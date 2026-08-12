@@ -1,5 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { countDirty, gitOverview, parseAheadBehind, parseWorktreeList, samePath } from "../src/git";
+import {
+  commitSessionWork,
+  countDirty,
+  gitOverview,
+  GIT_LOG_FORMAT,
+  parseAheadBehind,
+  parseGitLog,
+  parseNameStatus,
+  parseNumstat,
+  parseUntracked,
+  parseWorktreeList,
+  samePath,
+  sessionDiff,
+} from "../src/git";
 import type { GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
@@ -9,6 +22,19 @@ const fail = (): GitResult => ({ status: 1, stdout: "", stderr: "fatal" });
  *  commands it cares about and every other call fails like a real git would. */
 function runner(replies: Record<string, GitResult>): GitRunner {
   return (_cwd, args) => replies[args.slice(0, 2).join(" ")] ?? fail();
+}
+
+/**
+ * The review's runner keys on THREE words, because `diff -z --numstat` and
+ * `diff -z --name-status` are different questions with different answers — a
+ * two-word key answered both with the same fixture and hid the fact that the
+ * status letters were never being read.
+ */
+function reviewRunner(replies: Record<string, GitResult>, seen?: string[][]): GitRunner {
+  return (_cwd, args) => {
+    seen?.push(args);
+    return replies[args.slice(0, 3).join(" ")] ?? replies[args.slice(0, 2).join(" ")] ?? fail();
+  };
 }
 
 const REPO = {
@@ -133,5 +159,170 @@ describe("worktree identity", () => {
     // Only meaningful on a case-insensitive filesystem, which is where the bug
     // was observed; the helper's own test above covers both platforms.
     expect(entry.isMainCheckout).toBe(process.platform === "darwin" || process.platform === "win32");
+  });
+});
+
+
+// ── the session review ─────────────────────────────────────────────────────
+
+describe("parseNumstat", () => {
+  test("reads counts and paths, and a rename's three NUL fields", () => {
+    // `-z` is why this is parseable at all: without it a rename arrives as the
+    // brace form `src/{old => new}/f.ts`, which has to be reassembled by hand
+    // and mis-parses any real path containing a brace.
+    const entries = parseNumstat("12\t3\tsrc/a.ts\0" + "1\t1\t\0src/old.ts\0src/new.ts\0" + "-\t-\tlogo.png\0");
+    expect(entries[0]).toEqual({ path: "src/a.ts", added: 12, removed: 3, binary: false });
+    expect(entries[1]).toEqual({ path: "src/new.ts", renamedFrom: "src/old.ts", added: 1, removed: 1, binary: false });
+    // A binary file reports `-` for both counts, which is ABSENT rather than
+    // zero — `+0 −0` would be a measurement git never made.
+    expect(entries[2]).toEqual({ path: "logo.png", binary: true });
+  });
+});
+
+describe("parseNameStatus", () => {
+  test("maps letters to the contract's vocabulary and takes the NEW path of a rename", () => {
+    const statuses = parseNameStatus("A\0src/new.ts\0M\0src/a.ts\0D\0src/gone.ts\0R100\0src/old.ts\0src/moved.ts\0");
+    expect([...statuses]).toEqual([
+      ["src/new.ts", "added"],
+      ["src/a.ts", "modified"],
+      ["src/gone.ts", "deleted"],
+      ["src/moved.ts", "renamed"],
+    ]);
+  });
+});
+
+describe("parseUntracked", () => {
+  test("takes only the untracked entries, because everything tracked is already in the diff", () => {
+    // Reading tracked paths here as well would double every row.
+    expect(parseUntracked(" M src/a.ts\0?? dist/app.js\0?? notes.md\0")).toEqual(["dist/app.js", "notes.md"]);
+  });
+});
+
+describe("parseGitLog", () => {
+  test("splits on separators git will not emit itself, and converts seconds to milliseconds", () => {
+    // A commit subject may contain any printable character, including tabs —
+    // which is why the format uses these separators rather than something typeable.
+    const record = ["abc123def", "abc123d", "fix: tab\there", "1700000000", "Ada"].join("\x1f") + "\x1e";
+    expect(parseGitLog(record)).toEqual([
+      { sha: "abc123def", shortSha: "abc123d", subject: "fix: tab\there", at: 1_700_000_000_000, author: "Ada" },
+    ]);
+  });
+});
+
+/** `git log`'s key carries the whole format string, so it is built from the
+ *  module's own constant rather than typed out — a change to the format must
+ *  not silently make this fixture stop matching. */
+const LOG_KEY = `log --format=${GIT_LOG_FORMAT}`;
+
+const REVIEW: Record<string, GitResult> = {
+  "rev-parse --is-inside-work-tree": ok("true\n"),
+  "rev-parse --abbrev-ref": ok("session/fix\n"),
+  "rev-parse --verify": ok("base000\n"),
+  "diff -z --numstat": ok("4\t1\tsrc/a.ts\0"),
+  "diff -z --name-status": ok("M\0src/a.ts\0"),
+  "status --porcelain": ok("?? dist/app.js\0"),
+  [LOG_KEY]: ok(["sha1", "sha1sho", "did the thing", "1700000000", "Ada"].join("\x1f") + "\x1e"),
+  "rev-list --left-right": ok("0\t2\n"),
+};
+
+describe("sessionDiff", () => {
+  test("covers committed and uncommitted work together, and untracked files the diff cannot see", () => {
+    // The whole reason this exists: `git status` forgets a change the moment the
+    // agent commits it, and a branch comparison forgets everything uncommitted.
+    const diff = sessionDiff(reviewRunner(REVIEW), { cwd: "/repo", baseRef: "base000" });
+    expect(diff.repository).toBe(true);
+    expect(diff.base).toBe("base000");
+    expect(diff.branch).toBe("session/fix");
+    expect(diff.files.map((file) => file.path)).toEqual(["dist/app.js", "src/a.ts"]);
+    // Untracked files are absent from `git diff` entirely — a review built from
+    // the diff alone misses every file a scaffolding run created.
+    expect(diff.files.find((file) => file.path === "dist/app.js")?.status).toBe("untracked");
+    expect(diff.commits).toHaveLength(1);
+    expect({ ahead: diff.ahead, behind: diff.behind }).toEqual({ ahead: 2, behind: 0 });
+    expect({ added: diff.linesAdded, removed: diff.linesRemoved }).toEqual({ added: 4, removed: 1 });
+  });
+
+  test("a base that no longer resolves falls back to HEAD rather than failing", () => {
+    // A worktree's base can genuinely disappear — an upstream rebase, a gc — and
+    // every command would then fail with the same opaque "bad revision".
+    const diff = sessionDiff(reviewRunner({ ...REVIEW, "rev-parse --verify": fail() }), { cwd: "/repo", baseRef: "gone" });
+    expect(diff.base).toBeUndefined();
+    // Without a base there is no commit range to ask about, so committed work is
+    // not counted — and the surface says so rather than implying completeness.
+    expect(diff.commits).toEqual([]);
+  });
+
+  test("a directory that is not a repository is answered, not thrown", () => {
+    // `envMode: "local"` exists precisely so an unversioned directory can host
+    // sessions.
+    expect(sessionDiff(runner({}), { cwd: "/tmp/notes" })).toMatchObject({ repository: false, files: [], commits: [] });
+  });
+
+  test("untracked files are listed one by one, not collapsed into a directory row", () => {
+    // MEASURED AGAINST A REAL REPOSITORY: without `-uall`, five new files under
+    // two new directories arrived as two rows reading `app/api/…/diff/` — rows
+    // nobody can open, count or judge.
+    const seen: string[][] = [];
+    sessionDiff(reviewRunner(REVIEW, seen), { cwd: "/repo", baseRef: "base000" });
+    const status = seen.find((args) => args[0] === "status");
+    expect(status).toContain("-uall");
+  });
+
+  test("the status letters come from name-status, not from the numstat fixture", () => {
+    const diff = sessionDiff(
+      reviewRunner({ ...REVIEW, "diff -z --name-status": ok("D\0src/a.ts\0") }),
+      { cwd: "/repo", baseRef: "base000" },
+    );
+    expect(diff.files.find((file) => file.path === "src/a.ts")?.status).toBe("deleted");
+  });
+});
+
+describe("commitSessionWork", () => {
+  test("stages everything, then commits, and reports the new commit", () => {
+    const calls: string[][] = [];
+    const git: GitRunner = (_cwd, args) => {
+      calls.push(args);
+      const key = args.slice(0, 2).join(" ");
+      if (key === "rev-parse --is-inside-work-tree") return ok("true\n");
+      if (key === "add -A") return ok("");
+      // Non-zero from `diff --cached --quiet` means there IS something staged.
+      if (key === "diff --cached") return fail();
+      if (key === "commit -m") return ok("");
+      if (key === "log -1") return ok(["sha1", "sha1sho", "Session work", "1700000000", "Ada"].join("\x1f") + "\x1e");
+      return fail();
+    };
+    const result = commitSessionWork(git, { cwd: "/repo", message: "Session work" });
+    expect(result.committed).toBe(true);
+    expect(result.commit?.shortSha).toBe("sha1sho");
+    // `add -A` rather than a staging UI: you did not write these changes, so
+    // "which hunks" is bookkeeping for authorship you do not have.
+    expect(calls.some((args) => args[0] === "add" && args[1] === "-A")).toBe(true);
+  });
+
+  test("a clean tree is an answer, not a failure", () => {
+    // The ordinary state after a session that only read. A red error here would
+    // teach the reader to distrust the button.
+    const git: GitRunner = (_cwd, args) => {
+      const key = args.slice(0, 2).join(" ");
+      if (key === "rev-parse --is-inside-work-tree") return ok("true\n");
+      if (key === "add -A") return ok("");
+      if (key === "diff --cached") return ok("");
+      return fail();
+    };
+    expect(commitSessionWork(git, { cwd: "/repo", message: "x" })).toMatchObject({ committed: false });
+  });
+
+  test("a hook that refuses is passed through in its own words", () => {
+    const git: GitRunner = (_cwd, args) => {
+      const key = args.slice(0, 2).join(" ");
+      if (key === "rev-parse --is-inside-work-tree") return ok("true\n");
+      if (key === "add -A") return ok("");
+      if (key === "diff --cached") return fail();
+      if (key === "commit -m") return { status: 1, stdout: "", stderr: "pre-commit: lint failed on 3 files\n" };
+      return fail();
+    };
+    // Its own output is the only useful thing to show; a generic failure would
+    // send the reader to a terminal to find out what this already knew.
+    expect(commitSessionWork(git, { cwd: "/repo", message: "x" }).reason).toBe("pre-commit: lint failed on 3 files");
   });
 });

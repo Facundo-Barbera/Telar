@@ -50,7 +50,22 @@ export type SessionState = z.infer<typeof SessionState>;
  * on one project do not collide.
  */
 export const SessionWorkspace = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("local"), path: z.string().min(1) }),
+  z.object({
+    mode: z.literal("local"),
+    path: z.string().min(1),
+    /**
+     * The commit HEAD pointed at when this session was created.
+     *
+     * A WORKTREE SESSION HAS ALWAYS HAD ONE and a local session never did, which
+     * made "what has this session done to the repository" answerable for half of
+     * them. It is the only anchor that survives the agent committing: `git
+     * status` forgets a commit the moment it lands, and a branch comparison
+     * forgets everything still uncommitted. Optional because sessions created
+     * before this existed have no base — the review surface falls back to HEAD
+     * and says which question it is answering.
+     */
+    baseRef: z.string().min(1).optional(),
+  }),
   z.object({
     mode: z.literal("worktree"),
     path: z.string().min(1),
@@ -233,6 +248,81 @@ export const GitWorktreeEntry = z.object({
   isMainCheckout: z.boolean(),
 });
 export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
+
+/**
+ * ONE FILE, AS GIT SEES IT — which is a different witness from the journal.
+ *
+ * `Item`'s `file_change` says what the agent REPORTED writing, with the patch
+ * its own tool produced. This says what is actually different on disk. They
+ * disagree constantly and usefully: a `bun install` touches a lockfile no
+ * transcript mentions, a build writes artefacts, and a file the agent edited
+ * twice can end up byte-identical to where it started. The cockpit's review
+ * surface exists to show exactly that disagreement.
+ */
+export const GitChangeStatus = z.enum(["added", "modified", "deleted", "renamed", "untracked"]);
+export type GitChangeStatus = z.infer<typeof GitChangeStatus>;
+
+export const GitFileChange = z.object({
+  path: z.string().min(1),
+  status: GitChangeStatus,
+  renamedFrom: z.string().min(1).optional(),
+  /** Absent rather than zero for a binary file and for an untracked one — git
+   *  counts neither, and a confident `+0` would be a fabrication. */
+  linesAdded: z.number().int().nonnegative().optional(),
+  linesRemoved: z.number().int().nonnegative().optional(),
+  binary: z.boolean().optional(),
+});
+export type GitFileChange = z.infer<typeof GitFileChange>;
+
+/** A commit the session itself made. Agents commit; a review that showed only
+ *  the working tree would report a finished session as having done nothing. */
+export const GitCommitEntry = z.object({
+  sha: z.string().min(1),
+  shortSha: z.string().min(1),
+  subject: z.string(),
+  /** Author date, epoch milliseconds — the same unit as every other timestamp
+   *  in this contract, converted at the seam rather than by three clients. */
+  at: Timestamp,
+  author: z.string(),
+});
+export type GitCommitEntry = z.infer<typeof GitCommitEntry>;
+
+/**
+ * WHAT THIS SESSION HAS DONE TO THE REPOSITORY, committed and uncommitted
+ * together, measured from where it started.
+ *
+ * The frozen cockpit answered two narrower questions and neither was the one a
+ * reviewer asks. `git status` forgets a change the moment the agent commits it;
+ * a branch comparison forgets everything still uncommitted. `base…worktree`
+ * covers both, and it is the only framing under which "is this session's work
+ * good" has a single answer.
+ *
+ * SCOPED TO THE SESSION'S OWN CHECKOUT. A worktree session has a branch and a
+ * working tree of its own, so running this against the project root would
+ * describe somebody else's changes — which is what the donor's pane did.
+ */
+export const SessionDiff = z.object({
+  repository: z.boolean(),
+  /** The session's own checkout: its worktree, or the project root. */
+  workspacePath: z.string().min(1),
+  branch: z.string().optional(),
+  /**
+   * Absent means the session has no recorded base and this diff is against
+   * HEAD instead — so committed work is NOT included and the surface has to say
+   * so. Present is the full answer.
+   */
+  base: z.string().min(1).optional(),
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+  files: z.array(GitFileChange),
+  commits: z.array(GitCommitEntry),
+  linesAdded: z.number().int().nonnegative(),
+  linesRemoved: z.number().int().nonnegative(),
+  /** The file list is capped. Reported so a truncated review cannot read as a
+   *  complete one. */
+  truncated: z.boolean(),
+});
+export type SessionDiff = z.infer<typeof SessionDiff>;
 
 export const GitOverview = z.object({
   repository: z.boolean(),

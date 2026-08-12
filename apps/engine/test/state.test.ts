@@ -486,3 +486,45 @@ test("a store with no browser attached reports none rather than failing", async 
   // a deployment whose worker owns the browser gives. One code path, not two.
   expect(await store.browserState("session_one")).toEqual({ scopeKey: "session_one", provider: "none", running: false, tabs: [] });
 });
+
+test("a local session records the commit it started from, so its review survives the agent committing", () => {
+  // Without a base, "what has this session done" was answerable only for
+  // worktree sessions: `git status` forgets a change the instant it is
+  // committed, so a session that committed its work reviewed as having done
+  // nothing at all.
+  const projectRoot = fs.realpathSync.native(root());
+  const store = new EngineStore(root(), () => 100, {
+    git: (_cwd, args) => (args.join(" ") === "rev-parse HEAD" ? { status: 0, stdout: "base000\n", stderr: "" } : { status: 1, stdout: "", stderr: "" }),
+  });
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  const session = store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(session.workspace).toEqual({ mode: "local", path: projectRoot, baseRef: "base000" });
+});
+
+test("an unversioned project still gets a session, with no base rather than a refusal", () => {
+  // `envMode: "local"` exists precisely so an unversioned directory can host
+  // sessions; a failure to resolve HEAD must not cost the session.
+  const projectRoot = fs.realpathSync.native(root());
+  const store = new EngineStore(root(), () => 100, { git: () => ({ status: 128, stdout: "", stderr: "not a git repository" }) });
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  expect(store.createSession({ id: "session_one", projectId: "project_one" }).workspace).toEqual({ mode: "local", path: projectRoot });
+});
+
+test("a file patch cannot be asked for outside the session's own workspace", () => {
+  // `git diff -- <path>` takes a pathspec, and `../../` in one is how a client
+  // asks to read a file it was never offered. Fenced in the store rather than at
+  // the route, so an in-process caller cannot walk past it either.
+  const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
+  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(() => store.sessionFilePatch("session_one", "../../etc/passwd")).toThrow(EngineStateError);
+  expect(() => store.sessionFilePatch("session_one", "  ")).toThrow(EngineStateError);
+});
+
+test("a commit needs a message and the message has a ceiling", () => {
+  const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
+  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(() => store.commitSessionWork("session_one", "   ")).toThrow(EngineStateError);
+  expect(() => store.commitSessionWork("session_one", "x".repeat(2_001))).toThrow(EngineStateError);
+});

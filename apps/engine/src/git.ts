@@ -7,16 +7,27 @@
  * and the engine already holds the project root and an injectable runner for it
  * (see ./worktree.ts), so this is the only party that can answer.
  *
- * EVERY CALL IS READ-ONLY, and that is a boundary rather than an accident. This
- * module runs `rev-parse`, `status --porcelain`, `rev-list` and `worktree list`
- * and nothing else. A mutation belongs behind a request a human answers, not
- * behind a panel that refreshes itself every fifteen seconds.
+ * EVERY READ IS READ-ONLY, and that is still the boundary: `gitOverview` and
+ * `sessionDiff` run `rev-parse`, `status`, `diff`, `log`, `rev-list` and
+ * `worktree list`, and a surface that refreshes itself on a timer may call
+ * nothing else.
+ *
+ * THERE IS EXACTLY ONE MUTATION, `commitSessionWork`, and its shape is the rule
+ * for any that follow: a human pressed a button, it is additive, and it is
+ * recoverable. `git commit` can be undone with a reset; `git restore`,
+ * `git checkout <branch>` and a hunk-level index cannot, and a panel that
+ * refreshes every fifteen seconds beside an agent that is still writing is the
+ * worst possible place to offer them. The frozen cockpit offered all three (see
+ * `apps/web_old/components/session/workspace-git-pane.tsx`): a branch list whose
+ * rows ran `git checkout` in the tree an agent was working in, with no
+ * confirmation. Their absence here is a decision, not a gap.
  *
  * A PROJECT THAT IS NOT A REPOSITORY IS NOT AN ERROR. `envMode: "local"` exists
  * precisely so an unversioned directory can host sessions, so the overview
  * reports `repository: false` and stops. Throwing here would make the composer's
  * foot a failure state for a configuration the engine supports on purpose.
  */
+import type { GitChangeStatus, GitCommitEntry, GitFileChange, SessionDiff } from "@telar/engine-client";
 import type { GitRunner } from "./worktree.js";
 
 export type GitWorktreeEntry = {
@@ -126,6 +137,279 @@ export function parseAheadBehind(stdout: string): { ahead: number; behind: numbe
   const ahead = Number(parts[1]);
   if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return undefined;
   return { ahead, behind };
+}
+
+/**
+ * How many changed files one review may carry.
+ *
+ * A HUMAN LIMIT, NOT A TRANSPORT ONE. Past a couple of hundred rows nobody is
+ * reading a list — they are looking for a number and a shape — and a session
+ * that touched 4,000 files (a `node_modules` that escaped a gitignore, a
+ * formatter run over the repo) would otherwise turn a panel poll into a
+ * megabyte. `truncated` is reported so the surface can say what it dropped.
+ */
+const MAX_REVIEW_FILES = 300;
+
+/** Splits a NUL-delimited git payload, dropping the trailing empty field. */
+function nulFields(stdout: string): string[] {
+  const fields = stdout.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  return fields;
+}
+
+/**
+ * `git diff -z --numstat` → adds, dels, path — with renames arriving as THREE
+ * fields rather than one.
+ *
+ * `-z` is what makes this parseable at all. Without it a rename prints as
+ * `src/{old => new}/file.ts`, a brace form that has to be reassembled by hand
+ * and that silently mis-parses any real path containing a brace. With `-z` the
+ * counts stay tab-separated and the paths become separate NUL fields, so there
+ * is nothing to guess. A binary file reports `-` for both counts, which is
+ * ABSENT rather than zero.
+ */
+export function parseNumstat(stdout: string): { path: string; renamedFrom?: string; added?: number; removed?: number; binary: boolean }[] {
+  const out: { path: string; renamedFrom?: string; added?: number; removed?: number; binary: boolean }[] = [];
+  const fields = nulFields(stdout);
+  for (let index = 0; index < fields.length; index += 1) {
+    const head = fields[index]!;
+    const parts = head.split("\t");
+    if (parts.length < 3) continue;
+    const [added, removed, first] = parts as [string, string, string];
+    const binary = added === "-" || removed === "-";
+    // An empty third field means the paths follow as their own records, which is
+    // how `-z` reports a rename or a copy.
+    let path = first;
+    let renamedFrom: string | undefined;
+    if (first === "") {
+      renamedFrom = fields[index + 1];
+      path = fields[index + 2] ?? "";
+      index += 2;
+    }
+    if (!path) continue;
+    out.push({
+      path,
+      ...(renamedFrom ? { renamedFrom } : {}),
+      ...(binary ? {} : { added: Number(added), removed: Number(removed) }),
+      binary,
+    });
+  }
+  return out;
+}
+
+const NAME_STATUS: Record<string, GitChangeStatus> = { A: "added", M: "modified", D: "deleted", R: "renamed", C: "added", T: "modified" };
+
+/** `git diff -z --name-status` → one status letter per path, same NUL rules. */
+export function parseNameStatus(stdout: string): Map<string, GitChangeStatus> {
+  const out = new Map<string, GitChangeStatus>();
+  const fields = nulFields(stdout);
+  for (let index = 0; index < fields.length; index += 1) {
+    const code = fields[index]!;
+    const letter = code[0];
+    if (!letter || !NAME_STATUS[letter]) continue;
+    // R100 / C75 carry a similarity score and two paths; the NEW path is the
+    // one the row is about.
+    const renamed = letter === "R" || letter === "C";
+    const path = renamed ? fields[index + 2] : fields[index + 1];
+    index += renamed ? 2 : 1;
+    if (path) out.set(path, NAME_STATUS[letter]!);
+  }
+  return out;
+}
+
+/** `git status --porcelain -z` → the untracked paths only. Everything tracked is
+ *  already in the base diff, and reading it twice would double the row. */
+export function parseUntracked(stdout: string): string[] {
+  return nulFields(stdout)
+    .filter((entry) => entry.startsWith("?? "))
+    .map((entry) => entry.slice(3))
+    .filter(Boolean);
+}
+
+/** Field and record separators chosen because git will not emit them itself:
+ *  a commit subject may contain any printable character, including tabs. */
+const FIELD = "";
+const RECORD = "";
+export const GIT_LOG_FORMAT = `%H${FIELD}%h${FIELD}%s${FIELD}%at${FIELD}%an${RECORD}`;
+
+export function parseGitLog(stdout: string): GitCommitEntry[] {
+  return stdout
+    .split(RECORD)
+    .map((record) => record.replace(/^\n/, ""))
+    .filter((record) => record.trim().length > 0)
+    .flatMap((record) => {
+      const [sha, shortSha, subject, at, author] = record.split(FIELD);
+      if (!sha || !shortSha) return [];
+      const seconds = Number(at);
+      return [
+        {
+          sha,
+          shortSha,
+          subject: subject ?? "",
+          // Seconds at the seam, milliseconds everywhere else — converted once
+          // here rather than by every client that renders a date.
+          at: Number.isFinite(seconds) ? seconds * 1000 : 0,
+          author: author ?? "",
+        },
+      ];
+    });
+}
+
+/**
+ * What a session has done to the repository, from where it started to now.
+ *
+ * RUN IN THE SESSION'S OWN CHECKOUT. `cwd` is the session workspace, not the
+ * project root: a worktree session has its own branch and its own working tree,
+ * and describing the project root instead would report changes belonging to
+ * whoever else is working there.
+ *
+ * `base` ABSENT IS A DIFFERENT QUESTION, answered honestly rather than papered
+ * over. With a base this is `base…worktree` and includes the agent's own
+ * commits; without one it is `HEAD…worktree` and cannot. The caller reports
+ * which, so a session created before bases were recorded does not silently
+ * claim its committed work never happened.
+ */
+export function sessionDiff(git: GitRunner, input: { cwd: string; baseRef?: string }): SessionDiff {
+  const { cwd, baseRef } = input;
+  const inside = git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return { repository: false, workspacePath: cwd, files: [], commits: [], linesAdded: 0, linesRemoved: 0, truncated: false };
+  }
+
+  const head = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const raw = head.status === 0 ? head.stdout.trim() : "";
+  const branch = raw && raw !== "HEAD" ? raw : undefined;
+
+  /**
+   * A BASE THAT NO LONGER RESOLVES IS DROPPED, not reported.
+   *
+   * A worktree's base commit can genuinely disappear — a rebase upstream, a
+   * `gc` after a branch was deleted — and every command below would then fail
+   * with the same opaque "bad revision". Falling back to HEAD gives a smaller
+   * true answer instead of an error a reader cannot act on.
+   */
+  const resolved = baseRef && git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]).status === 0 ? baseRef : undefined;
+  const against = resolved ?? "HEAD";
+
+  const numstat = git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]);
+  const nameStatus = git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]);
+  const statuses = nameStatus.status === 0 ? parseNameStatus(nameStatus.stdout) : new Map<string, GitChangeStatus>();
+  const tracked: GitFileChange[] = (numstat.status === 0 ? parseNumstat(numstat.stdout) : []).map((entry) => ({
+    path: entry.path,
+    status: statuses.get(entry.path) ?? "modified",
+    ...(entry.renamedFrom ? { renamedFrom: entry.renamedFrom } : {}),
+    ...(entry.added === undefined ? {} : { linesAdded: entry.added }),
+    ...(entry.removed === undefined ? {} : { linesRemoved: entry.removed }),
+    ...(entry.binary ? { binary: true } : {}),
+  }));
+
+  // Untracked files are NOT in `git diff` at all, so a review built from the
+  // diff alone would miss every file the agent created and never staged —
+  // which for a scaffolding run is all of them.
+  /**
+   * `-uall` IS LOAD-BEARING. By default `git status` collapses a wholly
+   * untracked directory into ONE entry with a trailing slash — `dist/` — which
+   * is a row a reviewer cannot open, cannot count, and cannot judge. Found by
+   * running this against a real repository: five new files under two new
+   * directories arrived as two directory rows. Listing files individually is
+   * what makes the review a review; the file cap and `truncated` handle the
+   * pathological case of an unignored `node_modules`.
+   */
+  const status = git(cwd, ["status", "--porcelain", "-z", "-uall"]);
+  const untracked: GitFileChange[] = (status.status === 0 ? parseUntracked(status.stdout) : []).map((path) => ({
+    path,
+    status: "untracked" as const,
+  }));
+
+  const log = resolved ? git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${resolved}..HEAD`]) : undefined;
+  const commits = log?.status === 0 ? parseGitLog(log.stdout) : [];
+
+  const tracking = git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+  const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
+
+  const all = [...tracked, ...untracked].sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    repository: true,
+    workspacePath: cwd,
+    ...(branch ? { branch } : {}),
+    ...(resolved ? { base: resolved } : {}),
+    ...(divergence ?? {}),
+    files: all.slice(0, MAX_REVIEW_FILES),
+    commits,
+    // Totalled over EVERY file, not just the ones that survived the cap: the
+    // headline figure must describe the change, and the list is what is capped.
+    linesAdded: all.reduce((sum, file) => sum + (file.linesAdded ?? 0), 0),
+    linesRemoved: all.reduce((sum, file) => sum + (file.linesRemoved ?? 0), 0),
+    truncated: all.length > MAX_REVIEW_FILES,
+  };
+}
+
+/**
+ * One file's patch, on demand.
+ *
+ * NOT INLINED IN `sessionDiff`, for the same reason the browser's screenshot is
+ * not journalled: a review of two hundred files carrying every patch is a
+ * megabyte on a poll, and the reader opens one row at a time.
+ *
+ * An UNTRACKED file has no diff — git will not compare it to anything — so it is
+ * diffed against `/dev/null` explicitly. `--no-index` exits 1 when the files
+ * differ, which is the successful case here and the reason this accepts 1.
+ */
+export function sessionFilePatch(
+  git: GitRunner,
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean },
+): { patch: string; binary: boolean } {
+  const { cwd, baseRef, path: target } = input;
+  const against = baseRef && git(cwd, ["rev-parse", "--verify", "--quiet", baseRef]).status === 0 ? baseRef : "HEAD";
+  const result = input.untracked
+    ? git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target])
+    : git(cwd, ["diff", "--unified=3", against, "--", target]);
+  if (result.status !== 0 && result.status !== 1) return { patch: "", binary: false };
+  const patch = result.stdout;
+  return { patch, binary: /^Binary files .* differ$/m.test(patch) };
+}
+
+/**
+ * Commit everything in the session's checkout.
+ *
+ * THE ONLY MUTATION IN THIS MODULE, and everything about it is chosen so that
+ * pressing it by accident costs nothing you cannot get back.
+ *
+ * `add -A` RATHER THAN A STAGING UI. You did not write these changes — an agent
+ * did — so "which hunks do I stage" is bookkeeping for authorship you do not
+ * have. The question a reviewer actually has is "is this work good", and the
+ * answer is a snapshot of all of it or none.
+ *
+ * NOTHING TO COMMIT IS NOT AN ERROR. A clean tree is the ordinary state after a
+ * session that only read, and a red failure for it would teach the reader to
+ * distrust the button.
+ */
+export function commitSessionWork(
+  git: GitRunner,
+  input: { cwd: string; message: string },
+): { committed: boolean; commit?: GitCommitEntry; reason?: string } {
+  const inside = git(input.cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return { committed: false, reason: "This session's workspace is not a git repository." };
+  }
+  const staged = git(input.cwd, ["add", "-A"]);
+  if (staged.status !== 0) {
+    return { committed: false, reason: staged.stderr.trim() || "git could not stage this session's changes." };
+  }
+  // Checked AFTER staging, because untracked files only become visible to
+  // `diff --cached` once they are added.
+  if (git(input.cwd, ["diff", "--cached", "--quiet"]).status === 0) {
+    return { committed: false, reason: "Nothing to commit — this session's checkout matches its last commit." };
+  }
+  const committed = git(input.cwd, ["commit", "-m", input.message]);
+  if (committed.status !== 0) {
+    // A pre-commit hook that refuses is the common case here, and its own
+    // output is the only useful thing to show — so it is passed through rather
+    // than replaced with a generic failure.
+    return { committed: false, reason: committed.stderr.trim() || committed.stdout.trim() || "git refused the commit." };
+  }
+  const entry = parseGitLog(git(input.cwd, ["log", "-1", `--format=${GIT_LOG_FORMAT}`]).stdout)[0];
+  return { committed: true, ...(entry ? { commit: entry } : {}) };
 }
 
 export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {

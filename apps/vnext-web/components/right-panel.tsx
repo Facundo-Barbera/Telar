@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   BotIcon,
   ChevronRightIcon,
+  GitBranchIcon,
   FileIcon,
   GaugeIcon,
   GlobeIcon,
@@ -42,6 +43,7 @@ import {
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
+import { GitSurface } from "@/components/session/git-surface";
 import { cn } from "@/lib/utils";
 
 /** The panel reads the engine directly for the one thing the journal cannot
@@ -76,7 +78,15 @@ const api = createVNextApi();
  */
 const SURFACES = [
   { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and background work." },
-  { id: "changes", label: "Changes", icon: PencilIcon, blurb: "Every file this session wrote." },
+  { id: "changes", label: "Changes", icon: PencilIcon, blurb: "Every file this session said it wrote." },
+  /**
+   * CHANGES AND GIT ARE NOT THE SAME SURFACE, and keeping both is the point.
+   * Changes reads the JOURNAL — what the agent reported, with the patch its own
+   * tool produced, including work it later undid. Git reads the DISK — what
+   * actually differs from where the session started, including side effects
+   * nobody narrated. The Git surface is where the two are joined.
+   */
+  { id: "git", label: "Git", icon: GitBranchIcon, blurb: "What the repository has, against where this session started." },
   { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this session has spent." },
 ] as const;
 
@@ -572,6 +582,8 @@ export function VNextPanelSurface({
   turns,
   browser,
   sessionId,
+  sessionTitle,
+  active,
 }: {
   tab: PanelTab;
   files: readonly ChangedFile[];
@@ -579,14 +591,29 @@ export function VNextPanelSurface({
   turns: readonly Turn[];
   browser?: BrowserState;
   /** Absent on a session that does not exist yet, which is also a session with
-   *  no browser — the live view simply has nothing to poll. */
+   *  no browser and no repository diff — both surfaces have nothing to poll. */
   sessionId?: string;
+  /** The default commit message. Derived from the first message, which is the
+   *  best one-line summary of what was asked for that anybody has. */
+  sessionTitle?: string;
+  active?: TurnState;
 }) {
   const usage = useMemo(() => sessionUsage(turns), [turns]);
+  // The journal's half of the reconciliation, as plain paths.
+  const reportedPaths = useMemo(() => files.map((file) => file.path), [files]);
   const pageId = browserTabId(tab);
   if (pageId !== undefined)
     return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} />;
   if (tab === "changes") return <ChangesSurface files={files} />;
+  if (tab === "git")
+    return (
+      <GitSurface
+        {...(sessionId ? { sessionId } : {})}
+        reportedPaths={reportedPaths}
+        suggestion={sessionTitle?.trim() || "Session work"}
+        {...(active ? { active } : {})}
+      />
+    );
   if (tab === "agents") return <AgentsSurface tasks={tasks} />;
   return <UsageSurface usage={usage} />;
 }
@@ -808,6 +835,7 @@ function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement 
 export function VNextRightPanel({
   active,
   sessionId,
+  sessionTitle,
   items = [],
   tasks = [],
   turns = [],
@@ -820,10 +848,12 @@ export function VNextRightPanel({
   onClose,
 }: {
   active?: TurnState;
-  /** Absent until the first message creates the session. The browser surface is
-   *  the only thing here that needs it — everything else folds records the
+  /** Absent until the first message creates the session. The browser and git
+   *  surfaces are the two that need it — everything else folds records the
    *  cockpit already holds. */
   sessionId?: string;
+  /** The default commit message on the git surface. */
+  sessionTitle?: string;
   items?: readonly Item[];
   tasks?: readonly Task[];
   turns?: readonly Turn[];
@@ -1022,6 +1052,8 @@ export function VNextRightPanel({
               turns={turns}
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}
+              {...(sessionTitle ? { sessionTitle } : {})}
+              {...(active ? { active } : {})}
             />
           </>
         ) : (

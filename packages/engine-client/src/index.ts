@@ -11,6 +11,8 @@ import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
   type BrowserSnapshot,
+  type GitCommitEntry,
+  type SessionDiff,
   type McpServer,
   type McpServerSpec,
   type TurnAttachment,
@@ -223,6 +225,29 @@ export class EngineClient {
       // header may not — a raw newline here would end the header block.
       "x-telar-attachment-name": encodeURIComponent(file.name),
     });
+  }
+
+  /**
+   * What this session has done to the repository since it started — committed
+   * and uncommitted together, measured from the base recorded when it was
+   * created. See `SessionDiff` for why that framing rather than `git status`.
+   */
+  sessionDiff(sessionId: string): Promise<{ diff: SessionDiff }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff`);
+  }
+
+  /** One file's patch. Separate from the review for the same reason a screenshot
+   *  is separate from the browser's tab list: size, and nobody reads all of it. */
+  sessionFilePatch(sessionId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: { patch: string; binary: boolean } }> {
+    const query = new URLSearchParams({ path });
+    if (options.untracked) query.set("untracked", "1");
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`);
+  }
+
+  /** Snapshot the session's work as one commit. The engine's only git mutation —
+   *  additive, reversible, and never automatic. */
+  commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/commit`, { message });
   }
 
   /**

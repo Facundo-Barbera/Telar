@@ -462,6 +462,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        /**
+         * The session's review: what it has done to the repository since it
+         * started. `?path=` narrows it to ONE file's patch, because a review of
+         * two hundred files carrying every patch is a megabyte on a poll.
+         */
+        if (request.method === "GET" && session.tail === "/diff") {
+          const target = url.searchParams.get("path");
+          if (target) {
+            writeJson(response, 200, {
+              file: store.sessionFilePatch(session.sessionId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+            });
+            return;
+          }
+          writeJson(response, 200, { diff: store.sessionDiff(session.sessionId) });
+          return;
+        }
+        if (request.method === "POST" && session.tail === "/git/commit") {
+          const input = await body(request);
+          writeJson(response, 200, store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
+          return;
+        }
         if (request.method === "GET" && session.tail === "/browser") {
           writeJson(response, 200, {
             browser: await store.browserState(session.sessionId, {

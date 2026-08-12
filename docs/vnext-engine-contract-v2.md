@@ -365,6 +365,17 @@ behind it works.
   the filesystem. Images reach Claude as base64 content blocks and Codex as its
   `localImage` input element; anything else is named by PATH, because both
   agents have a Read tool and a file they can reopen beats a copy they cannot.
+- **The git surface.** DONE, and deliberately narrower than the frozen app's.
+  `GET /v2/sessions/:id/diff` answers `base…worktree` — committed and
+  uncommitted together, run in the SESSION's own checkout — because `git status`
+  forgets a change the moment the agent commits it and a branch comparison
+  forgets everything uncommitted. A local session now records `baseRef` at
+  creation so that question is answerable for it too. The cockpit joins the
+  result against the journal, so files that differ on disk and never appeared in
+  the transcript are named. `POST /v2/sessions/:id/git/commit` is the ONE git
+  mutation: additive, reversible, human-pressed. Staging, branch switching and
+  discarding are refused by design — the frozen pane's branch list ran
+  `git checkout` in the tree a running agent was writing to.
 - **User-configured MCP servers.** DONE for Claude. Environment-scoped in
   `mcp-servers.json`, filtered to the enabled ones on the `WorkerClaim`, and
   merged UNDER Telar's own servers so a user server called `telar` cannot shadow

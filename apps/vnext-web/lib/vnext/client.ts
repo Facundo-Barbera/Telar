@@ -1,6 +1,8 @@
 import type {
   BrowserSnapshot,
+  GitCommitEntry,
   GitOverview,
+  SessionDiff,
   EngineErrorCode,
   EngineEvent,
   EngineHealth,
@@ -135,6 +137,30 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       }
       return payload as { attachment: TurnAttachment };
     },
+    /** What this session has done to the repository since it started — committed
+     *  and uncommitted together, from the base recorded at creation. */
+    sessionDiff: (sessionId: string) =>
+      request<{ diff: SessionDiff }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff`),
+    /** One file's patch, opened on demand. */
+    sessionFilePatch: (sessionId: string, path: string, options: { untracked?: boolean } = {}) => {
+      const query = new URLSearchParams({ path });
+      if (options.untracked) query.set("untracked", "1");
+      return request<{ file: { patch: string; binary: boolean } }>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,
+      );
+    },
+    /** Snapshot the session's work as one commit. A refusal ("nothing to commit",
+     *  a hook that said no) comes back as `committed: false` with a reason, not
+     *  as a thrown error — it is an answer about the repository. */
+    commitSessionWork: (sessionId: string, message: string) =>
+      request<{ committed: boolean; commit?: GitCommitEntry; reason?: string }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/git/commit`,
+        { message },
+      ),
     /** What the session's browser is looking at. `screenshot` costs a round trip
      *  through Chromium and `start` would LAUNCH one, so both are opt-in. */
     browserState: (sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}) => {

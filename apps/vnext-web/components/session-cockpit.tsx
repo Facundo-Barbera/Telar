@@ -957,6 +957,7 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
         <VNextRightPanel
           {...(active?.state ? { active: active.state } : {})}
           {...(sessionId ? { sessionId } : {})}
+          {...(session?.title ? { sessionTitle: session.title } : {})}
           items={items}
           tasks={tasks}
           turns={turns}

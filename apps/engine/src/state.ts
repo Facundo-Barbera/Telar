@@ -24,6 +24,8 @@ import {
   type BrowserProvider,
   type BrowserSnapshot,
   type BrowserTab,
+  type GitCommitEntry,
+  type SessionDiff,
   type EngineEvent,
   type Item,
   type McpServer,
@@ -49,7 +51,7 @@ import {
   type WorkerClaim,
   type WorkerStatus,
 } from "@telar/engine-client";
-import { gitOverview, type GitOverview } from "./git";
+import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
@@ -645,6 +647,63 @@ export class EngineStore {
     return gitOverview(this.git, this.getProject(projectId).root);
   }
 
+  /**
+   * What this session has done to the repository, from where it started.
+   *
+   * READ AGAINST THE SESSION'S OWN CHECKOUT and its own recorded base, both of
+   * which come from the session record rather than from the caller — a client
+   * that could name the directory could ask the engine to diff anything on the
+   * machine.
+   */
+  sessionDiff(sessionId: string): SessionDiff {
+    const session = this.getSession(sessionId);
+    return sessionDiff(this.git, {
+      cwd: session.workspace.path,
+      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+    });
+  }
+
+  /** One file's patch, on demand — see `sessionFilePatch` for why it is not
+   *  carried on the review itself. */
+  sessionFilePatch(sessionId: string, target: string, options: { untracked?: boolean } = {}): { patch: string; binary: boolean } {
+    const session = this.getSession(sessionId);
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    /**
+     * THE PATH IS RESOLVED AND FENCED INSIDE THE WORKSPACE.
+     *
+     * `git diff -- <path>` treats its argument as a pathspec relative to the
+     * repository, and `../../` in one is how a client asks to read a file it was
+     * never offered. The fence is here rather than at the route because an
+     * in-process caller must not be able to walk past a check that only ran on
+     * the socket.
+     */
+    const resolved = path.resolve(session.workspace.path, target);
+    const prefix = session.workspace.path.endsWith(path.sep) ? session.workspace.path : `${session.workspace.path}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the session workspace");
+    return sessionFilePatch(this.git, {
+      cwd: session.workspace.path,
+      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+      path: path.relative(session.workspace.path, resolved),
+      ...(options.untracked ? { untracked: true } : {}),
+    });
+  }
+
+  /**
+   * Snapshot the session's work as one commit.
+   *
+   * THE ONE GIT MUTATION THE ENGINE OFFERS. It is additive and reversible, a
+   * human pressed it, and it runs in the session's own checkout — see
+   * `commitSessionWork` for why staging, branch switching and discarding are
+   * deliberately absent rather than pending.
+   */
+  commitSessionWork(sessionId: string, message: string): { committed: boolean; commit?: GitCommitEntry; reason?: string } {
+    const session = this.getSession(sessionId);
+    const text = message.trim();
+    if (!text) throw new EngineStateError("invalid_request", "a commit message is required");
+    if (text.length > 2_000) throw new EngineStateError("invalid_request", "commit message is too long");
+    return commitSessionWork(this.git, { cwd: session.workspace.path, message: text });
+  }
+
   createSession(input: {
     id?: string;
     projectId: string;
@@ -685,7 +744,25 @@ export class EngineStore {
             });
             return { mode: "worktree" as const, path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
           })()
-        : { mode: "local" as const, path: project.root };
+        : (() => {
+            /**
+             * A LOCAL SESSION GETS A BASE TOO, which it never used to.
+             *
+             * Without it "what has this session done to the repository" was only
+             * answerable for worktree sessions: `git status` forgets a change the
+             * instant the agent commits it, so a session that committed its work
+             * reviewed as having done nothing. Resolved at creation and stored,
+             * because HEAD moves — reading it later would answer a different
+             * question every time.
+             *
+             * An unversioned directory is a supported configuration (`envMode:
+             * "local"` exists for exactly that), so a failure here leaves the
+             * base absent rather than refusing the session.
+             */
+            const head = this.git(project.root, ["rev-parse", "HEAD"]);
+            const baseRef = head.status === 0 ? head.stdout.trim() : "";
+            return { mode: "local" as const, path: project.root, ...(baseRef ? { baseRef } : {}) };
+          })();
     const session: Session = {
       id,
       projectId: input.projectId,
