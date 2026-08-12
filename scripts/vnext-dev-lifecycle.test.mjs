@@ -43,7 +43,10 @@ describe("vNext dev lifecycle decisions", () => {
   test("the vNext desktop door targets the one explicit web port and reuses the existing runner", () => {
     expect(shouldLaunchDesktop([])).toBeFalse();
     expect(shouldLaunchDesktop(["--desktop"])).toBeTrue();
-    expect(resolveVnextWebPort({})).toBe(43125);
+    // Next's own default. Safe to sit on a crowded port only because
+    // `assertVnextWebPortAvailable` fails loudly instead of letting Next slide
+    // to 3001 and leave every printed URL pointing at the wrong cockpit.
+    expect(resolveVnextWebPort({})).toBe(3000);
     expect(resolveVnextWebPort({ TELAR_VNEXT_WEB_PORT: "43123" })).toBe(43123);
     expect(() => resolveVnextWebPort({ TELAR_VNEXT_WEB_PORT: "not-a-port" })).toThrow("TELAR_VNEXT_WEB_PORT");
     const cockpitUrl = vnextCockpitUrl(43123);
@@ -73,7 +76,7 @@ describe("vNext dev lifecycle decisions", () => {
 
   test("the desktop is stopped only when this wrapper launched it", () => {
     const attachedDesktop = { name: "desktop", owned: false };
-    const launchedDesktop = { name: "desktop", owned: desktopDevCommand(vnextCockpitUrl(43125)).owned };
+    const launchedDesktop = { name: "desktop", owned: desktopDevCommand(vnextCockpitUrl(3000)).owned };
     expect(ownedChildrenForShutdown([attachedDesktop, launchedDesktop])).toEqual([launchedDesktop]);
   });
 });

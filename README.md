@@ -74,7 +74,7 @@ bun run dev:vnext
 It uses the isolated `TELAR_HOME=$HOME/.telar-vnext-dogfood` by default (or an
 absolute dedicated `TELAR_HOME` you set), starts or attaches the engine, starts
 one vNext worker unless the attached engine already has a live registered
-worker, then opens the standalone vNext web app at `http://127.0.0.1:43125/`. Set
+worker, then opens the standalone vNext web app at `http://127.0.0.1:3000/`. Set
 `TELAR_VNEXT_WEB_PORT` to use a different explicit port. The launcher checks
 the selected loopback port before it starts anything and passes that exact port
 to both Next and the desktop shell; it fails rather than silently using Next's

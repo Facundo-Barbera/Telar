@@ -10,13 +10,21 @@ export function decideEngineStart(probe) {
   return probe === "healthy" ? "attach" : "spawn";
 }
 
-const DEFAULT_VNEXT_WEB_PORT = 43125;
-
 /**
- * Pick one explicit loopback port for this invocation.  Next must receive this
- * exact value: relying on its automatic 3001/3002 fallback would point the
- * desktop shell at the wrong cockpit.
+ * Next's own default, because this is a Next app and muscle memory should work.
+ *
+ * IT IS SAFE TO SIT ON THE CROWDED PORT ONLY BECAUSE OF `assertPortFree` BELOW.
+ * The reason this used to be a high, unlikely-to-collide number is that Next
+ * silently walks to 3001/3002 when 3000 is taken, which would leave the desktop
+ * shell and every printed URL pointing at a cockpit that is not the one running.
+ * Binding the port ourselves first turns that into a loud "port 3000 is
+ * unavailable" instead of a quiet mismatch — so the collision risk is now a
+ * clear error rather than a wrong answer. `TELAR_VNEXT_WEB_PORT` overrides.
  */
+const DEFAULT_VNEXT_WEB_PORT = 3000;
+
+/** Pick one explicit loopback port for this invocation. Next must receive this
+ *  exact value rather than being left to choose. */
 export function resolveVnextWebPort(env = process.env) {
   const raw = env.TELAR_VNEXT_WEB_PORT?.trim();
   if (!raw) return DEFAULT_VNEXT_WEB_PORT;
