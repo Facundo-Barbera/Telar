@@ -10,7 +10,7 @@ export function decideEngineStart(probe) {
   return probe === "healthy" ? "attach" : "spawn";
 }
 
-const DEFAULT_VNEXT_WEB_PORT = 3000;
+const DEFAULT_VNEXT_WEB_PORT = 43125;
 
 /**
  * Pick one explicit loopback port for this invocation.  Next must receive this
@@ -29,14 +29,14 @@ export function resolveVnextWebPort(env = process.env) {
 }
 
 export function vnextCockpitUrl(port) {
-  return `http://127.0.0.1:${port}/vnext`;
+  return `http://127.0.0.1:${port}/`;
 }
 
 /** Make Next bind to the same deterministic port advertised to the desktop. */
 export function webDevCommand(port) {
   return {
     label: "web",
-    args: ["run", "--cwd", "apps/web", "dev", "--", "--hostname", "127.0.0.1", "--port", String(port)],
+    args: ["run", "--cwd", "apps/vnext-web", "dev", "--", "--hostname", "127.0.0.1", "--port", String(port)],
     owned: true,
   };
 }

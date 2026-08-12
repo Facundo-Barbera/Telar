@@ -85,7 +85,7 @@ describe("the Phase 3 Git migration", () => {
   });
 
   test("keeps Git hosted only in the right panel and canonicalizes legacy links", () => {
-    const projectPage = read("app/projects/[name]/page.tsx");
+    const projectPage = read("app/(legacy)/projects/[name]/page.tsx");
     const panel = read("components/right-panel/right-panel.tsx");
 
     expect(panel).toContain('import("@/components/projects/git-tab")');

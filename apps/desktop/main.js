@@ -166,7 +166,7 @@ function readBuildInfo() {
   const fs = require("node:fs");
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, "standalone", "build-info.json")]
-    : [path.join(__dirname, "..", "web", ".next-desktop", "standalone", "build-info.json")];
+    : [path.join(__dirname, "..", "web_old", ".next-desktop", "standalone", "build-info.json")];
   for (const c of candidates) {
     try {
       if (fs.existsSync(c)) return JSON.parse(fs.readFileSync(c, "utf8"));
@@ -204,7 +204,7 @@ function applyDevelopmentAppIcon() {
 function bundledPlaywrightMcpCli() {
   return app.isPackaged
     ? path.join(process.resourcesPath, "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js")
-    : path.join(__dirname, "..", "web", ".next-desktop", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
+    : path.join(__dirname, "..", "web_old", ".next-desktop", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
 }
 
 // --- Bundled claude-agent-sdk native CLI binary -----------------------------
@@ -236,7 +236,7 @@ function resolveBundledClaudeBinary() {
     // Dev-repo: resolve the SDK from the web app's install, exactly as the server does.
     try {
       sdkMjs = require.resolve("@anthropic-ai/claude-agent-sdk", {
-        paths: [path.join(__dirname, "..", "web")],
+        paths: [path.join(__dirname, "..", "web_old")],
       });
     } catch {
       /* not installed — unresolved */
@@ -253,12 +253,12 @@ function resolveBundledClaudeBinary() {
 }
 
 // --- Resolve the standalone server.js ---------------------------------------
-// Dev-repo layout:  apps/web/.next-desktop/standalone/apps/web/server.js
-// Packaged layout:  <Resources>/standalone/apps/web/server.js  (extraResources)
+// Dev-repo layout:  apps/web_old/.next-desktop/standalone/apps/web_old/server.js
+// Packaged layout:  <Resources>/standalone/apps/web_old/server.js  (extraResources)
 function resolveServerJs() {
   const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "standalone", "apps", "web", "server.js")]
-    : [path.join(__dirname, "..", "web", ".next-desktop", "standalone", "apps", "web", "server.js")];
+    ? [path.join(process.resourcesPath, "standalone", "apps", "web_old", "server.js")]
+    : [path.join(__dirname, "..", "web_old", ".next-desktop", "standalone", "apps", "web_old", "server.js")];
   const fs = require("node:fs");
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -480,7 +480,7 @@ function requireBrowserManager() {
 // --- Application menu (issue #16 — command keys) -----------------------------
 // The ONE place accelerators are wired to Electron's native menu. Every
 // binding (id, label, accelerator) comes from ./command-keys.js — the single
-// source of truth apps/web/lib/command-keys.ts also reads, by relative
+// source of truth apps/web_old/lib/command-keys.ts also reads, by relative
 // import, since this process runs under real Node with no TypeScript (see
 // the long comment there). This file never repeats a key combination; it
 // only turns the shared table into a Menu template and forwards clicks to

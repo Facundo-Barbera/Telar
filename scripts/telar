@@ -72,7 +72,7 @@ function headCommit(): string {
 }
 
 function ensureBuilt(force = false) {
-  const webDir = path.join(cfg.appDir, "apps", "web");
+  const webDir = path.join(cfg.appDir, "apps", "web_old");
   const head = headCommit();
   const built = existsSync(builtFile) ? readFileSync(builtFile, "utf8").trim() : null;
   const hasBuild = existsSync(path.join(webDir, ".next", "BUILD_ID"));
@@ -96,7 +96,7 @@ async function start() {
   if (existsSync(logFile)) renameSync(logFile, logFile + ".old");
   const log = openSync(logFile, "a");
   const child = spawn("bun", ["run", "start"], {
-    cwd: path.join(cfg.appDir, "apps", "web"),
+    cwd: path.join(cfg.appDir, "apps", "web_old"),
     env: { ...process.env, PORT: String(cfg.port) },
     detached: true,
     stdio: ["ignore", log, log],

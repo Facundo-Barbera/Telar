@@ -31,9 +31,22 @@ A green verify only moves a loom to `ready` — the human always accepts.
 
 | Path | What |
 | --- | --- |
-| `apps/web` | Next.js cockpit — create looms, watch orchestration, inspect verification, accept / steer / reject. |
+| `apps/vnext-web` | **The app being built.** Standalone Next.js cockpit over the vNext engine. |
+| `apps/engine` | The vNext control plane — a local authenticated daemon owning projects, sessions and a durable turn journal. |
+| `packages/engine-client` | The dependency-free engine protocol types + HTTP client. |
+| `apps/web_old` | **FROZEN.** The legacy cockpit — looms, orchestration, verification, accept / steer / reject. Read-only design source for the vNext rebuild; see `apps/web_old/AGENTS.md`. |
 | `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
 | `docs/` | Fresh project documentation is being regenerated here; legacy design docs are archived in `.cleanup-archives/docs-legacy-2026-07-17/`. |
+
+### `apps/web_old` is frozen and unverified
+
+It was renamed from `apps/web` so it is not worked on by accident, and it was
+retired from verification in the same change: `bun run verify` and CI no longer
+typecheck it, lint it, or run its tests, and the invariants in
+`packages/core/test/invariants.test.ts` that scanned it were retired alongside
+it. Each retirement carries a note naming what stopped being checked. Desktop
+packaging and the legacy launchers were repointed at the new path rather than
+retired, so the legacy app still builds and runs.
 
 ## Getting started
 
@@ -41,7 +54,13 @@ Requires [Bun](https://bun.sh).
 
 ```bash
 bun install
-cd apps/web && bun run dev   # the web cockpit
+bun run dev:vnext            # the vNext cockpit — see below
+```
+
+The frozen legacy cockpit, if you need to run it for reference:
+
+```bash
+cd apps/web_old && bun run dev
 ```
 
 ### vNext dogfood cockpit
@@ -55,17 +74,19 @@ bun run dev:vnext
 It uses the isolated `TELAR_HOME=$HOME/.telar-vnext-dogfood` by default (or an
 absolute dedicated `TELAR_HOME` you set), starts or attaches the engine, starts
 one vNext worker unless the attached engine already has a live registered
-worker, then opens the web cockpit at `http://127.0.0.1:3000/vnext`. Set
+worker, then opens the standalone vNext web app at `http://127.0.0.1:43125/`. Set
 `TELAR_VNEXT_WEB_PORT` to use a different explicit port. The launcher checks
 the selected loopback port before it starts anything and passes that exact port
 to both Next and the desktop shell; it fails rather than silently using Next's
 automatic fallback. It never uses `~/.telar` or `~/.telar-dev`.
 
-`/vnext` has its own visual shell as well as its own engine state: it does not
-mount the legacy sidebar, dock, Loom/Workspace navigation, account registry, or
-desktop/browser host. Existing `/`, `/projects`, `/looms`, `/workspace`,
-`/settings`, and `/demo-gallery` URLs keep their unchanged legacy shell.
-`/vnext/settings` is a read-only local-runtime guide; it does not manage
+`apps/vnext-web` is an independent Next app with its own root-relative routes,
+styles, API adapters, and engine client. It does not mount or compile the legacy
+sidebar, dock, Loom/Workspace navigation, account registry, desktop/browser host,
+or the legacy app's state/runtime modules. The legacy `apps/web_old` route tree
+and desktop package remain independently runnable during this transition; its
+former in-app vNext cockpit is superseded by this standalone app. `/settings` in the
+standalone app is a read-only local-runtime guide; it does not manage
 accounts, credentials, or provider configuration.
 
 To use the same cockpit in the development Electron shell, run:
@@ -76,7 +97,7 @@ bun run dev:vnext:desktop
 
 This starts the engine, worker, and one web server exactly as `dev:vnext` does,
 then launches the existing desktop development runner with
-`TELAR_DESKTOP_URL` set to the same selected `http://127.0.0.1:<port>/vnext`
+`TELAR_DESKTOP_URL` set to the same selected `http://127.0.0.1:<port>/`
 route. It therefore does not start a second Next server. Ctrl-C stops only the worker, web, and desktop processes
 this command launched; when it attaches to an already healthy vNext engine, it
 deliberately leaves that engine running. Legacy `bun run dev:desktop` and all
@@ -123,10 +144,10 @@ added later without changing this local workflow.
 A type error naming a route absent from the tree — say
 `Cannot find module '../../app/api/proxy/adopt/route.js'` — means a stale
 `.next/` from an older build is being type-checked alongside `.next-desktop/`,
-since `apps/web/tsconfig.json` includes both. Clear it and package again:
+since `apps/web_old/tsconfig.json` includes both. Clear it and package again:
 
 ```bash
-rm -rf apps/web/.next
+rm -rf apps/web_old/.next
 ```
 
 ## Design docs

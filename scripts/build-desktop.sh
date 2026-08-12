@@ -137,7 +137,7 @@ NODE_OPTIONS= bash apps/desktop/build-web.sh
 # --- stamp build-info.json into the desktop resources (BEFORE packaging) -----
 # It lands at the root of the standalone tree, which electron-builder copies to
 # <Resources>/standalone/build-info.json, so it is inside the packaged .app.
-STANDALONE="$SNAP/apps/web/.next-desktop/standalone"
+STANDALONE="$SNAP/apps/web_old/.next-desktop/standalone"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > "$STANDALONE/build-info.json" <<JSON
 {

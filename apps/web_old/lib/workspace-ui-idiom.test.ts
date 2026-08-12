@@ -40,9 +40,9 @@ const DESK = "components/workspace/desk-rail.tsx";
 const PAGES = [
   // The ROOT is the master chat (story 5.7 moved the queue down a segment, per
   // ui-contract.md's "the queue does not pretend to be its own destination").
-  "app/workspace/page.tsx",
-  "app/workspace/queue/page.tsx",
-  "app/workspace/[id]/page.tsx",
+  "app/(legacy)/workspace/page.tsx",
+  "app/(legacy)/workspace/queue/page.tsx",
+  "app/(legacy)/workspace/[id]/page.tsx",
 ];
 const ALL = [CHIPS, QUEUE, PACKET, MASTER, DESK, ...PAGES];
 

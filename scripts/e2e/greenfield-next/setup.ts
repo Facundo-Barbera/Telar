@@ -39,7 +39,7 @@ export async function setup(opts: { keep: boolean; ui: boolean }): Promise<RunSt
   }
 
   // 6. optionally start the harness-owned Telar web UI server. HEADLESS by
-  //    default: Next 16 refuses a 2nd `next dev` for apps/web while another is
+  //    default: Next 16 refuses a 2nd `next dev` for apps/web_old while another is
   //    already running (e.g. your cockpit on :3131), so the browser UI is
   //    opt-in (--ui). The loom runs + is monitored in-process either way
   //    (watch.ts polls getLoom directly). Detached => own process group =>

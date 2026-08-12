@@ -6,7 +6,7 @@ const { randomUUID } = require("node:crypto");
 
 const desktopDir = __dirname;
 const repoDir = path.resolve(desktopDir, "../..");
-const webDir = path.join(repoDir, "apps/web");
+const webDir = path.join(repoDir, "apps/web_old");
 const electronPath = require("electron");
 const children = new Set();
 const expectedElectronExits = new WeakSet();

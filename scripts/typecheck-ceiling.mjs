@@ -8,15 +8,15 @@
  * 116 files under packages/core/test. Verified the blunt way: a file containing
  * `const x: number = "definitely not a number"` dropped into that directory was
  * typechecked green. `bun test` erases types rather than checking them, so
- * nothing in the repo covered that tree. The same file under apps/web/lib IS
- * caught, because apps/web's tsconfig includes `**​/*.ts` and therefore checks
+ * nothing in the repo covered that tree. The same file under apps/web_old/lib IS
+ * caught, because apps/web_old's tsconfig includes `**​/*.ts` and therefore checks
  * its 67 test files. The gate's coverage was asymmetric between the two
  * workspaces and the step name overstated what it did.
  *
  * WHY A CEILING RATHER THAN A CLEAN CHECK. Turning the tree on produces 264
  * errors on day one. They are not fake, but they are also not news: 116 of them
  * are one-per-file `TS2307: Cannot find module 'bun:test'`, because this
- * workspace has no `@types/bun` — apps/web works around exactly this with a
+ * workspace has no `@types/bun` — apps/web_old works around exactly this with a
  * `// @ts-expect-error no @types/bun in this workspace` line above the import,
  * and packages/core never needed one because it was never checked. The
  * remaining ~148 are real type drift inside test fixtures (test objects missing
@@ -171,7 +171,7 @@ let loadedFiles = listFiles("file-listing");
 const run = spawnTsc(["--noEmit"], "typecheck");
 
 // WHICH COMPILER ACTUALLY RAN, printed always. This workspace declares TWO
-// TypeScript majors (packages/core wants ^6, apps/web wants ^5), so `bunx tsc`
+// TypeScript majors (packages/core wants ^6, apps/web_old wants ^5), so `bunx tsc`
 // has more than one thing it could legitimately resolve to, and which one it
 // picks depends on how the install laid out node_modules. A gate whose result
 // depends on that must say which one it got — on a green run as well as a red
@@ -272,7 +272,7 @@ if (testFiles.length < MIN_TEST_FILES && onDisk >= MIN_TEST_FILES) {
     `${onDisk} .ts files are present under packages/core/test RIGHT NOW. The tree did not ` +
     `move — tsc did not include it. This is a TOOLCHAIN RESOLUTION problem, not a config or ` +
     `coverage one. tsc reported itself as "${tscVersion}"; this workspace declares two ` +
-    `TypeScript majors (packages/core ^6, apps/web ^5), so compare that version against the ` +
+    `TypeScript majors (packages/core ^6, apps/web_old ^5), so compare that version against the ` +
     `last green run. NEXT STEP: pin the compiler; do not edit tsconfig.typecheck.json and do ` +
     `not lower MIN_TEST_FILES.`;
   console.error(inActions ? `::error::${message}` : `\n${message}`);

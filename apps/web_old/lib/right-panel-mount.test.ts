@@ -10,7 +10,7 @@ const read = (path: string) => readFileSync(new URL(path, WEB_ROOT), "utf8");
 
 describe("the production right-panel mount", () => {
   test("mounts one session-owned dock with live Activity state", () => {
-    const page = read("app/projects/[name]/sessions/[id]/page.tsx");
+    const page = read("app/(legacy)/projects/[name]/sessions/[id]/page.tsx");
     const session = read("components/session/session-view.tsx");
     expect(page).not.toContain('import { RightPanel } from "@/components/right-panel/right-panel"');
     expect(session).toContain('import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel"');
@@ -126,7 +126,7 @@ describe("the production right-panel mount", () => {
     const session = read("components/session/session-view.tsx");
     const controller = read("lib/use-controlled-browser.ts");
     const desktopHost = read("components/desktop-browser-host.tsx");
-    const layout = read("app/layout.tsx");
+    const legacyLayout = read("app/(legacy)/layout.tsx");
     const events = read("app/api/browser/events/route.ts");
     const chat = read("app/api/chat/route.ts");
     // STORY 5.6 — the Claude branch's MCP mount (the `browser` server included)
@@ -181,7 +181,7 @@ describe("the production right-panel mount", () => {
     expect(panel).not.toContain("window.addEventListener");
     expect(session).toContain("adoptRightPanelSession(");
     expect(session).toContain("scopeKey={resolvedRightPanelScopeKey}");
-    expect(layout).toContain("<DesktopBrowserHost />");
+    expect(legacyLayout).toContain("<DesktopBrowserHost />");
     expect(desktopMain).toContain("new DesktopBrowserManager(win)");
     expect(desktopMain).toContain('preload: path.join(__dirname, "preload.js")');
     expect(browserManager).toContain("new WebContentsView");

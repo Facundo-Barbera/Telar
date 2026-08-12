@@ -20,7 +20,7 @@ apps/desktop/release/
 # Scratch Next builds from parallel agent runs. `.next/` above only covers the
 # default distDir; next.config.ts's NEXT_DIST_DIR lets a run pick its own, and
 # each one is ~650MB.
-apps/web/.next-codex-*/
+apps/web_old/.next-codex-*/
 .codex-tmp/
 .tmp/
 

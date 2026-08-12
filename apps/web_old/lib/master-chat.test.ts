@@ -50,7 +50,7 @@ const ADAPTER = "components/workspace/master-chat.tsx";
 // destination with two tabs — Chat (front door) and Queue (the drawer behind
 // it)" — so the queue lives at app/workspace/queue/page.tsx and this is the
 // page the sidebar's single Workspace entry lands on.
-const PAGE = "app/workspace/page.tsx";
+const PAGE = "app/(legacy)/workspace/page.tsx";
 
 /** A state mid-turn: one user bubble, one assistant bubble open for the stream. */
 const opened = (): MasterChatState =>
@@ -710,12 +710,12 @@ describe("the route resumes the master rather than addressing one", () => {
     // nested at /workspace/chat states that backwards — the sidebar's single
     // Workspace entry would land on the drawer with the front door inside it.
     expect(read(PAGE)).toContain("<MasterChat");
-    expect(read("app/workspace/queue/page.tsx")).toContain("<QueueView />");
+    expect(read("app/(legacy)/workspace/queue/page.tsx")).toContain("<QueueView />");
     // THE MOVE'S ONE HAZARD, PINNED: `/workspace/<id>` is a packet deep link,
     // and a static `queue` segment sits in the same position. Next resolves a
     // static segment ahead of a dynamic one, and item ids are minted `i-<hex>`
     // (packages/core/src/workspace/store.ts, createItem), so no item can be
     // addressed "queue" — but the dynamic route has to still BE there.
-    expect(read("app/workspace/[id]/page.tsx")).toContain("params");
+    expect(read("app/(legacy)/workspace/[id]/page.tsx")).toContain("params");
   });
 });

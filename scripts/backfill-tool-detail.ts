@@ -29,13 +29,13 @@ import {
   capToolInput,
   capToolOutput,
   extractToolResultText,
-} from "../apps/web/lib/transcript";
-import type { Chat, Part } from "../apps/web/lib/store";
+} from "../apps/web_old/lib/transcript";
+import type { Chat, Part } from "../apps/web_old/lib/store";
 
 const TELAR_DIR = path.join(os.homedir(), ".telar");
 const CHATS_FILE = path.join(TELAR_DIR, "chats.json");
 
-// Mirrors apps/web/lib/accounts.ts (kept as a plain literal here so this
+// Mirrors apps/web_old/lib/accounts.ts (kept as a plain literal here so this
 // script has no workspace/module-resolution dependency on the Next app).
 const CONFIG_DIRS: Record<string, string> = {
   personal: path.join(os.homedir(), ".claude"),

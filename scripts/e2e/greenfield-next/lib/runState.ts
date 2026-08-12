@@ -9,7 +9,7 @@ export type RunState = {
   projectRoot: string;
   telarHome: string;
   projectName: string;        // === runId; the registry key
-  webServerPort: number;      // the harness-owned Telar web (apps/web) port
+  webServerPort: number;      // the harness-owned Telar web (apps/web_old) port
   webServerPid: number | null;// detached process-group leader pid
   webServerLog: string;
   loomId: string | null;      // set by run()

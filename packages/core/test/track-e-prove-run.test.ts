@@ -305,7 +305,15 @@ describe("track-e prove-run", () => {
     const subtree = "work" + "space";
     const needle = `${joinCall}(${rootFn}(), "${subtree}")`;
 
-    const roots = ["packages/core/src", "apps/web/lib", "apps/web/app", "scripts"];
+    // `apps/web/lib` and `apps/web/app` were dropped when the legacy cockpit was
+    // frozen and renamed to apps/web_old. They are NOT re-pointed at the new
+    // path deliberately: the claim this leg proves is "exactly one module in the
+    // LIVE tree composes the workspace root", and a frozen tree cannot acquire a
+    // second composing site. The walk() below already swallows a missing
+    // directory silently, so leaving stale roots here would have degraded this
+    // scan into a narrower one without saying so. The anti-vacuity check below
+    // is what keeps the remaining roots honest.
+    const roots = ["packages/core/src", "apps/vnext-web/lib", "apps/vnext-web/app", "scripts"];
     const composing: string[] = [];
     const walk = (dir: string) => {
       let entries: fs.Dirent[];

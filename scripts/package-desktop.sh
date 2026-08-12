@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DESKTOP_DIR="$REPO_ROOT/apps/desktop"
-WEB_DIR="$REPO_ROOT/apps/web"
+WEB_DIR="$REPO_ROOT/apps/web_old"
 STANDALONE="$WEB_DIR/.next-desktop/standalone"
 INSTALL=0
 INSTALL_ARGS=()

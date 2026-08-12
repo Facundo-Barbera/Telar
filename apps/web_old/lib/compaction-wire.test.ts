@@ -52,7 +52,7 @@ const projector = readFileSync(
 const turnSource = `${route}\n${turnHooks}\n${projector}`;
 const storeSource = readFileSync(new URL("./store.ts", import.meta.url), "utf8");
 const sessionPage = readFileSync(
-  new URL("../app/projects/[name]/sessions/[id]/page.tsx", import.meta.url),
+  new URL("../app/(legacy)/projects/[name]/sessions/[id]/page.tsx", import.meta.url),
   "utf8",
 );
 

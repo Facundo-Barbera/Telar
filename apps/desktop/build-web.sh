@@ -3,15 +3,15 @@
 # files exactly where server.js expects them.
 #
 # Layout (Next standalone, monorepo, distDir=.next-desktop):
-#   .next-desktop/standalone/apps/web/server.js   <- the child we fork
+#   .next-desktop/standalone/apps/web_old/server.js   <- the child we fork
 #   server.js chdir's to its own dir and reads PORT + HOSTNAME from env.
 #   Next does NOT copy static assets or public/ into standalone — we do it here.
 set -euo pipefail
 
 DESKTOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WEB_DIR="$(cd "$DESKTOP_DIR/../web" && pwd)"
+WEB_DIR="$(cd "$DESKTOP_DIR/../web_old" && pwd)"
 DIST="$WEB_DIR/.next-desktop"
-STANDALONE_WEB="$DIST/standalone/apps/web"
+STANDALONE_WEB="$DIST/standalone/apps/web_old"
 JS_RUNTIME="${TELAR_JS_RUNTIME:-bun}"
 
 command -v "$JS_RUNTIME" >/dev/null 2>&1 \

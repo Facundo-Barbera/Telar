@@ -1238,9 +1238,13 @@ describe("5.6 the anchor registry — the project gate replaced, not skipped", (
 // scoped one: this leg cannot open a real HTTP stream. It proves the two halves
 // that are provable in one process — the checker names the unmet capability,
 // and the route's SOURCE orders the resolve call before `new ReadableStream`.
-// The second half is asserted mechanically by INV-6c in
-// packages/core/test/invariants.test.ts and is CITED here rather than re-run,
-// the same way L1–L5 cite the suites that own their exhaustive coverage. The
+//
+// THE SECOND HALF LAPSED WHEN apps/web WAS FROZEN. It was asserted mechanically
+// by INV-6c in packages/core/test/invariants.test.ts and cited here rather than
+// re-run, the same way L1–L5 cite the suites that own their exhaustive
+// coverage. INV-6c is retired: its route no longer exists and vNext has no
+// equivalent pre-stream failure path yet. So L6 now proves ONE half, and the
+// citation below is what keeps that shrinkage visible instead of silent. The
 // human-visible 400 is the story's curl, captured in the Debug Log.
 const transcript = (leg: string, what: string) => console.log(`[track-b] ${leg} ${what}`);
 
@@ -1260,21 +1264,28 @@ describe("prove-run L6", () => {
     // wall.
     expect(unmetCapabilities(escalation, "claude")).toEqual([]);
 
-    // The ordering half, cited rather than re-run. If INV-6c is renamed, this
-    // citation fails here instead of rotting silently.
+    // THE ORDERING HALF IS NO LONGER PROVEN ANYWHERE, and this citation now
+    // says so rather than pointing at a test that was deleted.
+    //
+    // INV-6c pinned `resolveSessionProfile(` ahead of `new ReadableStream(` in
+    // apps/web's chat route. That route was frozen with the legacy cockpit and
+    // the invariant was retired with it; vNext's turn route hands execution to
+    // the engine and has no in-request stream to order against, so there is no
+    // call site to re-point the check at. The CITATION IS KEPT AND INVERTED: it
+    // asserts the retirement note is still there, so if someone restores INV-6c
+    // (or deletes the note), this fails and they are sent back here to decide
+    // whether L6's scope claim below is still honest.
     const invariants = fs.readFileSync(
       path.join(CORE_ROOT, "test", "invariants.test.ts"),
       "utf8",
     );
-    expect(invariants).toContain(
-      "INV-6c the chat route resolves the session profile BEFORE the stream opens",
-    );
+    expect(invariants).toContain("RETIRED WITH apps/web — INV-6c.");
 
     transcript(
       "L6",
       `a "${escalation.kind}" profile requires ${escalation.requiredCapabilities.join(", ")}; ` +
         `codex publishes ${providerCapabilities("codex").join(", ")}; unmet = ${unmet.join(", ")} ` +
-        `→ a pre-SSE 400, and INV-6c pins the call site ahead of new ReadableStream`,
+        `→ a pre-SSE 400. The ordering half is UNGUARDED since apps/web was frozen`,
     );
   });
 });

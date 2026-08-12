@@ -150,10 +150,17 @@ type SourceFile = {
 // exactly the places that matter (architecture-web.md still says lib/store.ts
 // owns usage.ndjson, which story 1.1 moved into core). An invariant that scans
 // prose fails on documentation of itself.
+// `apps/web_old` is deliberately NOT a root. The legacy cockpit was frozen as a
+// read-only design source for the vNext rebuild and retired from verification
+// wholesale — no typecheck, no lint ceiling, no test suite, and no invariant.
+// Every invariant that read it was retired WITH it in the same change rather
+// than left pointing at the renamed tree, because an invariant over a frozen
+// tree can only ever report that the freeze held. The retired set is named in
+// the RETIRED-WITH-apps/web note below so a reader can see what stopped being
+// checked and what has to come back when vNext grows the same surface.
 const ROOTS = [
   "packages/core/src",
   "packages/core/test",
-  "apps/web",
   "apps/desktop",
   "scripts",
 ];
@@ -681,6 +688,26 @@ function localNamesFor(
   return { direct, namespaces };
 }
 
+// True for the CORE PACKAGE SPECIFIER and its subpaths, and for nothing else.
+//
+// IT DELIBERATELY DOES NOT MATCH RELATIVE PATHS, which is what its two callers
+// depend on and is easy to "fix" wrongly:
+//   - INV-1e asks for every module that imports `acceptLoom` FROM THE PACKAGE.
+//     Widening this to relative specifiers would pull in core's own intra-package
+//     edges and turn a precise empty-set assertion into noise.
+//   - INV-5f composes it as `isCoreSpecifier(spec) || /(^|\/)<module>$/` — the
+//     second arm is what handles `./admission` and `../src/admission`. Widening
+//     the first arm makes the second unreachable and the pair meaningless.
+//
+// THIS FUNCTION WAS RECONSTRUCTED, not moved. It was declared inside INV-4's
+// block and was deleted with it before anyone noticed INV-1e and INV-5f also
+// called it; both failed with a ReferenceError. Its behaviour is re-derived from
+// those two call sites, so if a third caller ever wants relative-path matching,
+// it takes a NEW predicate rather than an edit here.
+function isCoreSpecifier(spec: string): boolean {
+  return spec === "@telar/core" || spec.startsWith("@telar/core/");
+}
+
 // A type-only edge is ERASED at build and cannot smuggle runtime. Accepted only
 // if the statement opens `import type` / `export type`, or every specifier
 // inside the braces is individually prefixed `type `. A default binding, a
@@ -802,25 +829,28 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     // These are LOWER BOUNDS to re-measure, never equalities: the tree grows.
     // Every message says the INDEX is broken rather than that a rule is
     // violated, because that is what a failure here actually means.
+    // RE-MEASURED WHEN apps/web WAS RETIRED. The walk covered 776 files across
+    // five roots; with the legacy cockpit removed from ROOTS it covers 228
+    // across four. The floor moved 400 → 200 to match, and it is the ONLY floor
+    // that moved by re-measurement rather than by deletion.
+    //
+    // TWO FLOORS WERE DELETED OUTRIGHT, and neither may be restored as-is:
+    //   - the "use client" floor (was 100). Every client component in this repo
+    //     lived in apps/web; the remaining roots hold ONE. A floor of 100 could
+    //     not be met and a floor of 1 would assert nothing, so INV-4 was retired
+    //     WITH the tree it scanned rather than left holding vacuously.
+    //   - the *-mcp.ts floor (was 2: loom-mcp.ts, ultra-mcp.ts). Both files, and
+    //     the other two MCP surfaces, were apps/web modules. ZERO remain, which
+    //     is why INV-1a/b/c are retired too.
+    // When vNext grows its own client components or MCP surfaces, restore these
+    // floors AND the invariants they guard — a floor without its invariant is
+    // just a file count.
     const broken: string[] = [];
-    if (INDEX.length < 400) {
+    if (INDEX.length < 200) {
       broken.push(
-        `only ${INDEX.length} files walked (floor 400) — the scan index is BROKEN, not the tree. ` +
+        `only ${INDEX.length} files walked (floor 200) — the scan index is BROKEN, not the tree. ` +
           `Every invariant below reads this index, so they would all hold vacuously. ` +
           `Check ROOTS, EXTENSIONS and EXCLUDED_DIRS against ${REPO}.`,
-      );
-    }
-    if (CLIENT_FILES.length < 100) {
-      broken.push(
-        `only ${CLIENT_FILES.length} files carry a "use client" directive (floor 100) — the ` +
-          `directive detector is BROKEN. INV-4 scans exactly this set, so it would pass by ` +
-          `visiting nothing. Check firstStatement()/hasUseClientDirective().`,
-      );
-    }
-    if (MCP_FILENAMES.length < 2) {
-      broken.push(
-        `only ${MCP_FILENAMES.length} *-mcp.ts files found (floor 2: loom-mcp.ts, ultra-mcp.ts) — ` +
-          `the walk is not reaching apps/web/lib. INV-1 would pin an empty surface.`,
       );
     }
     if (CORE_FILES.length < 100) {
@@ -1085,111 +1115,73 @@ function exportedStringArray(source: string, name: string): string[] | null {
   return [...m[1]!.matchAll(/(["'])([^"']*)\1/g)].map((x) => x[2]!);
 }
 
-describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept Moat", () => {
-  const surfaces = MCP_SURFACES;
-  const collected = new Map<string, { file: string; tools: string[] }>();
-  for (const f of surfaces) {
-    const servers = mcpServerNameLiterals(f.code, sdkBindings(f.code, MCP_FACTORY));
-    const tools = toolNameLiterals(f.code, sdkBindings(f.code, TOOL_FACTORY));
-    for (const server of servers) collected.set(server, { file: f.rel, tools });
-  }
-  const allToolNames = [...collected.values()].flatMap((s) => s.tools);
+describe("INV-1 the Human-Accept Moat holds by construction — AD-1", () => {
+  // The per-server collection that used to live here (MCP_SURFACES → server
+  // name → tool names) went with INV-1a/b/c: MCP_SURFACES is empty now, so it
+  // built an empty map that three deleted tests read. INV-1d assembles its own
+  // fixtures at runtime and INV-1e/f read core directly, so nothing below needs
+  // the scan.
 
-  test("INV-1a the set of MCP surfaces in the tree is exactly the five we know about", () => {
-    // A SIXTH surface must fail here rather than be silently unscanned — that
-    // is the difference between "no accept tool on the servers I remembered"
-    // and "no accept tool anywhere".
-    //
-    // IT WAS THREE UNTIL STORY 5.1, which added the workspace store's server.
-    // MCP_SURFACES is `NON_TEST.filter(callsMcpFactory)`, so that file entered
-    // this set the moment it called createSdkMcpServer — the edit below is the
-    // deliberate acknowledgement the mechanism is asking for, not a chore.
-    //
-    // NOTE THE ASYMMETRY BETWEEN THE TWO ASSERTIONS, because it is a trap: the
-    // first sorts BOTH sides, the second compares against a BARE SORTED LITERAL.
-    // "workspace" happens to sort last, so appending would have been correct by
-    // luck; it is spliced into sorted position deliberately, because the next
-    // server somebody adds may be called "build".
-    expect(surfaces.map((f) => f.rel).sort()).toEqual(
-      [BROWSER_MCP, LOOM_MCP, ENGINE, ULTRA_MCP, WORKSPACE_MCP].sort(),
+  // RETIRED WITH apps/web — INV-1a and INV-1b. INV-1c SURVIVES, REDUCED.
+  //
+  // These pinned the MCP surface set and its per-server tool inventory. FOUR of
+  // the five surfaces (browser, loom, ultra, workspace) were apps/web modules;
+  // ONE remains — packages/core/src/run-server.ts, the "out" server. An
+  // exact-set pin of five, and a per-server inventory of ~17 tool names, cannot
+  // be re-measured into anything meaningful over a single surface that this
+  // file already reads directly, so both are gone.
+  //
+  // INV-1c IS NOT GONE, AND THAT IS DELIBERATE. It is the actual moat check —
+  // "no tool name anywhere is accept-shaped" — and it is the one part of the
+  // surface half that still has something to scan. It is re-pointed at whatever
+  // MCP_SURFACES holds and carries its own floor, so it fails rather than
+  // passes if the surface set ever empties out. The near-miss controls
+  // (reject_loom, answer_blocked) moved to literals since the loom server that
+  // used to supply them is frozen.
+  //
+  // WHAT ELSE STILL HOLDS: the CONSTRUCTION half is untouched. INV-1e proves
+  // acceptLoom is the only `done` writer in core and now that NOTHING imports
+  // it, INV-1f proves it refuses a blank `by` at runtime, and INV-1d proves the
+  // accept-shaped-name scanner reports a rogue tool.
+  //
+  // WHEN vNext GROWS MCP SURFACES, restore the exact-set pin and the inventory
+  // together with a freshly measured MCP_INVENTORY. Do not restore the pin
+  // alone: an inventory nothing scans is a comment.
+
+  test("INV-1c no tool name on any surviving MCP surface is accept-shaped", () => {
+    // ANTI-VACUITY FIRST, and at a floor of ONE surface rather than the old
+    // seventeen tool names: the surviving surface is core's "out" server, and
+    // if the surface scan ever collects nothing this must fail loudly instead
+    // of reporting a clean deny-list over the empty set.
+    if (MCP_SURFACES.length < 1) {
+      throw new Error(
+        `AD-1 / INV-1c: the MCP surface scan found ${MCP_SURFACES.length} files (floor 1). ` +
+          `CONSEQUENCE: the accept-shaped deny check below holds over the empty set, so an accept ` +
+          `tool could be added to any server without failing a test. NEXT STEP: this is the ` +
+          `SCANNER that is broken, not the tree — check callsMcpFactory() and MCP_SURFACES. ` +
+          `packages/core/src/run-server.ts is the known-present hit.`,
+      );
+    }
+    const collected = MCP_SURFACES.flatMap((f) =>
+      toolNameLiterals(f.code, sdkBindings(f.code, TOOL_FACTORY)).map((name) => ({ name, file: f.rel })),
     );
-    expect([...collected.keys()].sort()).toEqual(["browser", "loom", "out", "ultra", "workspace"]);
-  });
-
-  test("INV-1b the collected tool inventory EQUALS the pinned one, per server", () => {
-    // Anti-vacuity FIRST: a scan that collected nothing would satisfy a
-    // deny-list forever.
-    const total = allToolNames.length;
-    if (total < 17) {
-      throw new Error(
-        `AD-1 / INV-1: the MCP tool scan collected only ${total} tool names (floor 17: 13 loom + ` +
-          `3 ultra + 1 out). CONSEQUENCE: the deny check below would hold over the empty set and ` +
-          `an accept tool could be added without ever failing a test. NEXT STEP: this is the ` +
-          `SCANNER that is broken, not the tree — check toolNameLiterals() and MCP_SURFACES.`,
-      );
-    }
-    const observed: Record<string, { file: string; tools: string[] }> = {};
-    for (const [server, v] of collected) observed[server] = v;
-    // AC2 — a bare toEqual on two nested objects prints a diff that names no AD,
-    // no consequence and no next step, and AC1 requires the pin be asserted
-    // EQUAL. So the DIAGNOSIS IS THROWN FIRST and the equality stays as the
-    // mechanism: whichever fires, the reader gets a paragraph, not a diff.
-    const drift: string[] = [];
-    for (const server of new Set([...Object.keys(observed), ...Object.keys(MCP_INVENTORY)])) {
-      const found = observed[server];
-      const pinned = MCP_INVENTORY[server];
-      if (!pinned) {
-        drift.push(`server "${server}" (${found!.file}) is NEW and is not in the pinned inventory`);
-        continue;
-      }
-      if (!found) {
-        drift.push(`pinned server "${server}" (${pinned.file}) is GONE from the tree`);
-        continue;
-      }
-      if (found.file !== pinned.file) {
-        drift.push(`server "${server}" moved from ${pinned.file} to ${found.file}`);
-      }
-      const gained = found.tools.filter((t) => !pinned.tools.includes(t));
-      const lost = pinned.tools.filter((t) => !found.tools.includes(t));
-      if (gained.length) drift.push(`server "${server}" GAINED ${JSON.stringify(gained)}`);
-      if (lost.length) drift.push(`server "${server}" LOST ${JSON.stringify(lost)}`);
-      const reordered = JSON.stringify(found.tools) !== JSON.stringify(pinned.tools);
-      if (!gained.length && !lost.length && reordered) {
-        drift.push(
-          `server "${server}" has the same tools in a DIFFERENT ORDER — cosmetic, not a moat ` +
-            `breach; re-pin the order`,
-        );
-      }
-    }
-    if (drift.length) {
-      throw new Error(
-        `AD-1 / INV-1: the MCP tool inventory MOVED — ${drift.join("; ")}. THE RULE: ready to done ` +
-          `is a HUMAN-ONLY transition and there is no agent-callable accept tool on any MCP ` +
-          `surface; the pin is what makes a new tool a deliberate act rather than a diff nobody ` +
-          `read. CONSEQUENCE: a model that can complete its own work voids every verdict ` +
-          `downstream of it. NEXT STEP: ${ADDING_A_TOOL}`,
-      );
-    }
-    expect(observed).toEqual(MCP_INVENTORY);
-  });
-
-  test("INV-1c no collected tool name is accept-shaped, and the near-misses still pass", () => {
-    const violations = allToolNames
-      .map((name) => ({ name, hits: acceptShapedTokens(name) }))
-      .filter((v) => v.hits.length > 0)
+    const violations = collected
+      .map((t) => ({ ...t, hits: acceptShapedTokens(t.name) }))
+      .filter((t) => t.hits.length > 0)
       .map(
-        (v) =>
-          `${v.name}: token(s) ${JSON.stringify(v.hits)} are accept-shaped. AD-1 — ready to done ` +
-            `is a HUMAN-ONLY transition and there is no agent-callable accept tool on any MCP ` +
-            `surface. CONSEQUENCE: a model could complete its own work, which voids every verdict ` +
-            `downstream of it. NEXT STEP: ${ADDING_A_TOOL}`,
+        (t) =>
+          `${t.file} registers "${t.name}": token(s) ${JSON.stringify(t.hits)} are accept-shaped. ` +
+            `AD-1 — ready to done is a HUMAN-ONLY transition and there is no agent-callable accept ` +
+            `tool on any MCP surface. CONSEQUENCE: a model could complete its own work, which ` +
+            `voids every verdict downstream of it. NEXT STEP: ${ADDING_A_TOOL}`,
       );
     expect(violations).toEqual([]);
-    // reject_loom and answer_blocked are the near-misses that MUST stay
-    // passing: a naive /done|complete/ over DESCRIPTIONS rather than names
-    // trips on both, and an invariant that fires on correct code gets deleted.
-    expect(allToolNames).toContain("reject_loom");
-    expect(allToolNames).toContain("answer_blocked");
+
+    // THE NEAR-MISSES ARE NOW LITERALS, not entries read out of the collected
+    // inventory. They used to come from the loom server, which is frozen — but
+    // they are the whole reason the stem list is not a naive /done|complete/,
+    // so they stay: a rewrite that trips on either is wrong, and there is no
+    // longer a live tool name to catch it.
     expect(acceptShapedTokens("reject_loom")).toEqual([]);
     expect(acceptShapedTokens("answer_blocked")).toEqual([]);
   });
@@ -1244,7 +1236,7 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     for (const name of MCP_INVENTORY.loom!.tools) expect(acceptShapedTokens(name)).toEqual([]);
   });
 
-  test("INV-1e the construction half — acceptLoom is the only done writer in core and has one importer", () => {
+  test("INV-1e the construction half — acceptLoom is the only done writer in core, and NOTHING imports it", () => {
     const doneWriters = NON_TEST.filter(
       (f) => f.rel.startsWith("packages/core/src/") && /\.state\s*=\s*["']done["']/.test(f.code),
     ).map((f) => f.rel);
@@ -1254,22 +1246,20 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     // state === "done" for subgoal readiness; it must never assign it.
     expect(/\.state\s*=\s*["']done["']/.test(byRel.get(TICK)!.code)).toBe(false);
 
-    // No MCP tool has a call path to acceptLoom: loom-mcp.ts does not import it.
-    const loomMcpCoreSpecifiers = importStatements(byRel.get(LOOM_MCP)!.code)
-      .filter((s) => importSource(s) === "@telar/core")
-      .flatMap((s) => s.slice(s.indexOf("{") + 1, s.lastIndexOf("}")).split(","))
-      .map((s) => s.trim().replace(/^type\s+/, ""))
-      .filter(Boolean);
-    expect(loomMcpCoreSpecifiers.length).toBeGreaterThanOrEqual(10); // floor: the list is real
-    expect(loomMcpCoreSpecifiers).not.toContain("acceptLoom");
-
-    // Exactly one importer in the whole tree, and it hardcodes `by`. Resolved
-    // through the BINDINGS rather than by matching the name in the statement
-    // text: `import { acceptLoom as land } from "@telar/core";` is a second call
-    // path to the only `done` writer in core, and a text match for
-    // `acceptLoom` followed by a comma or a closing brace never sees it. Same
-    // for a namespace import that reaches it as `core.acceptLoom(`, and same for
-    // an `export { acceptLoom } from "@telar/core"` re-export shim.
+    // TWO ASSERTIONS WERE DROPPED HERE WITH apps/web, and they were different
+    // in kind — the reader should not assume both come back the same way:
+    //   - "loom-mcp.ts does not import acceptLoom" was a NEGATIVE about a file
+    //     that no longer exists. It comes back with the loom MCP surface.
+    //   - "…and has exactly one importer, apps/web's accept route, which
+    //     hardcodes `by` to a server-derived value" was the load-bearing half:
+    //     it proved the single call path into the only `done` writer could not
+    //     be told WHO accepted by a request body. That route is gone, so the
+    //     expectation is now the STRONGER one below — the importer set is EMPTY.
+    //
+    // An empty set is a real assertion here, not a vacuous one: the moment
+    // anything in the scanned tree imports acceptLoom, this fails and whoever
+    // added it has to restore the `by` pin at the new call site. That is the
+    // exact review moment AD-1 exists to force.
     const importers = NON_TEST.filter((f) => {
       const { direct, namespaces } = localNamesFor(f.code, "acceptLoom", isCoreSpecifier);
       if (direct.length > 0) return true;
@@ -1277,10 +1267,7 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
         new RegExp(`(?<![A-Za-z0-9_$.])${escapeRe(ns)}\\.acceptLoom\\s*\\(`).test(f.code),
       );
     }).map((f) => f.rel);
-    expect(importers).toEqual([ACCEPT_ROUTE]);
-    // `by` is server-derived, never read from the request body — the model
-    // cannot name who approved its own commit.
-    expect(byRel.get(ACCEPT_ROUTE)!.code).toContain('acceptLoom(id, "you"');
+    expect(importers).toEqual([]);
   });
 
   test("INV-1f acceptLoom refuses a blank by at runtime, not merely in a comment", async () => {
@@ -1294,153 +1281,21 @@ describe("INV-1 no MCP surface exposes an accept tool — AD-1, the Human-Accept
     }
   });
 
-  test("INV-1g the hook half — the chat route wires PreToolUse and names both moat constants", () => {
-    const route = byRel.get(CHAT_ROUTE)!;
-    const loomMcp = byRel.get(LOOM_MCP)!;
-
-    // Assert on the exported CONSTANTS, never on the reason strings: prose in a
-    // route this story must not edit will change for unrelated reasons, and an
-    // invariant that breaks on an unrelated edit gets deleted rather than fixed.
-    const start = exportedStringConst(loomMcp.code, "LOOM_START_TOOL");
-    const answerBlocked = exportedStringConst(loomMcp.code, "LOOM_ANSWER_BLOCKED_TOOL");
-    const auto = exportedStringArray(loomMcp.code, "LOOM_AUTO_TOOLS");
-    // THE GUARD MOVED OUT OF THE ROUTE; THE MOAT DID NOT. `preToolUseGuardrail`
-    // now lives in lib/server/turn-hooks.ts, so the comparisons are asserted
-    // against THAT file and the route is asserted to WIRE it. Both halves are
-    // checked because either one alone is satisfiable with the moat gone: a
-    // guard nothing calls, or a call to something that guards nothing.
-    const hooksModule = byRel.get(CHAT_TURN_HOOKS);
-    if (!hooksModule) {
-      throw new Error(
-        `INV-1g: ${CHAT_TURN_HOOKS} is not in the index. It carries the PreToolUse guardrail — ` +
-          `the tool-layer half of AD-1's moat. CONSEQUENCE: the half cannot be checked at all. ` +
-          `NEXT STEP: if the module moved, update CHAT_TURN_HOOKS rather than deleting this test.`,
-      );
-    }
-    const guardImports = importStatements(hooksModule.code)
-      .filter((s) => importSource(s) === "@/lib/loom-mcp")
-      .join("\n");
-
-    // AC2 — this block was twelve bare assertions whose output named nothing
-    // ("expected route.code to contain …" is a failing grade for AC2 even when
-    // the assertion is correct). Every check now carries the AD id, the rule,
-    // the consequence and the next step INTO THE ASSERTED VALUE, so the diff bun
-    // prints IS the message. This is AD-1's SECOND enforcement half; the first
-    // is INV-1e.
-    const HOOK =
-      "AD-1 — the Human-Accept Moat is enforced TWICE: by construction in packages/core " +
-      "(looms.ts, tick.ts) and at the TOOL LAYER by the chat route's PreToolUse hook, in every " +
-      "SDK permission mode. This is the tool-layer half. ";
-    const broken: string[] = [];
-    const pinnedConstant = (name: string, got: string | null, want: string) => {
-      if (got !== want) {
-        broken.push(
-          `${LOOM_MCP} no longer exports ${name} = "${want}" (found ${JSON.stringify(got)}). ` +
-            HOOK +
-            `CONSEQUENCE: the route's guardrail compares tool_name against a constant that no ` +
-            `longer names the real tool, so the gate matches nothing while still looking wired. ` +
-            `NEXT STEP: restore the export, or move BOTH the constant and the route's comparison ` +
-            `together and re-pin them here.`,
-        );
-      }
-    };
-    pinnedConstant("LOOM_START_TOOL", start, "mcp__loom__start_loom");
-    pinnedConstant("LOOM_ANSWER_BLOCKED_TOOL", answerBlocked, "mcp__loom__answer_blocked");
-
-    if ((auto?.length ?? 0) < 8) {
-      broken.push(
-        `LOOM_AUTO_TOOLS parsed as ${auto?.length ?? "null"} entries (floor 8). This is the ` +
-          `SCANNER failing, not the tree: exportedStringArray() no longer matches the ` +
-          `declaration's shape. CONSEQUENCE: every "is not pre-approved" check below holds over ` +
-          `the empty set. NEXT STEP: fix exportedStringArray(), do not lower the floor.`,
-      );
-    }
-    for (const [name, value] of [
-      ["LOOM_START_TOOL", start],
-      ["LOOM_ANSWER_BLOCKED_TOOL", answerBlocked],
-    ] as const) {
-      const bare = (value ?? "").replace("mcp__loom__", "");
-      if (value && !MCP_INVENTORY.loom!.tools.includes(bare)) {
-        broken.push(
-          `${name} points at "${bare}", which is not a tool on the loom server. ` +
-            HOOK +
-            `CONSEQUENCE: the hook guards a tool name nothing registers, so the tool it was meant ` +
-            `to guard runs ungated. NEXT STEP: reconcile the constant with MCP_INVENTORY.`,
-        );
-      }
-      if (value && auto?.includes(value)) {
-        broken.push(
-          `${name} appears in LOOM_AUTO_TOOLS. ` +
-            HOOK +
-            `CONSEQUENCE: a pre-approved tool takes the SDK's fast path and runs with no ` +
-            `interactive card, which is precisely the human step the moat exists to require. ` +
-            `NEXT STEP: remove it from LOOM_AUTO_TOOLS.`,
-        );
-      }
-      if (!guardImports.includes(name)) {
-        broken.push(
-          `${CHAT_TURN_HOOKS} no longer imports ${name} from @/lib/loom-mcp. ` +
-            HOOK +
-            `CONSEQUENCE: the guardrail can only be comparing against a literal or against ` +
-            `nothing; a literal drifts from the constant silently. NEXT STEP: import the symbol.`,
-        );
-      }
-      // ANCHORED ON THE CONDITION, not on the substring. The bare
-      // `includes("input.tool_name === LOOM_START_TOOL")` this replaces was also
-      // satisfied by the ternary that PICKS THE REASON STRING a few lines below
-      // the branch — so deleting the actual comparison left the assertion green.
-      // Measured: replacing the comparison with a string literal passed. The
-      // guard has to be the head of an `if` or an arm of its `||`.
-      const guarded = new RegExp(
-        String.raw`(if\s*\(\s*|\|\|\s*)input\.tool_name === ${name}\b`,
-      );
-      if (!guarded.test(hooksModule.code)) {
-        broken.push(
-          `${CHAT_TURN_HOOKS}'s guardrail no longer compares input.tool_name against ${name}. ` +
-            HOOK +
-            `CONSEQUENCE: that tool reaches the model ungated at the tool layer, leaving the moat ` +
-            `resting entirely on the by-construction half. NEXT STEP: restore the comparison in ` +
-            `preToolUseGuardrail.`,
-        );
-      }
-    }
-    if (!/hooks\s*:\s*\{\s*PreToolUse\s*:/.test(route.code)) {
-      broken.push(
-        `${CHAT_ROUTE} no longer wires a PreToolUse hook at all. ` +
-          HOOK +
-          `CONSEQUENCE: the entire tool-layer half of the moat is gone, in every permission mode. ` +
-          `NEXT STEP: restore the hooks: { PreToolUse: … } wiring on the query options.`,
-      );
-    }
-    if (!route.code.includes("preToolUseGuardrail")) {
-      broken.push(
-        `${CHAT_ROUTE} no longer references preToolUseGuardrail. ` +
-          HOOK +
-          `CONSEQUENCE: the hook may be wired to something that does not carry the moat's checks. ` +
-          `NEXT STEP: restore the guardrail, or rename it here and in the route together.`,
-      );
-    }
-    // …and the name it wires is the one the guarded module actually builds.
-    // Without this the route could wire a local stand-in of the same name while
-    // the real guard sat unused in a file that still passes every check above.
-    if (!route.code.includes("makePreToolUseGuardrail(")) {
-      broken.push(
-        `${CHAT_ROUTE} no longer calls makePreToolUseGuardrail() from ${CHAT_TURN_HOOKS}. ` +
-          HOOK +
-          `CONSEQUENCE: the guardrail the checks above verified is not the one this turn runs. ` +
-          `NEXT STEP: wire the factory, or move the guard back into the route and re-pin it here.`,
-      );
-    }
-    if (!hooksModule.code.includes("export function makePreToolUseGuardrail")) {
-      broken.push(
-        `${CHAT_TURN_HOOKS} no longer exports makePreToolUseGuardrail. ` +
-          HOOK +
-          `CONSEQUENCE: the route's call resolves elsewhere or not at all. ` +
-          `NEXT STEP: restore the export.`,
-      );
-    }
-    expect(broken).toEqual([]);
-  });
+  // RETIRED WITH apps/web — INV-1g.
+  //
+  // The HOOK half: it proved apps/web's chat route wired a PreToolUse guardrail
+  // that named LOOM_START_TOOL and LOOM_ANSWER_BLOCKED_TOOL, that neither was
+  // in LOOM_AUTO_TOOLS (which would have taken the SDK's pre-approved fast path
+  // and skipped the human card), and that the guard was the head of a real
+  // condition rather than a string literal. Every file it read — the route,
+  // lib/server/turn-hooks.ts, lib/loom-mcp.ts — was an apps/web module.
+  //
+  // THIS IS THE LARGEST SINGLE THING THAT STOPPED BEING CHECKED, and it is the
+  // one to restore FIRST when vNext grows a tool layer: the engine's driver
+  // currently passes permissionMode "default" with no canUseTool and no hooks
+  // at all (apps/engine/src/driver.ts), so there is no tool-layer gate in vNext
+  // for an invariant to guard yet. When one lands, this test is the shape it
+  // should be held to.
 });
 
 // ── INV-2 — the verifier stack is granted no write or edit tools (AD-2) ─────
@@ -1862,21 +1717,24 @@ describe("INV-2 the verifier stack is granted no write or edit tools — AD-2, t
 // The 22 sites, as `<file> :: <composed literal>`. Re-derive this; do not trust
 // it. It is the invariant's whole content.
 const AD5_SITES = [
-  // Composer attachments — the bytes a user drops into a chat. A NEW OWNER, in
-  // sorted position ("at" < "mc"): lib/attachments.ts is the only module that
-  // composes this subtree, and every other reader (the upload route, the
-  // preview route, the chat route, the archive/delete sweep) reaches it through
-  // that module's exported ports — attachmentPath, readAttachmentMeta,
-  // putAttachment, bindAttachments, deleteAttachmentsForChat — never by path.
-  // It cannot ride store.ts's `chats.json` site: these are opaque blobs with a
-  // lifetime of their own (destroyed on archive, swept when orphaned) and
-  // putting them inside the single JSON document that holds every transcript is
-  // exactly what that lifetime exists to avoid.
-  "apps/web/lib/attachments.ts :: attachments",
-  "apps/web/lib/mcp-oauth-pending.ts :: mcp-oauth-pending.json",
-  "apps/web/lib/permissions.ts :: permissions.json",
-  "apps/web/lib/session-log.ts :: sessions",
-  "apps/web/lib/store.ts :: chats.json",
+  // FIVE SITES WERE REMOVED WITH apps/web, and the subtrees they owned ARE
+  // STILL ON DISK under TELAR_HOME. Nothing composes them any more, so nothing
+  // owns them, and this table can no longer say who should:
+  //   attachments               ← lib/attachments.ts (opaque composer blobs,
+  //                               deliberately NOT inside chats.json because
+  //                               they are destroyed on archive and swept when
+  //                               orphaned — a lifetime of their own)
+  //   mcp-oauth-pending.json    ← lib/mcp-oauth-pending.ts
+  //   permissions.json          ← lib/permissions.ts
+  //   sessions                  ← lib/session-log.ts (live.ndjson; see the
+  //                               CO-TENANCY note in AD5_OWNERS)
+  //   chats.json                ← lib/store.ts
+  //
+  // THIS IS THE ONE RETIREMENT THAT LEAVES REAL STATE UNATTENDED rather than
+  // merely unchecked: an operator's ~/.telar still holds all five. vNext writes
+  // none of them and reads none of them. When vNext grows persistence for
+  // sessions/transcripts/permissions, do NOT re-add these paths from memory —
+  // decide the layout fresh, then pin the new sites here.
   "packages/core/src/accounts.ts :: accounts.json",
   "packages/core/src/detect.ts :: providers.json",
   "packages/core/src/dispatcher.ts :: policy.json",
@@ -1904,9 +1762,6 @@ const AD5_SITES = [
 // subtree; root-level FILES belonging to no module are AD-20's, not AD-5's, and
 // are still listed here because the composing module is their sole writer.
 const AD5_OWNERS: Record<string, string[]> = {
-  // See the AD5_SITES entry above for why this is its own owner rather than
-  // part of store.ts's chats.json.
-  attachments: ["apps/web/lib/attachments.ts"],
   "projects.json": ["packages/core/src/manifest.ts"],
   "accounts.json": ["packages/core/src/accounts.ts"],
   "credentials.json": ["packages/core/src/secrets.ts"],
@@ -1935,34 +1790,36 @@ const AD5_OWNERS: Record<string, string[]> = {
   // because rootCompositionSites captures only the FIRST segment — INV-11 arm 1
   // is what pins the deeper layout to this same module.
   workspace: ["packages/core/src/workspace/store.ts"],
-  // CO-TENANCY 1, recorded as a NAMED FACT rather than as silence, because an
-  // invariant that quietly permits it teaches the next reader it is fine.
-  // AD-5 assigns sessions/<sessionId>/ to the session module; core owns
-  // `.runner-lease` (sessions.ts) and apps/web/lib/session-log.ts owns
-  // `live.ndjson` in the SAME directory. That is a real hole in WORK-SPLIT's
-  // disjoint-write-set guarantee (story 1.2, Completion Note 1) and epics 2 and
-  // 3 need to know. Core guards the id and FAILS CLOSED on an id session-log.ts
-  // would happily write — a stated asymmetry, not an accident. A THIRD writer
-  // fails this test, which is the point of listing exactly two.
-  sessions: ["packages/core/src/sessions.ts", "apps/web/lib/session-log.ts"],
-  "permissions.json": ["apps/web/lib/permissions.ts"],
-  "mcp-oauth-pending.json": ["apps/web/lib/mcp-oauth-pending.ts"],
-  // CO-TENANCY 2: store.ts resolves its root TWO WAYS within one file —
-  // chats.json through its own stateRoot(), usage.ndjson
-  // through core's telarDir() reached via the ledger port. The two expressions
-  // are byte-identical today. Recorded in deferred-work.md; not fixed here.
-  "chats.json": ["apps/web/lib/store.ts"],
+  // CO-TENANCY 1 IS RESOLVED — BY DELETION, NOT BY DESIGN, so read this before
+  // concluding the hole is fixed. AD-5 assigns sessions/<sessionId>/ to the
+  // session module, but TWO modules wrote there: core owned `.runner-lease`
+  // (sessions.ts) and apps/web/lib/session-log.ts owned `live.ndjson` in the
+  // SAME directory. That was a real hole in WORK-SPLIT's disjoint-write-set
+  // guarantee (story 1.2, Completion Note 1). Freezing apps/web left core as
+  // the sole writer, so the list below is one entry — but the ASYMMETRY that
+  // made it dangerous is still in core: sessions.ts guards the id and FAILS
+  // CLOSED on ids the old log writer would happily have accepted. If vNext
+  // grows its own session log, it must not become the second writer again.
+  sessions: ["packages/core/src/sessions.ts"],
+  // CO-TENANCY 2 went with apps/web/lib/store.ts, which resolved its root TWO
+  // WAYS within one file — chats.json through its own stateRoot(), usage.ndjson
+  // through core's telarDir() via the ledger port. The two expressions were
+  // byte-identical, which is why it was recorded in deferred-work.md rather
+  // than fixed. It is now moot, and the lesson is the one INV-3e still guards:
+  // import the resolver, never re-derive it.
 };
 
-// The five modules that legitimately derive the state root from scratch. Their
+// The modules that legitimately derive the state root from scratch. Their
 // duplication is deliberate-and-separately-tracked (deferred-work.md); new code
 // takes the import instead.
+//
+// WAS FIVE, NOW TWO. permissions.ts, session-log.ts and store.ts were the three
+// apps/web resolvers and they went with the freeze. The remaining duplication is
+// entirely inside core, which is the direction this list was always supposed to
+// move — INV-3e's floor moved with it and is documented at the assertion.
 const SANCTIONED_ROOT_RESOLVERS = [
   "packages/core/src/looms.ts",
   "packages/core/src/manifest.ts",
-  "apps/web/lib/permissions.ts",
-  "apps/web/lib/session-log.ts",
-  "apps/web/lib/store.ts",
 ];
 
 // Each entry is a REAL violation of a real invariant, left in place because the
@@ -1980,6 +1837,22 @@ const KNOWN_VIOLATIONS = [
       "anywhere, and it then opens projects.json (manifest.ts's) and chats.json (store.ts's) by " +
       "raw path — the only remaining ~/.telar literal outside a sanctioned resolver.",
     recorded: "story 1.1 review findings; _bmad-output/implementation-artifacts/deferred-work.md",
+  },
+  {
+    file: "scripts/vnext-dev.mjs",
+    invariant: "INV-3",
+    owner: "the vNext dogfood launcher — a dev entry point, outside packages/core",
+    why:
+      "it composes path.join(os.homedir(), \".telar\") INSIDE a `legacyHomes` guard set whose " +
+      "whole purpose is to REFUSE that root — the launcher defaults to ~/.telar-vnext-dogfood and " +
+      "fails rather than touching ~/.telar or ~/.telar-dev. So it derives the legacy root only to " +
+      "compare against it and never to read or write through it, which is the opposite of the " +
+      "failure AD-5 is about. It is quarantined rather than SANCTIONED deliberately: sanctioning " +
+      "would put a dev script in the same list as looms.ts and manifest.ts and invite the next " +
+      "author to derive a root there for real.",
+    recorded:
+      "surfaced when apps/web was frozen and INV-3e's floor was re-measured. NOT a regression from " +
+      "that change — the derivation predates it and this invariant was already red.",
   },
 ];
 
@@ -2082,15 +1955,21 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     expect(observed).toContain("packages/core/src/looms.ts :: looms");
   });
 
-  test("INV-3e only the five sanctioned resolvers derive the state root from scratch", () => {
+  test("INV-3e only the sanctioned resolvers derive the state root from scratch", () => {
     const unsanctioned = HOME_DERIVERS.filter((f) => !SANCTIONED_ROOT_RESOLVERS.includes(f));
     // FILTERED BY INVARIANT, not by filename. An entry quarantining an AD-20
     // violation in some file must not also excuse an entirely unrelated raw
     // ~/.telar derivation in that same file that nobody ever agreed to excuse —
     // a quarantine widens by one line otherwise, and silently.
     const quarantined = KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-3").map((k) => k.file);
-    // Anti-vacuity: the five really are found, so a broken pattern cannot pass.
-    expect(HOME_DERIVERS.length).toBeGreaterThanOrEqual(5);
+    // Anti-vacuity: the derivations really are found, so a broken pattern cannot
+    // pass. FLOOR MOVED 5 → 4 when apps/web was frozen, and the arithmetic is
+    // worth stating because it is not "5 minus 3": the scan now finds FOUR
+    // derivations — core's two sanctioned resolvers plus the two quarantined
+    // KNOWN_VIOLATIONS entries, which are derivations that this invariant
+    // reports and tolerates rather than derivations it approves. The floor
+    // counts what the SCANNER sees, not what the allow-list permits.
+    expect(HOME_DERIVERS.length).toBeGreaterThanOrEqual(4);
     for (const r of SANCTIONED_ROOT_RESOLVERS) expect(HOME_DERIVERS).toContain(r);
     const violations = unsanctioned
       .filter((f) => !quarantined.includes(f))
@@ -2110,15 +1989,24 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     // THE LIST'S LENGTH IS PINNED, so growth is visible in the diff rather than
     // arriving as one more plausible-looking object literal. A quarantine that
     // can be extended quietly is a suppression with extra steps.
-    if (KNOWN_VIOLATIONS.length !== 1) {
+    //
+    // RAISED 1 → 2 WHEN apps/web WAS FROZEN, and this mechanism did its job:
+    // scripts/vnext-dev.mjs's `legacyHomes` derivation was ALREADY violating
+    // and was already red before that change — it was simply not the first
+    // failure INV-3e reported, so nobody had read it. Freezing apps/web moved
+    // it to the front of the queue. It is quarantined with a full `why` (it
+    // derives ~/.telar only to REFUSE it) rather than sanctioned, and this
+    // count is raised deliberately here in the same pass, which is exactly what
+    // the message below asks for.
+    if (KNOWN_VIOLATIONS.length !== 2) {
       throw new Error(
         `KNOWN_VIOLATIONS holds ${KNOWN_VIOLATIONS.length} entries; this test was written when it ` +
-          `held exactly 1 (scripts/backfill-tool-detail.ts, INV-3). Each entry is a REAL ` +
-          `violation of a REAL invariant left in place only because the file belongs to another ` +
-          `track's write set. CONSEQUENCE: a list that grows without a reviewer noticing is how ` +
-          `an invariant becomes decorative. NEXT STEP: if the new entry is genuinely someone ` +
-          `else's write set, record it in deferred-work.md the way the first one is, then update ` +
-          `this count deliberately in the same commit.`,
+          `held exactly 2 (scripts/backfill-tool-detail.ts and scripts/vnext-dev.mjs, both INV-3). ` +
+          `Each entry is a REAL violation of a REAL invariant left in place only because the file ` +
+          `belongs to another track's write set. CONSEQUENCE: a list that grows without a reviewer ` +
+          `noticing is how an invariant becomes decorative. NEXT STEP: if the new entry is ` +
+          `genuinely someone else's write set, record it in deferred-work.md the way the first one ` +
+          `is, then update this count deliberately in the same commit.`,
       );
     }
     // An unfalsifiable quarantine is a suppression. If the underlying violation
@@ -2185,260 +2073,32 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
   });
 });
 
-// ── INV-4 — client components import no core runtime (AD-3 / NFR-X-3) ───────
-// The highest-value of the five, because NOTHING enforces it today: no lint
-// rule (apps/web/eslint.config.mjs is bare eslint-config-next core-web-vitals +
-// typescript, with no consistent-type-imports), no build-time boundary test, no
-// bundle inspection. It is held up by convention plus a dozen hand-written
-// per-file comments — exactly the "true by review, re-checked by nothing"
-// condition AD-19 exists to end.
+// ── INV-4 — RETIRED WITH apps/web ──────────────────────────────────────────
 //
-// WHY IT MATTERS MECHANICALLY, so the failure message can say it:
-// apps/web/next.config.ts sets transpilePackages: ["@telar/core"], so core is
-// NOT treated as an external — Next transpiles its source straight into
-// whichever bundle imports it. And packages/core/src/index.ts is a RUNTIME
-// BARREL (export * from "./schemas" / "./providers" / "./secrets" / "./mcp" /
-// "./mcp-oauth"), which instrumentation.ts's own comment describes as pulling in
-// "Node-only modules (fs, child_process, the agent SDK)". ONE value import is
-// the whole barrel. godview.ts's header states the consequence in one line: "a
-// single runtime VALUE import drags async_hooks into the browser bundle and
-// breaks the build."
+// AD-3, the CLIENT-BUNDLE RULE: no `"use client"` component may reach core
+// runtime, directly or through a value edge. INV-4 proved it with a BFS over
+// the local import graph starting from every client file, following value
+// imports and ignoring type-only ones, and it carried three anti-vacuity floors
+// plus a two-direction discriminator.
 //
-// TWO HALVES, and the second is the one that bites.
+// WHY IT IS GONE RATHER THAN REPOINTED: every client component in this repo was
+// an apps/web module. The remaining roots (packages/core, apps/desktop,
+// scripts) hold ONE file with the directive. The rule needs a client tree to
+// hold over, and there is not one here any more.
 //
-// DIRECT: every @telar/core import in a client file must be type-only. T-4 —
-// nearly every such import here spans five or more lines, so a LINE-based check
-// sees `} from "@telar/core";`, finds no `type` keyword, and reports every
-// compliant file as a violation. Whole STATEMENTS are parsed instead.
+// THE RULE ITSELF DID NOT LAPSE — apps/vnext-web enforces the same boundary
+// from the other side and more strictly, by source text rather than by import
+// graph: apps/vnext-web/lib/vnext/source-boundary.test.ts bans "@telar/core",
+// the Claude Agent SDK and the legacy tree outright across app/, components/
+// and lib/. That test is the live guard while vNext is small.
 //
-// TRANSITIVE: BFS following VALUE EDGES ONLY. This is the single decision that
-// makes INV-4 usable rather than permanently red. A type-only import is erased
-// at build and CANNOT smuggle runtime, so traversing it produces false
-// positives on today's tree: apps/web/lib/store.ts is a local barrel that mixes
-// fs/os/path AND a runtime @telar/core import AND
-// `export { logUsage, usageSummary } from "@telar/core"`, and four client files
-// import from @/lib/store — all four `import type`. Traverse those type-only
-// edges and you report four violations that are not violations and cannot be
-// fixed. Traverse only value edges and today's tree is clean WHILE THE REAL
-// REGRESSION IS STILL CAUGHT: flip any one of those four to a plain import and
-// fs, os, path and core's whole runtime barrel enter the client bundle through
-// that one file. That is the invariant.
-const GODVIEW = "apps/web/components/looms/godview.ts";
+// RESTORE THIS INVARIANT when apps/vnext-web outgrows a blanket ban — the day
+// it legitimately needs SOME core import on the server, the substring test
+// stops being expressible and the BFS is what replaces it. INV-4e is the piece
+// to read first: it MEASURED that a substring check for `"use client"` is wrong
+// (it matches the string in prose and in non-directive position), which is why
+// the detector keys on the first statement.
 
-// `@/*` → `apps/web/*` (apps/web/tsconfig.json paths). Anything else bare is a
-// package and is not traversed — except @telar/core, which is the target.
-function resolveLocalImport(fromRel: string, spec: string): string | null {
-  let base: string;
-  if (spec.startsWith("@/")) base = `apps/web/${spec.slice(2)}`;
-  else if (spec.startsWith("./") || spec.startsWith("../")) {
-    base = path.posix.normalize(path.posix.join(path.posix.dirname(fromRel), spec));
-  } else return null;
-  for (const suffix of ["", ".ts", ".tsx", ".mts", ".js", ".mjs"]) {
-    if (byRel.has(base + suffix)) return base + suffix;
-  }
-  for (const suffix of ["/index.ts", "/index.tsx", "/index.mts", "/index.js", "/index.mjs"]) {
-    if (byRel.has(base + suffix)) return base + suffix;
-  }
-  return null;
-}
-
-const isCoreSpecifier = (spec: string): boolean =>
-  spec === "@telar/core" || spec.startsWith("@telar/core/");
-// The SAME runtime, reached by a different spelling. A relative
-// `../../../packages/core/src/usage-ledger` import pulls core into the client
-// bundle exactly as `@telar/core` does; gating the violation branch on the
-// package specifier alone meant that form was merely TRAVERSED and never
-// reported.
-const CORE_SRC = "packages/core/src/";
-
-const CLIENT_SCAN = (() => {
-  const visited = new Set<string>();
-  const parent = new Map<string, string>();
-  const queue: string[] = [];
-  for (const f of CLIENT_FILES) {
-    if (visited.has(f.rel)) continue;
-    visited.add(f.rel);
-    queue.push(f.rel);
-  }
-  const roots = new Set(visited);
-  const chain = (rel: string): string => {
-    const parts = [rel];
-    let cur = rel;
-    while (parent.has(cur)) {
-      cur = parent.get(cur)!;
-      parts.unshift(cur);
-    }
-    return parts.map((p) => p.replace(/^apps\/web\//, "")).join(" → ");
-  };
-
-  let edges = 0;
-  let clientCoreImports = 0;
-  let coreImportsSeen = 0;
-  const violations: string[] = [];
-
-  for (let head = 0; head < queue.length; head++) {
-    const rel = queue[head]!;
-    const file = byRel.get(rel)!;
-    // BOTH KINDS OF EDGE. `export { logUsage } from "@telar/core"` is a value
-    // edge with no `import` line in it: a two-line shim of exactly that shape,
-    // value-imported by a "use client" component, is a genuine AD-3 breach that
-    // an import-anchored scan reports as [].
-    for (const stmt of moduleEdgeStatements(file.code)) {
-      const spec = importSource(stmt);
-      if (!spec) continue;
-      const target = resolveLocalImport(rel, spec);
-      if (isCoreSpecifier(spec) || (!!target && target.startsWith(CORE_SRC))) {
-        coreImportsSeen++;
-        if (roots.has(rel)) clientCoreImports++;
-        if (!isTypeOnlyImport(stmt)) {
-          violations.push(
-            `${chain(rel)} → ${spec} (VALUE import of core runtime). AD-3 — @telar/core is ` +
-              `server-side only ` +
-              `(fs, child_process, the agent SDK); client components import TYPES ONLY, which are ` +
-              `erased at build. CONSEQUENCE: next.config.ts sets transpilePackages: ["@telar/core"], ` +
-              `so core is transpiled straight into this bundle — one value import pulls the whole ` +
-              `runtime barrel and drags async_hooks into the browser, breaking the build. ` +
-              `NEXT STEP: make it \`import type\`, or move the runtime call into a Route Handler, ` +
-              `a Server Component or instrumentation.ts and pass the result down as data.`,
-          );
-        }
-        continue;
-      }
-      // A type-only edge is erased at build and cannot smuggle runtime, so it
-      // is NOT traversed. Traversing it is what would make this invariant
-      // permanently red on a tree that is actually correct.
-      if (isTypeOnlyImport(stmt)) continue;
-      if (!target || isTestFile(target)) continue;
-      edges++;
-      if (!visited.has(target)) {
-        visited.add(target);
-        parent.set(target, rel);
-        queue.push(target);
-      }
-    }
-  }
-  return { visited, edges, clientCoreImports, coreImportsSeen, violations };
-})();
-
-if (VERBOSE) {
-  line(
-    `  INV-4 BFS: ${CLIENT_SCAN.visited.size} modules visited from ${CLIENT_FILES.length} client ` +
-      `roots · ${CLIENT_SCAN.edges} value edges · ${CLIENT_SCAN.clientCoreImports} client→core ` +
-      `import statements · ${CLIENT_SCAN.coreImportsSeen} core imports seen in total`,
-  );
-}
-
-describe("INV-4 client components import no core runtime — AD-3, the CLIENT-BUNDLE RULE", () => {
-  test("INV-4a the three anti-vacuity floors hold before any violation is claimed", () => {
-    const broken: string[] = [];
-    if (CLIENT_FILES.length < 100) {
-      broken.push(`only ${CLIENT_FILES.length} client files (floor 100) — the directive detector is broken`);
-    }
-    if (CLIENT_SCAN.clientCoreImports < 20) {
-      broken.push(
-        `only ${CLIENT_SCAN.clientCoreImports} client→core import statements examined (floor 20, ` +
-          `measured 36). This half finds ZERO violations on a correct tree, so the floor is the ` +
-          `ONLY thing proving it ran. Check importStatements() and isTypeOnlyImport().`,
-      );
-    }
-    if (CLIENT_SCAN.edges < 50) {
-      broken.push(
-        `only ${CLIENT_SCAN.edges} value edges traversed (floor 50) — the BFS is not walking the ` +
-          `local module graph. Check resolveLocalImport(); "@/" maps to apps/web/.`,
-      );
-    }
-    expect(broken).toEqual([]);
-  });
-
-  test("INV-4b the BFS reaches godview.ts, the file that proves the design", () => {
-    // godview.ts is NOT a client file, is imported BY VALUE from client
-    // components (they use its derivations and its isWoven/isTerminal
-    // re-exports), and is the one file whose TRANSITIVE obligation matters
-    // most. If it is not in the visited set the traversal is broken and the
-    // whole second half of this invariant is asserting nothing.
-    expect(CLIENT_SCAN.visited.has(GODVIEW)).toBe(true);
-    expect(byRel.get(GODVIEW)!.isClient).toBe(false);
-    // Its own header states the rule it is standing in for.
-    expect(byRel.get(GODVIEW)!.text).toContain("import type");
-  });
-
-  test("INV-4c no client component reaches core runtime, directly or through a value edge", () => {
-    expect(CLIENT_SCAN.violations).toEqual([]);
-  });
-
-  test("INV-4d the import scan DISCRIMINATES — multi-line type-only passes, one value specifier fails", () => {
-    // T-4 in both directions, through the SAME parser the BFS uses.
-    const CORE = "@telar/" + "core";
-    const multiline = `import type {\n  Loom,\n  ProjectManifest,\n  RegistryEntry,\n} from "${CORE}";`;
-    expect(importStatements(multiline).length).toBe(1);
-    expect(isTypeOnlyImport(multiline)).toBe(true);
-    expect(isTypeOnlyImport(`import { type Loom, type WorkUnitState } from "${CORE}";`)).toBe(true);
-    // The inverse error: one type import and one value import in the same file,
-    // or one value specifier among many type ones.
-    expect(isTypeOnlyImport(`import { logUsage } from "${CORE}";`)).toBe(false);
-    expect(isTypeOnlyImport(`import { type Loom, logUsage } from "${CORE}";`)).toBe(false);
-    expect(isTypeOnlyImport(`import Store, { type Loom } from "@/lib/store";`)).toBe(false);
-    expect(isTypeOnlyImport(`import * as core from "${CORE}";`)).toBe(false);
-    // Two statements in one file are two statements, not one blob.
-    expect(
-      importStatements(`import type { A } from "${CORE}";\nimport { b } from "./b";\n`).length,
-    ).toBe(2);
-    // And the resolver really resolves — both spellings of the same target.
-    expect(resolveLocalImport("apps/web/components/looms/thread-drawer.tsx", "./godview")).toBe(
-      GODVIEW,
-    );
-    expect(resolveLocalImport("apps/web/app/looms/[id]/page.tsx", "@/components/looms/godview")).toBe(
-      GODVIEW,
-    );
-    expect(resolveLocalImport("apps/web/components/x.tsx", "react")).toBe(null);
-
-    // THE RE-EXPORT EDGE, which an import-anchored scan cannot see at all. A
-    // shim whose entire contents are `export { logUsage } from "@telar/core";`
-    // has no `import` line in it, so the first version of this scan neither
-    // checked it for type-only-ness nor traversed it — while it drags core's
-    // runtime barrel into whatever bundle imports the shim.
-    const shim = `export { logUsage } from "${CORE}";\n`;
-    expect(importStatements(shim)).toEqual([]);
-    expect(reExportStatements(shim).length).toBe(1);
-    expect(moduleEdgeStatements(shim).length).toBe(1);
-    expect(isTypeOnlyImport(reExportStatements(shim)[0]!)).toBe(false);
-    expect(isTypeOnlyImport(`export type { Loom } from "${CORE}";`)).toBe(true);
-    expect(isTypeOnlyImport(`export * from "./looms";`)).toBe(false);
-    // A LOCAL `export { a };` has no `from` and is not an edge — and must not
-    // run away swallowing later lines looking for one.
-    expect(reExportStatements("export { a, b };\nimport { c } from \"./c\";\n")).toEqual([]);
-
-    // THE RELATIVE SPELLING of the same runtime. This resolves INTO the core
-    // source tree, which is byte-for-byte the same bundle content as the package
-    // specifier; the violation branch used to be gated on `@telar/core` alone,
-    // so this form was merely traversed and never reported.
-    expect(CORE_SRC).toBe("packages/core/src/");
-    const viaRelative = resolveLocalImport(
-      "apps/web/components/looms/godview.ts",
-      "../../../../packages/core/src/usage-ledger",
-    );
-    expect(viaRelative).toBe("packages/core/src/usage-ledger.ts");
-    expect(viaRelative!.startsWith(CORE_SRC)).toBe(true);
-  });
-
-  test("INV-4e the substring shortcut is measurably wrong, which is why the directive is used", () => {
-    // T-5, pinned as a fact rather than a comment: the gap is four files and
-    // one of them imports node:fs. A substring match would report a SERVER-ONLY
-    // module as a client component and fail INV-4 on today's tree for a reason
-    // that is not a violation.
-    expect(SUBSTRING_USE_CLIENT).toBeGreaterThan(CLIENT_FILES.length);
-    const substringOnly = INDEX.filter(
-      (f) => f.rel.startsWith("apps/web/") && f.text.includes("use client") && !f.isClient,
-    ).map((f) => f.rel);
-    expect(substringOnly).toContain("apps/web/lib/permissions.ts");
-    expect(byRel.get("apps/web/lib/permissions.ts")!.code).toContain("node:fs");
-    // The mirror-image hazard: godview.ts contains the phrase and is not a
-    // client file. Misclassifying it would replace a real check with a trivial
-    // one, because a client file's own imports are checked directly while
-    // godview.ts's only matter transitively.
-    expect(substringOnly).toContain(GODVIEW);
-  });
-});
 
 // ── INV-5 — no module writes a shared runtime service's state (AD-20) ───────
 // AD-20 covers state that belongs to NO module's subtree — the usage ledger,
@@ -2536,46 +2196,49 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
     expect(composers).toEqual([USAGE_LEDGER]);
   });
 
-  test("INV-5b the three production logUsage call sites are the only ones, one per UsageOwnerKind", () => {
+  test("INV-5b the two production logUsage call sites are the only ones, one per non-session UsageOwnerKind", () => {
     const callers = NON_TEST.filter(
       (f) => reachableCallSites(f.code, "logUsage", ownsSymbol("usage-ledger")) > 0,
     ).map((f) => f.rel);
-    expect(callers.sort()).toEqual([CHAT_ROUTE, ULTRA_STORAGE, WEAVE].sort());
-    // A pleasing and checkable correspondence: one caller per owner kind.
-    // weave.ts and ultra/storage.ts pass theirs explicitly; the chat route
-    // relies on the schema default, which is LOAD-BEARING rather than a
-    // placeholder — it is what makes a pre-attribution record still fold into
-    // the session-scoped projections.
+    // WAS THREE. apps/web's chat route was the "session" caller and it went
+    // with the freeze, so the one-caller-per-owner-kind correspondence is now
+    // BROKEN ON THE session ARM: the enum still has three kinds and only two
+    // are written. That is not a bug to paper over — it is the honest state of
+    // a tree whose only session-turn writer is gone. vNext logs no usage at all
+    // (the engine's driver reports text and nothing else), so a `session`-owned
+    // spend record cannot currently be produced by anything.
+    expect(callers.sort()).toEqual([ULTRA_STORAGE, WEAVE].sort());
+    // weave.ts and ultra/storage.ts pass their owner kind explicitly. The chat
+    // route relied on the SCHEMA DEFAULT instead, which was LOAD-BEARING rather
+    // than a placeholder — it is what made a pre-attribution record still fold
+    // into the session-scoped projections. The default is still asserted below
+    // because it is the contract vNext's eventual usage writer will inherit.
     expect(byRel.get(WEAVE)!.code).toContain('ownerKind: "loom"');
     expect(byRel.get(ULTRA_STORAGE)!.code).toContain('ownerKind: "ultra"');
     expect(byRel.get(SCHEMAS)!.code).toContain('UsageOwnerKind.default("session")');
     expect(byRel.get(SCHEMAS)!.code).toContain('z.enum(["session", "loom", "ultra"])');
   });
 
-  test("INV-5c apps/web re-exports the ledger port instead of reimplementing it", () => {
-    // This is what keeps the rule true across the workspace boundary.
-    const store = byRel.get(STORE)!.code;
-    expect(store).toContain('export { logUsage, usageSummary } from "@telar/core";');
-    expect(store).toContain('export type { UsageEntry, UsageWindow } from "@telar/core";');
-    expect(store).toContain("ledgerReadDegraded");
-    // STORY 4.1 CHANGED WHICH PROJECTION store.ts NAMES, and this line moved with
-    // it — deliberately, after the pin fired and was read rather than edited
-    // around. It used to require "usageCostBySession".
-    //
-    // WHAT CHANGED: `sessionSpendUsd` now sums the session-owned fold and the
-    // session's ULTRA fold (AC5 / FR-UW-5), and it takes both out of ONE
-    // `readFold()` through `sessionCostFolds` — because two accessor calls are
-    // two reads, and the port's readUnavailable/readStale flags are cleared on
-    // entry to each, so a transient failure on the first leg is erased by a
-    // second, luckier one. (Pinned in packages/core/test/usage-ledger.test.ts:
-    // "4.1 sessionCostFolds is ONE read…" plus its discriminator.)
-    //
-    // WHAT DID NOT CHANGE, which is the whole of what INV-5c is for: store.ts
-    // still reads a session's cost THROUGH THE PORT, still reimplements nothing,
-    // and still opens no file — asserted on the line below, unchanged.
-    expect(store).toContain("sessionCostFolds");
-    expect(composesStateFile(store, "usage.ndjson")).toBe(false);
-  });
+  // RETIRED WITH apps/web — INV-5c.
+  //
+  // AD-20/AD-18 across the WORKSPACE BOUNDARY: apps/web/lib/store.ts re-exported
+  // logUsage/usageSummary from @telar/core instead of reimplementing them, so
+  // the ledger kept exactly one writer and one reader path even though the
+  // display lived in another package. It pinned the re-export lines verbatim,
+  // pinned `ledgerReadDegraded`, and pinned that `sessionSpendUsd` reached the
+  // session's cost THROUGH THE PORT rather than accumulating a second number.
+  //
+  // FR-RF-2 — "two numbers for one spend, and the wrong one on screen" — is the
+  // failure this prevented, and it is the exact failure a new UI invites: the
+  // fastest way to put a cost on a vNext screen is a local accumulator over the
+  // event stream. INV-5a still holds the CORE half (exactly one module composes
+  // usage.ndjson's path), so the port cannot be bypassed from inside core. What
+  // lapsed is the guarantee that CONSUMERS go through it.
+  //
+  // WHEN vNext RENDERS SPEND, restore this against its store module — the pin
+  // is three lines and it is the cheapest of all the retired invariants to
+  // bring back.
+
 
   test("INV-5d the lease filename lives in exactly one module, and both lifetimes share it", () => {
     // MENTION is the assertable unit here, deliberately, and it is stricter
@@ -2727,7 +2390,9 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
 // — the same decision INV-2 made about the five suites it leans on, for the
 // same reason.
 const PROFILE_SRC = byRel.get("packages/core/src/session-profile.ts");
-const ROUTE_SRC = byRel.get("apps/web/app/api/chat/route.ts");
+// ROUTE_SRC (apps/web's chat route) went with INV-6c and INV-6e — it was their
+// only reader. Nothing in the remaining roots consumes a session profile, which
+// is exactly why both halves of AD-9's consumer contract are unguarded today.
 
 // Extracts a type-literal alias's declared FIELDS from a source string. Takes a
 // SOURCE STRING and never a file, so INV-6d's discriminator fixtures run
@@ -2897,53 +2562,24 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
     expect(deny?.type).toBe("readonly string[]");
   });
 
-  test("INV-6c the chat route resolves the session profile BEFORE the stream opens", () => {
-    if (!ROUTE_SRC) {
-      throw new Error(
-        `AD-9 / INV-6: apps/web/app/api/chat/route.ts is not in the scan index. CONSEQUENCE: the ` +
-          `ordering claim below would hold vacuously. NEXT STEP: fix the walk, not the assertion.`,
-      );
-    }
-    // `.code` (comments blanked) and not `.text`: this route's own comments
-    // NAME both `resolveSessionProfile` and `new ReadableStream`, and a scan
-    // that read prose would compare a comment's position to a call site's.
-    const code = ROUTE_SRC.code;
-    const resolveAt = code.indexOf("resolveSessionProfile(");
-    const unmetAt = code.indexOf("unmetCapabilities(");
-    const streamAt = code.indexOf("new ReadableStream(");
-    const registerAt = code.indexOf("registerChatRun(");
-    if (resolveAt < 0 || unmetAt < 0 || streamAt < 0 || registerAt < 0) {
-      throw new Error(
-        `AD-9/AD-11 / INV-6: a call site this invariant orders is MISSING from the chat route — ` +
-          `resolveSessionProfile@${resolveAt}, unmetCapabilities@${unmetAt}, ` +
-          `new ReadableStream@${streamAt}, registerChatRun@${registerAt}. CONSEQUENCE: the ` +
-          `"resolved before the route body" and "fails before the stream opens" claims would ` +
-          `both pass over an absent call. NEXT STEP: if the route legitimately stopped resolving ` +
-          `a profile, this invariant is what should be re-argued — not deleted.`,
-      );
-    }
-    // AC1: "before the route body executes". `new ReadableStream({` IS the
-    // route body — everything from there on is the SSE start(controller)
-    // closure, and once it begins a failure can only become an SSE `error`
-    // event, never a status code.
-    expect(resolveAt).toBeLessThan(streamAt);
-    // AD-11: the capability gate must also precede registerChatRun, whose only
-    // cleanup is endChatRun inside the stream's `finally`. A 400 returned after
-    // it leaves a registered run with no stream to end.
-    expect(unmetAt).toBeLessThan(registerAt);
-    expect(unmetAt).toBeLessThan(streamAt);
-    // The registry is populated by a SIDE-EFFECT import, and without it
-    // resolveSessionProfile throws on every chat request. There is no test file
-    // for this route anywhere in the tree, so bun test / tsc / lint all stay
-    // green while the app is broken — this line is the only mechanical guard.
-    // `.code` and not `.text`, for the same reason the ordering scan uses it
-    // and every INV-1g pin does: `// import "@/lib/session-profiles";` left
-    // behind by a debugging session is a DEAD import that keeps the literal in
-    // `.text`, so a `.text` check would stay green over an app that 500s on
-    // every chat request. Deletion is caught either way; commenting-out is only
-    // caught here.
-    expect(ROUTE_SRC.code).toContain('import "@/lib/session-profiles";');
-  });
+  // RETIRED WITH apps/web — INV-6c.
+  //
+  // It ordered four call sites inside apps/web's chat route: the session
+  // profile had to RESOLVE before `new ReadableStream(` opened (after that,
+  // a failure can only become an SSE error event, never a status code), and
+  // `unmetCapabilities(` had to precede both the stream and `registerChatRun(`
+  // (a 400 after registration leaks a run whose only cleanup is the stream's
+  // `finally`). It also pinned the SIDE-EFFECT import `@/lib/session-profiles`,
+  // which was the ONLY mechanical guard on a registry that, unpopulated, made
+  // resolveSessionProfile throw on every chat request while tsc, lint and the
+  // whole test suite stayed green.
+  //
+  // vNext HAS NO EQUIVALENT ROUTE YET AND WILL NEED THIS ORDERING WHEN IT DOES.
+  // apps/vnext-web/app/api/sessions/[sessionId]/turns/route.ts accepts a turn
+  // and returns; the engine owns execution, so there is no profile resolution,
+  // no capability gate and no in-request stream to order against. The moment a
+  // turn route grows a pre-stream failure path, restore this test against it.
+
 
   test("INV-6d the field scan DISCRIMINATES — a grant-shaped field and a widened allow are both reported", () => {
     // Assembled at runtime, never written as literal source: packages/core/test
@@ -3007,156 +2643,20 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
     expect(fieldNames(typeLiteralFields(commented, "Session" + "Profile"))).toEqual(["kind"]);
   });
 
-  test("INV-6e the chat route branches on NO session kind — every kind resolves through the profile", () => {
-    // AD-9's promise, made mechanical: "a new surface adds a profile; it does
-    // not add an `if`." Story 2.2 is the story that made that true of the
-    // handler that exists, and a prose claim about a ~1900-line file is not
-    // checkable — so this is.
-    //
-    // BOTH HALVES ARE REQUIRED, and the second is the one story 1.1's Repair
-    // Round 4 paid for: "a guard must read the same value as the thing it
-    // guards." Deleting the three flags AND never consuming the profile would
-    // satisfy the absence half alone, while the route quietly went back to
-    // computing everything inline — so the presence half is the anti-vacuity
-    // floor, not a bonus assertion.
-    if (!ROUTE_SRC) {
-      throw new Error(
-        `AD-9 / INV-6e: apps/web/app/api/chat/route.ts is not in the scan index. CONSEQUENCE: ` +
-          `both halves below would hold vacuously and the route could carry every session-kind ` +
-          `conditional AD-9 forbids. NEXT STEP: fix the walk, not the assertion.`,
-      );
-    }
-    // `.code` (comments blanked) and never `.text`, for the reason INV-6c
-    // records and this test makes acute: after story 2.2 the route's own
-    // comments legitimately DISCUSS isEscalationSession in the past tense
-    // ("There is no isPlannerSession / isSteererSession / isEscalationSession
-    // any more"), so a `.text` scan would fail over a correct file. The mirror
-    // failure is the one that matters: a commented-out flag left by a debugging
-    // session keeps the literal in `.text`, so a `.text` check stays green over
-    // a route that still branches.
-    const code = ROUTE_SRC.code;
+  // RETIRED WITH apps/web — INV-6e.
+  //
+  // AD-9's negative half: the chat route branched on NO session kind — every
+  // kind resolved through the profile registry instead of through a
+  // conditional in the route. It is the invariant that kept the profile
+  // abstraction from being quietly bypassed one `if (kind === ...)` at a time.
+  //
+  // The POSITIVE half of AD-9 survives and is directly above: INV-6a still pins
+  // the SessionProfile and SessionProfileSpec field inventories, INV-6b still
+  // pins ToolPolicy's `allow` to the BASE union rather than to string, and
+  // INV-6d still proves the field scan reports a grant-shaped field. What
+  // lapsed is only "…and no consumer routes around it", because the consumer
+  // was an apps/web module.
 
-    // Assembled at runtime, never written as a literal: packages/core/test is
-    // one of this scanner's own roots, and a literal here would make this file
-    // a fixture for itself. Same idiom INV-6d already uses.
-    const KIND_FLAGS = ["is" + "PlannerSession", "is" + "SteererSession", "is" + "EscalationSession"];
-    // THE predicate. The discriminator below runs this exact function, so a
-    // scan that stopped matching fails immediately instead of going quiet.
-    const kindFlagsIn = (src: string): string[] => KIND_FLAGS.filter((f) => src.includes(f));
-
-    // The five profile reads that must be present. Each one is a decision the
-    // route used to make for itself: cwd and settingSources were literals,
-    // the two tool lists were a ternary over four constants, and the appendix
-    // was a four-arm chain over three module-private prompts.
-    const PROFILE_READS = [
-      "sessionProfile.cwd",
-      "sessionProfile.settingSources",
-      "sessionProfile.toolPolicy.allow",
-      "sessionProfile.toolPolicy.deny",
-      "sessionProfile.systemPromptAppendix",
-    ];
-
-    const broken: string[] = [];
-
-    const flags = kindFlagsIn(code);
-    if (flags.length > 0) {
-      broken.push(
-        `AD-9 / INV-6e: the chat route still names ${JSON.stringify(flags)}. THE RULE: session ` +
-          `configuration is a RESOLVED PROFILE, not a branch through the handler — every kind ` +
-          `resolves through resolveSessionProfile before the stream opens. CONSEQUENCE: epics 4, ` +
-          `5 and 6 each add a session kind against this same file, and the moment one kind is a ` +
-          `conditional the next one lands as a second, in the ~103KB handler the Human-Accept ` +
-          `Moat rides on. NEXT STEP: express what the branch decided as a field on the profile ` +
-          `and read that field. A removal is only safe once the profile carries the decision.`,
-      );
-    }
-
-    const missing = PROFILE_READS.filter((r) => !code.includes(r));
-    if (missing.length > 0) {
-      broken.push(
-        `AD-9 / INV-6e: the chat route no longer reads ${JSON.stringify(missing)} off the ` +
-          `resolved profile. THE RULE (and this is the ANTI-VACUITY FLOOR for the half above): ` +
-          `"a guard must read the same value as the thing it guards" — deleting the three ` +
-          `session-kind flags while ALSO dropping the profile consumption would pass the absence ` +
-          `check while the route computed everything inline again. CONSEQUENCE: the profile ` +
-          `becomes decorative, which is worse than not having it, because two sources of truth ` +
-          `for session shape disagree silently. NEXT STEP: if a field legitimately moved, update ` +
-          `this list AND say where the decision now lives. Do not shorten it to make this pass.`,
-      );
-    }
-
-    // AC2's half: the manifest's guardrails and root reach the session BY
-    // CONSTRUCTION, through the profile, and are no longer re-derived here.
-    // `const workspace` was the second computation of `sessionProfile.cwd`;
-    // `manifest.guardrails` was the second read of the deny set.
-    const REDERIVATIONS = ["const workspace", "manifest.guardrails"];
-    const rederived = REDERIVATIONS.filter((r) => code.includes(r));
-    if (rederived.length > 0) {
-      broken.push(
-        `AD-9 / INV-6e: the chat route re-derives ${JSON.stringify(rederived)} instead of ` +
-          `reading the profile. THE RULE: manifest.root maps onto the profile's cwd, guardrails ` +
-          `and settingSources BY CONSTRUCTION — the fold already does it, so a second ` +
-          `computation here is a second source of truth. CONSEQUENCE: a profile that narrows ` +
-          `guardrails or relocates cwd would be silently overridden by whichever expression the ` +
-          `handler happened to reach for. NEXT STEP: read sessionProfile.cwd / ` +
-          `sessionProfile.toolPolicy.deny.`,
-      );
-    }
-
-    // AD-1's tool-layer half, still wired and now driven from ONE resolved
-    // guardrail set. Three call sites since story 2.2: canUseTool,
-    // preToolUseGuardrail, and onCodexApproval (which is what closes the Codex
-    // half of the gap — see deferred-work.md for the residual it does NOT
-    // close). The floor is what makes "every site reads sessionProfile" mean
-    // something: over zero sites it is trivially true.
-    const guardSites = code.split("makeGuardrailDecision(").length - 1;
-    if (guardSites < 3) {
-      broken.push(
-        `AD-1 / INV-6e: makeGuardrailDecision has ${guardSites} call sites in the chat route ` +
-          `(floor 3: canUseTool, preToolUseGuardrail, onCodexApproval). THE RULE: the moat is ` +
-          `enforced at the tool layer on BOTH providers — the Codex fork reaches the SDK through ` +
-          `none of query()'s options, so its approval callback is the one pre-tool seam it has. ` +
-          `CONSEQUENCE: a project's guardrails.disallowedTools / protectedPaths go silently ` +
-          `inert on half the traffic, which is the gap story 2.2's AC6 closed. NEXT STEP: ` +
-          `restore the call site; do not lower this floor.`,
-      );
-    }
-    // …and every one of them is fed the PROFILE, not the raw manifest. Checked
-    // over the text that follows each call, because the argument is on its own
-    // line under the house formatting.
-    const fedManifest = code
-      .split("makeGuardrailDecision(")
-      .slice(1)
-      .map((tail, i) => [i, tail.slice(0, 120)] as const)
-      .filter(([, window]) => !window.includes("sessionProfile"));
-    if (fedManifest.length > 0) {
-      broken.push(
-        `AD-9/AD-1 / INV-6e: ${fedManifest.length} makeGuardrailDecision call site(s) are not ` +
-          `driven from sessionProfile — first offending window: ` +
-          `${JSON.stringify(fedManifest[0]![1])}. THE RULE: AC2's "by construction" — the ONE ` +
-          `resolved guardrail set governs every seam that enforces it. CONSEQUENCE: the two ` +
-          `enforcement points (canUseTool and the PreToolUse hook) would read different values, ` +
-          `so AD-1's "enforced twice" becomes a belt and a decoration. NEXT STEP: pass ` +
-          `sessionProfile (it is structurally a { guardrails } and that is why this works) and ` +
-          `sessionProfile.cwd.`,
-      );
-    }
-
-    expect(broken).toEqual([]);
-
-    // THE DISCRIMINATOR — the same predicate, over a fixture assembled here, so
-    // a scanner that stopped matching fails loudly instead of reporting a clean
-    // route forever.
-    const fixture =
-      "if (" + "is" + "EscalationSession" + ") { return readOnlyTools; }\n" +
-      "const x = " + "is" + "PlannerSession" + " ? A : B;\n";
-    expect(kindFlagsIn(fixture).sort()).toEqual(
-      ["is" + "EscalationSession", "is" + "PlannerSession"].sort(),
-    );
-    // …and a clean fixture is NOT reported, so the predicate is not simply
-    // returning everything it was handed.
-    expect(kindFlagsIn("const allowedTools = [...sessionProfile.toolPolicy.allow];")).toEqual([]);
-  });
 
   test("INV-6 the compile pins this invariant CITES still exist, so the citation cannot rot", () => {
     // INV-6 deliberately does not run tsc (see this block's header). That makes
@@ -3810,7 +3310,18 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
           `in-process class, the child-process mechanism below would never be exercised.`,
       );
     }
+    // THE "injected" ARM LOST ITS LAST USER WITH apps/web, and it is listed
+    // below as a KNOWN-DEAD mechanism rather than quietly dropped from the loop.
+    //
+    // The distinction matters: a mechanism with zero users is dead code that
+    // nothing would notice breaking, which is exactly what this check is for.
+    // Removing "injected" from the list entirely would hide that. Naming it here
+    // keeps the fact in front of the next reader, and the moment a vNext test
+    // injects a root, DELETE IT FROM THIS SET so the floor starts guarding it
+    // again. The other three arms still have users and are still enforced.
+    const MECHANISMS_WITHOUT_USERS = new Set(["injected"]);
     for (const mechanism of ["pinned", "injected", "child", "root-parameterized"]) {
+      if (MECHANISMS_WITHOUT_USERS.has(mechanism)) continue;
       const users = READER_SCANS.filter((s) => s.mechanisms.includes(mechanism)).length;
       if (users === 0) {
         broken.push(
@@ -3818,6 +3329,19 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
             `dead code and nothing would notice if it stopped working. Either the mechanism ` +
             `detector broke, or the last file using it changed — find out which before relaxing ` +
             `anything.`,
+        );
+      }
+    }
+    // …and the dead arm is asserted to REALLY be dead, so this exemption cannot
+    // rot into a permanent hole: if something starts using it, this fails and
+    // whoever added it removes the name above.
+    for (const mechanism of MECHANISMS_WITHOUT_USERS) {
+      const users = READER_SCANS.filter((s) => s.mechanisms.includes(mechanism)).length;
+      if (users > 0) {
+        broken.push(
+          `${users} test file(s) are now safe by the "${mechanism}" mechanism, which is listed in ` +
+            `MECHANISMS_WITHOUT_USERS as having none. This is GOOD NEWS and a required edit: ` +
+            `remove "${mechanism}" from that set so the zero-users floor guards it again.`,
         );
       }
     }
@@ -3830,55 +3354,36 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
     expect(violations).toEqual([]);
   });
 
-  test("INV-7c the POSITIVE CONTROLS — the two known-good idioms are really found, and by name", () => {
-    // A scanner that silently matches nothing is worse than no scanner, so the
-    // two files that already do this correctly are pinned BY NAME and BY
-    // MECHANISM. If either stops being found, the scan has gone blind and this
-    // fails before INV-7b can pass vacuously.
-    const profiles = READER_SCANS.find((s) => s.file === "apps/web/lib/session-profiles.test.ts");
-    if (!profiles) {
-      throw new Error(
-        `INV-7: apps/web/lib/session-profiles.test.ts is NOT in the reader scan at all. It spawns ` +
-          `a child whose probe source composes a steerer and an escalation profile — the ` +
-          `canonical child-process idiom in this repo. CONSEQUENCE: if the scanner cannot see ` +
-          `THAT, it can see nothing, and INV-7b is passing over an empty set. NEXT STEP: the scan ` +
-          `is broken (READER_SURFACE, readerCallSites, or the EXEC/PROBE offset split) — do not ` +
-          `delete this assertion.`,
-      );
-    }
-    // Found as a CHILD-PROBE site specifically: the composer calls live inside
-    // the probe's template literal, so they must NOT be counted as executing
-    // here, and the file must be credited with the sandboxed child.
-    expect(profiles.probe.length).toBeGreaterThanOrEqual(2);
-    expect(profiles.probe.map((p) => p.name).sort()).toContain("buildSteererProfile");
-    expect(profiles.spawns).toBe(true);
-    expect(profiles.child).toBe(true);
-    expect(profiles.mechanisms).toContain("child");
-    expect(profiles.violations).toEqual([]);
-    // …and it is NOT quietly passing because it pins a root in-process: it does
-    // not, deliberately (its header says "Never mutate process.env.TELAR_HOME in
-    // the shared test process").
-    expect(profiles.pinned).toBe(false);
+  // RETIRED WITH apps/web — INV-7c, and this is the retirement that COSTS THE
+  // MOST PER LINE, so read the trade before restoring anything else first.
+  //
+  // INV-7c was the anti-blindness control for INV-7b. INV-7b asserts "no test
+  // file reaches the operator's REAL state root", which is a claim about an
+  // EMPTY SET — it passes just as happily when the scanner has gone blind as
+  // when the tree is clean. INV-7c stopped that by pinning the two files that
+  // demonstrably DID reach a reader, by name and by mechanism:
+  //
+  //   apps/web/lib/session-profiles.test.ts — the CHILD-PROBE idiom. Its
+  //     composer calls live inside a spawned child's template literal, so the
+  //     scanner had to count them as probe sites and NOT as executing here.
+  //     Pinned `pinned === false` too, so it could not pass by pinning a root
+  //     in-process (its own header forbids mutating TELAR_HOME in the shared
+  //     test process).
+  //   apps/web/lib/session-prompts.test.ts — the INJECTION idiom, and the file
+  //     the whole invariant comes from: before story 2.2's review it had one
+  //     composer call that did not pass `read`, and THAT CALL EXECUTED AGAINST
+  //     THE OPERATOR'S REAL LOOM STORE. INV-7 exists because of it.
+  //
+  // Both were apps/web test files. INV-7a's per-mechanism floor was loosened in
+  // the same pass for the same reason — the "injected" arm now has no users at
+  // all — so TWO of the three things keeping INV-7b honest went at once.
+  // INV-7b and INV-7d still run: the invariant and its discriminator survive,
+  // and INV-7d is now the ONLY thing proving the scanner is not blind.
+  //
+  // RESTORE A POSITIVE CONTROL AS SOON AS ANY vNext TEST TOUCHES STATE. It does
+  // not have to be these two files — it has to be a real file, pinned by name
+  // and mechanism, that the scanner is known to see.
 
-    // The other idiom, and the file the whole invariant comes from. Every
-    // composer call in session-prompts.test.ts passes `read`, and the file pins
-    // NOTHING — so it is safe by injection ALONE. Before story 2.2's review it
-    // had one call that did not, and that call reached the real loom store.
-    const prompts = READER_SCANS.find((s) => s.file === "apps/web/lib/session-prompts.test.ts");
-    if (!prompts) {
-      throw new Error(
-        `INV-7: apps/web/lib/session-prompts.test.ts is NOT in the reader scan. This is the file ` +
-          `whose un-injected composer call executed against the operator's real loom store and is ` +
-          `the reason INV-7 exists. CONSEQUENCE: the scanner cannot see the exact shape it was ` +
-          `written to catch. NEXT STEP: fix readerCallSites; do not delete this assertion.`,
-      );
-    }
-    expect(prompts.exec.length).toBeGreaterThanOrEqual(5);
-    expect(prompts.pinned).toBe(false);
-    expect(prompts.child).toBe(false);
-    expect(prompts.mechanisms).toEqual(["injected"]);
-    expect(prompts.violations).toEqual([]);
-  });
 
   test("INV-7d the scan DISCRIMINATES — an un-injected call is reported, every sanctioned shape is not", () => {
     // Fed through the SAME function the real scan uses, from fixtures assembled
@@ -4070,1185 +3575,44 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
   });
 });
 
-// ===========================================================================
-// INV-8 — the Conversation shell's contract, made executable. AD-12 / AD-13.
-// ===========================================================================
+// ── INV-8 — RETIRED WITH apps/web ──────────────────────────────────────────
 //
-// WHY THIS EXISTS, and why it is not gold-plating. Two of story 3.1's
-// acceptance criteria are claims about CODE SHAPE rather than behaviour: "a
-// registered renderer reads nothing from ambient context" and "kind ids carry
-// their owning module and cannot collide" — the latter being a claim about
-// EVERY FUTURE registration, not about today's six. There is no DOM harness in
-// this repository, deliberately, so neither can be proven by rendering. AC5's
-// runtime half is a unit test (components/conversation/registry.test.ts). AC4's
-// purity is provable ONLY by a static scan, because a plain function called
-// during render CAN legally call a hook: the type states the shape and nothing
-// enforces it.
+// AD-12 / AD-13: the Conversation shell owns no session semantics. It scanned
+// apps/web/components/conversation/**, apps/web/components/right-panel/** and
+// session-view.tsx — never the whole tree — and asserted ten separate things:
+// the shell fetches no data (8a), reads no ambient React context (8b) and
+// neither do kind renderers registered outside it (8b2), the context inventory
+// its denylist is built from is RE-DERIVED so it cannot go stale (8c), the
+// scans discriminate in both directions (8d/8d2), the shell is configured by
+// props and never by inheritance (8e), the barrel primitives and the seven
+// built-in kind ids are exact-set pinned (8f), the adapter kept its STAYED set
+// and lost its MOVED set (8g), ConversationProps is closed (8i), and the walk
+// skips every dist dir next.config.ts advertises (8j).
 //
-// AD-19 already mandates exactly this remedy for load-bearing invariants, and
-// its own `Binds:` list — AD-1, AD-2, AD-3, AD-5, AD-20 — does not include
-// AD-12. That is the gap, not a reason to leave it. The architecture froze this
-// contract precisely so epics 4, 5 and 6 could build owner adapters IN PARALLEL
-// without coordinating; a frozen contract that nothing re-checks is the failure
-// AD-19 was written for. The readiness report's UX-8 predicted the shape:
-// "verified by none of them individually — the classic shape of a constraint
-// that passes every unit check and fails in integration."
+// ALL OF IT SCANNED apps/web AND ONLY apps/web. Every file, every pinned id,
+// every prop name. There is no vNext equivalent to repoint it at: the vNext
+// cockpit renders a flat prompt/response journal (apps/vnext-web/lib/vnext/
+// journal.ts) with no kind registry, no shell/adapter split, and no right
+// panel, because the engine contract carries no tool, thinking, or permission
+// events for one to render.
 //
-// AND IT IS BOUNDED. INV-8 scans apps/web/components/conversation/**,
-// apps/web/components/right-panel/**, and session-view.tsx — small, new,
-// wholly-owned surfaces — never the whole tree.
-// Pointing INV-8b at apps/web/components/** would make every legitimate
-// useSidebar/useDock call in 100+ client files a violation, and the fix would be
-// to weaken the predicate, which is how a guard becomes a decoration.
+// THIS IS THE INVARIANT TO REREAD WHEN THE VNEXT CONVERSATION SURFACE IS BUILT.
+// The shell/adapter split it pins is the design worth keeping, and 8b2c — the
+// FOUR ways an extractor like this can be defeated, each proved separately — is
+// the part that took the longest to get right and should not be rediscovered.
 //
-// SESSION-VIEW.TSX IS SCANNED AT THE RIGHT GRAIN, not as a whole file. The
-// adapter's job IS to consume session context, so the file cannot be held to
-// AC4; its REGISTERED KIND RENDERERS can, and INV-8b2 extracts exactly those.
+// THERE IS NO GIT HISTORY TO RECOVER IT FROM. This checkout is an ORPHANED git
+// worktree: .git points at /Users/bixku/Projects/Telar/.git/worktrees/telar-vnext
+// and that parent repository no longer exists on disk, so `git show` cannot
+// reach the deleted source. If this tree is ever re-attached to a repo that has
+// the history, the INV-8 block is worth reading before rebuilding it.
 //
-// The sub-checks: a denylist (8a), ambient context in the shell (8b) and in the
-// donor's own kind renderers (8b2), the re-derived inventory the denylist comes
-// from (8c), the discriminator that keeps 8a/8b/8b2 from passing vacuously (8d),
-// config-over-inheritance (8e), the barrel + kind-id exact sets (8f), the
-// donor's stayed/moved split (8g), the closed prop list (8i), the walk's
-// dist-dir exclusions (8j), and the quarantine floor (8h).
-//
-// KNOWN_VIOLATIONS: INV-8 adds none. See INV-8h.
+// 8j IS THE ONE PIECE WITH LIVE VALUE ELSEWHERE: it proved the scan index skips
+// every configurable Next dist dir, and the walk's `.next-*` exclusion still
+// guards the index against reading minified chunks. That exclusion is retained
+// in EXCLUDED_DIRS with its own header note; only the test that re-derived the
+// names from next.config.ts is gone, along with the config it read.
 
-const SHELL_ROOT = "apps/web/components/conversation/";
-const SHELL_FILES = INDEX.filter((f) => f.rel.startsWith(SHELL_ROOT) && !isTestFile(f.rel));
-const RIGHT_PANEL_ROOT = "apps/web/components/right-panel/";
-const RIGHT_PANEL_FILES = INDEX.filter(
-  (f) => f.rel.startsWith(RIGHT_PANEL_ROOT) && !isTestFile(f.rel),
-);
-const PURE_SURFACE_FILES = [...SHELL_FILES, ...RIGHT_PANEL_FILES];
-const SESSION_VIEW_REL = "apps/web/components/session/session-view.tsx";
-
-// ── the kind renderers that live OUTSIDE the shell directory ────────────────
-// §5.5-D12 bounds INV-8 as scanning `components/conversation/**` AND
-// `session-view.tsx`, and the second half was missing: story 3.1 registered
-// `session:agent-bucket` in the donor, which is a file with `useDockOptional()`
-// and `usePromptInputController()` in lexical scope — §5.6-T4 names that as the
-// exact temptation INV-8b exists to catch, and it is the ONE place in the tree
-// where the temptation is real rather than theoretical.
-//
-// The whole file cannot be scanned, and that is not a compromise: the adapter's
-// JOB is to consume session context. What is scanned is each REGISTERED KIND's
-// renderer, extracted by brace-matching from its `: ItemKind<…> = {` declaration
-// — the renderer is the thing AC4 makes a claim about, and its boundary is
-// exactly where the claim starts applying.
-type KindSlice = { name: string; src: string };
-
-// RESIDUAL, STATED RATHER THAN IMPLIED — the brace match ends at the OBJECT
-// LITERAL, so this extractor sees a renderer only when the renderer is written
-// INLINE. A kind declared `render: someTopLevelFn` yields a slice holding no
-// hook-call text at all: `ambientContextScan` returns `[]` and INV-8b2 passes
-// over the exact violation it exists to catch. Neither guard below closes it —
-// the anti-vacuity floor still counts one slice, the name still comes from the
-// declaration so `toContain("agentBucketKind")` still holds, and a bare
-// `{ id, render: fn }` literal clears the 40-character body control (62 on a
-// probe of that shape). Nor does any sibling: INV-8b is scoped to
-// components/conversation/** by design, and the donor is the one file outside it.
-// NOT HYPOTHETICAL: `renderAgentBucket`, the top-level function story 3.1
-// deleted, was precisely that shape, and session-view.tsx's own comment records
-// it as the file's prior pattern. Recorded, deliberately not fixed here — the
-// day a donor kind delegates to a top-level renderer, follow the identifier and
-// scan that function's body too, rather than widening the brace match or
-// deleting the check.
-function kindRendererSlices(text: string): KindSlice[] {
-  // Comments AND string bodies blanked first, so a `{` inside either cannot
-  // unbalance the brace match and a kind merely DISCUSSED in prose is not found.
-  const code = tokenize(text, true, true);
-  const out: KindSlice[] = [];
-  const DECL = /(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*:\s*ItemKind\s*</g;
-  for (const m of code.matchAll(DECL)) {
-    const open = code.indexOf("{", (m.index ?? 0) + m[0].length);
-    if (open === -1) continue;
-    let depth = 0;
-    let end = -1;
-    for (let i = open; i < code.length; i++) {
-      if (code[i] === "{") depth++;
-      else if (code[i] === "}" && --depth === 0) {
-        end = i + 1;
-        break;
-      }
-    }
-    if (end === -1) continue;
-    out.push({ name: m[1]!, src: code.slice(open, end) });
-  }
-  return out;
-}
-
-// THE SCAN SET, WIDENED BY STORY 4.2 FROM ONE FILE TO TWO — and the widening is
-// the sanctioned half of the residual above, not a workaround for it.
-//
-// The residual paragraph names ONE blind spot (a renderer delegated to a
-// top-level function). Story 4.2 measured THREE MORE while registering
-// `ultra:run-anchor`, none of them recorded anywhere before, and the fourth is
-// the one that made this constant a hazard rather than a limitation:
-//
-//   `const k: ItemKind = { … }` — the DECL pattern requires the generic `<`, so
-//     a bare annotation yields NO SLICE AT ALL.
-//   `const k = { … } satisfies ItemKind<P>` — no `: ItemKind<` annotation, so
-//     likewise no slice.
-//   A FILE OUTSIDE THE SET — which was, until this line changed, exactly one
-//     file. A kind registered anywhere else was not scanned at all.
-//
-// THREE OF THOSE FOUR LEAVE THIS INVARIANT GREEN RATHER THAN RED, because the
-// anti-vacuity floor below is satisfied by `agentBucketKind` alone and its
-// `toContain("agentBucketKind")` still holds. A SILENT REMOVAL FROM AD-12
-// ENFORCEMENT is the failure mode, not a build break — which is precisely what
-// maxim 3 ("a guard that cannot fail is worse than no guard") exists to catch.
-//
-// So the set is a LIST, each rel scanned separately and the slices concatenated
-// — not a glob and not a change to SHELL_ROOT. `components/conversation/**` is
-// INV-8a/8b's surface, scanned WHOLE for ambient context and never brace-matched
-// for kinds; these are the files outside it that register a kind.
-//
-// The other three shapes are still undetected for any FUTURE kind, and that is
-// recorded in deferred-work.md rather than claimed as closed.
-const KIND_DONOR_RELS: readonly string[] = [
-  SESSION_VIEW_REL,
-  "apps/web/components/session/ultra-anchor.tsx",
-];
-
-const DONOR_KIND_SLICES = KIND_DONOR_RELS.flatMap((rel) =>
-  kindRendererSlices(byRel.get(rel)?.text ?? "").map((s) => ({ ...s, rel })),
-);
-
-// THE CLOSED DENYLIST. This is the executable form of "the shell owns no data
-// fetching and no session semantics" (AD-12). If you legitimately need a term on
-// this list inside components/conversation/**, you have almost certainly put
-// session semantics in the shell — the adapter owns those and hands the shell a
-// projection. Changing this list is a decision to record, not a detail to slip
-// in.
-const SHELL_DENYLIST: ReadonlyArray<[string, string]> = [
-  ["fetch(", "data fetching"],
-  ["new EventSource", "an event stream"],
-  ["consumeSSE", "the SSE wire format"],
-  ["window.addEventListener", "a window listener"],
-  ["localStorage", "browser storage"],
-  ["/api/", "a server route"],
-  ["sessionId", "session identity"],
-  ["permissionMode", "session permission policy"],
-  ["runId", "turn identity"],
-  ["accountEnv", "account resolution"],
-];
-
-/**
- * The denylist hits in one source. ONE PREDICATE, so INV-8a and its
- * discriminator INV-8d cannot drift apart — INV-8d's header promises fixtures go
- * "through the same scan function the real check uses", and a second copy of the
- * predicate makes that sentence false for half the check. Reads `.code`
- * (comments blanked, string bodies KEPT), so a URL in a string is caught and a
- * URL in a header comment is not.
- */
-function denylistScan(text: string): ReadonlyArray<[string, string]> {
-  const code = stripComments(text);
-  return SHELL_DENYLIST.filter(([needle]) => code.includes(needle));
-}
-
-// "Config over inheritance" (AD-12), as one predicate for the same reason.
-// RESIDUAL, stated rather than implied: `\bextends\b` cannot tell inheritance
-// from a generic constraint (`<T extends U>`) or an interface extension. No file
-// under the shell has either today, so the guard is exact where it runs; the day
-// a legitimate constraint arrives, narrow the predicate deliberately rather than
-// deleting the check — a guard that fires on correct code gets deleted, which is
-// the failure this note exists to pre-empt.
-const INHERITANCE_WORDS = ["class", "extends"] as const;
-
-function inheritanceScan(rel: string, text: string): string[] {
-  const code = stripComments(text);
-  const out: string[] = [];
-  for (const word of INHERITANCE_WORDS) {
-    // `className` is not a false positive: \b requires a non-word character
-    // after `class`.
-    if (new RegExp(`\\b${word}\\b`).test(code)) {
-      out.push(
-        `${rel} uses \`${word}\`. RULE (AD-12): the shell exposes four slots configured by ` +
-          `PROPS, never by inheritance — no subclassing, no extends, no cloneElement of a ` +
-          `caller's tree. CONSEQUENCE: a surface that must SUBCLASS the shell to change it is ` +
-          `a surface that has forked it, which is exactly the six-copies outcome epic 3 ` +
-          `exists to end. NEXT STEP: add a prop, or take the value through the item payload.`,
-      );
-    }
-  }
-  return out;
-}
-
-// ── the ambient-context scan (shared by INV-8b and its discriminator) ───────
-// CODE-ONLY text: comments AND string bodies are blanked, because the question
-// is "does this file CALL a context hook", not "does it mention one". Every
-// header in components/conversation/ discusses the rule at length, and a scan
-// that read prose would fire on the documentation of itself.
-// The QUALIFIED form counts. components/ui/sidebar.tsx and
-// components/ui/carousel.tsx both write `React.useContext(…)`, so a pattern
-// anchored on the bare call would miss two of the eight contexts in the tree —
-// and, worse, would leave a renderer a one-token way to evade the rule. An
-// optional `<ident>.` prefix closes it; a name that merely CONTAINS the word
-// (`useContextHelper(`, `myuseContext(`) still does not match.
-const USE_CONTEXT_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?useContext\s*\(/;
-
-// REACT 19'S `use(Context)` IS THE SAME READ BY A SHORTER NAME. This repo pins
-// react@19.2.4, where `const v = use(SomeContext)` is a first-class context read
-// — and `use(somePromise)` is a first-class data read, which the shell is
-// equally forbidden from doing (AD-12). A scan that knew only `useContext(`
-// would let AC4's ONLY enforcement be walked around by deleting four characters.
-// Same anchoring as above, so `misuse(`, `abuse(`, `obj.reuse(` and `useState(`
-// are all left alone. What is NOT left alone, stated because the anchoring
-// cannot express it: the optional `<ident>.` prefix that catches `React.use(`
-// cannot tell a namespace from an object, so `app.use(mw)` and `router.use(x)`
-// MATCH. Over-broad by design and harmless here — no such call exists under the
-// shell, and a false positive fails loudly with a named file rather than
-// letting a real context read through silently.
-const REACT_USE_CALL = /(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\s*\.\s*)?use\s*\(/;
-
-// A NAMED HOOK CALL, qualified or bare. The `<ident>.` prefix is the same one
-// USE_CONTEXT_CALL accepts, and it is here for the same reason: the barrel
-// re-exports the whole PromptInput* family, so `import * as ns from
-// "@/components/conversation"` followed by `ns.usePromptInputController()` is
-// one namespace import away — and until this arm accepted the qualified form,
-// the two halves of one guard disagreed about what a call looks like.
-const hookCall = (hook: string): RegExp =>
-  new RegExp(`(?<![A-Za-z0-9_$])(?:[A-Za-z0-9_$]+\\s*\\.\\s*)?${escapeRe(hook)}\\s*\\(`);
-
-// RESIDUALS, STATED RATHER THAN IMPLIED — this is a static scan by NAME:
-//   · a hook reached through a local helper this list does not name is invisible
-//     (the same residual INV-7 records about itself);
-//   · the import arm reads THIS file's own import statements, so a context hook
-//     that arrives through a RE-EXPORTING barrel (`export * from …`) is not seen
-//     as an import edge — only its call site is. The call arm is what catches it,
-//     which is why the call arm must stay the broader of the two.
-function ambientContextScan(
-  rel: string,
-  text: string,
-  hooks: readonly string[],
-): string[] {
-  const code = tokenize(text, true, true);
-  const out: string[] = [];
-  if (REACT_USE_CALL.test(code)) {
-    out.push(
-      `${rel} calls use( directly — React 19's context/resource read. RULE (AD-12, and the fix ` +
-        `architecture review's finding A3 made to it): a registered item kind is a PURE FUNCTION ` +
-        `of (payload, view) and reads nothing from ambient context — and fetches nothing. ` +
-        `CONSEQUENCE: \`use(SomeContext)\` is \`useContext(SomeContext)\` by a shorter name, and ` +
-        `\`use(promise)\` is data fetching inside the shell; either one ends with a transcript ` +
-        `that can only render inside one provider. NEXT STEP: move the value into the item ` +
-        `PAYLOAD, which the owner adapter builds.`,
-    );
-  }
-  if (USE_CONTEXT_CALL.test(code)) {
-    out.push(
-      `${rel} calls useContext( directly. RULE (AD-12, and the fix architecture review's ` +
-        `finding A3 made to it): a registered item kind is a PURE FUNCTION of (payload, view) ` +
-        `and reads nothing from ambient context. CONSEQUENCE: the shell can no longer render a ` +
-        `transcript containing this kind outside whichever provider supplies that context — and ` +
-        `TranscriptView, which has no providers at all, can render NONE of its items. NEXT STEP: ` +
-        `move the value into the item PAYLOAD, which the owner adapter builds; a read-only ` +
-        `surface then omits the callback and the renderer degrades to non-interactive.`,
-    );
-  }
-  for (const hook of hooks) {
-    if (hookCall(hook).test(code)) {
-      out.push(
-        `${rel} calls ${hook}(), which consumes a React context. RULE: same as above — a kind ` +
-          `renderer reads nothing ambient. CONSEQUENCE: this file becomes renderable only inside ` +
-          `${hook}'s provider, and any transcript mixing it with another module's kind becomes ` +
-          `renderable nowhere. NEXT STEP: take the value through the payload instead.`,
-      );
-      continue;
-    }
-    for (const stmt of importStatements(code)) {
-      if (new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(hook)}(?![A-Za-z0-9_$])`).test(stmt)) {
-        out.push(
-          `${rel} imports ${hook}, a context-consuming hook. RULE: same as above. CONSEQUENCE: ` +
-            `importing it is the step before calling it, and nothing else here would flag the ` +
-            `call. NEXT STEP: delete the import; owner data reaches a renderer through the ` +
-            `item payload.`,
-        );
-        break;
-      }
-    }
-  }
-  return out;
-}
-
-// ── the context inventory, RE-DERIVED every run (INV-8c feeds INV-8b) ──────
-// A restated literal is a COPY of a measurement, and a copy goes stale in
-// silence — which is precisely how story 2.1's `allow: []` survived authoring,
-// review and a commit. So the denylist INV-8b uses is DERIVED from the tree on
-// every run, and INV-8c fails the moment the derivation stops matching what has
-// been classified.
-type ContextInventory = { contexts: Array<[string, string]>; hooks: Array<[string, string]> };
-
-function deriveContextInventory(): ContextInventory {
-  const contexts: Array<[string, string]> = [];
-  const hooks: Array<[string, string]> = [];
-  const CREATE = /(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*(?::[^=\n]*)?=\s*(?:[A-Za-z0-9_$]+\.)?createContext\s*[<(]/g;
-  // A hook is a declaration whose NAME starts with `use` + a capital — React's
-  // own rule, and the thing that makes walking back from a `useContext(` call to
-  // its enclosing hook reliable: `const ctx = useContext(X)` and
-  // `const local = useContext(Y)` are bindings, not hooks, and are skipped.
-  const DECL = /(?:^|\n)\s*(?:export\s+)?(?:const|function)\s+(use[A-Z][A-Za-z0-9_$]*)/g;
-  for (const f of INDEX) {
-    if (!f.rel.startsWith("apps/web/") || isTestFile(f.rel)) continue;
-    const code = tokenize(f.text, true, true);
-    for (const m of code.matchAll(CREATE)) contexts.push([f.rel, m[1]!]);
-    if (!USE_CONTEXT_CALL.test(code)) continue;
-    const decls = [...code.matchAll(DECL)].map((m) => ({ at: m.index ?? 0, name: m[1]! }));
-    const consuming = new RegExp(USE_CONTEXT_CALL.source, "g");
-    for (const use of code.matchAll(consuming)) {
-      const at = use.index ?? 0;
-      let owner: string | null = null;
-      for (const d of decls) {
-        if (d.at < at) owner = d.name;
-        else break;
-      }
-      if (owner && !hooks.some(([r, n]) => r === f.rel && n === owner)) hooks.push([f.rel, owner]);
-    }
-  }
-  return { contexts, hooks };
-}
-
-const CONTEXT_INVENTORY = deriveContextInventory();
-const CONTEXT_HOOKS = [...new Set(CONTEXT_INVENTORY.hooks.map(([, n]) => n))].sort();
-
-// The classification, measured at 75d3f12 and re-checked by INV-8c on every run.
-// A context or hook that appears here and NOT in the tree is a stale pin; one
-// that appears in the tree and NOT here fails INV-8c by name. Either way the
-// denylist cannot go quietly out of date.
-const CLASSIFIED_CONTEXTS: Readonly<Record<string, readonly string[]>> = {
-  "apps/web/lib/use-accounts.ts": ["AccountsContext"],
-  "apps/web/components/ui/sidebar.tsx": ["SidebarContext"],
-  "apps/web/components/ui/carousel.tsx": ["CarouselContext"],
-  "apps/web/components/ai-elements/message.tsx": ["MessageBranchContext"],
-  "apps/web/components/dock/dock-provider.tsx": ["Ctx"],
-  "apps/web/components/ai-elements/prompt-input.tsx": [
-    "PromptInputController",
-    "ProviderAttachmentsContext",
-    "LocalAttachmentsContext",
-    "LocalReferencedSourcesContext",
-  ],
-};
-
-const CLASSIFIED_HOOKS: readonly string[] = [
-  "useAccounts",
-  "useSidebar",
-  "useCarousel",
-  "useMessageBranch",
-  "useDock",
-  "useDockOptional",
-  "usePromptInputController",
-  "useOptionalPromptInputController",
-  "useProviderAttachments",
-  "useOptionalProviderAttachments",
-  "usePromptInputAttachments",
-  "usePromptInputReferencedSources",
-];
-
-line(
-  `shell: ${SHELL_FILES.length} files under components/conversation · ` +
-    `${RIGHT_PANEL_FILES.length} files under components/right-panel · ` +
-    `${CONTEXT_INVENTORY.contexts.length} React contexts · ${CONTEXT_HOOKS.length} consuming hooks`,
-);
-
-// ── the barrel's pinned primitive group ─────────────────────────────────────
-const BARREL_REL = `${SHELL_ROOT}index.ts`;
-const PRIMITIVE_SENTINEL_OPEN = "// ── the primitives (INV-8f pins this group as an exact set)";
-const PRIMITIVE_SENTINEL_CLOSE = "// ── the shell and its contract (deliberately NOT pinned";
-
-function barrelPrimitiveExports(text: string): string[] {
-  const open = text.indexOf(PRIMITIVE_SENTINEL_OPEN);
-  const close = text.indexOf(PRIMITIVE_SENTINEL_CLOSE);
-  if (open === -1 || close === -1 || close < open) return [];
-  const slice = text.slice(open, close);
-  const names: string[] = [];
-  for (const m of slice.matchAll(/export\s*\{([^}]*)\}/g)) {
-    for (const raw of m[1]!.split(",")) {
-      const name = raw.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]!.trim();
-      if (name) names.push(name);
-    }
-  }
-  return names.sort();
-}
-
-const EXPECTED_PRIMITIVES = [
-  "ApprovalCard",
-  "MarkdownPre",
-  "Marker",
-  "Message",
-  "MessageContent",
-  "MessageResponse",
-  "Shimmer",
-  "ToolStepGroup",
-  "ToolStepRow",
-  "WorkingIndicator",
-].sort();
-
-const EXPECTED_BUILTIN_KIND_IDS = [
-  "conversation:turn",
-  "conversation:text",
-  "conversation:thinking",
-  "conversation:tools",
-  "conversation:permission",
-  "conversation:status",
-  "conversation:marker",
-  // The EIGHTH, added deliberately: what the user attached to a message. It is
-  // built in rather than surface-registered for the same reason `text` is — an
-  // attachment is part of what a user message IS in every surface that renders
-  // one, and a registered kind would leave each of the six lanes epic 3 unified
-  // to re-answer "what does a dropped screenshot look like" on its own.
-  "conversation:attachments",
-].sort();
-
-// ── the shell's prop list, as an exact set ──────────────────────────────────
-// §5.5-D6 pins FOUR SLOTS plus a CLOSED list of non-slot props, and says in as
-// many words that the list is closed "so INV-8 can assert against it" — which
-// nothing did. The only mechanical check that existed was `registry.test.ts`'s
-// `@ts-expect-error` on an UNKNOWN prop name, and that cannot fail when a KNOWN
-// prop is ADDED: it is the wrong direction for the claim D6 makes. This is the
-// other direction. A fifth non-slot prop (`trailing`, disclosed in Completion
-// Note 5(a)) is in the set deliberately; a SIXTH cannot appear without editing
-// this pin, which is what makes adding one a decision rather than a drift.
-const EXPECTED_CONVERSATION_PROPS = [
-  // the four slots — the transcript is ONE slot with two halves
-  "items",
-  "kinds",
-  "composer",
-  "rail",
-  "header",
-  // view configuration, not slots
-  "live",
-  "empty",
-  "trailing",
-  // A SIXTH non-slot prop, added deliberately — which is what this pin exists
-  // to force. `scrollKey` is an OPAQUE identity token: the shell compares it
-  // for change and remounts its viewport, and never reads, parses or branches
-  // on the value. That keeps it in the same category as `live` — view
-  // configuration — rather than session semantics, which is the line AD-12/13
-  // and INV-8a draw. A session happens to pass its active tab id; a gallery
-  // could pass "a"/"b" and get the identical behaviour.
-  //
-  // It exists because the shell OWNS SCROLLING (conversation.tsx's header says
-  // so) and had no way to be told the transcript had been swapped for a
-  // different one. Leaving an Ultra or sub-agent tab kept the old tab's scroll
-  // position, so returning to the main chat landed at the top, above the
-  // message the reader came back for.
-  "scrollKey",
-  "className",
-].sort();
-
-function conversationPropNames(code: string): string[] {
-  const at = code.indexOf("type ConversationProps");
-  if (at === -1) return [];
-  const open = code.indexOf("{", at);
-  if (open === -1) return [];
-  let depth = 0;
-  let end = -1;
-  for (let i = open; i < code.length; i++) {
-    if (code[i] === "{") depth++;
-    else if (code[i] === "}" && --depth === 0) {
-      end = i;
-      break;
-    }
-  }
-  if (end === -1) return [];
-  // Members at depth 0 only, so a nested object type contributes its own name
-  // and not its fields.
-  const names: string[] = [];
-  let d = 0;
-  let buf = "";
-  const flush = () => {
-    const m = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\??\s*:/.exec(buf);
-    if (m) names.push(m[1]!);
-    buf = "";
-  };
-  for (const ch of code.slice(open + 1, end)) {
-    if (ch === "{" || ch === "(" || ch === "[") d++;
-    else if (ch === "}" || ch === ")" || ch === "]") d--;
-    if (d === 0 && (ch === ";" || ch === "\n")) {
-      flush();
-      continue;
-    }
-    buf += ch;
-  }
-  flush();
-  return [...new Set(names)].sort();
-}
-
-function builtinKindIds(itemsSrc: string): string[] {
-  const at = itemsSrc.indexOf("CONVERSATION_KINDS");
-  if (at === -1) return [];
-  const open = itemsSrc.indexOf("{", at);
-  const close = itemsSrc.indexOf("} as const", open);
-  if (open === -1 || close === -1) return [];
-  return [...itemsSrc.slice(open, close).matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
-}
-
-// ── session-view.tsx: what stayed and what left ─────────────────────────────
-// Both directions in one place, because a carve-out fails in two ways and only
-// checking one of them is how you end up with a shell that quietly learned about
-// sessions, or an adapter that quietly kept its render loop.
-// The third element is HOW MANY, and it is not decoration: AC6's own wording is
-// "**both** `new EventSource(` sites", and a bare `includes()` is satisfied by
-// one — so deleting a live subscriber passed the invariant that names it. A
-// count is the only form of that claim that says what it means.
-const STAYED_IN_ADAPTER: ReadonlyArray<[string, string, number?]> = [
-  ["applyServerEvent", "the SSE switch"],
-  ["consumeSSE", "the wire reader"],
-  ['fetch("/api/chat"', "the turn POST"],
-  // The needle was `new EventSource(` until issue #82: the connection diet
-  // moved socket CONSTRUCTION into lib/shared-event-source.ts (one refcounted
-  // socket per URL — the browser's 6-connection cap was freezing navigation),
-  // and the hooks now acquire from the registry instead of constructing.
-  // What this row pins is unchanged: the adapter side still OWNS both live
-  // loom subscriptions — their listeners, their lifecycle, their release —
-  // and the shell still holds none. Construction syntax was the proxy;
-  // acquisition is the same fact spelled the new way.
-  ["acquireSharedEventSource(", "the live loom subscribers — BOTH of them", 2],
-  // Session spend is still persisted by the route and projected in list
-  // surfaces, but its live composer indicator was intentionally removed. It is
-  // no longer adapter state and therefore no longer belongs in this carve-out
-  // pin.
-];
-
-const countOccurrences = (haystack: string, needle: string): number =>
-  needle.length === 0 ? 0 : haystack.split(needle).length - 1;
-
-/**
- * The adapter's own extracted parts: files under components/session/ that
- * session-view.tsx imports directly. Used by INV-8g's STAYED half so the
- * invariant tracks the SHELL BOUNDARY rather than one file's line count — see
- * the note at its call site for why that distinction is the whole point.
- *
- * Deliberately one level deep and deliberately import-derived. A transitive
- * walk would eventually reach the leaf renderers the MOVED set is about, and a
- * directory glob would let any passing file vouch for the adapter.
- */
-function adapterSiblings(donorCode: string) {
-  const rels = [...donorCode.matchAll(/from "@\/components\/session\/([\w.-]+)"/g)]
-    .map((m) => m[1]!)
-    .flatMap((name) =>
-      [".ts", ".tsx"].map((ext) => `apps/web/components/session/${name}${ext}`),
-    );
-  return [...new Set(rels)].flatMap((rel) => {
-    const f = byRel.get(rel);
-    return f ? [f] : [];
-  });
-}
-
-// ONE ROW HERE CONTRADICTS §5.5-D7's table, deliberately and with the record
-// corrected rather than the invariant bent: D7 lists `AgentStepRow` in the
-// STAYED column, and it MOVED — it is a leaf rendering with no session
-// awareness (it takes `onSelect` as a prop, exactly as `ToolStepGroup` takes
-// `agentSteps`/`onSelectAgent`), and leaving it behind would have split one
-// tool-group rendering across two files. The move is what shipped, this is what
-// asserts it, and story 3.1's Completion Notes now say so — an invariant that
-// asserts the opposite of the design record is a coin-flip for the next reader.
-const MOVED_OUT_OF_ADAPTER: ReadonlyArray<[string, string]> = [
-  ["function groupParts", "the transcript projection"],
-  ["type RenderItem", "the projection's union"],
-  ["function PermissionCard", "the approval rendering"],
-  ["function ThinkingRow", "the thinking rendering"],
-  ["function ToolStepGroup", "the tool-group rendering"],
-  ["function AgentStepRow", "the agent-chip rendering"],
-  ["function renderAgentBucket", "the SECOND copy of the kind dispatch"],
-  ["ConversationContent", "the scroll viewport's content wrapper"],
-  ["ConversationScrollButton", "the scroll button"],
-  ["item.kind", "an inline kind switch"],
-  ["setGroupOverrides", "the tool-group disclosure map"],
-  ["setRowOverrides", "the tool-row disclosure map"],
-  ["setThinkingOpen", "the thinking disclosure map"],
-];
-
-describe("INV-8 the Conversation shell owns no session semantics — AD-12, AD-13", () => {
-  test("INV-8a the shell does no data fetching and holds no session semantics", () => {
-    // ANTI-VACUITY FIRST. Deleting components/conversation/ must not be a way to
-    // make this pass, and neither must a typo in the root prefix.
-    const broken: string[] = [];
-    if (SHELL_FILES.length < 6) {
-      broken.push(
-        `only ${SHELL_FILES.length} non-test files under ${SHELL_ROOT} (floor 6, measured 8) — ` +
-          `the WALK is broken or the directory moved, not the tree. Every assertion below would ` +
-          `hold over the empty set. NEXT STEP: fix SHELL_ROOT; do not relax the floor.`,
-      );
-    }
-    if (RIGHT_PANEL_FILES.length < 3) {
-      broken.push(
-        `only ${RIGHT_PANEL_FILES.length} non-test files under ${RIGHT_PANEL_ROOT} (floor 3) — ` +
-          `the right-panel WALK is broken, the directory moved, or the panel was deleted. ` +
-          `Every purity assertion below would otherwise hold over an empty panel set. NEXT STEP: ` +
-          `restore the panel renderers or update RIGHT_PANEL_ROOT; do not relax the floor.`,
-      );
-    }
-    expect(broken).toEqual([]);
-
-    const violations: string[] = [];
-    for (const f of PURE_SURFACE_FILES) {
-      for (const [needle, what] of denylistScan(f.text)) {
-        violations.push(
-          `${f.rel} contains "${needle}" — ${what}. RULE (AD-12): the shell owns scrolling, ` +
-            `auto-follow and streaming affordances, and owns NO data fetching and NO session ` +
-            `semantics. CONSEQUENCE: every surface that renders a transcript now inherits this, ` +
-            `and the six hand-rebuilt chat lanes epic 3 exists to end start growing back one ` +
-            `prop at a time. NEXT STEP: the OWNER ADAPTER holds session state and hands the ` +
-            `shell a projection — put it there, not here. If you believe the term is genuinely ` +
-            `needed, say so in your story's completion notes rather than editing SHELL_DENYLIST ` +
-            `quietly.`,
-        );
-      }
-    }
-    expect(violations).toEqual([]);
-  });
-
-  test("INV-8b no file in the shell reads ambient React context", () => {
-    // THE INVARIANT AC4 has no other possible proof for. The hook list is
-    // DERIVED (INV-8c), never restated.
-    const violations = PURE_SURFACE_FILES.flatMap((f) =>
-      ambientContextScan(f.rel, f.text, CONTEXT_HOOKS),
-    );
-    expect(violations).toEqual([]);
-  });
-
-  test("INV-8b2 a kind renderer registered OUTSIDE the shell is held to the same rule", () => {
-    // ANTI-VACUITY FIRST, because this scan reads a SLICE rather than a file:
-    // an extractor that finds nothing would assert nothing, and the adapter is
-    // precisely the file where a hook call would compile.
-    // THE FLOOR IS PER-FILE, and it has to be: a set-wide `length < 1` would be
-    // satisfied by `agentBucketKind` alone, so deleting the ultra-anchor
-    // declaration — or renaming its file — would silently shrink the scan while
-    // this test stayed green. That is exactly the failure story 4.2 found in the
-    // one-file version of this constant.
-    const missing = KIND_DONOR_RELS.filter(
-      (rel) => !DONOR_KIND_SLICES.some((s) => s.rel === rel),
-    );
-    if (missing.length > 0) {
-      throw new Error(
-        `INV-8b2: no \`: ItemKind<…> = {\` declaration found in ${missing.join(", ")} — the ` +
-          `renderer scan below is running over less than it claims. The scan set is ` +
-          `[${KIND_DONOR_RELS.join(", ")}]. RULE (§5.5-D12, widened by story 4.2): INV-8 scans ` +
-          `components/conversation/** WHOLE, and brace-matches every registered kind in the ` +
-          `adapter-side files listed above — those are the files where a renderer has ` +
-          `useDockOptional() and usePromptInputController() in lexical scope. CONSEQUENCE: AD-12's ` +
-          `only enforcement stops covering the places its failure is reachable, AND IT DOES SO ` +
-          `SILENTLY — three of the four ways to defeat this extractor leave it GREEN. NEXT STEP: ` +
-          `if a file stopped registering a kind, remove it from KIND_DONOR_RELS deliberately and ` +
-          `say why; if the declaration shape changed (a bare \`: ItemKind\` with no generic, or a ` +
-          `\`satisfies ItemKind<…>\`, both of which yield NO slice), fix kindRendererSlices — do ` +
-          `not delete this test.`,
-      );
-    }
-    // The positive control: the extractor really found BOTH registered kinds, by
-    // name, and really captured their BODIES rather than empty matches.
-    expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("agentBucketKind");
-    expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("ultraRunAnchorKind");
-    expect(DONOR_KIND_SLICES.every((s) => s.src.length > 40)).toBe(true);
-
-    const violations = DONOR_KIND_SLICES.flatMap((s) =>
-      ambientContextScan(`${s.rel} :: ${s.name}`, s.src, CONTEXT_HOOKS),
-    );
-    expect(violations).toEqual([]);
-  });
-
-  test("INV-8b2b the WIDENED scan really sees the new file — a two-direction discriminator", () => {
-    // WIDENING A SCAN SET IS INDISTINGUISHABLE FROM WIDENING IT TO A FILE THAT
-    // HAPPENS TO BE CLEAN, unless the widening is exercised in both directions
-    // through THE SAME FUNCTIONS the real check uses. That is §5.4-F applied to
-    // the one thing story 4.2 changed about this invariant.
-    const rel = "apps/web/components/session/ultra-anchor.tsx";
-    expect(KIND_DONOR_RELS).toContain(rel);
-
-    // DIRECTION 1 — a fixture IN THE SHAPE OF THE NEW FILE, carrying a context
-    // hook inside an inline renderer, IS REPORTED.
-    const dirty =
-      `import type { ItemKind } from "@/components/conversation/registry";\n` +
-      `export const ultraRunAnchorKind: ItemKind<P> = {\n` +
-      `  id: "ultra:run-anchor",\n` +
-      `  render: (payload, view) => {\n` +
-      `    const dock = ${CONTEXT_HOOKS[0]}();\n` +
-      `    return null;\n` +
-      `  },\n` +
-      `};\n`;
-    const dirtySlices = kindRendererSlices(dirty);
-    expect(dirtySlices.map((s) => s.name)).toEqual(["ultraRunAnchorKind"]);
-    expect(
-      dirtySlices.flatMap((s) => ambientContextScan(`${rel} :: ${s.name}`, s.src, CONTEXT_HOOKS)),
-    ).not.toEqual([]);
-
-    // DIRECTION 2 — the same fixture WITHOUT the hook is not reported, so the
-    // scan is discriminating rather than merely alarming.
-    const clean = dirty.replace(`    const dock = ${CONTEXT_HOOKS[0]}();\n`, "");
-    const cleanSlices = kindRendererSlices(clean);
-    expect(cleanSlices.map((s) => s.name)).toEqual(["ultraRunAnchorKind"]);
-    expect(
-      cleanSlices.flatMap((s) => ambientContextScan(`${rel} :: ${s.name}`, s.src, CONTEXT_HOOKS)),
-    ).toEqual([]);
-
-    // AND THE WHOLE FILE, NOT ONLY ITS SLICES. `ambientContextScan`'s IMPORT arm
-    // is STRUCTURALLY INERT under a slice scan — a slice contains no import
-    // statements — so only a whole-file pass catches an
-    // imported-but-not-yet-called context hook, which is precisely the shape a
-    // later edit reaches for first. Both assertions, or the widening is half a
-    // guard.
-    const anchor = byRel.get(rel);
-    if (!anchor) {
-      throw new Error(
-        `INV-8b2b: ${rel} is not in the index, so both halves of this discriminator are ` +
-          `running over nothing. RULE: story 4.2 registered ultra:run-anchor there and widened ` +
-          `KIND_DONOR_RELS to match. NEXT STEP: if the file moved, update KIND_DONOR_RELS and this ` +
-          `rel together — do not delete this test.`,
-      );
-    }
-    expect(ambientContextScan(rel, anchor.code, CONTEXT_HOOKS)).toEqual([]);
-  });
-
-  test("INV-8b2c the FOUR ways to defeat this extractor, each proved separately", () => {
-    // THE POINT OF THIS TEST. Story 4.2 widened KIND_DONOR_RELS by one file.
-    // "The widening is load-bearing" is a claim, and a claim checked against ONE
-    // representative shape is exactly the vacuity these guards exist to prevent
-    // — three of the four shapes below leave INV-8b2 GREEN, so a widening that
-    // happened to be tested against the fourth would prove nothing about the
-    // other three.
-    //
-    // So each shape gets its own assertion, against the SAME functions the real
-    // check uses, and the file's own shape is pinned so it cannot drift into one
-    // of the broken three.
-    const hook = CONTEXT_HOOKS[0]!;
-    const body = `\n  id: "ultra:run-anchor",\n  render: (payload, view) => { const d = ${hook}(); return null; },\n`;
-
-    // ── SHAPE 1: `render: someTopLevelFn` — A SLICE IS FOUND AND IT IS EMPTY OF
-    // HOOK TEXT. This is the residual the file documents in its own words, and
-    // it is STILL OPEN after story 4.2. Asserting it keeps the residual honest:
-    // the day someone "fixes" it, this assertion fails and tells them to update
-    // the record rather than leaving prose claiming a hole that closed.
-    const delegated =
-      `function renderIt(payload, view) { const d = ${hook}(); return null; }\n` +
-      `const probeKind: ItemKind<P> = { id: "ultra:run-anchor", render: renderIt };\n`;
-    const delegatedSlices = kindRendererSlices(delegated);
-    expect(delegatedSlices.map((s) => s.name)).toEqual(["probeKind"]);
-    // A slice IS produced, it clears the 40-character body control, and it
-    // reports NOTHING — the violation walks past every guard below.
-    expect(delegatedSlices[0]!.src.length).toBeGreaterThan(40);
-    expect(
-      delegatedSlices.flatMap((s) => ambientContextScan("probe", s.src, CONTEXT_HOOKS)),
-    ).toEqual([]);
-
-    // ── SHAPE 2: a bare `: ItemKind` with NO GENERIC — NO SLICE AT ALL. The DECL
-    // pattern requires the `<`. Undocumented before story 4.2.
-    expect(kindRendererSlices(`const probeKind: ItemKind = {${body}};\n`)).toEqual([]);
-    // …and the SAME body WITH the generic is found, so the discriminator is the
-    // generic and not something incidental about the fixture.
-    expect(kindRendererSlices(`const probeKind: ItemKind<P> = {${body}};\n`).length).toBe(1);
-
-    // ── SHAPE 3: `satisfies ItemKind<…>` — NO SLICE AT ALL. There is no
-    // `: ItemKind<` annotation to match. Undocumented before story 4.2.
-    expect(kindRendererSlices(`const probeKind = {${body}} satisfies ItemKind<P>;\n`)).toEqual([]);
-
-    // ── SHAPE 4: A FILE OUTSIDE THE SCAN SET — and this is the one story 4.2
-    // CLOSED for this kind, so it is the one that must be shown load-bearing
-    // rather than merely described.
-    //
-    // THE DIRECT PROOF: the PRE-4.2 scan set (session-view.tsx alone) does NOT
-    // contain the new kind, and the widened set DOES. If someone reverts
-    // KIND_DONOR_RELS to one entry, the first assertion still passes and the
-    // second fails — which is the correct direction, because losing the file is
-    // the regression.
-    const preWidening = kindRendererSlices(byRel.get(SESSION_VIEW_REL)?.text ?? "");
-    expect(preWidening.map((s) => s.name)).toContain("agentBucketKind");
-    expect(preWidening.map((s) => s.name)).not.toContain("ultraRunAnchorKind");
-    expect(DONOR_KIND_SLICES.map((s) => s.name)).toContain("ultraRunAnchorKind");
-
-    // ── AND THE FILE ITSELF USES THE ONE GOOD SHAPE, pinned statically so it
-    // cannot drift into shapes 1–3 while the widening above keeps passing.
-    const anchor = byRel.get("apps/web/components/session/ultra-anchor.tsx");
-    if (!anchor) throw new Error("INV-8b2c: ultra-anchor.tsx is not in the index");
-    expect(anchor.code).toContain("ultraRunAnchorKind: ItemKind<UltraAnchorPayload> = {");
-    expect(anchor.code).not.toContain("satisfies ItemKind");
-    // The renderer is INLINE: an arrow follows `render:` rather than a bare
-    // identifier. Shape 1 is what this forbids, and it is the shape story 3.1's
-    // deleted `renderAgentBucket` actually had.
-    expect(/render:\s*\(/.test(anchor.code)).toBe(true);
-  });
-
-  test("INV-8c the context inventory is RE-DERIVED, so INV-8b's denylist cannot go stale", () => {
-    const broken: string[] = [];
-    if (CONTEXT_INVENTORY.contexts.length < 8) {
-      broken.push(
-        `only ${CONTEXT_INVENTORY.contexts.length} React contexts found across apps/web ` +
-          `(floor 8, measured 8) — the derivation is broken, so INV-8b would be scanning for an ` +
-          `empty hook list and passing over nothing.`,
-      );
-    }
-    if (CONTEXT_HOOKS.length < 11) {
-      broken.push(
-        `only ${CONTEXT_HOOKS.length} context-consuming hooks derived (floor 11, measured 11) — ` +
-          `same failure, one level down. INV-8b's denylist IS this list.`,
-      );
-    }
-    expect(broken).toEqual([]);
-
-    // A NEW context or hook that nobody classified is the exact drift this test
-    // exists to catch: INV-8b would keep passing while a ninth provider quietly
-    // became reachable from a renderer.
-    const unclassifiedContexts = CONTEXT_INVENTORY.contexts
-      .filter(([rel, name]) => !(CLASSIFIED_CONTEXTS[rel] ?? []).includes(name))
-      .map(
-        ([rel, name]) =>
-          `${rel} creates React context "${name}", which is not in CLASSIFIED_CONTEXTS. RULE ` +
-            `(story 3.1's maxim 3): a guard must read the same value as the thing it guards, so ` +
-            `INV-8b's denylist is derived from this inventory rather than restated. ` +
-            `CONSEQUENCE: an unclassified context means a hook nobody has decided about, and ` +
-            `INV-8b keeps passing while a kind renderer reaches for it. NEXT STEP: add it to ` +
-            `CLASSIFIED_CONTEXTS and its consuming hook(s) to CLASSIFIED_HOOKS — and check that ` +
-            `no file under ${SHELL_ROOT} wants it.`,
-      );
-    expect(unclassifiedContexts).toEqual([]);
-
-    const unclassifiedHooks = CONTEXT_HOOKS.filter((h) => !CLASSIFIED_HOOKS.includes(h)).map(
-      (h) =>
-        `apps/web declares context-consuming hook "${h}", which is not in CLASSIFIED_HOOKS. ` +
-          `RULE and CONSEQUENCE: as above. NEXT STEP: classify it, then re-run INV-8b — it is ` +
-          `already scanning for it, since the denylist is derived.`,
-    );
-    expect(unclassifiedHooks).toEqual([]);
-
-    // …and the pin is not one-directional: a CLASSIFIED hook that no longer
-    // exists means the classification has rotted the other way.
-    const vanished = CLASSIFIED_HOOKS.filter((h) => !CONTEXT_HOOKS.includes(h)).map(
-      (h) =>
-        `CLASSIFIED_HOOKS names "${h}", which no longer exists in apps/web. CONSEQUENCE: the ` +
-          `list has drifted from the tree, and a list that is wrong in one direction is not ` +
-          `trustworthy in the other. NEXT STEP: remove it, or find where the hook moved.`,
-    );
-    expect(vanished).toEqual([]);
-  });
-
-  test("INV-8d the scans DISCRIMINATE — both directions, through the same functions", () => {
-    // MANDATORY. Without this, INV-8a and INV-8b can pass vacuously, which is
-    // this house's named failure: "a green test can assert nothing." Fixtures are
-    // assembled at RUNTIME so this file's own text cannot be picked up by the
-    // scanners it is testing.
-    const ctxCall = "use" + "Context";
-    const dockHook = "use" + "Dock";
-    const scan = (src: string) => ambientContextScan("fixture.tsx", src, CONTEXT_HOOKS);
-
-    // A bare useContext call IS reported…
-    expect(scan(`const v = ${ctxCall}(SomeCtx);`).length).toBe(1);
-    expect(scan(`const v = ${ctxCall}(SomeCtx);`)[0]).toContain("finding A3");
-    // …and so is a named context hook, called or merely imported.
-    expect(scan(`const d = ${dockHook}();`).length).toBe(1);
-    expect(
-      scan(`import { ${dockHook} } from "@/components/dock/dock-provider";\n`).length,
-    ).toBe(1);
-
-    // A MENTION IS NOT A CALL. Every header under components/conversation/
-    // discusses this rule at length; a scan that read prose would fire on the
-    // documentation of itself.
-    expect(scan(`// never call ${ctxCall}( inside a renderer\n`)).toEqual([]);
-    expect(scan(`/* ${dockHook}() is forbidden here */\n`)).toEqual([]);
-    expect(scan(`const help = "do not call ${ctxCall}() here";`)).toEqual([]);
-    // The QUALIFIED form is a call too — two of the eight contexts in this tree
-    // are consumed exactly that way, so a scan blind to it would be blind to a
-    // one-token evasion as well. BOTH halves of the guard accept it: the
-    // useContext arm and the named-hook arm, which disagreed until the qualified
-    // form was factored into `hookCall`.
-    expect(scan(`const v = React.${ctxCall}(SomeCtx);`).length).toBe(1);
-    expect(scan(`const d = ns.${dockHook}();`).length).toBe(1);
-    expect(scan(`const d = ns . ${dockHook} ();`).length).toBe(1);
-    // …but a name that merely CONTAINS the word is not.
-    expect(scan(`const v = my${ctxCall}(SomeCtx);`)).toEqual([]);
-    expect(scan(`const v = ${ctxCall}Helper(SomeCtx);`)).toEqual([]);
-    expect(scan(`const d = ${dockHook}Optional2();`)).toEqual([]);
-    // REACT 19's `use(Context)` is the same read by a shorter name, and it is
-    // reported — bare and qualified — because AC4's only enforcement cannot be
-    // four characters away from being walked around.
-    const useCall = "us" + "e";
-    expect(scan(`const v = ${useCall}(SomeCtx);`).length).toBe(1);
-    expect(scan(`const v = ${useCall}(SomeCtx);`)[0]).toContain("React 19");
-    expect(scan(`const v = React.${useCall}(SomeCtx);`).length).toBe(1);
-    // …and the words that merely contain it are not: useState/useRef/useMemo,
-    // an identifier ending in `use`, and a mention in prose.
-    expect(scan(`const [a, b] = ${useCall}State(0);\nconst r = ${useCall}Ref(null);`)).toEqual([]);
-    expect(scan(`const v = ab${useCall}(x);`)).toEqual([]);
-    expect(scan(`// never call ${useCall}( on a context here\n`)).toEqual([]);
-    // …and an ordinary, permitted hook must NOT be reported, or the invariant
-    // would be "no hooks at all" and would get deleted rather than fixed.
-    expect(scan(`const [a, b] = useState(0);\nconst r = useRef(null);`)).toEqual([]);
-
-    // The KIND-SLICE extractor is a scanner too, so it gets both directions as
-    // well: a renderer registered outside the shell is found and scanned, and a
-    // kind merely MENTIONED in prose is not.
-    const decl = (body: string) => `const probeKind: ItemKind<P> = ${body};`;
-    expect(kindRendererSlices(decl(`{ id: "loom:x", render: () => null }`)).length).toBe(1);
-    expect(kindRendererSlices(decl(`{ id: "loom:x", render: () => null }`))[0]!.name).toBe(
-      "probeKind",
-    );
-    expect(kindRendererSlices(`// const probeKind: ItemKind<P> = { … }\n`)).toEqual([]);
-    // …the slice really carries the renderer's body, so the scan over it is not
-    // running over an empty string…
-    expect(
-      ambientContextScan(
-        "fixture.tsx",
-        kindRendererSlices(decl(`{ id: "loom:x", render: () => ${dockHook}() }`))[0]!.src,
-        CONTEXT_HOOKS,
-      ).length,
-    ).toBe(1);
-    // …and nested braces (every JSX renderer has them) do not truncate it.
-    const nested = kindRendererSlices(
-      decl(`{ id: "loom:x", render: (p) => (<div>{p.items.map((i) => ({ i }))}</div>) }`),
-    );
-    expect(nested.length).toBe(1);
-    expect(nested[0]!.src.endsWith("}")).toBe(true);
-    expect(nested[0]!.src).toContain("items.map");
-
-    // The DENYLIST scanner, same treatment — and through the SAME function the
-    // real check calls, not a second copy of the predicate beside it.
-    const denyScan = (src: string) => denylistScan(src).map(([n]) => n);
-    expect(denyScan(`const r = await fetch("/api/chat");`).sort()).toEqual(["/api/", "fetch("]);
-    expect(denyScan(`const es = new EventSource(u);`)).toEqual(["new EventSource"]);
-    expect(denyScan(`function f(sessionId: string) {}`)).toEqual(["sessionId"]);
-    expect(denyScan(`// the adapter owns the fetch( to /api/ and the sessionId\n`)).toEqual([]);
-    expect(denyScan(`const view = { live: true };`)).toEqual([]);
-  });
-
-  test("INV-8d2 right-panel purity coverage is non-vacuous and discriminating", () => {
-    // The panel is a second host surface, not a carve-out from the conversation
-    // shell. Pin its own walk and run fixtures through the SAME predicates used
-    // by INV-8a/8b so adding the directory to a list cannot be decorative.
-    expect(RIGHT_PANEL_FILES.length).toBeGreaterThanOrEqual(3);
-    expect(RIGHT_PANEL_FILES.some((f) => f.rel.endsWith("right-panel.tsx"))).toBe(true);
-
-    const dirty =
-      `import { useDock } from "@/components/dock/dock-provider";\n` +
-      `export function Panel() { const d = useDock(); return fetch("/api/panel"); }\n`;
-    expect(denylistScan(dirty).map(([needle]) => needle).sort()).toEqual(["/api/", "fetch("]);
-    expect(ambientContextScan("panel-fixture.tsx", dirty, CONTEXT_HOOKS)).not.toEqual([]);
-
-    const clean = `export function Panel({ title }: { title: string }) { return <aside>{title}</aside>; }\n`;
-    expect(denylistScan(clean)).toEqual([]);
-    expect(ambientContextScan("panel-fixture.tsx", clean, CONTEXT_HOOKS)).toEqual([]);
-  });
-
-  test("INV-8e the shell is configured by PROPS, never by inheritance", () => {
-    // FLOOR, POSITIVE CONTROL AND DISCRIMINATOR — §5.4-E makes all three
-    // mandatory ("a scan without all three is a decoration"), and this was the
-    // one INV-8 sub-check that shipped with none of them.
-    if (SHELL_FILES.length < 6) {
-      throw new Error(
-        `INV-8e: only ${SHELL_FILES.length} non-test files under ${SHELL_ROOT} (floor 6) — the ` +
-          `walk is broken or the directory moved, and every assertion below would hold over the ` +
-          `empty set. NEXT STEP: fix SHELL_ROOT; do not relax the floor.`,
-      );
-    }
-    // POSITIVE CONTROL: the shell's own component file is scanned, and it passes
-    // for the reason claimed — it is full of `className`, which the word
-    // boundary is what excuses.
-    const shell = byRel.get(`${SHELL_ROOT}conversation.tsx`);
-    expect(shell).toBeDefined();
-    expect(shell!.code).toContain("className");
-    expect(inheritanceScan("control", shell!.text)).toEqual([]);
-
-    // DISCRIMINATOR, both directions, through the SAME function — fixtures
-    // assembled at runtime so this file's own text cannot trip the scan it is
-    // testing.
-    const kw = "ex" + "tends";
-    const cls = "cl" + "ass";
-    expect(inheritanceScan("fixture.tsx", `${cls} Shell ${kw} React.Component {}`).length).toBe(2);
-    expect(inheritanceScan("fixture.tsx", `${cls} Shell {}`).length).toBe(1);
-    expect(inheritanceScan("fixture.tsx", `<div ${cls}Name="x" />`)).toEqual([]);
-    // …and a MENTION is not a declaration: comments are blanked before the scan,
-    // which matters because every header in this directory argues the rule.
-    expect(inheritanceScan("fixture.tsx", `// never ${kw} the shell — configure it\n`)).toEqual([]);
-
-    const violations = SHELL_FILES.flatMap((f) => inheritanceScan(f.rel, f.text));
-    expect(violations).toEqual([]);
-  });
-
-  test("INV-8f the barrel's PRIMITIVES and the SEVEN built-in kind ids are exact-set pinned", () => {
-    const barrel = byRel.get(BARREL_REL);
-    if (!barrel) {
-      throw new Error(
-        `INV-8f: ${BARREL_REL} is not in the index. It is the "one roof" AC1 requires — the ` +
-          `single import path every conversational surface uses. CONSEQUENCE: the pin below can ` +
-          `no longer be checked and a later refactor could drop a primitive silently. NEXT STEP: ` +
-          `find where the barrel moved and update BARREL_REL.`,
-      );
-    }
-    // The PRIMITIVE group only. The shell/contract group is deliberately NOT
-    // pinned: it grows as the contract grows, and pinning it would make every
-    // legitimate addition look like a violation.
-    expect(barrelPrimitiveExports(barrel.text)).toEqual(EXPECTED_PRIMITIVES);
-    // The composer kit rides a star export — ~50 vendored symbols that move
-    // together — so its presence is asserted rather than its membership.
-    expect(barrel.code).toContain('export * from "@/components/ai-elements/prompt-input"');
-
-    const items = byRel.get(`${SHELL_ROOT}items.ts`);
-    if (!items) {
-      throw new Error(
-        `INV-8f: ${SHELL_ROOT}items.ts is not in the index — the built-in kind ids live there ` +
-          `and cannot be checked. NEXT STEP: update the path.`,
-      );
-    }
-    // An exact-set equality, so an EIGHTH built-in kind cannot appear without a
-    // deliberate edit to this pin. AD-13: every id is namespaced, including the
-    // built-ins — a bare "text" would be exactly the collision the rule prevents.
-    expect(builtinKindIds(items.code)).toEqual(EXPECTED_BUILTIN_KIND_IDS);
-    const kinds = byRel.get(`${SHELL_ROOT}kinds.tsx`);
-    expect(kinds).toBeDefined();
-    for (const id of EXPECTED_BUILTIN_KIND_IDS) {
-      const key = id.split(":")[1]!;
-      expect(kinds!.code).toContain(`CONVERSATION_KINDS.${key}`);
-    }
-  });
-
-  test("INV-8g session-view.tsx kept the STAYED set and lost the MOVED set", () => {
-    const donor = byRel.get(SESSION_VIEW_REL);
-    if (!donor) {
-      throw new Error(
-        `INV-8g: ${SESSION_VIEW_REL} is not in the index. It is the file the shell was carved ` +
-          `out of and the first owner adapter. CONSEQUENCE: the behaviour-unchanged claim (AC6) ` +
-          `has no mechanical half at all. NEXT STEP: if the file was renamed — the ` +
-          `SessionView → ProjectSessionView rename is a recorded, deliberate deferral — update ` +
-          `SESSION_VIEW_REL rather than deleting this test.`,
-      );
-    }
-
-    // THE ADAPTER IS A MODULE SET, NOT A FILE. The claim this half makes is that
-    // session semantics stayed on the ADAPTER side of the shell boundary — not
-    // that they stayed in one 4,000-line file. Splitting the adapter into
-    // siblings under components/session/ that session-view.tsx itself imports
-    // moves nothing across that boundary, and pinning the file would have made
-    // the invariant an argument against ever decomposing the donor.
-    //
-    // The set is derived from session-view.tsx's OWN imports rather than from a
-    // directory listing, so an unrelated file dropped into components/session/
-    // cannot satisfy a needle on the adapter's behalf: to count, a module has to
-    // be one the adapter actually composes itself out of.
-    const adapterCode = [donor.code, ...adapterSiblings(donor.code).map((f) => f.code)].join("\n");
-
-    const missing = STAYED_IN_ADAPTER.filter(
-      ([needle, , min]) => countOccurrences(adapterCode, needle) < (min ?? 1),
-    ).map(
-      ([needle, what, min]) =>
-        `the ${SESSION_VIEW_REL} adapter contains "${needle}" ` +
-        `${countOccurrences(adapterCode, needle)} ` +
-        `time(s), expected at least ${min ?? 1} — ${what}. RULE (AC6): the carve-out ` +
-          `moved the RENDER SEAM and nothing else; route, state and API stayed in the adapter. ` +
-          `CONSEQUENCE: session semantics have followed the transcript into the shell, which ` +
-          `INV-8a forbids from the other side — between them the two assertions mean the ` +
-          `session lifecycle has nowhere left to live. NEXT STEP: put it back in the adapter.`,
-    );
-    expect(missing).toEqual([]);
-
-    const leftBehind = MOVED_OUT_OF_ADAPTER.filter(([needle]) => donor.code.includes(needle)).map(
-      ([needle, what]) =>
-        `${SESSION_VIEW_REL} STILL contains "${needle}" — ${what}. RULE (AC6 / AD-12): the ` +
-          `transcript's projection and its per-kind rendering live in ` +
-          `components/conversation/**, and the registry's first job was collapsing the TWO ` +
-          `copies of the dispatch this file used to hold. CONSEQUENCE: if a dispatch site is ` +
-          `still here, the registry has only been ADDED, not proven — and the seventh copy is ` +
-          `already inside the donor. NEXT STEP: render it through the registry.`,
-    );
-    expect(leftBehind).toEqual([]);
-
-    // The positive half of the same claim: the adapter really does render the
-    // shell, through the one import path. The element test is anchored on the
-    // character AFTER the name, because a bare `toContain("<Conversation")` is
-    // satisfied by `<ConversationEmptyState`, which this adapter also renders —
-    // so the control would have passed with the shell deleted.
-    expect(donor.code).toContain('from "@/components/conversation"');
-    expect(/<Conversation[\s/>]/.test(donor.code)).toBe(true);
-    // …and it renders it as a TRANSCRIPT: both halves of the one slot that is a
-    // pair. Either alone would not compile, which is exactly why asserting them
-    // proves the render site is the real one rather than a stray element.
-    expect(donor.code).toContain("items={");
-    expect(donor.code).toContain("kinds={");
-  });
-
-  test("INV-8i ConversationProps is the CLOSED prop list §5.5-D6 declares", () => {
-    const conv = byRel.get(`${SHELL_ROOT}conversation.tsx`);
-    if (!conv) {
-      throw new Error(
-        `INV-8i: ${SHELL_ROOT}conversation.tsx is not in the index — the shell's prop contract ` +
-          `lives there and cannot be checked. NEXT STEP: find where the shell moved and update ` +
-          `the path; do not delete this test.`,
-      );
-    }
-    const found = conversationPropNames(conv.code);
-    // ANTI-VACUITY: a parser that finds nothing would make the equality below a
-    // statement about the empty set, and this claim's whole point is that a
-    // SIXTH non-slot prop cannot land quietly.
-    if (found.length < 9) {
-      throw new Error(
-        `INV-8i: parsed only ${found.length} members out of ConversationProps (floor 9, ` +
-          `measured 9): ${JSON.stringify(found)}. The PARSER is broken, not the contract — ` +
-          `every assertion below would hold over a short list. NEXT STEP: fix ` +
-          `conversationPropNames.`,
-      );
-    }
-    // DISCRIMINATOR, both directions, through the same parser — assembled at
-    // runtime so this file's own text is not what is being read.
-    const fixture = (extra: string) =>
-      `export type ConversationProps = {\n  items: readonly T[];\n  kinds: R;\n${extra}};\n`;
-    expect(conversationPropNames(fixture(""))).toEqual(["items", "kinds"]);
-    expect(conversationPropNames(fixture("  sessionId?: string;\n"))).toEqual([
-      "items",
-      "kinds",
-      "sessionId",
-    ]);
-    // …a nested object type contributes its own name and not its fields, so the
-    // pin cannot be satisfied or broken by something one level down.
-    expect(conversationPropNames(fixture("  view: { live: boolean; busy: boolean };\n"))).toEqual([
-      "items",
-      "kinds",
-      "view",
-    ]);
-
-    expect(found).toEqual(EXPECTED_CONVERSATION_PROPS);
-    // The four slots by name, so the failure says WHICH half of D6 moved: a
-    // renamed slot and an added non-slot prop are different mistakes.
-    for (const slot of ["items", "kinds", "composer", "rail", "header"]) {
-      expect(found).toContain(slot);
-    }
-  });
-
-  test("INV-8j the scan index skips every dist dir next.config.ts advertises", () => {
-    // SF-6's guard, and it is maxim 3 applied to the WALK: the invariant suite
-    // reads a tree whose build-output directory name is configurable, and the
-    // config's own comments are where a developer learns the names. If the two
-    // disagree, INV-8c fails on minified chunks (`creates React context "r"`)
-    // and a green gate turns red for a reason unrelated to the code.
-    const cfgRel = "apps/web/next.config.ts";
-    const cfg = byRel.get(cfgRel);
-    if (!cfg) {
-      throw new Error(
-        `INV-8j: ${cfgRel} is not in the index, so the dist-dir names it advertises cannot be ` +
-          `re-derived. NEXT STEP: update the path; do not delete this test.`,
-      );
-    }
-    // Re-DERIVED from the config's own text (comments included — that is where
-    // the examples live), never restated here.
-    const advertised = [...cfg.text.matchAll(/NEXT_DIST_DIR=([.\w-]+)/g)].map((m) => m[1]!);
-    expect(advertised.length).toBeGreaterThanOrEqual(2);
-    const missed = advertised.filter((name) => !isExcludedDir(name));
-    expect(missed).toEqual([]);
-    // The default, and the shape of every sibling.
-    expect(isExcludedDir(".next")).toBe(true);
-    expect(isExcludedDir(".next-build")).toBe(true);
-    expect(isExcludedDir(".next-anything-a-developer-picks")).toBe(true);
-    // …and the pattern is not a blanket: real source directories still walk.
-    expect(isExcludedDir("components")).toBe(false);
-    expect(isExcludedDir("next")).toBe(false);
-    expect(isExcludedDir(".nextish")).toBe(false);
-  });
-
-  test("INV-8h the quarantine did not grow — INV-8 added no KNOWN_VIOLATIONS entry", () => {
-    // KNOWN_VIOLATIONS has held at exactly ONE entry across seven stories.
-    // INV-8 did not reach for it: components/conversation/** was written to the
-    // contract rather than excused from it. A future INV-8 entry appearing here
-    // should be an argument someone has, not a line that lands quietly.
-    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-8")).toEqual([]);
-  });
-});
 
 // ── INV-9 (AD-21) ───────────────────────────────────────────────────────────
 //
@@ -5465,232 +3829,24 @@ describe("INV-9 a module's declared event names and delivery classes are contrac
   });
 });
 
-// ── INV-10 (AD-13 / AD-12) ──────────────────────────────────────────────────
+// ── INV-10 — RETIRED WITH apps/web ─────────────────────────────────────────
 //
-// THE ULTRA RUN ANCHOR'S REGISTRATION IS A CONTRACT, and story 4.2 is when it
-// stopped being a promise in a story file. `ultra:run-anchor` was held
-// UNREGISTERED through stories 3.1 and 4.1 — deliberately, so the demo gallery's
-// configuration 6 could show a real tombstone for a kind that genuinely does not
-// exist — and 4.2 registers it into the ADAPTER's registry alone. This is what
-// keeps that arrangement true afterwards.
+// AD-13/AD-12: the ultra run anchor is registered in the ADAPTER and nowhere
+// else. It pinned the kind id `ultra:run-anchor`, proved `ultra` was in the
+// declared namespace vocabulary, proved the kind was registered in the
+// adapter's registry and NOT in the demo gallery's, and proved it never
+// migrated into the frozen shell — with the one legitimate mention named
+// explicitly so the negative could not be satisfied by deleting the file.
 //
-// WHY IT IS WORTH THIS FILE'S BUDGET. Three of the four ways to defeat INV-8b2
-// leave that guard GREEN (see INV-8b2c), so "the kind is registered and pure"
-// cannot rest on INV-8b2 alone: something has to assert the id, the registration
-// SITE, and the non-registration site. And the tombstone is the load-bearing
-// half — `demo-gallery/conversation/shell.tsx`'s own comment says the id "is
-// deliberately absent so configuration 6 can show the tombstone", and two tests
-// in `fixtures.validate.test.ts` pin it. A later story quietly adding the id
-// there would turn an honest demo into a mock, and nothing else would say so.
+// Its three files were apps/web/components/session/ultra-anchor.tsx,
+// apps/web/lib/ultra-runs.ts and apps/web/lib/demo-gallery/conversation/
+// shell.tsx. All three are frozen. vNext has no Ultra surface at all — the
+// engine exposes no ultra entity — so there is nothing to re-anchor.
 //
-// BUDGET, in this file's own terms: a static scan over the index plus a runtime
-// helper on strings. No process, no compiler — INV-*'s standing constraint.
+// RESTORE IT WITH THE ULTRA SURFACE, not before, and restore it together with
+// INV-8: this invariant is a corollary of INV-8's registry design and asserts
+// nothing on its own once that design is gone.
 
-const ULTRA_ANCHOR_REL = "apps/web/components/session/ultra-anchor.tsx";
-const ULTRA_RUNS_REL = "apps/web/lib/ultra-runs.ts";
-const GALLERY_SHELL_REL = "apps/web/lib/demo-gallery/conversation/shell.tsx";
-const ULTRA_ANCHOR_ID = "ultra:run-anchor";
-
-// Is this a legal kind id for the ultra module? A function of a STRING, never of
-// a file, so INV-10d can feed it a runtime-assembled fixture through the SAME
-// function the real check uses — a discriminator that called a different
-// function would prove nothing. Mirrors createItemKindRegistry's own rule:
-// exactly one colon, both halves non-empty and unpadded, module in the declared
-// vocabulary.
-function ultraKindIdViolations(id: string, namespaces: readonly string[]): string[] {
-  const out: string[] = [];
-  const segments = id.split(":");
-  if (segments.length !== 2) {
-    out.push(
-      `AD-13: kind id "${id}" must be exactly \`<module>:<name>\`, one colon. CONSEQUENCE: the ` +
-        `module segment stops being unambiguous, so "who owns this kind" can no longer be ` +
-        `answered by reading the id — the whole property AD-13 buys. NEXT STEP: use a hyphen ` +
-        `inside the name segment.`,
-    );
-    return out;
-  }
-  const [mod, name] = segments as [string, string];
-  if (mod !== mod.trim() || name !== name.trim() || mod.trim() === "" || name.trim() === "") {
-    out.push(
-      `AD-13: kind id "${id}" has an empty or whitespace-padded segment. CONSEQUENCE: a padded ` +
-        `id REGISTERS and shows up in ids(), while every item minted as the id the author meant ` +
-        `misses in the Map and renders AD-8's tombstone — a tombstone for a kind you can see ` +
-        `registered. NEXT STEP: give both halves a real, unpadded name.`,
-    );
-  }
-  if (!namespaces.includes(mod)) {
-    out.push(
-      `AD-13: kind id "${id}" names module "${mod}", which is not in MODULE_NAMESPACES ` +
-        `(${namespaces.join(", ")}). CONSEQUENCE: an undeclared module is almost always a typo of ` +
-        `a declared one, and it would create a second, near-identical namespace nothing flags. ` +
-        `NEXT STEP: fix the spelling, or add the module to registry.ts deliberately.`,
-    );
-  }
-  return out;
-}
-
-describe("INV-10 the ultra run anchor is registered in the adapter and NOWHERE else — AD-13/AD-12", () => {
-  test("INV-10 floor — the anchor file exists and declares exactly ONE ItemKind", () => {
-    // ANTI-VACUITY FIRST. Every arm below reads this file; if it vanished or was
-    // renamed, they would all assert over the empty string and pass.
-    const anchor = byRel.get(ULTRA_ANCHOR_REL);
-    if (!anchor) {
-      throw new Error(
-        `INV-10: ${ULTRA_ANCHOR_REL} is not in the index, so every arm of this invariant is ` +
-          `running over nothing. RULE (story 4.2 / AD-13): the ultra:run-anchor kind lives in its ` +
-          `own file so INV-8b2 can brace-match its renderer without the adapter growing. ` +
-          `CONSEQUENCE: the registration contract stops being checked, silently. NEXT STEP: if the ` +
-          `file moved, update ULTRA_ANCHOR_REL and KIND_DONOR_RELS together — do not delete this ` +
-          `test.`,
-      );
-    }
-    const slices = kindRendererSlices(anchor.text);
-    expect(slices.map((s) => s.name)).toEqual(["ultraRunAnchorKind"]);
-  });
-
-  test("INV-10a the id is exactly `ultra:run-anchor`, and `ultra` is in the declared vocabulary", () => {
-    // The literal lives ONCE, in the pure module, and the component writes
-    // `id: ULTRA_ANCHOR_KIND` — so there is one source for the id and this scan
-    // reads it rather than a copy.
-    const runs = byRel.get(ULTRA_RUNS_REL);
-    if (!runs) throw new Error(`INV-10a: ${ULTRA_RUNS_REL} is not in the index`);
-    expect(runs.code).toContain(`ULTRA_ANCHOR_KIND = "${ULTRA_ANCHOR_ID}"`);
-    const anchor = byRel.get(ULTRA_ANCHOR_REL)!;
-    expect(anchor.code).toContain("id: ULTRA_ANCHOR_KIND");
-
-    // MODULE_NAMESPACES is RE-DERIVED from registry.ts, never restated here: a
-    // restated copy goes stale in silence, and this whole file's third maxim is
-    // that a copy of a measurement indicts nothing.
-    const registry = byRel.get("apps/web/components/conversation/registry.ts");
-    if (!registry) throw new Error("INV-10a: components/conversation/registry.ts is not in the index");
-    const block = /MODULE_NAMESPACES\s*=\s*\[([\s\S]*?)\]/.exec(registry.code);
-    if (!block) {
-      throw new Error(
-        `INV-10a: MODULE_NAMESPACES could not be re-derived from registry.ts, so the vocabulary ` +
-          `check below is running over nothing. NEXT STEP: fix this extractor; do not hardcode the ` +
-          `list here.`,
-      );
-    }
-    const namespaces = [...block[1]!.matchAll(/"([a-z-]+)"/g)].map((m) => m[1]!);
-    expect(namespaces.length).toBeGreaterThanOrEqual(5);
-    expect(namespaces).toContain("ultra");
-    expect(ultraKindIdViolations(ULTRA_ANCHOR_ID, namespaces)).toEqual([]);
-  });
-
-  test("INV-10b it is registered in the ADAPTER's registry and NOT in the gallery's", () => {
-    // HARD RULE 4, MADE MECHANICAL. Two registries, two INDEPENDENT INSTANCES
-    // passed as props (never a singleton), so registering in one cannot reach
-    // the other — and that independence is exactly what makes the gallery's
-    // tombstone honest rather than a mock.
-    const donor = byRel.get(SESSION_VIEW_REL);
-    if (!donor) throw new Error(`INV-10b: ${SESSION_VIEW_REL} is not in the index`);
-    expect(donor.code).toContain("ultraRunAnchorKind");
-
-    const gallery = byRel.get(GALLERY_SHELL_REL);
-    if (!gallery) {
-      throw new Error(
-        `INV-10b: ${GALLERY_SHELL_REL} is not in the index, so the NEGATIVE half of this check ` +
-          `is running over nothing — which is the half that matters. RULE: the gallery's ` +
-          `GALLERY_KINDS deliberately omits ultra:run-anchor so configuration 6 shows a REAL ` +
-          `tombstone. CONSEQUENCE: a later story could register it there and turn an honest demo ` +
-          `into a mock, with two of the gallery's own tests as the only thing left to notice. ` +
-          `NEXT STEP: if the gallery shell moved, update GALLERY_SHELL_REL — do not delete this ` +
-          `test.`,
-      );
-    }
-    const galleryKinds = /GALLERY_KINDS\s*=\s*createItemKindRegistry\(\s*\[([\s\S]*?)\]\s*\)/.exec(
-      gallery.code,
-    );
-    if (!galleryKinds) {
-      throw new Error(
-        `INV-10b: GALLERY_KINDS could not be re-derived from ${GALLERY_SHELL_REL}. NEXT STEP: fix ` +
-          `this extractor rather than dropping the assertion — the negative claim is the point.`,
-      );
-    }
-    expect(galleryKinds[1]).not.toContain("ultra");
-    expect(galleryKinds[1]).not.toContain("ultraRunAnchorKind");
-  });
-
-  test("INV-10c the kind never migrated into the frozen shell — and the ONE legitimate mention is named", () => {
-    // AD-12: `components/conversation/**` is frozen and owns no module
-    // semantics. A shell file that knew what an Ultra run WAS would mean the
-    // shell had acquired a domain — the drift INV-8a/8b exist to catch, checked
-    // here from the other side, by name.
-    //
-    // STORY 4.2 WROTE THIS ARM AS "no shell file mentions `ultra` AT ALL" AND
-    // THAT WAS FALSE AGAINST THE TREE, measured the moment it first ran:
-    // `registry.ts`'s MODULE_NAMESPACES has contained the literal `"ultra"`
-    // since story 3.1. That entry is not a leak — IT IS THE VOCABULARY, and it
-    // is precisely why `ultra:run-anchor` is a legal id with NO contract change
-    // (AD-13's closed module list is edited deliberately or not at all). Writing
-    // the loose version would have made this invariant fail on a correct tree,
-    // and "relax it until it passes" is how a guard becomes decoration.
-    //
-    // So the claim is narrowed to what AD-12 actually forbids: the shell must
-    // not know the KIND, its PAYLOAD, or its PROJECTION.
-    const ANCHOR_LEAKS = [
-      ULTRA_ANCHOR_ID,
-      "ultraRunAnchorKind",
-      "UltraAnchorPayload",
-      "RunSnapshot",
-      "ultra-runs",
-      "ultra-anchor",
-    ];
-    const leaked = SHELL_FILES.flatMap((f) =>
-      ANCHOR_LEAKS.filter((needle) => f.code.includes(needle)).map(
-        (needle) =>
-          `AD-12: ${f.rel} mentions "${needle}". RULE: the Conversation shell is frozen and owns ` +
-          `no module semantics — everything a kind needs arrives in its item PAYLOAD, and ` +
-          `ConversationProps is closed at nine names (INV-8i). CONSEQUENCE: the shell acquires a ` +
-          `domain one field at a time, which is the drift AD-12 was frozen to stop. NEXT STEP: ` +
-          `move it into the adapter or into lib/ultra-runs.ts; do not widen the shell.`,
-      ),
-    );
-    expect(leaked).toEqual([]);
-
-    // …and the ONE legitimate mention is ASSERTED PRESENT rather than merely
-    // tolerated, because it is load-bearing: if `"ultra"` ever left
-    // MODULE_NAMESPACES, `createItemKindRegistry` would throw at module scope in
-    // session-view.tsx and the whole session surface would fail to construct.
-    const registry = SHELL_FILES.find(
-      (f) => f.rel === "apps/web/components/conversation/registry.ts",
-    );
-    if (!registry) throw new Error("INV-10c: registry.ts is not among SHELL_FILES");
-    expect(registry.code).toContain('"ultra"');
-    const others = SHELL_FILES.filter(
-      (f) => f.rel !== registry.rel && /\bultra\b/i.test(f.code),
-    ).map((f) => f.rel);
-    expect(others).toEqual([]);
-
-    // The floor SHELL_FILES already carries elsewhere, restated so this arm
-    // cannot pass over an empty set.
-    expect(SHELL_FILES.length).toBeGreaterThanOrEqual(6);
-  });
-
-  test("INV-10d the discriminator — a mis-namespaced ultra id IS reported, in both directions", () => {
-    // §5.4-F: the same function the real check uses, fed a runtime-assembled
-    // fixture, in both directions. Without this, "the id is legal" is
-    // indistinguishable from "the checker accepts everything".
-    const namespaces = ["conversation", "ultra", "loom", "workspace", "session"];
-    expect(ultraKindIdViolations("ultra:run-anchor", namespaces)).toEqual([]);
-    // A typo of a declared module.
-    expect(ultraKindIdViolations("ultras:run-anchor", namespaces).length).toBe(1);
-    // No namespace at all.
-    expect(ultraKindIdViolations("run-anchor", namespaces).length).toBe(1);
-    // Two colons — the module segment stops being unambiguous.
-    expect(ultraKindIdViolations("ultra:run:anchor", namespaces).length).toBe(1);
-    // A whitespace-padded half, which REGISTERS and then never matches.
-    expect(ultraKindIdViolations("ultra:run-anchor ", namespaces).length).toBeGreaterThanOrEqual(1);
-    expect(ultraKindIdViolations("ultra:", namespaces).length).toBeGreaterThanOrEqual(1);
-  });
-
-  test("INV-10e the quarantine did not grow — INV-10 added no KNOWN_VIOLATIONS entry", () => {
-    // The shape INV-7f / INV-8h / INV-9e already use. KNOWN_VIOLATIONS has held
-    // at exactly ONE entry across eight stories; INV-3f pins its LENGTH and this
-    // pins the fact that INV-10 did not reach for it.
-    expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-10")).toEqual([]);
-  });
-});
 
 // ── INV-11 — the workspace item store is reachable ONLY through its port ─────
 // Story 5.1, AC1/AC3/AC7/AC8. Six arms, and each one asserts something no other
@@ -5827,18 +3983,27 @@ describe("INV-11 the workspace item store is reachable only through its port —
     const NAMES_WORKSPACE = /(?:workspaceDir|workspaceHomeDir|workspace\/packets|lanes\.yaml|["'`]workspace["'`])/;
 
     const granters = NON_TEST.filter((f) => GRANT.test(f.code)).map((f) => f.rel);
-    // ANTI-VACUITY: the scan must find the grant expressions that DO exist, or
-    // "no grant names the workspace" is a statement about an empty set.
-    if (granters.length < 1) {
-      throw new Error(
-        `AD-5 / INV-11b: the grant-expression scan found ${granters.length} files (floor 1). ` +
-          `CONSEQUENCE: AC7's whole executable half would hold vacuously — a module could add the ` +
-          `workspace store to a session's writable roots and nothing would fail. NEXT STEP: the ` +
-          `PATTERN is broken, not the tree — apps/web/lib/codex-app-server.ts's writableRoots is ` +
-          `the known-present hit.`,
-      );
-    }
-    expect(granters).toContain("apps/web/lib/codex-app-server.ts");
+    // THE ANTI-VACUITY FLOOR IS GONE, AND THIS ARM IS VACUOUS TODAY. SAY SO.
+    //
+    // The floor required at least one file containing a sandbox-grant
+    // expression, because "no grant names the workspace" is a statement about
+    // an empty set otherwise. The ONLY granter in the tree was
+    // apps/web/lib/codex-app-server.ts's writableRoots, and it was frozen with
+    // the cockpit. There are ZERO grant expressions in the remaining roots —
+    // vNext's driver hands the SDK a cwd and nothing else, no --add-dir, no
+    // additionalDirectories — so the `violations` check below genuinely does
+    // hold over the empty set.
+    //
+    // IT IS KEPT RATHER THAN DELETED for one reason: it is a NEGATIVE that
+    // becomes live the instant vNext adds its first sandbox grant, and that is
+    // precisely the change that would silently widen a session's write boundary
+    // onto every project's items. The runtime discriminator below is what keeps
+    // it from being decorative in the meantime — it proves both predicates
+    // still classify correctly, which is the part a blind scan would fail.
+    //
+    // WHEN vNext GRANTS ITS FIRST DIRECTORY, restore the floor at 1 and pin the
+    // new granter by name, exactly as the retired line did.
+    expect(granters).toEqual([]);
 
     const violations = NON_TEST.filter((f) => GRANT.test(f.code) && NAMES_WORKSPACE.test(f.code)).map(
       (f) =>
@@ -5862,57 +4027,39 @@ describe("INV-11 the workspace item store is reachable only through its port —
     const wsPort = "workspace" + "Dir";
     const bad = `const opts = { ${grantWord}: [cwd, ${wsPort}()] };`;
     expect(GRANT.test(bad) && NAMES_WORKSPACE.test(bad)).toBe(true);
-    // THE NEGATIVE CONTROL IS REAL CODE. codex-app-server.ts's
-    // `writableRoots: [cwd]` is correct and must not fire — a naive
-    // co-occurrence scan that flagged it would be an invariant nobody keeps.
+    // THE NEGATIVE CONTROL IS NO LONGER REAL CODE, and that is a downgrade
+    // worth naming rather than hiding. It used to assert against
+    // apps/web/lib/codex-app-server.ts, whose `writableRoots: [cwd]` is a
+    // CORRECT grant that must not fire — a naive co-occurrence scan flagging it
+    // would be an invariant nobody keeps. That file is frozen and there is no
+    // real grant expression left in the tree, so the control is now a fixture
+    // only. Re-point it at the first genuine vNext grant site.
     const good = `const opts = { ${grantWord}: [cwd] };`;
     expect(GRANT.test(good)).toBe(true);
     expect(NAMES_WORKSPACE.test(good)).toBe(false);
-    expect(NAMES_WORKSPACE.test(byRel.get("apps/web/lib/codex-app-server.ts")!.code)).toBe(false);
   });
 
-  test("INV-11c every workspace tool name survives ACCEPT_STEMS, checked at the NAME", () => {
-    // INV-1c already runs this over the collected inventory. Running it here on
-    // the server's own exported constant catches a rename AT THE CONSTANT, which
-    // is where a later story makes it — and it reads the constant out of source
-    // text rather than importing apps/web, which would drag Next into this file.
-    const src = byRel.get(WORKSPACE_MCP);
-    expect(src).toBeDefined();
-    const names = exportedStringArray(src!.code, "WORKSPACE_AUTO_TOOLS");
-    // ANTI-VACUITY: a null or short read would make the loop below assert
-    // nothing at all.
-    if (!names || names.length !== 5) {
-      throw new Error(
-        `AD-1 / INV-11c: WORKSPACE_AUTO_TOOLS read back as ${JSON.stringify(names)} (expected 5 ` +
-          `names). CONSEQUENCE: the accept-shape check below would run over an empty list and an ` +
-          `accept-named workspace tool could ship. NEXT STEP: this is the READER that is broken — ` +
-          `check exportedStringArray against ${WORKSPACE_MCP}'s WORKSPACE_AUTO_TOOLS.`,
-      );
-    }
-    for (const qualified of names) {
-      expect(qualified.startsWith("mcp__workspace__")).toBe(true);
-      expect(acceptShapedTokens(qualified.replace("mcp__workspace__", ""))).toEqual([]);
-    }
-    // …and it agrees with the pinned inventory EXCEPT for the moat tool, which
-    // is the whole of story 5.5's change to this surface: the auto list is the
-    // inventory MINUS the one name a human has to approve. Written as a
-    // difference rather than as two hardcoded lists, so adding a sixth tool
-    // still fails here until someone decides which side it belongs on.
-    const weaveTool = exportedStringConst(src!.code, "WORKSPACE_WEAVE_TOOL");
-    expect(weaveTool).toBe("mcp__workspace__weave_batch");
-    expect(names).not.toContain(weaveTool!);
-    expect(acceptShapedTokens(weaveTool!.replace("mcp__workspace__", ""))).toEqual([]);
-    expect(names.map((n) => n.replace("mcp__workspace__", ""))).toEqual(
-      MCP_INVENTORY.workspace!.tools.filter((t) => t !== weaveTool!.replace("mcp__workspace__", "")),
-    );
+  // RETIRED WITH apps/web — INV-11c. READ THIS BEFORE BUILDING THE vNext
+  // WORKSPACE SURFACE; it is the one retired invariant that guards the thing
+  // being built next.
+  //
+  // It ran the ACCEPT_STEMS scan over the workspace MCP server's own EXPORTED
+  // TOOL-NAME CONSTANTS in apps/web/lib/workspace-mcp.ts, rather than over the
+  // collected inventory. The distinction was the point: INV-1c caught an
+  // accept-shaped tool at the REGISTRATION, this caught it AT THE CONSTANT,
+  // which is where a rename actually gets made.
+  //
+  // THE RULE IT ENFORCED, restated so it can be re-applied rather than
+  // re-derived: no workspace tool may be named anything accept-shaped —
+  // accept/approve/confirm/finish/close/complete/deliver(ed|y)/done. A human
+  // moves a queue row to its terminal state; an agent proposes and never
+  // ratifies. The near-misses that MUST stay legal are the ones a naive filter
+  // breaks on, e.g. `reject_*` and `answer_blocked`.
+  //
+  // acceptShapedTokens() is still in this file and still tested by INV-1d. When
+  // the vNext workspace tool surface exists, this test is roughly six lines:
+  // read the constants, map them through acceptShapedTokens, expect empty.
 
-    // DISCRIMINATOR: the same function fires on the names this surface is
-    // forbidden to grow. `promote_subtask` is the sharpest — NFR-OW-15 forbids
-    // an agent promotion path, and `promote` is independently an ACCEPT_STEM.
-    for (const forbidden of ["promote_subtask", "close_lane", "land_packet", "mark_completed"]) {
-      expect(acceptShapedTokens(forbidden).length).toBeGreaterThan(0);
-    }
-  });
 
   test("INV-11d the store writes ONLY through atomicWrite — no writeFileSync, no appendFileSync", () => {
     // ANTI-VACUITY: the directory really was found and really was walked.
@@ -5974,159 +4121,58 @@ describe("INV-11 the workspace item store is reachable only through its port —
     ).toEqual(["writeFileSync"]);
   });
 
-  test("INV-11e the MCP server declares no entity schema and has no delete call", () => {
-    const src = byRel.get(WORKSPACE_MCP);
-    expect(src).toBeDefined();
-    // ANTI-VACUITY: zod really is in use in this file, so "no z.object(" is a
-    // statement about a file that uses zod rather than about one that does not.
-    expect(src!.code).toContain("z.string(");
+  // RETIRED WITH apps/web — INV-11e. ALSO DIRECTLY RELEVANT TO THE vNext
+  // WORKSPACE WORK.
+  //
+  // TWO SEPARATE CLAIMS about apps/web/lib/workspace-mcp.ts, both worth
+  // carrying forward:
+  //
+  //   1. THE MCP SERVER DECLARED NO ENTITY SCHEMA. Persisted workspace shapes
+  //      are owned by @telar/core (packages/core/src/workspace/schema.ts) and
+  //      the tool layer took RAW zod shapes for tool INPUTS only. A second
+  //      definition of an item is how the store and its surface drift into
+  //      disagreeing about what an item is — NFR-X-5.
+  //   2. IT HAD NO DELETE CALL. The workspace store is append-and-amend; rows
+  //      reach terminal states, they are not removed by a tool.
+  //
+  // Both survive as DESIGN CONSTRAINTS on packages/core/src/workspace/store.ts,
+  // which is untouched and still tested by INV-11a and INV-11d. What lapsed is
+  // the guarantee that the TOOL SURFACE over it honours them — and there is no
+  // tool surface at all right now, in vNext or anywhere.
 
-    // NFR-X-5 — "zod schemas for persisted entities are owned by @telar/core and
-    // never redefined in apps/web". The tool() input shapes are RAW zod shapes
-    // ({ itemId: z.string() }), which are argument schemas; a z.object( here
-    // would be the first step toward a second definition of `Item`.
-    expect(/z\.object\s*\(/.test(src!.code)).toBe(false);
-    expect(/z\.looseObject\s*\(/.test(src!.code)).toBe(false);
 
-    // SPEC.md non-goals: "No deletion path." CAP-3: "No path deletes an item."
-    // Dismissing an item drains it to the queue; nothing removes one.
-    // THE SCAN SEES `fs.rmSync`, NOT ONLY A BARE `rmSync` — same defect and same
-    // fix as INV-11d above. A mutation adding `import fs from "node:fs"` plus an
-    // exported `fs.rmSync(dir, {recursive:true})` to THIS file left core and
-    // apps/web fully green under the old pattern.
-    const DELETERS = ["rmSync", "unlinkSync", "rmdirSync", "rm", "rmdir", "unlink"] as const;
-    expect(fsCallsIn(src!.code, DELETERS)).toEqual([]);
-    // …and the store itself has none either, which is the half a handler scan
-    // would miss.
-    expect(fsCallsIn(byRel.get(WORKSPACE_STORE)!.code, DELETERS)).toEqual([]);
+  // RETIRED WITH apps/web — INV-11g. THE MOST IMPORTANT ONE ON THIS LIST for
+  // the workspace rebuild, because it is a HUMAN-GATE invariant and those are
+  // the ones this project treats as the moat.
+  //
+  // THE RULE: a workspace WEAVE — handing a set of queue rows to a loom — is
+  // approval-gated in EVERY permission mode, including full-access and auto.
+  // It checked BOTH halves, because either alone is satisfiable with the gate
+  // gone: the PreToolUse hook that forces the approval card, AND all four
+  // route sites that could otherwise start a weave around it.
+  //
+  // THE FAILURE IT PREVENTED, in its own words: "a weave could auto-run in
+  // full-access/auto mode with no human ever seeing which of their queue rows
+  // were handed to a loom." That is the same class of failure as an
+  // agent-callable accept tool — work committed without the human who owns it
+  // ever seeing the scope.
+  //
+  // vNext HAS NO PERMISSION MODES AT ALL. apps/engine/src/driver.ts passes
+  // permissionMode "default" with no canUseTool and no hooks, so there is
+  // currently no mode for a weave to escape through and nothing to gate. THAT
+  // IS THE POINT TO WATCH: the moment vNext grows permission modes AND a
+  // workspace weave, this invariant has to exist BEFORE the two meet, not
+  // after. Restoring it later means auditing a surface that already shipped.
 
-    // DISCRIMINATOR, both directions, on runtime-assembled fixtures.
-    expect(/z\.object\s*\(/.test("const S = z." + "object({ a: z.string() });")).toBe(true);
-    expect(/z\.object\s*\(/.test("const S = { a: z.string() };")).toBe(false);
-    // THE EXACT MUTATION SHAPE, assembled at runtime: an fs import plus a
-    // namespace delete call. This is the arm's own proof that it can fail — the
-    // half whose absence let a real deletion path be added to this surface with
-    // 1715/1715 and 663/663 still green. `undeleted` proves the same fixture
-    // WITHOUT the import is not enough to trip it, so the binding is what did.
-    const DELETE_PATH = "export function deleteEverything(dir) { fs." + "rmSync" + "(dir, {recursive:true}); }";
-    expect(fsCallsIn('import fs from "node:fs";\n' + DELETE_PATH, DELETERS)).toEqual(["rmSync"]);
-    expect(fsCallsIn(DELETE_PATH, DELETERS)).toEqual([]);
-    // A BARE call matches; the same name reached through an unrelated object
-    // does not, which is what keeps the pattern off ordinary member calls.
-    expect(fsCallsIn("rm" + "Sync" + "(dir);", DELETERS)).toEqual(["rmSync"]);
-    expect(fsCallsIn('import fs from "node:fs";\nshim.' + "rmSync" + "(dir);", DELETERS)).toEqual([]);
-    // The async delete spellings, for the same reason as INV-11d's arm 4.
-    expect(fsCallsIn('import fsp from "node:fs/promises";\nawait fsp.' + "rm" + "(dir);", DELETERS)).toEqual([
-      "rm",
-    ]);
-    expect(fsCallsIn('import fs from "node:fs";\nawait fs.promises.' + "rm" + "(dir);", DELETERS)).toEqual([
-      "rm",
-    ]);
-  });
-
-  test("INV-11g the workspace weave is approval-gated in every mode — the hook AND all four route sites", () => {
-    // Story 5.5 / CAP-11: "weave_batch is approval-gated and renders as the
-    // shared ApprovalCard." INV-1g proves this shape for the two LOOM moat
-    // tools; this is the same proof for the workspace's one, and it is a
-    // separate arm because the two are gated for different reasons (§M.6 spend
-    // vs "the human decides what leaves the queue") and a later story may move
-    // one without the other.
-    const mcp = byRel.get(WORKSPACE_MCP);
-    const hooks = byRel.get(CHAT_TURN_HOOKS);
-    const route = byRel.get(CHAT_ROUTE);
-    for (const [rel, file] of [
-      [WORKSPACE_MCP, mcp],
-      [CHAT_TURN_HOOKS, hooks],
-      [CHAT_ROUTE, route],
-    ] as const) {
-      if (!file) {
-        throw new Error(
-          `INV-11g: ${rel} is not in the index, so the workspace weave's approval gate cannot be ` +
-            `checked at all. CONSEQUENCE: a weave could auto-run in full-access/auto mode with no ` +
-            `human ever seeing which of their queue rows were handed to a loom. NEXT STEP: if the ` +
-            `module moved, update the constant rather than deleting this test.`,
-        );
-      }
-    }
-    const weaveTool = exportedStringConst(mcp!.code, "WORKSPACE_WEAVE_TOOL");
-    const auto = exportedStringArray(mcp!.code, "WORKSPACE_AUTO_TOOLS");
-    const broken: string[] = [];
-    const HOOK =
-      "CAP-11 — the workspace weave hands the human's own queue rows to a loom, so it is " +
-      "approval-gated in EVERY permission mode: excluded from the pre-approved list, hard-routed " +
-      "to `ask` by the PreToolUse hook, and named at every moat site in the chat route. ";
-
-    if (weaveTool !== "mcp__workspace__weave_batch") {
-      broken.push(
-        `${WORKSPACE_MCP} no longer exports WORKSPACE_WEAVE_TOOL = "mcp__workspace__weave_batch" ` +
-          `(found ${JSON.stringify(weaveTool)}). ${HOOK}CONSEQUENCE: every comparison below holds ` +
-          `against a constant that names no real tool. NEXT STEP: restore the export, or move the ` +
-          `constant and its comparisons together and re-pin them here.`,
-      );
-    }
-    if (weaveTool && auto?.includes(weaveTool)) {
-      broken.push(
-        `WORKSPACE_WEAVE_TOOL appears in WORKSPACE_AUTO_TOOLS. ${HOOK}CONSEQUENCE: the SDK's ` +
-          `pre-approval fast path runs the weave with no card at all. NEXT STEP: remove it from ` +
-          `WORKSPACE_AUTO_TOOLS; the moat tool is never a granted one.`,
-      );
-    }
-    if (weaveTool && !MCP_INVENTORY.workspace!.tools.includes(weaveTool.replace("mcp__workspace__", ""))) {
-      broken.push(
-        `WORKSPACE_WEAVE_TOOL points at a tool the workspace server does not register. ${HOOK}` +
-          `CONSEQUENCE: the gate guards a name nothing calls while the real tool runs ungated. ` +
-          `NEXT STEP: reconcile the constant with MCP_INVENTORY.`,
-      );
-    }
-    // THE HOOK HALF. The comparison form is pinned the way INV-1g pins the loom
-    // pair: `input.tool_name === WORKSPACE_WEAVE_TOOL`, against the IMPORTED
-    // constant, so a literal that drifts from the export cannot satisfy it.
-    if (!/import\s*\{[^}]*WORKSPACE_WEAVE_TOOL[^}]*\}\s*from\s*["']@\/lib\/workspace-mcp["']/.test(hooks!.code)) {
-      broken.push(
-        `${CHAT_TURN_HOOKS} does not import WORKSPACE_WEAVE_TOOL from @/lib/workspace-mcp. ${HOOK}` +
-          `CONSEQUENCE: any gate it applies is against a local literal that can drift from the ` +
-          `tool's real name. NEXT STEP: import the constant and compare against it.`,
-      );
-    }
-    if (!/input\.tool_name\s*===\s*WORKSPACE_WEAVE_TOOL/.test(hooks!.code)) {
-      broken.push(
-        `${CHAT_TURN_HOOKS}'s PreToolUse guardrail does not compare input.tool_name against ` +
-          `WORKSPACE_WEAVE_TOOL. ${HOOK}CONSEQUENCE: auto/acceptEdits/bypassPermissions approve the ` +
-          `weave without ever invoking canUseTool, so the ApprovalCard never appears. NEXT STEP: ` +
-          `add it to the \`ask\` branch beside the two loom tools.`,
-      );
-    }
-    // THE ROUTE HALF — FOUR SITES, counted rather than merely present: the
-    // full-access bypass, the stored-rules fast path, the "always" rule
-    // persistence, and the Codex dynamic-tool moat check. Three of four passing
-    // is a hole in whichever one is missing, and a bare `toContain` cannot tell
-    // the difference.
-    const routeSites = route!.code.match(/WORKSPACE_WEAVE_TOOL/g)?.length ?? 0;
-    // 1 import + 4 comparison sites.
-    if (routeSites < 5) {
-      broken.push(
-        `${CHAT_ROUTE} names WORKSPACE_WEAVE_TOOL ${routeSites} times (expected the import plus ` +
-          `FOUR moat sites: the full-access bypass, the readRules fast path, the \`always\` rule ` +
-          `guard, and onCodexDynamicTool's isMoatTool). ${HOOK}CONSEQUENCE: whichever site is ` +
-          `missing is a mode in which a weave runs unapproved — full access, a stored "always ` +
-          `allow", or any Codex session (which has no PreToolUse hook at all). NEXT STEP: name it ` +
-          `at every site the two loom constants are named at.`,
-      );
-    }
-    expect(broken).toEqual([]);
-
-    // ANTI-VACUITY: the two patterns above really can fail. Assembled at
-    // runtime so this file's own text does not satisfy the scans it defines.
-    const CONST = "WORKSPACE_WEAVE" + "_TOOL";
-    expect(new RegExp(`input\\.tool_name\\s*===\\s*${CONST}`).test(`if (input.tool_name === ${CONST}) {`)).toBe(true);
-    expect(new RegExp(`input\\.tool_name\\s*===\\s*${CONST}`).test(`if (input.tool_name === "mcp__workspace__weave_batch") {`)).toBe(false);
-  });
 
   test("INV-11f the quarantine did not grow — INV-11 added no KNOWN_VIOLATIONS entry", () => {
-    // The shape INV-7f / INV-8h / INV-9e / INV-10e already use. KNOWN_VIOLATIONS
-    // has held at exactly ONE entry across nine stories; INV-3f pins its LENGTH
-    // and this pins the fact that INV-11 did not reach for it.
+    // The shape INV-7f / INV-9e already use (INV-8h and INV-10e went with
+    // apps/web). KNOWN_VIOLATIONS held at exactly ONE entry across nine
+    // stories and is now TWO — the second is scripts/vnext-dev.mjs under INV-3,
+    // added when freezing apps/web surfaced a pre-existing derivation. INV-3f
+    // pins the LENGTH and explains the raise; this still pins the thing it was
+    // written to pin, which is that INV-11 did not reach for the quarantine.
     expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-11")).toEqual([]);
-    expect(KNOWN_VIOLATIONS.length).toBe(1);
+    expect(KNOWN_VIOLATIONS.length).toBe(2);
   });
 });
