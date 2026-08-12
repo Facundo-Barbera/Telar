@@ -290,6 +290,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * only from a button a human pressed. A timer must never be able to hold
        * a network read open against somebody else's rate limit.
        */
+      /** The project's own uncommitted work, for a canvas with no session. */
+      const projectDiff = /^\/v2\/projects\/([^/]+)\/diff$/.exec(url.pathname);
+      if (request.method === "GET" && projectDiff) {
+        const projectId = decodeURIComponent(projectDiff[1]);
+        const target = url.searchParams.get("path");
+        if (target) {
+          writeJson(response, 200, {
+            file: store.projectFilePatch(projectId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+          });
+          return;
+        }
+        writeJson(response, 200, { diff: store.projectDiff(projectId) });
+        return;
+      }
       const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
       if (request.method === "GET" && projectGitHub) {
         writeJson(response, 200, {

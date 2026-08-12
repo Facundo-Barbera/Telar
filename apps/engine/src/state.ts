@@ -707,6 +707,35 @@ export class EngineStore {
   }
 
   /**
+   * What is uncommitted in a PROJECT right now.
+   *
+   * FOR A CONVERSATION THAT DOES NOT EXIST YET. The new-conversation canvas is
+   * scoped to a project and to nothing else, and "the tree already has twelve
+   * uncommitted files" is exactly the thing worth knowing BEFORE you point an
+   * agent at it. Same reader as `sessionDiff` with no base, so it answers
+   * `HEAD…worktree` and the surface says which question it answered.
+   */
+  projectDiff(projectId: string): SessionDiff {
+    return sessionDiff(this.git, { cwd: this.getProject(projectId).root });
+  }
+
+  /** One file's patch in a project's own checkout, for the same surface. */
+  projectFilePatch(projectId: string, target: string, options: { untracked?: boolean } = {}): { patch: string; binary: boolean } {
+    const project = this.getProject(projectId);
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    // Fenced exactly as the session read is: a pathspec is a file read, and a
+    // client that could name the directory could name anything on the machine.
+    const resolved = path.resolve(project.root, target);
+    const prefix = project.root.endsWith(path.sep) ? project.root : `${project.root}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the project");
+    return sessionFilePatch(this.git, {
+      cwd: project.root,
+      path: path.relative(project.root, resolved),
+      ...(options.untracked ? { untracked: true } : {}),
+    });
+  }
+
+  /**
    * What this session has done to the repository, from where it started.
    *
    * READ AGAINST THE SESSION'S OWN CHECKOUT and its own recorded base, both of

@@ -90,6 +90,19 @@ function readStore(): StoredPanel {
  * "is this a tab id" is a question about SHAPE and cannot be answered by
  * membership.
  */
+/**
+ * THE KEY A CANVAS USES BEFORE IT HAS A SESSION.
+ *
+ * The same shape the draft store uses (`new:<projectId>`), and for the same
+ * reason: a new-conversation canvas is a real place a person arranges — opening
+ * Issues, resizing the panel — and it forgot all of it on every visit because
+ * the only key it could offer was a session id that did not exist yet. Scoped
+ * per PROJECT because that is what the canvas is scoped to.
+ */
+export function canvasPanelKey(projectId: string): string {
+  return `new:${projectId}`;
+}
+
 export function readPanelTabs<Tab extends string>(sessionId: string, isKnown: (tab: string) => tab is Tab): PanelTabState<Tab> {
   const stored = readStore().sessions[sessionId];
   if (!stored) return emptyPanelTabs<Tab>();

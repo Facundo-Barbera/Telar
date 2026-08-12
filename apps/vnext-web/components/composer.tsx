@@ -261,6 +261,7 @@ export function Composer({
   session,
   projectId,
   projectName,
+  greeting,
   usage,
   backgroundTasks,
   onDraftChange,
@@ -299,6 +300,8 @@ export function Composer({
   session?: Session;
   projectId: string;
   projectName?: string;
+  /** Which greeting the canvas opens on, chosen by the page. */
+  greeting?: number;
   /** The newest turn's usage — the context readout's only honest source. */
   usage?: UsageSnapshot;
   /** Work that outlives the turn that started it. */
@@ -493,7 +496,9 @@ export function Composer({
           the sentence jumping out from under a composer that is still moving.
           It is mounted only while fresh, so an ordinary session never pays for
           the height. */}
-      {fresh && <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} />}
+      {fresh && (
+        <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} {...(greeting === undefined ? {} : { index: greeting })} />
+      )}
 
       {queued.length > 0 && (
         <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2" aria-label="Queued messages">

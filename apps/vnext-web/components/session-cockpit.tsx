@@ -25,6 +25,7 @@ import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./trans
 import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, VNextRightPanel, type PanelTab } from "./right-panel";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import {
+  canvasPanelKey,
   closePanelTab,
   emptyPanelTabs,
   openPanelTab,
@@ -339,7 +340,22 @@ function EmptyTranscript({ loading }: { loading: boolean }) {
  *   (`/projects/:id/sessions/new`), where nothing is persisted until the first
  *   message is sent.
  */
-export function SessionCockpit({ projectId, sessionId: routeSessionId }: { projectId: string; sessionId?: string }) {
+export function SessionCockpit({
+  projectId,
+  sessionId: routeSessionId,
+  projectName: serverProjectName,
+  greeting,
+}: {
+  projectId: string;
+  sessionId?: string;
+  /** Resolved by the page, so the breadcrumb and the greeting never paint the
+   *  raw id first and correct themselves a moment later. */
+  projectName?: string;
+  /** Which phrase the canvas opens on. Chosen on the server for the same
+   *  reason: a phrase picked after mount is a phrase the reader watches
+   *  change. */
+  greeting?: number;
+}) {
   /**
    * THE SESSION ID IS STATE, NOT JUST A PROP.
    *
@@ -418,7 +434,12 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
    * "go there", which means opening a tab that may not exist yet.
    */
   const [panel, setPanel] = useState<PanelTabState<PanelTab>>(() => emptyPanelTabs<PanelTab>());
-  const [projectName, setProjectName] = useState<string>();
+  /**
+   * SEEDED FROM THE SERVER when the page could resolve it, which is every case
+   * that matters — the canvas. The client read below stays for the session
+   * routes, which do not have it, and for a project renamed while open.
+   */
+  const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
 
@@ -470,24 +491,33 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
    * whole tree away. Reading it in an effect costs one extra paint and is the
    * only shape that is correct in both places.
    */
+  /**
+   * Where this cockpit's panel state lives.
+   *
+   * A CANVAS HAS ONE TOO. Before this, the arrangement only persisted once a
+   * session existed, so a new-conversation canvas reset its panel on every
+   * visit and again the moment the first message landed — the surfaces you had
+   * open to write that message vanished as it sent.
+   */
+  const panelKey = sessionId ?? canvasPanelKey(projectId);
+
   useEffect(() => {
-    if (!sessionId) return;
     // Deferred to a task rather than called in the effect body: a synchronous
     // setState there is a cascading render, and it is the same rule the git
     // readout in workspace-environment.tsx follows.
-    const task = window.setTimeout(() => setPanel(readPanelTabs<PanelTab>(sessionId, isPanelTab)), 0);
+    const task = window.setTimeout(() => setPanel(readPanelTabs<PanelTab>(panelKey, isPanelTab)), 0);
     return () => window.clearTimeout(task);
-  }, [sessionId]);
+  }, [panelKey]);
 
   const updatePanel = useCallback(
     (next: (current: PanelTabState<PanelTab>) => PanelTabState<PanelTab>) => {
       setPanel((current) => {
         const updated = next(current);
-        if (sessionId) writePanelTabs(sessionId, updated, Date.now());
+        writePanelTabs(panelKey, updated, Date.now());
         return updated;
       });
     },
-    [sessionId],
+    [panelKey],
   );
   /** Folded once here rather than in both the panel and the pinned summary, so
    *  the two cannot disagree about which tabs are open. */
@@ -756,6 +786,11 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
           const patched = await api.updateSession(target, creationPatch);
           setSession(patched.session);
         }
+        // THE PANEL ARRANGEMENT SURVIVES THE SESSION BEING BORN. The surfaces
+        // you had open while writing the first message are the surfaces you
+        // want open while it runs; without this hand-off the key changes from
+        // the canvas's to the session's and the panel resets exactly then.
+        writePanelTabs(target, panel, Date.now());
         setSessionId(target);
         // Only when the patch did not already give us a newer record.
         if (Object.keys(creationPatch).length === 0) setSession(created.session);
@@ -1004,6 +1039,7 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
             : {})}
           projectId={session?.projectId ?? projectId}
           {...(projectName ? { projectName } : {})}
+          {...(greeting === undefined ? {} : { greeting })}
           {...(session ? { session } : {})}
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}

@@ -18,7 +18,9 @@ describe("the greeting list", () => {
     }
   });
 
-  test("the first one is the plain one, because it is what the server renders", () => {
+  test("the plain one is still in the list, and is what an out-of-range index falls back to", () => {
+    // No longer special — the server picks the phrase now, so nothing has to be
+    // safe to flicker away from. It is still the sensible fallback.
     expect(GREETINGS[0]).toEqual({ before: "Let's work on ", after: "" });
   });
 });
@@ -37,9 +39,9 @@ describe("rotation", () => {
     expect(index).toBe(0);
   });
 
-  test("a stored counter is clamped into range rather than trusted", () => {
-    // localStorage holds whatever was last written there, including something
-    // another build wrote, or garbage a user typed into devtools.
+  test("a chosen index is clamped into range rather than trusted", () => {
+    // It crosses a serialization boundary from the server, and an index past
+    // the end renders nothing at all.
     expect(greetingForVisit(0)).toBe(0);
     expect(greetingForVisit(GREETINGS.length)).toBe(0);
     expect(greetingForVisit(-3)).toBe(3 % GREETINGS.length);

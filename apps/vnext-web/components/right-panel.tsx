@@ -82,7 +82,7 @@ const api = createVNextApi();
  */
 const SURFACES = [
   { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and background work." },
-  { id: "changes", label: "Changes", icon: PencilIcon, blurb: "Every file this session said it wrote." },
+  { id: "changes", label: "Changes", icon: PencilIcon, blurb: "Every file the conversation says it wrote." },
   /**
    * CHANGES AND GIT ARE NOT THE SAME SURFACE, and keeping both is the point.
    * Changes reads the JOURNAL — what the agent reported, with the patch its own
@@ -90,7 +90,7 @@ const SURFACES = [
    * actually differs from where the session started, including side effects
    * nobody narrated. The Git surface is where the two are joined.
    */
-  { id: "git", label: "Git", icon: GitBranchIcon, blurb: "What the repository has, against where this session started." },
+  { id: "git", label: "Git", icon: GitBranchIcon, blurb: "What the checkout has that its last commit does not." },
   /**
    * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
    * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
@@ -98,7 +98,7 @@ const SURFACES = [
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues. Drag one into the message." },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests, and this session's own." },
-  { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this session has spent." },
+  { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this conversation has spent." },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -640,6 +640,7 @@ export function VNextPanelSurface({
     return (
       <GitSurface
         {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
         reportedPaths={reportedPaths}
         suggestion={sessionTitle?.trim() || "Session work"}
         {...(active ? { active } : {})}

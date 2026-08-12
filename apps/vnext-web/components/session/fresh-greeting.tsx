@@ -32,35 +32,20 @@ import {
 
 const api = createVNextApi();
 
-/** Where the rotation counter lives. Versioned like every other key this app
- *  writes, so a shape change cannot poison an old one. */
-const ROTATION_KEY = "telar:greeting:v1";
-
-export function FreshGreeting({ projectId, projectName }: { projectId: string; projectName?: string }) {
+export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { projectId: string; projectName?: string; index?: number }) {
   const router = useRouter();
-  const [index, setIndex] = useState(0);
+  /**
+   * CHOSEN BY THE PAGE, ON THE SERVER, and only ever changed by a human
+   * pressing it.
+   *
+   * This used to pick after mount from a localStorage counter, which meant the
+   * canvas painted the plain phrase and then visibly rewrote itself — one of
+   * three steps the reader could watch this screen take before it settled. The
+   * server can pick a number as well as the client can, and a number that
+   * arrives as a prop is a number the client never disagrees about.
+   */
+  const [index, setIndex] = useState(greetingForVisit(initial));
   const [projects, setProjects] = useState<Project[]>([]);
-
-  useEffect(() => {
-    /**
-     * DEFERRED TO A TASK, which is this app's established shape for "read
-     * something the server could not have known". The server rendered phrase 0
-     * because it has no localStorage and no random it can agree with the client
-     * about; picking here and swapping is the only hydration-safe way to
-     * rotate, and it is why phrase 0 is the plainest one.
-     */
-    const task = window.setTimeout(() => {
-      try {
-        const seen = Number(window.localStorage.getItem(ROTATION_KEY) ?? "0");
-        setIndex(greetingForVisit(seen));
-        window.localStorage.setItem(ROTATION_KEY, String(nextGreeting(seen)));
-      } catch {
-        // Private browsing, or storage disabled. The canonical phrase is a
-        // perfectly good answer and nothing else here depends on it.
-      }
-    }, 0);
-    return () => window.clearTimeout(task);
-  }, []);
 
   const loadProjects = useCallback(async () => {
     try {

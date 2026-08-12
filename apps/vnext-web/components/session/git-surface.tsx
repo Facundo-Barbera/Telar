@@ -106,11 +106,13 @@ function Patch({ patch }: { patch: string }) {
  * timer for content nobody asked to see.
  */
 function ReviewFileRow({
-  sessionId,
+  readPatch,
   file,
   reported,
 }: {
-  sessionId: string;
+  /** Session-scoped or project-scoped — the row does not care which, which is
+   *  what lets one surface serve a conversation and a canvas. */
+  readPatch: (path: string, untracked: boolean) => Promise<{ file: { patch: string; binary: boolean } }>;
   file: GitFileChange;
   reported: boolean;
 }) {
@@ -122,8 +124,7 @@ function ReviewFileRow({
   useEffect(() => {
     if (!open || patch !== undefined || failed) return;
     let cancelled = false;
-    void api
-      .sessionFilePatch(sessionId, file.path, { untracked: file.status === "untracked" })
+    void readPatch(file.path, file.status === "untracked")
       .then((result) => {
         if (!cancelled) setPatch(result.file.binary ? "" : result.file.patch);
       })
@@ -133,7 +134,7 @@ function ReviewFileRow({
     return () => {
       cancelled = true;
     };
-  }, [open, patch, failed, sessionId, file.path, file.status]);
+  }, [open, patch, failed, readPatch, file.path, file.status]);
 
   return (
     /* Draggable on the wrapper so the row can be dropped into the message while
@@ -368,6 +369,8 @@ function CommitBox({
 
 export function GitSurface({
   sessionId,
+  /** Present always; used when there is no session yet. */
+  projectId,
   /** Paths the JOURNAL says this session wrote — `changedFiles(items)`. The other
    *  half of the reconciliation. */
   reportedPaths,
@@ -377,6 +380,7 @@ export function GitSurface({
   active,
 }: {
   sessionId?: string;
+  projectId?: string;
   reportedPaths: readonly string[];
   suggestion: string;
   active?: TurnState;
@@ -385,15 +389,33 @@ export function GitSurface({
   const [error, setError] = useState<string>();
   const [refreshing, setRefreshing] = useState(false);
 
+  /**
+   * A CANVAS REVIEWS ITS PROJECT.
+   *
+   * Before the first message there is no session and therefore no base, but
+   * there is very much a repository — and "the tree already has twelve
+   * uncommitted files" is exactly what a person wants to know before pointing
+   * an agent at it. Same surface, same rows, one scope narrower: `HEAD…worktree`
+   * instead of `base…worktree`, which the headline already knows how to say.
+   */
   const load = useCallback(async () => {
-    if (!sessionId) return;
     try {
-      setDiff((await api.sessionDiff(sessionId)).diff);
+      if (sessionId) setDiff((await api.sessionDiff(sessionId)).diff);
+      else if (projectId) setDiff((await api.projectDiff(projectId)).diff);
+      else return;
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof VNextApiError ? cause.message : "The engine did not answer.");
     }
-  }, [sessionId]);
+  }, [sessionId, projectId]);
+
+  const readPatch = useCallback(
+    (path: string, untracked: boolean) =>
+      sessionId
+        ? api.sessionFilePatch(sessionId, path, untracked ? { untracked: true } : {})
+        : api.projectFilePatch(projectId!, path, untracked ? { untracked: true } : {}),
+    [sessionId, projectId],
+  );
 
   useEffect(() => {
     // Deferred to a task rather than called in the effect body, matching the
@@ -410,10 +432,10 @@ export function GitSurface({
 
   const review = useMemo(() => (diff ? reconcileReview(diff, reportedPaths) : undefined), [diff, reportedPaths]);
 
-  if (!sessionId) {
+  if (!sessionId && !projectId) {
     return (
-      <PanelEmpty icon={<GitBranchIcon />} title="No session yet">
-        The first message creates the session; this shows what it then does to the repository.
+      <PanelEmpty icon={<GitBranchIcon />} title="No project">
+        This surface reviews a checkout, and there is not one to name yet.
       </PanelEmpty>
     );
   }
@@ -473,15 +495,20 @@ export function GitSurface({
               difference between an honest figure and a wrong one: a session
               that committed its work would otherwise review as having done
               nothing at all. */}
-          {diff.base
-            ? "Everything this session changed, committed and uncommitted."
-            : "This session recorded no starting commit, so this is only what is uncommitted right now — anything it committed is not counted."}
+          {!sessionId
+            ? "Everything uncommitted in this project right now."
+            : diff.base
+              ? "Everything this session changed, committed and uncommitted."
+              : "This session recorded no starting commit, so this is only what is uncommitted right now — anything it committed is not counted."}
           {diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
           {diff.truncated ? " The list below is capped; the figures above are not." : ""}
         </p>
       </div>
 
-      <ReconciliationBand review={review} />
+      {/* The reconciliation needs a TRANSCRIPT to disagree with. A canvas has
+          none, so the band would be reporting every file as "never mentioned"
+          by a session that has not said anything yet. */}
+      {sessionId && <ReconciliationBand review={review} />}
       <CommitList commits={diff.commits} />
 
       {review.rows.length === 0 ? (
@@ -492,33 +519,48 @@ export function GitSurface({
       ) : (
         <div className="flex flex-col">
           {/* Unreported rows lead. They are the ones a reviewer has not seen,
-              and burying them in alphabetical order defeats the point. */}
-          {review.rows.filter((row) => !row.reported).length > 0 && review.rows.some((row) => row.reported) && (
+              and burying them in alphabetical order defeats the point. On a
+              canvas there is no transcript, so NOTHING is unreported — badging
+              every row would be reporting a disagreement with a conversation
+              that has not happened. */}
+          {sessionId && review.rows.filter((row) => !row.reported).length > 0 && review.rows.some((row) => row.reported) && (
             <PanelDivider label="not in the transcript" />
           )}
           {review.rows
             .filter((row) => !row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} sessionId={sessionId} file={row.file} reported={false} />
+              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported={!sessionId} />
             ))}
-          {review.rows.some((row) => row.reported) && review.rows.some((row) => !row.reported) && <PanelDivider label="the session wrote these" />}
+          {sessionId && review.rows.some((row) => row.reported) && review.rows.some((row) => !row.reported) && (
+            <PanelDivider label="the session wrote these" />
+          )}
           {review.rows
             .filter((row) => row.reported)
             .map((row) => (
-              <ReviewFileRow key={row.file.path} sessionId={sessionId} file={row.file} reported />
+              <ReviewFileRow key={row.file.path} readPatch={readPatch} file={row.file} reported />
             ))}
         </div>
       )}
 
       <div className="mt-auto">
-        <CommitBox
+        {sessionId ? (
+          <CommitBox
           sessionId={sessionId}
           suggestion={suggestion}
           files={review.filesChanged}
           busy={active === "running" || active === "claimed"}
           workspacePath={diff.workspacePath}
           onCommitted={() => void load()}
-        />
+          />
+        ) : (
+          /* No session, no commit. Committing a project's existing uncommitted
+             work from a canvas would be snapshotting somebody else's work under
+             a conversation that has not started. */
+          <p className="border-t border-border p-3 text-[11px] leading-snug text-muted-foreground">
+            This is the project&rsquo;s own uncommitted work, before this conversation starts. Send a message and this becomes a review of
+            what the session itself changed.
+          </p>
+        )}
       </div>
     </div>
   );

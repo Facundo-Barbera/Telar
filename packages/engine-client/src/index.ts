@@ -170,6 +170,18 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${suffix}`);
   }
 
+  /** What is uncommitted in a project right now — the review a canvas shows
+   *  before its conversation exists. */
+  projectDiff(projectId: string): Promise<{ diff: SessionDiff }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff`);
+  }
+
+  projectFilePatch(projectId: string, path: string, options: { untracked?: boolean } = {}): Promise<{ file: { patch: string; binary: boolean } }> {
+    const query = new URLSearchParams({ path });
+    if (options.untracked) query.set("untracked", "1");
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`);
+  }
+
   /** Which models a provider says it has. Cached in the engine for five
    *  minutes — answering means spawning the provider's own CLI. */
   modelCatalogue(driver: ProviderDriverKind, options: { refresh?: boolean } = {}): Promise<{ catalogue: ModelCatalogue }> {

@@ -12,10 +12,11 @@
  * a CONTROL — you can press it and change it — and a template string cannot hold
  * a button. `before` and `after` are the two halves of the sentence.
  *
- * THE FIRST ONE IS NOT RANDOM AND THAT IS DELIBERATE. It is what renders on the
- * server, before the client has picked; every other phrase swaps in after mount.
- * Making the plainest line the one that can flicker into something else keeps
- * the transition reading as intentional rather than as a glitch.
+ * THE PHRASE IS CHOSEN ON THE SERVER, which is why there is no "safe first
+ * one" any more. The canvas used to render phrase 0 and then rewrite itself
+ * once the client had read a counter — one of three visible steps that screen
+ * took before it settled. The page picks a number, the number arrives as a
+ * prop, and the first paint is the final paint.
  */
 export type Greeting = { before: string; after: string };
 
@@ -44,21 +45,18 @@ export function nextGreeting(index: number): number {
 }
 
 /**
- * Where to start on this visit.
+ * Clamp a chosen index into range.
  *
- * ROTATES ACROSS VISITS RATHER THAN ON A TIMER. A sentence that rewrites itself
+ * ONE PHRASE PER PAGE LOAD, never on a timer: a sentence that rewrites itself
  * while you are reading it is a distraction with no upside, and this one sits
- * directly above the thing you came to type into. One phrase per new
- * conversation is the cadence that makes it feel alive without ever moving under
- * the cursor.
+ * directly above the thing you came to type into.
+ *
+ * The index arrives from the server, so this is a boundary check rather than a
+ * choice — but it is a real one. A number out of range, or one that stopped
+ * being a number somewhere in transit, would index past the end and render
+ * nothing at all.
  */
 export function greetingForVisit(seed: number): number {
-  // NOT FINITE MEANS START OVER. The seed comes from `localStorage`, so it is
-  // whatever was last written there — including something another build wrote,
-  // or a value that stopped being a number on the way through `Number()`.
-  // Without this the modulo yields NaN and the lookup silently misses.
   if (!Number.isFinite(seed)) return 0;
-  // Modulo rather than random so the sequence is a rotation — every phrase gets
-  // its turn, instead of the same three coming up all week.
   return Math.abs(Math.trunc(seed)) % GREETINGS.length;
 }

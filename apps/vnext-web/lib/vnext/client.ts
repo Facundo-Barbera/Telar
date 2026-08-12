@@ -154,6 +154,19 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       }
       return payload as { attachment: TurnAttachment };
     },
+    /** What is uncommitted in a project right now — what the canvas reviews
+     *  before its conversation exists. */
+    projectDiff: (projectId: string) =>
+      request<{ diff: SessionDiff }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/diff`),
+    projectFilePatch: (projectId: string, path: string, options: { untracked?: boolean } = {}) => {
+      const query = new URLSearchParams({ path });
+      if (options.untracked) query.set("untracked", "1");
+      return request<{ file: { patch: string; binary: boolean } }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`,
+      );
+    },
     /** What this session has done to the repository since it started — committed
      *  and uncommitted together, from the base recorded at creation. */
     sessionDiff: (sessionId: string) =>
