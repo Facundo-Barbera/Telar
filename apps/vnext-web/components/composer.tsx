@@ -25,8 +25,8 @@
  * see is indistinguishable from a keystroke that did nothing.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
@@ -38,6 +38,11 @@ import { cn } from "@/lib/utils";
 
 /** How long a first Escape stays armed. */
 const ESC_ARM_WINDOW_MS = 3_000;
+
+/** The contract's own ceiling (`TurnSubmission.attachments`). Enforced here so
+ *  the seventeenth file is refused at the point of picking rather than at the
+ *  end of a submit that also uploaded the first sixteen. */
+const MAX_ATTACHMENTS = 16;
 
 export type QueuedMessage = { runId: string; text: string };
 
@@ -52,44 +57,118 @@ function placeholderFor(ready: boolean, busy: boolean): string {
  *  appears only when there is more than one, because "1." above a single line is
  *  a list marker for a list nobody is reading. */
 /**
- * The donor's add-context menu, with its two items present but inert.
+ * The donor's add-context menu, now attached to a real file picker.
  *
  * THE TRIGGER IS NOT `disabled`, deliberately. `InputGroup` carries
  * `has-disabled:opacity-50`, so a permanently-disabled child inside the box
- * greys the whole composer for the life of the session — which is exactly what
- * it did. The menu's items carry the disabled state instead: they render in a
- * portal, outside the group, so they can say "not yet" without dimming
- * everything around them.
+ * greys the whole composer for the life of the session. Any item that cannot
+ * act carries the disabled state itself: items render in a portal, outside the
+ * group, so they can say "not yet" without dimming everything around them.
  */
-function AddContextMenu() {
+function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
+  const input = useRef<HTMLInputElement>(null);
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <button
-            type="button"
-            aria-label="Add context"
-            title="Add photos, files, or a screenshot"
-            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          />
-        }
+    <>
+      {/* Outside the menu, because the menu unmounts its content on select and
+          an input that unmounts mid-dialog never fires its change event. */}
+      <input
+        ref={input}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          onPick([...(event.target.files ?? [])]);
+          // Cleared so picking the SAME file twice in a row still fires.
+          event.target.value = "";
+        }}
+      />
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label="Add context"
+              title="Attach photos or files"
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            />
+          }
+        >
+          <PlusIcon className="size-4" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-64">
+          <DropdownMenuItem onClick={() => input.current?.click()}>
+            <ImageIcon />
+            Add photos or files
+          </DropdownMenuItem>
+          {/* Still inert, and now the only one: the cockpit runs in a browser
+              tab and cannot photograph a screen it is not allowed to read.
+              Capturing the AGENT's browser is the right panel's job. */}
+          <DropdownMenuItem disabled>
+            <MonitorIcon />
+            Take screenshot
+          </DropdownMenuItem>
+          <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+            Images are shown to the model directly. Anything else is written beside the session and named by path, so the agent can open it.
+          </p>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
+}
+
+/** Bytes, at the coarseness a human reads a file size at. */
+function fileSize(bytes: number): string {
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+/**
+ * One picked file, before it is sent.
+ *
+ * IMAGES SHOW THEMSELVES. A filename is a poor answer to "which screenshot did
+ * I attach", and the file is already in memory — `createObjectURL` costs a
+ * handle rather than a round trip. The URL is revoked on unmount because a leak
+ * here holds the whole file.
+ */
+function AttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }) {
+  /**
+   * MADE DURING RENDER, RELEASED ON UNMOUNT.
+   *
+   * The obvious shape — create it in an effect and `setState` — paints one
+   * frame with no thumbnail and trips `react-hooks/set-state-in-effect`. A
+   * `useMemo` has the URL ready on the first paint; the effect beside it exists
+   * only to revoke, because an object URL holds the entire file until it is.
+   */
+  const preview = useMemo(() => (file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined), [file]);
+  useEffect(() => {
+    if (!preview) return;
+    return () => URL.revokeObjectURL(preview);
+  }, [preview]);
+
+  return (
+    <span className="group/chip relative flex items-center gap-2 rounded-lg border border-border bg-background/80 py-1 pl-1 pr-2">
+      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
+        {preview ? (
+          // eslint-disable-next-line @next/next/no-img-element -- a blob URL for a file the user just picked; next/image cannot optimise it
+          <img src={preview} alt="" className="size-full object-cover" />
+        ) : (
+          <PaperclipIcon className="size-3.5 text-muted-foreground" />
+        )}
+      </span>
+      <span className="flex min-w-0 flex-col">
+        <span className="max-w-40 truncate text-[11px] font-medium leading-tight">{file.name}</span>
+        <span className="text-[10px] leading-tight text-muted-foreground">{fileSize(file.size)}</span>
+      </span>
+      <button
+        type="button"
+        aria-label={`Remove ${file.name}`}
+        onClick={onRemove}
+        className="ml-0.5 shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover/chip:opacity-100 focus-visible:opacity-100"
       >
-        <PlusIcon className="size-4" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
-        <DropdownMenuItem disabled>
-          <ImageIcon />
-          Add photos or files
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <MonitorIcon />
-          Take screenshot
-        </DropdownMenuItem>
-        <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
-          Attachments need a contract on the turn submission before this can send anything — the engine does not model them yet.
-        </p>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        <XIcon className="size-3.5" />
+      </button>
+    </span>
   );
 }
 
@@ -156,9 +235,13 @@ function QueueChip({
 export function Composer({
   draft,
   ready,
+  attachments,
+  onAttach,
   fresh = false,
   driver,
   onDriverChange,
+  envMode,
+  onEnvMode,
   pendingModel,
   busy,
   sending,
@@ -180,11 +263,19 @@ export function Composer({
 }: {
   draft: string;
   ready: boolean;
+  /** Files picked but not yet sent. Owned by the cockpit because sending them
+   *  is: they are uploaded as part of the same submit that creates the session. */
+  attachments: File[];
+  onAttach: (files: File[]) => void;
   /** No session exists yet: the composer is the whole screen, and the pills
    *  choose what the first message will CREATE rather than patching a record. */
   fresh?: boolean;
   driver?: ProviderDriverKind;
   onDriverChange?: (driver: ProviderDriverKind) => void;
+  /** Where the FIRST message will land. Only meaningful while fresh — a
+   *  worktree is cut when the session is created. */
+  envMode?: "local" | "worktree";
+  onEnvMode?: (mode: "local" | "worktree") => void;
   /** The model the first message will create the session with, while fresh. */
   pendingModel?: { model?: string; effort?: string };
   /** A turn is running or claimed. NOT a reason to disable anything. */
@@ -281,6 +372,13 @@ export function Composer({
     [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop],
   );
 
+  /**
+   * `onAttach` takes THE WHOLE NEW LIST, so removal is a filter and adding is a
+   * concat. One prop with one meaning beats an add/remove pair that can
+   * disagree about ordering.
+   */
+  const addFiles = (files: File[]) => onAttach([...attachments, ...files].slice(0, MAX_ATTACHMENTS));
+
   const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
   // The session's own record wins once it exists; before that, the pending
   // choice the first message will be created with.
@@ -354,13 +452,37 @@ export function Composer({
             disabled={!ready}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={onKeyDown}
+            /**
+             * PASTE A SCREENSHOT AND IT ATTACHES. ⌘⇧4 then ⌘V is how anyone
+             * actually shows an agent what they are looking at, and routing
+             * that through a file dialog would be the slowest possible path
+             * for the commonest case. Only intercepted when the clipboard
+             * actually holds a file — pasting text stays paste.
+             */
+            onPaste={(event) => {
+              const files = [...event.clipboardData.files];
+              if (files.length === 0) return;
+              event.preventDefault();
+              addFiles(files);
+            }}
           />
+          {attachments.length > 0 && (
+            <InputGroupAddon align="block-start" className="flex-wrap gap-1.5 px-2.5 pt-2.5">
+              {attachments.map((file, index) => (
+                <AttachmentChip
+                  key={`${file.name}-${file.size}-${index}`}
+                  file={file}
+                  onRemove={() => onAttach(attachments.filter((_, at) => at !== index))}
+                />
+              ))}
+            </InputGroupAddon>
+          )}
           <InputGroupAddon align="block-end" className="min-h-11 flex-wrap justify-between gap-1 border-t border-border/40 px-2.5 pt-1.5 pb-2">
             <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {/* Present but inert: attachments are a contract the engine does
                   not have yet. Disabled with the reason rather than absent, so
                   the row's shape is the one it will keep. */}
-              <AddContextMenu />
+              <AddContextMenu onPick={addFiles} />
               {/**
                * THE PILLS ARE THE DEFAULT; `···` IS WHAT HAPPENS WHEN THEY DO
                * NOT FIT.
@@ -452,6 +574,8 @@ export function Composer({
         projectId={projectId}
         {...(projectName ? { projectName } : {})}
         {...(session ? { session } : {})}
+        {...(envMode ? { envMode } : {})}
+        {...(onEnvMode ? { onEnvMode } : {})}
         {...(onOpenChanges ? { onOpenChanges } : {})}
       />
     </div>

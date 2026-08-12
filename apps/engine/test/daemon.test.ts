@@ -102,3 +102,70 @@ test("lease expiry is pruned without another worker control request", async () =
   expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "queued" });
   await expect(client.health()).resolves.toMatchObject({ worker: { registered: false } });
 });
+
+test("attachments upload as raw bytes, ride the turn, and the browser answers even with no browser", async () => {
+  const daemon = await startEngine({ vnextRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const project = await client.registerProject({ name: "One", root: "/tmp" });
+  const session = await client.createSession({ projectId: project.project.id });
+
+  // RAW BYTES, NOT BASE64 IN JSON — the JSON body cap on every other route is
+  // deliberately small, and this path is the largest thing a client sends.
+  const uploaded = await client.uploadAttachment(session.session.id, {
+    name: "shot.png",
+    mediaType: "image/png",
+    data: new Uint8Array([1, 2, 3]),
+  });
+  expect(uploaded.attachment).toMatchObject({ name: "shot.png", mediaType: "image/png", bytes: 3 });
+  expect(fs.readFileSync(uploaded.attachment.path)).toEqual(Buffer.from([1, 2, 3]));
+
+  await client.registerWorker("worker_one");
+  await client.submitTurn(session.session.id, {
+    runId: "run_one",
+    input: "look",
+    model: { model: "claude-haiku-4-5", effort: "low" },
+    attachments: [uploaded.attachment.id],
+  });
+  const claim = await client.claimTurn("worker_one");
+  expect(claim.claim?.turn.attachments).toEqual([uploaded.attachment]);
+  // The instance came from the SESSION: the submission has no field for one.
+  expect(claim.claim?.model).toEqual({
+    instanceId: session.session.providerInstanceId,
+    model: "claude-haiku-4-5",
+    effort: "low",
+  });
+
+  // No browser is attached to a daemon started without an embedded worker, and
+  // that is a `none` rather than a failure — the same answer a session that has
+  // never browsed gets.
+  await expect(client.browserState(session.session.id)).resolves.toEqual({
+    browser: { scopeKey: session.session.id, provider: "none", running: false, tabs: [] },
+  });
+});
+
+test("MCP servers are environment-scoped and survive a daemon restart", async () => {
+  const stateRoot = root();
+  const first = await startEngine({ vnextRoot: stateRoot });
+  daemons.push(first);
+  const client = new EngineClient(first.discovery);
+  await client.saveMcpServer({ id: "linear", label: "Linear", spec: { transport: "http", url: "https://mcp.linear.app" } });
+  await expect(client.listMcpServers()).resolves.toEqual({
+    mcpServers: [expect.objectContaining({ id: "linear", label: "Linear", enabled: true })],
+  });
+  await expect(client.saveMcpServer({ id: "bad", spec: { transport: "smoke-signal" } as never })).rejects.toBeInstanceOf(
+    EngineClientError,
+  );
+  await first.close();
+  daemons.length = 0;
+
+  // Written beside projects.json rather than into a session, so a tool
+  // configured once is still configured after a restart.
+  const second = await startEngine({ vnextRoot: stateRoot });
+  daemons.push(second);
+  const reconnected = new EngineClient(second.discovery);
+  await expect(reconnected.listMcpServers()).resolves.toEqual({
+    mcpServers: [expect.objectContaining({ id: "linear" })],
+  });
+  await expect(reconnected.removeMcpServer("linear")).resolves.toEqual({ removed: true });
+});

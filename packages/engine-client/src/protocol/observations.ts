@@ -22,6 +22,7 @@ import {
   BrowserProvider,
   BrowserTab,
   Id,
+  McpServer,
   ModelSelection,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -138,6 +139,15 @@ export const WorkerClaim = z.object({
    * uses its provider's own default — which is not the same as an invented one.
    */
   model: ModelSelection.optional(),
+  /**
+   * The user's MCP servers, resolved and filtered to the enabled ones.
+   *
+   * Carried for the same reason `model` is — the worker holds no store handle —
+   * and filtered HERE rather than in the worker so "disabled" means one thing.
+   * A worker that received the disabled ones and was trusted to skip them would
+   * be a second place the rule lives.
+   */
+  mcpServers: z.array(McpServer).optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
   turn: Turn,

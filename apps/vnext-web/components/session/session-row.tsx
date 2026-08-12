@@ -5,9 +5,10 @@
 //
 // LAYOUT DOCTRINE (unchanged): the title is the only thing you scan for, so it
 // leads. Project is meta, shown only when the sidebar says it earns the space
-// (`showProject`). COST IS DELIBERATELY ABSENT from the row — it is a number you
-// audit, not one you scan, and right-aligned mono currency on every line drew
-// the eye away from the title. It lives in the hover card with the rest.
+// (`showProject`). SPEND IS DELIBERATELY ABSENT from the row — it is a number
+// you audit, not one you scan, and a right-aligned mono figure on every line
+// drew the eye away from the title. It lives in the hover card with the rest,
+// and it is measured in TOKENS: see lib/format.ts for why money left.
 //
 // WHAT THE DONOR HAD THAT THIS CANNOT. The legacy row carried five live states:
 // running, unread, snoozed, needs-approval, and background runs. Every one of
@@ -21,7 +22,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArchiveIcon, CircleCheckIcon } from "lucide-react";
-import { fmtAgo, fmtCost, fmtTokens } from "@/lib/format";
+import { fmtAgo, fmtTokens } from "@/lib/format";
 import { bandOf, sessionHref, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
@@ -87,7 +88,9 @@ function SessionDetails({ session, renderedAt }: { session: SidebarSession; rend
       </div>
       <div className="mt-2.5 grid grid-cols-3 gap-px border-y border-border/60 bg-border/60">
         <StatTile label="Context" value={session.contextTokens ? fmtTokens(session.contextTokens) : "—"} />
-        <StatTile label="Cost" value={session.costUsd === undefined ? "—" : fmtCost(session.costUsd)} />
+        {/* Was "Cost". Tokens are the unit this cockpit reports — see
+            lib/format.ts for why money left. */}
+        <StatTile label="Tokens" value={session.tokens === undefined ? "—" : fmtTokens(session.tokens)} />
         <StatTile label="Workspace" value={session.worktreeBranch ? "Worktree" : "Local"} />
       </div>
       <div className="space-y-0.5 px-3 py-2">

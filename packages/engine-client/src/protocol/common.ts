@@ -221,3 +221,105 @@ export const BrowserTab = z.object({
   loading: z.boolean().optional(),
 });
 export type BrowserTab = z.infer<typeof BrowserTab>;
+
+/**
+ * THE BROWSER AS A HUMAN SEES IT, which is a different question from the one
+ * `browser.state.changed` answers.
+ *
+ * That event says which pages exist, and it is journalled because it is history.
+ * This is a POLLED SNAPSHOT of a live thing, and its whole reason for existing
+ * is `screenshot` — without pixels the browser panel can list URLs and nothing
+ * else, which is the state the cockpit shipped in. A screenshot is far too large
+ * and far too transient to journal: one per turn would dominate the event log
+ * within an hour of browsing, and the interesting one is always the current one.
+ *
+ * So it is a read, never an event. `null` screenshot is honest and common — the
+ * browser may not be running, and asking for a picture must never be the thing
+ * that launches a Chromium.
+ */
+export const BrowserSnapshot = z.object({
+  /** The session whose browser this is. Scopes are per session by construction:
+   *  two sessions must never share a page. */
+  scopeKey: Id,
+  provider: BrowserProvider,
+  running: z.boolean(),
+  tabs: z.array(BrowserTab),
+  /** A `data:` URL. NEVER a file path — a detached session has nobody to clean
+   *  up a screenshot directory, and a client on another machine could not read
+   *  one anyway. */
+  screenshot: z.string().min(1).optional(),
+  error: z.string().min(1).optional(),
+});
+export type BrowserSnapshot = z.infer<typeof BrowserSnapshot>;
+
+/**
+ * A file the human attached to a message.
+ *
+ * UPLOADED BEFORE THE TURN, NOT INSIDE IT. The submission carries ids and the
+ * bytes arrive on their own route, for three reasons that all bite at once:
+ * a JSON body has a size cap the rest of the protocol wants kept small; base64
+ * inflates every byte by a third on a path that is already the largest thing a
+ * client sends; and a failed upload should not cost the message. Two steps also
+ * make an attachment addressable, which is what lets a client show a thumbnail
+ * before anything is sent.
+ *
+ * `path` is where the engine wrote it. The drivers need a real path — Codex's
+ * `localImage` input element takes one, and a non-image file is only reachable
+ * by the agent's own Read tool — so the engine owning that path is what makes an
+ * attachment usable rather than merely stored.
+ */
+export const TurnAttachment = z.object({
+  id: Id,
+  /** The human's own filename, kept for display. Never used to build a path —
+   *  see the engine's `attachmentFile`, which mints its own. */
+  name: z.string().min(1),
+  /** As declared by the client. Trusted for DISPLAY and for choosing how to
+   *  hand the file to a provider; never for deciding what to execute. */
+  mediaType: z.string().min(1),
+  bytes: z.number().int().nonnegative(),
+  /** Absolute, engine-owned. Present on a stored attachment, which is the only
+   *  kind that exists — an attachment is written before it is referenced. */
+  path: z.string().min(1),
+});
+export type TurnAttachment = z.infer<typeof TurnAttachment>;
+
+/**
+ * An MCP server the USER configured, as opposed to the ones Telar registers for
+ * itself.
+ *
+ * THE TWO KINDS ARE NOT INTERCHANGEABLE and this shape is deliberately not the
+ * same as `TELAR_CAPABILITIES`. Telar's own tools run in-process, are named by
+ * `mcp__telar__<capability>_<verb>` (see ./tools.ts), and the engine vouches for
+ * them. One of these is a THIRD PARTY the user pointed at: it may be a command
+ * that gets spawned or a URL that gets called, so it carries a transport, it is
+ * disable-able without being deleted, and it is stored per environment rather
+ * than per session — the user configures a tool once, not once per conversation.
+ */
+export const McpServerSpec = z.discriminatedUnion("transport", [
+  z.object({
+    transport: z.literal("stdio"),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    /** Overlaid on the worker's own environment, never replacing it: an MCP
+     *  server still needs PATH and HOME like any other process. */
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({ transport: z.literal("http"), url: z.string().min(1), headers: z.record(z.string(), z.string()).optional() }),
+  z.object({ transport: z.literal("sse"), url: z.string().min(1), headers: z.record(z.string(), z.string()).optional() }),
+]);
+export type McpServerSpec = z.infer<typeof McpServerSpec>;
+
+export const McpServer = z.object({
+  /** Also the server's NAME as the provider sees it, which is what makes its
+   *  tools `mcp__<id>__<tool>`. Constrained to an id so a name cannot inject
+   *  separators into a tool name three clients then fail to parse. */
+  id: Id,
+  label: z.string().min(1),
+  /** Off is a real state and not deletion: a server that is failing should be
+   *  silenceable without losing how it was configured. */
+  enabled: z.boolean(),
+  spec: McpServerSpec,
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+});
+export type McpServer = z.infer<typeof McpServer>;

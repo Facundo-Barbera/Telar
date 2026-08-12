@@ -137,6 +137,11 @@ export class EngineWorker {
         // read absence as "use the provider's own default".
         ...(model?.model ? { model: model.model } : {}),
         ...(model?.effort ? { effort: model.effort } : {}),
+        // Both arrive ON THE CLAIM, resolved by the engine, for the same reason
+        // everything else here does: the worker holds no store handle and must
+        // not look anything up between claim and execution.
+        ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments } : {}),
+        ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
         providerSessionId,
         // Sessions are the browser's natural boundary: two sessions must not
         // share a tab, and a session's tabs must survive between its turns.

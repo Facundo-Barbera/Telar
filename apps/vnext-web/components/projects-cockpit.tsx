@@ -2,16 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, GitBranchIcon, MessageSquareIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
-import type { EngineHealth, Project, ProviderDriverKind, Session } from "@telar/engine-client";
+import { ActivityIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, MessageSquarePlusIcon, MessageSquareIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import type { EngineHealth, Project, Session } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { sessionsForSelectedProject } from "@/lib/vnext/project-selection";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelEmpty, PanelHeader, PanelRow } from "@/components/ui/panel";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 const api = createVNextApi();
@@ -41,15 +39,13 @@ export function ProjectsCockpit() {
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
   const [root, setRoot] = useState("");
-  const [title, setTitle] = useState("");
   /**
-   * Both are engine capabilities that existed with no way to ask for them: a
-   * session has been able to run on Codex, and to get a git worktree of its own,
-   * since those stages landed — the form simply never offered either, so every
-   * session was Claude-on-the-shared-checkout by omission rather than by choice.
+   * NO PROVIDER OR WORKTREE STATE HERE ANY MORE. Both moved to the composer
+   * canvas, where they can still be changed after you have started typing —
+   * the provider lives in the model picker's rail and the worktree in the
+   * composer's foot, which is the surface that already answers "where does
+   * this land".
    */
-  const [driver, setDriver] = useState<ProviderDriverKind>("claude");
-  const [worktree, setWorktree] = useState(false);
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -109,23 +105,6 @@ export function ProjectsCockpit() {
     } catch (cause) {
       setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not register the project."));
     } finally {
-      setSaving(false);
-    }
-  };
-
-  const createSession = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!selectedId) return;
-    setSaving(true);
-    try {
-      const result = await api.createSession(selectedId, {
-        ...(title ? { title } : {}),
-        driver,
-        envMode: worktree ? "worktree" : "local",
-      });
-      window.location.assign(`/projects/${encodeURIComponent(selectedId)}/sessions/${encodeURIComponent(result.session.id)}`);
-    } catch (cause) {
-      setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not create the session."));
       setSaving(false);
     }
   };
@@ -218,38 +197,22 @@ export function ProjectsCockpit() {
           <Panel>
             <PanelHeader icon={<MessageSquareIcon />} label={selectedProject ? `sessions · ${selectedProject.name}` : "sessions"} count={visibleSessions.length} />
             <div className="flex flex-col gap-4 p-3">
+              {/**
+                * STARTING A CONVERSATION IS A COMPOSER, NOT A FORM.
+                *
+                * This used to be title + provider + worktree + a "New session"
+                * button, which created an engine record BEFORE anybody had said
+                * anything — so an abandoned thought left a session in the rail,
+                * and the first thing a person met was a form rather than a
+                * place to type. The canvas asks for the message; the message
+                * creates the session, names it, and every one of those choices
+                * lives on the composer where it can still be changed.
+                */}
               {selectedId && (
-                <form className="flex flex-col gap-2 rounded-lg border border-border p-3" onSubmit={createSession}>
-                  <Input
-                    aria-label="Session title"
-                    placeholder="Session title (optional)"
-                    value={title}
-                    onChange={(event) => setTitle(event.target.value)}
-                  />
-                  <div className="flex flex-wrap items-center gap-3">
-                    <Tabs value={driver} onValueChange={(next) => setDriver(next as ProviderDriverKind)}>
-                      <TabsList className="h-7">
-                        <TabsTrigger value="claude" className="text-xs">
-                          Claude
-                        </TabsTrigger>
-                        <TabsTrigger value="codex" className="text-xs">
-                          Codex
-                        </TabsTrigger>
-                      </TabsList>
-                    </Tabs>
-                    <label
-                      className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground"
-                      title="Cut a git worktree and a branch of its own, so this session cannot collide with another working in the same project."
-                    >
-                      <Switch checked={worktree} onCheckedChange={setWorktree} />
-                      <GitBranchIcon className="size-3.5" />
-                      Own worktree
-                    </label>
-                    <Button type="submit" size="sm" className="ml-auto" disabled={saving}>
-                      New session
-                    </Button>
-                  </div>
-                </form>
+                <Button size="sm" className="self-start" render={<Link href={`/projects/${encodeURIComponent(selectedId)}/sessions/new`} />}>
+                  <MessageSquarePlusIcon className="size-3.5" />
+                  New conversation
+                </Button>
               )}
               {!selectedId && <PanelEmpty title="No project selected">Choose one on the left to see its sessions.</PanelEmpty>}
               {selectedId && visibleSessions.length === 0 && (

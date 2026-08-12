@@ -17,8 +17,21 @@ import {
   TerminalIcon,
   XIcon,
 } from "lucide-react";
-import type { BrowserProvider, BrowserTab, EngineEvent, FileChangeKind, Item, Task, TaskState, Turn, TurnState } from "@telar/engine-client";
+import type {
+  BrowserProvider,
+  BrowserSnapshot,
+  BrowserTab,
+  EngineEvent,
+  FileChangeKind,
+  Item,
+  Task,
+  TaskState,
+  Turn,
+  TurnState,
+} from "@telar/engine-client";
+import { createVNextApi } from "@/lib/vnext/client";
 import { Badge } from "@/components/ui/badge";
+import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
@@ -30,6 +43,11 @@ import {
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
 import { cn } from "@/lib/utils";
+
+/** The panel reads the engine directly for the one thing the journal cannot
+ *  carry: the browser's current pixels. Everything else on this surface is a
+ *  fold over records the cockpit already has. */
+const api = createVNextApi();
 
 /**
  * THE RAIL — a permanent column, not an overlay.
@@ -59,7 +77,7 @@ import { cn } from "@/lib/utils";
 const SURFACES = [
   { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and background work." },
   { id: "changes", label: "Changes", icon: PencilIcon, blurb: "Every file this session wrote." },
-  { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens and spend, per session." },
+  { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this session has spent." },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -174,17 +192,17 @@ export type SessionUsage = {
   output?: number;
   cacheRead?: number;
   cacheCreate?: number;
-  costUsd?: number;
   /** How many turns reported a figure, out of how many exist. An em dash means
    *  a figure is MISSING, and this is what lets the surface say so. */
   reported: number;
   turns: number;
 };
 
+/** NO `costUsd` FOLD. `UsageSnapshot` still carries the provider's own price and
+ *  nothing here reads it — see `UsageSurface` for why money left this cockpit. */
 export function sessionUsage(turns: readonly Turn[]): SessionUsage {
   const total = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
   let reported = 0;
-  let costUsd: number | undefined;
   for (const turn of turns) {
     if (!turn.usage) continue;
     reported += 1;
@@ -192,9 +210,8 @@ export function sessionUsage(turns: readonly Turn[]): SessionUsage {
     total.output += turn.usage.tokens.output;
     total.cacheRead += turn.usage.tokens.cacheRead;
     total.cacheCreate += turn.usage.tokens.cacheCreate;
-    if (typeof turn.usage.costUsd === "number") costUsd = (costUsd ?? 0) + turn.usage.costUsd;
   }
-  return { ...(reported > 0 ? total : {}), costUsd, reported, turns: turns.length };
+  return { ...(reported > 0 ? total : {}), reported, turns: turns.length };
 }
 
 const LIVE_TASK_STATES = new Set<TaskState>(["pending", "running", "waiting"]);
@@ -220,10 +237,6 @@ function figure(value: number | undefined): string {
   return value === undefined ? "—" : value.toLocaleString("en-US");
 }
 
-/** Same scaling as the transcript's per-turn price, so the two agree on sight. */
-function money(usd: number): string {
-  return `$${usd.toFixed(usd < 0.01 ? 4 : usd < 1 ? 3 : 2)}`;
-}
 
 const CHANGE_KIND: Partial<Record<FileChangeKind, string>> = {
   create: "new",
@@ -356,8 +369,57 @@ function ChangesSurface({ files }: { files: readonly ChangedFile[] }) {
  * so there is nothing to paint below. Drawing a grey rectangle where a page
  * would go would imply a webview that does not exist.
  */
-function BrowserPageSurface({ pageId, state }: { pageId: string; state?: BrowserState }) {
+/**
+ * How often an open browser tab asks the engine what it is looking at.
+ *
+ * A SCREENSHOT IS A ROUND TRIP THROUGH CHROMIUM, so this is not a frame rate
+ * and must not pretend to be one. Three seconds is fast enough to watch an
+ * agent work and slow enough that watching costs less than the work does. It
+ * only runs while a browser tab is the visible one.
+ */
+const BROWSER_POLL_MS = 3_000;
+
+/**
+ * The session's browser, WITH PIXELS.
+ *
+ * WHY THIS IS A POLL AND NOT AN EVENT. `browser.state.changed` is journalled
+ * because tabs are history; a screenshot is neither history nor small — one per
+ * navigation would dominate the event log inside an hour, and the only one
+ * anybody wants is the current one. So the live view is a read, taken while
+ * somebody is looking, and nothing is stored.
+ *
+ * THE PICTURE IS OF THE ACTIVE TAB, WHICH IS NOT ALWAYS THIS ONE. Playwright
+ * screenshots the page that has focus, so a background tab shows its address and
+ * says the picture belongs elsewhere rather than showing a different page's
+ * pixels under this page's title.
+ */
+function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; state?: BrowserState; sessionId?: string }) {
   const page = state?.tabs.find((tab) => tab.id === pageId);
+  const [snapshot, setSnapshot] = useState<BrowserSnapshot>();
+  const live = Boolean(page?.active) && Boolean(sessionId);
+
+  useEffect(() => {
+    if (!live || !sessionId) return;
+    let cancelled = false;
+    const read = async () => {
+      try {
+        const next = await api.browserState(sessionId, { screenshot: true });
+        if (!cancelled) setSnapshot(next.browser);
+      } catch {
+        // A browser that cannot be described must not break the panel around
+        // it: the address row above is still true.
+      }
+    };
+    // No `pending` flag: "waiting" is exactly "live with no snapshot yet", and
+    // a second piece of state for it would be one more thing to keep true.
+    void read();
+    const timer = window.setInterval(() => void read(), BROWSER_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [live, sessionId]);
+
   if (!page) {
     return (
       <PanelEmpty icon={<GlobeIcon />} title="This page is no longer open">
@@ -372,19 +434,36 @@ function BrowserPageSurface({ pageId, state }: { pageId: string; state?: Browser
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={page.url}>
           {page.url || "about:blank"}
         </span>
+        {live && !snapshot?.screenshot && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
         {page.loading && <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">loading</Badge>}
         {page.active && <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px] font-normal">active</Badge>}
       </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-        <div className="max-w-sm text-center">
-          <GlobeIcon className="mx-auto size-8 text-muted-foreground/40" />
-          <p className="mt-4 text-sm font-medium">{browserTabLabel(page)}</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Served by {BROWSER_PROVIDER[state!.provider]}. The engine reports this page’s address, title and loading state — there
-            is no screenshot and no webview, so there is nothing to render here.
-          </p>
+      {snapshot?.screenshot ? (
+        <div className="min-h-0 flex-1 overflow-auto bg-muted/40 p-2">
+          {/* eslint-disable-next-line @next/next/no-img-element -- a data URL polled from the engine; there is nothing for next/image to optimise */}
+          <img
+            src={snapshot.screenshot}
+            alt={`Screenshot of ${browserTabLabel(page)}`}
+            className="w-full rounded-md border border-border shadow-sm"
+          />
         </div>
-      </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+          <div className="max-w-sm text-center">
+            <GlobeIcon className="mx-auto size-8 text-muted-foreground/40" />
+            <p className="mt-4 text-sm font-medium">{browserTabLabel(page)}</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {!page.active
+                ? "The engine photographs whichever page has focus. This one is in the background, so its address is all there is to show until the agent brings it forward."
+                : snapshot?.error
+                  ? snapshot.error
+                  : snapshot && !snapshot.running
+                    ? `The ${BROWSER_PROVIDER[state?.provider ?? "none"]} is no longer running. This page is what it had open when it stopped.`
+                    : `Waiting on the first frame from ${BROWSER_PROVIDER[state?.provider ?? "none"]}.`}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -448,13 +527,24 @@ function AgentsSurface({ tasks }: { tasks: readonly Task[] }) {
   );
 }
 
+/**
+ * TOKENS, AND NO PRICE. The engine still carries the provider's `costUsd` and
+ * this surface deliberately does not read it: only some providers report one, a
+ * subscription seat has no per-turn price to report, and the total that results
+ * is a number a human cannot act on. Tokens are reported by everything, are
+ * what actually runs out, and are the same unit the context gauge speaks.
+ */
 function UsageSurface({ usage }: { usage: SessionUsage }) {
+  const total =
+    usage.input === undefined
+      ? undefined
+      : usage.input + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheCreate ?? 0);
   const rows: Array<[string, string]> = [
     ["Input", figure(usage.input)],
     ["Output", figure(usage.output)],
     ["Cache read", figure(usage.cacheRead)],
     ["Cache write", figure(usage.cacheCreate)],
-    ["Cost", usage.costUsd === undefined ? "—" : money(usage.costUsd)],
+    ["Total", figure(total)],
   ];
   return (
     <div className="flex flex-col">
@@ -470,7 +560,6 @@ function UsageSurface({ usage }: { usage: SessionUsage }) {
         {usage.reported === 0
           ? "No turn has reported usage yet. Every figure above is missing, not zero."
           : `Totalled across ${usage.reported} of ${usage.turns} turns. A turn the provider gave no figures for contributes nothing rather than a zero.`}
-        {usage.reported > 0 && usage.costUsd === undefined && " This provider reported tokens but no price."}
       </p>
     </div>
   );
@@ -482,16 +571,21 @@ export function VNextPanelSurface({
   tasks,
   turns,
   browser,
+  sessionId,
 }: {
   tab: PanelTab;
   files: readonly ChangedFile[];
   tasks: readonly Task[];
   turns: readonly Turn[];
   browser?: BrowserState;
+  /** Absent on a session that does not exist yet, which is also a session with
+   *  no browser — the live view simply has nothing to poll. */
+  sessionId?: string;
 }) {
   const usage = useMemo(() => sessionUsage(turns), [turns]);
   const pageId = browserTabId(tab);
-  if (pageId !== undefined) return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} />;
+  if (pageId !== undefined)
+    return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} />;
   if (tab === "changes") return <ChangesSurface files={files} />;
   if (tab === "agents") return <AgentsSurface tasks={tasks} />;
   return <UsageSurface usage={usage} />;
@@ -713,6 +807,7 @@ function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement 
  */
 export function VNextRightPanel({
   active,
+  sessionId,
   items = [],
   tasks = [],
   turns = [],
@@ -725,6 +820,10 @@ export function VNextRightPanel({
   onClose,
 }: {
   active?: TurnState;
+  /** Absent until the first message creates the session. The browser surface is
+   *  the only thing here that needs it — everything else folds records the
+   *  cockpit already holds. */
+  sessionId?: string;
   items?: readonly Item[];
   tasks?: readonly Task[];
   turns?: readonly Turn[];
@@ -916,7 +1015,14 @@ export function VNextRightPanel({
             {active && browserTabId(tab) === undefined && (
               <p className="px-4 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
             )}
-            <VNextPanelSurface tab={tab} files={files} tasks={tasks} turns={turns} {...(browser ? { browser } : {})} />
+            <VNextPanelSurface
+              tab={tab}
+              files={files}
+              tasks={tasks}
+              turns={turns}
+              {...(browser ? { browser } : {})}
+              {...(sessionId ? { sessionId } : {})}
+            />
           </>
         ) : (
           <PanelEmptyState onOpen={onOpenTab} {...(browser ? { browser } : {})} />

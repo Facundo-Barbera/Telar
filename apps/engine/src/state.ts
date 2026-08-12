@@ -11,15 +11,24 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   Item as ItemSchema,
+  McpServer as McpServerSchema,
+  McpServerSpec as McpServerSpecSchema,
   ModelSelection,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
   Task as TaskSchema,
   Turn as TurnSchema,
+  TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
+  type BrowserProvider,
+  type BrowserSnapshot,
+  type BrowserTab,
   type EngineEvent,
   type Item,
+  type McpServer,
+  type TurnAttachment,
+  type TurnModelSelection,
   type ProviderDriverKind,
   type Task,
   type Project,
@@ -143,10 +152,27 @@ export class EngineStateError extends Error {
   }
 }
 
+/**
+ * How large one attached file may be.
+ *
+ * 20 MB is above every screenshot and design mock and below the point where
+ * holding the bytes in memory to write them matters. It is a guard on the HTTP
+ * edge rather than a product limit: the cost of a too-large attachment lands on
+ * the provider's context, and refusing it here with a clear message beats
+ * discovering it three layers down as a token overflow.
+ */
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
+/** Per turn, so one message cannot smuggle 16 × 20 MB past the per-file cap. */
+const MAX_TURN_ATTACHMENTS = 16;
+
 export type EngineStatePaths = {
   root: string;
   projects: string;
   sessions: string;
+  /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json
+   *  rather than inside a session: a tool is configured once. */
+  mcpServers: string;
   engine: string;
   lock: string;
 };
@@ -191,6 +217,7 @@ export function statePaths(root: string): EngineStatePaths {
     root: resolved,
     projects: path.join(resolved, "projects.json"),
     sessions: path.join(resolved, "sessions"),
+    mcpServers: path.join(resolved, "mcp-servers.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
@@ -343,6 +370,27 @@ function tasksFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "tasks.json");
 }
 
+/** The id → metadata index for a session's uploaded files. */
+function attachmentsFile(paths: EngineStatePaths, sessionId: string): string {
+  return path.join(sessionDir(paths, sessionId), "attachments.json");
+}
+
+/**
+ * Where an attachment's bytes land.
+ *
+ * THE FILENAME IS MINTED HERE AND IS NOT THE HUMAN'S. `attachment.name` is
+ * whatever the client sent — `../../.ssh/id_rsa`, a newline, 4 KB of unicode —
+ * and it is kept only for display. The path is `<id><ext>` where the id is one
+ * the engine generated, so no user-supplied byte reaches the filesystem. The
+ * extension is the one part that follows the name, sanitised down to a short
+ * alphanumeric run, because a provider and a human both read files by suffix.
+ */
+function attachmentFile(paths: EngineStatePaths, sessionId: string, attachmentId: string, name: string): string {
+  assertId(attachmentId, "attachment id");
+  const extension = /\.([A-Za-z0-9]{1,12})$/.exec(name)?.[1]?.toLowerCase();
+  return path.join(sessionDir(paths, sessionId), "attachments", `${attachmentId}${extension ? `.${extension}` : ""}`);
+}
+
 function readJson(file: string): unknown | undefined {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -403,6 +451,23 @@ function readJournal(file: string): EngineEvent[] {
  * than implying someone was. The contract comment on `EngineRequest.notified` exists
  * for exactly this: it must be detectable, not inferred from absence.
  */
+/**
+ * The browser as the STORE is allowed to see it.
+ *
+ * Narrow on purpose, and `state` is optional: every test constructs an
+ * `EngineStore` directly, and requiring the full runtime here would drag
+ * Chromium's transport into all of them. A store with no browser answers
+ * `provider: "none"`, which is the same thing a session that never browsed
+ * answers — one code path, not two.
+ */
+export type AttachedBrowser = {
+  release(scopeKey: string, reason?: string): Promise<boolean>;
+  state?(
+    scopeKey: string,
+    options: { screenshot?: boolean; start?: boolean },
+  ): Promise<{ provider: BrowserProvider; running: boolean; tabs: BrowserTab[]; screenshot?: string | null; error?: string | null }>;
+};
+
 export type EngineNotifier = (input: {
   sessionId: string;
   runId: string;
@@ -420,10 +485,90 @@ export class EngineStore {
    * so the store keeps no provider dependency — every test builds an
    * EngineStore directly and must not pull Chromium in to do it.
    */
-  private browser?: { release(scopeKey: string, reason?: string): Promise<boolean> };
+  private browser?: AttachedBrowser;
 
-  attachBrowser(browser: { release(scopeKey: string, reason?: string): Promise<boolean> }): void {
+  attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
+  }
+
+  /**
+   * What the session's browser is looking at, for a human.
+   *
+   * ANSWERED FROM THE DAEMON'S OWN RUNTIME, which is a real limitation and is
+   * stated rather than hidden: the out-of-process worker owns a DIFFERENT
+   * `BrowserRuntime` that this process cannot reach (see worker-main.ts), so a
+   * deployment running its worker separately reports `provider: "none"` here
+   * even while that worker is driving a page. The journalled
+   * `browser.state.changed` observation still shows the tabs in that case,
+   * because the party that drove them reported them. Only the pixels are
+   * daemon-local.
+   *
+   * `provider: "none"` with no error is also the ordinary answer for a session
+   * that has never browsed, and asking must never be what starts a browser.
+   */
+  async browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
+    this.getSession(sessionId);
+    if (!this.browser?.state) {
+      return { scopeKey: sessionId, provider: "none", running: false, tabs: [] };
+    }
+    const state = await this.browser.state(sessionId, {
+      ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
+      ...(options.start === undefined ? {} : { start: options.start }),
+    });
+    return {
+      scopeKey: sessionId,
+      provider: state.provider,
+      running: state.running,
+      tabs: state.tabs,
+      ...(state.screenshot ? { screenshot: state.screenshot } : {}),
+      ...(state.error ? { error: state.error } : {}),
+    };
+  }
+
+  /**
+   * The user's own MCP servers.
+   *
+   * ENVIRONMENT-SCOPED, not per session or per project. A user configures a tool
+   * server once and expects every session to have it; per-session copies would
+   * mean re-entering credentials for each conversation and would leave no answer
+   * to "which of these forty copies is the real one".
+   */
+  listMcpServers(): McpServer[] {
+    const stored = readJson(this.paths.mcpServers) as { mcpServers?: unknown } | undefined;
+    const parsed = McpServerSchema.array().safeParse(stored?.mcpServers ?? []);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext MCP server registry");
+    return structuredClone(parsed.data);
+  }
+
+  /** Create or replace one server. Keyed by id because the id IS the name the
+   *  provider addresses its tools by — `mcp__<id>__<tool>`. */
+  saveMcpServer(input: { id: string; label?: string; enabled?: boolean; spec: unknown }): McpServer {
+    assertId(input.id, "mcp server id");
+    const spec = McpServerSpecSchema.safeParse(input.spec);
+    if (!spec.success) throw new EngineStateError("invalid_request", "MCP server configuration is invalid");
+    const servers = this.listMcpServers();
+    const at = this.now();
+    const existing = servers.find((server) => server.id === input.id);
+    const server: McpServer = {
+      id: input.id,
+      label: (input.label ?? existing?.label ?? input.id).trim().slice(0, 120) || input.id,
+      enabled: input.enabled ?? existing?.enabled ?? true,
+      spec: spec.data,
+      createdAt: existing?.createdAt ?? at,
+      updatedAt: at,
+    };
+    const next = existing ? servers.map((entry) => (entry.id === server.id ? server : entry)) : [...servers, server];
+    atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
+    return structuredClone(server);
+  }
+
+  removeMcpServer(id: string): boolean {
+    assertId(id, "mcp server id");
+    const servers = this.listMcpServers();
+    const next = servers.filter((server) => server.id !== id);
+    if (next.length === servers.length) return false;
+    atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
+    return true;
   }
 
   constructor(
@@ -682,10 +827,52 @@ export class EngineStore {
     return structuredClone([...this.readTasks(sessionId).values()]);
   }
 
-  submitTurn(sessionId: string, input: { runId: string; input: string }): { turn: Turn; replayed: boolean } {
+  /**
+   * Store one attached file and hand back its handle.
+   *
+   * WRITTEN BEFORE THE MESSAGE THAT REFERS TO IT, and independent of any turn:
+   * a human picks three files, changes their mind about one, then types. Binding
+   * bytes to a turn at upload time would mean either inventing a turn that does
+   * not exist yet or holding megabytes in memory until they send.
+   *
+   * The index is what makes an id resolvable. Without it `submitTurn` would have
+   * to take the whole attachment from the client — including its PATH — and a
+   * client-supplied path is a client-supplied file read.
+   */
+  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array }): TurnAttachment {
+    this.getSession(sessionId);
+    if (input.data.byteLength === 0) throw new EngineStateError("invalid_request", "attachment is empty");
+    if (input.data.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new EngineStateError("invalid_request", "attachment is larger than the engine accepts");
+    }
+    const name = input.name.trim().slice(0, 200) || "attachment";
+    const mediaType = input.mediaType.trim().slice(0, 120) || "application/octet-stream";
+    const id = `att_${crypto.randomUUID().replaceAll("-", "")}`;
+    const file = attachmentFile(this.paths, sessionId, id, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, input.data, { mode: 0o600 });
+    const attachment: TurnAttachment = { id, name, mediaType, bytes: input.data.byteLength, path: file };
+    const index = this.readAttachments(sessionId);
+    index.set(id, attachment);
+    atomicWrite(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
+    return structuredClone(attachment);
+  }
+
+  private readAttachments(sessionId: string): Map<string, TurnAttachment> {
+    const stored = readJson(attachmentsFile(this.paths, sessionId)) as { attachments?: unknown } | undefined;
+    const parsed = TurnAttachmentSchema.array().safeParse(stored?.attachments ?? []);
+    // A corrupt index costs the ABILITY TO REFERENCE old attachments, not the
+    // session. Throwing here would make one bad record unopenable forever.
+    return new Map((parsed.success ? parsed.data : []).map((attachment) => [attachment.id, attachment]));
+  }
+
+  submitTurn(
+    sessionId: string,
+    input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] },
+  ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
     assertText(input.input);
-    this.getSession(sessionId);
+    const session = this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
     const known = queue.turns.find((turn) => turn.runId === input.runId);
     if (known) {
@@ -719,6 +906,37 @@ export class EngineStore {
       state: "queued",
       acceptedAt: at,
       updatedAt: at,
+      ...(() => {
+        const ids = input.attachments ?? [];
+        if (ids.length === 0) return {};
+        if (ids.length > MAX_TURN_ATTACHMENTS) throw new EngineStateError("invalid_request", "too many attachments on one turn");
+        const index = this.readAttachments(sessionId);
+        const attachments = ids.map((id) => {
+          const found = index.get(id);
+          // Loud rather than silent: a message that says "look at this" and
+          // arrives with nothing attached is worse than one that fails to send.
+          if (!found) throw new EngineStateError("not_found", "attachment does not exist on this session");
+          return found;
+        });
+        return { attachments };
+      })(),
+      /**
+       * PER-TURN MODEL, STAMPED WITH THE SESSION'S INSTANCE.
+       *
+       * The client sends only `model`/`effort` — `TurnModelSelection` has no
+       * instance field — and the instance comes from the session here. That is
+       * what makes "the provider cannot change mid-conversation" true by
+       * construction: there is no wire shape that could ask for it.
+       */
+      ...(input.model
+        ? {
+            model: {
+              instanceId: session.providerInstanceId,
+              model: input.model.model,
+              ...(input.model.effort ? { effort: input.model.effort } : {}),
+            },
+          }
+        : {}),
     };
     queue.turns.push(turn);
     this.writeQueue(sessionId, queue);
@@ -752,6 +970,18 @@ export class EngineStore {
       const turn = this.claimTurn(session.id, workerId);
       if (!turn) continue;
       const resumeCursor = this.resumeCursorFor(session);
+      /**
+       * THE TURN'S OWN CHOICE BEATS THE SESSION'S, and that ordering is the
+       * whole of "per-turn model".
+       *
+       * It matters most where it is least visible: queue three messages, change
+       * the pill between them, and each one has to run on what was chosen when
+       * it was written — not on whatever the session happens to say by the time
+       * a worker gets to it. The session default is what a turn falls back to,
+       * not what overrides it.
+       */
+      const model = turn.model ?? session.model;
+      const mcpServers = this.listMcpServers().filter((server) => server.enabled);
       return {
         sessionId: session.id,
         projectRoot: session.workspace.path,
@@ -760,7 +990,10 @@ export class EngineStore {
         // Resolved HERE, at claim time, so a model changed mid-session applies
         // to the next turn the worker picks up rather than to the one it is
         // already running.
-        ...(session.model ? { model: session.model } : {}),
+        ...(model ? { model } : {}),
+        // Filtered to the enabled ones in the engine, so "disabled" is decided
+        // in exactly one place rather than trusted to every worker.
+        ...(mcpServers.length > 0 ? { mcpServers } : {}),
         ...(resumeCursor ? { resumeCursor } : {}),
         turn,
       };

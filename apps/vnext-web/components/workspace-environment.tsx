@@ -35,6 +35,8 @@ export function WorkspaceEnvironment({
   projectId,
   projectName,
   session,
+  envMode,
+  onEnvMode,
   onOpenChanges,
 }: {
   projectId: string;
@@ -43,6 +45,16 @@ export function WorkspaceEnvironment({
    *  — so its checkout is the honest thing to name, and the repository's HEAD
    *  would be actively misleading. */
   session?: Session;
+  /**
+   * WHERE THE FIRST MESSAGE WILL LAND, while there is no session yet.
+   *
+   * This is the one create-time choice with nowhere else to live: a worktree is
+   * cut when the session is created and cannot be changed afterwards, so it
+   * belongs to the surface that already answers "where does this land" rather
+   * than to a form standing between a person and their first sentence.
+   */
+  envMode?: "local" | "worktree";
+  onEnvMode?: (mode: "local" | "worktree") => void;
   onOpenChanges?: () => void;
 }) {
   const [git, setGit] = useState<GitOverview>();
@@ -74,6 +86,10 @@ export function WorkspaceEnvironment({
   const worktreeBranch = session?.workspace.mode === "worktree" ? session.workspace.branch : undefined;
   const branch = worktreeBranch ?? git?.branch;
   const dirty = git?.dirtyFiles ?? 0;
+  /** Only while the session does not exist. Afterwards the worktree is a fact
+   *  on disk, not a setting. */
+  const choosing = Boolean(onEnvMode) && !session;
+  const willBeWorktree = envMode === "worktree";
 
   return (
     <div className="mx-3 -mt-px">
@@ -108,17 +124,47 @@ export function WorkspaceEnvironment({
           <p className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Environment</p>
 
           <div className="rounded-xl bg-muted/35 p-1">
-            <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-              <LaptopIcon className="size-4 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-sm">
-                {worktreeBranch ? "Own worktree" : "Project checkout"}
-              </span>
-              {git?.repository && (
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
-                </span>
-              )}
-            </div>
+            {choosing ? (
+              /* Two rows rather than a switch: they are two different places
+                 the work lands, and each one gets to say what that means. */
+              <>
+                {(["local", "worktree"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => onEnvMode?.(mode)}
+                    className={cn(
+                      "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
+                      (mode === "worktree") === willBeWorktree ? "bg-accent" : "hover:bg-accent/60",
+                    )}
+                  >
+                    {mode === "worktree" ? (
+                      <GitBranchIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <LaptopIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm">{mode === "worktree" ? "Own worktree" : "Project checkout"}</span>
+                      <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+                        {mode === "worktree"
+                          ? "Cut a branch and a checkout of its own, so this session cannot collide with another."
+                          : "Work directly in the project, alongside anything else running on it."}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </>
+            ) : (
+              <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+                <LaptopIcon className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-sm">{worktreeBranch ? "Own worktree" : "Project checkout"}</span>
+                {git?.repository && (
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
+                  </span>
+                )}
+              </div>
+            )}
             {branch && (
               <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
                 <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -139,9 +185,11 @@ export function WorkspaceEnvironment({
               ? "The engine did not answer, so this may be out of date."
               : git && !git.repository
                 ? "This project is not a git repository. Sessions still run; there is simply no branch to report."
-                : worktreeBranch
-                  ? "This session has a checkout of its own, so its work cannot collide with another session on this project."
-                  : "This session shares the project checkout with anything else running on it."}
+                : choosing
+                  ? "Chosen when the first message creates the session, and fixed afterwards — a worktree is cut once."
+                  : worktreeBranch
+                    ? "This session has a checkout of its own, so its work cannot collide with another session on this project."
+                    : "This session shares the project checkout with anything else running on it."}
           </p>
 
           {/* The donor's footer, pointing at the same place: the surface that

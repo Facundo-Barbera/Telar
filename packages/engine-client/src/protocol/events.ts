@@ -18,7 +18,7 @@
  * event.data.text === "string"` before it dares use a field.
  */
 import { z } from "zod";
-import { BrowserProvider, BrowserTab, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
+import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
 import { Project, Runtime, RuntimeState, Session, Turn, TurnFailureCode } from "./entities";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
@@ -253,12 +253,32 @@ export const EngineErrorBody = z.object({
 });
 export type EngineErrorBody = z.infer<typeof EngineErrorBody>;
 
+/**
+ * What a client may choose for ONE message, as opposed to for the session.
+ *
+ * THERE IS NO `instanceId` HERE, and its absence is the rule rather than an
+ * omission: a turn is routed by the session's `providerInstanceId`, which owns
+ * the resume cursor that makes the conversation continuous. A turn that could
+ * name a different instance could strand the history mid-conversation. So the
+ * engine stamps the instance from the session and a client can only ever change
+ * the model and the effort — the provider is not a per-turn question, and this
+ * shape is what makes that true by construction instead of by validation.
+ */
+export const TurnModelSelection = z.object({
+  model: z.string().min(1),
+  effort: Effort.optional(),
+});
+export type TurnModelSelection = z.infer<typeof TurnModelSelection>;
+
 /** Submitting a turn. `runId` is the client's idempotency key — resubmitting
  *  the same one returns the original turn with `replayed: true`. */
 export const TurnSubmission = z.object({
   runId: Id,
   input: z.string(),
-  model: z.object({ instanceId: Id, model: z.string().min(1) }).partial().optional(),
+  model: TurnModelSelection.optional(),
+  /** Ids from `POST /v2/sessions/:id/attachments`. The bytes are already on
+   *  disk by the time this is sent — see `TurnAttachment`. */
+  attachments: z.array(Id).max(16).optional(),
 });
 export type TurnSubmission = z.infer<typeof TurnSubmission>;
 

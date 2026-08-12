@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type { TurnObservation } from "@telar/engine-client";
 import { unifiedDiff } from "../src/diff";
 import {
@@ -689,4 +692,54 @@ test("collapsed labels are derived once, by the engine", () => {
   expect(titleForToolCall("Bash", itemDetailForToolCall("Bash", { command: "  ls   -la  " }))).toBe("ls -la");
   expect(titleForToolCall("Read", itemDetailForToolCall("Read", { file_path: "src/a.ts" }))).toBe("src/a.ts");
   expect(titleForToolCall("Odd", itemDetailForToolCall("Odd", {}))).toBe("Odd");
+});
+
+test("an image attachment reaches Claude as pixels; anything else reaches it as a path", async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-attach-")), "shot.png");
+  fs.writeFileSync(file, Buffer.from([137, 80, 78, 71]));
+  let prompt: unknown;
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      prompt = input.prompt;
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await run(driver, {
+    attachments: [
+      { id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: file },
+      { id: "att_2", name: "notes.md", mediaType: "text/markdown", bytes: 9, path: "/tmp/notes.md" },
+    ],
+  }).result;
+
+  // The async-iterable form is what carries content blocks; a turn with no
+  // attachment must stay a plain string, which the tests above already assert
+  // by passing one through untouched.
+  expect(typeof prompt).toBe("object");
+  const messages: unknown[] = [];
+  for await (const message of prompt as AsyncIterable<unknown>) messages.push(message);
+  expect(messages).toHaveLength(1);
+  const content = (messages[0] as { message: { content: Array<Record<string, unknown>> } }).message.content;
+  expect(content[0]).toEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } });
+  // The non-image is NAMED WITH ITS PATH rather than inlined: the agent has a
+  // Read tool and a file it can reopen beats a copy it cannot.
+  expect(content[1]).toMatchObject({ type: "text" });
+  expect(String((content[1] as { text: string }).text)).toContain("notes.md (text/markdown) at /tmp/notes.md");
+});
+
+test("the user's MCP servers reach the SDK, and Telar's own key wins a collision", async () => {
+  let servers: Record<string, unknown> | undefined;
+  const driver = createClaudeDriver(async () => ({
+    async *query(input) {
+      servers = input.options.mcpServers;
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await run(driver, {
+    mcpServers: [
+      { id: "linear", label: "Linear", enabled: true, createdAt: 1, updatedAt: 1, spec: { transport: "http", url: "https://mcp.linear.app" } },
+      { id: "tools", label: "Tools", enabled: true, createdAt: 1, updatedAt: 1, spec: { transport: "stdio", command: "node", args: ["s.js"] } },
+    ],
+  }).result;
+  expect(servers?.linear).toEqual({ type: "http", url: "https://mcp.linear.app" });
+  expect(servers?.tools).toEqual({ type: "stdio", command: "node", args: ["s.js"] });
 });

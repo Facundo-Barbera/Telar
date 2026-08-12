@@ -9,6 +9,7 @@ import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
   RequestOpenInput,
+  TurnModelSelection,
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
@@ -117,6 +118,31 @@ async function body(request: http.IncomingMessage): Promise<Record<string, unkno
     if (error instanceof HttpError) throw error;
     throw new HttpError(400, "invalid_request", "request body is invalid JSON");
   }
+}
+
+/**
+ * The attachment route's body — raw bytes, with its own much larger cap.
+ *
+ * SEPARATE FROM `body()` RATHER THAN A PARAMETER ON IT. The 1 MB JSON cap is a
+ * guard worth keeping tight on every other route, and one shared reader with a
+ * size argument is how that guard drifts: the next route to want a big body
+ * passes the big number and nobody notices which limit applies where.
+ */
+/** The HTTP edge's own ceiling. The store enforces the same number again —
+ *  an in-process caller must not be able to walk past a check that only ever
+ *  ran on the socket. */
+const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+async function rawBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > limit) throw new HttpError(400, "invalid_request", "attachment is larger than the engine accepts");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 function stringValue(value: unknown, label: string, optional = false): string | undefined {
@@ -253,6 +279,33 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             id: stringValue(input.id, "project id", true),
             name: stringValue(input.name, "project name")!,
             root: stringValue(input.root, "project root")!,
+          }),
+        });
+        return;
+      }
+      /**
+       * The user's MCP servers. NOT under a project or a session, because they
+       * are not scoped to one — a tool server is configured once for the
+       * environment and every session on it gets the enabled ones.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/mcp-servers") {
+        writeJson(response, 200, { mcpServers: store.listMcpServers() });
+        return;
+      }
+      const mcpServer = /^\/v2\/mcp-servers\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
+      if (mcpServer && (request.method === "PUT" || request.method === "DELETE")) {
+        const id = decodeURIComponent(mcpServer[1]);
+        if (request.method === "DELETE") {
+          writeJson(response, 200, { removed: store.removeMcpServer(id) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          mcpServer: store.saveMcpServer({
+            id,
+            ...(input.label === undefined ? {} : { label: stringValue(input.label, "mcp server label")! }),
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+            spec: input.spec,
           }),
         });
         return;
@@ -409,13 +462,50 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        if (request.method === "GET" && session.tail === "/browser") {
+          writeJson(response, 200, {
+            browser: await store.browserState(session.sessionId, {
+              screenshot: url.searchParams.get("screenshot") === "1",
+              start: url.searchParams.get("start") === "1",
+            }),
+          });
+          return;
+        }
+        if (request.method === "POST" && session.tail === "/attachments") {
+          const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
+          const header = request.headers["x-telar-attachment-name"];
+          const encoded = Array.isArray(header) ? header[0] : header;
+          let name = "attachment";
+          try {
+            // Encoded by the client because a filename may hold bytes a header
+            // may not. A name that will not decode is not worth failing an
+            // upload over — the bytes are the point.
+            if (encoded) name = decodeURIComponent(encoded);
+          } catch {
+            name = encoded ?? "attachment";
+          }
+          writeJson(response, 201, {
+            attachment: store.putAttachment(session.sessionId, {
+              name,
+              mediaType: (request.headers["content-type"] ?? "application/octet-stream").split(";")[0]!.trim(),
+              data,
+            }),
+          });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/turns") {
           pruneWorkers();
           if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no vNext worker is registered");
           const input = await body(request);
+          const model = TurnModelSelection.safeParse(input.model);
+          if (input.model !== undefined && !model.success) {
+            throw new HttpError(400, "invalid_request", "turn model selection is invalid");
+          }
           const accepted = store.submitTurn(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,
             input: stringValue(input.input, "turn input")!,
+            ...(model.success ? { model: model.data } : {}),
+            ...(Array.isArray(input.attachments) ? { attachments: input.attachments.map((id) => stringValue(id, "attachment id")!) } : {}),
           });
           const result: TurnSubmissionResult = accepted;
           writeJson(response, accepted.replayed ? 200 : 202, result);

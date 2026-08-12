@@ -10,6 +10,11 @@
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
+  type BrowserSnapshot,
+  type McpServer,
+  type McpServerSpec,
+  type TurnAttachment,
+  type TurnModelSelection,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -103,6 +108,35 @@ export class EngineClient {
     return payload as T;
   }
 
+  /** The same envelope as `request`, for a body that is not JSON. Kept separate
+   *  rather than generalised: exactly one route takes bytes, and folding the
+   *  two would put a `content-type` branch on every call in this class. */
+  private async requestBytes<T>(method: string, pathname: string, bytes: Uint8Array, headers: Record<string, string>): Promise<T> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
+        method,
+        headers: { authorization: `Bearer ${this.discovery.token}`, ...headers },
+        // A fresh copy: `BodyInit` will not take a `Uint8Array` view whose
+        // buffer may be shared, and the caller's array often is one.
+        body: new Uint8Array(bytes) as unknown as BodyInit,
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "vNext engine is unreachable");
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new EngineClientError("engine_unavailable", "vNext engine returned an invalid response", response.status);
+    }
+    if (!response.ok) {
+      const error = (payload as EngineErrorBody | null)?.error;
+      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "vNext engine request failed", response.status);
+    }
+    return payload as T;
+  }
+
   health(): Promise<EngineHealth> {
     return this.request("GET", "/v2/health");
   }
@@ -158,8 +192,66 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`);
   }
 
-  submitTurn(sessionId: string, input: { runId: string; input: string }): Promise<TurnSubmissionResult> {
+  /**
+   * Queue one message. `model` applies to THIS turn only and cannot name an
+   * instance — the provider is the session's for its whole life (see
+   * `TurnModelSelection`). `attachments` are ids from `uploadAttachment`.
+   */
+  submitTurn(
+    sessionId: string,
+    input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] },
+  ): Promise<TurnSubmissionResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns`, input);
+  }
+
+  /**
+   * Put a file where the session's provider can reach it, BEFORE the message
+   * that refers to it.
+   *
+   * Raw bytes rather than JSON: base64 costs a third of the payload again on
+   * the largest thing a client ever sends, and the engine's JSON body cap is
+   * deliberately small for everything else.
+   */
+  async uploadAttachment(
+    sessionId: string,
+    file: { name: string; mediaType: string; data: ArrayBuffer | Uint8Array },
+  ): Promise<{ attachment: TurnAttachment }> {
+    const bytes = file.data instanceof Uint8Array ? file.data : new Uint8Array(file.data);
+    return this.requestBytes("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/attachments`, bytes, {
+      "content-type": file.mediaType || "application/octet-stream",
+      // Encoded, because a filename may hold anything a filesystem allows and a
+      // header may not — a raw newline here would end the header block.
+      "x-telar-attachment-name": encodeURIComponent(file.name),
+    });
+  }
+
+  /**
+   * What the session's browser is looking at, with pixels.
+   *
+   * `screenshot` costs a real round trip through Chromium, so it is opt-in; and
+   * `start` is opt-in for a bigger reason — a panel that polled for state would
+   * otherwise LAUNCH a browser for every session it rendered.
+   */
+  browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<{ browser: BrowserSnapshot }> {
+    const query = new URLSearchParams();
+    if (options.screenshot) query.set("screenshot", "1");
+    if (options.start) query.set("start", "1");
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
+  }
+
+  /** The user's own MCP servers. Environment-scoped: configured once, not once
+   *  per conversation. */
+  listMcpServers(): Promise<{ mcpServers: McpServer[] }> {
+    return this.request("GET", "/v2/mcp-servers");
+  }
+
+  saveMcpServer(input: { id: string; label?: string; enabled?: boolean; spec: McpServerSpec }): Promise<{ mcpServer: McpServer }> {
+    return this.request("PUT", `/v2/mcp-servers/${encodeURIComponent(input.id)}`, input);
+  }
+
+  removeMcpServer(id: string): Promise<{ removed: boolean }> {
+    return this.request("DELETE", `/v2/mcp-servers/${encodeURIComponent(id)}`);
   }
 
   stopTurn(sessionId: string, runId?: string): Promise<{ turn?: Turn; stopped: boolean }> {

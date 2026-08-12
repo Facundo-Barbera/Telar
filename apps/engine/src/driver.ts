@@ -12,11 +12,14 @@
  * downstream of that one omission.
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type {
   BrowserProvider,
   BrowserTab,
   ItemDetail,
   ItemSeed,
+  McpServer,
+  TurnAttachment,
   RequestDecision,
   RequestDetail,
   RequestKind,
@@ -78,6 +81,17 @@ export type DriverRun = {
   /** Reasoning effort, where the provider has the concept. Same absent rule. */
   effort?: string;
   /**
+   * Files the human attached to THIS message, already on disk.
+   *
+   * The engine wrote them and owns the paths; a driver reads them and decides
+   * how its provider wants them. That split is deliberate — a driver that
+   * accepted bytes would have to be trusted with where they came from.
+   */
+  attachments?: TurnAttachment[];
+  /** The user's own MCP servers, already filtered to the enabled ones by the
+   *  engine. Telar's in-process servers are added by the driver on top. */
+  mcpServers?: McpServer[];
+  /**
    * Scopes this turn's browser. Sessions are the natural boundary: two
    * sessions must not share a tab, and a session's tabs must survive between
    * its turns.
@@ -123,6 +137,102 @@ type SdkCanUseTool = (
 type SdkMcpServer = unknown;
 
 /**
+ * One user message with content blocks, which is the only way to hand this SDK
+ * an image.
+ *
+ * A PLAIN STRING PROMPT STAYS A PLAIN STRING when there is nothing attached —
+ * see `claudePrompt`. Switching every turn to the async-iterable form would
+ * change how the SDK reads input for the 99% of turns that carry no file, for
+ * no gain.
+ */
+type SdkUserMessage = {
+  type: "user";
+  message: { role: "user"; content: Array<Record<string, unknown>> };
+  parent_tool_use_id: null;
+};
+
+/** The image types the Anthropic API accepts as an image block. Anything else
+ *  is offered as a PATH instead — the agent has a Read tool, and a file it can
+ *  open beats a block the API rejects. */
+const CLAUDE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/**
+ * Build the prompt Claude receives, attachments included.
+ *
+ * IMAGES GO IN AS PIXELS, EVERYTHING ELSE AS A PATH. An image is the one kind of
+ * attachment the model cannot open for itself — there is no tool that turns a
+ * PNG into something it can see — so it is inlined as base64. A text file, a
+ * PDF, a CSV: the agent has Read and the file is on the same disk it is working
+ * on, so a path is both smaller and more useful than an inlined copy it cannot
+ * re-read later.
+ *
+ * A file that has vanished between upload and turn is NAMED rather than
+ * silently dropped. "Look at this" with nothing attached is a worse failure than
+ * a line saying the attachment could not be read.
+ */
+function claudePrompt(prompt: string, attachments: TurnAttachment[]): string | AsyncIterable<SdkUserMessage> {
+  if (attachments.length === 0) return prompt;
+  const blocks: Array<Record<string, unknown>> = [];
+  const notes: string[] = [];
+  for (const attachment of attachments) {
+    if (CLAUDE_IMAGE_TYPES.has(attachment.mediaType)) {
+      try {
+        blocks.push({
+          type: "image",
+          source: { type: "base64", media_type: attachment.mediaType, data: fs.readFileSync(attachment.path).toString("base64") },
+        });
+        notes.push(`- ${attachment.name} (image, shown above)`);
+        continue;
+      } catch {
+        notes.push(`- ${attachment.name} — attached but could not be read from ${attachment.path}`);
+        continue;
+      }
+    }
+    notes.push(`- ${attachment.name} (${attachment.mediaType}) at ${attachment.path}`);
+  }
+  blocks.push({ type: "text", text: `${prompt}\n\nAttached files:\n${notes.join("\n")}` });
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield { type: "user", message: { role: "user", content: blocks }, parent_tool_use_id: null } satisfies SdkUserMessage;
+    },
+  };
+}
+
+/**
+ * The user's MCP servers in the SDK's own config shape.
+ *
+ * A TRANSLATION, NOT A PASS-THROUGH. The contract's `McpServerSpec` is the shape
+ * three clients and a settings form agree on; this SDK's is the shape one
+ * library wants, and `stdio` is the arm where they differ — the contract names
+ * the transport explicitly, the SDK infers it. Keeping our own vocabulary means
+ * a Codex-side implementation later reads the same config rather than the
+ * Anthropic SDK's.
+ */
+function claudeMcpServers(servers: McpServer[] | undefined): Record<string, SdkMcpServer> | undefined {
+  if (!servers || servers.length === 0) return undefined;
+  const out: Record<string, SdkMcpServer> = {};
+  for (const server of servers) {
+    if (server.spec.transport === "stdio") {
+      out[server.id] = {
+        type: "stdio",
+        command: server.spec.command,
+        ...(server.spec.args ? { args: server.spec.args } : {}),
+        // Overlaid on the worker's environment rather than replacing it: an MCP
+        // server still needs PATH and HOME like any other child process.
+        ...(server.spec.env ? { env: { ...process.env, ...server.spec.env } } : {}),
+      };
+      continue;
+    }
+    out[server.id] = {
+      type: server.spec.transport,
+      url: server.spec.url,
+      ...(server.spec.headers ? { headers: server.spec.headers } : {}),
+    };
+  }
+  return out;
+}
+
+/**
  * The Agent SDK's effort vocabulary, verbatim from its `EffortLevel`.
  *
  * `ModelSelection.effort` is an OPEN string on purpose — provider vocabularies
@@ -140,7 +250,7 @@ const claudeEffort = (value: string | undefined): ClaudeEffort | undefined =>
 
 type ClaudeSdk = {
   query(input: {
-    prompt: string;
+    prompt: string | AsyncIterable<SdkUserMessage>;
     options: {
       cwd: string;
       permissionMode: "default";
@@ -451,7 +561,19 @@ export function createClaudeDriver(
   options: { browser?: BrowserCapability } = {},
 ): TurnDriver {
   return {
-    async run({ prompt, cwd, signal, model, effort, onObservations, onRequest, providerSessionId, browserScopeKey }) {
+    async run({
+      prompt,
+      cwd,
+      signal,
+      model,
+      effort,
+      attachments,
+      mcpServers: userMcpServers,
+      onObservations,
+      onRequest,
+      providerSessionId,
+      browserScopeKey,
+    }) {
       let sdk: ClaudeSdk;
       try {
         sdk = await loadSdk();
@@ -461,6 +583,7 @@ export function createClaudeDriver(
         );
       }
       const sdkEffort = claudeEffort(effort);
+      const userServers = claudeMcpServers(userMcpServers);
       const controller = new AbortController();
       const abort = () => controller.abort(signal.reason);
       if (signal.aborted) abort();
@@ -639,7 +762,7 @@ export function createClaudeDriver(
        * which is exactly why a passing unit test on `itemDetailForToolCall` did
        * not catch it — the mapping was right and the input to it was wrong.
        */
-      const mcpServers =
+      const telarServer =
         options.browser && browserScopeKey
           ? {
               [TELAR_MCP_SERVER]: await buildBrowserMcpServer(
@@ -664,9 +787,20 @@ export function createClaudeDriver(
             }
           : undefined;
 
+      /**
+       * TELAR'S SERVERS AND THE USER'S, IN ONE RECORD — and Telar's are applied
+       * LAST on purpose. The keys become the `mcp__<key>__<tool>` addressing
+       * every client parses, so a user server called `telar` would shadow the
+       * engine's own capabilities and route their approvals to the generic arm.
+       * Losing a colliding user server is the better failure of the two, and it
+       * is the one the naming standard in ./protocol/tools.ts already assumes.
+       */
+      const mcpServers =
+        userServers || telarServer ? { ...(userServers ?? {}), ...(telarServer ?? {}) } : undefined;
+
       try {
         for await (const message of sdk.query({
-          prompt,
+          prompt: claudePrompt(prompt, attachments ?? []),
           options: {
             cwd,
             permissionMode: "default",

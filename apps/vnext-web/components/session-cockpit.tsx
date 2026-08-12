@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2Icon, PencilIcon, TriangleAlertIcon } from "lucide-react";
+import { FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
 import {
   type EngineEvent,
   type EngineRequest,
@@ -111,7 +111,16 @@ function SessionMasthead({
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
-  const title = session?.title ?? "Session";
+  /**
+   * "New conversation" UNTIL ONE EXISTS, rather than "Session".
+   *
+   * The breadcrumb states what you are looking at, and on a fresh canvas that is
+   * not a session — there is no record, no id, and nothing to rename. Naming it
+   * "Session" implied one had already been created, which is the exact thing
+   * this screen is careful not to do: the first message creates it, and the
+   * title is derived from that message.
+   */
+  const title = session?.title ?? "New conversation";
 
   const commit = () => {
     setEditing(false);
@@ -200,17 +209,14 @@ function RecoveryActions({ sending, onRetry, onDiscard }: { sending: boolean; on
 }
 
 /**
- * A price, at a precision that matches its size.
+ * `formatCost` USED TO LIVE HERE, printing a per-turn price beside the tokens.
  *
- * A flat four decimals prints `$0.4210` — a trailing zero that reads as spurious
- * accuracy on a figure whose last digit does not matter. Sub-cent runs still
- * need the digits, so the precision scales instead of being fixed.
+ * Money left this cockpit deliberately. `UsageSnapshot.costUsd` is still on the
+ * contract because it is the provider's own figure and discarding it upstream
+ * would be lossy — but a price rendered here is one only some providers report,
+ * that a subscription seat does not have at all, and that reads as authoritative
+ * next to a token count that always is. Tokens are the unit everywhere now.
  */
-function formatCost(usd: number): string {
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  if (usd < 1) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(2)}`;
-}
 
 /** The journal separates the submitted prompt from streamed agent output. */
 export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "state" | "prompt">): Pick<Turn, "runId" | "state" | "input"> {
@@ -255,6 +261,25 @@ function SessionTurn({
       <Message from="user">
         <MessageContent from="user">
           <p className="whitespace-pre-wrap">{turn.prompt}</p>
+          {/* WHAT WAS SENT, not what the model made of it. A transcript that
+              shows the words and not the screenshot has lost half the message —
+              and re-reading it later is exactly when that half matters. Named
+              rather than rendered: the bytes live beside the session on the
+              engine's disk, and no route serves them back to a browser. */}
+          {turn.attachments?.length ? (
+            <ul className="mt-2 flex flex-wrap gap-1.5">
+              {turn.attachments.map((attachment) => (
+                <li
+                  key={attachment.id}
+                  title={attachment.path}
+                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[11px] text-muted-foreground"
+                >
+                  <PaperclipIcon className="size-3 shrink-0" />
+                  <span className="max-w-48 truncate">{attachment.name}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </MessageContent>
       </Message>
 
@@ -281,7 +306,6 @@ function SessionTurn({
           {turn.usage && !live && (
             <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
-              {typeof turn.usage.costUsd === "number" && ` · ${formatCost(turn.usage.costUsd)}`}
             </p>
           )}
           {turn.state === "ambiguous" && (
@@ -328,6 +352,9 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
    * patches that instead.
    */
   const [draftDriver, setDraftDriver] = useState<ProviderDriverKind>("claude");
+  /** Where the first message will land. `local` matches the engine's own
+   *  default, so an untouched canvas creates what it says it will. */
+  const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
   const [draftModel, setDraftModel] = useState<{ model?: string; effort?: string }>({});
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -336,6 +363,9 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
   const [requests, setRequests] = useState<EngineRequest[]>([]);
   const [events, setEvents] = useState<EngineEvent[]>([]);
   const [draft, setDraft] = useState("");
+  /** Files picked but not yet sent. Held as `File`s rather than uploaded on
+   *  pick — see the upload loop in `submit` for why. */
+  const [attachments, setAttachments] = useState<File[]>([]);
   const [draftRunId, setDraftRunId] = useState<string>();
   const [error, setError] = useState<VNextApiError>();
   /** Seeded from whether there is anything to load at all — a fresh canvas has
@@ -643,8 +673,10 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
     // acknowledgement, and waiting on the network to give it back is the thing
     // that makes queueing feel like a form submission.
     const text = draft.trim();
+    const files = attachments;
     setDraft("");
     setDraftRunId(undefined);
+    setAttachments([]);
     try {
       /**
        * THE FIRST MESSAGE IS WHAT CREATES THE SESSION.
@@ -661,6 +693,7 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
         const created = await api.createSession(projectId, {
           title: text.replace(/\s+/g, " ").slice(0, 80),
           driver: draftDriver,
+          envMode: draftEnvMode,
         });
         target = created.session.id;
         if (draftModel.model) {
@@ -676,17 +709,50 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
         setSession(created.session);
         window.history.replaceState(null, "", `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(target)}`);
       }
-      await api.submitTurn(target, { runId, input: text });
+      /**
+       * ATTACHMENTS UPLOAD AT SEND, NOT AT PICK.
+       *
+       * On a fresh canvas there is no session to upload to — the session is
+       * created by this very message — so an eager upload would need either an
+       * invented session or a second code path for the one case that matters
+       * most. Uploading here costs a moment on send and works identically for a
+       * first message and a hundredth.
+       *
+       * SEQUENTIAL, not `Promise.all`: the engine writes an index per upload,
+       * and this is the client that decides how many files land at once.
+       */
+      const attachmentIds: string[] = [];
+      for (const file of files) {
+        const stored = await api.uploadAttachment(target, file);
+        attachmentIds.push(stored.attachment.id);
+      }
+      /**
+       * THE MODEL RIDES WITH THE MESSAGE.
+       *
+       * Sent per turn rather than relied on from the session record, so three
+       * messages queued under three different models each run on the one they
+       * were written under. It cannot name a provider — `TurnModelSelection` has
+       * no field for it — so the session's provider stays fixed for its life.
+       */
+      const pending = session?.model ?? (draftModel.model ? { model: draftModel.model, effort: draftModel.effort } : undefined);
+      await api.submitTurn(target, {
+        runId,
+        input: text,
+        ...(pending?.model ? { model: { model: pending.model, ...(pending.effort ? { effort: pending.effort } : {}) } } : {}),
+        ...(attachmentIds.length > 0 ? { attachments: attachmentIds } : {}),
+      });
       // Only for a session that ALREADY existed. A just-created one is hydrated
       // by the effect that fires when `sessionId` changes, and calling it here
       // would run against the stale id captured in this closure.
       if (sessionId) await hydrate();
       setError(undefined);
     } catch (cause) {
-      // Give the words back. Losing a typed message to a failed POST is
-      // unforgivable in a way that a visible error is not.
+      // Give the words back — and the files. Losing a typed message to a failed
+      // POST is unforgivable in a way that a visible error is not, and a human
+      // who has to re-pick four screenshots feels the same way about those.
       setDraft(text);
       setDraftRunId(runId);
+      setAttachments(files);
       setError(cause instanceof VNextApiError ? cause : new VNextApiError("internal_error", "Could not submit the turn."));
     } finally {
       setSending(false);
@@ -840,8 +906,18 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
           // A fresh canvas is READY: there is nothing to wait for, because the
           // message you type is the thing that creates the session.
           ready={fresh || Boolean(session)}
+          attachments={attachments}
+          onAttach={setAttachments}
           fresh={fresh}
-          {...(fresh ? { driver: draftDriver, onDriverChange: setDraftDriver, pendingModel: draftModel } : {})}
+          {...(fresh
+            ? {
+                driver: draftDriver,
+                onDriverChange: setDraftDriver,
+                pendingModel: draftModel,
+                envMode: draftEnvMode,
+                onEnvMode: setDraftEnvMode,
+              }
+            : {})}
           busy={Boolean(active)}
           sending={sending}
           queued={queued}
@@ -880,6 +956,7 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
       {panel.open && (
         <VNextRightPanel
           {...(active?.state ? { active: active.state } : {})}
+          {...(sessionId ? { sessionId } : {})}
           items={items}
           tasks={tasks}
           turns={turns}

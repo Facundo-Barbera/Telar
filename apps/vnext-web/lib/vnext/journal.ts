@@ -1,4 +1,4 @@
-import { displayToolName, type EngineEvent, type Item, type Session, type Task, type Turn, type TurnState, type UsageSnapshot } from "@telar/engine-client";
+import { displayToolName, type EngineEvent, type Item, type Session, type Task, type Turn, type TurnAttachment, type TurnState, type UsageSnapshot } from "@telar/engine-client";
 
 /**
  * The client-side fold over protocol v2's journal.
@@ -28,6 +28,10 @@ export type JournalTask = Task & { items: JournalItem[] };
 export type JournalTurn = {
   runId: string;
   prompt: string;
+  /** Files sent WITH this message. On the turn because that is what they
+   *  describe — a transcript that showed the words and not the screenshot has
+   *  lost half of what was said. */
+  attachments?: TurnAttachment[];
   state: TurnState;
   /**
    * The MAIN LOOP's timeline only.
@@ -76,6 +80,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       {
         runId: turn.runId,
         prompt: turn.input,
+        ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
         items: [],
         tasks: [],
@@ -145,6 +150,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
           byRun.set(event.turn.runId, {
             runId: event.turn.runId,
             prompt: event.turn.input,
+            ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
             items: [],
             tasks: [],

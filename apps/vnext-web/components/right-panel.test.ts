@@ -76,7 +76,7 @@ describe("sessionUsage", () => {
     // that returned 0 here would state a figure the provider never gave.
     const none = sessionUsage([{ runId: "run_1" } as Turn]);
     expect(none.input).toBeUndefined();
-    expect(none.costUsd).toBeUndefined();
+    expect(none.output).toBeUndefined();
     expect(none.reported).toBe(0);
     expect(none.turns).toBe(1);
   });
@@ -85,9 +85,9 @@ describe("sessionUsage", () => {
     const usage = sessionUsage([turnWithUsage(10, 5, 0.01), { runId: "bare" } as Turn, turnWithUsage(20, 1)]);
     expect(usage.input).toBe(30);
     expect(usage.output).toBe(6);
-    // One turn reported tokens with no price; the price total is still the sum
-    // of the prices that DID arrive rather than being discarded.
-    expect(usage.costUsd).toBeCloseTo(0.01, 10);
+    // The provider's price is still on the contract and is NOT folded here:
+    // money is not a unit this cockpit reports. See lib/format.ts.
+    expect(usage).not.toHaveProperty("costUsd");
     expect(usage.reported).toBe(2);
     expect(usage.turns).toBe(3);
   });

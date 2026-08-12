@@ -16,6 +16,12 @@ export async function POST(request: Request, context: Context) {
     const result = await (await vnextEngine()).submitTurn(sessionId, {
       runId: requiredString(body.runId, "Run id"),
       input: requiredString(body.input, "Turn input"),
+      // Both forwarded unvalidated: the engine parses `model` against
+      // `TurnModelSelection` and resolves each attachment id against what it
+      // actually stored. A second copy of either check here could only disagree
+      // with the first.
+      ...(body.model === undefined ? {} : { model: body.model as never }),
+      ...(Array.isArray(body.attachments) ? { attachments: body.attachments as string[] } : {}),
     });
     return Response.json(result, { status: result.replayed ? 200 : 202 });
   } catch (error) {

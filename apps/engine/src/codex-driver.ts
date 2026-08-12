@@ -16,9 +16,18 @@
  *     omit-when-empty note on `threadParams`).
  *   - no on-demand compaction or rollback. Those are session operations, not
  *     turn operations, and `TurnDriver` runs turns.
+ *   - NO USER-CONFIGURED MCP SERVERS, and this one is a real gap rather than a
+ *     scoping choice. `DriverRun.mcpServers` arrives here and is not used: the
+ *     app-server owns its own MCP registry through `~/.codex/config.toml` and
+ *     its `mcpServer/*` methods, and the shape its `thread/start` `config`
+ *     overlay accepts for servers is not something this driver can verify
+ *     against anything. Guessing it would fail the whole turn on an unknown
+ *     key. A Codex session therefore sees the servers Codex itself is
+ *     configured with, and the cockpit's MCP settings say so rather than
+ *     implying otherwise.
  */
 import crypto from "node:crypto";
-import type { ItemDetail, ItemSeed, RequestDecision, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { ItemDetail, ItemSeed, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage } from "./codex/items";
 import type { DriverRun, DriverResult, TurnDriver } from "./driver";
@@ -80,8 +89,28 @@ function defaultThreadConfig(gated: boolean): CodexThreadConfig {
  * this wire. It is not a typo to be tidied: the app-server's `UserInput` schema
  * declares it, and a text item without it is rejected.
  */
-export function codexTurnInput(prompt: string): Array<Record<string, unknown>> {
-  return [{ type: "text", text: prompt, text_elements: [] }];
+export function codexTurnInput(prompt: string, attachments: TurnAttachment[] = []): Array<Record<string, unknown>> {
+  /**
+   * THE APP-SERVER TAKES A PATH FOR AN IMAGE, NOT BYTES. Its `UserInput` union
+   * has a `localImage` arm carrying `path` — verified against the installed
+   * binary's own schema strings rather than assumed — which suits this engine
+   * exactly: the file is already on the same disk, written by the engine, so
+   * there is nothing to inline.
+   *
+   * Everything else is named in the text with its path. Codex has a Read tool
+   * and a file it can open is worth more than a copy it cannot re-read, which
+   * is the same choice the Claude seam makes for non-images.
+   */
+  const images = attachments.filter((attachment) => attachment.mediaType.startsWith("image/"));
+  const others = attachments.filter((attachment) => !attachment.mediaType.startsWith("image/"));
+  const text =
+    others.length === 0
+      ? prompt
+      : `${prompt}\n\nAttached files:\n${others.map((attachment) => `- ${attachment.name} (${attachment.mediaType}) at ${attachment.path}`).join("\n")}`;
+  return [
+    { type: "text", text, text_elements: [] },
+    ...images.map((attachment) => ({ type: "localImage", path: attachment.path })),
+  ];
 }
 
 /**
@@ -138,6 +167,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       signal,
       model: turnModel,
       effort: turnEffort,
+      attachments,
       providerSessionId,
       onObservations,
       onRequest,
@@ -414,7 +444,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
 
         const turn = await client.request<{ turn?: { id?: string } }>("turn/start", {
           threadId: rootThreadId,
-          input: codexTurnInput(prompt),
+          input: codexTurnInput(prompt, attachments ?? []),
           ...(effort ? { effort } : {}),
           model,
           approvalPolicy: threadConfig.approvalPolicy,

@@ -1,10 +1,15 @@
 import type {
+  BrowserSnapshot,
   GitOverview,
   EngineErrorCode,
   EngineEvent,
   EngineHealth,
+  McpServer,
+  McpServerSpec,
   ModelSelection,
   Project,
+  TurnAttachment,
+  TurnModelSelection,
   ProviderDriverKind,
   EngineRequest,
   RequestDecision,
@@ -96,8 +101,56 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
     events: (sessionId: string, after: number) =>
       request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
-    submitTurn: (sessionId: string, input: { runId: string; input: string }) =>
+    /** `model` rides with THIS message — queue three with different models and
+     *  each runs on the one it was written under. It cannot name a provider
+     *  instance, so the session's provider is fixed for its whole life. */
+    submitTurn: (sessionId: string, input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] }) =>
       request<TurnSubmissionResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns`, input),
+    /**
+     * Put a file where the session's provider can reach it.
+     *
+     * A `File` goes over the wire as ITS OWN BODY rather than as base64 inside
+     * JSON: base64 costs a third again on the largest thing this client ever
+     * sends, and the JSON limit on every other route is deliberately small.
+     */
+    uploadAttachment: async (sessionId: string, file: File): Promise<{ attachment: TurnAttachment }> => {
+      let response: Response;
+      try {
+        response = await fetcher(`/api/sessions/${encodeURIComponent(sessionId)}/attachments`, {
+          method: "POST",
+          headers: {
+            "content-type": file.type || "application/octet-stream",
+            // Encoded because a filename may hold bytes a header may not.
+            "x-telar-attachment-name": encodeURIComponent(file.name),
+          },
+          body: file,
+        });
+      } catch {
+        throw new VNextApiError("engine_unavailable", "The vNext cockpit cannot reach its local adapter.");
+      }
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error = (payload as { error?: { code?: VNextErrorCode; message?: string } } | null)?.error;
+        throw new VNextApiError(error?.code ?? "internal_error", error?.message ?? "That file could not be attached.", response.status);
+      }
+      return payload as { attachment: TurnAttachment };
+    },
+    /** What the session's browser is looking at. `screenshot` costs a round trip
+     *  through Chromium and `start` would LAUNCH one, so both are opt-in. */
+    browserState: (sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (options.screenshot) query.set("screenshot", "1");
+      if (options.start) query.set("start", "1");
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
+      return request<{ browser: BrowserSnapshot }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
+    },
+    /** The user's own MCP servers. Environment-scoped: configured once, not once
+     *  per conversation. */
+    mcpServers: () => request<{ mcpServers: McpServer[] }>(fetcher, "GET", "/api/mcp-servers"),
+    saveMcpServer: (input: { id: string; label?: string; enabled?: boolean; spec: McpServerSpec }) =>
+      request<{ mcpServer: McpServer }>(fetcher, "PUT", "/api/mcp-servers", input),
+    removeMcpServer: (id: string) =>
+      request<{ removed: boolean }>(fetcher, "DELETE", `/api/mcp-servers/${encodeURIComponent(id)}`),
     stopTurn: (sessionId: string, runId?: string) =>
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>

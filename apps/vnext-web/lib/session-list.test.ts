@@ -124,7 +124,7 @@ describe("toSidebarSession", () => {
         runtimeMode: "auto",
         interactionMode: "default",
         detached: true,
-        usage: { tokens: { input: 10, output: 5 }, costUsd: 0.25, contextUsed: 1_234 },
+        usage: { tokens: { input: 10, output: 5, cacheRead: 0, cacheCreate: 0 }, costUsd: 0.25, contextUsed: 1_234 },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixture, not a wire payload
       } as any,
       "telar-vnext",
@@ -132,7 +132,8 @@ describe("toSidebarSession", () => {
     expect(projected.archived).toBe(false);
     expect(projected.model).toBe("opus");
     expect(projected.effort).toBe("high");
-    expect(projected.costUsd).toBe(0.25);
+    // Every token the session has spent, cache included — not the price.
+    expect(projected.tokens).toBe(15);
     expect(projected.contextTokens).toBe(1_234);
     expect(projected.worktreeBranch).toBe("session/fix");
     expect(projected.projectName).toBe("telar-vnext");
@@ -159,7 +160,7 @@ describe("toSidebarSession", () => {
       } as any,
     );
     expect(projected.worktreeBranch).toBeUndefined();
-    expect(projected.costUsd).toBeUndefined();
+    expect(projected.tokens).toBeUndefined();
     expect(projected.archived).toBe(true);
     expect(projected.driver).toBe("codex");
   });

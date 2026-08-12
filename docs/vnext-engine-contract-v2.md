@@ -344,11 +344,35 @@ behind it works.
 - **The `attached` browser provider.** `headless` is the default and works
   detached, which was the point. `attached` needs a client offering a webview
   and no client offers one, so nothing reports it; adding the arm without an
-  implementation would be a lie in the enum.
-- **Model and effort selection per turn.** `TurnSubmission.model` is modelled
-  and ignored — every turn runs the driver's default.
-- **Attachments and user-configured MCP servers.** Modelled nowhere; the only
-  MCP server the engine registers is its own in-process browser.
+  implementation would be a lie in the enum. The headless one is now VISIBLE:
+  `GET /v2/sessions/:id/browser` answers a `BrowserSnapshot` with an optional
+  screenshot, polled by the cockpit's browser tab. It is a READ, never an event
+  — a screenshot per navigation would dominate the journal within an hour and
+  the only one anybody wants is the current one. Answered from the DAEMON's own
+  runtime, so a deployment running its worker out of process reports
+  `provider: "none"` there even while that worker drives a page; the journalled
+  `browser.state.changed` still shows the tabs, because the party that drove
+  them reported them.
+- **Per-turn model and effort.** DONE. `TurnSubmission.model` is a
+  `TurnModelSelection` — model and effort, and deliberately NO `instanceId`, so
+  a turn cannot change the provider that owns the session's resume cursor. The
+  engine stamps the instance from the session and `claimNextTurn` prefers
+  `turn.model` over `session.model`, which is what makes three messages queued
+  under three models each run on the one they were written under.
+- **Attachments.** DONE. Bytes upload on their own route
+  (`POST /v2/sessions/:id/attachments`, raw body, 20 MB) and the submission
+  carries ids; the engine mints the filename so no user-supplied byte reaches
+  the filesystem. Images reach Claude as base64 content blocks and Codex as its
+  `localImage` input element; anything else is named by PATH, because both
+  agents have a Read tool and a file they can reopen beats a copy they cannot.
+- **User-configured MCP servers.** DONE for Claude. Environment-scoped in
+  `mcp-servers.json`, filtered to the enabled ones on the `WorkerClaim`, and
+  merged UNDER Telar's own servers so a user server called `telar` cannot shadow
+  the engine's capabilities. NOT applied to Codex: the app-server owns its own
+  registry through `~/.codex/config.toml`, and the shape its `thread/start`
+  `config` overlay accepts for servers is not verifiable from here — guessing it
+  would fail the whole turn on an unknown key. The cockpit's MCP settings say
+  so rather than implying otherwise.
 
 ### What stage 1 actually landed
 

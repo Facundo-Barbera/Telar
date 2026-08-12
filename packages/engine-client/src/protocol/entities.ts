@@ -25,6 +25,7 @@ import {
   ProviderInstanceId,
   RuntimeMode,
   Timestamp,
+  TurnAttachment,
   UsageSnapshot,
 } from "./common";
 
@@ -181,8 +182,19 @@ export const Turn = z.object({
 
   /** What the human asked for. */
   input: z.string(),
+  /**
+   * Files sent WITH this message.
+   *
+   * ON THE TURN RATHER THAN THE SESSION, because that is what they are: an
+   * attachment answers "look at this" about one message, and a session-level
+   * list would have no answer to which message it belonged to. Stored resolved
+   * (name, media type, path) rather than as ids, so replaying a turn from the
+   * queue does not require a second lookup that could have gone stale.
+   */
+  attachments: z.array(TurnAttachment).optional(),
   /** Model actually used, which may differ from the session default if the
-   *  turn overrode it or the provider rerouted. */
+   *  turn overrode it or the provider rerouted. The instance is always the
+   *  session's — see `TurnModelSelection`. */
   model: ModelSelection.optional(),
   interactionMode: InteractionMode.optional(),
 

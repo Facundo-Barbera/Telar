@@ -42,7 +42,9 @@ export type SidebarSession = {
   driver: "claude" | "codex";
   model?: string;
   effort?: string;
-  costUsd?: number;
+  /** Everything this session has spent, in tokens. Money is not a unit this
+   *  cockpit reports — see lib/format.ts. */
+  tokens?: number;
   contextTokens?: number;
   workspacePath: string;
   worktreeBranch?: string;
@@ -61,7 +63,15 @@ export function toSidebarSession(session: Session, projectName?: string): Sideba
     driver: session.driver,
     ...(session.model?.model ? { model: session.model.model } : {}),
     ...(session.model?.effort ? { effort: session.model.effort } : {}),
-    ...(typeof session.usage?.costUsd === "number" ? { costUsd: session.usage.costUsd } : {}),
+    ...(session.usage
+      ? {
+          tokens:
+            session.usage.tokens.input +
+            session.usage.tokens.output +
+            session.usage.tokens.cacheRead +
+            session.usage.tokens.cacheCreate,
+        }
+      : {}),
     ...(typeof session.usage?.contextUsed === "number" ? { contextTokens: session.usage.contextUsed } : {}),
     workspacePath: session.workspace.path,
     ...(session.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {}),

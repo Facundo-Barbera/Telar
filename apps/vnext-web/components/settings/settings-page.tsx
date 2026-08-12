@@ -10,17 +10,19 @@
  *
  * THE SECTION LIST IS SHORT ON PURPOSE. The donor carries Accounts, Agent
  * defaults, CLIs, Doctor, MCP, Notifications, Provider instances and Updates —
- * every one of them backed by legacy state this cockpit deliberately does not
- * own. What remains is what the vNext engine can actually answer for, and each
- * absent section is stated as a fact rather than left as a gap.
+ * most of them backed by legacy state this cockpit deliberately does not own.
+ * What remains is what the vNext engine can actually answer for, and each absent
+ * section is stated as a fact rather than left as a gap. MCP is here because the
+ * engine now models it: see components/settings/mcp-section.tsx.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleAlertIcon, PaletteIcon, PlugIcon, ServerIcon } from "lucide-react";
+import { CircleAlertIcon, PaletteIcon, PlugIcon, ServerIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import { Badge } from "@/components/ui/badge";
 import { ThemeControl } from "@/components/theme-control";
+import { McpSection } from "./mcp-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 
 const api = createVNextApi();
@@ -29,6 +31,7 @@ const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
   { id: "engine", label: "Engine", icon: ServerIcon, group: "Runtime" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
+  { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
 ];
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -119,34 +122,26 @@ export function SettingsPage() {
       {active === "engine" && <EngineSection {...(health ? { health } : {})} unreachable={unreachable} />}
 
       {active === "providers" && (
-        <>
-          <SettingsGroup title="Provider configuration" description="This cockpit does not manage credentials.">
-            <Row
-              label="Sign-in lives outside Telar"
-              hint="Authenticate Claude Code or Codex on this machine; the worker picks the session up from there."
-              control={<Badge variant="outline">External</Badge>}
-            />
-            <Row
-              label="Which provider runs a session"
-              hint="Chosen when the session is created and fixed for its lifetime — the engine routes turns by provider instance."
-              control={<Badge variant="secondary">Per session</Badge>}
-            />
-          </SettingsGroup>
-
-          <SettingsGroup
-            title="Not built yet"
-            description="The frozen app configures these; the vNext engine does not model them, so there is nothing here to set."
-          >
-            <Row label="MCP servers" hint="User-configured servers are not modelled by the contract." control={<Badge variant="outline">Absent</Badge>} />
-            <Row label="Attachments" hint="No attachment contract exists on the turn submission yet." control={<Badge variant="outline">Absent</Badge>} />
-            <Row
-              label="Per-turn model and effort"
-              hint="Modelled on the submission and ignored by the engine, so the composer does not offer it."
-              control={<Badge variant="outline">Absent</Badge>}
-            />
-          </SettingsGroup>
-        </>
+        <SettingsGroup title="Provider configuration" description="This cockpit does not manage credentials.">
+          <Row
+            label="Sign-in lives outside Telar"
+            hint="Authenticate Claude Code or Codex on this machine; the worker picks the session up from there."
+            control={<Badge variant="outline">External</Badge>}
+          />
+          <Row
+            label="Which provider runs a session"
+            hint="Chosen when the session is created and fixed for its lifetime — the engine routes turns by provider instance."
+            control={<Badge variant="secondary">Per session</Badge>}
+          />
+          <Row
+            label="Which model runs a turn"
+            hint="Chosen per message in the composer. The provider cannot change with it, because the submission has no field for one."
+            control={<Badge variant="secondary">Per turn</Badge>}
+          />
+        </SettingsGroup>
       )}
+
+      {active === "mcp" && <McpSection />}
     </SettingsShell>
   );
 }

@@ -390,12 +390,22 @@ function SidebarBody() {
    * composer with nothing behind it, and so is this: the first message is what
    * creates the session (see `app/projects/[projectId]/sessions/new/page.tsx`).
    *
-   * Unscoped it falls back to the project list, because the engine has nowhere
-   * to put a session that does not name a project.
+   * UNSCOPED, IT STILL OPENS A COMPOSER. A session has to name a project, but
+   * "which project" almost always has an obvious answer — the one you are
+   * reading, then the one you touched last — and sending someone to a project
+   * list to press a second button is the flow this screen exists to replace.
+   * Only a cockpit with NO projects at all falls back, because then there is
+   * genuinely nothing to open a conversation against.
    */
+  const composerProjectId =
+    selectedScope ??
+    sessions.find((session) => session.id === activeSessionId)?.projectId ??
+    [...sessions].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.projectId ??
+    projects[0]?.id;
+
   const startSession = () => {
     onNavigate();
-    router.push(selectedScope ? `/projects/${encodeURIComponent(selectedScope)}/sessions/new` : "/");
+    router.push(composerProjectId ? `/projects/${encodeURIComponent(composerProjectId)}/sessions/new` : "/");
   };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -474,8 +484,8 @@ function SidebarBody() {
               variant="ghost"
               size="icon-sm"
               className="shrink-0"
-              aria-label="New session"
-              title={selectedScope ? "New session" : "Pick a project to start a session"}
+              aria-label="New conversation"
+              title={composerProjectId ? "New conversation" : "Register a project first"}
               onClick={startSession}
             >
               <MessageSquarePlusIcon />

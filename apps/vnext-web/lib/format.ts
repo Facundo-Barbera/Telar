@@ -19,10 +19,18 @@ export function fmtAgo(ts: number, now = Date.now()): string {
   return `${Math.floor(d / 365)}y ago`;
 }
 
-/** USD cost fixed to four places — the granularity model spend needs. */
-export function fmtCost(usd: number): string {
-  return `$${usd.toFixed(4)}`;
-}
+/**
+ * `fmtCost` USED TO LIVE HERE and money is no longer a unit this cockpit
+ * reports.
+ *
+ * The engine still carries `UsageSnapshot.costUsd` — it is the provider's own
+ * figure and throwing it away would be lossy — but a price shown beside a turn
+ * invites a comparison it cannot support: only some providers report one, a
+ * subscription seat has no per-turn price at all, and a session that reported
+ * nothing rendered as `$0.0000`, which reads as free rather than as unknown.
+ * TOKENS are reported by every provider, are the thing that actually runs out,
+ * and are what a human can act on. `fmtTokens` is the unit everywhere.
+ */
 
 /** First 8 chars of an id — enough to recognize, short enough to sit inline. */
 export function shortId(id: string): string {

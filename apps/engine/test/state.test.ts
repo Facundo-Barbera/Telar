@@ -408,3 +408,81 @@ setTimeout(() => { lock.release(); process.exit(0); }, 1_000);`;
   const statuses = await Promise.all([left.exited, right.exited]);
   expect(statuses.sort()).toEqual([0, 1]);
 });
+
+test("an attachment is stored under the engine's own name and a turn may only reference one that exists", () => {
+  const { store, root: stateRoot } = readyStore();
+  const attachment = store.putAttachment("session_one", {
+    name: "../../escape.png",
+    mediaType: "image/png",
+    data: new Uint8Array([1, 2, 3, 4]),
+  });
+
+  // THE HUMAN'S NAME NEVER REACHES THE FILESYSTEM. It is kept for display and
+  // the path is minted from the engine's own id, so a name full of `..` is a
+  // label rather than a traversal.
+  expect(attachment.name).toBe("../../escape.png");
+  expect(attachment.path.startsWith(path.join(stateRoot, "sessions", "session_one", "attachments"))).toBe(true);
+  expect(path.basename(attachment.path)).toBe(`${attachment.id}.png`);
+  expect(fs.readFileSync(attachment.path)).toEqual(Buffer.from([1, 2, 3, 4]));
+
+  const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Look", attachments: [attachment.id] });
+  expect(turn.attachments).toEqual([attachment]);
+
+  // Loud rather than silent: a message that says "look at this" and arrives
+  // with nothing attached is worse than one that fails to send.
+  expect(() => store.submitTurn("session_one", { runId: "run_two", input: "Look", attachments: ["att_missing"] })).toThrow(
+    EngineStateError,
+  );
+});
+
+test("a per-turn model beats the session default and cannot change the provider", () => {
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
+
+  const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Hi", model: { model: "claude-haiku-4-5", effort: "low" } });
+  // The instance is STAMPED FROM THE SESSION — the wire shape has no field for
+  // it, so a client cannot ask for a different provider mid-conversation.
+  expect(turn.model).toEqual({ instanceId: session.providerInstanceId, model: "claude-haiku-4-5", effort: "low" });
+
+  const claim = store.claimNextTurn("worker_one");
+  expect(claim?.model).toEqual({ instanceId: session.providerInstanceId, model: "claude-haiku-4-5", effort: "low" });
+});
+
+test("a turn with no model of its own falls back to the session's", () => {
+  const { store } = readyStore();
+  const session = store.getSession("session_one");
+  store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5");
+});
+
+test("only enabled MCP servers ride the claim, and disabling one keeps its configuration", () => {
+  const { store } = readyStore();
+  store.saveMcpServer({ id: "linear", label: "Linear", spec: { transport: "http", url: "https://mcp.linear.app/sse" } });
+  store.saveMcpServer({ id: "local_tools", spec: { transport: "stdio", command: "node", args: ["server.js"] } });
+  expect(store.listMcpServers().map((server) => server.id)).toEqual(["linear", "local_tools"]);
+  // The label defaults to the id, which is also the name the provider addresses
+  // its tools by.
+  expect(store.listMcpServers()[1]!.label).toBe("local_tools");
+
+  store.saveMcpServer({ id: "linear", enabled: false, spec: { transport: "http", url: "https://mcp.linear.app/sse" } });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  expect(store.claimNextTurn("worker_one")?.mcpServers?.map((server) => server.id)).toEqual(["local_tools"]);
+
+  // Off is a state, not deletion: the configuration survives so it can come back.
+  expect(store.listMcpServers().find((server) => server.id === "linear")?.spec).toEqual({
+    transport: "http",
+    url: "https://mcp.linear.app/sse",
+  });
+  expect(store.removeMcpServer("linear")).toBe(true);
+  expect(store.removeMcpServer("linear")).toBe(false);
+  expect(() => store.saveMcpServer({ id: "bad", spec: { transport: "carrier-pigeon" } })).toThrow(EngineStateError);
+});
+
+test("a store with no browser attached reports none rather than failing", async () => {
+  const { store } = readyStore();
+  // The ordinary answer for a session that has never browsed, and the same one
+  // a deployment whose worker owns the browser gives. One code path, not two.
+  expect(await store.browserState("session_one")).toEqual({ scopeKey: "session_one", provider: "none", running: false, tabs: [] });
+});

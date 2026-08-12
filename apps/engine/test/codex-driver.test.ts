@@ -141,6 +141,19 @@ test("turn/start sends the app-server's own input shape, snake_case field and al
   expect(codexTurnInput("x")).toEqual([{ type: "text", text: "x", text_elements: [] }]);
 });
 
+test("an image attachment becomes a localImage element; anything else is named in the text", () => {
+  // `localImage` carries a PATH, not bytes — the app-server's own `UserInput`
+  // union says so, and the file is already on the disk Codex is working on.
+  const input = codexTurnInput("look", [
+    { id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: "/tmp/shot.png" },
+    { id: "att_2", name: "notes.md", mediaType: "text/markdown", bytes: 9, path: "/tmp/notes.md" },
+  ]);
+  expect(input[1]).toEqual({ type: "localImage", path: "/tmp/shot.png" });
+  expect(String((input[0] as { text: string }).text)).toContain("notes.md (text/markdown) at /tmp/notes.md");
+  // The text element keeps its required snake_case field even when it grew.
+  expect(input[0]).toMatchObject({ type: "text", text_elements: [] });
+});
+
 test("the app-server is launched with exactly one argument and told everything else in params", async () => {
   await runTurn("plain").result;
   // Config on an argv is world-readable through `ps` to every process running
