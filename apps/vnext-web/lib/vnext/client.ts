@@ -1,6 +1,7 @@
 import type {
   BrowserSnapshot,
   GitCommitEntry,
+  GitHubSnapshot,
   GitOverview,
   SessionDiff,
   EngineErrorCode,
@@ -72,6 +73,14 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     projectGit: (projectId: string) =>
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
+    /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
+     *  `refresh` is what the button sends, and nothing else may send it. */
+    projectGitHub: (projectId: string, options: { refresh?: boolean } = {}) =>
+      request<{ github: GitHubSnapshot }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github${options.refresh ? "?refresh=1" : ""}`,
+      ),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
     createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>

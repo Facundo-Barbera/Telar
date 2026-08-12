@@ -46,6 +46,7 @@ import type { GitFileChange, SessionDiff, TurnState } from "@telar/engine-client
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { fmtAgo } from "@/lib/format";
 import { describeReview, reconcileReview, REVIEW_STATUS_LETTER, type SessionReview } from "@/lib/session-review";
+import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
@@ -135,7 +136,10 @@ function ReviewFileRow({
   }, [open, patch, failed, sessionId, file.path, file.status]);
 
   return (
-    <div>
+    /* Draggable on the wrapper so the row can be dropped into the message while
+       the button inside keeps its press — see the same note on the journal's
+       file rows in right-panel.tsx. */
+    <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
       <PanelRow tone={STATUS_TONE[file.status]} className="p-0 pl-0">
         <button
           type="button"

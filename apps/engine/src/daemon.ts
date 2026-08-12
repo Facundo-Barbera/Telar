@@ -272,6 +272,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { git: store.projectGit(decodeURIComponent(projectGit[1])) });
         return;
       }
+      /**
+       * A project's issues and pull requests.
+       *
+       * `?refresh=1` IS THE ONLY WAY PAST THE CACHE, and the surface sends it
+       * only from a button a human pressed. A timer must never be able to hold
+       * a network read open against somebody else's rate limit.
+       */
+      const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
+      if (request.method === "GET" && projectGitHub) {
+        writeJson(response, 200, {
+          github: await store.projectGitHub(decodeURIComponent(projectGitHub[1]), { force: url.searchParams.get("refresh") === "1" }),
+        });
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {

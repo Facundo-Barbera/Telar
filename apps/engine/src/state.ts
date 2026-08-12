@@ -25,6 +25,7 @@ import {
   type BrowserSnapshot,
   type BrowserTab,
   type GitCommitEntry,
+  type GitHubSnapshot,
   type SessionDiff,
   type EngineEvent,
   type Item,
@@ -52,6 +53,7 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
+import { defaultGhRunner, readGitHub, type GhRunner } from "./github";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
@@ -167,6 +169,10 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 /** Per turn, so one message cannot smuggle 16 × 20 MB past the per-file cap. */
 const MAX_TURN_ATTACHMENTS = 16;
+
+/** How long a GitHub read stays fresh. Longer than a glance, shorter than the
+ *  time it takes to file an issue and come back for it. */
+const GITHUB_CACHE_MS = 30_000;
 
 export type EngineStatePaths = {
   root: string;
@@ -482,6 +488,10 @@ export class EngineStore {
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
   private readonly git: GitRunner;
+  private readonly gh: GhRunner;
+  /** In memory and never persisted: it is a cache of somebody else's state, and
+   *  a stale one surviving a restart would be worse than a slow first read. */
+  private readonly githubCache = new Map<string, GitHubSnapshot>();
   /**
    * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
    * so the store keeps no provider dependency — every test builds an
@@ -576,10 +586,11 @@ export class EngineStore {
   constructor(
     root: string,
     private readonly now: () => number = Date.now,
-    options: { notifier?: EngineNotifier; git?: GitRunner } = {},
+    options: { notifier?: EngineNotifier; git?: GitRunner; gh?: GhRunner } = {},
   ) {
     this.notifier = options.notifier;
     this.git = options.git ?? defaultGitRunner;
+    this.gh = options.gh ?? defaultGhRunner;
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
@@ -645,6 +656,28 @@ export class EngineStore {
    */
   projectGit(projectId: string): GitOverview {
     return gitOverview(this.git, this.getProject(projectId).root);
+  }
+
+  /**
+   * A project's issues and pull requests.
+   *
+   * CACHED, WHICH NOTHING ELSE IN THIS STORE IS. Every other read here is a
+   * local file or a local git command and costs nothing to repeat; this one is
+   * a network round trip against somebody else's rate limit. A panel that a
+   * reader opens, closes and reopens would otherwise spend three API calls per
+   * glance. Thirty seconds is longer than a glance and shorter than the time it
+   * takes to file an issue and come back for it.
+   *
+   * `force` is what the refresh button sends, and it is the only way past the
+   * cache — a timer must never be able to hold this open.
+   */
+  async projectGitHub(projectId: string, options: { force?: boolean } = {}): Promise<GitHubSnapshot> {
+    const project = this.getProject(projectId);
+    const cached = this.githubCache.get(project.id);
+    if (cached && !options.force && this.now() - cached.readAt < GITHUB_CACHE_MS) return structuredClone(cached);
+    const snapshot = await readGitHub(this.gh, project.root, this.now);
+    this.githubCache.set(project.id, snapshot);
+    return structuredClone(snapshot);
   }
 
   /**

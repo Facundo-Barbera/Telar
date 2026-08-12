@@ -376,6 +376,17 @@ behind it works.
   mutation: additive, reversible, human-pressed. Staging, branch switching and
   discarding are refused by design — the frozen pane's branch list ran
   `git checkout` in the tree a running agent was writing to.
+- **GitHub issues and pull requests.** DONE, read-only, through the `gh` CLI the
+  user already authenticated — no token crosses this contract, and the cockpit's
+  "sign-in lives outside Telar" arrangement stays true. `GET
+  /v2/projects/:id/github` answers a `GitHubSnapshot`; the runner is ASYNC
+  unlike `GitRunner`, because a synchronous network call in a single-threaded
+  daemon stalls every other session's turn observations. Cached thirty seconds,
+  and `?refresh=1` from a button is the only way past it — a timer must not
+  spend somebody else's rate limit. The four ways it can be unavailable are
+  four distinct answers, because "install gh", "log in" and "this is not a
+  GitHub repository" need three different responses and the third is usually
+  "nothing, that is fine".
 - **User-configured MCP servers.** DONE for Claude. Environment-scoped in
   `mcp-servers.json`, filtered to the enabled ones on the `WorkerClaim`, and
   merged UNDER Telar's own servers so a user server called `telar` cannot shadow

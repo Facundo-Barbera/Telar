@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   BotIcon,
   ChevronRightIcon,
+  CircleDotIcon,
   GitBranchIcon,
+  GitPullRequestIcon,
   FileIcon,
   GaugeIcon,
   GlobeIcon,
@@ -31,6 +33,7 @@ import type {
   TurnState,
 } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
+import { fileReference, pageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
@@ -44,6 +47,7 @@ import {
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
 import { GitSurface } from "@/components/session/git-surface";
+import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
 
 /** The panel reads the engine directly for the one thing the journal cannot
@@ -87,6 +91,13 @@ const SURFACES = [
    * nobody narrated. The Git surface is where the two are joined.
    */
   { id: "git", label: "Git", icon: GitBranchIcon, blurb: "What the repository has, against where this session started." },
+  /**
+   * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
+   * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
+   * they never poll and they always say how old their answer is.
+   */
+  { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues. Drag one into the message." },
+  { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests, and this session's own." },
   { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this session has spent." },
 ] as const;
 
@@ -309,7 +320,10 @@ function FileRow({ file }: { file: ChangedFile }) {
   const kind = CHANGE_KIND[file.kind];
 
   return (
-    <div>
+    /* DRAGGABLE ON THE WRAPPER, NOT THE BUTTON. A draggable <button> fights its
+       own click on every browser that has ever shipped; the wrapper carries the
+       gesture and the button keeps the press. */
+    <div draggable onDragStart={(event) => startReferenceDrag(event.dataTransfer, fileReference(file.path))}>
       <PanelRow tone={CHANGE_TONE[file.kind] ?? "none"} className="p-0 pl-0">
         <button
           type="button"
@@ -439,7 +453,12 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+      <div
+        draggable
+        onDragStart={(event) => startReferenceDrag(event.dataTransfer, pageReference({ title: page.title, url: page.url }))}
+        title="Drag into the message to reference this page"
+        className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2 active:cursor-grabbing"
+      >
         <GlobeIcon className={cn("size-3.5 shrink-0", page.loading ? "text-primary" : "text-muted-foreground")} />
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={page.url}>
           {page.url || "about:blank"}
@@ -485,7 +504,12 @@ function TaskRow({ task }: { task: Task }) {
   const RowIcon = task.kind === "background" ? TerminalIcon : BotIcon;
 
   return (
-    <div>
+    <div
+      draggable
+      onDragStart={(event) =>
+        startReferenceDrag(event.dataTransfer, taskReference({ id: task.id, ...(task.title ? { title: task.title } : {}), state: task.state }))
+      }
+    >
       <PanelRow tone={taskTone(task.state)} className="p-0 pl-0">
         <button
           type="button"
@@ -583,6 +607,8 @@ export function VNextPanelSurface({
   browser,
   sessionId,
   sessionTitle,
+  projectId,
+  branch,
   active,
 }: {
   tab: PanelTab;
@@ -596,6 +622,11 @@ export function VNextPanelSurface({
   /** The default commit message. Derived from the first message, which is the
    *  best one-line summary of what was asked for that anybody has. */
   sessionTitle?: string;
+  /** The GitHub surfaces are PROJECT-scoped: issues belong to the repository,
+   *  not to one conversation about it. */
+  projectId?: string;
+  /** The session's own branch, so its pull request can be marked as its own. */
+  branch?: string;
   active?: TurnState;
 }) {
   const usage = useMemo(() => sessionUsage(turns), [turns]);
@@ -614,6 +645,8 @@ export function VNextPanelSurface({
         {...(active ? { active } : {})}
       />
     );
+  if (tab === "issues" || tab === "pulls")
+    return <GitHubSurface kind={tab} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
   if (tab === "agents") return <AgentsSurface tasks={tasks} />;
   return <UsageSurface usage={usage} />;
 }
@@ -836,6 +869,8 @@ export function VNextRightPanel({
   active,
   sessionId,
   sessionTitle,
+  projectId,
+  branch,
   items = [],
   tasks = [],
   turns = [],
@@ -854,6 +889,9 @@ export function VNextRightPanel({
   sessionId?: string;
   /** The default commit message on the git surface. */
   sessionTitle?: string;
+  /** GitHub is project-scoped; the branch marks this session's own pull request. */
+  projectId?: string;
+  branch?: string;
   items?: readonly Item[];
   tasks?: readonly Task[];
   turns?: readonly Turn[];
@@ -1053,6 +1091,8 @@ export function VNextRightPanel({
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}
               {...(sessionTitle ? { sessionTitle } : {})}
+              {...(projectId ? { projectId } : {})}
+              {...(branch ? { branch } : {})}
               {...(active ? { active } : {})}
             />
           </>

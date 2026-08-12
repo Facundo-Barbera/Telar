@@ -958,6 +958,8 @@ export function SessionCockpit({ projectId, sessionId: routeSessionId }: { proje
           {...(active?.state ? { active: active.state } : {})}
           {...(sessionId ? { sessionId } : {})}
           {...(session?.title ? { sessionTitle: session.title } : {})}
+          projectId={session?.projectId ?? projectId}
+          {...(session?.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {})}
           items={items}
           tasks={tasks}
           turns={turns}

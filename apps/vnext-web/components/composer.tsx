@@ -33,6 +33,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } fro
 export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
 import { AccessControl, AgentControl, BackgroundPresence, ComposerOverflowMenu, ContextPill, ReasoningControl } from "./composer-controls";
+import { insertReference, readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
@@ -307,6 +308,8 @@ export function Composer({
   /** Which queued line the composer is currently editing, if any. */
   const [recalled, setRecalled] = useState<number>();
   const armedAt = useRef<number>(0);
+  /** Read on drop, to splice a reference in at the caret rather than at the end. */
+  const textarea = useRef<HTMLTextAreaElement>(null);
   /**
    * DERIVED, not reset in an effect. An armed stop only means anything while a
    * turn is running, so the running flag is part of the ANSWER rather than a
@@ -379,6 +382,59 @@ export function Composer({
    */
   const addFiles = (files: File[]) => onAttach([...attachments, ...files].slice(0, MAX_ATTACHMENTS));
 
+  /**
+   * DROPPING A THING FROM THE PANEL INTO THE MESSAGE.
+   *
+   * Three payloads land here and each means something different:
+   *   - OUR OWN reference type — an issue, a file, a page, a sub-agent — which
+   *     splices its text in at the caret.
+   *   - FILES from the operating system, which become attachments. The same
+   *     gesture people already expect from every other message box.
+   *   - ANYTHING ELSE with plain text — a link dragged from a browser, a
+   *     selection from an editor — which is inserted verbatim. Cheap, and it
+   *     makes the box behave the way a box that accepts drops should.
+   *
+   * The DEPTH COUNTER is not fussiness: `dragenter`/`dragleave` fire for every
+   * child element the pointer crosses, so a single boolean flickers off the
+   * moment the cursor moves from the textarea onto the toolbar inside it.
+   */
+  const dragDepth = useRef(0);
+  const [dropping, setDropping] = useState(false);
+
+  const onDrop = (event: React.DragEvent) => {
+    dragDepth.current = 0;
+    setDropping(false);
+    const files = [...event.dataTransfer.files];
+    if (files.length > 0) {
+      event.preventDefault();
+      addFiles(files);
+      return;
+    }
+    const reference = readReferenceDrag(event.dataTransfer);
+    const text = reference?.text ?? event.dataTransfer.getData("text/uri-list") ?? "";
+    const plain = text || event.dataTransfer.getData("text/plain");
+    if (!plain) return;
+    event.preventDefault();
+    // The caret is read from the textarea rather than tracked in state: a
+    // controlled `selectionStart` would have to be updated on every keystroke to
+    // stay right, and this is the only place it is ever needed.
+    const box = textarea.current;
+    const caret = box && document.activeElement === box ? box.selectionStart : draft.length;
+    const next = insertReference(draft, plain, caret);
+    onDraftChange(next.draft);
+    // After the paint that applies the new value, or the caret lands wherever
+    // React's re-render leaves it — which is the end of the box.
+    window.requestAnimationFrame(() => {
+      box?.focus();
+      box?.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  const dragging = (event: React.DragEvent) =>
+    event.dataTransfer.types.includes(REFERENCE_MIME) ||
+    event.dataTransfer.types.includes("Files") ||
+    event.dataTransfer.types.includes("text/uri-list");
+
   const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
   // The session's own record wins once it exists; before that, the pending
   // choice the first message will be created with.
@@ -436,11 +492,36 @@ export function Composer({
             text approach and dissolve instead. The long soft shadow does the
             rest: it lifts the composer off the conversation without a border
             heavy enough to read as a division. */}
-        <InputGroup className="rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl">
+        <InputGroup
+          onDragEnter={(event) => {
+            if (!dragging(event)) return;
+            dragDepth.current += 1;
+            setDropping(true);
+          }}
+          onDragOver={(event) => {
+            if (!dragging(event)) return;
+            // Without BOTH the preventDefault and the explicit effect, the
+            // browser refuses the drop and animates the item back to where it
+            // came from — the failure that makes drag-and-drop feel broken
+            // rather than absent.
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDragLeave={() => {
+            dragDepth.current = Math.max(0, dragDepth.current - 1);
+            if (dragDepth.current === 0) setDropping(false);
+          }}
+          onDrop={onDrop}
+          className={cn(
+            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl",
+            dropping && "border-ring ring-2 ring-ring/40",
+          )}
+        >
           <label className="sr-only" htmlFor="vnext-turn-prompt">
             Message
           </label>
           <InputGroupTextarea
+            ref={textarea}
             id="vnext-turn-prompt"
             // 76px and 15px/24 — a composer is not a form field. It is the
             // largest single target on the screen and the type has to hold its

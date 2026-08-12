@@ -528,3 +528,32 @@ test("a commit needs a message and the message has a ceiling", () => {
   expect(() => store.commitSessionWork("session_one", "   ")).toThrow(EngineStateError);
   expect(() => store.commitSessionWork("session_one", "x".repeat(2_001))).toThrow(EngineStateError);
 });
+
+test("a GitHub read is cached, and only a refresh gets past the cache", async () => {
+  // The one cached read in this store, because it is the one that costs
+  // somebody else's rate limit. A panel opened, closed and reopened must not
+  // spend three API calls per glance.
+  let calls = 0;
+  let clock = 1_000;
+  const store = new EngineStore(root(), () => clock, {
+    git: () => ({ status: 0, stdout: "", stderr: "" }),
+    gh: async (_cwd, args) => {
+      calls += 1;
+      return { status: 0, stdout: args[0] === "repo" ? JSON.stringify({ nameWithOwner: "o/r" }) : "[]", stderr: "" };
+    },
+  });
+  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+
+  await store.projectGitHub("project_one");
+  expect(calls).toBe(3);
+  await store.projectGitHub("project_one");
+  expect(calls).toBe(3);
+
+  // The refresh button is the only thing that may bypass it; a timer must not.
+  await store.projectGitHub("project_one", { force: true });
+  expect(calls).toBe(6);
+
+  clock += 31_000;
+  await store.projectGitHub("project_one");
+  expect(calls).toBe(9);
+});

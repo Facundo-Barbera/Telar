@@ -12,6 +12,7 @@ import {
   EngineDiscovery,
   type BrowserSnapshot,
   type GitCommitEntry,
+  type GitHubSnapshot,
   type SessionDiff,
   type McpServer,
   type McpServerSpec,
@@ -156,6 +157,16 @@ export class EngineClient {
    *  underneath the engine, and a stale branch name is worse than a slow one. */
   projectGit(projectId: string): Promise<{ git: GitOverview }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/git`);
+  }
+
+  /**
+   * A project's issues and pull requests, through the `gh` CLI the user
+   * authenticated on this machine. Cached for thirty seconds in the engine;
+   * `refresh` is what a human pressing the button sends.
+   */
+  projectGitHub(projectId: string, options: { refresh?: boolean } = {}): Promise<{ github: GitHubSnapshot }> {
+    const suffix = options.refresh ? "?refresh=1" : "";
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${suffix}`);
   }
 
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {
