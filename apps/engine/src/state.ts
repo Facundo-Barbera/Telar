@@ -38,6 +38,7 @@ import {
   type WorkerClaim,
   type WorkerStatus,
 } from "@telar/engine-client";
+import { gitOverview, type GitOverview } from "./git";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
@@ -480,6 +481,21 @@ export class EngineStore {
     const project = this.listProjects().find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
     return project;
+  }
+
+  /**
+   * The project's git state, read fresh.
+   *
+   * NOT CACHED and not journalled: it describes the working tree, which changes
+   * underneath the engine constantly — an agent writing files, a human on the
+   * same checkout, a rebase in another terminal. A stale branch name in the
+   * composer's foot is worse than a slow one, because that line is what tells a
+   * person where their next message lands.
+   *
+   * Uses the store's injected runner, so a test never needs a real repository.
+   */
+  projectGit(projectId: string): GitOverview {
+    return gitOverview(this.git, this.getProject(projectId).root);
   }
 
   createSession(input: {

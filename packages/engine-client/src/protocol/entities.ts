@@ -203,3 +203,32 @@ export const Turn = z.object({
   providerSessionId: z.string().min(1).optional(),
 });
 export type Turn = z.infer<typeof Turn>;
+
+/**
+ * A project's git state, as the engine last read it.
+ *
+ * READ-ONLY BY CONSTRUCTION. It exists so a client can say WHERE work lands —
+ * the composer's foot names the project and branch the next message will act on
+ * — and nothing here implies a mutation. A project that is not a repository
+ * reports `repository: false` rather than failing, because `envMode: "local"`
+ * supports exactly that case on purpose.
+ */
+export const GitWorktreeEntry = z.object({
+  path: z.string(),
+  basename: z.string(),
+  /** Absent on a detached checkout, which is a real state and not a name. */
+  branch: z.string().optional(),
+  isMainCheckout: z.boolean(),
+});
+export type GitWorktreeEntry = z.infer<typeof GitWorktreeEntry>;
+
+export const GitOverview = z.object({
+  repository: z.boolean(),
+  branch: z.string().optional(),
+  dirtyFiles: z.number().int().nonnegative(),
+  /** Both absent when the branch has no upstream — which is NOT zero/zero. */
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+  worktrees: z.array(GitWorktreeEntry),
+});
+export type GitOverview = z.infer<typeof GitOverview>;

@@ -1,4 +1,5 @@
 import type {
+  GitOverview,
   EngineErrorCode,
   EngineEvent,
   EngineHealth,
@@ -61,6 +62,8 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
+    projectGit: (projectId: string) =>
+      request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
     createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>

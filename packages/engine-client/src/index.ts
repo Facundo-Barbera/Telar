@@ -15,6 +15,7 @@ import {
   type EngineEvent,
   type EngineHealth,
   type Item,
+  type GitOverview,
   type Project,
   type ProviderDriverKind,
   type Session,
@@ -111,6 +112,13 @@ export class EngineClient {
 
   registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
     return this.request("POST", "/v2/projects", input);
+  }
+
+  /** A project's git state — branch, dirty count, divergence, worktrees.
+   *  Read fresh on every call: it describes a working tree that changes
+   *  underneath the engine, and a stale branch name is worse than a slow one. */
+  projectGit(projectId: string): Promise<{ git: GitOverview }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/git`);
   }
 
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {

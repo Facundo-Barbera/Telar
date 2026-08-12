@@ -26,12 +26,13 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BotIcon, CornerDownLeftIcon, GitBranchIcon, ShieldIcon, SquareIcon, XIcon } from "lucide-react";
-import type { ProviderDriverKind, RuntimeMode } from "@telar/engine-client";
+import { CornerDownLeftIcon, PaperclipIcon, SquareIcon, XIcon } from "lucide-react";
+import type { RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { AgentControl, BackgroundPresence, ContextPill, RuntimeModeControl } from "./composer-controls";
+import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
 
 /** How long a first Escape stays armed. */
@@ -39,65 +40,11 @@ const ESC_ARM_WINDOW_MS = 3_000;
 
 export type QueuedMessage = { runId: string; text: string };
 
-export const RUNTIME_MODE_LABELS: Record<RuntimeMode, string> = {
-  "approval-required": "Ask first",
-  "auto-accept-edits": "Auto edits",
-  auto: "Auto",
-  "full-access": "Full access",
-};
-
-/** What each mode actually permits, in the terms a human decides in. */
-export const RUNTIME_MODE_HELP: Record<RuntimeMode, string> = {
-  "approval-required": "Asks before running commands or changing files. Reads are allowed.",
-  "auto-accept-edits": "Edits and reads files freely. Asks before running commands.",
-  auto: "Runs tools without asking. Questions still reach you.",
-  "full-access": "Never asks. Use when nobody is watching and the blast radius is bounded.",
-};
-
-const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
-
 function placeholderFor(ready: boolean, busy: boolean): string {
   if (!ready) return "Waiting for the engine-owned session…";
   // The ONLY place the cockpit mentions that queueing exists.
   if (busy) return "Enter queues a message…";
   return "Ask for changes, explore the project, or continue this conversation…";
-}
-
-/** The mode control. A brake a human can reach MID-TURN, so it stays live while
- *  the session is busy rather than locking with everything else. */
-function RuntimeModeControl({ mode, onChange, disabled }: { mode: RuntimeMode; onChange: (mode: RuntimeMode) => void; disabled: boolean }) {
-  return (
-    <TooltipProvider>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Select value={mode} onValueChange={(next) => onChange(next as RuntimeMode)} disabled={disabled}>
-              <SelectTrigger
-                size="sm"
-                aria-label="What this session may do without asking"
-                className="h-6 gap-1 border-0 bg-transparent px-1.5 text-xs text-muted-foreground shadow-none hover:bg-muted hover:text-foreground"
-              >
-                <ShieldIcon className="size-3.5" />
-                {/* Without a formatter this prints the raw mode (`auto-accept-edits`),
-                    which is a wire value, not a label a human chose from. */}
-                <SelectValue>{(value: RuntimeMode) => RUNTIME_MODE_LABELS[value]}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {RUNTIME_MODES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {RUNTIME_MODE_LABELS[option]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          }
-        />
-        <TooltipContent side="top">
-          <p className="max-w-56">{RUNTIME_MODE_HELP[mode]}</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  );
 }
 
 function QueueChip({ item, onWithdraw }: { item: QueuedMessage; onWithdraw: (runId: string) => void }) {
@@ -125,8 +72,11 @@ export function Composer({
   sending,
   queued,
   runtimeMode,
-  driver,
-  worktreeBranch,
+  session,
+  projectId,
+  projectName,
+  usage,
+  backgroundTasks,
   onDraftChange,
   onSubmit,
   onStop,
@@ -140,13 +90,13 @@ export function Composer({
   sending: boolean;
   queued: QueuedMessage[];
   runtimeMode?: RuntimeMode;
-  /** Which provider runs this session. READ-ONLY: the engine fixes the driver
-   *  at creation, so this is a statement, not a control. It sits beside the
-   *  mode pill because "who is answering" and "what may they do" are the two
-   *  facts a person checks before pressing Enter. */
-  driver?: ProviderDriverKind;
-  /** Present only for a worktree session — the branch its work lands on. */
-  worktreeBranch?: string;
+  session?: Session;
+  projectId: string;
+  projectName?: string;
+  /** The newest turn's usage — the context readout's only honest source. */
+  usage?: UsageSnapshot;
+  /** Work that outlives the turn that started it. */
+  backgroundTasks: number;
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -198,7 +148,7 @@ export function Composer({
   const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
 
   return (
-    <div className="mx-auto flex w-full max-w-[50rem] shrink-0 flex-col gap-1.5 px-4 pt-2 pb-4">
+    <div className="relative mx-auto flex w-full max-w-[50rem] shrink-0 flex-col gap-1.5 px-4 pt-2 pb-5">
       {queued.length > 0 && (
         <div className="flex flex-col gap-1" aria-label="Queued messages">
           {queued.length > 1 && <p className="px-1 text-[10px] text-muted-foreground">{queued.length} waiting</p>}
@@ -208,19 +158,30 @@ export function Composer({
         </div>
       )}
 
+      <BackgroundPresence count={backgroundTasks} onStop={onStop} />
+
       <form
         onSubmit={(event) => {
           event.preventDefault();
           if (draft.trim() && ready) onSubmit();
         }}
       >
-        <InputGroup>
+        {/* A TRANSLUCENT, BLURRED SURFACE — not a flat panel. The transcript
+            scrolls UNDER the composer, so an opaque box would cut the column in
+            half with a hard edge; `bg-card/95` plus `backdrop-blur-xl` lets the
+            text approach and dissolve instead. The long soft shadow does the
+            rest: it lifts the composer off the conversation without a border
+            heavy enough to read as a division. */}
+        <InputGroup className="rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl">
           <label className="sr-only" htmlFor="vnext-turn-prompt">
             Message
           </label>
           <InputGroupTextarea
             id="vnext-turn-prompt"
-            className="field-sizing-content max-h-48 min-h-16"
+            // 76px and 15px/24 — a composer is not a form field. It is the
+            // largest single target on the screen and the type has to hold its
+            // own against the transcript it sits under.
+            className="field-sizing-content max-h-48 min-h-[76px] px-3 pt-3 pb-2 text-[15px] leading-6"
             placeholder={placeholderFor(ready, busy)}
             value={draft}
             // NOT disabled while busy. That is the whole point.
@@ -228,25 +189,25 @@ export function Composer({
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={onKeyDown}
           />
-          <InputGroupAddon align="block-end" className="justify-between gap-1">
-            <div className="flex min-w-0 items-center gap-1">
-              {driver && (
-                <span className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground" title="Set when the session was created">
-                  <BotIcon className="size-3.5" />
-                  {driver === "codex" ? "Codex" : "Claude"}
-                </span>
-              )}
+          <InputGroupAddon align="block-end" className="min-h-11 flex-wrap justify-between gap-1 border-t border-border/40 px-2.5 pt-1.5 pb-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {/* Present but inert: attachments are a contract the engine does
+                  not have yet. Disabled with the reason rather than absent, so
+                  the row's shape is the one it will keep. */}
+              <button
+                type="button"
+                disabled
+                title="Attachments are not built yet"
+                aria-label="Add context"
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-40"
+              >
+                <PaperclipIcon className="size-4" />
+              </button>
+              {session && <AgentControl driver={session.driver} {...(session.model?.model ? { model: session.model.model } : {})} {...(session.model?.effort ? { effort: session.model.effort } : {})} />}
               {runtimeMode && <RuntimeModeControl mode={runtimeMode} onChange={onRuntimeMode} disabled={!ready} />}
-              {worktreeBranch && (
-                <span
-                  className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-                  title={`Work lands on ${worktreeBranch}, not on the project checkout`}
-                >
-                  <GitBranchIcon className="size-3.5 shrink-0" />
-                  <span className="truncate">{worktreeBranch}</span>
-                </span>
-              )}
             </div>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
+            <ContextPill usage={usage} />
             <InputGroupButton
               type={busy ? "button" : "submit"}
               variant="default"
@@ -269,9 +230,14 @@ export function Composer({
                 <CornerDownLeftIcon className="size-4" />
               )}
             </InputGroupButton>
+            </div>
           </InputGroupAddon>
         </InputGroup>
       </form>
+
+      {/* The composer's foot: where this message lands. Outside the form and
+          fused to its bottom edge — see workspace-environment.tsx. */}
+      <WorkspaceEnvironment projectId={projectId} {...(projectName ? { projectName } : {})} {...(session ? { session } : {})} />
     </div>
   );
 }

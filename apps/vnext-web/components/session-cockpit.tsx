@@ -507,6 +507,15 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
   };
 
   const shown = transcript.filter((turn) => turn.state !== "queued");
+  /**
+   * The NEWEST reported usage, not the active turn's: a running turn has no
+   * figures yet, and blanking the context readout the moment work starts is
+   * exactly when a person most wants to know how much room is left.
+   */
+  const newestUsage = [...transcript].reverse().find((turn) => turn.usage)?.usage;
+  /** Background work outlives the turn that started it, so it is counted over
+   *  every task rather than over the active turn's. */
+  const backgroundTasks = tasks.filter((task) => task.kind === "background" && (task.state === "running" || task.state === "pending")).length;
 
   return (
     <main className="group/masthead flex min-h-0 flex-1 flex-col">
@@ -559,8 +568,11 @@ export function SessionCockpit({ projectId, sessionId }: { projectId: string; se
           sending={sending}
           queued={queued}
           runtimeMode={session?.runtimeMode}
-          driver={session?.driver}
-          {...(session?.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {})}
+          projectId={session?.projectId ?? projectId}
+          {...(projectName ? { projectName } : {})}
+          {...(session ? { session } : {})}
+          {...(newestUsage ? { usage: newestUsage } : {})}
+          backgroundTasks={backgroundTasks}
           onDraftChange={(nextDraft) => {
             setDraft(nextDraft);
             setDraftRunId(undefined);

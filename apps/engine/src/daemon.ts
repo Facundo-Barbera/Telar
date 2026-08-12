@@ -232,6 +232,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { projects: store.listProjects() });
         return;
       }
+      /**
+       * A project's git state, for the composer's pinned environment.
+       *
+       * Under /v2/projects/:id/ rather than /v2/sessions/:id/ because it
+       * describes the PROJECT — every session on it sees the same branch, and
+       * hanging it off a session would invite a per-session answer the working
+       * tree cannot give.
+       */
+      const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
+      if (request.method === "GET" && projectGit) {
+        writeJson(response, 200, { git: store.projectGit(decodeURIComponent(projectGit[1])) });
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {
