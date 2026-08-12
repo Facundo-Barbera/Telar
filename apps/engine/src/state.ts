@@ -370,6 +370,16 @@ export class EngineStore {
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
   private readonly git: GitRunner;
+  /**
+   * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
+   * so the store keeps no provider dependency — every test builds an
+   * EngineStore directly and must not pull Chromium in to do it.
+   */
+  private browser?: { release(scopeKey: string, reason?: string): Promise<boolean> };
+
+  attachBrowser(browser: { release(scopeKey: string, reason?: string): Promise<boolean> }): void {
+    this.browser = browser;
+  }
 
   constructor(
     root: string,
@@ -752,6 +762,11 @@ export class EngineStore {
       (turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running",
     );
     if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before archiving");
+
+    // Free the session's browser. WITHOUT THIS, Chromium instances accumulate
+    // until the pool's LRU evicts them six sessions later — which is a leak
+    // measured in hundreds of megabytes on a machine running detached work.
+    void this.browser?.release(sessionId, "session archived");
 
     if (session.workspace.mode === "worktree") {
       const project = this.getProject(session.projectId);

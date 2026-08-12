@@ -30,10 +30,30 @@ export type DriverRequest = {
   toolUseId: string;
 };
 
+/**
+ * The engine's browser, handed to the driver as a capability.
+ *
+ * PASSED IN RATHER THAN IMPORTED, so a driver constructed without one simply
+ * has no browser tools instead of dragging Chromium into every unit test. It is
+ * also what makes the headless/attached swap invisible to the model: the driver
+ * only ever sees `call`.
+ */
+export type BrowserCapability = {
+  call(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ content: unknown[]; isError?: boolean }>;
+  isReadOnly(name: string, args?: Record<string, unknown>): boolean;
+  tools: readonly { name: string; description: string; input: unknown }[];
+};
+
 export type DriverRun = {
   prompt: string;
   cwd: string;
   signal: AbortSignal;
+  /**
+   * Scopes this turn's browser. Sessions are the natural boundary: two
+   * sessions must not share a tab, and a session's tabs must survive between
+   * its turns.
+   */
+  browserScopeKey?: string;
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /** Batched back to the engine. Never called after the run settles. */
@@ -71,6 +91,8 @@ type SdkCanUseTool = (
   options: { signal: AbortSignal; toolUseID: string; title?: string },
 ) => Promise<{ behavior: "allow"; updatedInput?: Record<string, unknown> } | { behavior: "deny"; message: string; interrupt?: boolean }>;
 
+type SdkMcpServer = unknown;
+
 type ClaudeSdk = {
   query(input: {
     prompt: string;
@@ -81,9 +103,52 @@ type ClaudeSdk = {
       includePartialMessages: true;
       resume?: string;
       canUseTool?: SdkCanUseTool;
+      mcpServers?: Record<string, SdkMcpServer>;
     };
   }): AsyncIterable<unknown>;
+  /** OPTIONAL because the fake SDKs the tests inject only implement `query`.
+   *  A driver whose SDK lacks these simply gets no browser tools. */
+  createSdkMcpServer?(input: { name: string; version: string; tools: unknown[] }): SdkMcpServer;
+  tool?(
+    name: string,
+    description: string,
+    shape: Record<string, unknown>,
+    handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
+  ): unknown;
 };
+
+/**
+ * Wrap the engine's browser as an in-process MCP server the SDK can call.
+ *
+ * `gate` RETURNS FALSE FOR A DECLINE and the tool answers with `isError`
+ * rather than throwing. A thrown handler reads to the model as a broken tool
+ * and it retries; an error result reads as "you may not do that" and it adapts.
+ * That distinction is the whole reason a decline carries a reason.
+ */
+async function buildBrowserMcpServer(
+  sdk: ClaudeSdk,
+  browser: BrowserCapability,
+  scopeKey: string,
+  gate: (name: string, args: Record<string, unknown>) => Promise<boolean>,
+): Promise<SdkMcpServer | undefined> {
+  const { createSdkMcpServer, tool } = sdk;
+  if (!createSdkMcpServer || !tool) return undefined;
+  const tools = browser.tools.map((definition) =>
+    tool(
+      definition.name,
+      definition.description,
+      // The SDK wants a raw shape, not a wrapped object schema.
+      ((definition.input as { shape?: Record<string, unknown> }).shape ?? {}) as Record<string, unknown>,
+      async (args) => {
+        if (!(await gate(definition.name, args))) {
+          return { content: [{ type: "text", text: "The human declined this browser action." }], isError: true };
+        }
+        return browser.call(scopeKey, definition.name, args);
+      },
+    ),
+  );
+  return createSdkMcpServer({ name: "browser", version: "2.0.0", tools });
+}
 
 /**
  * Which REQUEST kind a tool call belongs to.
@@ -235,9 +300,10 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
  */
 export function createClaudeDriver(
   loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>,
+  options: { browser?: BrowserCapability } = {},
 ): TurnDriver {
   return {
-    async run({ prompt, cwd, signal, onObservations, onRequest, providerSessionId }) {
+    async run({ prompt, cwd, signal, onObservations, onRequest, providerSessionId, browserScopeKey }) {
       let sdk: ClaudeSdk;
       try {
         sdk = await loadSdk();
@@ -257,8 +323,26 @@ export function createClaudeDriver(
       let usage: UsageSnapshot | undefined;
       let completed = false;
 
-      /** Streaming blocks keyed by the provider's content-block index. */
-      const openBlocks = new Map<number, { id: string; kind: "text" | "thinking" }>();
+      /**
+       * Streaming blocks keyed by the provider's content-block index.
+       *
+       * `text` ACCUMULATES, and that is not redundant with the deltas already
+       * sent. Deltas are appends the engine journals but deliberately does NOT
+       * fold into `items.json` — rewriting the whole projection per token would
+       * be absurd — so the closing `item.completed` is the ONLY chance to give
+       * the stored item its final text. Without it a live client looked right
+       * (it folds deltas itself) while a client OPENING the session later got
+       * empty reasoning and empty assistant messages from the snapshot. Found
+       * by running it, not by a test; the test now exists.
+       */
+      const openBlocks = new Map<number, { id: string; kind: "text" | "thinking"; text: string }>();
+
+      const closeBlock = (block: { id: string; kind: "text" | "thinking"; text: string }): TurnObservation => ({
+        kind: "item.completed",
+        itemId: block.id,
+        status: "completed",
+        detail: block.kind === "text" ? { type: "assistant_message", text: block.text } : { type: "reasoning", text: block.text },
+      });
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
       const openTools = new Map<string, { id: string; detail: ItemDetail }>();
@@ -303,6 +387,33 @@ export function createClaudeDriver(
           }
         : undefined;
 
+      /**
+       * The browser, as an in-process MCP server.
+       *
+       * IN-PROCESS RATHER THAN A SPAWNED SERVER because the engine already owns
+       * the Chromium; a stdio MCP server would be a second process brokering
+       * to the first. The scope key is resolved PER CALL from the run, never
+       * captured once — a driver instance outlives any single turn.
+       *
+       * A MUTATING call goes through the SAME `onRequest` gate as every other
+       * tool. Clicking a button on a live page is an action with consequences,
+       * and the legacy stack classified browser calls for exactly this reason.
+       */
+      const mcpServers =
+        options.browser && browserScopeKey
+          ? {
+              browser: await buildBrowserMcpServer(sdk, options.browser, browserScopeKey, async (name, args) => {
+                if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
+                const decision = await onRequest({
+                  kind: "tool_call",
+                  detail: { kind: "tool_call", call: { name, input: args } },
+                  toolUseId: `browser_${name}_${crypto.randomUUID().slice(0, 8)}`,
+                });
+                return decision === "accept" || decision === "acceptForSession";
+              }),
+            }
+          : undefined;
+
       try {
         for await (const message of sdk.query({
           prompt,
@@ -313,6 +424,7 @@ export function createClaudeDriver(
             includePartialMessages: true,
             ...(providerSessionId ? { resume: providerSessionId } : {}),
             ...(canUseTool ? { canUseTool } : {}),
+            ...(mcpServers ? { mcpServers } : {}),
           },
         })) {
           const item = message as {
@@ -357,7 +469,7 @@ export function createClaudeDriver(
               // places is how a row gets emitted twice.
               if (blockType === "text" || blockType === "thinking") {
                 const id = itemId();
-                openBlocks.set(index, { id, kind: blockType });
+                openBlocks.set(index, { id, kind: blockType, text: "" });
                 emit({
                   kind: "item.started",
                   item: {
@@ -374,6 +486,7 @@ export function createClaudeDriver(
               if (!open) continue;
               const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
               if (typeof text !== "string" || text.length === 0) continue;
+              open.text += text;
               if (open.kind === "text") {
                 receivedPartialText = true;
                 finalText += text;
@@ -393,7 +506,7 @@ export function createClaudeDriver(
               const open = openBlocks.get(index);
               if (!open) continue;
               openBlocks.delete(index);
-              emit({ kind: "item.completed", itemId: open.id, status: "completed" });
+              emit(closeBlock(open));
               await flush();
             }
             continue;
@@ -465,9 +578,9 @@ export function createClaudeDriver(
         for (const [, open] of openTools) {
           emit({ kind: "item.completed", itemId: open.id, status: "failed" });
         }
-        for (const [, open] of openBlocks) {
-          emit({ kind: "item.completed", itemId: open.id, status: "completed" });
-        }
+        // A block the provider never closed still gets its accumulated text,
+        // for the same reason: the projection has no other source for it.
+        for (const [, open] of openBlocks) emit(closeBlock(open));
         await flush();
 
         return {

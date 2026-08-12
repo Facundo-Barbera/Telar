@@ -1,0 +1,492 @@
+/**
+ * The Codex seam: one turn, one `codex app-server` subprocess, the SAME
+ * normalized observations `./driver.ts` produces for Claude.
+ *
+ * THAT SAMENESS IS THE WHOLE POINT. The contract's item vocabulary is
+ * provider-agnostic (`packages/engine-client/src/protocol/items.ts`), so a
+ * Codex `commandExecution` and a Claude `Bash` must arrive as the same
+ * `command_execution` row or the cockpit grows a second renderer, a second
+ * approval card and a second definition of "what did this turn cost". A
+ * provider driver is a leaf: it reports what it saw and owns no state.
+ *
+ * WHAT IT DOES NOT DO, deliberately, because the legacy bridge did and vNext
+ * has nowhere to put it yet:
+ *   - no dynamic tools. Telar's in-process tool namespaces do not exist in
+ *     vNext, and declaring `dynamicTools: []` is WORSE than silence (see the
+ *     omit-when-empty note on `threadParams`).
+ *   - no sub-agent buckets. `ItemSeed` has no `taskId`, so a child thread's
+ *     work cannot be attributed to a task row. Its items are still emitted —
+ *     invisible work is worse than unfiled work — tagged with the child thread
+ *     id in `providerRefs.sessionId`, which is what a later task mapping keys
+ *     off.
+ *   - no on-demand compaction or rollback. Those are session operations, not
+ *     turn operations, and `TurnDriver` runs turns.
+ */
+import crypto from "node:crypto";
+import type { ItemDetail, ItemSeed, RequestDecision, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
+import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage } from "./codex/items";
+import type { DriverRun, DriverResult, TurnDriver } from "./driver";
+
+/**
+ * The posture a thread runs under.
+ *
+ * STRUCTURALLY IDENTICAL TO `codexThreadConfig()`'s return in
+ * `packages/core/src/runtime-mode.ts`, and taken as a parameter rather than
+ * derived here so that policy stays defined once. `apps/engine` does not depend
+ * on `@telar/core`; a caller that does can pass `codexThreadConfig(mode)`
+ * verbatim.
+ */
+export type CodexThreadConfig = {
+  approvalPolicy: "untrusted" | "on-request" | "never";
+  sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  approvalsReviewer: "user" | "auto_review";
+};
+
+export type CodexDriverOptions = {
+  model?: string;
+  /** Codex's reasoning effort. Omitted entirely when unset — the app-server has
+   *  its own default and an invented one would silently override the model's. */
+  effort?: string;
+  serviceTier?: string;
+  /** Overlaid on `process.env` for the subprocess. The child needs PATH and the
+   *  Codex home like any other process; this is for tests and for an account's
+   *  credentials once vNext has accounts. */
+  env?: Record<string, string | undefined>;
+  /** The seam for `codexExecutablePath()` from `@telar/core` — see
+   *  `resolveCodexBinary`'s header for why it is not imported here. */
+  resolveBin?: () => string;
+  threadConfig?: CodexThreadConfig;
+};
+
+export const DEFAULT_CODEX_MODEL = "gpt-5.5";
+
+/**
+ * The posture used when the caller names none.
+ *
+ * DERIVED FROM WHETHER THERE IS A GATE AT ALL, which is the same signal
+ * `./driver.ts` documents on `onRequest`: absent means "no gate", the
+ * full-access shape, which is what the tests use. Present means the engine
+ * wants to be asked — so Codex is told to ask about everything, and the
+ * ENGINE's `autoResolution()` decides. Codex must never apply its own policy on
+ * top of the engine's, because then two parties are deciding and only one of
+ * them is recorded.
+ */
+function defaultThreadConfig(gated: boolean): CodexThreadConfig {
+  return gated
+    ? { approvalPolicy: "on-request", sandbox: "workspace-write", approvalsReviewer: "user" }
+    : { approvalPolicy: "never", sandbox: "danger-full-access", approvalsReviewer: "user" };
+}
+
+/**
+ * `turn/start`'s input array.
+ *
+ * `text_elements: []` IS REQUIRED AND IS snake_case, alone among every field on
+ * this wire. It is not a typo to be tidied: the app-server's `UserInput` schema
+ * declares it, and a text item without it is rejected.
+ */
+export function codexTurnInput(prompt: string): Array<Record<string, unknown>> {
+  return [{ type: "text", text: prompt, text_elements: [] }];
+}
+
+/**
+ * `turn/start` takes a richer sandbox policy than `thread/start`'s enum, and it
+ * is the one that actually decides network access. Derived from the same
+ * `sandbox` value so the two can never disagree.
+ */
+export function codexSandboxPolicy(sandbox: CodexThreadConfig["sandbox"], cwd: string): Record<string, unknown> {
+  if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
+  if (sandbox === "read-only") return { type: "readOnly", networkAccess: false };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [cwd],
+    networkAccess: true,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
+const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchApproval"]);
+
+const dropUndefined = (env: Record<string, string | undefined>): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) if (value !== undefined) out[key] = value;
+  return out;
+};
+
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/** Cancellation carried out of the readline callback, where nothing may throw.
+ *  A method name no app-server message can collide with. */
+const CANCEL_SENTINEL = "@telar/cancelled";
+
+class CodexTurnCancelled extends Error {
+  constructor() {
+    super("The human cancelled this turn.");
+    this.name = "CodexTurnCancelled";
+  }
+}
+
+export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver {
+  const resolveBin = options.resolveBin ?? resolveCodexBinary;
+  const model = options.model ?? DEFAULT_CODEX_MODEL;
+
+  return {
+    async run({ prompt, cwd, signal, providerSessionId, onObservations, onRequest }: DriverRun): Promise<DriverResult> {
+      // Throws `ProviderUnavailableError` when Codex is not installed, BEFORE a
+      // subprocess exists — a missing CLI must read as a missing CLI, not as an
+      // app-server that exited with a null code.
+      const bin = resolveBin();
+      const threadConfig = options.threadConfig ?? defaultThreadConfig(Boolean(onRequest));
+      const client = new CodexAppServer(bin, dropUndefined({ ...process.env, ...options.env }));
+
+      let finalText = "";
+      let usage: UsageSnapshot | undefined;
+      let cancelled = false;
+      let rootThreadId = "";
+      let rootTurnId = "";
+
+      /** Rows keyed by Codex's item id, so a completion closes the row its
+       *  start opened rather than opening a second one. */
+      const open = new Map<string, { id: string; detail: ItemDetail }>();
+      /** Rows already closed. Codex re-publishes some items as later snapshots
+       *  (a collab tool call is touched again by every wait/send/close), and
+       *  without this each snapshot would open and close a fresh duplicate row. */
+      const closed = new Set<string>();
+      /** Text accumulated per item from deltas. Kept per item, not per turn:
+       *  it is both the double-count guard below and the only copy of a
+       *  reasoning block's text, which Codex never sends as a whole. */
+      const streamedText = new Map<string, string>();
+      /** The turn's single plan row, updated in place across the turn. */
+      let planItemId: string | undefined;
+
+      const pending: TurnObservation[] = [];
+      const emit = (observation: TurnObservation): void => void pending.push(observation);
+      const flush = async (): Promise<void> => {
+        if (pending.length === 0) return;
+        await onObservations(pending.splice(0, pending.length));
+      };
+
+      const abort = () => client.kill();
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+
+      /**
+       * Answer one approval REQUEST, detached.
+       *
+       * DETACHED IS THE LOAD-BEARING WORD. This is started from the stdout
+       * reader and never awaited there: a parked approval waits for a human,
+       * and awaiting it inline would stall every line behind it — including
+       * this same turn's text deltas, which is how the legacy bridge froze a
+       * session that was still perfectly alive.
+       */
+      const answerApproval = async (request: CodexServerRequest): Promise<void> => {
+        const approval = codexApprovalRequest(request.method, request.params);
+        // Only reachable when `onServerRequest` below already matched.
+        if (!approval || !onRequest) return;
+        let decision: RequestDecision;
+        try {
+          decision = await onRequest(approval);
+        } catch {
+          // A gate that failed is a DECLINE, never a hang: the app-server has
+          // no deadline on an unanswered request.
+          decision = "decline";
+        }
+        // `acceptForSession` widens the SESSION's posture, which the engine
+        // records itself (`RequestDecision` in the contract). Codex only needs
+        // to hear yes about this call.
+        const accepted = decision === "accept" || decision === "acceptForSession";
+        // Two answer vocabularies for the same question: `accept`/`decline` for
+        // the `item/*` pair, `approved`/`denied` (ReviewDecision) for the
+        // legacy pair. Sending one where the other belongs is not an error the
+        // app-server reports — it is a decision it ignores.
+        const answer = LEGACY_APPROVAL_METHODS.has(request.method)
+          ? accepted
+            ? "approved"
+            : "denied"
+          : accepted
+            ? "accept"
+            : "decline";
+        client.respond(request.id, { decision: answer });
+        if (decision === "cancel") {
+          // `cancel` withdraws the WHOLE turn, not just this call. The decline
+          // still goes out first — a subprocess torn down mid-answer leaves the
+          // app-server waiting on a request that will never arrive — and the
+          // withdrawal reaches the run loop as a sentinel rather than as a
+          // kill, so the teardown stays in the one place that owns it.
+          cancelled = true;
+          client.notifications.push({ method: CANCEL_SENTINEL, params: {} });
+        }
+      };
+
+      // Assigned BEFORE the first await, so no stdout line can be processed
+      // against a client that cannot yet answer approvals.
+      client.onServerRequest = (request) => {
+        if (!onRequest || !codexApprovalRequest(request.method, request.params)) return false;
+        void answerApproval(request);
+        return true;
+      };
+
+      const itemIdFor = (codexId: string): string => `item_${codexId}`;
+
+      const refsFor = (codexId: string, threadId: string): ItemSeed["providerRefs"] => ({
+        itemId: codexId,
+        ...(rootTurnId ? { turnId: rootTurnId } : {}),
+        // Only a CHILD thread's id says something the root refs do not. It is
+        // how a sub-agent's rows can be re-filed once tasks exist.
+        ...(threadId && threadId !== rootThreadId ? { sessionId: threadId } : {}),
+      });
+
+      /** Open a row for a Codex item if it has none yet. */
+      const openItem = (threadId: string, codexId: string, detail: ItemDetail, title?: string): string => {
+        const existing = open.get(codexId);
+        if (existing) return existing.id;
+        const id = itemIdFor(codexId);
+        open.set(codexId, { id, detail });
+        emit({
+          kind: "item.started",
+          item: { id, detail, ...(title ? { title } : {}), providerRefs: refsFor(codexId, threadId) },
+        });
+        return id;
+      };
+
+      const handleItem = (threadId: string, raw: unknown, terminal: boolean): void => {
+        const item = record(raw);
+        const codexId = str(item.id);
+        if (!codexId || closed.has(codexId)) return;
+        const mapped = codexItemDetail(item);
+        if (!mapped) return;
+
+        if (!terminal) {
+          openItem(threadId, codexId, mapped.detail, mapped.title);
+          return;
+        }
+
+        // Some items are only ever seen once, at completion. Opening the row
+        // here keeps the journal's started→completed pairing intact rather than
+        // emitting a completion for a row nothing started.
+        const id = openItem(threadId, codexId, mapped.detail, mapped.title);
+        open.delete(codexId);
+        closed.add(codexId);
+
+        const status = codexItemStatus(item.status, "completed");
+        let detail = mapped.detail;
+        const streamed = streamedText.get(codexId);
+        if (detail.type === "assistant_message") {
+          // THE DOUBLE-COUNT GUARD. `agentMessage` re-sends its FULL text on
+          // completion, so a turn that already streamed it as deltas must not
+          // append it a second time — the same guard `./driver.ts` keeps
+          // against Claude's repeated assistant envelope. A child thread's text
+          // is never this turn's answer either.
+          if (streamed === undefined && threadId === rootThreadId) finalText += detail.text;
+          // A completion that arrived without its text would otherwise blank a
+          // row the deltas already filled in.
+          if (detail.text.length === 0 && streamed) detail = { type: "assistant_message", text: streamed };
+        }
+        // Reasoning text exists ONLY as deltas — the item carries none — so the
+        // stored row would read empty without this.
+        if (detail.type === "reasoning" && streamed) detail = { type: "reasoning", text: streamed };
+        emit({
+          kind: "item.completed",
+          itemId: id,
+          status: codexItemFailed(item, status) ? "failed" : status,
+          detail,
+        });
+      };
+
+      const handleDelta = (
+        threadId: string,
+        params: Record<string, unknown>,
+        kind: "assistant" | "reasoning",
+      ): void => {
+        const codexId = str(params.itemId);
+        const text = typeof params.delta === "string" ? params.delta : undefined;
+        // A delta for a row that already closed has nowhere to land; opening a
+        // second row for it would be worse than dropping it.
+        if (!codexId || !text || closed.has(codexId)) return;
+        const id = openItem(
+          threadId,
+          codexId,
+          kind === "assistant" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" },
+        );
+        streamedText.set(codexId, (streamedText.get(codexId) ?? "") + text);
+        // Reasoning is NOT part of the turn's answer, and a child thread's text
+        // is not this turn's answer either.
+        if (kind === "assistant" && threadId === rootThreadId) finalText += text;
+        emit({
+          kind: "content.delta",
+          itemId: id,
+          stream: kind === "assistant" ? "assistant_text" : "reasoning_text",
+          text,
+        });
+      };
+
+      try {
+        await client.request("initialize", {
+          clientInfo: { name: "telar", title: "Telar", version: "0.1.0" },
+          capabilities: { experimentalApi: true, requestAttestation: false },
+        });
+        client.notify("initialized");
+
+        /**
+         * OMIT-WHEN-EMPTY IS PROTOCOL-SIGNIFICANT HERE. `dynamicTools`,
+         * `developerInstructions` and `config` are absent rather than empty
+         * because an explicit `dynamicTools: []` states "this client has no
+         * tools", which is a different sentence from saying nothing — and a
+         * resumed thread that says it LOSES the tools it started with. vNext
+         * declares none of the three today; the rule is written down here so
+         * whoever adds the first one adds it conditionally.
+         */
+        const threadParams = {
+          cwd,
+          approvalPolicy: threadConfig.approvalPolicy,
+          approvalsReviewer: threadConfig.approvalsReviewer,
+          sandbox: threadConfig.sandbox,
+          model,
+          ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+        };
+        const thread = providerSessionId
+          ? await client.request<{ thread?: { id?: string } }>("thread/resume", {
+              threadId: providerSessionId,
+              ...threadParams,
+            })
+          : await client.request<{ thread?: { id?: string } }>("thread/start", threadParams);
+        // A resume that comes back without a thread id still resumed the thread
+        // the engine named; falling back to it keeps continuity rather than
+        // stranding the next turn with no cursor.
+        rootThreadId = str(thread.thread?.id) ?? providerSessionId ?? "";
+        if (!rootThreadId) throw new Error("codex app-server started no thread");
+
+        const turn = await client.request<{ turn?: { id?: string } }>("turn/start", {
+          threadId: rootThreadId,
+          input: codexTurnInput(prompt),
+          ...(options.effort ? { effort: options.effort } : {}),
+          model,
+          approvalPolicy: threadConfig.approvalPolicy,
+          approvalsReviewer: threadConfig.approvalsReviewer,
+          sandboxPolicy: codexSandboxPolicy(threadConfig.sandbox, cwd),
+          ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+        });
+        rootTurnId = str(turn.turn?.id) ?? "";
+
+        for (;;) {
+          const { value: notification, done } = await client.notifications.next();
+          if (done) throw new Error("codex app-server closed the connection mid-turn");
+          if (notification.method === CANCEL_SENTINEL) throw new CodexTurnCancelled();
+          const params = notification.params;
+          const threadId = str(params.threadId) ?? "";
+
+          switch (notification.method) {
+            case "item/started":
+              handleItem(threadId, params.item, false);
+              break;
+
+            case "item/completed":
+              handleItem(threadId, params.item, true);
+              break;
+
+            case "item/agentMessage/delta":
+              handleDelta(threadId, params, "assistant");
+              break;
+
+            case "item/reasoning/textDelta":
+              handleDelta(threadId, params, "reasoning");
+              break;
+
+            case "turn/plan/updated": {
+              if (threadId !== rootThreadId) break;
+              const detail = codexPlanDetail(params);
+              if (!detail) break;
+              // ONE ROW, UPDATED IN PLACE, which is what `plan` means in the
+              // contract. The legacy bridge minted a fresh TodoWrite-shaped
+              // tool call per update and left the transcript full of near-
+              // identical checklists.
+              if (planItemId) emit({ kind: "item.updated", item: { id: planItemId, detail } });
+              else {
+                planItemId = `item_plan_${crypto.randomUUID().replaceAll("-", "")}`;
+                emit({ kind: "item.started", item: { id: planItemId, detail, title: "Plan" } });
+              }
+              break;
+            }
+
+            case "thread/tokenUsage/updated": {
+              // GATED ON THE ROOT THREAD: a sub-agent's tokens are reported
+              // against its own thread and adding them here would bill the
+              // parent turn twice for the same work.
+              if (threadId !== rootThreadId) break;
+              const snapshot = codexUsage(params);
+              if (!snapshot) break;
+              usage = snapshot;
+              // Emitted per update rather than once at the end so the cockpit's
+              // context meter moves during a long turn.
+              emit({ kind: "usage", usage: snapshot });
+              break;
+            }
+
+            case "error": {
+              const message = str(record(params.error).message) ?? "Codex reported an error";
+              // A retryable error, or one belonging to a child thread, is a row
+              // — not the end of the turn. Only the root thread's terminal
+              // failure ends it.
+              if (threadId === rootThreadId && params.willRetry !== true) throw new Error(message);
+              const id = `item_error_${crypto.randomUUID().replaceAll("-", "")}`;
+              emit({ kind: "item.started", item: { id, detail: { type: "error", error: { message } } } });
+              emit({ kind: "item.completed", itemId: id, status: "failed" });
+              break;
+            }
+
+            case "turn/completed": {
+              const turnRecord = record(params.turn);
+              if (threadId !== rootThreadId) break;
+              // A sub-agent's turn completing is not this turn completing.
+              if (rootTurnId && str(turnRecord.id) && str(turnRecord.id) !== rootTurnId) break;
+              if (turnRecord.status === "failed") {
+                throw new Error(str(record(turnRecord.error).message) ?? "Codex turn failed");
+              }
+              // Rows the app-server never closed would sit spinning forever.
+              for (const [, row] of open) emit({ kind: "item.completed", itemId: row.id, status: "failed" });
+              open.clear();
+              if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
+              await flush();
+              if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
+              return {
+                text: finalText,
+                providerSessionId: rootThreadId,
+                ...(usage ? { usage } : {}),
+              };
+            }
+
+            default:
+              // Everything else — thread/started (a documented duplicate of
+              // thread/start's own response), turn/started, rate limits, MCP
+              // startup status — is not this driver's concern.
+              break;
+          }
+          // Per notification, not per batch: buffering streamed text until the
+          // turn ends is not streaming.
+          await flush();
+        }
+      } catch (error) {
+        // A killed subprocess reports itself as an exit code, and an in-flight
+        // request rejects with that same exit — neither of which is what
+        // actually happened. Whatever the app-server said on its way out, an
+        // aborted or withdrawn turn is reported as one.
+        if (cancelled) throw new CodexTurnCancelled();
+        if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", abort);
+        // ONE SUBPROCESS PER TURN, ALWAYS REAPED. `TurnDriver.run` is a promise
+        // rather than a generator, so nothing else will do this for us and a
+        // failed turn would otherwise leak an app-server per attempt.
+        client.kill();
+      }
+    },
+  };
+}

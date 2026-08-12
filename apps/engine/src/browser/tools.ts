@@ -1,0 +1,265 @@
+/**
+ * The agent-facing browser tool surface, and the result shape a call returns.
+ *
+ * PORTED FROM `apps/web_old/lib/browser-mcp.ts` WITH ITS SDK COUPLING CUT. The
+ * legacy definitions were built with the Agent SDK's `tool()` helper and typed
+ * their result as `Awaited<ReturnType<SdkMcpToolDefinition["handler"]>>`, which
+ * made the browser — a thing that has nothing to do with Claude — unusable
+ * without the Claude SDK loaded. The engine must be able to drive a page for a
+ * Codex session, and a unit test must be able to assert on a tool result
+ * without importing a provider. So the schemas are plain zod here and the
+ * result is an engine-local MCP content shape.
+ *
+ * These schemas are the ENGINE's copy of the contract, not Playwright MCP's.
+ * They are deliberately a narrower surface than `@playwright/mcp` exposes (no
+ * `browser_evaluate`, no `browser_handle_dialog`, no file uploads): a tool the
+ * engine does not define is a tool an agent cannot reach.
+ */
+import { z } from "zod";
+
+// ── what a browser tool call returns ───────────────────────────────────────
+
+export const McpTextContent = z.object({ type: z.literal("text"), text: z.string() });
+export type McpTextContent = z.infer<typeof McpTextContent>;
+
+/** `data` is base64. Playwright MCP only sends this when the runtime was
+ *  launched with `--image-responses allow`, which `transport.ts` does. */
+export const McpImageContent = z.object({
+  type: z.literal("image"),
+  data: z.string(),
+  mimeType: z.string().min(1).optional(),
+});
+export type McpImageContent = z.infer<typeof McpImageContent>;
+
+/**
+ * Any content block MCP grows that this engine does not model yet (`resource`,
+ * `audio`, …). Kept so a newer @playwright/mcp cannot make a whole result fail
+ * to parse over one block nobody reads.
+ *
+ * THE REFINEMENT IS THE POINT. Without it this arm also swallows a MALFORMED
+ * `text` block — `{ type: "text", text: 42 }` fails the text arm, falls through
+ * to here, matches, and is silently accepted as an opaque block whose text
+ * every caller then reads as `undefined`. A forward-compatibility escape hatch
+ * must never be able to accept a shape we DO know and got wrong.
+ */
+export const McpUnknownContent = z
+  .looseObject({ type: z.string().min(1) })
+  .refine((block) => block.type !== "text" && block.type !== "image", {
+    message: "malformed text/image content block",
+  });
+export type McpUnknownContent = z.infer<typeof McpUnknownContent>;
+
+export const McpContentBlock = z.union([McpTextContent, McpImageContent, McpUnknownContent]);
+export type McpContentBlock = z.infer<typeof McpContentBlock>;
+
+/**
+ * The `tools/call` result.
+ *
+ * `isError` IS NOT A TRANSPORT ERROR. MCP reports a tool that ran and failed
+ * (bad selector, navigation refused) as a normal result with `isError: true`
+ * and the reason in its text — a JSON-RPC `error` means the call never ran at
+ * all. Conflating them is how "element not found" turns into "the browser
+ * crashed" in a session journal.
+ */
+export const BrowserToolResult = z.object({
+  content: z.array(McpContentBlock).default([]),
+  isError: z.boolean().optional(),
+});
+export type BrowserToolResult = z.infer<typeof BrowserToolResult>;
+
+// ── the tools ──────────────────────────────────────────────────────────────
+
+export const BrowserToolName = z.enum([
+  "browser_list_tabs",
+  "browser_tabs",
+  "browser_navigate",
+  "browser_navigate_back",
+  "browser_snapshot",
+  "browser_click",
+  "browser_type",
+  "browser_fill_form",
+  "browser_select_option",
+  "browser_press_key",
+  "browser_hover",
+  "browser_take_screenshot",
+  "browser_console_messages",
+  "browser_network_requests",
+]);
+export type BrowserToolName = z.infer<typeof BrowserToolName>;
+
+export type BrowserToolDefinition = {
+  name: BrowserToolName;
+  /** Written for the model, not for a human reader. It is the only thing that
+   *  tells an agent when this tool is the right one, so it names the situation
+   *  rather than describing the parameters. */
+  description: string;
+  input: z.ZodObject;
+};
+
+const EMPTY = z.object({});
+
+/**
+ * `target` is a ref out of the most recent `browser_snapshot`, and `element` is
+ * the human-readable description of the same node. Both are passed on every
+ * interaction: Playwright MCP uses `element` for its own error messages, so a
+ * failure reads "could not click the Save button" rather than "could not click
+ * e17". It stays optional because a retry that has the ref and not the prose is
+ * still worth letting through.
+ */
+const targeted = {
+  target: z.string().min(1),
+  element: z.string().optional(),
+};
+
+export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
+  {
+    name: "browser_list_tabs",
+    description:
+      "List the tabs currently open in Telar's integrated browser without changing them. Use this first when the user refers to a visible page or open browser tab.",
+    input: EMPTY,
+  },
+  {
+    name: "browser_tabs",
+    description:
+      "List, create, close, or select a tab in Telar's integrated browser. List tabs before acting when the user has more than one open.",
+    input: z.object({
+      action: z.enum(["list", "new", "close", "select"]),
+      // Tabs are addressed positionally by Playwright MCP, so a fractional or
+      // negative index is not a near-miss — it is a different tab or none.
+      index: z.number().int().nonnegative().optional(),
+      url: z.string().optional(),
+    }),
+  },
+  {
+    name: "browser_navigate",
+    description: "Navigate the selected Telar browser tab to an http or https URL.",
+    input: z.object({ url: z.url() }),
+  },
+  {
+    name: "browser_navigate_back",
+    description: "Go back in the selected Telar browser tab.",
+    input: EMPTY,
+  },
+  {
+    name: "browser_snapshot",
+    description:
+      "Read the accessibility snapshot of the selected Telar browser tab. Use its exact target refs for interactions.",
+    input: z.object({
+      target: z.string().optional(),
+      depth: z.number().int().nonnegative().optional(),
+      boxes: z.boolean().optional(),
+    }),
+  },
+  {
+    name: "browser_click",
+    description: "Click an element in the selected Telar browser tab using a target from browser_snapshot.",
+    input: z.object({
+      ...targeted,
+      doubleClick: z.boolean().optional(),
+      button: z.enum(["left", "right", "middle"]).optional(),
+    }),
+  },
+  {
+    name: "browser_type",
+    description: "Type text into an editable element in the selected Telar browser tab.",
+    input: z.object({
+      ...targeted,
+      text: z.string(),
+      submit: z.boolean().optional(),
+      slowly: z.boolean().optional(),
+    }),
+  },
+  {
+    name: "browser_fill_form",
+    description: "Fill several fields in the selected Telar browser tab.",
+    input: z.object({
+      fields: z.array(
+        z.object({
+          ...targeted,
+          name: z.string(),
+          type: z.enum(["textbox", "checkbox", "radio", "combobox", "slider"]),
+          value: z.string(),
+        }),
+      ),
+    }),
+  },
+  {
+    name: "browser_select_option",
+    description: "Select values in a dropdown in the selected Telar browser tab.",
+    input: z.object({ ...targeted, values: z.array(z.string()) }),
+  },
+  {
+    name: "browser_press_key",
+    description: "Press a keyboard key in the selected Telar browser tab.",
+    input: z.object({ key: z.string().min(1) }),
+  },
+  {
+    name: "browser_hover",
+    description: "Move Telar's visible agent cursor over an element in the selected browser tab.",
+    input: z.object({ ...targeted }),
+  },
+  {
+    name: "browser_take_screenshot",
+    description:
+      "Capture the selected Telar browser tab for visual inspection. Use browser_snapshot for element targeting.",
+    input: z.object({
+      type: z.enum(["png", "jpeg"]).default("png"),
+      fullPage: z.boolean().optional(),
+      scale: z.enum(["css", "device"]).default("css"),
+    }),
+  },
+  {
+    name: "browser_console_messages",
+    description: "Read console messages from the selected Telar browser tab.",
+    input: z.object({
+      level: z.enum(["error", "warning", "info", "debug"]).default("info"),
+      all: z.boolean().optional(),
+    }),
+  },
+  {
+    name: "browser_network_requests",
+    description: "Read network requests from the selected Telar browser tab.",
+    input: z.object({
+      static: z.boolean().default(false),
+      filter: z.string().optional(),
+    }),
+  },
+];
+
+const BY_NAME = new Map<string, BrowserToolDefinition>(BROWSER_TOOLS.map((tool) => [tool.name, tool]));
+
+export function browserToolDefinition(name: string): BrowserToolDefinition | null {
+  return BY_NAME.get(name) ?? null;
+}
+
+/** Every name the engine will forward to the browser. `isReadOnlyBrowserCall`
+ *  derives from this, so an unlisted tool is unknown rather than assumed safe. */
+export const BROWSER_TOOL_NAMES: ReadonlySet<string> = new Set(BrowserToolName.options);
+
+export class BrowserToolInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BrowserToolInputError";
+  }
+}
+
+/**
+ * Validate a tool call's arguments before they leave the engine.
+ *
+ * WORTH DOING EVEN THOUGH PLAYWRIGHT MCP VALIDATES TOO. A rejection here costs
+ * nothing and names the field; a rejection over there costs a 30-second RPC
+ * round trip through a browser process we may have just spawned, and comes back
+ * as prose. It also applies the schema DEFAULTS (screenshot `type`, console
+ * `level`) so the engine's journal records the arguments the browser actually
+ * received rather than the ones the model happened to type.
+ */
+export function parseBrowserToolInput(name: string, input: unknown = {}): Record<string, unknown> {
+  const definition = browserToolDefinition(name);
+  if (!definition) throw new BrowserToolInputError(`Unknown browser tool: ${name}`);
+  const parsed = definition.input.safeParse(input ?? {});
+  if (parsed.success) return parsed.data;
+  const detail = parsed.error.issues
+    .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "(root)"}: ${issue.message}`)
+    .join("; ");
+  throw new BrowserToolInputError(`Invalid arguments for ${name} — ${detail}`);
+}

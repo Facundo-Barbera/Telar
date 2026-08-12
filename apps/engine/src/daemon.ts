@@ -450,13 +450,29 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // rather than through a private in-process shortcut. That keeps one code
     // path for claim/heartbeat/observe instead of two that can diverge.
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
+    let browser: import("./browser").BrowserRuntime | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
       const [{ EngineClient }, { EngineWorker }] = await Promise.all([
         import("@telar/engine-client"),
         import("./worker"),
       ]);
-      const createDriver = config.createDriver ?? (async () => (await import("./driver")).createClaudeDriver());
+      // The daemon owns the browser, not the driver: it outlives any turn and
+      // has to be closed exactly once. `release(sessionId)` on archive is what
+      // keeps Chromium instances from accumulating until the pool evicts them.
+      const { BrowserRuntime, BROWSER_TOOLS } = await import("./browser");
+      browser = new BrowserRuntime();
+      store.attachBrowser(browser);
+      // The capability is ASSEMBLED HERE rather than being the runtime itself:
+      // the driver must not import ./browser, or every driver would drag
+      // Chromium's transport in whether or not a session ever browses.
+      const capability = {
+        call: (scopeKey: string, name: string, args?: Record<string, unknown>) => browser!.call(scopeKey, name, args),
+        isReadOnly: (name: string, args?: Record<string, unknown>) => browser!.isReadOnly(name, args),
+        tools: BROWSER_TOOLS,
+      };
+      const createDriver =
+        config.createDriver ?? (async () => (await import("./driver")).createClaudeDriver(undefined, { browser: capability }));
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const worker = new EngineWorker({
         client: new EngineClient(discovery),
@@ -479,6 +495,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The worker stops FIRST: it holds claims, and a claim outliving the
         // server it reports to becomes an ambiguous turn on the next start.
         await embedded?.stop();
+        // After the worker, before the lock: a live Chromium holding a profile
+        // lock outlives the process that spawned it otherwise.
+        await browser?.close("engine shutting down");
         await closeServer(server);
         clearInterval(workerPruner);
         removeOwnDiscovery(store, daemonId);

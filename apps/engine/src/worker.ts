@@ -105,6 +105,9 @@ export class EngineWorker {
         cwd,
         signal: controller.signal,
         providerSessionId,
+        // Sessions are the browser's natural boundary: two sessions must not
+        // share a tab, and a session's tabs must survive between its turns.
+        browserScopeKey: sessionId,
         onRequest: async ({ kind, detail, toolUseId }) => {
           const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
           const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {

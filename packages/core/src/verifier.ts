@@ -125,8 +125,21 @@ function walkUpForPlaywrightMcpBin(startDir: string | undefined): string | null 
     // turbopackIgnore: this is a runtime probe for an installed CLI binary —
     // Next's output tracing must not try to follow it (it would pull the whole
     // project into the server bundle).
+    // The app-scoped candidates come FIRST because bun does not hoist a
+    // workspace dependency to the repo root: `@playwright/mcp` is declared by
+    // the apps that use it and is installed under each of them, so a walk-up
+    // that only looked for `node_modules/@playwright/mcp` from a package
+    // directory would sail past the only real copy and fall through to a PATH
+    // lookup that usually has nothing.
+    //
+    // `apps/web` was renamed to `apps/web_old` (see apps/web_old/AGENTS.md) and
+    // vNext's engine now owns the headless browser, so the old candidate
+    // pointed at a path that no longer exists on any checkout. Both live
+    // installs are listed, engine first: the frozen tree is a design source we
+    // do not want anything resolving against by preference.
     const candidates = [
-      path.join(/* turbopackIgnore: true */ dir, "apps/web/node_modules/@playwright/mcp/cli.js"),
+      path.join(/* turbopackIgnore: true */ dir, "apps/engine/node_modules/@playwright/mcp/cli.js"),
+      path.join(/* turbopackIgnore: true */ dir, "apps/web_old/node_modules/@playwright/mcp/cli.js"),
       path.join(/* turbopackIgnore: true */ dir, "node_modules/@playwright/mcp/cli.js"),
       path.join(/* turbopackIgnore: true */ dir, "node_modules/.bin/playwright-mcp"),
     ];

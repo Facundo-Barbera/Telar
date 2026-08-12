@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { connectEngine } from "@telar/engine-client";
+import { BROWSER_TOOLS, BrowserRuntime } from "./browser";
 import { createClaudeDriver } from "./driver";
 import { vnextRootFromEnv } from "./state";
 import { EngineWorker } from "./worker";
@@ -15,10 +16,31 @@ if (!/^[A-Za-z0-9_-]+$/.test(workerId)) {
 
 let stopping = false;
 
+/**
+ * THE OUT-OF-PROCESS WORKER OWNS ITS OWN BROWSER.
+ *
+ * The daemon builds one for its embedded worker, but a worker in its own
+ * process cannot reach that instance — and without this it would run with no
+ * browser tools at all, silently, while the embedded deployment had them. Two
+ * deployments that differ in what the agent can DO is the kind of gap nobody
+ * notices until a detached run behaves differently depending on how it was
+ * started.
+ *
+ * One browser per worker process is correct rather than merely convenient:
+ * scopes are per session, and a session is only ever claimed by one worker.
+ */
+const browser = new BrowserRuntime();
+const capability = {
+  call: (scopeKey: string, name: string, args?: Record<string, unknown>) => browser.call(scopeKey, name, args),
+  isReadOnly: (name: string, args?: Record<string, unknown>) => browser.isReadOnly(name, args),
+  tools: BROWSER_TOOLS,
+};
+
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const supervisor = new WorkerReconnectController({
   connect: () => connectEngine(path.resolve(root)),
-  createWorker: (client, onConnectionLost) => new EngineWorker({ client, workerId, driver: createClaudeDriver(), onConnectionLost }),
+  createWorker: (client, onConnectionLost) =>
+    new EngineWorker({ client, workerId, driver: createClaudeDriver(undefined, { browser: capability }), onConnectionLost }),
   pause,
 });
 
@@ -29,6 +51,9 @@ const stop = async (exitCode: number) => {
   if (stopping) return;
   stopping = true;
   await supervisor.stop();
+  // After the supervisor: a live Chromium holding a profile lock outlives the
+  // process that spawned it otherwise.
+  await browser.close("worker shutting down");
   process.exit(exitCode);
 };
 

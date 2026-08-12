@@ -78,6 +78,51 @@ test("partial text deltas stream against one item without duplicating the final 
   expect(sink.observations.filter((o) => o.kind === "item.started")).toHaveLength(1);
 });
 
+test("a closed block carries its ACCUMULATED text, so a reloaded session is not empty", async () => {
+  // THE BUG THIS PINS, found by running the thing rather than by a test:
+  // `item.completed` was emitted with no detail, so the engine's projection
+  // kept the empty text the block opened with. A LIVE client looked correct —
+  // it folds `content.delta` itself — while a client opening the session
+  // LATER got empty reasoning and empty assistant messages from the snapshot,
+  // which is the exact path the projection exists to serve.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hel" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "lo" } } };
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+      yield { type: "stream_event", event: { type: "content_block_start", index: 1, content_block: { type: "thinking" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "hmm" } } };
+      yield { type: "stream_event", event: { type: "content_block_stop", index: 1 } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+
+  const closed = sink.observations.filter((o) => o.kind === "item.completed");
+  expect(closed).toHaveLength(2);
+  const [text, thinking] = closed;
+  expect(text?.kind === "item.completed" && text.detail).toEqual({ type: "assistant_message", text: "hello" });
+  expect(thinking?.kind === "item.completed" && thinking.detail).toEqual({ type: "reasoning", text: "hmm" });
+});
+
+test("a block the provider never closes still gets its accumulated text", async () => {
+  // Same reason: the projection has no other source for it, and a stream that
+  // ends mid-block is not rare — a stop lands there.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } } };
+      yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "unfinished" } } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.find((o) => o.kind === "item.completed");
+  expect(closed?.kind === "item.completed" && closed.detail).toEqual({ type: "reasoning", text: "unfinished" });
+});
+
 test("thinking blocks are captured as reasoning, which v1 discarded entirely", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
