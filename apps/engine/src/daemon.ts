@@ -15,10 +15,12 @@ import {
   type EngineErrorCode,
   type EngineHealth,
   type ModelSelection,
+  type ProviderDriverKind,
   type RuntimeMode,
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
+import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv, type EngineNotifier } from "./state";
 import type { DriverSelector } from "./worker";
 
@@ -58,6 +60,12 @@ export type EngineDaemonOptions = {
    * in this repo depends on that.
    */
   embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
+  /**
+   * How a provider's version is measured. The default runs `<bin> --version`;
+   * a test supplies its own so the suite never depends on which CLIs happen to
+   * be installed on the machine running it.
+   */
+  probeProviderVersion?: (driver: ProviderDriverKind) => Promise<VersionProbe>;
 };
 
 export type EngineDaemon = {
@@ -217,6 +225,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const workers = new Map<string, RegisteredWorker>();
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
+  /**
+   * INJECTED so a test never shells out to a real CLI. The default probes for
+   * real; every engine test in this repo passes its own, which is also what
+   * keeps the suite fast and offline.
+   */
+  const probeProviders = createProviderProber({
+    ...(options.probeProviderVersion ? { version: options.probeProviderVersion } : {}),
+    now,
+  });
   const pruneWorkers = (): void => {
     const expired = [...workers.values()].filter((worker) => now() - worker.heartbeatAt > workerLeaseMs);
     for (const worker of expired) {
@@ -474,6 +491,50 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /**
+       * The configured logins — the account registry.
+       *
+       * THE LIST AND THE PROBE ARRIVE TOGETHER because a settings page needs
+       * both to render one row, and two round trips would let it paint a green
+       * dot beside an instance the second call is about to call missing.
+       *
+       * SENSITIVE ENVIRONMENT VALUES NEVER COME BACK. `listProviderInstances`
+       * is the redacting read; the store keeps the only unredacting one for the
+       * worker claim, and it is not reachable from here.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/provider-instances") {
+        const providerInstances = store.listProviderInstances();
+        writeJson(response, 200, {
+          providerInstances,
+          probes: await probeProviders(providerInstances, { force: url.searchParams.get("refresh") === "1" }),
+        });
+        return;
+      }
+      const providerInstance = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
+      if (providerInstance && (request.method === "PUT" || request.method === "DELETE")) {
+        const id = decodeURIComponent(providerInstance[1]);
+        if (request.method === "DELETE") {
+          writeJson(response, 200, { removed: store.removeProviderInstance(id) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          providerInstance: store.saveProviderInstance({
+            id,
+            // Every field is forwarded VERBATIM, including an explicit `null`:
+            // the store owns the three-state rule (clear / keep / set), and a
+            // route that coerced null away here would make "remove the accent
+            // colour" unexpressible over HTTP.
+            ...(input.driver === undefined ? {} : { driver: input.driver }),
+            ...(input.displayName === undefined ? {} : { displayName: input.displayName as string | null }),
+            ...(input.accentColor === undefined ? {} : { accentColor: input.accentColor as string | null }),
+            ...(input.configDir === undefined ? {} : { configDir: input.configDir as string | null }),
+            ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
+            ...(input.env === undefined ? {} : { env: input.env }),
+          }),
+        });
+        return;
+      }
       if (request.method === "GET" && url.pathname === "/v2/sessions") {
         const projectId = url.searchParams.get("projectId");
         if (!projectId) throw new HttpError(400, "invalid_request", "projectId is required");
@@ -492,6 +553,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // Validated in the store rather than here, so the HTTP surface and
             // any in-process caller reject the same set of drivers.
             ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),
+            // Naming an instance also names the driver, so the store ignores
+            // `driver` when this is present rather than refusing the pair.
+            ...(typeof input.providerInstanceId === "string" ? { providerInstanceId: input.providerInstanceId } : {}),
           }),
         });
         return;

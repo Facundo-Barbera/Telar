@@ -329,11 +329,14 @@ test("tasks are journalled AND projected, so a cold session still knows a sub-ag
 
 test("a session names its provider, and the routing instance is derived from it", () => {
   const { store } = readyStore();
+  // The built-in slot's id IS the driver kind — t3 code's
+  // `defaultInstanceIdForDriver` — which is what keeps an instance id a plain
+  // slug that survives a URL path segment. It used to be `<driver>:default`.
   const codex = store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
-  expect(codex).toMatchObject({ driver: "codex", providerInstanceId: "codex:default" });
+  expect(codex).toMatchObject({ driver: "codex", providerInstanceId: "codex" });
   expect(store.createSession({ id: "session_default", projectId: "project_one" })).toMatchObject({
     driver: "claude",
-    providerInstanceId: "claude:default",
+    providerInstanceId: "claude",
   });
   expect(() => store.createSession({ id: "session_bad", projectId: "project_one", driver: "gemini" as "claude" })).toThrow(
     /unknown provider driver/,

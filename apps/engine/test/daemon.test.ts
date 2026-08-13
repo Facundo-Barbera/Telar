@@ -169,3 +169,38 @@ test("MCP servers are environment-scoped and survive a daemon restart", async ()
   });
   await expect(reconnected.removeMcpServer("linear")).resolves.toEqual({ removed: true });
 });
+
+test("the provider registry answers with its probe, and never with a secret", async () => {
+  const daemon = await startEngine({
+    vnextRoot: root(),
+    // Injected so the suite never depends on which CLIs happen to be installed
+    // on the machine running it.
+    probeProviderVersion: async (driver) =>
+      driver === "claude" ? { installed: true, version: "2.1.0" } : { installed: false, message: "codex is not on PATH" },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+
+  const seeded = await client.listProviderInstances();
+  expect(seeded.providerInstances.map((instance) => instance.id)).toEqual(["claude", "codex"]);
+  // One call for both, so the page cannot paint a green dot beside an instance
+  // a second call is about to report missing.
+  expect(seeded.probes.map((probe) => probe.status)).toEqual(["ready", "error"]);
+
+  await client.saveProviderInstance({
+    id: "claude_work",
+    driver: "claude",
+    displayName: "Work",
+    configDir: "~/.claude-work",
+    env: [{ name: "SECRET_TOKEN", value: "sk-live-1234", sensitive: true }],
+  });
+  const listed = await client.listProviderInstances();
+  const work = listed.providerInstances.find((instance) => instance.id === "claude_work")!;
+  expect(work.env).toEqual([{ name: "SECRET_TOKEN", value: "", sensitive: true, valueRedacted: true }]);
+  // The folder does not exist on this machine, which is a warning rather than
+  // an error: the CLI is installed, so the thing to fix is the folder.
+  expect(listed.probes.find((probe) => probe.instanceId === "claude_work")).toMatchObject({ status: "warning" });
+
+  await expect(client.removeProviderInstance("claude")).rejects.toMatchObject({ status: 409 });
+  await expect(client.removeProviderInstance("claude_work")).resolves.toEqual({ removed: true });
+});

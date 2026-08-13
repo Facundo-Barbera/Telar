@@ -38,6 +38,9 @@ import {
   type ModelSelection,
   type Project,
   type ProviderDriverKind,
+  type ProviderInstance,
+  type ProviderInstanceEnvVar,
+  type ProviderProbe,
   type Session,
   type Task,
   type EngineRequest,
@@ -459,6 +462,42 @@ export class EngineClient {
 
   removeMcpServer(id: string): Promise<{ removed: boolean }> {
     return this.request("DELETE", `/v2/mcp-servers/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * The configured logins, and what the machine says about each.
+   *
+   * ONE CALL FOR BOTH: a settings row needs the configuration and the probe to
+   * render at all, and splitting them would let the page paint a green dot
+   * beside an instance the second call is about to report missing.
+   *
+   * SENSITIVE ENVIRONMENT VALUES ARE NOT IN THIS ANSWER. They come back as
+   * `{ value: "", valueRedacted: true }`; sending that same shape to
+   * `saveProviderInstance` keeps the stored secret.
+   */
+  listProviderInstances(options: { refresh?: boolean } = {}): Promise<{ providerInstances: ProviderInstance[]; probes: ProviderProbe[] }> {
+    return this.request("GET", `/v2/provider-instances${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /** `null` clears a field, an absent key leaves it alone. Two different
+   *  requests, and JSON has no other way to say so. */
+  saveProviderInstance(input: {
+    id: string;
+    driver?: ProviderDriverKind;
+    displayName?: string | null;
+    accentColor?: string | null;
+    configDir?: string | null;
+    enabled?: boolean;
+    env?: ProviderInstanceEnvVar[];
+  }): Promise<{ providerInstance: ProviderInstance }> {
+    const { id, ...patch } = input;
+    return this.request("PUT", `/v2/provider-instances/${encodeURIComponent(id)}`, patch);
+  }
+
+  /** The built-in slot for a driver refuses: a session on that driver would
+   *  have nothing left to route to. */
+  removeProviderInstance(id: string): Promise<{ removed: boolean }> {
+    return this.request("DELETE", `/v2/provider-instances/${encodeURIComponent(id)}`);
   }
 
   stopTurn(sessionId: string, runId?: string): Promise<{ turn?: Turn; stopped: boolean }> {

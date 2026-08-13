@@ -1,6 +1,7 @@
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError } from "@telar/engine-client";
 import { ProviderUnavailableError, type TurnDriver } from "./driver";
+import { providerProcessEnv } from "./provider-instances";
 
 type WorkerClient = Pick<
   EngineClient,
@@ -143,6 +144,13 @@ export class EngineWorker {
         // not look anything up between claim and execution.
         ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments } : {}),
         ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
+        // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
+        // because it is a fact about spawning a process, and the worker is the
+        // process that spawns one — the engine's job was to resolve WHICH
+        // instance, which it did. An older engine sends no instance at all, and
+        // absence means "run exactly as this worker's own environment does",
+        // which is what every session did before the registry existed.
+        ...(claim.providerInstance ? { env: providerProcessEnv(claim.providerInstance) } : {}),
         providerSessionId,
         // Sessions are the browser's natural boundary: two sessions must not
         // share a tab, and a session's tabs must survive between its turns.

@@ -366,6 +366,118 @@ export const McpServer = z.object({
 export type McpServer = z.infer<typeof McpServer>;
 
 /**
+ * ONE ENVIRONMENT VARIABLE A PROVIDER INSTANCE SETS ON ITS OWN PROCESS.
+ *
+ * `sensitive` DECIDES WHERE THE VALUE LIVES, not merely how it renders. A
+ * sensitive value is written to a separate 0600 file and never comes back on a
+ * read: the list returns `value: ""` with `valueRedacted: true`, and saving that
+ * shape back keeps the stored secret rather than blanking it. Anything else and
+ * a settings page that round-trips the whole instance would echo every API key
+ * it was ever given to whoever opened it.
+ */
+export const ProviderInstanceEnvVar = z.object({
+  /** The shell's own rule, so a name that cannot be exported is refused here
+   *  rather than silently dropped by the child process. */
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "environment variable names are letters, digits and underscores"),
+  value: z.string(),
+  sensitive: z.boolean(),
+  /** Set by the engine on read. Absent on a value the client may see. */
+  valueRedacted: z.boolean().optional(),
+});
+export type ProviderInstanceEnvVar = z.infer<typeof ProviderInstanceEnvVar>;
+
+/**
+ * A CONFIGURED PROVIDER — which is to say, an account.
+ *
+ * THE SPLIT THIS COMPLETES. `ProviderDriverKind` says which implementation runs
+ * a turn; `ProviderInstanceId` says which configured thing it runs as. The
+ * contract has routed by instance id since v2 precisely so one Telar can hold
+ * two Claude logins, but until now the engine minted `<driver>:default` at
+ * session creation and there was nothing behind the id. This is the registry
+ * that comment promised.
+ *
+ * THE DEFAULT INSTANCE'S ID IS THE DRIVER KIND ITSELF — `claude`, `codex` —
+ * which is t3 code's `defaultInstanceIdForDriver`. It keeps the built-in slot
+ * addressable without a reserved separator, and it means an instance id is a
+ * plain slug that survives a URL path segment. Sessions created before this
+ * carry `claude:default`; resolution falls back to the driver's default
+ * instance for any id the registry does not know, which is also what happens
+ * when a custom instance is deleted out from under a session.
+ *
+ * WHAT IS NOT HERE: a `config` blob. t3 code keeps driver-specific settings
+ * opaque (`Schema.Unknown`) so a driver package can own its schema. Telar has
+ * two drivers in one repo and exactly one field that changes which login runs,
+ * so `configDir` is typed rather than smuggled through an untyped bag.
+ */
+export const ProviderInstance = z.object({
+  /** The routing key. A slug, because it is also a URL path segment and a
+   *  settings-page anchor. */
+  id: Id,
+  driver: ProviderDriverKind,
+  /** Optional label shown in the pickers. The id never changes; this does. */
+  displayName: z.string().min(1).optional(),
+  /** `#rrggbb`, used to tell two logins of the same provider apart. */
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  /** Off is a state, not deletion — same rule as an MCP server. */
+  enabled: z.boolean(),
+  /**
+   * The folder this instance is signed in with — `CLAUDE_CONFIG_DIR` or
+   * `CODEX_HOME`. ABSENT MEANS THE BASE LOGIN, and for Claude that is
+   * load-bearing rather than a default: pointing `CLAUDE_CONFIG_DIR` at
+   * `~/.claude` hashes to a different, empty Keychain entry and 401s, so the
+   * base login is the one that must leave the variable unset.
+   */
+  configDir: z.string().min(1).optional(),
+  env: z.array(ProviderInstanceEnvVar),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+});
+export type ProviderInstance = z.infer<typeof ProviderInstance>;
+
+/** The id of the built-in slot for a driver. One spelling, so the engine, the
+ *  cockpit and a stored session cannot disagree about what "the default Claude"
+ *  is called. */
+export function defaultInstanceIdForDriver(driver: ProviderDriverKind): string {
+  return driver;
+}
+
+/**
+ * WHETHER A CONFIGURED INSTANCE CAN ACTUALLY RUN, as far as the engine can tell.
+ *
+ * EVERY FIELD IS MEASURED AND NONE IS GUESSED, which is the whole reason this
+ * is a separate shape from the instance itself. `installed` and `version` come
+ * from `<bin> --version` and nothing else — an auth subcommand's prose is not a
+ * contract, and scraping sign-in state out of it turns a phrasing change into a
+ * confident wrong answer.
+ *
+ * `signIn` IS A FILESYSTEM FACT, NOT A CREDENTIAL READ. Telar never opens an
+ * auth file or a Keychain entry; it checks whether the config folder exists and
+ * whether the provider's login artefact is IN it. That bounds what the answer
+ * can be: on macOS Claude keeps its token in the Keychain, so a Claude instance
+ * with a config dir and no file credentials is `unknown`, never `signed-out`.
+ * Only Codex — whose credentials really are a file — may report `signed-out`.
+ *
+ * See apps/engine/src/provider-probe.ts for the measurement.
+ */
+export const ProviderSignIn = z.enum(["signed-in", "signed-out", "missing-config-dir", "unknown"]);
+export type ProviderSignIn = z.infer<typeof ProviderSignIn>;
+
+export const ProviderProbe = z.object({
+  instanceId: Id,
+  driver: ProviderDriverKind,
+  /** `disabled` outranks everything: an instance switched off is not failing. */
+  status: z.enum(["ready", "warning", "error", "disabled"]),
+  installed: z.boolean(),
+  version: z.string().min(1).optional(),
+  signIn: ProviderSignIn,
+  /** What the harness said when it could not answer. Verbatim, because a
+   *  paraphrase of a provider's own error is a second thing to keep true. */
+  message: z.string().min(1).optional(),
+  checkedAt: Timestamp,
+});
+export type ProviderProbe = z.infer<typeof ProviderProbe>;
+
+/**
  * ONE MODEL A PROVIDER SAYS IT HAS.
  *
  * ASKED FOR, NOT HAND-MAINTAINED. The cockpit shipped a static list of model

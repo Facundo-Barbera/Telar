@@ -94,6 +94,17 @@ export type DriverRun = {
    *  engine. Telar's in-process servers are added by the driver on top. */
   mcpServers?: McpServer[];
   /**
+   * WHICH LOGIN THIS TURN RUNS AS, expressed as an environment patch over the
+   * worker's own — the config dir, whatever the instance declares, and (for a
+   * configured instance) `undefined` for each ambient variable that would
+   * otherwise silently replace its identity.
+   *
+   * A PATCH RATHER THAN A WHOLE ENVIRONMENT because the child still needs PATH
+   * and HOME like any other process, and a driver handed a complete environment
+   * would be the one deciding which of the worker's variables survive.
+   */
+  env?: Record<string, string | undefined>;
+  /**
    * Scopes this turn's browser. Sessions are the natural boundary: two
    * sessions must not share a tab, and a session's tabs must survive between
    * its turns.
@@ -618,6 +629,7 @@ export function createClaudeDriver(
       fastMode,
       attachments,
       mcpServers: userMcpServers,
+      env,
       onObservations,
       onRequest,
       providerSessionId,
@@ -891,6 +903,13 @@ export function createClaudeDriver(
             ...(providerSessionId ? { resume: providerSessionId } : {}),
             ...(canUseTool ? { canUseTool } : {}),
             ...(mcpServers ? { mcpServers } : {}),
+            // WHOLE, NOT A PATCH, because that is what the SDK's option means:
+            // "when omitted the subprocess inherits process.env", so supplying
+            // one replaces it. The patch is applied over the worker's own
+            // environment here, which is where the child's PATH and HOME come
+            // from — and a key patched to `undefined` genuinely disappears,
+            // which is how a configured instance stops inheriting a credential.
+            ...(env ? { env: { ...process.env, ...env } } : {}),
           },
         })) {
           const item = message as {

@@ -10,10 +10,13 @@ import {
   autoResolution,
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
+  defaultInstanceIdForDriver,
   Item as ItemSchema,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
+  ProviderInstance as ProviderInstanceSchema,
+  ProviderInstanceEnvVar as ProviderInstanceEnvVarSchema,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
@@ -40,6 +43,8 @@ import {
   type EngineEvent,
   type Item,
   type McpServer,
+  type ProviderInstance,
+  type ProviderInstanceEnvVar,
   type TurnAttachment,
   type TurnModelSelection,
   type ProviderDriverKind,
@@ -129,17 +134,6 @@ type TurnFailure = { code: TurnFailureCode; message: string };
 const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "driver_failed", "budget_exhausted"]);
 
 /**
- * The provider instance a session gets until the account registry exists.
- *
- * ONE INSTANCE PER DRIVER, derived as `<driver>:default` where the session is
- * created. That is still an assumption — the contract routes by instance id
- * precisely so one Telar can hold two Claude accounts — but it is now an
- * assumption about ACCOUNTS rather than about providers, which is what stage 4
- * had to remove before a session could be a Codex session at all.
- */
-const PROVIDER_INSTANCE_SUFFIX = "default";
-
-/**
  * How deep a session's backlog may get.
  *
  * A RUNAWAY-CLIENT GUARD, NOT A PRODUCT LIMIT. A human queueing follow-ups will
@@ -216,6 +210,18 @@ export type EngineStatePaths = {
   /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json
    *  rather than inside a session: a tool is configured once. */
   mcpServers: string;
+  /** Configured provider instances — the account registry. */
+  providerInstances: string;
+  /**
+   * Their sensitive environment values, in a file of their own at 0600.
+   *
+   * SPLIT SO THE REGISTRY CAN BE READ FREELY. `listProviderInstances` hands its
+   * answer to a settings page over HTTP; if a secret lived on the record, every
+   * open of that page would echo back every API key the user had ever typed.
+   * Keeping them apart makes redaction the default rather than a step somebody
+   * has to remember at each call site.
+   */
+  providerSecrets: string;
   engine: string;
   lock: string;
 };
@@ -261,6 +267,8 @@ export function statePaths(root: string): EngineStatePaths {
     projects: path.join(resolved, "projects.json"),
     sessions: path.join(resolved, "sessions"),
     mcpServers: path.join(resolved, "mcp-servers.json"),
+    providerInstances: path.join(resolved, "provider-instances.json"),
+    providerSecrets: path.join(resolved, "provider-secrets.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
@@ -270,6 +278,67 @@ function assertId(value: unknown, label: string): asserts value is string {
   if (typeof value !== "string" || !ID.test(value)) {
     throw new EngineStateError("invalid_request", `${label} must contain only letters, numbers, underscores, or hyphens`);
   }
+}
+
+/**
+ * Stricter than `assertId` by one character: an instance id must START with a
+ * letter. It is a URL path segment, a settings anchor and — for the built-in
+ * slots — the driver kind itself, and an id like `-force` is one careless
+ * interpolation away from being read as a flag.
+ */
+function assertInstanceId(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(value)) {
+    throw new EngineStateError(
+      "invalid_request",
+      "provider instance id must start with a letter and contain only letters, numbers, underscores, or hyphens",
+    );
+  }
+}
+
+/**
+ * The three-state patch, as one expression.
+ *
+ * `null` clears, `undefined` keeps, anything else is normalised and set. Written
+ * once because doing it inline three times is where a form's "clear the accent
+ * colour" quietly becomes "keep it".
+ */
+function optionalPatch<K extends string>(
+  key: K,
+  submitted: string | null | undefined,
+  existing: string | undefined,
+  normalise: (value: string) => string,
+): Partial<Record<K, string>> {
+  if (submitted === null) return {};
+  const raw = submitted === undefined ? existing : submitted;
+  if (raw === undefined || raw.trim() === "") return {};
+  return { [key]: normalise(raw) } as Partial<Record<K, string>>;
+}
+
+/** A space separates the two halves because neither an instance id nor an
+ *  environment variable name may contain one — so the key cannot be ambiguous. */
+const SECRET_KEY_SEPARATOR = " ";
+
+function secretKey(instanceId: string, name: string): string {
+  return instanceId + SECRET_KEY_SEPARATOR + name;
+}
+
+/**
+ * The built-in slot for a driver.
+ *
+ * NO `configDir`, AND FOR CLAUDE THAT IS THE WHOLE POINT: setting
+ * `CLAUDE_CONFIG_DIR` — even to `~/.claude` — hashes to a different, empty
+ * Keychain entry and 401s. The base login is the one that must leave the
+ * variable unset, which is also why this slot cannot be deleted.
+ */
+function seedProviderInstance(driver: ProviderDriverKind, at: number): ProviderInstance {
+  return {
+    id: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    env: [],
+    createdAt: at,
+    updatedAt: at,
+  };
 }
 
 function assertText(value: unknown): asserts value is string {
@@ -641,6 +710,228 @@ export class EngineStore {
     if (next.length === servers.length) return false;
     atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
     return true;
+  }
+
+  // ── provider instances ────────────────────────────────────────────────────
+  //
+  // THE ACCOUNT REGISTRY the contract has been routing at since v2. Every
+  // session already stores a `providerInstanceId`; until now the engine minted
+  // `<driver>:default` and nothing was behind the id.
+  //
+  // TELAR ADOPTS LOGINS, IT DOES NOT CREATE THEM. Nothing here signs anyone in
+  // and no route below ever will. An instance names a config folder the user
+  // has already authenticated, plus the environment its provider process runs
+  // with; whether that folder actually holds a login is a question `probe()`
+  // answers from the filesystem, never by reading a credential.
+
+  /**
+   * Every configured instance, WITH SENSITIVE VALUES WITHHELD.
+   *
+   * This is the read a settings page gets. `resolveProviderInstance` is the one
+   * that returns real secrets, and it is not reachable from a route.
+   */
+  listProviderInstances(): ProviderInstance[] {
+    return this.readProviderInstances().map((instance) => ({
+      ...instance,
+      env: instance.env.map((variable) =>
+        variable.sensitive ? { ...variable, value: "", valueRedacted: true } : variable,
+      ),
+    }));
+  }
+
+  /**
+   * Create or replace one instance.
+   *
+   * `null` CLEARS A FIELD AND ABSENT LEAVES IT ALONE, the same three-state rule
+   * `updateSession` uses — a settings form that could not distinguish "no accent
+   * colour" from "did not touch the accent colour" would erase one edit with
+   * the next.
+   */
+  saveProviderInstance(input: {
+    id: string;
+    driver?: unknown;
+    displayName?: string | null;
+    accentColor?: string | null;
+    enabled?: boolean;
+    configDir?: string | null;
+    env?: unknown;
+  }): ProviderInstance {
+    assertInstanceId(input.id);
+    const instances = this.readProviderInstances();
+    const existing = instances.find((instance) => instance.id === input.id);
+    const driver = input.driver === undefined ? existing?.driver : input.driver;
+    if (driver !== "claude" && driver !== "codex") {
+      throw new EngineStateError("invalid_request", "provider instance driver must be claude or codex");
+    }
+    /**
+     * THE DRIVER IS FIXED FOR AN INSTANCE'S LIFETIME. Sessions, their resume
+     * cursors and their whole transcripts belong to one harness; re-pointing
+     * the id they route by at the other one would resume a Claude conversation
+     * inside Codex.
+     */
+    if (existing && existing.driver !== driver) {
+      throw new EngineStateError("conflict", "a provider instance cannot change driver");
+    }
+    const at = this.now();
+    const secrets = this.readProviderSecrets();
+    const env = this.applyEnvEdits(input.id, input.env, existing?.env ?? [], secrets);
+    const instance: ProviderInstance = {
+      id: input.id,
+      driver,
+      enabled: input.enabled ?? existing?.enabled ?? true,
+      env: env.stored,
+      createdAt: existing?.createdAt ?? at,
+      updatedAt: at,
+      ...optionalPatch("displayName", input.displayName, existing?.displayName, (value) => value.trim().slice(0, 120)),
+      ...optionalPatch("accentColor", input.accentColor, existing?.accentColor, (value) => {
+        const colour = value.trim();
+        if (!/^#[0-9a-fA-F]{6}$/.test(colour)) throw new EngineStateError("invalid_request", "accent colour must be #rrggbb");
+        return colour;
+      }),
+      ...optionalPatch("configDir", input.configDir, existing?.configDir, (value) => {
+        const dir = value.trim();
+        if (!dir.startsWith("/") && !dir.startsWith("~")) {
+          throw new EngineStateError("invalid_request", "config directory must be an absolute or ~-relative path");
+        }
+        return dir;
+      }),
+    };
+    const parsed = ProviderInstanceSchema.safeParse(instance);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "provider instance configuration is invalid");
+    const next = existing
+      ? instances.map((entry) => (entry.id === instance.id ? parsed.data : entry))
+      : [...instances, parsed.data];
+    atomicWrite(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
+    atomicWrite(this.paths.providerSecrets, { version: STATE_VERSION, secrets: env.secrets });
+    return structuredClone(this.listProviderInstances().find((entry) => entry.id === instance.id)!);
+  }
+
+  /**
+   * Remove a custom instance.
+   *
+   * THE BUILT-IN SLOT IS NOT DELETABLE — there would be nothing left for a
+   * session on that driver to route to, and "reset it" is what the caller
+   * actually wants. Sessions still naming a deleted instance are not rewritten:
+   * `resolveProviderInstance` falls back to the driver's default, which is the
+   * same path a session created before this registry existed takes.
+   */
+  removeProviderInstance(id: string): boolean {
+    assertInstanceId(id);
+    if (id === defaultInstanceIdForDriver("claude") || id === defaultInstanceIdForDriver("codex")) {
+      throw new EngineStateError("conflict", "the built-in provider instance cannot be removed");
+    }
+    const instances = this.readProviderInstances();
+    const next = instances.filter((instance) => instance.id !== id);
+    if (next.length === instances.length) return false;
+    const secrets = this.readProviderSecrets();
+    for (const key of Object.keys(secrets)) {
+      if (key.slice(0, key.indexOf(SECRET_KEY_SEPARATOR)) === id) delete secrets[key];
+    }
+    atomicWrite(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
+    atomicWrite(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
+    return true;
+  }
+
+  /**
+   * The instance a session actually runs as, WITH ITS SECRETS RESOLVED.
+   *
+   * Falls back to the driver's built-in slot for any id the registry does not
+   * know — a session created before the registry existed (`claude:default`), or
+   * one whose custom instance was deleted. Falling back rather than failing is
+   * t3 code's rule too: an instance that vanished is a settings change, not a
+   * reason a conversation stops being resumable.
+   */
+  resolveProviderInstance(instanceId: string, driver: ProviderDriverKind): ProviderInstance {
+    const instances = this.readProviderInstances();
+    const found =
+      instances.find((instance) => instance.id === instanceId) ??
+      instances.find((instance) => instance.id === defaultInstanceIdForDriver(driver));
+    if (!found) return seedProviderInstance(driver, this.now());
+    const secrets = this.readProviderSecrets();
+    return {
+      ...found,
+      env: found.env.map((variable) =>
+        variable.sensitive ? { ...variable, value: secrets[secretKey(found.id, variable.name)] ?? "" } : variable,
+      ),
+    };
+  }
+
+  /** The one place a caller's instance id is checked to exist. Creating a
+   *  session against an id nobody configured is a client bug worth a 400;
+   *  RESUMING one whose instance was deleted is not, which is why
+   *  `resolveProviderInstance` falls back instead of throwing. */
+  private requireProviderInstance(id: string): ProviderInstance {
+    assertInstanceId(id);
+    const found = this.readProviderInstances().find((instance) => instance.id === id);
+    if (!found) throw new EngineStateError("not_found", "provider instance does not exist");
+    return found;
+  }
+
+  /** On disk, seeded on first read so a fresh install has the two built-in
+   *  slots rather than an empty page that offers nothing to configure. */
+  private readProviderInstances(): ProviderInstance[] {
+    const stored = readJson(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
+    if (stored === undefined) {
+      const at = this.now();
+      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at)];
+      atomicWrite(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
+      return seeded;
+    }
+    const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext provider instance registry");
+    return parsed.data;
+  }
+
+  private readProviderSecrets(): Record<string, string> {
+    const stored = readJson(this.paths.providerSecrets) as { secrets?: unknown } | undefined;
+    const secrets = stored?.secrets;
+    if (secrets === undefined || secrets === null) return {};
+    if (typeof secrets !== "object") throw new EngineStateError("invalid_request", "invalid vNext provider secret store");
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return out;
+  }
+
+  /**
+   * Fold a submitted env list into what is stored, moving secrets aside.
+   *
+   * THE REDACTED ROUND TRIP IS THE POINT. A client reads a sensitive variable
+   * as `{ value: "", valueRedacted: true }` and hands that same shape back on
+   * save; the stored secret must survive. Only a non-empty value replaces one,
+   * and clearing a secret is done by dropping the variable — not by saving it
+   * blank, which is indistinguishable from "I did not retype my key".
+   */
+  private applyEnvEdits(
+    instanceId: string,
+    submitted: unknown,
+    previous: ProviderInstanceEnvVar[],
+    secrets: Record<string, string>,
+  ): { stored: ProviderInstanceEnvVar[]; secrets: Record<string, string> } {
+    if (submitted === undefined) return { stored: previous, secrets };
+    const parsed = ProviderInstanceEnvVarSchema.array().max(64).safeParse(submitted);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "provider instance environment is invalid");
+    const next = { ...secrets };
+    const stored: ProviderInstanceEnvVar[] = [];
+    const seen = new Set<string>();
+    for (const variable of parsed.data) {
+      if (seen.has(variable.name)) throw new EngineStateError("invalid_request", `duplicate environment variable ${variable.name}`);
+      seen.add(variable.name);
+      const key = secretKey(instanceId, variable.name);
+      if (!variable.sensitive) {
+        delete next[key];
+        stored.push({ name: variable.name, value: variable.value, sensitive: false });
+        continue;
+      }
+      if (variable.value !== "") next[key] = variable.value;
+      else if (!(key in next)) next[key] = "";
+      stored.push({ name: variable.name, value: "", sensitive: true });
+    }
+    for (const variable of previous) {
+      if (!seen.has(variable.name)) delete next[secretKey(instanceId, variable.name)];
+    }
+    return { stored, secrets: next };
   }
 
   constructor(
@@ -1115,6 +1406,15 @@ export class EngineStore {
     detached?: boolean;
     envMode?: EnvMode;
     driver?: ProviderDriverKind;
+    /**
+     * WHICH CONFIGURED LOGIN runs this session, if the caller picked one.
+     *
+     * Naming an instance also names the driver — they cannot be chosen
+     * independently without inventing the contradiction the split exists to
+     * prevent — so `driver` is ignored when this is present rather than
+     * cross-checked and refused.
+     */
+    providerInstanceId?: string;
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
@@ -1133,8 +1433,10 @@ export class EngineStore {
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
     const envMode = input.envMode ?? "local";
-    const driver = input.driver ?? "claude";
+    const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
+    const driver = chosen?.driver ?? input.driver ?? "claude";
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
     // The worktree is cut BEFORE the session document is written. A session
     // whose workspace does not exist is unusable and would have to be repaired
     // on read; failing here leaves nothing behind to repair.
@@ -1177,9 +1479,9 @@ export class EngineStore {
       updatedAt: at,
       // The instance is the ROUTING key and the driver is descriptive, so the
       // two are derived together here rather than picked independently — a
-      // session routed to `claude:default` while claiming to be a Codex session
-      // is the one inconsistency this split exists to make impossible.
-      providerInstanceId: `${driver}:${PROVIDER_INSTANCE_SUFFIX}`,
+      // session routed to Claude while claiming to be a Codex session is the
+      // one inconsistency this split exists to make impossible.
+      providerInstanceId: chosen?.id ?? defaultInstanceIdForDriver(driver),
       driver,
       workspace,
       envMode,
@@ -1534,11 +1836,19 @@ export class EngineStore {
        */
       const model = turn.model ?? session.model;
       const mcpServers = this.listMcpServers().filter((server) => server.enabled);
+      /**
+       * Resolved at CLAIM TIME like everything else here, and never omitted:
+       * a session whose instance was deleted still has to run, so this falls
+       * back to the driver's built-in slot rather than handing the worker
+       * nothing.
+       */
+      const providerInstance = this.resolveProviderInstance(session.providerInstanceId, session.driver);
       return {
         sessionId: session.id,
         projectRoot: session.workspace.path,
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
+        providerInstance,
         // Resolved HERE, at claim time, so a model changed mid-session applies
         // to the next turn the worker picks up rather than to the one it is
         // already running.

@@ -25,6 +25,7 @@ import {
   McpServer,
   ModelSelection,
   ProviderDriverKind,
+  ProviderInstance,
   ProviderInstanceId,
   ProviderRefs,
   Timestamp,
@@ -148,6 +149,19 @@ export const WorkerClaim = z.object({
    * be a second place the rule lives.
    */
   mcpServers: z.array(McpServer).optional(),
+  /**
+   * The configured login this session runs as, RESOLVED — sensitive environment
+   * values included, unlike every other read of the registry.
+   *
+   * They are here because the worker is the process that spawns the provider,
+   * and the alternative is worse in both directions: a worker that looked the
+   * instance up would need a store handle (the one thing this claim exists to
+   * avoid), and a worker that received the redacted shape would launch the
+   * provider without the credential the user configured and fail confusingly.
+   * The claim already travels the same loopback socket with the same bearer
+   * token as the MCP server specs beside it, which carry their own secrets.
+   */
+  providerInstance: ProviderInstance.optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
   turn: Turn,

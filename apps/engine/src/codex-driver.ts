@@ -173,6 +173,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       effort: turnEffort,
       attachments,
       providerSessionId,
+      env: instanceEnv,
       onObservations,
       onRequest,
     }: DriverRun): Promise<DriverResult> {
@@ -190,7 +191,16 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       // app-server that exited with a null code.
       const bin = resolveBin();
       const threadConfig = options.threadConfig ?? defaultThreadConfig(Boolean(onRequest));
-      const client = new CodexAppServer(bin, dropUndefined({ ...process.env, ...options.env }));
+      /**
+       * THE TURN'S INSTANCE WINS OVER THE DEPLOYMENT'S DEFAULT, the same
+       * ordering `model` uses two lines up: `options.env` is what a worker was
+       * started with, and `instanceEnv` is what the human configured for the
+       * login this session actually runs as. `dropUndefined` is what makes a
+       * scrub work — an owned variable patched to `undefined` is removed from
+       * the child's environment rather than passed through as the string
+       * "undefined".
+       */
+      const client = new CodexAppServer(bin, dropUndefined({ ...process.env, ...options.env, ...instanceEnv }));
 
       let finalText = "";
       let usage: UsageSnapshot | undefined;
