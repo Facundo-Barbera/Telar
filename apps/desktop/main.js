@@ -17,7 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
@@ -546,6 +546,35 @@ ipcMain.handle("telar:browser:release-scope", (_event, input) =>
 ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
   requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
+
+// --- Native folder picker -----------------------------------------------------
+//
+// The one thing a browser sandbox genuinely cannot do: hand back an absolute
+// path. Registering a project needs one, and typing `/Users/you/code/thing` by
+// hand is how you find out about typos after the engine has already refused.
+//
+// PARENTED TO THE WINDOW THAT ASKED, which is what makes this a sheet attached to
+// the app on macOS rather than a free-floating dialog that can end up behind it.
+// `dialog` handles every platform, so nothing here is macOS-specific — unlike the
+// osascript fallback the web adapter keeps for people running the cockpit in a
+// plain browser.
+//
+// CANCELLING IS AN ANSWER, not an error: `{ cancelled: true }`, so the caller does
+// not have to tell "the user changed their mind" apart from "the dialog broke".
+ipcMain.handle("telar:dialog:choose-directory", async (event, input) => {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const options = {
+    title: input?.title || "Choose a project folder",
+    // `createDirectory` lets somebody make the folder while they are in there;
+    // `treatPackageAsDirectory` matters on macOS, where a repository that happens
+    // to be named `something.app` is otherwise unselectable.
+    properties: ["openDirectory", "createDirectory", "treatPackageAsDirectory"],
+    ...(input?.buttonLabel ? { buttonLabel: input.buttonLabel } : {}),
+  };
+  const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+  const [directory] = result.filePaths || [];
+  return result.canceled || !directory ? { cancelled: true } : { path: directory };
+});
 
 // --- Auto-update (electron-updater) ------------------------------------------
 // electron-updater has no way to bake a custom request header into the

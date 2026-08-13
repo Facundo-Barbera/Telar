@@ -19,6 +19,17 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
   },
+  /**
+   * The native folder picker.
+   *
+   * The renderer cannot open one — a browser sandbox will never hand back an
+   * absolute path — and the engine needs exactly that to register a project.
+   * Answers `{ path }` or `{ cancelled: true }`; changing your mind is not an
+   * error and the caller should not have to guess which happened.
+   */
+  dialog: {
+    chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     install: () => ipcRenderer.invoke("telar:updates:install"),
