@@ -390,7 +390,41 @@ export const WorkspaceFile = z.object({
   text: z.string(),
   /** The file's real size, even when the text above was cut short. */
   bytes: z.number().int().nonnegative(),
+  /**
+   * SHA-256 OF THE WHOLE FILE ON DISK, and the thing that makes editing safe.
+   *
+   * An editor sends it back with a write and the engine refuses if disk has moved
+   * since — which it may well have, because an agent could be writing this file
+   * mid-turn while somebody types in the panel. Of the WHOLE file even when
+   * `truncated` is set, because a precondition computed over a prefix would
+   * authorise a save that discards everything after it.
+   */
+  sha256: z.string().min(1),
   binary: z.boolean(),
   truncated: z.boolean(),
 });
 export type WorkspaceFile = z.infer<typeof WorkspaceFile>;
+
+/**
+ * WHY A WRITE WAS REFUSED. Four reasons, because a reader needs four different
+ * responses: re-read and re-apply (`conflict`), nothing to save (`binary`), this
+ * file is too big for the panel to hold safely (`too_large`), and this endpoint
+ * replaces rather than creates (`not_found`).
+ */
+export const WorkspaceWriteRefusal = z.enum(["not_found", "binary", "too_large", "conflict"]);
+export type WorkspaceWriteRefusal = z.infer<typeof WorkspaceWriteRefusal>;
+
+/**
+ * The answer to a write.
+ *
+ * A REFUSAL IS AN ANSWER, NOT AN ERROR — the same shape `commitSessionWork` uses,
+ * and for the same reason: "the file changed under you" is a fact about the
+ * repository that the surface must render, not an exception it should catch. The
+ * current `sha256` rides along so an editor can offer to re-read without a second
+ * round trip.
+ */
+export const WorkspaceWriteResult = z.union([
+  z.object({ written: z.literal(true), file: WorkspaceFile }),
+  z.object({ written: z.literal(false), refusal: WorkspaceWriteRefusal, sha256: z.string().min(1).optional() }),
+]);
+export type WorkspaceWriteResult = z.infer<typeof WorkspaceWriteResult>;

@@ -54,8 +54,9 @@ import {
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
+  type WorkspaceWriteResult,
 } from "@telar/engine-client";
-import { listWorkspaceFiles, readWorkspaceFile } from "./files";
+import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { defaultGhRunner, readGitHub, type GhRunner } from "./github";
 import { readModelCatalogue } from "./models";
@@ -821,6 +822,23 @@ export class EngineStore {
   }
 
   /**
+   * SAVE A FILE A HUMAN EDITED IN THE COCKPIT.
+   *
+   * `expected` is the hash the editor read. Everything about why this endpoint
+   * takes one — and what it refuses — is in `writeWorkspaceFile`; the store's job
+   * is the fence, which is the same fence as the read and for the same reason.
+   */
+  projectFileWrite(projectId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
+    const project = this.getProject(projectId);
+    return this.writeFenced(project.root, target, text, expected, "project");
+  }
+
+  sessionFileWrite(sessionId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
+    const session = this.getSession(sessionId);
+    return this.writeFenced(session.workspace.path, target, text, expected, "session workspace");
+  }
+
+  /**
    * READ A FILE, INSIDE ONE DIRECTORY AND NOWHERE ELSE.
    *
    * The fence is the whole method. A client that can name a path can name
@@ -846,6 +864,24 @@ export class EngineStore {
     if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
     if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
     return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved) });
+  }
+
+  /**
+   * The same fence, for the one write.
+   *
+   * DELIBERATELY NOT SHARED WITH `readFenced` beyond the check itself: a read that
+   * cannot find a file is a 404, while a write that cannot is a REFUSAL the editor
+   * renders inline (`not_found`), so the two disagree about what a missing file
+   * means and merging them would have to invent a third answer.
+   */
+  private writeFenced(root: string, target: string, text: string, expected: string, label: string): WorkspaceWriteResult {
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    if (!expected.trim()) throw new EngineStateError("invalid_request", "a write must carry the hash it expects on disk");
+    if (text.length > MAX_TEXT_LENGTH * 10) throw new EngineStateError("invalid_request", "that file is too large to save");
+    const resolved = path.resolve(root, target);
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
+    return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected });
   }
 
   createSession(input: {

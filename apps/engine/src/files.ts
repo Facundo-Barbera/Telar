@@ -20,12 +20,16 @@
  * there — so the engine walks, with its own small deny list, and the listing says
  * `source: "walk"` so a surface can be honest about which question it answered.
  *
- * NEITHER READ IS A MUTATION and neither may become one. This module is reachable
- * from a panel that a human refreshes; the fencing that keeps a path inside its
- * own checkout lives at the store boundary (see state.ts) for the same reason the
- * patch read's does.
+ * THERE IS ONE MUTATION, `writeWorkspaceFile`, and it is the same shape as the
+ * one in ./git.ts: a human pressed a key, the change is theirs, and it cannot
+ * silently destroy somebody else's. That last part is the whole design — an
+ * AGENT may be writing the same file while a person types in the panel, so the
+ * write carries the hash the reader saw and is REFUSED when disk has moved. The
+ * fencing that keeps a path inside its own checkout lives at the store boundary
+ * (see state.ts) for the same reason the patch read's does.
  */
-import { readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
+import crypto from "node:crypto";
+import { readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, type Dirent } from "node:fs";
 import path from "node:path";
 import type { WorkspaceFile, WorkspaceListing } from "@telar/engine-client";
 import { nulFields } from "./git.js";
@@ -163,6 +167,17 @@ function looksBinary(buffer: Buffer): boolean {
 }
 
 /**
+ * THE HASH OF WHAT IS ON DISK, and the reason writes are safe.
+ *
+ * Of the WHOLE file, always — never of the truncated view a reader received.
+ * That is deliberate: it is a precondition, and a precondition computed over a
+ * prefix would happily authorise a write that discards everything after it.
+ */
+export function contentHash(buffer: Buffer): string {
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+/**
  * One file's text.
  *
  * The path arriving here is already fenced inside its checkout by the caller —
@@ -173,7 +188,8 @@ export function readWorkspaceFile(input: { cwd: string; path: string; maxBytes?:
   const absolute = path.resolve(input.cwd, input.path);
   const bytes = statSync(absolute).size;
   const buffer = readFileSync(absolute);
-  if (looksBinary(buffer)) return { path: input.path, text: "", bytes, binary: true, truncated: false };
+  const sha256 = contentHash(buffer);
+  if (looksBinary(buffer)) return { path: input.path, text: "", bytes, sha256, binary: true, truncated: false };
   /**
    * CUT ON BYTES, THEN DECODED — the other order would mean decoding a
    * multi-megabyte file in order to throw most of it away. A multi-byte
@@ -185,7 +201,78 @@ export function readWorkspaceFile(input: { cwd: string; path: string; maxBytes?:
     path: input.path,
     text: (truncated ? buffer.subarray(0, limit) : buffer).toString("utf8"),
     bytes,
+    sha256,
     binary: false,
     truncated,
+  };
+}
+
+/** Why a write was refused. Four distinct reasons, because they need four
+ *  different responses from a reader — see `writeWorkspaceFile`. */
+export type WriteRefusal = "not_found" | "binary" | "too_large" | "conflict";
+
+/**
+ * REPLACE A FILE'S TEXT, IF DISK STILL LOOKS THE WAY THE EDITOR THINKS.
+ *
+ * `expected` is the `sha256` from the read the editor is showing. Every refusal
+ * below is a case where writing would destroy something:
+ *
+ *   - `conflict` — disk moved. Usually the AGENT, mid-turn, writing the file you
+ *     have open. This is the reason the whole endpoint takes a hash: a
+ *     last-write-wins save beside a running agent is a data-loss button with a
+ *     500ms fuse. t3 code's editor sends no precondition, which is fine in an app
+ *     where nothing else writes; it is not fine here.
+ *   - `too_large` — the read was CUT, so the editor is holding a prefix. Saving it
+ *     would delete everything past the cut. Refused at the engine as well as
+ *     hidden in the client, because one client's bug should not be able to
+ *     truncate a file.
+ *   - `binary` — no text was ever sent, so there is nothing to save back.
+ *   - `not_found` — this endpoint replaces; it does not create. Creating a file is
+ *     a different gesture with a different safety question, and `expected` has no
+ *     meaning for a file that does not exist yet.
+ *
+ * ATOMIC: written beside the target and renamed over it, so a crash or a full
+ * disk leaves the original rather than half a file. Same rule as every other
+ * write this engine makes.
+ */
+export function writeWorkspaceFile(input: {
+  cwd: string;
+  path: string;
+  text: string;
+  expected: string;
+  maxBytes?: number;
+}): { written: true; file: WorkspaceFile } | { written: false; refusal: WriteRefusal; sha256?: string } {
+  const limit = input.maxBytes ?? MAX_FILE_BYTES;
+  const absolute = path.resolve(input.cwd, input.path);
+  let current: Buffer;
+  try {
+    current = readFileSync(absolute);
+  } catch {
+    return { written: false, refusal: "not_found" };
+  }
+  if (looksBinary(current)) return { written: false, refusal: "binary", sha256: contentHash(current) };
+  if (current.length > limit) return { written: false, refusal: "too_large", sha256: contentHash(current) };
+  const sha256 = contentHash(current);
+  // Compared against the WHOLE file, which is what `readWorkspaceFile` hashes.
+  if (sha256 !== input.expected) return { written: false, refusal: "conflict", sha256 };
+
+  const next = Buffer.from(input.text, "utf8");
+  const temporary = `${absolute}.telar-${process.pid}-${crypto.randomUUID()}`;
+  try {
+    writeFileSync(temporary, next);
+    renameSync(temporary, absolute);
+  } catch (error) {
+    // Never leave the scratch file behind: it would show up in the tree, in
+    // `git status`, and in the next person's diff.
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Already gone, or never created. Either way there is nothing to clean.
+    }
+    throw error;
+  }
+  return {
+    written: true,
+    file: { path: input.path, text: input.text, bytes: next.length, sha256: contentHash(next), binary: false, truncated: false },
   };
 }

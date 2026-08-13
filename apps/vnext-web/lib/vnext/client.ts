@@ -24,6 +24,7 @@ import type {
   TurnSubmissionResult,
   WorkspaceFile,
   WorkspaceListing,
+  WorkspaceWriteResult,
 } from "@telar/engine-client";
 
 /**
@@ -206,6 +207,29 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
         fetcher,
         "GET",
         `/api/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
+      ),
+    /**
+     * Save an edited file.
+     *
+     * `expectedSha256` is the hash the read returned. The engine refuses the write
+     * when disk no longer matches — an agent writing the same file mid-turn is the
+     * case this exists for — and a refusal arrives as `written: false` rather than
+     * as a thrown error, because "the file changed under you" is something the
+     * editor has to render.
+     */
+    writeProjectFile: (projectId: string, path: string, text: string, expectedSha256: string) =>
+      request<WorkspaceWriteResult>(
+        fetcher,
+        "PUT",
+        `/api/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`,
+        { text, expectedSha256 },
+      ),
+    writeSessionFile: (sessionId: string, path: string, text: string, expectedSha256: string) =>
+      request<WorkspaceWriteResult>(
+        fetcher,
+        "PUT",
+        `/api/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
+        { text, expectedSha256 },
       ),
     /** Snapshot the session's work as one commit. A refusal ("nothing to commit",
      *  a hook that said no) comes back as `committed: false` with a reason, not

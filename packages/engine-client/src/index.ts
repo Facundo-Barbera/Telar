@@ -44,6 +44,7 @@ import {
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
+  type WorkspaceWriteResult,
 } from "./protocol";
 
 export * from "./protocol";
@@ -207,6 +208,31 @@ export class EngineClient {
 
   sessionFile(sessionId: string, path: string): Promise<{ file: WorkspaceFile }> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`);
+  }
+
+  /**
+   * Save a file a human edited.
+   *
+   * `expectedSha256` IS THE SAFETY, not an optimisation: it is the hash the read
+   * returned, and the engine refuses the write if disk no longer matches — which
+   * happens for real, because an agent may be writing this file mid-turn. A
+   * refusal comes back as `written: false` rather than as a thrown error; see
+   * `WorkspaceWriteResult`.
+   */
+  writeProjectFile(projectId: string, path: string, text: string, expectedSha256: string): Promise<WorkspaceWriteResult> {
+    return this.request(
+      "PUT",
+      `/v2/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`,
+      { text, expectedSha256 },
+    );
+  }
+
+  writeSessionFile(sessionId: string, path: string, text: string, expectedSha256: string): Promise<WorkspaceWriteResult> {
+    return this.request(
+      "PUT",
+      `/v2/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
+      { text, expectedSha256 },
+    );
   }
 
   /** Which models a provider says it has. Cached in the engine for five

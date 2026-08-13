@@ -307,9 +307,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       /** The project's own file list, for a canvas with no session — same tree,
        *  one scope wider. */
       const projectFiles = /^\/v2\/projects\/([^/]+)\/files$/.exec(url.pathname);
-      if (request.method === "GET" && projectFiles) {
+      if ((request.method === "GET" || request.method === "PUT") && projectFiles) {
         const projectId = decodeURIComponent(projectFiles[1]);
         const target = url.searchParams.get("path");
+        if (request.method === "PUT") {
+          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
+          const input = await body(request);
+          writeJson(
+            response,
+            200,
+            store.projectFileWrite(projectId, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!),
+          );
+          return;
+        }
         if (target) {
           writeJson(response, 200, { file: store.projectFile(projectId, target) });
           return;
@@ -542,6 +552,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             return;
           }
           writeJson(response, 200, { listing: store.sessionFiles(session.sessionId) });
+          return;
+        }
+        /**
+         * PUT, not POST: this replaces one named file and is idempotent given the
+         * same hash. A refusal comes back 200 with `written: false` — "the file
+         * changed under you" is an answer the editor renders, not an error it
+         * should catch (same rule as `/git/commit`).
+         */
+        if (request.method === "PUT" && session.tail === "/files") {
+          const target = url.searchParams.get("path");
+          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
+          const input = await body(request);
+          writeJson(
+            response,
+            200,
+            store.sessionFileWrite(session.sessionId, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!),
+          );
           return;
         }
         if (request.method === "POST" && session.tail === "/git/commit") {

@@ -7,11 +7,11 @@
  * modified file appears twice, drop `-z` and a filename with a newline in it
  * splits into two rows that both point nowhere.
  */
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
-import { listWorkspaceFiles, MAX_WORKSPACE_FILES, readWorkspaceFile, walkWorkspaceFiles } from "../src/files";
+import { contentHash, listWorkspaceFiles, MAX_WORKSPACE_FILES, readWorkspaceFile, walkWorkspaceFiles, writeWorkspaceFile } from "../src/files";
 import type { GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
@@ -145,16 +145,28 @@ describe("walkWorkspaceFiles", () => {
 });
 
 describe("readWorkspaceFile", () => {
-  test("reads text, with the real size", () => {
+  test("reads text, with the real size and the hash a write will need", () => {
     const root = scratch();
     writeFileSync(path.join(root, "a.ts"), "export const a = 1;\n");
     expect(readWorkspaceFile({ cwd: root, path: "a.ts" })).toEqual({
       path: "a.ts",
       text: "export const a = 1;\n",
       bytes: 20,
+      sha256: contentHash(Buffer.from("export const a = 1;\n")),
       binary: false,
       truncated: false,
     });
+  });
+
+  test("the hash is of the WHOLE file even when the text is cut", () => {
+    // The hash is a write precondition. Computed over the prefix a reader got, it
+    // would authorise a save that discards everything after the cut.
+    const root = scratch();
+    writeFileSync(path.join(root, "big.ts"), "x".repeat(50));
+    const file = readWorkspaceFile({ cwd: root, path: "big.ts", maxBytes: 10 });
+    expect(file.truncated).toBe(true);
+    expect(file.sha256).toBe(contentHash(Buffer.from("x".repeat(50))));
+    expect(file.sha256).not.toBe(contentHash(Buffer.from("x".repeat(10))));
   });
 
   test("a NUL byte means binary, and no bytes are sent", () => {
@@ -171,6 +183,82 @@ describe("readWorkspaceFile", () => {
     const root = scratch();
     writeFileSync(path.join(root, "big.ts"), "x".repeat(50));
     const file = readWorkspaceFile({ cwd: root, path: "big.ts", maxBytes: 10 });
-    expect(file).toEqual({ path: "big.ts", text: "xxxxxxxxxx", bytes: 50, binary: false, truncated: true });
+    expect(file).toEqual({
+      path: "big.ts",
+      text: "xxxxxxxxxx",
+      bytes: 50,
+      sha256: contentHash(Buffer.from("x".repeat(50))),
+      binary: false,
+      truncated: true,
+    });
+  });
+});
+
+describe("writeWorkspaceFile", () => {
+  const seed = (text: string) => {
+    const root = scratch();
+    writeFileSync(path.join(root, "a.ts"), text);
+    return { root, sha256: contentHash(Buffer.from(text)) };
+  };
+
+  test("replaces the file and answers with the new hash", () => {
+    const { root, sha256 } = seed("const a = 1;\n");
+    const result = writeWorkspaceFile({ cwd: root, path: "a.ts", text: "const a = 2;\n", expected: sha256 });
+    expect(result.written).toBe(true);
+    expect(readFileSync(path.join(root, "a.ts"), "utf8")).toBe("const a = 2;\n");
+    // The answer's hash is of what was just written, so an editor can keep saving
+    // without re-reading — otherwise the second keystroke conflicts with itself.
+    if (result.written) expect(result.file.sha256).toBe(contentHash(Buffer.from("const a = 2;\n")));
+  });
+
+  test("REFUSES when disk moved under the editor", () => {
+    // The case the whole precondition exists for: an agent wrote the file while a
+    // person had it open. Last-write-wins here is a data-loss button.
+    const { root } = seed("const a = 1;\n");
+    writeFileSync(path.join(root, "a.ts"), "written by the agent\n");
+    const result = writeWorkspaceFile({
+      cwd: root,
+      path: "a.ts",
+      text: "written by the human\n",
+      expected: contentHash(Buffer.from("const a = 1;\n")),
+    });
+    expect(result).toMatchObject({ written: false, refusal: "conflict" });
+    // Untouched, and the CURRENT hash comes back so the editor can re-read
+    // without a second round trip.
+    expect(readFileSync(path.join(root, "a.ts"), "utf8")).toBe("written by the agent\n");
+    if (!result.written) expect(result.sha256).toBe(contentHash(Buffer.from("written by the agent\n")));
+  });
+
+  test("refuses to save a prefix over a file that was read truncated", () => {
+    // Enforced at the engine as well as hidden in the client: one client's bug
+    // must not be able to truncate a file.
+    const { root, sha256 } = seed("y".repeat(50));
+    const result = writeWorkspaceFile({ cwd: root, path: "a.ts", text: "y".repeat(10), expected: sha256, maxBytes: 10 });
+    expect(result).toMatchObject({ written: false, refusal: "too_large" });
+    expect(readFileSync(path.join(root, "a.ts"), "utf8")).toHaveLength(50);
+  });
+
+  test("refuses a binary file and a file that is not there", () => {
+    const root = scratch();
+    writeFileSync(path.join(root, "logo.png"), Buffer.from([0x89, 0x50, 0x00, 0x01]));
+    expect(writeWorkspaceFile({ cwd: root, path: "logo.png", text: "text", expected: "whatever" })).toMatchObject({
+      written: false,
+      refusal: "binary",
+    });
+    // This endpoint REPLACES; it does not create. `expected` has no meaning for a
+    // file that does not exist yet.
+    expect(writeWorkspaceFile({ cwd: root, path: "new.ts", text: "text", expected: "whatever" })).toMatchObject({
+      written: false,
+      refusal: "not_found",
+    });
+  });
+
+  test("leaves no scratch file behind", () => {
+    // The write is atomic — written beside the target and renamed over it — and a
+    // leftover temp file would show up in the tree, in `git status`, and in the
+    // next person's diff.
+    const { root, sha256 } = seed("const a = 1;\n");
+    writeWorkspaceFile({ cwd: root, path: "a.ts", text: "const a = 3;\n", expected: sha256 });
+    expect(readdirSync(root)).toEqual(["a.ts"]);
   });
 });
