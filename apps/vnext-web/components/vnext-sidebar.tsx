@@ -35,6 +35,7 @@ import type { Project } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import {
   activeSessionFromPathname,
+  canvasHref,
   deriveSessionList,
   SESSION_PAGE_SIZE,
   sessionHref,
@@ -405,7 +406,7 @@ function SidebarBody() {
 
   const startSession = () => {
     onNavigate();
-    router.push(composerProjectId ? `/projects/${encodeURIComponent(composerProjectId)}/sessions/new` : "/");
+    router.push(composerProjectId ? canvasHref(composerProjectId) : "/");
   };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {

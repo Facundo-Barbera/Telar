@@ -47,6 +47,17 @@ export type JournalTurn = {
   /** When the provider actually started, for the live elapsed clock. Absent
    *  until the turn is claimed and running. */
   startedAt?: number;
+  /**
+   * When anything last happened on this turn — a row opened or closed, a delta,
+   * a sub-agent reporting in.
+   *
+   * WHAT "GONE QUIET" IS MEASURED FROM. The working indicator used the turn's
+   * total elapsed time for both readouts, so every turn over twenty seconds
+   * announced "no output 43s" beside forty-three seconds of visible output.
+   * Silence is a gap since the LAST thing that happened, which is a different
+   * number and the only one that can tell slow from stuck.
+   */
+  lastActivityAt?: number;
   /** The assistant's final text, as the engine recorded it on completion. */
   resultText: string;
   failure?: string;
@@ -163,9 +174,27 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
   // first pass instead of landing on the main timeline and staying there.
   for (const task of tasks) upsertTask(task);
   for (const item of items) upsert(item, 0);
+  /**
+   * The quiet clock, seeded from the snapshot so a page opened onto a running
+   * turn does not start by claiming it has been silent since it began.
+   */
+  for (const turn of byRun.values()) {
+    const latest = Math.max(
+      turn.startedAt ?? 0,
+      ...turn.items.map((item) => item.completedAt ?? item.startedAt),
+      ...turn.tasks.map((task) => task.updatedAt),
+    );
+    if (latest > 0) turn.lastActivityAt = latest;
+  }
 
   for (const event of events) {
     const turn = event.runId ? byRun.get(event.runId) : undefined;
+    /**
+     * ANY event on this turn is activity, deltas included — which is the point.
+     * A row's timestamps do not move while it streams, so a long answer measured
+     * by item stamps alone reads as silence while it is being written.
+     */
+    if (turn) turn.lastActivityAt = Math.max(turn.lastActivityAt ?? 0, event.at);
 
     switch (event.type) {
       case "turn.accepted":

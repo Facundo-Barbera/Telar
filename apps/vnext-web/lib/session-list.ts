@@ -224,6 +224,16 @@ export function sessionHref(session: Pick<SidebarSession, "id" | "projectId">): 
   return `/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
 }
 
+/**
+ * The new-conversation canvas for a project — spelled once for the same reason
+ * `sessionHref` is, and with a sharper edge: the cockpit now decides whether it
+ * is showing a canvas or a session by COMPARING the pathname to this string, so
+ * a second spelling anywhere would be a screen that never resets.
+ */
+export function canvasHref(projectId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/sessions/new`;
+}
+
 export function activeSessionFromPathname(pathname: string): string | undefined {
   const match = /^\/projects\/[^/]+\/sessions\/([^/?#]+)/.exec(pathname);
   if (!match) return undefined;

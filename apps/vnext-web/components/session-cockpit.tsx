@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
 import {
@@ -17,11 +18,12 @@ import {
 } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import { appendJournalEvents, isActiveTurn, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/vnext/journal";
+import { canvasHref } from "@/lib/session-list";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { Composer } from "./composer";
-import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./transcript";
+import { ActivityGroup, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, VNextRightPanel, type PanelTab, type TaskFocus } from "./right-panel";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import {
@@ -262,6 +264,8 @@ function SessionTurn({
    * everything before it is activity, and narration in the middle folds with the
    * work it narrates rather than stranding itself above the fold.
    */
+  /** What the line under the turn says it is doing — see `turnActivity`. */
+  const doing = turnActivity(turn);
   const lastProse = turn.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
   const activity = lastProse === -1 ? turn.items : turn.items.slice(0, lastProse);
   const closing = lastProse === -1 ? [] : turn.items.slice(lastProse);
@@ -309,8 +313,10 @@ function SessionTurn({
           {turn.state === "discarded" && <Marker>{describeTurnState(turn.state).label.toLowerCase()}</Marker>}
           {live && (
             <WorkingIndicator
-              label={turn.items.some((item) => item.status === "inProgress") ? "Working" : "Thinking"}
+              label={doing.label}
+              delegated={doing.delegated}
               startedAt={turn.startedAt}
+              {...(turn.lastActivityAt ? { lastActivityAt: turn.lastActivityAt } : {})}
               now={now}
             />
           )}
@@ -369,7 +375,23 @@ export function SessionCockpit({
    * away the turn that was just submitted, along with its polling loop. So the
    * id has to be able to change underneath a mounted cockpit.
    */
-  const [sessionId, setSessionId] = useState(routeSessionId);
+  const [createdSessionId, setCreatedSessionId] = useState<string>();
+  /**
+   * …WHICH MEANS THE ROUTE HAS TO BE ABLE TO TAKE IT BACK.
+   *
+   * `history.replaceState` moves the address bar and `usePathname`, but it does
+   * NOT re-render the route segment: the tree still holds the `sessions/new`
+   * page. So pressing "New conversation" pushed a URL the router considered a
+   * navigation, rendered the same segment it was already rendering, reused this
+   * very component instance — and left the conversation on screen. The button
+   * did nothing, once per session, forever after the first message.
+   *
+   * Reading the id off the PATHNAME closes that hole without giving up the
+   * in-place rewrite: on the canvas path there is no session, whatever this
+   * component created a moment ago.
+   */
+  const onCanvas = usePathname() === canvasHref(projectId);
+  const sessionId = routeSessionId ?? (onCanvas ? undefined : createdSessionId);
   /** No session yet: the composer is the whole screen and nothing is polled. */
   const fresh = !sessionId;
   /**
@@ -412,7 +434,14 @@ export function SessionCockpit({
     setDraftDriver(next);
     setDraftModel({});
   }, []);
-  const [session, setSession] = useState<Session>();
+  /**
+   * THE RECORD, AND WHETHER IT IS THIS SCREEN'S. Held separately from the id for
+   * the same reason the journal is gated above: a canvas reached by pressing
+   * "New conversation" still has the last session's record in hand, and it went
+   * on naming that conversation in the breadcrumb above an empty composer.
+   */
+  const [sessionRecord, setSession] = useState<Session>();
+  const session = sessionId ? sessionRecord : undefined;
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -644,7 +673,16 @@ export function SessionCockpit({
     };
   }, [hydrate, tail, sessionId]);
 
-  const transcript = useMemo(() => projectJournal(turns, items, events, tasks), [turns, items, events, tasks]);
+  /**
+   * NO SESSION, NO JOURNAL. Ordinarily a canvas has nothing to project anyway —
+   * it polls nothing — but a canvas reached by pressing "New conversation" is
+   * this same component holding the last conversation's records, and without
+   * this it painted the whole of it under a fresh greeting.
+   */
+  const transcript = useMemo(
+    () => (sessionId ? projectJournal(turns, items, events, tasks) : []),
+    [sessionId, turns, items, events, tasks],
+  );
   /**
    * THE SUB-AGENT ROSTER, FROM THE SAME FOLD THE TRANSCRIPT READS.
    *
@@ -824,7 +862,16 @@ export function SessionCockpit({
         // want open while it runs; without this hand-off the key changes from
         // the canvas's to the session's and the panel resets exactly then.
         writePanelTabs(target, panel, Date.now());
-        setSessionId(target);
+        // A NEW SESSION STARTS EMPTY. Ordinarily this state is already empty —
+        // the canvas polls nothing — but a canvas reached by pressing "New
+        // conversation" inherits whatever the last conversation left here, and
+        // it would paint for the frame between this and the first hydrate.
+        setTurns([]);
+        setItems([]);
+        setTasks([]);
+        setRequests([]);
+        setEvents([]);
+        setCreatedSessionId(target);
         // Only when the patch did not already give us a newer record.
         if (Object.keys(creationPatch).length === 0) setSession(created.session);
         window.history.replaceState(null, "", `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(target)}`);

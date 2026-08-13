@@ -8,7 +8,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { bandOf, deriveSessionList, SETTLED_AFTER_MS, toSidebarSession, type SidebarSession } from "./session-list";
+import { bandOf, canvasHref, deriveSessionList, sessionHref, SETTLED_AFTER_MS, toSidebarSession, type SidebarSession } from "./session-list";
 
 const NOW = 1_800_000_000_000;
 
@@ -163,5 +163,18 @@ describe("toSidebarSession", () => {
     expect(projected.tokens).toBeUndefined();
     expect(projected.archived).toBe(true);
     expect(projected.driver).toBe("codex");
+  });
+});
+
+describe("canvasHref", () => {
+  test("is the one spelling of the new-conversation route", () => {
+    // THE COCKPIT DECIDES whether it is showing a canvas or a session by
+    // comparing `usePathname()` against this string. A second spelling — the
+    // sidebar's own template literal, which is where this came from — is a
+    // screen that never resets when you press New conversation.
+    expect(canvasHref("project_a")).toBe("/projects/project_a/sessions/new");
+    expect(canvasHref("a/b")).toBe("/projects/a%2Fb/sessions/new");
+    // And it must not be mistaken for a session by the sidebar's own reader.
+    expect(sessionHref({ id: "s1", projectId: "project_a" })).not.toBe(canvasHref("project_a"));
   });
 });

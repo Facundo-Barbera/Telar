@@ -45,7 +45,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import type { Item } from "@telar/engine-client";
-import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask } from "@/lib/vnext/journal";
+import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/vnext/journal";
 import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
 import { Badge } from "@/components/ui/badge";
@@ -458,6 +458,11 @@ export function ActivityGroup({
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
+      {/* NO FOLD OVER NOTHING. A turn whose only main-loop rows were the spawns
+          themselves — now that a `task` item is not counted as a step — printed
+          "0 steps · " above its chips: a summary of an empty list, with the
+          separator still there because the tally had nothing to put after it. */}
+      {rows.length > 0 && (
       <button
         type="button"
         aria-expanded={open}
@@ -472,6 +477,7 @@ export function ActivityGroup({
         <span className="shrink-0 text-muted-foreground/50">·</span>
         <span className="min-w-0 truncate text-muted-foreground/80">{tally(rows)}</span>
       </button>
+      )}
       {open && (
         <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
           {rows.map((item) => (
@@ -532,9 +538,34 @@ const formatElapsed = (seconds: number) =>
  * is the part nothing else carries — that the turn is alive, how long it has been
  * at it, and whether it has gone quiet.
  */
-export function WorkingIndicator({ label, startedAt, now }: { label: string; startedAt?: number; now: number }) {
+export function WorkingIndicator({
+  label,
+  startedAt,
+  lastActivityAt,
+  delegated,
+  now,
+}: {
+  label: string;
+  startedAt?: number;
+  /** When anything last happened on this turn. Absent means nothing has yet. */
+  lastActivityAt?: number;
+  /** Sub-agents are carrying this turn. A quiet main loop is then the CORRECT
+   *  state rather than a stalled one. */
+  delegated?: boolean;
+  now: number;
+}) {
   const elapsed = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
-  const silent = elapsed >= SILENCE_THRESHOLD;
+  /**
+   * SILENCE IS A GAP SINCE THE LAST THING THAT HAPPENED, not the age of the
+   * turn. This compared `elapsed` against the threshold, so every turn over
+   * twenty seconds announced "no output 43s" beside forty-three seconds of
+   * visible output — the readout that is supposed to distinguish slow from stuck
+   * fired on both, which makes it noise the moment a turn is interesting.
+   */
+  const quiet = lastActivityAt ? Math.max(0, Math.floor((now - lastActivityAt) / 1000)) : elapsed;
+  // A fan-out mid-flight is the loudest thing in the session; the main loop is
+  // silent because it is waiting on purpose, which is not a warning.
+  const silent = !delegated && quiet >= SILENCE_THRESHOLD;
 
   return (
     <div className={cn("flex items-center gap-2 text-[11px] text-muted-foreground/70", silent && "text-warning/80")}>
@@ -548,7 +579,25 @@ export function WorkingIndicator({ label, startedAt, now }: { label: string; sta
       <span className="shrink-0 font-mono tabular-nums">{formatElapsed(elapsed)}</span>
       {/* A run that has said nothing for 20s is the case a detached session most
           needs surfaced — it is the difference between slow and stuck. */}
-      {silent && <span className="shrink-0 font-mono tabular-nums text-warning">· no output {formatElapsed(elapsed)}</span>}
+      {silent && <span className="shrink-0 font-mono tabular-nums text-warning">· no output {formatElapsed(quiet)}</span>}
     </div>
   );
+}
+
+/**
+ * WHAT THE TURN IS DOING, in the reader's terms rather than the loop's.
+ *
+ * "Thinking" was a lie with four sub-agents mid-sweep: the main loop IS idle,
+ * and saying so describes the machinery instead of the work. What is happening
+ * is that four agents are out searching, which the reader can see in the chips
+ * directly above and could not see in the one line that claimed to summarise it.
+ */
+export function turnActivity(turn: Pick<JournalTurn, "items" | "tasks">): { label: string; delegated: boolean } {
+  const live = turn.tasks.filter((task) => task.state === "running" || task.state === "pending" || task.state === "waiting");
+  const agents = live.filter((task) => task.kind !== "background").length;
+  if (agents > 0) return { label: `${agents} sub-agent${agents === 1 ? "" : "s"} working`, delegated: true };
+  // Background work does not speak for the turn: a watch loop running does not
+  // mean the main loop is doing anything, and it outlives the turn anyway.
+  if (turn.items.some((item) => item.status === "inProgress")) return { label: "Working", delegated: false };
+  return { label: "Thinking", delegated: false };
 }
