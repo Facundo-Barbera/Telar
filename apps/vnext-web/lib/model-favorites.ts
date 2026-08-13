@@ -12,10 +12,24 @@
  * engine state would make a display choice durable, replicated and versioned for
  * no gain. `localStorage` is the honest home, and losing it costs one gesture.
  */
-const KEY = "telar:favorite-models:v1";
+const KEY = "telar:favorite-models:v2";
 
-/** Favourites are keyed by the provider's own model id, so the same star means
- *  the same model across every project and session in this browser. */
+/**
+ * Favourites are keyed by the FAMILY id — the resolved model id with the context
+ * window and the dated build stripped off (lib/model-families.ts) — so one star
+ * means the same model across every project and session in this browser, and
+ * keeps meaning it when the provider re-points an alias or you switch windows.
+ *
+ * NO PROVIDER PREFIX, unlike the donor's `claude:sonnet`: a resolved id is
+ * already provider-unique, and every star is looked up against a catalogue that
+ * came from one provider, so a prefix would be a second copy of a fact the
+ * caller already has.
+ *
+ * `:v2` BECAUSE THE KEYS CHANGED MEANING. They used to be catalogue ids —
+ * `sonnet`, `opus[1m]` — which no longer match anything the picker lists. A
+ * version bump loses the stars once, which is a gesture; silently matching
+ * nothing would look like a broken star.
+ */
 export function readFavorites(storage: Pick<Storage, "getItem"> | undefined = safeStorage()): Set<string> {
   try {
     const raw = storage?.getItem(KEY);
@@ -53,6 +67,26 @@ export function toggleFavorite(current: ReadonlySet<string>, id: string): Set<st
  */
 export function orderByFavorite<T extends { id: string }>(options: readonly T[], favorites: ReadonlySet<string>): T[] {
   return [...options.filter((option) => favorites.has(option.id)), ...options.filter((option) => !favorites.has(option.id))];
+}
+
+/**
+ * A STARRED MODEL IS NEVER FOLDED AWAY, whatever generation it belongs to.
+ *
+ * The picker hides older generations behind a "Legacy models" row, and by the
+ * version rule Haiku 4.5 is one — it is a whole number behind the default. That
+ * is the right default and the wrong answer for the person who starred it: a
+ * star says KEEP THIS AT THE TOP, and a star that leaves the model one click
+ * further away than before it was pressed is a control working against itself.
+ */
+export function keepStarredVisible<T extends { id: string }>(
+  split: { current: T[]; legacy: T[] },
+  favorites: ReadonlySet<string>,
+): { current: T[]; legacy: T[] } {
+  if (!split.legacy.some((option) => favorites.has(option.id))) return split;
+  return {
+    current: [...split.current, ...split.legacy.filter((option) => favorites.has(option.id))],
+    legacy: split.legacy.filter((option) => !favorites.has(option.id)),
+  };
 }
 
 function safeStorage(): Pick<Storage, "getItem" | "setItem"> | undefined {

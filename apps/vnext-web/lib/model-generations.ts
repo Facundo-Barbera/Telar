@@ -45,14 +45,27 @@ export function modelVersion(id: string): number | undefined {
   return Number.isFinite(minor) ? major + minor / 100 : major;
 }
 
-export type ModelGenerations = {
+export type ModelGenerations<T> = {
   /** The default's generation and anything level with it. */
-  current: ProviderModel[];
+  current: T[];
   /** Older, plus anything the provider itself marked hidden. */
-  legacy: ProviderModel[];
+  legacy: T[];
 };
 
-export function splitGenerations(models: readonly ProviderModel[]): ModelGenerations {
+/**
+ * GENERIC OVER THE ROW, because the picker no longer splits raw catalogue rows —
+ * it splits FAMILIES (lib/model-families.ts), whose id is the resolved id with
+ * the window and the dated build taken off.
+ *
+ * That is a better string to read a version out of than the one this ran on
+ * before, and it fixed a real misfiling: `modelVersion("sonnet[1m]")` finds the
+ * `1` in `[1m]` and reports version 1, which put the long-context Sonnet under
+ * "Legacy models" next to nothing else. Its family id is `claude-sonnet-5`,
+ * which reports 5, which is what it is.
+ */
+type Generational = { id: string; isDefault: boolean; hidden: boolean };
+
+export function splitGenerations<T extends Generational>(models: readonly T[]): ModelGenerations<T> {
   const visible = models.filter((model) => !model.hidden);
   const hidden = models.filter((model) => model.hidden);
   const defaultModel = visible.find((model) => model.isDefault) ?? visible[0];
@@ -62,8 +75,8 @@ export function splitGenerations(models: readonly ProviderModel[]): ModelGenerat
   // guessed here would be hiding models on the strength of a regex.
   if (line === undefined) return { current: visible, legacy: hidden };
 
-  const current: ProviderModel[] = [];
-  const legacy: ProviderModel[] = [...hidden];
+  const current: T[] = [];
+  const legacy: T[] = [...hidden];
   for (const model of visible) {
     const version = modelVersion(model.id);
     if (version === undefined || version >= line) current.push(model);
@@ -77,8 +90,10 @@ export function defaultModelId(models: readonly ProviderModel[]): string | undef
   return (models.find((model) => model.isDefault) ?? models.find((model) => !model.hidden))?.id;
 }
 
-/** The effort levels a specific model supports. An unknown model reports none,
- *  and the picker then offers only "Auto" — which is true rather than a guess. */
-export function effortsFor(models: readonly ProviderModel[], id: string | undefined): readonly string[] {
-  return models.find((model) => model.id === id)?.efforts ?? [];
-}
+/**
+ * THERE IS NO `effortsFor` HERE ANY MORE. It matched a model by `id` alone,
+ * which silently reported "no effort levels" for a session carrying the wire id
+ * of an alias — every menu then offered only Auto for a model with five levels.
+ * The menus read `rowOf(models, id)?.efforts` instead (lib/model-families.ts),
+ * which matches an alias to what it resolves to.
+ */

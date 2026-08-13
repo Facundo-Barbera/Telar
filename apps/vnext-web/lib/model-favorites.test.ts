@@ -3,6 +3,9 @@
  *
  * The ordering is the part worth pinning: a menu whose rows move when you are
  * not looking is a menu you have to read every time.
+ *
+ * The stored KEYS are family ids now (`claude-sonnet-5`, not `sonnet[1m]`) —
+ * what a star survives is pinned in model-families.test.ts, where the fold is.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
@@ -10,11 +13,11 @@ import { orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "
 
 function storage(initial?: string) {
   const slots = new Map<string, string>();
-  if (initial !== undefined) slots.set("telar:favorite-models:v1", initial);
+  if (initial !== undefined) slots.set("telar:favorite-models:v2", initial);
   return {
     getItem: (key: string) => slots.get(key) ?? null,
     setItem: (key: string, value: string) => void slots.set(key, value),
-    read: () => slots.get("telar:favorite-models:v1"),
+    read: () => slots.get("telar:favorite-models:v2"),
   };
 }
 

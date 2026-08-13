@@ -8,7 +8,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
-import { defaultModelId, effortsFor, modelVersion, splitGenerations } from "./model-generations";
+import { defaultModelId, modelVersion, splitGenerations } from "./model-generations";
 
 const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
   id,
@@ -87,21 +87,16 @@ describe("splitGenerations", () => {
   });
 });
 
-describe("defaultModelId and effortsFor", () => {
+describe("defaultModelId", () => {
   test("the provider's default wins; failing that, the first visible one", () => {
     expect(defaultModelId([model("a"), model("b", { isDefault: true })])).toBe("b");
     expect(defaultModelId([model("hidden-one", { hidden: true }), model("a")])).toBe("a");
     expect(defaultModelId([])).toBeUndefined();
   });
 
-  test("efforts are per model, and an unknown model has none rather than a guess", () => {
-    // Codex reports six levels for its newest model and four for an older one.
-    // Offering a level a model does not have fails the whole turn.
-    const models = [model("new", { efforts: ["low", "high", "ultra"] }), model("old", { efforts: ["low", "high"] })];
-    expect(effortsFor(models, "new")).toEqual(["low", "high", "ultra"]);
-    expect(effortsFor(models, "old")).toEqual(["low", "high"]);
-    expect(effortsFor(models, "gone")).toEqual([]);
-  });
+  // `effortsFor` used to live here and matched on `id` alone, which reported no
+  // levels for a session carrying the wire id of an alias. Its replacement is
+  // `rowOf(...)?.efforts` — see model-families.test.ts.
 });
 
 describe("effortLabel", () => {

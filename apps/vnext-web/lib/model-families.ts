@@ -1,0 +1,186 @@
+/**
+ * ONE ROW PER MODEL, NOT ONE ROW PER CONTEXT WINDOW.
+ *
+ * The installed Claude Code answers with five rows for four models: `sonnet` and
+ * `sonnet[1m]` are the same Sonnet with a different window, and `opus[1m]` is
+ * the only Opus there is. Listed flat, that picker asks two questions in one
+ * place — WHICH MODEL and HOW MUCH CONTEXT — and answers neither: half the rows
+ * are the same name twice, and the window ends up written into the model's own
+ * label ("Opus (1M context)"), where it is a fact you can read and not a control
+ * you can reach.
+ *
+ * SO THE PICKER LISTS FAMILIES AND THE WINDOW BECOMES A SETTING, sitting with
+ * the reasoning level where the other per-turn knobs are. That is where the
+ * reference cockpit puts it — its pill reads `Extra High · 1M` — and where the
+ * donor put it too, as a `Standard | 1M` group inside the reasoning popover.
+ *
+ * IT IS STILL THE PROVIDER'S OWN MODEL ID ON THE WIRE. A family is a way of
+ * READING the catalogue, not a thing the contract knows about: choosing Sonnet
+ * with a 1M window sends `sonnet[1m]`, the same string that picking that row
+ * sent before. `ModelSelection` is unchanged, the engine is unchanged, and a
+ * provider that stops publishing a long variant simply stops offering the
+ * control — which is the property the deleted `default | 1m` switch never had.
+ *
+ * THE FOLD IS THE DONOR'S RULE (`modelFamilyKey` in the frozen cockpit): strip
+ * the `[1m]` suffix and a trailing dated build from the id the alias RESOLVES
+ * to. Resolved rather than literal, because Claude Code's rows are mostly
+ * aliases — `sonnet` resolves to `claude-sonnet-5` and `sonnet[1m]` to
+ * `claude-sonnet-5[1m]`, which are obviously one family; their literal ids are
+ * not obviously anything.
+ */
+import type { ProviderModel } from "@telar/engine-client";
+
+export type ContextWindow = "standard" | "long";
+
+/** What the pill and the menu call each window. "Standard" is never printed on
+ *  the pill — see `windowSuffix`. */
+export const WINDOW_LABEL: Record<ContextWindow, string> = { standard: "Standard", long: "1M" };
+
+/**
+ * `[1m]`, AND NOTHING ELSE COUNTS.
+ *
+ * This is Claude Code's own spelling and the only long-window marker either
+ * provider publishes today. A model that never says `[1m]` is reported as
+ * standard rather than unknown, because "standard" is what every id without the
+ * suffix means — including every Codex id, none of which have windows to pick.
+ */
+export function contextWindowOf(model: Pick<ProviderModel, "id" | "resolves">): ContextWindow {
+  return /\[1m\]$/i.test(model.id) || /\[1m\]$/i.test(model.resolves ?? "") ? "long" : "standard";
+}
+
+/**
+ * The id two rows share when they are the same model.
+ *
+ *   `sonnet`            → resolves `claude-sonnet-5`               → `claude-sonnet-5`
+ *   `sonnet[1m]`        → resolves `claude-sonnet-5[1m]`           → `claude-sonnet-5`
+ *   `haiku`             → resolves `claude-haiku-4-5-20251001`     → `claude-haiku-4-5`
+ *   `gpt-5.6-sol`       → no alias                                 → `gpt-5.6-sol`
+ *
+ * THE DATED SUFFIX GOES TOO, for the same reason as the window: two builds of
+ * one model dated a month apart are one row to a reader, and the provider is the
+ * one deciding which build the alias points at today.
+ */
+export function familyKey(model: Pick<ProviderModel, "id" | "resolves">): string {
+  return (model.resolves ?? model.id).replace(/\[1m\]$/i, "").replace(/-\d{8}$/, "");
+}
+
+/**
+ * A model as the picker lists it: the name, and every window it comes in.
+ *
+ * SHAPED LIKE A `ProviderModel` ON PURPOSE — `id`, `isDefault`, `hidden` — so
+ * the two helpers that already sort and split a catalogue (`orderByFavorite`,
+ * `splitGenerations`) work on families without learning a second shape. `id`
+ * here is the FAMILY key, which is also what a star is stored against.
+ */
+export type ModelFamily = {
+  id: string;
+  label: string;
+  isDefault: boolean;
+  hidden: boolean;
+  /** The provider's own rows, in catalogue order. Never empty. */
+  rows: ProviderModel[];
+};
+
+/**
+ * The window out of a model's name.
+ *
+ * "Opus (1M context)" is the provider describing a row that is about to stop
+ * being a row. Once the window is a control, that parenthetical is the label
+ * repeating a setting the reader can already see — and worse, disagreeing with
+ * it the moment they switch.
+ */
+export function stripWindow(label: string): string {
+  return label.replace(/\s*\([^)]*\bcontext\b[^)]*\)\s*$/i, "").trim();
+}
+
+/**
+ * Fold a catalogue into families, in catalogue order.
+ *
+ * THE NAME COMES FROM THE STANDARD ROW WHERE THERE IS ONE, because that is the
+ * label the provider wrote without a window in mind — Sonnet's pair is "Sonnet"
+ * and "Sonnet 5 (1M context)", and the first is the better name for both. Where
+ * there is no standard row (Opus, today) the long row's label is used with its
+ * window stripped.
+ *
+ * HIDDEN ONLY IF EVERY VARIANT IS HIDDEN. `hidden` is the provider saying "do
+ * not show this at all", and it says it per row; one visible window is enough to
+ * make the model worth listing.
+ */
+export function groupFamilies(models: readonly ProviderModel[]): ModelFamily[] {
+  const families = new Map<string, ProviderModel[]>();
+  for (const model of models) {
+    const key = familyKey(model);
+    const rows = families.get(key);
+    if (rows) rows.push(model);
+    else families.set(key, [model]);
+  }
+  return [...families].map(([id, rows]) => {
+    const named = rows.find((row) => contextWindowOf(row) === "standard") ?? rows[0]!;
+    return {
+      id,
+      label: stripWindow(named.label) || named.label,
+      isDefault: rows.some((row) => row.isDefault),
+      hidden: rows.every((row) => row.hidden),
+      rows,
+    };
+  });
+}
+
+/**
+ * The catalogue row a stored id names.
+ *
+ * MATCHED ON THE ID FIRST AND ON `resolves` SECOND, because a session can carry
+ * either: this cockpit stores the alias (`sonnet`) and another client — or an
+ * older record — may have stored the wire id (`claude-sonnet-5`). Both name the
+ * same row, and the row is where the efforts, the fast-mode flag and the window
+ * are written, so failing to find it silently offers a model none of its own
+ * settings.
+ */
+export function rowOf(models: readonly ProviderModel[], id: string | undefined): ProviderModel | undefined {
+  if (!id) return undefined;
+  return models.find((model) => model.id === id) ?? models.find((model) => model.resolves === id);
+}
+
+/** The family a concrete model id belongs to, matched the same way. Undefined
+ *  for a model this catalogue does not have. */
+export function familyOf(families: readonly ModelFamily[], id: string | undefined): ModelFamily | undefined {
+  if (!id) return undefined;
+  return families.find((family) => family.rows.some((row) => row.id === id || row.resolves === id));
+}
+
+/** The windows this model actually comes in, standard first. One entry is the
+ *  common case and means there is nothing to choose. */
+export function windowsOf(family: ModelFamily | undefined): ContextWindow[] {
+  const windows = new Set((family?.rows ?? []).map(contextWindowOf));
+  return (["standard", "long"] as const).filter((option) => windows.has(option));
+}
+
+export function rowFor(family: ModelFamily | undefined, window: ContextWindow): ProviderModel | undefined {
+  return family?.rows.find((row) => contextWindowOf(row) === window);
+}
+
+/**
+ * Which row runs when you pick this model — THE WINDOW YOU ARE ON, if it has
+ * one.
+ *
+ * Because the window is now a control you set, switching model must not quietly
+ * unset it: someone who chose 1M on Opus and then switched to Sonnet asked for
+ * Sonnet, not for a shorter context. Where the family has no such variant the
+ * provider's default row wins, then the standard one — and the pill says which,
+ * so a window that could not be carried is visible rather than assumed.
+ */
+export function pickInFamily(family: ModelFamily, window: ContextWindow): ProviderModel {
+  return rowFor(family, window) ?? family.rows.find((row) => row.isDefault) ?? rowFor(family, "standard") ?? family.rows[0]!;
+}
+
+/**
+ * What the reasoning pill adds after the effort — `Extra high · 1M`.
+ *
+ * NOTHING FOR THE STANDARD WINDOW, and the asymmetry is deliberate: the long
+ * window is the exception worth stating and "Standard" on every pill forever is
+ * a word that never tells anybody anything. Absence reads as standard the same
+ * way it does for fast mode.
+ */
+export function windowSuffix(window: ContextWindow): string | undefined {
+  return window === "long" ? WINDOW_LABEL.long : undefined;
+}

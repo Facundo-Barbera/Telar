@@ -2,11 +2,24 @@
 
 import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
-import type { ModelCatalogue, ProviderDriverKind, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
+import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
 import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
-import { orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "@/lib/model-favorites";
-import { defaultModelId, effortsFor, splitGenerations } from "@/lib/model-generations";
+import { keepStarredVisible, orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "@/lib/model-favorites";
+import { defaultModelId, splitGenerations } from "@/lib/model-generations";
+import {
+  contextWindowOf,
+  familyOf,
+  groupFamilies,
+  pickInFamily,
+  rowFor,
+  rowOf,
+  windowSuffix,
+  windowsOf,
+  WINDOW_LABEL,
+  type ContextWindow,
+  type ModelFamily,
+} from "@/lib/model-families";
 import { createVNextApi } from "@/lib/vnext/client";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -218,34 +231,184 @@ const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", 
 const catalogues = new Map<ProviderDriverKind, Promise<ModelCatalogue>>();
 const api = createVNextApi();
 
-function useModelCatalogue(driver: ProviderDriverKind): ModelCatalogue | undefined {
-  const [catalogue, setCatalogue] = useState<ModelCatalogue>();
+/**
+ * ASKS FOR THE ONES IT IS GIVEN, AND NO OTHERS.
+ *
+ * Reading a catalogue SPAWNS A SUBPROCESS on the engine's side, so which
+ * providers this is called with is a real cost rather than a detail. The
+ * session's own provider is asked on mount, because the pill has to be able to
+ * say which model is running without being opened. Every other provider is asked
+ * only when something needs it — today that is the favourites view, which spans
+ * providers and is reached by pressing the star.
+ */
+function useModelCatalogues(drivers: readonly ProviderDriverKind[]): ReadonlyMap<ProviderDriverKind, ModelCatalogue> {
+  const [loaded, setLoaded] = useState<ReadonlyMap<ProviderDriverKind, ModelCatalogue>>(new Map());
+  // The dependency is the JOINED LIST, not the array: the caller rebuilds the
+  // array every render and an identity dependency would re-run this forever.
+  const wanted = drivers.join(",");
   useEffect(() => {
     let cancelled = false;
     // Deferred, like every other read in this app that the server could not
     // have performed.
     const task = window.setTimeout(() => {
-      let pending = catalogues.get(driver);
-      if (!pending) {
-        pending = api.modelCatalogue(driver).then((result) => result.catalogue);
-        catalogues.set(driver, pending);
-        // A failed read must not poison the cache — the next popover should try
-        // again rather than inherit the error for the life of the page.
-        void pending.catch(() => catalogues.delete(driver));
+      for (const driver of wanted.split(",").filter(Boolean) as ProviderDriverKind[]) {
+        let pending = catalogues.get(driver);
+        if (!pending) {
+          pending = api.modelCatalogue(driver).then((result) => result.catalogue);
+          catalogues.set(driver, pending);
+          // A failed read must not poison the cache — the next popover should
+          // try again rather than inherit the error for the life of the page.
+          void pending.catch(() => catalogues.delete(driver));
+        }
+        void pending
+          .then((result) => {
+            if (cancelled) return;
+            setLoaded((current) => (current.get(driver) === result ? current : new Map(current).set(driver, result)));
+          })
+          .catch(() => undefined);
       }
-      void pending.then((result) => !cancelled && setCatalogue(result)).catch(() => undefined);
     }, 0);
     return () => {
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [driver]);
-  return catalogue;
+  }, [wanted]);
+  return loaded;
+}
+
+function useModelCatalogue(driver: ProviderDriverKind): ModelCatalogue | undefined {
+  return useModelCatalogues([driver]).get(driver);
+}
+
+/**
+ * EVERYTHING THE THREE MENUS NEED TO KNOW ABOUT THE MODEL THAT WILL RUN.
+ *
+ * The pill, the reasoning popover and the overflow menu each used to work this
+ * out for themselves, and the copies drifted — the overflow offered effort
+ * levels the popover did not. One function, three callers, and the answers agree
+ * by construction.
+ */
+function selectionOf(models: readonly ProviderModel[], choice: ModelChoice) {
+  const families = groupFamilies(models);
+  /**
+   * An absent model still SELECTS a row: the provider's own default is what will
+   * run, and a menu with nothing ticked reads as broken rather than unset.
+   * Nothing is written for it — sending no model IS asking for the default, and
+   * the row simply says which one that is.
+   */
+  const id = choice.model ?? defaultModelId(models);
+  const row = rowOf(models, id);
+  const family = familyOf(families, id);
+  return {
+    families,
+    id,
+    row,
+    family,
+    /** The window the next turn will actually run in. Unknown models read as
+     *  standard, which is what an id without `[1m]` means. */
+    window: (row ? contextWindowOf(row) : "standard") as ContextWindow,
+    /** The windows this model comes in. One entry means nothing to choose. */
+    windows: windowsOf(family),
+    levels: row?.efforts ?? [],
+    fastMode: row?.fastMode === true,
+  };
+}
+
+/**
+ * Move the choice to a different row, DROPPING WHAT THAT ROW CANNOT HONOUR.
+ *
+ * An effort a model does not list fails the turn outright; a fast-mode switch it
+ * does not offer silently does nothing. Both are dropped here rather than
+ * carried into a call the provider would refuse or ignore — and this is the one
+ * place that decides it, so picking a model, a window or a favourite all behave
+ * the same way.
+ */
+function withModel(choice: ModelChoice, row: ProviderModel): ModelChoice {
+  return {
+    ...choice,
+    model: row.id,
+    ...(choice.effort && !row.efforts.includes(choice.effort) ? { effort: undefined } : {}),
+    ...(choice.fastMode && !row.fastMode ? { fastMode: undefined } : {}),
+  };
 }
 
 /** Every provider the engine can drive. Two, and the contract's union is the
  *  reason this is not a lookup — a third would want a rail entry, not a row. */
 const PROVIDERS: ProviderDriverKind[] = ["claude", "codex"];
+
+/** What the rail selects: one provider's models, or the ones you starred. */
+type ModelView = ProviderDriverKind | "favorites";
+
+/**
+ * ONE LINE PER MODEL — the name, whether it is the default, a tick, and a star.
+ *
+ * The row lists a FAMILY rather than a catalogue row (lib/model-families.ts):
+ * `sonnet` and `sonnet[1m]` are one model here, and which window it runs in is a
+ * setting on the reasoning pill. Before that fold the list showed Sonnet twice
+ * and wrote the answer into a name — "Sonnet 5 (1M context)" — where no control
+ * could reach it.
+ *
+ * THE PROVIDER ICON IS ONLY ON A MIXED LIST. In a provider's own list every row
+ * would carry the same mark, which is decoration; in the favourites list it is
+ * the only thing saying which harness a starred model belongs to.
+ */
+function FamilyRow({
+  family,
+  provider,
+  selected,
+  starred,
+  readOnly,
+  onSelect,
+  onStar,
+}: {
+  family: ModelFamily;
+  provider?: ProviderDriverKind;
+  selected: boolean;
+  starred: boolean;
+  readOnly: boolean;
+  onSelect: () => void;
+  onStar: () => void;
+}) {
+  return (
+    <div className="group/model flex items-center gap-0.5">
+      <button
+        type="button"
+        disabled={readOnly}
+        onClick={onSelect}
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+          selected ? "bg-accent" : "hover:bg-accent/60",
+          readOnly && "cursor-default opacity-60",
+        )}
+      >
+        {provider && (
+          <span className="shrink-0 text-muted-foreground">
+            <ProviderIcon provider={provider} size={13} />
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate">{family.label}</span>
+        {family.isDefault && <span className="shrink-0 text-[10px] text-muted-foreground">Default</span>}
+        <span className="flex size-3.5 shrink-0 items-center justify-center">
+          {selected && <CheckIcon className="size-3.5 text-primary" />}
+        </span>
+      </button>
+      {/* The star stays out of the row's own hit target: pressing a model must
+          never be one pixel away from favouriting it. */}
+      <button
+        type="button"
+        aria-label={starred ? `Unstar ${family.label}` : `Star ${family.label}`}
+        title={starred ? "Remove from favourites" : "Keep it in favourites"}
+        onClick={onStar}
+        className={cn(
+          "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
+          starred ? "opacity-100" : "opacity-0 group-hover/model:opacity-60 focus-visible:opacity-100",
+        )}
+      >
+        <StarIcon className={cn("size-3.5", starred && "fill-current text-primary")} />
+      </button>
+    </div>
+  );
+}
 
 /**
  * THE MODEL PICKER — not just a readout of which agent answers.
@@ -279,11 +442,22 @@ export function AgentControl({
 }) {
   const [open, setOpen] = useState(false);
   const [showLegacy, setShowLegacy] = useState(false);
-  const catalogue = useModelCatalogue(driver);
+  /** Which rail entry is showing. Reset when the popover closes: reopening
+   *  should land on the models you can run, not wherever you last wandered. */
+  const [view, setView] = useState<ModelView>(driver);
   const readOnly = !onChange;
   const { effort } = choice;
+  /**
+   * FAVOURITES SPAN PROVIDERS — a star is a fact about a model, not about this
+   * session — but only where a foreign model is something you could actually
+   * run. Once the session exists its provider is fixed, so the other catalogue
+   * would be a subprocess spawned to list models this session cannot use.
+   */
+  const crossProvider = view === "favorites" && Boolean(onDriverChange);
+  const catalogues = useModelCatalogues(crossProvider ? PROVIDERS : [driver]);
+  const catalogue = catalogues.get(driver);
   const models = catalogue?.models ?? [];
-  const { current, legacy } = splitGenerations(models);
+  const { families, family: selectedFamily, window: activeWindow } = selectionOf(models, choice);
   /**
    * READ AFTER MOUNT, like every other localStorage-backed preference in this
    * app: the server has no storage to agree with, and a value picked during
@@ -298,25 +472,78 @@ export function AgentControl({
     setStoredFavorites(next);
     writeFavorites(next);
   };
+
+  const { current, legacy } = keepStarredVisible(splitGenerations(families), favorites);
   /**
-   * An absent model still SELECTS a row: the provider's own default is what
-   * will run, and a menu with nothing ticked reads as broken rather than unset.
-   * Nothing is written for it — sending no model IS asking for the default, and
-   * the row simply says which one that is.
+   * THE LIST, EITHER WAY ROUND. A provider's own models are its current
+   * generation, favourites first; the favourites view is every starred model on
+   * every provider you could switch to, in catalogue order per provider.
    */
-  const selectedModel = choice.model ?? defaultModelId(models);
-  const shown = orderByFavorite(showLegacy ? [...current, ...legacy] : current, favorites);
+  const listed: { from: ProviderDriverKind; family: ModelFamily }[] =
+    view === "favorites"
+      ? (crossProvider ? PROVIDERS : [driver]).flatMap((option) =>
+          groupFamilies(catalogues.get(option)?.models ?? [])
+            .filter((family) => favorites.has(family.id))
+            .map((family) => ({ from: option, family })),
+        )
+      : orderByFavorite(showLegacy ? [...current, ...legacy] : current, favorites).map((family) => ({ from: driver, family }));
+  /** A provider the favourites view is still waiting on. Named, because a
+   *  silently short list looks like a lost star. */
+  const asking = (crossProvider ? PROVIDERS : [driver]).find((option) => !catalogues.get(option));
+
+  /**
+   * CLOSING RESETS THE VIEW, and every path that closes has to do it.
+   *
+   * Reopening should land on the models you can run rather than wherever you
+   * last wandered, and the difference was visible: picking a starred model left
+   * the view on Favourites, so the next open showed one row and no sign of the
+   * provider's own list until you pressed the rail. Base UI routes its own
+   * dismissals — escape, a press outside — through `onOpenChange`; a pick has to
+   * say so itself.
+   */
+  const close = (onto: ModelView) => {
+    setOpen(false);
+    setView(onto);
+    setShowLegacy(false);
+  };
+
+  /**
+   * Pick a model. THE WINDOW YOU ARE ON COMES WITH YOU where the new model has
+   * one — see `pickInFamily`.
+   *
+   * A CROSS-PROVIDER PICK SENDS THE MODEL AND NOTHING ELSE. Effort levels and
+   * fast mode are the old provider's vocabulary and mean nothing to the new one,
+   * so they go with the provider rather than into a turn that would refuse them.
+   * It closes onto `from` for the same reason: after the switch, that is the
+   * provider you are on, whatever this render still calls `driver`.
+   */
+  const pickFamily = (family: ModelFamily, from: ProviderDriverKind) => {
+    const row = pickInFamily(family, activeWindow);
+    if (from === driver) onChange?.(withModel(choice, row));
+    else {
+      onDriverChange?.(from);
+      onChange?.({ model: row.id });
+    }
+    close(from);
+  };
+
+  const label = selectedFamily?.label ?? modelLabel(models, choice.model);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next: boolean) => (next ? setOpen(true) : close(driver))}>
       <PopoverTrigger
         render={
           <ControlTrigger
             open={open}
             icon={<ProviderIcon provider={driver} size={14} />}
-            label={modelLabel(models, choice.model)}
+            /**
+             * THE NAME, WITHOUT THE WINDOW. This read "Opus (1M context)" until
+             * the window became a setting — a label carrying an answer to a
+             * question the pill next door now asks properly.
+             */
+            label={label}
             {...(effort ? { detail: effortLabel(effort) } : {})}
-            ariaLabel={`Model: ${modelLabel(models, choice.model)} on ${PROVIDER_LABEL[driver]}`}
+            ariaLabel={`Model: ${label} on ${PROVIDER_LABEL[driver]}`}
             // Shrinks rather than forcing the row to overflow: the composer
             // shares the window with the right panel and cannot assume width.
             className="min-w-0 max-w-44 justify-start"
@@ -330,28 +557,53 @@ export function AgentControl({
         className="max-h-[min(26rem,70vh)] w-64 flex-col gap-0 overflow-hidden rounded-xl p-0"
       >
         {/**
-         * THE PROVIDER RAIL — the donor's own `w-14` column, minus its
-         * favourites star, which is now a per-row toggle instead.
+         * THE RAIL — the donor's own column, star and all.
          *
          * The provider belongs HERE rather than in an overflow menu, and not
          * only to shorten the row: which provider you are on decides which
-         * models exist, so the two questions are one question.
+         * models exist, so the two questions are one question. The STAR is the
+         * same kind of entry and sits above them, because a favourite is a model
+         * you chose over the provider's ordering — it answers "which models do I
+         * actually use" without first answering "on which harness".
          */}
         <div className="flex min-h-0 flex-1">
           <div className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-border bg-muted/20 p-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setView("favorites");
+                setShowLegacy(false);
+              }}
+              aria-label="Favourites"
+              title="Starred models"
+              className={cn(
+                "flex size-8 items-center justify-center rounded-lg transition-colors",
+                view === "favorites"
+                  ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
+                  : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+              )}
+            >
+              <StarIcon className={cn("size-4", view === "favorites" && "fill-current text-primary")} />
+            </button>
             {PROVIDERS.map((option) => (
               <button
                 key={option}
                 type="button"
                 // Safe here and nowhere else in the composer: this content is
                 // portalled, so it is outside `InputGroup`'s `has-disabled` reach.
-                disabled={!onDriverChange}
-                onClick={() => onDriverChange?.(option)}
+                // The CURRENT provider stays live even when locked, because it is
+                // how you get back from the favourites view.
+                disabled={!onDriverChange && option !== driver}
+                onClick={() => {
+                  setView(option);
+                  setShowLegacy(false);
+                  if (option !== driver) onDriverChange?.(option);
+                }}
                 aria-label={PROVIDER_LABEL[option]}
-                title={onDriverChange ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed once the session exists`}
+                title={onDriverChange || option === driver ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed once the session exists`}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
-                  option === driver
+                  option === view
                     ? "bg-accent text-foreground shadow-sm ring-1 ring-border"
                     : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                   option !== driver && !onDriverChange && "opacity-40",
@@ -362,77 +614,29 @@ export function AgentControl({
             ))}
           </div>
           <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-1">
-            {/**
-             * ONE LINE PER MODEL, and no "Provider default" row.
-             *
-             * Each row used to carry a sentence of prose, which made a list of
-             * four the tallest thing in the cockpit and buried the only word
-             * anybody reads — the name. And the default is now a MODEL rather
-             * than an option: "whatever the harness is configured with" asked
-             * the reader to hold two ideas at once, when the answer to "which
-             * model is running" is the only one they wanted.
-             */}
-            {shown.map((option) => {
-              const starred = favorites.has(option.id);
-              return (
-                <div key={option.id} className="group/model flex items-center gap-0.5">
-                  <button
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => {
-                      /**
-                       * A CHOICE THE NEW MODEL CANNOT HONOUR GOES WITH THE OLD
-                       * ONE. An effort it does not list fails the turn outright;
-                       * fast mode it does not offer is a switch that silently
-                       * does nothing. Both are dropped here rather than carried
-                       * into a call the provider would refuse or ignore.
-                       */
-                      onChange?.({
-                        ...choice,
-                        model: option.id,
-                        ...(choice.effort && !option.efforts.includes(choice.effort) ? { effort: undefined } : {}),
-                        ...(choice.fastMode && !option.fastMode ? { fastMode: undefined } : {}),
-                      });
-                      setOpen(false);
-                    }}
-                    className={cn(
-                      "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                      option.id === selectedModel ? "bg-accent" : "hover:bg-accent/60",
-                      readOnly && "cursor-default opacity-60",
-                    )}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
-                    {option.isDefault && <span className="shrink-0 text-[10px] text-muted-foreground">Default</span>}
-                    <span className="flex size-3.5 shrink-0 items-center justify-center">
-                      {option.id === selectedModel && <CheckIcon className="size-3.5 text-primary" />}
-                    </span>
-                  </button>
-                  {/* The star stays out of the row's own hit target: pressing a
-                      model must never be one pixel away from favouriting it. */}
-                  <button
-                    type="button"
-                    aria-label={starred ? `Unstar ${option.label}` : `Star ${option.label}`}
-                    title={starred ? "Remove from favourites" : "Keep at the top"}
-                    onClick={() => setFavorites(toggleFavorite(favorites, option.id))}
-                    className={cn(
-                      "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
-                      starred ? "opacity-100" : "opacity-0 group-hover/model:opacity-60 focus-visible:opacity-100",
-                    )}
-                  >
-                    <StarIcon className={cn("size-3.5", starred && "fill-current text-primary")} />
-                  </button>
-                </div>
-              );
-            })}
+            {view === "favorites" && <MenuHeading>Favourites</MenuHeading>}
+            {listed.map(({ from, family }) => (
+              <FamilyRow
+                key={`${from}:${family.id}`}
+                family={family}
+                {...(crossProvider ? { provider: from } : {})}
+                selected={from === driver && family.id === selectedFamily?.id}
+                starred={favorites.has(family.id)}
+                readOnly={readOnly}
+                onSelect={() => pickFamily(family, from)}
+                onStar={() => setFavorites(toggleFavorite(favorites, family.id))}
+              />
+            ))}
             {/**
              * OLDER GENERATIONS, FOLDED. A provider's list grows and never
              * shrinks — Codex reports seven models and four of them are
              * previous families kept for people who pinned them. The rule is
              * "older than the provider's own default" rather than a list of ids
              * this repository would have to keep editing: see
-             * lib/model-generations.ts.
+             * lib/model-generations.ts. A STARRED model is never in here, whoever
+             * it is older than.
              */}
-            {legacy.length > 0 && !showLegacy && (
+            {view !== "favorites" && legacy.length > 0 && !showLegacy && (
               <button
                 type="button"
                 onClick={() => setShowLegacy(true)}
@@ -446,11 +650,15 @@ export function AgentControl({
             {/* A model this catalogue does not list — set by another client, or
                 added upstream since. Shown so the session never reads as running
                 something it is not. */}
-            {choice.model && models.length > 0 && !models.some((option) => option.id === choice.model) && (
+            {view !== "favorites" && choice.model && models.length > 0 && !selectedFamily && (
               <CompactRow label={choice.model} hint="external" selected disabled onSelect={() => undefined} />
             )}
-            {!catalogue && <p className="px-2 py-1.5 text-[11px] text-muted-foreground">Asking {PROVIDER_LABEL[driver]}…</p>}
-            {catalogue && models.length === 0 && (
+            {asking && <p className="px-2 py-1.5 text-[11px] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
+            {/* Nothing to show, and the two reasons are different questions. */}
+            {view === "favorites" && !asking && listed.length === 0 && (
+              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">Star a model to keep it here.</p>
+            )}
+            {view !== "favorites" && catalogue && models.length === 0 && (
               <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
                 {catalogue.message ?? `${PROVIDER_LABEL[driver]} did not report any models.`}
               </p>
@@ -488,6 +696,12 @@ export function AgentControl({
  * not be told to think harder: this popover said "pick a model first" and the
  * feature read as missing. Both providers take the two independently, so the
  * contract now does too.
+ *
+ * AND IT CARRIES THE CONTEXT WINDOW, which is what the pill's `Extra high · 1M`
+ * is. The window used to be part of the model's NAME, because the provider
+ * publishes it as a separate model — but a name is not a control, and "which
+ * model" and "how much of it can I fill" are two questions that were being
+ * answered in one list. The reference cockpit reads them exactly this way round.
  */
 export function ReasoningControl({
   driver,
@@ -499,28 +713,28 @@ export function ReasoningControl({
   onChange?: (next: ModelChoice) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const label = effortLabel(choice.effort);
   const catalogue = useModelCatalogue(driver);
   /**
    * PER MODEL, not per provider. Codex reports six levels for its newest model
    * and four for an older one, and offering a level a model does not have fails
-   * the whole turn. The static list is the fallback for a catalogue that has not
-   * loaded or could not be read.
+   * the whole turn. `selectionOf` resolves the model the next turn will run —
+   * including through an alias — and everything below is that row's own answer.
+   *
+   * FAST MODE IS PER MODEL TOO, AND THE MODEL SAYS SO. It used to be gated on
+   * `driver === "claude"` — right that Codex has no equivalent, wrong that every
+   * Claude model does. Of the rows the installed Claude Code reports, two
+   * support it; the group is absent on the rest, because a switch that silently
+   * does nothing is the thing this cockpit keeps refusing to ship.
    */
   const models = catalogue?.models ?? [];
-  const selected = choice.model ?? defaultModelId(models);
-  const levels = effortsFor(models, selected);
+  const { family, levels, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
   const readOnly = !onChange;
-  /**
-   * FAST MODE IS PER MODEL, AND THE MODEL SAYS SO.
-   *
-   * It used to be gated on `driver === "claude"` — right that Codex has no
-   * equivalent, wrong that every Claude model does. Of the six rows the
-   * installed Claude Code reports, two support it. The group is absent on the
-   * rest, because a switch that silently does nothing is the thing this cockpit
-   * keeps refusing to ship.
-   */
-  const fastMode = models.find((model) => model.id === selected)?.fastMode === true;
+  const effort = effortLabel(choice.effort);
+  const suffix = windowSuffix(activeWindow);
+  /** `Extra high · 1M`. The window rides on the LABEL rather than in `detail`,
+   *  which the pill hides at anything but the narrowest width — a fact you can
+   *  only see by opening a menu is the thing this row exists to avoid. */
+  const label = suffix ? `${effort} · ${suffix}` : effort;
 
   /** Every row re-sends the WHOLE choice. Picking an effort must not clear the
    *  model, and picking a window must not clear the effort. */
@@ -538,7 +752,7 @@ export function ReasoningControl({
             icon={<GaugeIcon className="size-3.5" />}
             label={label}
             {...(choice.fastMode ? { detail: "Fast" } : {})}
-            ariaLabel={`Reasoning effort: ${label}`}
+            ariaLabel={`Reasoning effort: ${effort}${suffix ? `, ${suffix} context` : ""}`}
           />
         }
       />
@@ -566,6 +780,38 @@ export function ReasoningControl({
             be asked, its own words say why. */}
         {levels.length === 0 && catalogue?.message && (
           <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">{catalogue.message}</p>
+        )}
+
+        {/**
+         * THE CONTEXT WINDOW, WHERE THE MODEL HAS MORE THAN ONE.
+         *
+         * Absent otherwise, and that is the whole reason this is derived from
+         * the catalogue rather than from a flag: the switch this replaces was a
+         * hand-kept `long` per model, and it offered a 1M window on models that
+         * do not have one. Opus is 1M-only today and Haiku standard-only, so
+         * neither shows a choice — the pill still says which, so nothing about
+         * the next turn is hidden.
+         *
+         * PICKING ONE PICKS A MODEL — `sonnet` or `sonnet[1m]` — which is how
+         * the provider publishes it. `withModel` drops anything the other row
+         * cannot honour.
+         */}
+        {windows.length > 1 && family && (
+          <div className="mt-1 border-t border-border pt-1">
+            <MenuHeading>Context window</MenuHeading>
+            {windows.map((option) => {
+              const row = rowFor(family, option);
+              return (
+                <CompactRow
+                  key={option}
+                  label={WINDOW_LABEL[option]}
+                  selected={activeWindow === option}
+                  disabled={readOnly || !row}
+                  onSelect={() => row && pick(withModel(choice, row))}
+                />
+              );
+            })}
+          </div>
         )}
 
         {fastMode && (
@@ -651,11 +897,10 @@ export function ComposerOverflowMenu({
   onEnvMode?: (mode: "local" | "worktree") => void;
 }) {
   const catalogue = useModelCatalogue(driver);
-  // Same per-model rules as the pill's menus — see `ReasoningControl`.
+  // Same per-model rules as the pill's menus, from the same function — see
+  // `selectionOf`, which exists because these two drifted apart once already.
   const models = catalogue?.models ?? [];
-  const selected = choice.model ?? defaultModelId(models);
-  const levels = effortsFor(models, selected);
-  const fastMode = models.find((model) => model.id === selected)?.fastMode === true;
+  const { family, levels, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
 
   return (
     <DropdownMenu>
@@ -697,6 +942,26 @@ export function ComposerOverflowMenu({
               </DropdownMenuItem>
             ))}
           </DropdownMenuGroup>
+        )}
+
+        {/* The window is a pill setting too, so it is here for the same reason
+            everything else is: a narrow composer must not take a control away. */}
+        {onChange && windows.length > 1 && family && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Context window</DropdownMenuLabel>
+              {windows.map((option) => {
+                const row = rowFor(family, option);
+                return (
+                  <DropdownMenuItem key={option} onClick={() => row && onChange(withModel(choice, row))}>
+                    <span className="flex-1">{WINDOW_LABEL[option]}</span>
+                    {activeWindow === option && <CheckIcon className="size-3.5 text-primary" />}
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuGroup>
+          </>
         )}
 
         {onChange && fastMode && (
