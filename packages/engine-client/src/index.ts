@@ -450,18 +450,38 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
   }
 
-  /** The user's own MCP servers. Environment-scoped: configured once, not once
-   *  per conversation. */
+  /**
+   * The MACHINE-WIDE MCP servers — the ones every project sees.
+   *
+   * A project's own live under `listProjectMcpServers`, and the URL is what
+   * says which scope you are in. Two shapes rather than one with a filter,
+   * because "all of them" and "the global ones" being the same request is how a
+   * delete lands in the wrong scope.
+   */
   listMcpServers(): Promise<{ mcpServers: McpServer[] }> {
     return this.request("GET", "/v2/mcp-servers");
   }
 
-  saveMcpServer(input: { id: string; label?: string; enabled?: boolean; spec: McpServerSpec }): Promise<{ mcpServer: McpServer }> {
-    return this.request("PUT", `/v2/mcp-servers/${encodeURIComponent(input.id)}`, input);
+  /** This project's servers, plus `effective` — the merge its sessions actually
+   *  run with, computed by the engine so the surface that explains the
+   *  shadowing cannot disagree with the one that performs it. */
+  listProjectMcpServers(projectId: string): Promise<{ mcpServers: McpServer[]; effective: McpServer[] }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers`);
   }
 
-  removeMcpServer(id: string): Promise<{ removed: boolean }> {
-    return this.request("DELETE", `/v2/mcp-servers/${encodeURIComponent(id)}`);
+  saveMcpServer(input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: McpServerSpec }): Promise<{ mcpServer: McpServer }> {
+    const { projectId, id, ...rest } = input;
+    const path = projectId
+      ? `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
+      : `/v2/mcp-servers/${encodeURIComponent(id)}`;
+    return this.request("PUT", path, { id, ...rest });
+  }
+
+  removeMcpServer(id: string, projectId?: string): Promise<{ removed: boolean }> {
+    const path = projectId
+      ? `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
+      : `/v2/mcp-servers/${encodeURIComponent(id)}`;
+    return this.request("DELETE", path);
   }
 
   /**

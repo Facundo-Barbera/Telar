@@ -317,13 +317,35 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       const suffix = query.size > 0 ? `?${query.toString()}` : "";
       return request<{ browser: BrowserSnapshot }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
     },
-    /** The user's own MCP servers. Environment-scoped: configured once, not once
-     *  per conversation. */
+    /** The MACHINE-WIDE MCP servers — the ones every project sees. A project's
+     *  own live under `projectMcpServers`, and the URL is what says which scope
+     *  a write lands in. */
     mcpServers: () => request<{ mcpServers: McpServer[] }>(fetcher, "GET", "/api/mcp-servers"),
-    saveMcpServer: (input: { id: string; label?: string; enabled?: boolean; spec: McpServerSpec }) =>
-      request<{ mcpServer: McpServer }>(fetcher, "PUT", "/api/mcp-servers", input),
-    removeMcpServer: (id: string) =>
-      request<{ removed: boolean }>(fetcher, "DELETE", `/api/mcp-servers/${encodeURIComponent(id)}`),
+    /** This project's servers, plus `effective` — the merge its sessions run
+     *  with, computed by the engine rather than re-derived here. */
+    projectMcpServers: (projectId: string) =>
+      request<{ mcpServers: McpServer[]; effective: McpServer[] }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/mcp-servers`,
+      ),
+    saveMcpServer: (input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: McpServerSpec }) => {
+      const { projectId, ...rest } = input;
+      return request<{ mcpServer: McpServer }>(
+        fetcher,
+        "PUT",
+        projectId ? `/api/projects/${encodeURIComponent(projectId)}/mcp-servers` : "/api/mcp-servers",
+        rest,
+      );
+    },
+    removeMcpServer: (id: string, projectId?: string) =>
+      request<{ removed: boolean }>(
+        fetcher,
+        "DELETE",
+        projectId
+          ? `/api/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
+          : `/api/mcp-servers/${encodeURIComponent(id)}`,
+      ),
     /**
      * The configured logins and what the machine says about each, in ONE call —
      * a settings row needs both to render, and two would let it paint a green

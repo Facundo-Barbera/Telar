@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, MessageSquarePlusIcon, MessageSquareIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { ActivityIcon, ChevronRightIcon, FolderIcon, FolderPlusIcon, MessageSquarePlusIcon, MessageSquareIcon, RefreshCwIcon, SlidersHorizontalIcon, TriangleAlertIcon } from "lucide-react";
 import type { EngineHealth, Project, Session } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { sessionsForSelectedProject } from "@/lib/vnext/project-selection";
@@ -209,10 +209,25 @@ export function ProjectsCockpit() {
                 * lives on the composer where it can still be changed.
                 */}
               {selectedId && (
-                <Button size="sm" className="self-start" render={<Link href={`/projects/${encodeURIComponent(selectedId)}/sessions/new`} />}>
-                  <MessageSquarePlusIcon className="size-3.5" />
-                  New conversation
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" render={<Link href={`/projects/${encodeURIComponent(selectedId)}/sessions/new`} />}>
+                    <MessageSquarePlusIcon className="size-3.5" />
+                    New conversation
+                  </Button>
+                  {/* The way in to per-project settings. Beside the primary
+                      action rather than in a menu: it is the only route to a
+                      surface that otherwise has no door, and a page nothing
+                      links to is a page nobody finds. */}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-foreground"
+                    render={<Link href={`/projects/${encodeURIComponent(selectedId)}/settings`} />}
+                  >
+                    <SlidersHorizontalIcon className="size-3.5" />
+                    Project settings
+                  </Button>
+                </div>
               )}
               {!selectedId && <PanelEmpty title="No project selected">Choose one on the left to see its sessions.</PanelEmpty>}
               {selectedId && visibleSessions.length === 0 && (

@@ -884,3 +884,36 @@ test("fast mode reaches the claim without a model", () => {
   store.submitTurn("session_one", { runId: "run_one", input: "hi" });
   expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, fastMode: true });
 });
+
+test("an MCP server belongs to a project or to the machine, and the project's wins", () => {
+  const { store } = readyStore();
+  // A distinct root: the registry refuses two projects pointing at one checkout.
+  store.registerProject({ id: "project_two", name: "Two", root: os.tmpdir() });
+  store.saveMcpServer({ id: "linear", spec: { transport: "http", url: "https://global.example" } });
+  store.saveMcpServer({ id: "browser", spec: { transport: "stdio", command: "node" } });
+  store.saveMcpServer({ id: "linear", projectId: "project_one", spec: { transport: "http", url: "https://one.example" } });
+
+  // Scope is a property, and the three reads answer three different questions.
+  expect(store.listMcpServers({ projectId: null }).map((server) => server.id)).toEqual(["linear", "browser"]);
+  expect(store.listMcpServers({ projectId: "project_one" }).map((server) => server.spec)).toEqual([
+    { transport: "http", url: "https://one.example" },
+  ]);
+  expect(store.listMcpServers({ projectId: "project_two" })).toEqual([]);
+
+  // THE PAIR IS THE KEY: the project's `linear` did not overwrite the global
+  // one, and a session on that project sees the project's instead.
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimNextTurn("worker_one");
+  expect(claimed?.mcpServers?.map((server) => [server.id, server.spec])).toEqual([
+    ["browser", { transport: "stdio", command: "node" }],
+    ["linear", { transport: "http", url: "https://one.example" }],
+  ]);
+
+  // …and deleting the project's leaves the global one standing, which an
+  // id-only match would not have done.
+  expect(store.removeMcpServer("linear", "project_one")).toBe(true);
+  expect(store.listMcpServers({ projectId: null }).map((server) => server.id)).toEqual(["linear", "browser"]);
+  expect(() => store.saveMcpServer({ id: "x", projectId: "nobody", spec: { transport: "stdio", command: "node" } })).toThrow(
+    EngineStateError,
+  );
+});

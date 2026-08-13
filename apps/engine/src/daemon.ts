@@ -10,6 +10,7 @@ import {
   ENGINE_PROTOCOL_VERSION,
   parseForgeQuery,
   RequestOpenInput,
+  resolveMcpServers,
   TurnModelSelection,
   type EngineDiscovery,
   type EngineErrorCode,
@@ -469,21 +470,43 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * are not scoped to one — a tool server is configured once for the
        * environment and every session on it gets the enabled ones.
        */
+      /**
+       * TWO SCOPES, TWO ROUTE SHAPES, and the URL says which one you are in.
+       * `/v2/mcp-servers` is the machine's; `/v2/projects/:id/mcp-servers` is
+       * one repository's. Hanging the project scope off a query parameter would
+       * have made "all of them" and "the global ones" the same request, which is
+       * how a delete ends up in the wrong scope.
+       */
       if (request.method === "GET" && url.pathname === "/v2/mcp-servers") {
-        writeJson(response, 200, { mcpServers: store.listMcpServers() });
+        writeJson(response, 200, { mcpServers: store.listMcpServers({ projectId: null }) });
         return;
       }
-      const mcpServer = /^\/v2\/mcp-servers\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
-      if (mcpServer && (request.method === "PUT" || request.method === "DELETE")) {
-        const id = decodeURIComponent(mcpServer[1]);
+      const projectMcp = /^\/v2\/projects\/([^/]+)\/mcp-servers(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname);
+      const globalMcp = /^\/v2\/mcp-servers\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
+      if (projectMcp && request.method === "GET" && projectMcp[2] === undefined) {
+        const projectId = decodeURIComponent(projectMcp[1]);
+        writeJson(response, 200, {
+          mcpServers: store.listMcpServers({ projectId }),
+          // The merge this project's sessions actually run with, answered by
+          // the engine rather than re-derived by the page — so the surface that
+          // EXPLAINS the shadowing cannot disagree with the one that performs it.
+          effective: resolveMcpServers(store.listMcpServers(), projectId),
+        });
+        return;
+      }
+      const mcpSlot = projectMcp?.[2] !== undefined ? { id: projectMcp[2], projectId: decodeURIComponent(projectMcp[1]) } : globalMcp ? { id: globalMcp[1] } : undefined;
+      if (mcpSlot && (request.method === "PUT" || request.method === "DELETE")) {
+        const id = decodeURIComponent(mcpSlot.id);
+        const scope = mcpSlot.projectId === undefined ? {} : { projectId: mcpSlot.projectId };
         if (request.method === "DELETE") {
-          writeJson(response, 200, { removed: store.removeMcpServer(id) });
+          writeJson(response, 200, { removed: store.removeMcpServer(id, mcpSlot.projectId) });
           return;
         }
         const input = await body(request);
         writeJson(response, 200, {
           mcpServer: store.saveMcpServer({
             id,
+            ...scope,
             ...(input.label === undefined ? {} : { label: stringValue(input.label, "mcp server label")! }),
             ...(typeof input.enabled === "boolean" ? { enabled: input.enabled } : {}),
             spec: input.spec,

@@ -17,6 +17,7 @@ import {
   ModelSelection,
   ProviderInstance as ProviderInstanceSchema,
   ProviderInstanceEnvVar as ProviderInstanceEnvVarSchema,
+  resolveMcpServers,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
@@ -669,44 +670,64 @@ export class EngineStore {
   /**
    * The user's own MCP servers.
    *
-   * ENVIRONMENT-SCOPED, not per session or per project. A user configures a tool
-   * server once and expects every session to have it; per-session copies would
-   * mean re-entering credentials for each conversation and would leave no answer
-   * to "which of these forty copies is the real one".
+   * TWO SCOPES, IN ONE FILE, keyed by the PAIR `(projectId, id)`. A server with
+   * no `projectId` is global; one with a `projectId` belongs to that repository
+   * and shadows a global server of the same id when the two meet — see
+   * `McpServer.projectId` in the contract for why that shadowing is a feature
+   * rather than a collision.
+   *
+   * ONE FILE RATHER THAN ONE PER PROJECT because scope is a PROPERTY of a
+   * server, not a location: the claim needs both halves on every turn, and a
+   * per-project file would make the common read two reads and leave orphans
+   * behind whenever a project was unregistered.
+   *
+   * `scope` FILTERS: absent returns everything, `null` returns only the global
+   * ones, and a project id returns only that project's. The merge a session
+   * actually runs with is `resolveMcpServers`, which is shared with the client
+   * so the engine and the page explaining it cannot disagree.
    */
-  listMcpServers(): McpServer[] {
+  listMcpServers(scope?: { projectId: string | null }): McpServer[] {
     const stored = readJson(this.paths.mcpServers) as { mcpServers?: unknown } | undefined;
     const parsed = McpServerSchema.array().safeParse(stored?.mcpServers ?? []);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext MCP server registry");
-    return structuredClone(parsed.data);
+    const all = structuredClone(parsed.data);
+    if (scope === undefined) return all;
+    if (scope.projectId === null) return all.filter((server) => server.projectId === undefined);
+    return all.filter((server) => server.projectId === scope.projectId);
   }
 
-  /** Create or replace one server. Keyed by id because the id IS the name the
-   *  provider addresses its tools by — `mcp__<id>__<tool>`. */
-  saveMcpServer(input: { id: string; label?: string; enabled?: boolean; spec: unknown }): McpServer {
+  /** Create or replace one server, in one scope. Keyed by `(projectId, id)`
+   *  because the id IS the name the provider addresses its tools by —
+   *  `mcp__<id>__<tool>` — and two scopes may legitimately spell it the same. */
+  saveMcpServer(input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: unknown }): McpServer {
     assertId(input.id, "mcp server id");
+    if (input.projectId !== undefined) this.getProject(input.projectId);
     const spec = McpServerSpecSchema.safeParse(input.spec);
     if (!spec.success) throw new EngineStateError("invalid_request", "MCP server configuration is invalid");
     const servers = this.listMcpServers();
     const at = this.now();
-    const existing = servers.find((server) => server.id === input.id);
+    const sameSlot = (server: McpServer) => server.id === input.id && server.projectId === input.projectId;
+    const existing = servers.find(sameSlot);
     const server: McpServer = {
       id: input.id,
+      ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       label: (input.label ?? existing?.label ?? input.id).trim().slice(0, 120) || input.id,
       enabled: input.enabled ?? existing?.enabled ?? true,
       spec: spec.data,
       createdAt: existing?.createdAt ?? at,
       updatedAt: at,
     };
-    const next = existing ? servers.map((entry) => (entry.id === server.id ? server : entry)) : [...servers, server];
+    const next = existing ? servers.map((entry) => (sameSlot(entry) ? server : entry)) : [...servers, server];
     atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
     return structuredClone(server);
   }
 
-  removeMcpServer(id: string): boolean {
+  removeMcpServer(id: string, projectId?: string): boolean {
     assertId(id, "mcp server id");
     const servers = this.listMcpServers();
-    const next = servers.filter((server) => server.id !== id);
+    // Scoped, so removing a project's `linear` cannot take the global one with
+    // it — which is exactly what an id-only match would have done.
+    const next = servers.filter((server) => !(server.id === id && server.projectId === projectId));
     if (next.length === servers.length) return false;
     atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
     return true;
@@ -1835,7 +1856,14 @@ export class EngineStore {
        * not what overrides it.
        */
       const model = turn.model ?? session.model;
-      const mcpServers = this.listMcpServers().filter((server) => server.enabled);
+      /**
+       * THIS PROJECT'S SERVERS OVER THE GLOBAL ONES, then filtered to the
+       * enabled ones. Both halves happen HERE rather than in the worker so each
+       * rule lives in exactly one place: a worker trusted to skip the disabled
+       * ones, or to work out which scope wins, would be a second copy of a
+       * decision that has to be identical every time.
+       */
+      const mcpServers = resolveMcpServers(this.listMcpServers(), session.projectId).filter((server) => server.enabled);
       /**
        * Resolved at CLAIM TIME like everything else here, and never omitted:
        * a session whose instance was deleted still has to run, so this falls

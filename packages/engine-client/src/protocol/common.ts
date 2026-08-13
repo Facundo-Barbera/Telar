@@ -355,6 +355,29 @@ export const McpServer = z.object({
    *  tools `mcp__<id>__<tool>`. Constrained to an id so a name cannot inject
    *  separators into a tool name three clients then fail to parse. */
   id: Id,
+  /**
+   * WHICH PROJECT THIS SERVER BELONGS TO. Absent means every project.
+   *
+   * THE ORIGINAL SHAPE WAS WRONG AND SAID SO CONFIDENTLY: "stored per
+   * environment rather than per session — the user configures a tool once, not
+   * once per conversation". The first half of that is right and the conclusion
+   * does not follow. Not-per-session does not mean global: an MCP server is
+   * usually a thing about a CODEBASE — the issue tracker that repo files
+   * against, a database that only one service talks to — and making every one
+   * of them visible to every project hands each session a pile of tools that
+   * cannot help it and can mislead it. The legacy cockpit had this right; its
+   * servers lived in each project's own manifest.
+   *
+   * BOTH SCOPES EXIST because both are real. A browser or a search tool belongs
+   * to the machine; a repo's issue tracker belongs to the repo.
+   *
+   * THE PAIR (projectId, id) IS THE KEY, not the id alone — so a project may
+   * define a server with the SAME id as a global one, and when it does the
+   * project's wins. That is a feature rather than a collision: the id is the
+   * provider-facing name, so overriding it is how a project points `linear` at
+   * a different workspace without renaming the tools its agents already know.
+   */
+  projectId: Id.optional(),
   label: z.string().min(1),
   /** Off is a real state and not deletion: a server that is failing should be
    *  silenceable without losing how it was configured. */
@@ -364,6 +387,22 @@ export const McpServer = z.object({
   updatedAt: Timestamp,
 });
 export type McpServer = z.infer<typeof McpServer>;
+
+/**
+ * The servers one session actually gets: this project's, over the global ones.
+ *
+ * PURE, AND SHARED, so the engine's claim and the settings page that explains
+ * the merge cannot disagree about which server wins. A project entry shadows a
+ * global entry of the same id — see `McpServer.projectId` for why that is a
+ * feature — and everything else is concatenated in a stable order: global
+ * first, so a reader sees the machine-wide baseline before the overrides.
+ */
+export function resolveMcpServers(servers: readonly McpServer[], projectId: string): McpServer[] {
+  const scoped = servers.filter((server) => server.projectId === projectId);
+  const shadowed = new Set(scoped.map((server) => server.id));
+  const global = servers.filter((server) => server.projectId === undefined && !shadowed.has(server.id));
+  return [...global, ...scoped];
+}
 
 /**
  * ONE ENVIRONMENT VARIABLE A PROVIDER INSTANCE SETS ON ITS OWN PROCESS.
