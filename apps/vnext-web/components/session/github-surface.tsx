@@ -51,12 +51,16 @@ const UNAVAILABLE: Record<NonNullable<GitHubSnapshot["unavailable"]>, { title: s
 };
 
 /**
- * One row, draggable.
+ * One row: three gestures, three targets.
  *
- * THE WHOLE ROW IS THE DRAG HANDLE and the link is a separate target, because
- * the two gestures mean different things: dragging says "talk about this here",
- * clicking says "take me to GitHub". A row that did both from the same pixel
- * would make one of them an accident.
+ * CLICKING OPENS IT IN THE PANEL — the row is a button, exactly as a row in the
+ * file tree is. DRAGGING references it in the message. The link icon goes to
+ * GitHub. The three mean different things ("read this here", "talk about this
+ * here", "take me to the website") and each has its own pixel, because a row that
+ * did two of them from the same one would make one of them an accident.
+ *
+ * A `<button>` THAT IS ALSO `draggable` is the same arrangement the file tree
+ * uses, and it works because a drag never fires the click.
  */
 function ForgeRow({
   icon,
@@ -65,6 +69,8 @@ function ForgeRow({
   url,
   meta,
   badges,
+  open,
+  onOpen,
   onDrag,
 }: {
   icon: React.ReactNode;
@@ -73,15 +79,24 @@ function ForgeRow({
   url: string;
   meta: string;
   badges?: React.ReactNode;
+  /** Already open as a tab. Marked rather than prevented — clicking still brings
+   *  that tab forward, which is what a person expects. */
+  open?: boolean;
+  onOpen: () => void;
   onDrag: (transfer: DataTransfer) => void;
 }) {
   return (
     <PanelRow tone="none" className="p-0 pl-0">
-      <div
+      <button
+        type="button"
         draggable
         onDragStart={(event) => onDrag(event.dataTransfer)}
-        title="Drag into the message to reference it"
-        className="flex w-full min-w-0 cursor-grab items-start gap-2 py-2 pr-2 pl-4 active:cursor-grabbing"
+        onClick={onOpen}
+        title={`#${number} — click to open it here, drag it into the message`}
+        className={cn(
+          "flex w-full min-w-0 cursor-grab items-start gap-2 py-2 pr-2 pl-4 text-left transition-colors hover:bg-muted/60 active:cursor-grabbing",
+          open && "bg-muted/40",
+        )}
       >
         <span className="mt-0.5 flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">{icon}</span>
         <span className="min-w-0 flex-1">
@@ -102,25 +117,28 @@ function ForgeRow({
           rel="noreferrer"
           aria-label={`Open #${number} on GitHub`}
           title="Open on GitHub"
-          // Dragging a link is the browser's own gesture and would replace ours.
+          // Dragging a link is the browser's own gesture and would replace ours;
+          // stopping the click keeps it from also opening the panel tab.
           draggable={false}
           onClick={(event) => event.stopPropagation()}
           className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
         >
           <ExternalLinkIcon className="size-3" />
         </a>
-      </div>
+      </button>
     </PanelRow>
   );
 }
 
-function IssueRow({ issue }: { issue: GitHubIssue }) {
+function IssueRow({ issue, open, onOpen }: { issue: GitHubIssue; open: boolean; onOpen: () => void }) {
   return (
     <ForgeRow
       icon={<CircleDotIcon className="size-3.5" />}
       number={issue.number}
       title={issue.title}
       url={issue.url}
+      open={open}
+      onOpen={onOpen}
       meta={`${issue.author ? `${issue.author} · ` : ""}${fmtAgo(issue.updatedAt)}`}
       badges={issue.labels.slice(0, 3).map((label) => (
         <Badge key={label.name} variant="outline" className="px-1 py-0 text-[9px] font-normal">
@@ -132,13 +150,15 @@ function IssueRow({ issue }: { issue: GitHubIssue }) {
   );
 }
 
-function PullRow({ pull, mine }: { pull: GitHubPullRequest; mine: boolean }) {
+function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest; mine: boolean; open: boolean; onOpen: () => void }) {
   return (
     <ForgeRow
       icon={<GitPullRequestIcon className={cn("size-3.5", mine && "text-primary")} />}
       number={pull.number}
       title={pull.title}
       url={pull.url}
+      open={open}
+      onOpen={onOpen}
       meta={`${pull.author ? `${pull.author} · ` : ""}${fmtAgo(pull.updatedAt)}`}
       badges={
         <>
@@ -176,10 +196,17 @@ export function GitHubSurface({
   projectId,
   /** The session's own branch, so its pull request can be marked. */
   branch,
+  /** Opening one is opening a TAB, which the panel owns — the same arrangement
+   *  the file tree has with the file view. */
+  onOpen,
+  /** Which numbers already have a tab, so a row can say so. */
+  openNumbers,
 }: {
   kind: "issues" | "pulls";
   projectId?: string;
   branch?: string;
+  onOpen?: (number: number) => void;
+  openNumbers?: readonly number[];
 }) {
   const [snapshot, setSnapshot] = useState<GitHubSnapshot>();
   const [error, setError] = useState<string>();
@@ -231,6 +258,7 @@ export function GitHubSurface({
   }
 
   const rows = kind === "issues" ? snapshot.issues : snapshot.pulls;
+  const open = new Set(openNumbers ?? []);
 
   return (
     <div className="flex flex-col">
@@ -264,13 +292,27 @@ export function GitHubSurface({
         <>
           <div className="flex flex-col group">
             {kind === "issues"
-              ? snapshot.issues.map((issue) => <IssueRow key={issue.number} issue={issue} />)
+              ? snapshot.issues.map((issue) => (
+                  <IssueRow
+                    key={issue.number}
+                    issue={issue}
+                    open={open.has(issue.number)}
+                    onOpen={() => onOpen?.(issue.number)}
+                  />
+                ))
               : snapshot.pulls.map((pull) => (
-                  <PullRow key={pull.number} pull={pull} mine={Boolean(branch) && pull.headRefName === branch} />
+                  <PullRow
+                    key={pull.number}
+                    pull={pull}
+                    mine={Boolean(branch) && pull.headRefName === branch}
+                    open={open.has(pull.number)}
+                    onOpen={() => onOpen?.(pull.number)}
+                  />
                 ))}
           </div>
           <p className="px-4 py-2 text-[11px] leading-snug text-muted-foreground">
-            Drag any row into the message to reference it. What lands in the box is exactly what the agent gets.
+            Click a row to read it here — body, conversation{kind === "pulls" ? ", checks, reviews and the merge" : " and status"}. Drag one into
+            the message to reference it instead; what lands in the box is exactly what the agent gets.
           </p>
         </>
       )}

@@ -25,6 +25,10 @@ import {
   type BrowserSnapshot,
   type BrowserTab,
   type GitCommitEntry,
+  type GitHubIssueRead,
+  type GitHubMergeMethod,
+  type GitHubMergeResult,
+  type GitHubPullRead,
   type GitHubSnapshot,
   type ModelCatalogue,
   type SessionDiff,
@@ -58,7 +62,7 @@ import {
 } from "@telar/engine-client";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
-import { defaultGhRunner, readGitHub, type GhRunner } from "./github";
+import { defaultGhRunner, mergePull, readGitHub, readIssue, readPull, type GhRunner } from "./github";
 import { readModelCatalogue } from "./models";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
@@ -502,6 +506,16 @@ export class EngineStore {
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
   private readonly githubCache = new Map<string, GitHubSnapshot>();
+  /**
+   * One issue or one pull request, keyed `<projectId>:issue:<number>`.
+   *
+   * SEPARATE FROM THE SNAPSHOT CACHE rather than folded into it, because the two
+   * expire independently: reopening a detail tab must not have to re-read the
+   * whole list, and a list refresh must not silently answer a detail read with
+   * rows that have no body. Only successful reads are cached — caching "gh is not
+   * signed in" for thirty seconds would outlive the `gh auth login` that fixes it.
+   */
+  private readonly githubDetailCache = new Map<string, GitHubIssueRead | GitHubPullRead>();
   /** In memory, like the GitHub cache and for the same reason: it describes
    *  somebody else's installation, which changes without telling us. */
   private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
@@ -708,6 +722,76 @@ export class EngineStore {
     const snapshot = await readGitHub(this.gh, project.root, this.now);
     this.githubCache.set(project.id, snapshot);
     return structuredClone(snapshot);
+  }
+
+  /** A positive whole number, because it is going into an argv and a URL. */
+  private forgeNumber(value: number): number {
+    if (!Number.isInteger(value) || value <= 0) throw new EngineStateError("invalid_request", "an issue or pull request number is required");
+    return value;
+  }
+
+  /**
+   * One issue or one pull request, opened.
+   *
+   * CACHED LIKE THE LIST AND FOR THE SAME THIRTY SECONDS — it is the same rate
+   * limit — but only when the read WORKED. A failure is not cached: the four
+   * reasons a detail read fails are all things a person fixes in less than thirty
+   * seconds, and a cached "not signed in" would tell them their fix did not work.
+   */
+  private async forgeDetail<T extends GitHubIssueRead | GitHubPullRead>(
+    projectId: string,
+    kind: "issue" | "pull",
+    number: number,
+    read: (root: string) => Promise<T>,
+    options: { force?: boolean },
+  ): Promise<T> {
+    const project = this.getProject(projectId);
+    const key = `${project.id}:${kind}:${this.forgeNumber(number)}`;
+    const cached = this.githubDetailCache.get(key) as T | undefined;
+    const readAt = cached && "issue" in cached ? cached.issue.readAt : cached && "pull" in cached ? cached.pull.readAt : undefined;
+    if (readAt !== undefined && !options.force && this.now() - readAt < GITHUB_CACHE_MS) return structuredClone(cached!);
+    const answer = await read(project.root);
+    if ("issue" in answer || "pull" in answer) this.githubDetailCache.set(key, answer);
+    return structuredClone(answer);
+  }
+
+  projectIssue(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubIssueRead> {
+    return this.forgeDetail(projectId, "issue", number, (root) => readIssue(this.gh, root, number, this.now), options);
+  }
+
+  projectPull(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubPullRead> {
+    return this.forgeDetail(projectId, "pull", number, (root) => readPull(this.gh, root, number, this.now), options);
+  }
+
+  /**
+   * Merge a pull request.
+   *
+   * NOT CACHED — obviously — AND IT DROPS TWO CACHES ON THE WAY OUT. A merged
+   * pull request that goes on reporting itself as open for the next thirty
+   * seconds, in the panel that just merged it, is the worst possible moment for
+   * this cache to be right about a stale answer. The LIST goes too: the row this
+   * merge just closed is in it.
+   *
+   * `expectedHeadOid` is the reader's precondition and is required. There is no
+   * "merge whatever is there now" path, because that is the merge nobody meant.
+   */
+  async projectPullMerge(
+    projectId: string,
+    number: number,
+    input: { method: GitHubMergeMethod; expectedHeadOid: string },
+  ): Promise<GitHubMergeResult> {
+    const project = this.getProject(projectId);
+    const target = this.forgeNumber(number);
+    if (!input.expectedHeadOid.trim()) throw new EngineStateError("invalid_request", "the head commit this merge was reviewed against is required");
+    const result = await mergePull(this.gh, project.root, { number: target, method: input.method, expectedHeadOid: input.expectedHeadOid }, this.now);
+    this.githubDetailCache.delete(`${project.id}:pull:${target}`);
+    if (result.merged) {
+      this.githubCache.delete(project.id);
+      // The merge's own re-read is fresher than anything a cache could hold, so
+      // it becomes the cached answer rather than being thrown away.
+      this.githubDetailCache.set(`${project.id}:pull:${target}`, { pull: result.pull });
+    }
+    return structuredClone(result);
   }
 
   /**

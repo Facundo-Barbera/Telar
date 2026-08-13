@@ -1,6 +1,10 @@
 import type {
   BrowserSnapshot,
   GitCommitEntry,
+  GitHubIssueRead,
+  GitHubMergeMethod,
+  GitHubMergeResult,
+  GitHubPullRead,
   GitHubSnapshot,
   GitOverview,
   ModelCatalogue,
@@ -92,6 +96,36 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
         "GET",
         `/api/projects/${encodeURIComponent(projectId)}/github${options.refresh ? "?refresh=1" : ""}`,
       ),
+    /**
+     * ONE issue or ONE pull request, opened as its own panel tab.
+     *
+     * THE ANSWER IS A UNION rather than a throw — `{ issue }` or
+     * `{ unavailable, message? }` — because a detail tab restored from a previous
+     * run can open into a machine where `gh` has since been logged out, and the
+     * five sentences that say what to do about that are the answer.
+     */
+    projectIssue: (projectId: string, number: number, options: { refresh?: boolean } = {}) =>
+      request<GitHubIssueRead>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/issues/${number}${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    projectPull: (projectId: string, number: number, options: { refresh?: boolean } = {}) =>
+      request<GitHubPullRead>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    /**
+     * Merge a pull request.
+     *
+     * `expectedHeadOid` is the head the person pressing the button reviewed, and
+     * it is required: it becomes `--match-head-commit`, so a commit pushed since
+     * the read makes GitHub refuse rather than merge code nobody saw. A refusal
+     * arrives as `merged: false` with one of seven reasons, not as a thrown error.
+     */
+    mergeProjectPull: (projectId: string, number: number, input: { method: GitHubMergeMethod; expectedHeadOid: string }) =>
+      request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
     createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>

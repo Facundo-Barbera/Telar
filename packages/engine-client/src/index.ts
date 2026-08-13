@@ -12,6 +12,10 @@ import {
   EngineDiscovery,
   type BrowserSnapshot,
   type GitCommitEntry,
+  type GitHubIssueRead,
+  type GitHubMergeMethod,
+  type GitHubMergeResult,
+  type GitHubPullRead,
   type GitHubSnapshot,
   type ModelCatalogue,
   type SessionDiff,
@@ -171,6 +175,45 @@ export class EngineClient {
   projectGitHub(projectId: string, options: { refresh?: boolean } = {}): Promise<{ github: GitHubSnapshot }> {
     const suffix = options.refresh ? "?refresh=1" : "";
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${suffix}`);
+  }
+
+  /**
+   * ONE issue or ONE pull request — the body, the conversation, and for a pull
+   * request its reviews, its checks and whether GitHub will merge it.
+   *
+   * THE ANSWER IS A UNION, not a throw: `{ issue }` or `{ unavailable, message? }`.
+   * A detail read has a fifth way to be unavailable that a list read does not
+   * (`not_found` — there is no #999), and all five are sentences a reader can act
+   * on rather than HTTP failures.
+   */
+  projectIssue(projectId: string, number: number, options: { refresh?: boolean } = {}): Promise<GitHubIssueRead> {
+    const suffix = options.refresh ? "?refresh=1" : "";
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/issues/${number}${suffix}`);
+  }
+
+  projectPull(projectId: string, number: number, options: { refresh?: boolean } = {}): Promise<GitHubPullRead> {
+    const suffix = options.refresh ? "?refresh=1" : "";
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}${suffix}`);
+  }
+
+  /**
+   * Merge a pull request.
+   *
+   * `expectedHeadOid` IS REQUIRED AND IS THE POINT. It is the `headRefOid` the
+   * detail read returned, and it goes to GitHub as `--match-head-commit`, so a
+   * commit pushed after the review — by a person or by an agent — makes this
+   * refuse rather than merge something nobody read. There is deliberately no way
+   * to say "merge whatever is on the branch now".
+   *
+   * A refusal is `{ merged: false, refusal }` with seven named reasons, not an
+   * exception; see `GitHubMergeRefusal`.
+   */
+  mergeProjectPull(
+    projectId: string,
+    number: number,
+    input: { method: GitHubMergeMethod; expectedHeadOid: string },
+  ): Promise<GitHubMergeResult> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input);
   }
 
   /** What is uncommitted in a project right now — the review a canvas shows

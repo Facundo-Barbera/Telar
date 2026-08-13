@@ -334,6 +334,50 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /**
+       * ONE issue or ONE pull request, and merging one.
+       *
+       * `(\d+)` IN THE PATTERN rather than a parse afterwards: the number goes
+       * into a `gh` argv, and a route that matched `../../etc` and then tried to
+       * make sense of it is a route that can be argued with. It either is a
+       * number or it is not this route.
+       *
+       * THE FOUR-AND-A-FIFTH KINDS OF NOTHING COME BACK AS 200s, the same as the
+       * list's. "gh is not signed in" and "there is no #999" are answers about the
+       * environment and the repository; a 4xx here would collapse them into the
+       * cockpit's generic error path and lose the sentence that says what to do.
+       */
+      const projectForge = /^\/v2\/projects\/([^/]+)\/github\/(issues|pulls)\/(\d+)$/.exec(url.pathname);
+      if (request.method === "GET" && projectForge) {
+        const projectId = decodeURIComponent(projectForge[1]);
+        const number = Number(projectForge[3]);
+        const force = url.searchParams.get("refresh") === "1";
+        writeJson(
+          response,
+          200,
+          projectForge[2] === "issues" ? await store.projectIssue(projectId, number, { force }) : await store.projectPull(projectId, number, { force }),
+        );
+        return;
+      }
+      const projectMerge = /^\/v2\/projects\/([^/]+)\/github\/pulls\/(\d+)\/merge$/.exec(url.pathname);
+      if (request.method === "POST" && projectMerge) {
+        const input = await body(request);
+        const method = stringValue(input.method, "merge method")!;
+        if (method !== "merge" && method !== "squash" && method !== "rebase") {
+          throw new HttpError(400, "invalid_request", "merge method must be merge, squash or rebase");
+        }
+        writeJson(
+          response,
+          200,
+          await store.projectPullMerge(decodeURIComponent(projectMerge[1]), Number(projectMerge[2]), {
+            method,
+            // Required, and named for what it is: the head the person who pressed
+            // the button had reviewed. See `mergePull`.
+            expectedHeadOid: stringValue(input.expectedHeadOid, "expected head commit")!,
+          }),
+        );
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {

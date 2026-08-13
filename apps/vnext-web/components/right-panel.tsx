@@ -48,6 +48,7 @@ import {
 import { DiffSurface } from "@/components/session/diff-surface";
 import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
+import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
 
@@ -123,10 +124,12 @@ type SurfaceId = (typeof SURFACES)[number]["id"];
  * tree — splits a 320px column into two unreadable halves (see
  * session/file-view-surface.tsx).
  */
-export type PanelTab = SurfaceId | `browser:${string}` | `file:${string}`;
+export type PanelTab = SurfaceId | `browser:${string}` | `file:${string}` | `issue:${number}` | `pull:${number}`;
 
 const BROWSER_PREFIX = "browser:";
 const FILE_PREFIX = "file:";
+const ISSUE_PREFIX = "issue:";
+const PULL_PREFIX = "pull:";
 
 export function browserPanelTab(tabId: string): PanelTab {
   return `${BROWSER_PREFIX}${tabId}`;
@@ -152,6 +155,65 @@ export function openFilePaths(tabs: readonly PanelTab[]): string[] {
   return tabs.map(filePanelPath).filter((path): path is string => path !== undefined);
 }
 
+/**
+ * ONE ISSUE OR ONE PULL REQUEST IS ALSO A TAB, and for the third time the same
+ * argument: you opened it, several can be open, each closes on its own, and the
+ * arrangement survives a reload. The alternative — a drill-down inside the list
+ * surface with a back button — would make reading two issues at once impossible
+ * and would put a navigation stack inside a panel that already has tabs.
+ */
+export function issuePanelTab(number: number): PanelTab {
+  return `${ISSUE_PREFIX}${number}`;
+}
+
+export function pullPanelTab(number: number): PanelTab {
+  return `${PULL_PREFIX}${number}`;
+}
+
+/** The number behind an `issue:`/`pull:` tab, or undefined for anything else.
+ *  Parsed strictly: `issue:12abc` is not a tab this build understands, and
+ *  restoring it would open a surface that can only ask gh a question with no
+ *  answer. */
+function forgeNumber(tab: PanelTab, prefix: string): number | undefined {
+  if (!tab.startsWith(prefix)) return undefined;
+  const digits = tab.slice(prefix.length);
+  if (!/^\d+$/.test(digits)) return undefined;
+  const number = Number(digits);
+  return number > 0 ? number : undefined;
+}
+
+export function issuePanelNumber(tab: PanelTab): number | undefined {
+  return forgeNumber(tab, ISSUE_PREFIX);
+}
+
+export function pullPanelNumber(tab: PanelTab): number | undefined {
+  return forgeNumber(tab, PULL_PREFIX);
+}
+
+/**
+ * The tabs whose surface fills the panel itself.
+ *
+ * Each of these renders `h-full` with its own header and its own scroller, so the
+ * panel must put NOTHING above them — a single line of chrome pushes the bottom of
+ * an `h-full` child past the bottom of the box, and what it takes with it is the
+ * scroll. Found the hard way: an issue's comments were unreachable because one
+ * ten-pixel status line was sitting above them.
+ */
+const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
+  (tab) => browserTabId(tab) !== undefined,
+  (tab) => filePanelPath(tab) !== undefined,
+  (tab) => issuePanelNumber(tab) !== undefined,
+  (tab) => pullPanelNumber(tab) !== undefined,
+  (tab) => tab === "files",
+];
+
+/** Which numbers are already open, so a list row can say so instead of opening a
+ *  second tab for the same issue. The same courtesy the file tree does. */
+export function openForgeNumbers(tabs: readonly PanelTab[], kind: "issue" | "pull"): number[] {
+  const read = kind === "issue" ? issuePanelNumber : pullPanelNumber;
+  return tabs.map(read).filter((number): number is number => number !== undefined);
+}
+
 /** Anything shaped like a tab id this build understands — the validator for
  *  what comes back out of localStorage. A browser page whose id is no longer
  *  open is still KNOWN; the surface says so rather than the tab vanishing. A
@@ -160,6 +222,11 @@ export function isPanelTab(value: string): value is PanelTab {
   if (value.startsWith(BROWSER_PREFIX)) return true;
   // A bare `file:` names nothing, and would restore as a tab that can only fail.
   if (value.startsWith(FILE_PREFIX)) return value.length > FILE_PREFIX.length;
+  // `issue:` and `pull:` must carry a number, because the surface behind them
+  // asks gh for exactly that number.
+  if (value.startsWith(ISSUE_PREFIX) || value.startsWith(PULL_PREFIX)) {
+    return forgeNumber(value as PanelTab, value.startsWith(ISSUE_PREFIX) ? ISSUE_PREFIX : PULL_PREFIX) !== undefined;
+  }
   return SURFACES.some((surface) => surface.id === value);
 }
 
@@ -185,6 +252,18 @@ export function describePanelTab(
   // tooltip and the surface's own header.
   const path = filePanelPath(tab);
   if (path !== undefined) return { label: path.split("/").at(-1) || path, icon: FileIcon, blurb: path };
+  /**
+   * AN ISSUE WEARS ITS NUMBER, not its title.
+   *
+   * `#82` is the shortest thing that identifies it and the thing a person says
+   * out loud; a truncated title in a 44px tab (`Navigation fr…`) is longer, less
+   * recognisable, and would have to be fetched before the tab could be drawn — so
+   * a restored tab would have no label until the network answered.
+   */
+  const issueNumber = issuePanelNumber(tab);
+  if (issueNumber !== undefined) return { label: `#${issueNumber}`, icon: CircleDotIcon, blurb: `Issue #${issueNumber}` };
+  const pullNumber = pullPanelNumber(tab);
+  if (pullNumber !== undefined) return { label: `#${pullNumber}`, icon: GitPullRequestIcon, blurb: `Pull request #${pullNumber}` };
   const pageId = browserTabId(tab);
   if (pageId === undefined) {
     const surface = SURFACES.find((entry) => entry.id === tab)!;
@@ -526,6 +605,8 @@ export function VNextPanelSurface({
   projectId,
   branch,
   openPaths,
+  openIssueNumbers,
+  openPullNumbers,
   onOpenTab,
   active,
 }: {
@@ -550,6 +631,9 @@ export function VNextPanelSurface({
   branch?: string;
   /** Files already open as tabs, so the tree can mark them. */
   openPaths?: readonly string[];
+  /** Issues and pull requests already open as tabs, for the same reason. */
+  openIssueNumbers?: readonly number[];
+  openPullNumbers?: readonly number[];
   /** The tree opens a file by opening a TAB, which the panel owns. */
   onOpenTab: (tab: PanelTab) => void;
   active?: TurnState;
@@ -565,6 +649,12 @@ export function VNextPanelSurface({
         {...(active ? { active } : {})}
       />
     );
+  const issueNumber = issuePanelNumber(tab);
+  if (issueNumber !== undefined)
+    return <ForgeDetailSurface kind="issue" number={issueNumber} {...(projectId ? { projectId } : {})} />;
+  const pullNumber = pullPanelNumber(tab);
+  if (pullNumber !== undefined)
+    return <ForgeDetailSurface kind="pull" number={pullNumber} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
   const pageId = browserTabId(tab);
   if (pageId !== undefined)
     return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} />;
@@ -589,7 +679,15 @@ export function VNextPanelSurface({
       />
     );
   if (tab === "issues" || tab === "pulls")
-    return <GitHubSurface kind={tab} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
+    return (
+      <GitHubSurface
+        kind={tab}
+        {...(projectId ? { projectId } : {})}
+        {...(branch ? { branch } : {})}
+        onOpen={(number) => onOpenTab(tab === "issues" ? issuePanelTab(number) : pullPanelTab(number))}
+        openNumbers={tab === "issues" ? openIssueNumbers : openPullNumbers}
+      />
+    );
   if (tab === "agents") return <AgentsSurface tasks={tasks} />;
   return <UsageSurface usage={usage} />;
 }
@@ -856,6 +954,8 @@ export function VNextRightPanel({
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   const openPaths = useMemo(() => openFilePaths(tabs), [tabs]);
+  const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
+  const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
   const running = tasks.filter(isLiveTask).length;
   const failed = tasks.filter((task) => task.state === "failed").length;
   /**
@@ -1030,10 +1130,14 @@ export function VNextRightPanel({
         {tab ? (
           <>
             {/* The active turn's state, in the machine's register: one word
-                saying what the RECORD below is currently doing. A page, a file
-                and the file tree are not the record — they are things on disk and
-                in a browser — so the word would be describing something else. */}
-            {active && browserTabId(tab) === undefined && filePanelPath(tab) === undefined && tab !== "files" && (
+                saying what the RECORD below is currently doing. A page, a file,
+                the file tree and one issue or pull request are not the record —
+                they are things on disk, in a browser and on GitHub — so the word
+                would be describing something else. It also has to be absent for
+                any surface that fills the panel itself: these tabs own their own
+                header and scroller, and a line above them pushes an `h-full`
+                child past the bottom of the box. */}
+            {active && OWNS_ITS_HEIGHT.every((holds) => !holds(tab)) && (
               <p className="px-4 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
             )}
             <VNextPanelSurface
@@ -1042,6 +1146,8 @@ export function VNextRightPanel({
               tasks={tasks}
               turns={turns}
               openPaths={openPaths}
+              openIssueNumbers={openIssueNumbers}
+              openPullNumbers={openPullNumbers}
               onOpenTab={onOpenTab}
               {...(browser ? { browser } : {})}
               {...(sessionId ? { sessionId } : {})}

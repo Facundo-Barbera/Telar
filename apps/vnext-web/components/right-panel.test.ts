@@ -7,7 +7,19 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Item, Task, Turn } from "@telar/engine-client";
-import { isLiveTask, isPanelTab, journalWrites, latestBrowserState, openFilePaths, sessionUsage } from "./right-panel";
+import {
+  isLiveTask,
+  isPanelTab,
+  issuePanelNumber,
+  issuePanelTab,
+  journalWrites,
+  latestBrowserState,
+  openFilePaths,
+  openForgeNumbers,
+  pullPanelNumber,
+  pullPanelTab,
+  sessionUsage,
+} from "./right-panel";
 
 function fileChange(overrides: {
   path: string;
@@ -86,6 +98,38 @@ describe("file tabs", () => {
     expect(isPanelTab("files")).toBe(true);
     expect(isPanelTab("changes")).toBe(false);
     expect(isPanelTab("git")).toBe(false);
+  });
+});
+
+describe("issue and pull-request tabs", () => {
+  test("a tab id round-trips to the number the surface will ask gh for", () => {
+    expect(issuePanelNumber(issuePanelTab(82))).toBe(82);
+    expect(pullPanelNumber(pullPanelTab(12))).toBe(12);
+    // And the two do not answer for each other: `issue:82` and `pull:82` are
+    // different things with the same number, which is the common case.
+    expect(pullPanelNumber(issuePanelTab(82))).toBeUndefined();
+    expect(issuePanelNumber(pullPanelTab(12))).toBeUndefined();
+    expect(issuePanelNumber("files")).toBeUndefined();
+  });
+
+  test("only DIGITS are a number", () => {
+    // Restoring `issue:12abc` from localStorage would open a surface that can only
+    // ask gh a question with no answer.
+    expect(isPanelTab("issue:82")).toBe(true);
+    expect(isPanelTab("pull:1")).toBe(true);
+    expect(isPanelTab("issue:")).toBe(false);
+    expect(isPanelTab("issue:12abc")).toBe(false);
+    expect(isPanelTab("issue:-4")).toBe(false);
+    expect(isPanelTab("issue:0")).toBe(false);
+    expect(isPanelTab("pull:1.5")).toBe(false);
+  });
+
+  test("the open set is read per kind, so a list marks its own rows only", () => {
+    // An issue #12 open as a tab must not put the "already open" mark on pull
+    // request #12 in the other list.
+    const tabs = ["issues", "issue:82", "issue:9", "pull:12", "file:a.ts"] as const;
+    expect(openForgeNumbers(tabs, "issue")).toEqual([82, 9]);
+    expect(openForgeNumbers(tabs, "pull")).toEqual([12]);
   });
 });
 

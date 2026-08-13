@@ -558,6 +558,115 @@ test("a GitHub read is cached, and only a refresh gets past the cache", async ()
   expect(calls).toBe(9);
 });
 
+/** A store whose `gh` answers one pull request, counting the calls. */
+function forgeStore(pull: () => Record<string, unknown>) {
+  const calls: string[] = [];
+  let clock = 1_000;
+  const store = new EngineStore(root(), () => clock, {
+    git: () => ({ status: 0, stdout: "", stderr: "" }),
+    gh: async (_cwd, args) => {
+      calls.push(args.slice(0, 2).join(" "));
+      if (args[0] === "repo") return { status: 0, stdout: JSON.stringify({ nameWithOwner: "o/r" }), stderr: "" };
+      if (args[1] === "list") return { status: 0, stdout: "[]", stderr: "" };
+      if (args[1] === "merge") return { status: 0, stdout: "", stderr: "" };
+      return { status: 0, stdout: JSON.stringify(pull()), stderr: "" };
+    },
+  });
+  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+  return { store, calls, tick: (ms: number) => (clock += ms) };
+}
+
+const OPEN_PULL = {
+  number: 12,
+  title: "Ship it",
+  state: "OPEN",
+  isDraft: false,
+  url: "u",
+  createdAt: "2026-08-01T00:00:00Z",
+  baseRefName: "main",
+  headRefName: "telar/x",
+  headRefOid: "head-1",
+  mergeable: "MERGEABLE",
+  mergeStateStatus: "CLEAN",
+};
+
+test("a detail read has its OWN cache, so reopening a tab does not re-read the list", async () => {
+  // Folding this into the snapshot cache would mean a list refresh could answer a
+  // detail read with rows that have no body, and reopening one issue would spend
+  // three API calls re-reading every issue.
+  const { store, calls, tick } = forgeStore(() => OPEN_PULL);
+  // Counted by the pull-request read alone: `readPull` also asks the repository
+  // which merge methods it allows, concurrently, and that call is not the subject
+  // of this test.
+  const views = () => calls.filter((call) => call === "pr view").length;
+  await store.projectPull("project_one", 12);
+  expect(views()).toBe(1);
+  await store.projectPull("project_one", 12);
+  expect(views()).toBe(1);
+
+  // A different number is a different read.
+  await store.projectPull("project_one", 13);
+  expect(views()).toBe(2);
+  // And the refresh button still gets through, as does time.
+  await store.projectPull("project_one", 12, { force: true });
+  tick(31_000);
+  await store.projectPull("project_one", 12);
+  expect(views()).toBe(4);
+});
+
+test("a FAILED detail read is not cached — the fix takes less than thirty seconds", async () => {
+  // Caching "gh is not signed in" would tell somebody who just ran `gh auth
+  // login` that their fix did not work.
+  let signedIn = false;
+  const calls: string[] = [];
+  const store = new EngineStore(root(), () => 1_000, {
+    git: () => ({ status: 0, stdout: "", stderr: "" }),
+    gh: async (_cwd, args) => {
+      calls.push(args[1] ?? "");
+      return signedIn
+        ? { status: 0, stdout: JSON.stringify({ number: 4, title: "t", state: "OPEN", url: "u" }), stderr: "" }
+        : { status: 1, stdout: "", stderr: "gh auth login" };
+    },
+  });
+  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+
+  expect(await store.projectIssue("project_one", 4)).toEqual({ unavailable: "not_authenticated" });
+  signedIn = true;
+  expect(await store.projectIssue("project_one", 4)).toMatchObject({ issue: { number: 4 } });
+  expect(calls).toHaveLength(2);
+});
+
+test("a merge DROPS both caches, so the panel that merged it does not go on saying open", async () => {
+  // The worst possible moment for a thirty-second cache to be right about a
+  // stale answer.
+  let state = "OPEN";
+  const { store, calls } = forgeStore(() => ({ ...OPEN_PULL, state, ...(state === "MERGED" ? { mergedAt: "2026-08-04T00:00:00Z" } : {}) }));
+  await store.projectGitHub("project_one");
+  await store.projectPull("project_one", 12);
+  calls.length = 0;
+
+  const result = await store.projectPullMerge("project_one", 12, { method: "squash", expectedHeadOid: "head-1" });
+  state = "MERGED";
+  expect(result.merged).toBe(true);
+
+  // The merge's own confirming read is fresher than any cache, so it BECOMES the
+  // cached answer rather than being thrown away.
+  await store.projectPull("project_one", 12);
+  expect(calls.filter((call) => call === "pr view")).toHaveLength(2);
+  // And the list is re-read, because the row this merge closed is in it.
+  await store.projectGitHub("project_one");
+  expect(calls).toContain("issue list");
+});
+
+test("a merge with no head to pin against is refused before gh is reached", async () => {
+  // There is deliberately no "merge whatever is there now" path.
+  const { store, calls } = forgeStore(() => OPEN_PULL);
+  await expect(store.projectPullMerge("project_one", 12, { method: "merge", expectedHeadOid: "  " })).rejects.toThrow(EngineStateError);
+  await expect(store.projectPullMerge("project_one", 0, { method: "merge", expectedHeadOid: "head-1" })).rejects.toThrow(EngineStateError);
+  await expect(store.projectIssue("project_one", 1.5)).rejects.toThrow(EngineStateError);
+  expect(calls).toEqual([]);
+});
+
 test("an effort can be set without naming a model, and clearing the model keeps it", () => {
   // THE DEFECT THIS PINS: `ModelSelection` used to require a model in order to
   // carry an effort, so a session on the provider default — which is the
