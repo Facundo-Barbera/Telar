@@ -325,8 +325,36 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
   };
 }
 
+/**
+ * A UUID, INCLUDING ON ORIGINS THE BROWSER DOES NOT CALL SECURE.
+ *
+ * `crypto.randomUUID` exists ONLY IN A SECURE CONTEXT — HTTPS, or a loopback
+ * host. Served over plain HTTP from any other address it is simply not there,
+ * and this cockpit is served that way the moment it is bound to something other
+ * than localhost so another machine can reach it.
+ *
+ * THE FAILURE LANDED ON THE FIRST MESSAGE OF A NEW CONVERSATION, which is the
+ * worst place it could have: `submit` mints a run id before it does anything
+ * else, so the whole app worked until you tried to say something, and then threw
+ * `crypto.randomUUID is not a function` from inside a click handler.
+ *
+ * `getRandomValues` CARRIES NO SUCH RESTRICTION, so the fallback is the same
+ * randomness with the version and variant bits set by hand. Deliberately NOT
+ * `Math.random`, which is what most snippets substitute here: this id is the
+ * idempotency key a retried submission is matched on, and a weak one turns a
+ * collision from impossible into merely unlikely.
+ */
+function randomUuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 1
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Browser-generated ids are stable if the submission has to be retried. */
-export function newVNextRunId(uuid: () => string = () => crypto.randomUUID()): string {
+export function newVNextRunId(uuid: () => string = randomUuid): string {
   return `run_${uuid().replaceAll("-", "")}`;
 }
 

@@ -15,6 +15,30 @@ describe("vNext browser adapter", () => {
     expect(newVNextRunId(() => "a-b-c")).toBe("run_abc");
   });
 
+  test("mints a run id on an origin the browser does not call secure", () => {
+    /**
+     * `crypto.randomUUID` is secure-context only, so it is ABSENT — not
+     * restricted, absent — on a page served over plain HTTP from anything but a
+     * loopback host. Which is every reader who reaches this cockpit by its
+     * address on a network, and the throw landed on the first message of a new
+     * conversation.
+     */
+    const real = crypto.randomUUID;
+    Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    try {
+      // The override has to have TAKEN, or this test passes by testing nothing.
+      expect(crypto.randomUUID).toBeUndefined();
+      const id = newVNextRunId();
+      expect(id).toMatch(/^run_[0-9a-f]{32}$/);
+      // Still a version 4 UUID underneath, from `getRandomValues` — which has no
+      // secure-context restriction — rather than `Math.random`.
+      expect(id[16]).toBe("4");
+      expect(newVNextRunId()).not.toBe(id);
+    } finally {
+      Object.defineProperty(crypto, "randomUUID", { value: real, configurable: true });
+    }
+  });
+
   test("keeps a typed unavailable engine state instead of pretending a local fallback worked", async () => {
     const api = createVNextApi(async () => Response.json({ error: { code: "engine_unavailable", message: "not running" } }, { status: 503 }));
     try {
