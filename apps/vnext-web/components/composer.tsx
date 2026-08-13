@@ -30,7 +30,7 @@ import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import type { ModelChoice } from "@/lib/models";
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
+import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -41,8 +41,14 @@ import {
   ContextPill,
   ControlDivider,
   ReasoningControl,
+  useComposerCommandChoices,
 } from "./composer-controls";
-import { insertReference, readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
+import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
+import { ComposerMenu } from "./composer-menu";
+import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
+import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
+import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
+import { createVNextApi } from "@/lib/vnext/client";
 import { FreshGreeting } from "./session/fresh-greeting";
 import { WorkspaceEnvironment } from "./workspace-environment";
 import { cn } from "@/lib/utils";
@@ -50,12 +56,35 @@ import { cn } from "@/lib/utils";
 /** How long a first Escape stays armed. */
 const ESC_ARM_WINDOW_MS = 3_000;
 
+const api = createVNextApi();
+
 /** The contract's own ceiling (`TurnSubmission.attachments`). Enforced here so
  *  the seventeenth file is refused at the point of picking rather than at the
  *  end of a submit that also uploaded the first sixteen. */
 const MAX_ATTACHMENTS = 16;
 
 export type QueuedMessage = { runId: string; text: string };
+
+/**
+ * ONE VALUE FOR EVERY PROVIDER KNOB, and one place that derives it.
+ *
+ * The session's own record wins once it exists; before that, the pending choice
+ * the first message will be created with. Module scope because the slash menu
+ * needs the same answer as the pills do, and two derivations of "which model is
+ * about to run" is exactly how the two came to disagree last time.
+ */
+function modelChoiceOf(session: Session | undefined, pending: ModelChoice | undefined): ModelChoice {
+  const stored = session?.model ?? pending;
+  return {
+    ...(stored?.model ? { model: stored.model } : {}),
+    ...(stored?.effort ? { effort: stored.effort } : {}),
+    ...(stored?.fastMode === undefined ? {} : { fastMode: stored.fastMode }),
+  };
+}
+
+function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind | undefined): ProviderDriverKind {
+  return session?.driver ?? driver ?? "claude";
+}
 
 function placeholderFor(ready: boolean, busy: boolean): string {
   if (!ready) return "Waiting for the engine-owned session…";
@@ -324,8 +353,7 @@ export function Composer({
   /** Which queued line the composer is currently editing, if any. */
   const [recalled, setRecalled] = useState<number>();
   const armedAt = useRef<number>(0);
-  /** Read on drop, to splice a reference in at the caret rather than at the end. */
-  const textarea = useRef<HTMLTextAreaElement>(null);
+  const editor = useRef<ComposerEditorHandle>(null);
   /**
    * DERIVED, not reset in an effect. An armed stop only means anything while a
    * turn is running, so the running flag is part of the ANSWER rather than a
@@ -340,10 +368,153 @@ export function Composer({
     return () => window.clearTimeout(timer);
   }, [escArmed]);
 
+  /* ---------------------------------------------------------------- *
+   * COMPLETIONS — `@` for a path, `/` for one of this box's controls.
+   * ---------------------------------------------------------------- */
+
+  /** What the caret is in the middle of, recomputed on every edit and every
+   *  caret move. Null means no menu, which is the usual state. */
+  const [trigger, setTrigger] = useState<ComposerTrigger | null>(null);
+  const [active, setActive] = useState(0);
+  /**
+   * Escape closes the menu WITHOUT clearing the trigger, because the `@word` is
+   * still being typed and the user just does not want the list. Re-armed by the
+   * next edit, so dismissing is a gesture rather than a mode.
+   */
+  const [dismissed, setDismissed] = useState(false);
+  /**
+   * KEYED BY THE CHECKOUT IT WAS READ FROM, rather than cleared by an effect
+   * when the session changes. A cache that carries its own provenance cannot
+   * serve one session's paths to another even for the one render between the
+   * change and the effect that would have cleared it.
+   */
+  const [pathCache, setPathCache] = useState<{ checkout: string; entries: PathEntry[] }>();
+  const [reading, setReading] = useState(false);
+
+  const sessionId = session?.id;
+  const checkout = sessionId ?? `project:${projectId}`;
+  const paths = pathCache?.checkout === checkout ? pathCache.entries : undefined;
+  const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel));
+
+  /**
+   * READ ONCE, ON THE FIRST `@`, AND NEVER ON MOUNT.
+   *
+   * The listing is a git call in the engine, and most messages contain no
+   * mention at all — fetching it when the composer appears would spend that on
+   * every session opened. The session's own checkout wins over the project's:
+   * a worktree session is where the paths the agent can read actually are.
+   */
+  useEffect(() => {
+    if (trigger?.kind !== "path" || paths || reading) return;
+    // Deferred to a task, like every other read in this app the server could
+    // not have performed — and it is what keeps the state writes below out of
+    // the effect body, where they would cascade a render.
+    const task = window.setTimeout(() => {
+      setReading(true);
+      void (async () => {
+        try {
+          const listed = sessionId ? await api.sessionFiles(sessionId) : await api.projectFiles(projectId);
+          setPathCache({ checkout, entries: buildPathIndex(listed.listing.files) });
+        } catch {
+          // An empty index reads as "no matching files", which is the honest
+          // answer when the checkout could not be listed. A different session
+          // has a different key, so it tries again rather than inheriting this.
+          setPathCache({ checkout, entries: [] });
+        } finally {
+          setReading(false);
+        }
+      })();
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [trigger?.kind, paths, reading, checkout, sessionId, projectId]);
+
+  const completions = useMemo<Completion[]>(() => {
+    if (!trigger || dismissed) return [];
+    if (trigger.kind === "path") return rankPaths(paths ?? [], trigger.query);
+    return rankCommands(
+      availableCommands({
+        busy,
+        fresh,
+        ...(runtimeMode ? { runtimeMode } : {}),
+        ...(driver ? { driver } : {}),
+        ...(envMode ? { envMode } : {}),
+        models: commandChoices.models,
+        efforts: commandChoices.efforts,
+      }),
+      trigger.query,
+    );
+  }, [trigger, dismissed, paths, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
+
+  const menuOpen = trigger !== null && !dismissed && (completions.length > 0 || (trigger.kind === "path" && reading));
+
+  /** Recompute the trigger from the live caret. Called after every edit and
+   *  every caret move, because moving out of a `@word` must close the menu. */
+  const retrigger = useCallback((text: string) => {
+    const caret = editor.current?.caret() ?? text.length;
+    setTrigger(detectComposerTrigger(text, caret));
+  }, []);
+
+  const apply = useCallback(
+    (completion: Completion) => {
+      const range = trigger;
+      setTrigger(null);
+      setDismissed(false);
+      setActive(0);
+      const action = completion.action;
+      if (action.type === "insert") {
+        if (range) editor.current?.replaceRange(range.rangeStart, range.rangeEnd, `${action.text} `);
+        return;
+      }
+      /**
+       * A COMMAND EATS ITS OWN TRIGGER AND NOTHING ELSE. `/full-access` is not
+       * part of the message — it is a control being pressed with the keyboard —
+       * so the slash and what follows it are removed and the rest of the draft
+       * is left exactly as it was.
+       */
+      if (range) editor.current?.replaceRange(range.rangeStart, range.rangeEnd, "");
+      if (action.type === "runtime-mode") onRuntimeMode(action.mode);
+      if (action.type === "env-mode") onEnvMode?.(action.mode);
+      if (action.type === "driver") onDriverChange?.(action.driver);
+      if (action.type === "model") onModelChange?.({ ...modelChoiceOf(session, pendingModel), model: action.model });
+      if (action.type === "effort") onModelChange?.({ ...modelChoiceOf(session, pendingModel), effort: action.effort });
+      if (action.type === "stop") onStop();
+    },
+    [trigger, onRuntimeMode, onEnvMode, onDriverChange, onModelChange, onStop, session, pendingModel],
+  );
+
   const onKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
       // IME composition: Enter is committing a candidate, not sending.
       if (event.nativeEvent.isComposing) return;
+      /**
+       * THE MENU GETS THE KEYS FIRST, and only while it is open. Enter picks the
+       * highlighted row instead of sending, which is the behaviour every editor
+       * with a completion list has and the reason none of them need a modifier
+       * for it.
+       */
+      if (menuOpen && completions.length > 0) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setActive((index) => (index + 1) % completions.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setActive((index) => (index - 1 + completions.length) % completions.length);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          const picked = completions[Math.min(active, completions.length - 1)];
+          if (picked) apply(picked);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setDismissed(true);
+          return;
+        }
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         if (draft.trim() && ready) onSubmit();
@@ -388,7 +559,7 @@ export function Composer({
       // Any other key disarms — the human moved on.
       if (escArmed) setEscArmed(false);
     },
-    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop],
+    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop, menuOpen, completions, active, apply],
   );
 
   /**
@@ -412,7 +583,14 @@ export function Composer({
    *
    * The DEPTH COUNTER is not fussiness: `dragenter`/`dragleave` fire for every
    * child element the pointer crosses, so a single boolean flickers off the
-   * moment the cursor moves from the textarea onto the toolbar inside it.
+   * moment the cursor moves from the editor onto the toolbar inside it.
+   *
+   * A DROPPED REFERENCE ARRIVES AS A CHIP, because the editor draws every
+   * reference in the draft as one — the drop inserts the same text it always
+   * did, and the repaint that follows is what turns it into an object. Which is
+   * the whole reason the two gestures share `drag-reference.ts`: dragging
+   * `apps/engine/src/driver.ts` out of the Files panel and typing `@driver`
+   * produce the same six characters on the wire and the same chip on screen.
    */
   const dragDepth = useRef(0);
   const [dropping, setDropping] = useState(false);
@@ -431,19 +609,8 @@ export function Composer({
     const plain = text || event.dataTransfer.getData("text/plain");
     if (!plain) return;
     event.preventDefault();
-    // The caret is read from the textarea rather than tracked in state: a
-    // controlled `selectionStart` would have to be updated on every keystroke to
-    // stay right, and this is the only place it is ever needed.
-    const box = textarea.current;
-    const caret = box && document.activeElement === box ? box.selectionStart : draft.length;
-    const next = insertReference(draft, plain, caret);
-    onDraftChange(next.draft);
-    // After the paint that applies the new value, or the caret lands wherever
-    // React's re-render leaves it — which is the end of the box.
-    window.requestAnimationFrame(() => {
-      box?.focus();
-      box?.setSelectionRange(next.caret, next.caret);
-    });
+    // The editor owns the caret and the spacing; a drop only says what to add.
+    editor.current?.insertAtCaret(plain);
   };
 
   const dragging = (event: React.DragEvent) =>
@@ -459,17 +626,9 @@ export function Composer({
    * those, so picking an effort cleared the model and picking a model cleared
    * the effort. Handing the whole choice down and taking the whole choice back
    * makes that loss unrepresentable — see `ModelChoice`.
-   *
-   * The session's own record wins once it exists; before that, the pending
-   * choice the first message will be created with.
    */
-  const activeDriver = session?.driver ?? driver!;
-  const stored = session?.model ?? pendingModel;
-  const choice: ModelChoice = {
-    ...(stored?.model ? { model: stored.model } : {}),
-    ...(stored?.effort ? { effort: stored.effort } : {}),
-    ...(stored?.fastMode === undefined ? {} : { fastMode: stored.fastMode }),
-  };
+  const activeDriver = activeDriverOf(session, driver);
+  const choice = modelChoiceOf(session, pendingModel);
 
   return (
     /**
@@ -532,6 +691,21 @@ export function Composer({
             text approach and dissolve instead. The long soft shadow does the
             rest: it lifts the composer off the conversation without a border
             heavy enough to read as a division. */}
+        {/* RELATIVE, so the completion menu can hang off the box's top edge
+            rather than off the whole composer column — the queued strip and the
+            greeting live in that column and would push the menu around. */}
+        <div className="relative">
+        {menuOpen && trigger && (
+          <ComposerMenu
+            completions={completions}
+            active={Math.min(active, Math.max(0, completions.length - 1))}
+            heading={trigger.kind === "path" ? "Files and folders" : "Commands"}
+            {...(trigger.kind === "path" && reading ? { loading: true } : {})}
+            emptyText={trigger.kind === "path" ? "No matching files or folders." : "No matching command."}
+            onActive={setActive}
+            onPick={apply}
+          />
+        )}
         <InputGroup
           onDragEnter={(event) => {
             if (!dragging(event)) return;
@@ -560,32 +734,25 @@ export function Composer({
           <label className="sr-only" htmlFor="vnext-turn-prompt">
             Message
           </label>
-          <InputGroupTextarea
-            ref={textarea}
+          <ComposerEditor
+            ref={editor}
             id="vnext-turn-prompt"
-            // 76px and 15px/24 — a composer is not a form field. It is the
-            // largest single target on the screen and the type has to hold its
-            // own against the transcript it sits under.
-            className="field-sizing-content max-h-48 min-h-[76px] px-3 pt-3 pb-2 text-[15px] leading-6"
-            placeholder={placeholderFor(ready, busy)}
             value={draft}
+            placeholder={placeholderFor(ready, busy)}
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
-            onChange={(event) => onDraftChange(event.target.value)}
-            onKeyDown={onKeyDown}
-            /**
-             * PASTE A SCREENSHOT AND IT ATTACHES. ⌘⇧4 then ⌘V is how anyone
-             * actually shows an agent what they are looking at, and routing
-             * that through a file dialog would be the slowest possible path
-             * for the commonest case. Only intercepted when the clipboard
-             * actually holds a file — pasting text stays paste.
-             */
-            onPaste={(event) => {
-              const files = [...event.clipboardData.files];
-              if (files.length === 0) return;
-              event.preventDefault();
-              addFiles(files);
+            onChange={(text) => {
+              onDraftChange(text);
+              // Synchronous, and BEFORE the state round-trip: `retrigger` reads
+              // the caret out of the live DOM, so it has to run while the DOM
+              // and the text it is being asked about are the same edit.
+              retrigger(text);
+              setActive(0);
+              setDismissed(false);
             }}
+            onSelectionChange={() => retrigger(draft)}
+            onKeyDown={onKeyDown}
+            onPasteFiles={addFiles}
           />
           {attachments.length > 0 && (
             <InputGroupAddon align="block-start" className="flex-wrap gap-1.5 px-2.5 pt-2.5">
@@ -697,6 +864,7 @@ export function Composer({
             </div>
           </InputGroupAddon>
         </InputGroup>
+        </div>
       </form>
 
       {/* The composer's foot: where this message lands. Outside the form and

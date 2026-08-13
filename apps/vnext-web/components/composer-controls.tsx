@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
+import { forwardRef, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
@@ -14,6 +14,7 @@ import {
   pickInFamily,
   rowFor,
   rowOf,
+  stripWindow,
   windowSuffix,
   windowsOf,
   WINDOW_LABEL,
@@ -330,6 +331,47 @@ function withModel(choice: ModelChoice, row: ProviderModel): ModelChoice {
     ...(choice.effort && !row.efforts.includes(choice.effort) ? { effort: undefined } : {}),
     ...(choice.fastMode && !row.fastMode ? { fastMode: undefined } : {}),
   };
+}
+
+/**
+ * THE MODEL AND EFFORT ROWS THE `/` MENU OFFERS.
+ *
+ * Exported so the slash menu and the pills cannot disagree about what is on
+ * offer: both go through `selectionOf`, so a model hidden from the picker is
+ * hidden from the command list, and the effort levels are the SELECTED model's
+ * rather than a union across the catalogue — offering `xhigh` on a model that
+ * does not publish it fails the turn at the provider.
+ *
+ * LEGACY GENERATIONS ARE LEFT OUT. The picker keeps them behind a fold for
+ * people who pinned one; a typed command is a shortcut, and a shortcut list is
+ * only useful while it is short.
+ */
+export function useComposerCommandChoices(
+  driver: ProviderDriverKind,
+  choice: ModelChoice,
+): { models: { id: string; label: string }[]; efforts: string[] } {
+  const catalogue = useModelCatalogue(driver);
+  const models = catalogue?.models;
+  // DESTRUCTURED, THEN REBUILT INSIDE. The composer makes a fresh `ModelChoice`
+  // every render, so depending on its identity would refold the catalogue on
+  // every keystroke; depending on the three fields it actually reads is the
+  // same answer, computed when the answer can have changed.
+  const { model, effort, fastMode } = choice;
+  return useMemo(() => {
+    if (!models) return { models: [], efforts: [] };
+    const selection = selectionOf(models, {
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+      ...(fastMode === undefined ? {} : { fastMode }),
+    });
+    return {
+      models: splitGenerations(selection.families).current.map((family) => ({
+        id: pickInFamily(family, selection.window).id,
+        label: stripWindow(family.label),
+      })),
+      efforts: [...selection.levels],
+    };
+  }, [models, model, effort, fastMode]);
 }
 
 /** Every provider the engine can drive. Two, and the contract's union is the
