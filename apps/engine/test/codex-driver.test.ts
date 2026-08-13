@@ -15,8 +15,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RequestDecision, TurnObservation } from "@telar/engine-client";
-import { codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
+import type { McpServer, RequestDecision, TurnObservation } from "@telar/engine-client";
+import { codexMcpServers, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
 import { codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
 
@@ -66,6 +66,7 @@ type RunOptions = {
   onRequest?: (request: DriverRequest) => Promise<RequestDecision>;
   controller?: AbortController;
   options?: CodexDriverOptions;
+  mcpServers?: McpServer[];
 };
 
 function runTurn(scenario: string, run: RunOptions = {}) {
@@ -82,9 +83,19 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     onObservations: async (batch) => void observations.push(...batch),
     ...(run.providerSessionId ? { providerSessionId: run.providerSessionId } : {}),
     ...(run.onRequest ? { onRequest: run.onRequest } : {}),
+    ...(run.mcpServers ? { mcpServers: run.mcpServers } : {}),
   });
   return { result, observations, controller };
 }
+
+const mcp = (id: string, spec: McpServer["spec"]): McpServer => ({
+  id,
+  label: id,
+  enabled: true,
+  spec,
+  createdAt: 0,
+  updatedAt: 0,
+});
 
 const started = (observations: TurnObservation[]) => observations.filter((o) => o.kind === "item.started");
 const completed = (observations: TurnObservation[]) => observations.filter((o) => o.kind === "item.completed");
@@ -174,8 +185,66 @@ test("empty capability fields are OMITTED, because an empty one is a different s
   // tools it started with. Same for developerInstructions and config.
   expect("dynamicTools" in params).toBeFalse();
   expect("developerInstructions" in params).toBeFalse();
+  // A session with no servers must say NOTHING rather than declare an empty
+  // registry, which would read as "forget the ones in config.toml".
   expect("config" in params).toBeFalse();
   expect(params).toMatchObject({ cwd: "/tmp/project", model: "gpt-5.5" });
+});
+
+test("the user's MCP servers ride thread/start's config overlay", async () => {
+  // THE HEADER OF codex-driver.ts USED TO SAY THIS WAS IMPOSSIBLE — "the shape
+  // its thread/start `config` overlay accepts for servers is not something this
+  // driver can verify against anything". It was settled by asking the real
+  // binary rather than reasoning about it: `codex app-server
+  // generate-json-schema` publishes the overlay, and driving codex-cli 0.145.0
+  // with a real MCP server showed all four shapes reach `ready` with their
+  // tools listed. The shapes below are the ones that were measured.
+  await runTurn("plain", {
+    mcpServers: [
+      mcp("local", { transport: "stdio", command: "node", args: ["server.js"], env: { TOKEN: "x" } }),
+      mcp("linear", { transport: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer managed" } }),
+    ],
+  }).result;
+
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: {
+      local: { default_tools_approval_mode: "approve", command: "node", args: ["server.js"], env: { TOKEN: "x" } },
+      // THE TOKEN TRAVELS ON STDIN, WHICH IS THE WHOLE REASON THIS IS ALLOWED.
+      // t3 code injects its own server through `-c` argv and is therefore forced
+      // to pass the token as `bearer_token_env_var`, because an argv is
+      // world-readable through `ps` to every process running as this user —
+      // including the sandboxed shells of the agent sessions. The `config`
+      // overlay has no such exposure, and `app-server` is still spawned with
+      // exactly one argument.
+      linear: {
+        // WITHOUT THIS EVERY TOOL IS UNUSABLE. Codex asks its client before a
+        // model-initiated MCP call, with a request `codexApprovalRequest` does
+        // not know; the transport answers -32601 (RULE TWO) and Codex reads a
+        // refused request as a refusal, reporting "user rejected MCP tool
+        // call" about a user who was never asked. Watched happen on a real
+        // session, with the tool correctly listed the whole time.
+        default_tools_approval_mode: "approve",
+        url: "https://mcp.linear.app/mcp",
+        http_headers: { Authorization: "Bearer managed" },
+      },
+    },
+  });
+});
+
+test("the translation names Codex's fields, not the contract's", () => {
+  // `sse` IS SENT AS `url` TOO: Codex has one HTTP client and picks the
+  // transport from what the server answers. There is no `sse` key to set, and
+  // inventing one would be the unknown-key failure that kept this unbuilt.
+  expect(codexMcpServers([mcp("events", { transport: "sse", url: "https://mcp.example.com/sse" })])).toEqual({
+    events: { default_tools_approval_mode: "approve", url: "https://mcp.example.com/sse" },
+  });
+  // Empty collections are dropped rather than sent as empty, for the same
+  // reason `config` itself is omitted when there is nothing to say.
+  expect(codexMcpServers([mcp("bare", { transport: "stdio", command: "node", args: [], env: {} })])).toEqual({
+    bare: { default_tools_approval_mode: "approve", command: "node" },
+  });
+  expect(codexMcpServers([])).toBeUndefined();
+  expect(codexMcpServers(undefined)).toBeUndefined();
 });
 
 test("a resumed turn resumes the thread and never opens a second one", async () => {

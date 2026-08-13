@@ -20,18 +20,19 @@
  *     an Agent SDK `betas` flag and an inline `settings.fastMode` — and the
  *     app-server exposes no equivalent. `DriverRun` carries them and this driver
  *     ignores them; the cockpit only offers them on a Claude session.
- *   - NO USER-CONFIGURED MCP SERVERS, and this one is a real gap rather than a
- *     scoping choice. `DriverRun.mcpServers` arrives here and is not used: the
- *     app-server owns its own MCP registry through `~/.codex/config.toml` and
- *     its `mcpServer/*` methods, and the shape its `thread/start` `config`
- *     overlay accepts for servers is not something this driver can verify
- *     against anything. Guessing it would fail the whole turn on an unknown
- *     key. A Codex session therefore sees the servers Codex itself is
- *     configured with, and the cockpit's MCP settings say so rather than
- *     implying otherwise.
+ * WHAT THIS FILE USED TO SAY IT COULD NOT DO, and how that was settled. The
+ * header here claimed user-configured MCP servers were unreachable — "the shape
+ * its `thread/start` `config` overlay accepts for servers is not something this
+ * driver can verify against anything. Guessing it would fail the whole turn on
+ * an unknown key." Every clause of that was reasonable and the conclusion was
+ * false, because nobody had asked the binary. `codex app-server
+ * generate-json-schema` publishes the overlay, and a real MCP server driven
+ * through it starts and lists its tools. `codexMcpServers` below carries the
+ * measurement. The lesson is cheaper than the bug: the app-server ships its own
+ * schema and will answer questions about itself.
  */
 import crypto from "node:crypto";
-import type { ItemDetail, ItemSeed, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage } from "./codex/items";
 import type { DriverRun, DriverResult, TurnDriver } from "./driver";
@@ -134,6 +135,94 @@ export function codexSandboxPolicy(sandbox: CodexThreadConfig["sandbox"], cwd: s
   };
 }
 
+/**
+ * The user's MCP servers in the shape `codex app-server` accepts.
+ *
+ * A TRANSLATION, NOT A PASS-THROUGH, exactly as `claudeMcpServers` is on the
+ * other seam. Codex names its fields after `~/.codex/config.toml`'s own
+ * `RawMcpServerConfig` — `url`, `http_headers`, `startup_timeout_sec` — and the
+ * contract's `McpServerSpec` is deliberately not that shape.
+ *
+ * WHY THIS EXISTS NOW, having been documented as impossible: the file's header
+ * used to say the overlay's shape "is not something this driver can verify
+ * against anything. Guessing it would fail the whole turn on an unknown key."
+ * That was an honest statement of what was known and it was wrong, and the way
+ * it was found to be wrong is the point — the binary was asked instead of
+ * reasoned about. `codex app-server generate-json-schema` publishes
+ * `ThreadStartParams.config` as a free-form object, and driving a real MCP
+ * server through it showed all four shapes reaching `ready` with their tools
+ * listed under the thread:
+ *
+ *     stdio (command/args)         ready · tools=["ping"] · auth=unsupported
+ *     http (url)                   ready · tools=["ping"] · auth=unsupported
+ *     http + bearer_token_env_var  ready · tools=["ping"] · auth=bearerToken
+ *     http + http_headers          ready · tools=["ping"] · auth=bearerToken
+ *
+ * THE OVERLAY TRAVELS ON STDIN, WHICH IS WHY HEADERS MAY GO IN IT. t3 code
+ * injects its own browser-control server as `-c mcp_servers.t3-code.url=…` and
+ * is then forced to pass the token as `bearer_token_env_var`, because an argv is
+ * world-readable through `ps` to every process running as this user — including
+ * the sandboxed shells of the agent sessions. `thread/start`'s `config` has no
+ * such exposure, so a token can be sent directly and the transport keeps this
+ * file's own rule: `codex app-server` is still spawned with exactly one
+ * argument, forever.
+ *
+ * SSE IS SENT AS `url` TOO. Codex has one HTTP client and picks the transport
+ * from what the server answers; there is no separate `sse` key to set, and
+ * inventing one would be the unknown-key failure the old comment feared.
+ */
+export function codexMcpServers(servers: McpServer[] | undefined): Record<string, Record<string, unknown>> | undefined {
+  if (!servers?.length) return undefined;
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const server of servers) {
+    const shared = { default_tools_approval_mode: MCP_TOOL_APPROVAL };
+    if (server.spec.transport === "stdio") {
+      out[server.id] = {
+        ...shared,
+        command: server.spec.command,
+        ...(server.spec.args?.length ? { args: server.spec.args } : {}),
+        ...(server.spec.env && Object.keys(server.spec.env).length > 0 ? { env: server.spec.env } : {}),
+      };
+      continue;
+    }
+    out[server.id] = {
+      ...shared,
+      url: server.spec.url,
+      ...(server.spec.headers && Object.keys(server.spec.headers).length > 0 ? { http_headers: server.spec.headers } : {}),
+    };
+  }
+  return out;
+}
+
+/**
+ * WITHOUT THIS, EVERY INJECTED TOOL IS UNUSABLE — and it fails in the way that
+ * looks most like the model's own decision.
+ *
+ * Codex asks its CLIENT before running a model-initiated MCP tool call, and it
+ * asks with a request this driver does not recognise. `codexApprovalRequest`
+ * knows two generations of file-change and command-execution approvals and
+ * nothing else, so the request falls through to the transport's RULE TWO reply
+ * — `-32601`, sent so the app-server is never left waiting — and Codex reads a
+ * refused request as a refusal. The turn then reports `user rejected MCP tool
+ * call`, naming a user who was never asked. Watched happen twice, on a real
+ * session, against a real server, with the tool correctly listed in the
+ * catalogue the whole time.
+ *
+ * `approve` IS THE HONEST VALUE HERE, not the convenient one. The enum is
+ * `auto | prompt | writes | approve` (the app-server names all four when it
+ * rejects a fifth). Anything that asks produces the failure above, because
+ * there is no channel to answer on.
+ *
+ * WHAT THIS COSTS, SAID PLAINLY: an MCP tool call in a Codex session is
+ * RECORDED but not GATED. It arrives as an `mcp_tool_call` row like any other
+ * and the engine's own posture still bounds the shell and the filesystem around
+ * it, but `autoResolution` never sees it and could not decline it. The moment
+ * the app-server exposes this approval as a request `codexApprovalRequest` can
+ * recognise, this constant should become `prompt` and the decision should move
+ * back to the engine, where every other one lives.
+ */
+const MCP_TOOL_APPROVAL = "approve";
+
 const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchApproval"]);
 
 const dropUndefined = (env: Record<string, string | undefined>): Record<string, string> => {
@@ -174,6 +263,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       attachments,
       providerSessionId,
       env: instanceEnv,
+      mcpServers: userMcpServers,
       onObservations,
       onRequest,
     }: DriverRun): Promise<DriverResult> {
@@ -432,10 +522,12 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
          * `developerInstructions` and `config` are absent rather than empty
          * because an explicit `dynamicTools: []` states "this client has no
          * tools", which is a different sentence from saying nothing — and a
-         * resumed thread that says it LOSES the tools it started with. vNext
-         * declares none of the three today; the rule is written down here so
-         * whoever adds the first one adds it conditionally.
+         * resumed thread that says it LOSES the tools it started with. So
+         * `config` carries `mcp_servers` only when there ARE servers: a session
+         * with none must say nothing rather than declare an empty registry,
+         * which would read as "forget the ones in config.toml".
          */
+        const mcpServers = codexMcpServers(userMcpServers);
         const threadParams = {
           cwd,
           approvalPolicy: threadConfig.approvalPolicy,
@@ -443,6 +535,11 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           sandbox: threadConfig.sandbox,
           model,
           ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
+          // OVERLAID ON `~/.codex/config.toml`, NOT REPLACING IT: a Codex user
+          // keeps the servers they configured for the CLI and gains the ones
+          // Telar knows about. A shared id means Telar's wins for this thread,
+          // which is the same shadowing rule the two Telar scopes already use.
+          ...(mcpServers ? { config: { mcp_servers: mcpServers } } : {}),
         };
         const thread = providerSessionId
           ? await client.request<{ thread?: { id?: string } }>("thread/resume", {
