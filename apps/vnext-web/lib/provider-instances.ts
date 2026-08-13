@@ -89,10 +89,28 @@ export function providerSummary(probe: ProviderProbe | undefined): { headline: s
   }
 }
 
-/** `v` prefixed once, whatever the CLI reported. */
+/**
+ * The version number out of whatever line the CLI printed.
+ *
+ * `--version` DOES NOT RETURN A VERSION, it returns a sentence, and the two
+ * installed harnesses do not agree on its shape: Claude answers
+ * `2.1.229 (Claude Code)` and Codex answers `codex-cli 0.145.0`. A rule that
+ * merely prefixed `v` when the string did not start with one produced
+ * `vcodex-cli 0.145.0`, which is how this was found — by looking at the row,
+ * not by a test.
+ *
+ * So the number is EXTRACTED rather than the line decorated: the first
+ * dotted-numeric run becomes `v1.2.3`, and the product name beside it is
+ * dropped because the row already says which provider this is. A line with no
+ * number in it is passed through untouched — a build id like `nightly-20260813`
+ * is still the most useful thing that could be shown.
+ */
 export function versionLabel(version: string | undefined): string | null {
   if (!version) return null;
-  return version.startsWith("v") ? version : `v${version}`;
+  const trimmed = version.trim();
+  if (!trimmed) return null;
+  const number = /\d+(?:\.\d+)+/.exec(trimmed);
+  return number ? `v${number[0]}` : trimmed;
 }
 
 /**

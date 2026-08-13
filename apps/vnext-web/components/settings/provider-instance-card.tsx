@@ -126,6 +126,39 @@ function AccentPicker({ value, onChange }: { value?: string; onChange: (next: st
   );
 }
 
+/** The shell's own rule, mirrored from the contract so a name that cannot be
+ *  exported is refused here rather than round-tripped to a 400. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Which of these draft rows are worth sending.
+ *
+ * A HALF-TYPED ROW IS NOT A CHANGE. Adding a variable puts an empty row on
+ * screen, and publishing that immediately is what this used to do — the engine
+ * refused the empty name and the card showed "provider instance environment is
+ * invalid" before the user had typed a character. Found by pressing the button,
+ * not by a test.
+ *
+ * So: a wholly empty row is DROPPED (it is a row somebody is about to fill in),
+ * a row with a name that is not a legal variable name SUSPENDS the publish
+ * entirely (mid-typing, and sending the rest would silently delete the row
+ * being edited), and everything else goes.
+ */
+export function publishableEnv(rows: readonly ProviderInstanceEnvVar[]): ProviderInstanceEnvVar[] | null {
+  const out: ProviderInstanceEnvVar[] = [];
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!ENV_NAME.test(name)) {
+      // Empty and untouched: nothing to say about it yet. Anything else means
+      // the user is mid-edit, and the whole list waits for them.
+      if (name === "" && row.value === "" && !row.sensitive) continue;
+      return null;
+    }
+    out.push({ ...row, name });
+  }
+  return out;
+}
+
 /**
  * The environment this instance's provider process runs with.
  *
@@ -133,14 +166,26 @@ function AccentPicker({ value, onChange }: { value?: string; onChange: (next: st
  * and leaving the field empty keeps whatever is stored — which is why clearing
  * a secret means removing the row, not blanking it. A blank field is
  * indistinguishable from "I did not retype my key".
+ *
+ * THE ROWS ARE LOCAL, and the parent re-keys this editor whenever the SERVER's
+ * copy changes, so a saved edit reseeds from what was actually kept. Without a
+ * local draft there is nowhere for a row to exist between "add" and "named".
  */
 function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange: (next: ProviderInstanceEnvVar[]) => void }) {
+  const [rows, setRows] = useState<ProviderInstanceEnvVar[]>(env);
+
+  const publish = (next: ProviderInstanceEnvVar[]) => {
+    setRows(next);
+    const ready = publishableEnv(next);
+    if (ready) onChange(ready);
+  };
+
   const patch = (index: number, next: Partial<ProviderInstanceEnvVar>) =>
-    onChange(env.map((variable, at) => (at === index ? { ...variable, ...next } : variable)));
+    publish(rows.map((variable, at) => (at === index ? { ...variable, ...next } : variable)));
 
   return (
     <div className="space-y-1.5">
-      {env.map((variable, index) => (
+      {rows.map((variable, index) => (
         <div key={index} className="flex items-center gap-1.5">
           <BlurInput
             value={variable.name}
@@ -178,7 +223,7 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
             variant="ghost"
             size="icon-sm"
             aria-label={`Remove ${variable.name || `variable ${index + 1}`}`}
-            onClick={() => onChange(env.filter((_, at) => at !== index))}
+            onClick={() => publish(rows.filter((_, at) => at !== index))}
           >
             <XIcon className="size-3" />
           </Button>
@@ -188,7 +233,10 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
         variant="ghost"
         size="sm"
         className="h-7 text-xs text-muted-foreground"
-        onClick={() => onChange([...env, { name: "", value: "", sensitive: false }])}
+        // Local only, on purpose: an empty row is not a change, and
+        // publishing one is what produced "environment is invalid" before the
+        // user had typed a character.
+        onClick={() => setRows([...rows, { name: "", value: "", sensitive: false }])}
       >
         <PlusIcon className="size-3" /> Add variable
       </Button>
@@ -380,7 +428,19 @@ export function ProviderInstanceCard({
             <div>
               <span className="text-xs font-medium text-foreground">Environment variables</span>
               <div className="mt-1.5">
-                <EnvEditor env={instance.env} onChange={(env) => onPatch({ env })} />
+                  {/*
+                  RE-KEYED ON `updatedAt`, NOT ON THE ENV ITSELF.
+                  A saved edit has to reseed this draft from what the engine
+                  actually kept — a secret comes back as `{ value: "",
+                  valueRedacted: true }` — and keying on the env's own shape
+                  looked equivalent and was not: REPLACING a stored secret
+                  produces a byte-identical record, so nothing changed, nothing
+                  remounted, and the field went on showing the token that had
+                  just been filed away. Found by typing one and looking.
+                  `updatedAt` moves on every accepted write, which is exactly
+                  the event that should reset the draft.
+                */}
+                <EnvEditor key={instance.updatedAt} env={instance.env} onChange={(env) => onPatch({ env })} />
               </div>
             </div>
 

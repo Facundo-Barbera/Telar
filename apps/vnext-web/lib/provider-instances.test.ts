@@ -77,10 +77,19 @@ test("a switched-off instance is muted, not amber", () => {
   expect(STATUS_DOT.error).toBe("bg-destructive");
 });
 
-test("the version label is prefixed exactly once", () => {
-  expect(versionLabel("2.1.0")).toBe("v2.1.0");
+test("the version is extracted from whatever sentence the CLI printed", () => {
+  // BOTH OF THESE ARE REAL OUTPUT from the installed harnesses, and they do not
+  // agree on a shape. The earlier rule — prefix `v` unless it starts with one —
+  // rendered the second as `vcodex-cli 0.145.0`, which is what driving the page
+  // showed and no test had asked about.
+  expect(versionLabel("2.1.229 (Claude Code)")).toBe("v2.1.229");
+  expect(versionLabel("codex-cli 0.145.0")).toBe("v0.145.0");
   expect(versionLabel("v2.1.0")).toBe("v2.1.0");
+  // No number to find: pass it through rather than invent one. A build id is
+  // still the most useful thing that could be shown.
+  expect(versionLabel("nightly-build")).toBe("nightly-build");
   expect(versionLabel(undefined)).toBeNull();
+  expect(versionLabel("   ")).toBeNull();
 });
 
 describe("displayNameOf", () => {
