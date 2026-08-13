@@ -11,6 +11,8 @@ import {
   classifyGhFailure,
   classifyMergeFailure,
   classifyProjectFailure,
+  listArgv,
+  MAX_FACET_VALUES,
   MAX_THREAD_COMMENTS,
   mergePull,
   parseChecks,
@@ -22,6 +24,7 @@ import {
   parsePullDetail,
   parsePulls,
   parseReviews,
+  readForgeFacets,
   readGitHub,
   readIssue,
   readPull,
@@ -245,7 +248,7 @@ describe("which rows a list read asks for", () => {
   test("a state PER KIND, because `merged` is not a state an issue can be in", async () => {
     // One shared filter would put a control on the Issues surface that always
     // answers nothing.
-    const seen = await argvFor({ issueState: "closed", pullState: "merged" });
+    const seen = await argvFor({ issues: { state: "closed", labels: [] }, pulls: { state: "merged", labels: [] } });
     const state = (verb: string) => {
       const args = seen.find((entry) => entry[0] === verb && entry[1] === "list" && entry.includes("--state"))!;
       return args[args.indexOf("--state") + 1];
@@ -254,17 +257,152 @@ describe("which rows a list read asks for", () => {
     expect(state("pr")).toBe("merged");
   });
 
-  test("the snapshot echoes back which rows these are", async () => {
-    // A surface showing forty closed issues must be able to say so. Without this it
-    // would have to trust that the answer matches the filter it last sent, which a
-    // thirty-second cache makes untrue.
+  test("the snapshot echoes back the WHOLE filter, not just the state", async () => {
+    // A surface showing four rows must be able to say why there are four, and one
+    // showing none must be able to say whether that is an empty repository or a
+    // filter nobody can see. Without the echo it would have to trust that the answer
+    // matches what it last sent, which a thirty-second cache makes untrue.
     const snapshot = await readGitHub(
       runner({ issue: ok("[]"), pr: ok("[]"), repo: ok(JSON.stringify({ nameWithOwner: "o/r" })) }),
       "/repo",
       () => 1,
-      { issueState: "all", pullState: "closed" },
+      { issues: { state: "all", milestone: "v2", assignee: "ada", labels: ["bug"] }, pulls: { state: "closed", labels: [] } },
     );
-    expect(snapshot).toMatchObject({ issueState: "all", pullState: "closed" });
+    expect(snapshot.issueFilter).toEqual({ state: "all", milestone: "v2", assignee: "ada", labels: ["bug"] });
+    expect(snapshot.pullFilter).toEqual({ state: "closed", labels: [] });
+  });
+});
+
+describe("listArgv", () => {
+  test("every filter becomes the flag `gh` has for it", () => {
+    expect(listArgv("issue", { state: "closed", milestone: "v2", assignee: "@me", author: "ada", labels: ["bug", "web"] }, "number")).toEqual([
+      "issue",
+      "list",
+      "--state",
+      "closed",
+      "--limit",
+      "50",
+      "--milestone",
+      "v2",
+      "--assignee",
+      "@me",
+      "--author",
+      "ada",
+      // REPEATED, not comma-joined: a GitHub label may contain a comma, and
+      // `--label "a,b"` asks for one label named `a,b` — which somebody can create.
+      "--label",
+      "bug",
+      "--label",
+      "web",
+      "--json",
+      "number",
+    ]);
+  });
+
+  test("MILESTONE IS DROPPED FOR PULL REQUESTS, because gh has no such flag there", () => {
+    // Passing it would make gh fail on a flag this cockpit chose, which reads to the
+    // user as "GitHub is broken".
+    const argv = listArgv("pr", { state: "open", milestone: "v2", labels: [] } as never, "number");
+    expect(argv).not.toContain("--milestone");
+    expect(argv).toEqual(["pr", "list", "--state", "open", "--limit", "50", "--json", "number"]);
+  });
+
+  test("an unfiltered read sends no filter flags at all", () => {
+    expect(listArgv("issue", { state: "open", labels: [] }, "f")).toEqual(["issue", "list", "--state", "open", "--limit", "50", "--json", "f"]);
+  });
+
+  test("THE BOARD CALL USES THE SAME FILTER as its rows", async () => {
+    /**
+     * Boards are folded onto rows BY NUMBER, so a board call filtered differently
+     * would attach one issue's boards to another's — silently, and only on a
+     * repository where the two result sets differ.
+     */
+    const seen: string[][] = [];
+    await readGitHub(
+      async (_cwd, args) => {
+        seen.push(args);
+        return args[0] === "repo" ? ok(JSON.stringify({ nameWithOwner: "o/r" })) : ok("[]");
+      },
+      "/repo",
+      () => 1,
+      { issues: { state: "all", milestone: "v2", labels: ["bug"] }, pulls: { state: "open", labels: [] } },
+    );
+    const issueCalls = seen.filter((args) => args[0] === "issue");
+    expect(issueCalls).toHaveLength(2);
+    // Identical but for the field list.
+    const withoutFields = (args: string[]) => args.slice(0, args.indexOf("--json"));
+    expect(withoutFields(issueCalls[0]!)).toEqual(withoutFields(issueCalls[1]!));
+    expect(withoutFields(issueCalls[0]!)).toContain("--milestone");
+  });
+});
+
+describe("readForgeFacets", () => {
+  const facetRunner = (replies: Partial<Record<"milestones" | "assignees" | "user" | "label", GhResult>>): GhRunner =>
+    async (_cwd, args) => {
+      if (args[0] === "label") return replies.label ?? ok("[]");
+      const path = args[1] ?? "";
+      if (path.startsWith("repos/{owner}/{repo}/milestones")) return replies.milestones ?? ok("[]");
+      if (path.startsWith("repos/{owner}/{repo}/assignees")) return replies.assignees ?? ok("[]");
+      if (path === "user") return replies.user ?? ok("{}");
+      return failed("unexpected");
+    };
+
+  test("reads the four lists a filter menu needs", async () => {
+    const facets = await readForgeFacets(
+      facetRunner({
+        milestones: ok(JSON.stringify([{ title: "v2", open_issues: 4, closed_issues: 9 }, { title: "" }])),
+        label: ok(JSON.stringify([{ name: "bug", color: "d73a4a" }])),
+        assignees: ok(JSON.stringify([{ login: "ada" }, { login: "" }])),
+        user: ok(JSON.stringify({ login: "grace" })),
+      }),
+      "/repo",
+      () => 42,
+    );
+    expect(facets).toEqual({
+      viewer: "grace",
+      // A milestone with no title is dropped: it cannot be named on a chip and
+      // `gh --milestone ""` is not a filter.
+      milestones: [{ title: "v2", open: 4, closed: 9 }],
+      labels: [{ name: "bug", color: "d73a4a" }],
+      assignees: ["ada"],
+      readAt: 42,
+    });
+  });
+
+  test("EVERY LIST FAILS ALONE, and none of them is a failure of the others", async () => {
+    // A repository with no milestones, a token that cannot list who is assignable,
+    // and a gh that cannot answer are three situations that mean the same thing to a
+    // menu: there is nothing to offer. None is a reason to break the others.
+    const facets = await readForgeFacets(
+      facetRunner({
+        milestones: failed("HTTP 404"),
+        assignees: failed("HTTP 403"),
+        label: ok(JSON.stringify([{ name: "bug" }])),
+        user: failed("HTTP 401"),
+      }),
+      "/repo",
+      () => 1,
+    );
+    expect(facets.milestones).toEqual([]);
+    expect(facets.assignees).toEqual([]);
+    expect(facets.viewer).toBeUndefined();
+    // The one that worked still worked.
+    expect(facets.labels).toEqual([{ name: "bug" }]);
+  });
+
+  test("output the parsers cannot read is empty, not a throw", async () => {
+    const facets = await readForgeFacets(
+      facetRunner({ milestones: ok("<html>"), label: ok("<html>"), assignees: ok("{}"), user: ok("<html>") }),
+      "/repo",
+      () => 1,
+    );
+    expect(facets).toMatchObject({ milestones: [], labels: [], assignees: [] });
+  });
+
+  test("the lists are capped, because nobody scrolls a hundred-item menu", async () => {
+    const many = Array.from({ length: MAX_FACET_VALUES + 20 }, (_unused, at) => ({ title: `m${at}`, open_issues: 0, closed_issues: 0 }));
+    const facets = await readForgeFacets(facetRunner({ milestones: ok(JSON.stringify(many)) }), "/repo", () => 1);
+    expect(facets.milestones).toHaveLength(MAX_FACET_VALUES);
   });
 });
 

@@ -238,6 +238,37 @@ export const STATUS_TONE: Record<ForgeStatus, "active" | "done" | "none" | "info
 };
 
 /**
+ * WHAT A FILTER IS NARROWING BY, as removable chips.
+ *
+ * A HIDDEN FILTER THAT RETURNS NOTHING LOOKS LIKE AN EMPTY REPOSITORY. That is the
+ * failure this exists to prevent: choose a milestone, come back tomorrow, see zero
+ * rows and conclude the project has no issues. Every narrowing beyond the state has
+ * to be visible without opening the menu that set it, and removable where it sits.
+ *
+ * THE STATE IS NOT ONE OF THESE. It is always set to something, it is always shown
+ * on the trigger, and there is no "no state" to clear it to — a chip for it would be
+ * a chip that cannot be removed.
+ */
+export type ForgeFilterChip = { key: string; label: string; clear: "milestone" | "assignee" | "author" | "label"; value?: string };
+
+export function filterChips(filter: { milestone?: string; assignee?: string; author?: string; labels: readonly string[] }): ForgeFilterChip[] {
+  const chips: ForgeFilterChip[] = [];
+  if (filter.milestone) chips.push({ key: `m:${filter.milestone}`, label: filter.milestone, clear: "milestone" });
+  // `@me` is `gh`'s own token and reads as jargon on a chip; the surface passes the
+  // viewer's login in so this can say who that is.
+  if (filter.assignee) chips.push({ key: `a:${filter.assignee}`, label: `@${filter.assignee}`, clear: "assignee" });
+  if (filter.author) chips.push({ key: `w:${filter.author}`, label: `by ${filter.author}`, clear: "author" });
+  for (const label of filter.labels) chips.push({ key: `l:${label}`, label, clear: "label", value: label });
+  return chips;
+}
+
+/** Whether anything beyond the state is narrowing the list — what the trigger shows
+ *  a count for, so a collapsed menu still admits it is filtering. */
+export function activeFilterCount(filter: { milestone?: string; assignee?: string; author?: string; labels: readonly string[] }): number {
+  return filterChips(filter).length;
+}
+
+/**
  * ONE CONVERSATION, IN ORDER.
  *
  * The detail view used to draw three separate lists — the body, then every review,

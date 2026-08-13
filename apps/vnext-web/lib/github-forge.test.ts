@@ -9,8 +9,10 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  activeFilterCount,
   buildForgeTimeline,
   checkHeadline,
+  filterChips,
   checkSummary,
   issueStatus,
   mergeReadiness,
@@ -149,6 +151,37 @@ describe("pullStatus", () => {
     // it, when in fact nobody is going to.
     expect(pullStatus({ state: "CLOSED", isDraft: true })).toBe("closed");
     expect(pullStatus({ state: "OPEN", isDraft: true })).toBe("draft");
+  });
+});
+
+describe("filterChips", () => {
+  test("every narrowing beyond the state gets a removable chip", () => {
+    // A HIDDEN FILTER THAT RETURNS NOTHING LOOKS LIKE AN EMPTY REPOSITORY: pick a
+    // milestone, come back tomorrow, see zero rows, conclude the project is done.
+    const chips = filterChips({ milestone: "v2", assignee: "ada", author: "grace", labels: ["bug", "web"] });
+    expect(chips.map((chip) => chip.label)).toEqual(["v2", "@ada", "by grace", "bug", "web"]);
+    expect(activeFilterCount({ milestone: "v2", assignee: "ada", author: "grace", labels: ["bug", "web"] })).toBe(5);
+  });
+
+  test("THE STATE IS NOT A CHIP", () => {
+    // It is always set to something, it is always shown on the trigger, and there is
+    // no "no state" to clear it to — a chip for it could not be removed.
+    expect(filterChips({ labels: [] })).toEqual([]);
+    expect(activeFilterCount({ labels: [] })).toBe(0);
+  });
+
+  test("a label chip carries its value, because clearing one must not clear the others", () => {
+    const chips = filterChips({ labels: ["bug", "web"] });
+    expect(chips.map((chip) => [chip.clear, chip.value])).toEqual([
+      ["label", "bug"],
+      ["label", "web"],
+    ]);
+  });
+
+  test("two labels with the same name as a milestone stay distinct", () => {
+    // The keys are React keys; a collision drops a chip silently.
+    const chips = filterChips({ milestone: "bug", labels: ["bug"] });
+    expect(new Set(chips.map((chip) => chip.key)).size).toBe(2);
   });
 });
 

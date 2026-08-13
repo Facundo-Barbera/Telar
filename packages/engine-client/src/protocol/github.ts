@@ -57,6 +57,77 @@ export const GitHubPullListState = z.enum(["open", "closed", "merged", "all"]);
 export type GitHubPullListState = z.infer<typeof GitHubPullListState>;
 
 /**
+ * The narrowing a list read carries, beyond which states.
+ *
+ * ONE OBJECT RATHER THAN FIVE LOOSE PARAMETERS, because it is also the CACHE KEY:
+ * the engine holds a read for thirty seconds, and a key that missed one field
+ * would answer "assigned to me" from a cache of everybody's. As a shape it can be
+ * normalised and stringified in one place, and it can be echoed back on the
+ * snapshot so a surface showing four rows can say why there are four.
+ *
+ * EVERY FIELD IS A `gh` FLAG, and only flags `gh` actually has. `--assignee` and
+ * `--author` take ONE value each, so these are single rather than arrays; `--label`
+ * repeats and ANDs, which is why labels is a list.
+ */
+const forgeFilterFields = {
+  /** A login, or `@me` — which `gh` resolves itself, so this cockpit never has to
+   *  know who you are to ask "what is mine". */
+  assignee: z.string().min(1).optional(),
+  author: z.string().min(1).optional(),
+  /** ANDed by `gh`: three labels means rows carrying all three. */
+  labels: z.array(z.string().min(1)),
+};
+
+export const GitHubIssueFilter = z.object({
+  state: GitHubIssueListState,
+  /** A milestone TITLE (or its number — `gh` takes either). Issues only: `gh pr
+   *  list` has no `--milestone` flag, so offering one on pull requests would be a
+   *  control that cannot work. */
+  milestone: z.string().min(1).optional(),
+  ...forgeFilterFields,
+});
+export type GitHubIssueFilter = z.infer<typeof GitHubIssueFilter>;
+
+export const GitHubPullFilter = z.object({
+  state: GitHubPullListState,
+  ...forgeFilterFields,
+});
+export type GitHubPullFilter = z.infer<typeof GitHubPullFilter>;
+
+export const GitHubMilestone = z.object({
+  title: z.string().min(1),
+  /** How much is left in it, and how much is done. A milestone with nothing open
+   *  is worth showing differently from one with forty. */
+  open: z.number().int().nonnegative(),
+  closed: z.number().int().nonnegative(),
+});
+export type GitHubMilestone = z.infer<typeof GitHubMilestone>;
+
+/**
+ * What there is to filter BY, in this repository.
+ *
+ * READ SEPARATELY AND LAZILY. These change on the timescale of a sprint, not of a
+ * page view, so they are cached far longer than a list read and are only fetched
+ * when somebody opens the filter menu — which means a reader who never filters
+ * pays nothing for the feature.
+ *
+ * EACH LIST FAILS ALONE. A repository with no milestones and a repository whose
+ * milestones cannot be read both answer `[]`; neither is a failure of the others,
+ * and none of them is a failure of the list itself.
+ */
+export const GitHubFacets = z.object({
+  /** The login `gh` is signed in as, so "assigned to me" can name the account it
+   *  means rather than asking the reader to trust `@me`. */
+  viewer: z.string().min(1).optional(),
+  milestones: z.array(GitHubMilestone),
+  labels: z.array(GitHubLabel),
+  /** Who CAN be assigned here, which is a longer list than who is. Capped. */
+  assignees: z.array(z.string()),
+  readAt: Timestamp,
+});
+export type GitHubFacets = z.infer<typeof GitHubFacets>;
+
+/**
  * The fields a LIST row carries, beyond its number and title.
  *
  * WHAT IS HERE IS WHAT A ROW CAN SHOW WITHOUT A SECOND READ. Status, who it is
@@ -135,11 +206,17 @@ export const GitHubSnapshot = z.object({
   repository: z.string().min(1).optional(),
   issues: z.array(GitHubIssue),
   pulls: z.array(GitHubPullRequest),
-  /** WHICH ROWS THIS IS, echoed back. A surface showing forty closed issues must
-   *  be able to say so; without this it would have to trust that the answer
-   *  matches the filter it last sent, which a cache makes untrue. */
-  issueState: GitHubIssueListState,
-  pullState: GitHubPullListState,
+  /**
+   * WHICH ROWS THESE ARE, echoed back in full.
+   *
+   * A surface showing four rows has to be able to say why there are four, and a
+   * surface showing none has to be able to say whether that is an empty repository
+   * or a filter nobody can see. Without this echo it would have to trust that the
+   * answer matches the filter it last sent — which a thirty-second cache and an
+   * in-flight refresh both make untrue.
+   */
+  issueFilter: GitHubIssueFilter,
+  pullFilter: GitHubPullFilter,
   /**
    * Why the board column is empty, when it is.
    *
@@ -405,3 +482,77 @@ export const GitHubMergeResult = z.union([
   z.object({ merged: z.literal(false), refusal: GitHubMergeRefusal, message: z.string().min(1).optional() }),
 ]);
 export type GitHubMergeResult = z.infer<typeof GitHubMergeResult>;
+
+// ── the wire encoding of a filter ───────────────────────────────────────────
+
+/**
+ * The query string for a filtered list read.
+ *
+ * EXPORTED AND SHARED, because the cockpit's own adapter builds the same string for
+ * its own route and two hand-written copies of this would drift on the first filter
+ * anybody adds. `Label` REPEATS rather than being comma-joined: a GitHub label may
+ * contain a comma, and joining would ask for a label nobody has.
+ */
+export function forgeQuery(options: { refresh?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter }): string {
+  const query = new URLSearchParams();
+  if (options.refresh) query.set("refresh", "1");
+  if (options.issues) {
+    query.set("issues", options.issues.state);
+    if (options.issues.milestone) query.set("issueMilestone", options.issues.milestone);
+    if (options.issues.assignee) query.set("issueAssignee", options.issues.assignee);
+    if (options.issues.author) query.set("issueAuthor", options.issues.author);
+    for (const label of options.issues.labels) query.append("issueLabel", label);
+  }
+  if (options.pulls) {
+    query.set("pulls", options.pulls.state);
+    if (options.pulls.assignee) query.set("pullAssignee", options.pulls.assignee);
+    if (options.pulls.author) query.set("pullAuthor", options.pulls.author);
+    for (const label of options.pulls.labels) query.append("pullLabel", label);
+  }
+  return query.size > 0 ? `?${query.toString()}` : "";
+}
+
+/**
+ * The other half of `forgeQuery`, and it lives here for one measured reason.
+ *
+ * THE PARAMETERS WERE SILENTLY DROPPED. The cockpit built this query correctly, the
+ * engine parsed it correctly, and the Next adapter in between forwarded only
+ * `refresh` — so choosing a milestone typechecked, passed every test, made a request
+ * with the milestone in it, and returned every issue in the repository. Found by
+ * driving it and reading the dev server's own log.
+ *
+ * A builder and a parser in one file cannot drift; a builder in the contract and a
+ * parser hand-written in each of two proxies drift on the first filter anybody adds.
+ *
+ * INVALID IS REFUSED, NOT COERCED. An unknown state throws, because `gh` would fail
+ * on the flag and report it as GitHub being broken. Everything else is free text —
+ * a login, a milestone title, a label — and `gh` is the one that decides whether it
+ * matches anything.
+ */
+export function parseForgeQuery(params: URLSearchParams): { refresh: boolean; issues: GitHubIssueFilter; pulls: GitHubPullFilter } {
+  const value = (name: string) => {
+    const raw = params.get(name)?.trim();
+    return raw ? raw : undefined;
+  };
+  const labels = (prefix: string) => params.getAll(`${prefix}Label`).filter((label) => label.trim().length > 0);
+  const issueState = params.get("issues") ?? "open";
+  const pullState = params.get("pulls") ?? "open";
+  if (!["open", "closed", "all"].includes(issueState)) throw new Error("issue state must be open, closed or all");
+  if (!["open", "closed", "merged", "all"].includes(pullState)) throw new Error("pull request state must be open, closed, merged or all");
+  return {
+    refresh: params.get("refresh") === "1",
+    issues: {
+      state: issueState as GitHubIssueFilter["state"],
+      ...(value("issueMilestone") ? { milestone: value("issueMilestone")! } : {}),
+      ...(value("issueAssignee") ? { assignee: value("issueAssignee")! } : {}),
+      ...(value("issueAuthor") ? { author: value("issueAuthor")! } : {}),
+      labels: labels("issue"),
+    },
+    pulls: {
+      state: pullState as GitHubPullFilter["state"],
+      ...(value("pullAssignee") ? { assignee: value("pullAssignee")! } : {}),
+      ...(value("pullAuthor") ? { author: value("pullAuthor")! } : {}),
+      labels: labels("pull"),
+    },
+  };
+}

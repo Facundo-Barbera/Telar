@@ -47,15 +47,31 @@ import {
   MilestoneIcon,
   RotateCwIcon,
   SquareKanbanIcon,
+  TagIcon,
   UserRoundIcon,
+  XIcon,
 } from "lucide-react";
-import type { GitHubIssue, GitHubIssueListState, GitHubPullListState, GitHubPullRequest, GitHubSnapshot } from "@telar/engine-client";
+import type { GitHubFacets, GitHubIssue, GitHubIssueFilter, GitHubPullFilter, GitHubPullRequest, GitHubSnapshot } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { fmtAgo } from "@/lib/format";
-import { issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeStatus } from "@/lib/github-forge";
+import { filterChips, issueStatus, pullStatus, STATUS_LABEL, STATUS_TONE, UNAVAILABLE, type ForgeFilterChip, type ForgeStatus } from "@/lib/github-forge";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { PanelEmpty, PanelRow } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -112,6 +128,37 @@ const PULL_GLYPH: Record<ForgeStatus, typeof CircleDotIcon> = {
   completed: GitMergeIcon,
   abandoned: GitPullRequestClosedIcon,
 };
+
+/**
+ * WHAT THIS SURFACE IS ASKING FOR.
+ *
+ * ONE TYPE FOR BOTH KINDS, with the widest state and the milestone that only issues
+ * have — because the surface is one component and branching its whole state shape on
+ * `kind` would double every handler below. What travels to the engine is narrowed
+ * per kind at the call, where `gh`'s actual flags are.
+ */
+type Filter = { state: GitHubIssueFilter["state"] | GitHubPullFilter["state"]; milestone?: string; assignee?: string; author?: string; labels: string[] };
+
+/**
+ * A facet submenu's three states, in one place.
+ *
+ * EMPTY AND STILL-LOADING ARE DIFFERENT, and a submenu that showed nothing for both
+ * would say "this repository has no milestones" about a network call in flight. A
+ * facet read that FAILED lands here as empty too — which is honest for a menu, since
+ * there is nothing to offer either way, and the list itself is unaffected.
+ */
+function FacetList({ loading, empty, children }: { loading: boolean; empty: string; children?: React.ReactNode }) {
+  const has = Array.isArray(children) ? children.some(Boolean) : Boolean(children);
+  if (loading && !has) {
+    return (
+      <p className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">
+        <Spinner className="size-3" /> asking gh…
+      </p>
+    );
+  }
+  if (!has) return <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">{empty}</p>;
+  return <>{children}</>;
+}
 
 const TONE_TEXT: Record<ReturnType<typeof statusTone>, string> = {
   active: "text-primary",
@@ -345,13 +392,24 @@ export function GitHubSurface({
   const [error, setError] = useState<string>();
   const [refreshing, setRefreshing] = useState(false);
   /**
-   * WHICH ROWS THIS SURFACE ASKED FOR.
+   * WHAT THIS SURFACE ASKED FOR.
    *
-   * Held per surface rather than shared: the Issues tab showing open work while
-   * the Pull requests tab shows everything that ever merged is a perfectly
-   * ordinary arrangement, and one filter for both would make it impossible.
+   * Held per surface rather than shared: the Issues tab showing open work assigned
+   * to you while the Pull requests tab shows everything that ever merged is a
+   * perfectly ordinary arrangement, and one filter for both would make it
+   * impossible.
    */
-  const [state, setState] = useState<GitHubIssueListState | GitHubPullListState>("open");
+  const [filter, setFilter] = useState<Filter>({ state: "open", labels: [] });
+  /**
+   * WHAT THERE IS TO FILTER BY, fetched when the menu first opens.
+   *
+   * LAZY ON PURPOSE. It is four more network calls against somebody else's rate
+   * limit, and a reader who never opens the menu should never spend them. Once
+   * fetched it is cached in the engine for five minutes, so opening the menu again
+   * costs nothing.
+   */
+  const [facets, setFacets] = useState<GitHubFacets>();
+  const [loadingFacets, setLoadingFacets] = useState(false);
 
   const load = useCallback(
     async (force = false) => {
@@ -363,7 +421,9 @@ export function GitHubSurface({
               ...(force ? { refresh: true } : {}),
               // Only this surface's own filter travels; the other list keeps the
               // engine's default, and its own surface asks again when opened.
-              ...(kind === "issues" ? { issueState: state as GitHubIssueListState } : { pullState: state as GitHubPullListState }),
+              ...(kind === "issues"
+                ? { issues: filter as GitHubIssueFilter }
+                : { pulls: { state: filter.state as GitHubPullFilter["state"], ...(filter.assignee ? { assignee: filter.assignee } : {}), ...(filter.author ? { author: filter.author } : {}), labels: filter.labels } }),
             })
           ).github,
         );
@@ -372,8 +432,39 @@ export function GitHubSurface({
         setError(cause instanceof VNextApiError ? cause.message : "The engine did not answer.");
       }
     },
-    [projectId, kind, state],
+    [projectId, kind, filter],
   );
+
+  /** Asked once, when the menu opens. A failure is silent: the menu still offers
+   *  the states, which is the filter that needs no list of values. */
+  const openFacets = useCallback(
+    (open: boolean) => {
+      if (!open || facets || loadingFacets || !projectId) return;
+      setLoadingFacets(true);
+      void api
+        .projectForgeFacets(projectId)
+        .then((read) => setFacets(read.facets))
+        .catch(() => undefined)
+        .finally(() => setLoadingFacets(false));
+    },
+    [facets, loadingFacets, projectId],
+  );
+
+  /** Setting a facet REPLACES it and clears nothing else; `undefined` removes it.
+   *  A label toggles, because `gh` ANDs repeated labels and that is what the
+   *  checkbox in the menu means. */
+  const choose = (patch: Partial<Filter>) => setFilter((current) => ({ ...current, ...patch }));
+  const toggleLabel = (label: string) =>
+    setFilter((current) => ({
+      ...current,
+      labels: current.labels.includes(label) ? current.labels.filter((entry) => entry !== label) : [...current.labels, label],
+    }));
+  const clearChip = (chip: ForgeFilterChip) =>
+    setFilter((current) =>
+      chip.clear === "label"
+        ? { ...current, labels: current.labels.filter((entry) => entry !== chip.value) }
+        : { ...current, [chip.clear]: undefined },
+    );
 
   useEffect(() => {
     // ONCE, ON OPEN, and again when the filter changes — which is a person asking,
@@ -386,7 +477,8 @@ export function GitHubSurface({
   const label = kind === "issues" ? "issues" : "pull requests";
   const Icon = kind === "issues" ? CircleDotIcon : GitPullRequestIcon;
   const options = STATES[kind];
-  const chosen = options.find((entry) => entry.id === state) ?? options[0];
+  const chosen = options.find((entry) => entry.id === filter.state) ?? options[0];
+  const chips = filterChips(filter);
 
   if (error) {
     return (
@@ -413,38 +505,152 @@ export function GitHubSurface({
 
   const rows = kind === "issues" ? snapshot.issues : snapshot.pulls;
   const alreadyOpen = new Set(openNumbers ?? []);
-  /** The filter the ROWS were read under, not the one the picker is showing: a
-   *  refresh in flight means those two disagree for a moment, and the count has to
-   *  describe what is on screen. */
-  const shown = kind === "issues" ? snapshot.issueState : snapshot.pullState;
+  /** The filter the ROWS were read under, not the one the menu is showing: a read
+   *  in flight means those two disagree for a moment, and the sentence under an
+   *  empty list has to describe what produced it. */
+  const shown = kind === "issues" ? snapshot.issueFilter : snapshot.pullFilter;
+  const shownChips = filterChips(shown);
 
   return (
     <div className="flex flex-col">
       <div className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-[11px] text-muted-foreground">
-        {/* THE FILTER, first, because it is the thing that decides what the count
-            beside it means. A dropdown rather than a row of pills: at 320px four
-            pills and a count do not fit, and the one you chose is the only one
-            worth showing. */}
-        <DropdownMenu>
+        {/**
+         * ONE MENU FOR EVERY NARROWING, with the state at the top level and the
+         * facets in submenus. A row of pills does not fit in 320px once there are
+         * four states and three facets, and the thing worth showing on the trigger is
+         * what you chose rather than what you could choose.
+         *
+         * `onOpenChange` IS WHAT FETCHES THE FACETS, which is why they are free for
+         * anybody who never opens this.
+         */}
+        <DropdownMenu onOpenChange={openFacets}>
           <DropdownMenuTrigger
             render={
               <button
                 type="button"
-                aria-label={`Which ${label} to show`}
-                title={`Which ${label} to show`}
+                aria-label={`Filter ${label}`}
+                title={`Filter ${label}`}
                 className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-muted hover:text-foreground"
               />
             }
           >
             <ListFilterIcon className="size-3" />
             <span>{chosen.label}</span>
+            {/* A COUNT ON THE TRIGGER, so a collapsed menu still admits it is
+                narrowing. The chips below say by what. */}
+            {chips.length > 0 && (
+              <span className="rounded-full bg-primary/15 px-1 font-mono text-[9px] leading-4 text-primary">{chips.length}</span>
+            )}
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-40">
-            {options.map((option) => (
-              <DropdownMenuItem key={option.id} onClick={() => setState(option.id)}>
-                <span className="truncate">{option.label}</span>
-              </DropdownMenuItem>
-            ))}
+          <DropdownMenuContent align="start" className="w-56">
+            {/* THE LABEL LIVES INSIDE THE GROUP IT NAMES. A label at depth zero is
+                not associated with anything for a screen reader, which this
+                repository has a test for — see ui/dropdown-menu.test.ts. */}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Show</DropdownMenuLabel>
+              <DropdownMenuRadioGroup value={filter.state} onValueChange={(next) => choose({ state: next as Filter["state"] })}>
+                {options.map((option) => (
+                  <DropdownMenuRadioItem key={option.id} value={option.id}>
+                    {option.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuGroup>
+
+            <DropdownMenuSeparator />
+
+            {/* MILESTONE IS ISSUES-ONLY. `gh pr list` has no `--milestone` flag, so
+                offering it here would be a control that cannot work. */}
+            {kind === "issues" && (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <MilestoneIcon />
+                  <span className="flex-1 truncate">Milestone</span>
+                  <span className="max-w-24 truncate text-muted-foreground">{filter.milestone ?? "any"}</span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="w-56">
+                  <FacetList loading={loadingFacets} empty="This repository has no milestones.">
+                    {facets?.milestones.length ? (
+                      <DropdownMenuRadioGroup
+                        value={filter.milestone ?? ""}
+                        onValueChange={(next) => choose({ milestone: next || undefined })}
+                      >
+                        <DropdownMenuRadioItem value="">Any milestone</DropdownMenuRadioItem>
+                        {facets.milestones.map((milestone) => (
+                          <DropdownMenuRadioItem key={milestone.title} value={milestone.title}>
+                            <span className="flex-1 truncate">{milestone.title}</span>
+                            {/* What is LEFT in it, which is the number that decides
+                                whether the milestone is worth opening. */}
+                            <span className="ml-1 shrink-0 font-mono text-[9px] text-muted-foreground tabular-nums">{milestone.open}</span>
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    ) : null}
+                  </FacetList>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            )}
+
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <UserRoundIcon />
+                <span className="flex-1 truncate">Assignee</span>
+                <span className="max-w-24 truncate text-muted-foreground">{filter.assignee ?? "anyone"}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-56">
+                <FacetList loading={loadingFacets} empty="Nobody can be assigned here, or gh could not say who.">
+                  <DropdownMenuRadioGroup value={filter.assignee ?? ""} onValueChange={(next) => choose({ assignee: next || undefined })}>
+                    <DropdownMenuRadioItem value="">Anyone</DropdownMenuRadioItem>
+                    {/* THE VIEWER FIRST AND BY NAME. "assigned to me" is the filter
+                        people actually want, and naming the account says which one
+                        gh is signed in as — worth knowing before you trust it. */}
+                    {facets?.viewer && <DropdownMenuRadioItem value={facets.viewer}>{facets.viewer} · me</DropdownMenuRadioItem>}
+                    {(facets?.assignees ?? [])
+                      .filter((login) => login !== facets?.viewer)
+                      .map((login) => (
+                        <DropdownMenuRadioItem key={login} value={login}>
+                          <span className="truncate">{login}</span>
+                        </DropdownMenuRadioItem>
+                      ))}
+                  </DropdownMenuRadioGroup>
+                </FacetList>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <TagIcon />
+                <span className="flex-1 truncate">Labels</span>
+                <span className="shrink-0 text-muted-foreground">{filter.labels.length > 0 ? filter.labels.length : "any"}</span>
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto">
+                <FacetList loading={loadingFacets} empty="This repository has no labels.">
+                  {/* CHECKBOXES, because `gh` ANDs repeated `--label` flags — two
+                      ticks means rows carrying both, which is what a reader expects
+                      of two ticks. */}
+                  {(facets?.labels ?? []).map((entry) => (
+                    <DropdownMenuCheckboxItem
+                      key={entry.name}
+                      checked={filter.labels.includes(entry.name)}
+                      onCheckedChange={() => toggleLabel(entry.name)}
+                      closeOnClick={false}
+                    >
+                      <span className="truncate">{entry.name}</span>
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </FacetList>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+
+            {chips.length > 0 && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setFilter({ state: filter.state, labels: [] })}>
+                  <XIcon />
+                  Clear filters
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         <span className="min-w-0 truncate">
@@ -468,11 +674,40 @@ export function GitHubSurface({
         </button>
       </div>
 
+      {/**
+       * WHAT IS NARROWING THIS LIST, visible without opening the menu that set it.
+       *
+       * The failure this prevents: pick a milestone, come back tomorrow, see no rows
+       * and conclude the repository is empty. Each chip removes its own filter, which
+       * is faster than reopening a submenu to unset one thing.
+       *
+       * Drawn from the filter the ROWS were read under, not the one being edited, so
+       * it never describes a narrowing that has not been applied yet.
+       */}
+      {shownChips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 border-b border-border px-4 py-1.5">
+          {shownChips.map((chip) => (
+            <button
+              key={chip.key}
+              type="button"
+              onClick={() => clearChip(chip)}
+              title={`Stop filtering by ${chip.label}`}
+              className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 py-0 text-[9px] text-muted-foreground transition-colors hover:border-destructive/40 hover:text-foreground"
+            >
+              <span className="truncate">{chip.label}</span>
+              <XIcon className="size-2.5 shrink-0" />
+            </button>
+          ))}
+        </div>
+      )}
+
       {rows.length === 0 ? (
         <p className="px-4 py-6 text-center text-[11px] leading-snug text-muted-foreground">
-          {shown === "open"
-            ? `Nothing open. Closed ${label} are one click away in the filter above.`
-            : `No ${label} match that filter in this repository.`}
+          {shownChips.length > 0
+            ? `Nothing matches those filters. Remove one above, or clear them all from the menu.`
+            : shown.state === "open"
+              ? `Nothing open. Closed ${label} are one click away in the filter above.`
+              : `No ${label} in this repository match that.`}
         </p>
       ) : (
         <>

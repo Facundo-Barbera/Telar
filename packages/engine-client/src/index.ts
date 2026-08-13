@@ -12,11 +12,13 @@ import {
   EngineDiscovery,
   type BrowserSnapshot,
   type GitCommitEntry,
-  type GitHubIssueListState,
+  forgeQuery,
+  type GitHubFacets,
+  type GitHubIssueFilter,
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
-  type GitHubPullListState,
+  type GitHubPullFilter,
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
@@ -177,16 +179,22 @@ export class EngineClient {
    */
   projectGitHub(
     projectId: string,
-    options: { refresh?: boolean; issueState?: GitHubIssueListState; pullState?: GitHubPullListState } = {},
+    options: { refresh?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {},
   ): Promise<{ github: GitHubSnapshot }> {
-    const query = new URLSearchParams();
-    if (options.refresh) query.set("refresh", "1");
-    // A state PER KIND: `merged` is not a state an issue can be in, so one shared
-    // filter would put a control on the Issues surface that always returns nothing.
-    if (options.issueState) query.set("issues", options.issueState);
-    if (options.pullState) query.set("pulls", options.pullState);
-    const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${suffix}`);
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${forgeQuery(options)}`);
+  }
+
+  /**
+   * What there is to filter by in this repository — milestones, labels, who can be
+   * assigned, and the login `gh` is signed in as.
+   *
+   * ITS OWN ROUTE AND ITS OWN CACHE, five minutes rather than thirty seconds: these
+   * change on the timescale of a sprint. Nothing asks for it until a filter menu
+   * opens, so a reader who never filters never pays for it.
+   */
+  projectForgeFacets(projectId: string, options: { refresh?: boolean } = {}): Promise<{ facets: GitHubFacets }> {
+    const suffix = options.refresh ? "?refresh=1" : "";
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/facets${suffix}`);
   }
 
   /**

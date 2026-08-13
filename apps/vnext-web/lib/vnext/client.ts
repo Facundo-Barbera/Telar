@@ -1,11 +1,12 @@
 import type {
   BrowserSnapshot,
   GitCommitEntry,
-  GitHubIssueListState,
+  GitHubFacets,
+  GitHubIssueFilter,
   GitHubIssueRead,
   GitHubMergeMethod,
   GitHubMergeResult,
-  GitHubPullListState,
+  GitHubPullFilter,
   GitHubPullRead,
   GitHubSnapshot,
   GitignoreResult,
@@ -33,6 +34,7 @@ import type {
   WorkspaceListing,
   WorkspaceWriteResult,
 } from "@telar/engine-client";
+import { forgeQuery } from "@telar/engine-client";
 
 /**
  * DERIVED FROM THE CONTRACT, not re-listed beside it. This union used to be ten
@@ -93,18 +95,20 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
     /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
      *  `refresh` is what the button sends, and nothing else may send it. */
-    projectGitHub: (
-      projectId: string,
-      options: { refresh?: boolean; issueState?: GitHubIssueListState; pullState?: GitHubPullListState } = {},
-    ) => {
-      const query = new URLSearchParams();
-      if (options.refresh) query.set("refresh", "1");
-      // A state per kind: `merged` is not a state an issue can be in.
-      if (options.issueState) query.set("issues", options.issueState);
-      if (options.pullState) query.set("pulls", options.pullState);
-      const suffix = query.size > 0 ? `?${query.toString()}` : "";
-      return request<{ github: GitHubSnapshot }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/github${suffix}`);
-    },
+    projectGitHub: (projectId: string, options: { refresh?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}) =>
+      // `forgeQuery` is the CONTRACT's own builder, not a second copy: the engine
+      // route parses these names, and two hand-written versions of the same query
+      // string would drift on the first filter anybody adds.
+      request<{ github: GitHubSnapshot }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/github${forgeQuery(options)}`),
+    /** What there is to filter by. Asked only when a filter menu opens, and cached
+     *  for five minutes in the engine — milestones change on the timescale of a
+     *  sprint. */
+    projectForgeFacets: (projectId: string, options: { refresh?: boolean } = {}) =>
+      request<{ facets: GitHubFacets }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/facets${options.refresh ? "?refresh=1" : ""}`,
+      ),
     /** Ignore Telar's own files in a project's repository. No body: the rules are
      *  the engine's, so this cannot be used to append arbitrary lines to a file in
      *  somebody's checkout. */

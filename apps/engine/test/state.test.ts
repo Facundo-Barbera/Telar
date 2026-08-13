@@ -577,13 +577,59 @@ test("WHICH ROWS is part of the cache key, so a filter cannot be answered by the
   });
   store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
 
-  await store.projectGitHub("project_one", { issueState: "open", pullState: "open" });
+  const open = { state: "open" as const, labels: [] };
+  await store.projectGitHub("project_one", { issues: open, pulls: open });
   expect(calls).toBe(5);
-  await store.projectGitHub("project_one", { issueState: "open", pullState: "all" });
+  await store.projectGitHub("project_one", { issues: open, pulls: { state: "all", labels: [] } });
   expect(calls).toBe(10);
   // And the first combination is still cached, so going back is free.
-  await store.projectGitHub("project_one", { issueState: "open", pullState: "open" });
+  await store.projectGitHub("project_one", { issues: open, pulls: open });
   expect(calls).toBe(10);
+
+  // EVERY FIELD IS IN THE KEY, not just the state: a milestone filter answered from
+  // a cache of everybody's issues is a filter that silently does nothing.
+  await store.projectGitHub("project_one", { issues: { state: "open", milestone: "v2", labels: [] }, pulls: open });
+  expect(calls).toBe(15);
+  await store.projectGitHub("project_one", { issues: { state: "open", assignee: "@me", labels: [] }, pulls: open });
+  expect(calls).toBe(20);
+
+  // BUT LABELS IN A DIFFERENT ORDER ARE THE SAME QUESTION. `gh` ANDs them, so
+  // without normalising, picking `bug` then `web` and `web` then `bug` would spend
+  // two network reads to get identical rows.
+  await store.projectGitHub("project_one", { issues: { state: "open", labels: ["bug", "web"] }, pulls: open });
+  expect(calls).toBe(25);
+  await store.projectGitHub("project_one", { issues: { state: "open", labels: ["web", "bug"] }, pulls: open });
+  expect(calls).toBe(25);
+});
+
+test("what there is to FILTER BY is its own cache, and a longer one", async () => {
+  // Milestones and labels change on the timescale of a sprint, not of a page view,
+  // and nothing asks for them until a filter menu opens.
+  let calls = 0;
+  let clock = 1_000;
+  const store = new EngineStore(root(), () => clock, {
+    git: () => ({ status: 0, stdout: "", stderr: "" }),
+    gh: async (_cwd, args) => {
+      calls += 1;
+      return { status: 0, stdout: args[0] === "label" ? "[]" : args[1] === "user" ? "{}" : "[]", stderr: "" };
+    },
+  });
+  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+
+  await store.projectForgeFacets("project_one");
+  expect(calls).toBe(4);
+  await store.projectForgeFacets("project_one");
+  expect(calls).toBe(4);
+
+  // Past the LIST cache's thirty seconds and still fresh — this is the whole point
+  // of it being separate.
+  clock += 60_000;
+  await store.projectForgeFacets("project_one");
+  expect(calls).toBe(4);
+
+  clock += 5 * 60_000;
+  await store.projectForgeFacets("project_one");
+  expect(calls).toBe(8);
 });
 
 test("a token with no read:project is asked ONCE, then left alone", async () => {

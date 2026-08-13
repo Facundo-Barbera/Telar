@@ -25,11 +25,12 @@ import {
   type BrowserSnapshot,
   type BrowserTab,
   type GitCommitEntry,
-  type GitHubIssueListState,
+  type GitHubFacets,
+  type GitHubIssueFilter,
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
-  type GitHubPullListState,
+  type GitHubPullFilter,
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
@@ -66,7 +67,17 @@ import {
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { ensureTelarGitignore } from "./gitignore";
-import { defaultGhRunner, mergePull, readGitHub, readIssue, readPull, type GhRunner } from "./github";
+import {
+  DEFAULT_ISSUE_FILTER,
+  DEFAULT_PULL_FILTER,
+  defaultGhRunner,
+  mergePull,
+  readForgeFacets,
+  readGitHub,
+  readIssue,
+  readPull,
+  type GhRunner,
+} from "./github";
 import { readModelCatalogue } from "./models";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
 
@@ -191,6 +202,10 @@ const GITHUB_CACHE_MS = 30_000;
 /** Longer than the GitHub cache because the read is heavier — a whole
  *  subprocess — and the answer changes far less often. */
 const MODEL_CACHE_MS = 5 * 60_000;
+
+/** Milestones and labels change on the timescale of a sprint, not of a page view,
+ *  so what there is to FILTER BY is held far longer than the rows themselves. */
+const FACET_CACHE_MS = 5 * 60_000;
 
 export type EngineStatePaths = {
   root: string;
@@ -529,6 +544,9 @@ export class EngineStore {
    * so the refresh button is the way back.
    */
   private noProjectScope = false;
+  /** What there is to filter by, per project. In memory like every cache here: it
+   *  describes somebody else's repository settings. */
+  private readonly facetCache = new Map<string, GitHubFacets>();
   /** In memory, like the GitHub cache and for the same reason: it describes
    *  somebody else's installation, which changes without telling us. */
   private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
@@ -735,8 +753,21 @@ export class EngineStore {
    * to all would be answered instantly from a cache of open ones — a filter that
    * silently does nothing for thirty seconds, which is worse than a slow one.
    */
-  private githubKey(projectId: string, issueState: GitHubIssueListState, pullState: GitHubPullListState): string {
-    return `${projectId}:${issueState}:${pullState}`;
+  private githubKey(projectId: string, issues: GitHubIssueFilter, pulls: GitHubPullFilter): string {
+    /**
+     * NORMALISED, so two spellings of the same question share one cache entry —
+     * labels chosen in a different order are the same filter, and `gh` ANDs them
+     * regardless. Without the sort, picking `bug` then `web` and `web` then `bug`
+     * would spend two network reads to get the same rows.
+     */
+    const shape = (filter: GitHubIssueFilter | GitHubPullFilter) => ({
+      state: filter.state,
+      milestone: (filter as GitHubIssueFilter).milestone ?? "",
+      assignee: filter.assignee ?? "",
+      author: filter.author ?? "",
+      labels: [...filter.labels].sort(),
+    });
+    return `${projectId}:${JSON.stringify([shape(issues), shape(pulls)])}`;
   }
 
   /**
@@ -756,19 +787,19 @@ export class EngineStore {
 
   async projectGitHub(
     projectId: string,
-    options: { force?: boolean; issueState?: GitHubIssueListState; pullState?: GitHubPullListState } = {},
+    options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {},
   ): Promise<GitHubSnapshot> {
     const project = this.getProject(projectId);
-    const issueState = options.issueState ?? "open";
-    const pullState = options.pullState ?? "open";
-    const key = this.githubKey(project.id, issueState, pullState);
+    const issues = options.issues ?? DEFAULT_ISSUE_FILTER;
+    const pulls = options.pulls ?? DEFAULT_PULL_FILTER;
+    const key = this.githubKey(project.id, issues, pulls);
     const cached = this.githubCache.get(key);
     if (cached && !options.force && this.now() - cached.readAt < GITHUB_CACHE_MS) return structuredClone(cached);
     // Once a token has said it has no `read:project`, stop paying two network calls
     // per read to be told again. A forced read clears the verdict, so adding the
     // scope and pressing refresh is all it takes to get boards back.
     const skipProjects = this.noProjectScope && !options.force;
-    const snapshot = await readGitHub(this.gh, project.root, this.now, { issueState, pullState, ...(skipProjects ? { skipProjects: true } : {}) });
+    const snapshot = await readGitHub(this.gh, project.root, this.now, { issues, pulls, ...(skipProjects ? { skipProjects: true } : {}) });
     if (snapshot.projectsUnavailable === "scope") this.noProjectScope = true;
     else if (snapshot.projectsUnavailable === undefined && options.force) this.noProjectScope = false;
     /**
@@ -784,6 +815,23 @@ export class EngineStore {
     const answer = skipProjects && this.noProjectScope ? { ...snapshot, projectsUnavailable: "scope" as const } : snapshot;
     this.githubCache.set(key, answer);
     return structuredClone(answer);
+  }
+
+  /**
+   * What there is to filter by in a project's repository.
+   *
+   * CACHED FIVE TIMES LONGER THAN A LIST READ, because milestones and labels change
+   * on the timescale of a sprint rather than of a page view — the same reason the
+   * model catalogue gets five minutes. Only asked when a client opens a filter menu,
+   * so a reader who never filters never pays for this at all.
+   */
+  async projectForgeFacets(projectId: string, options: { force?: boolean } = {}): Promise<GitHubFacets> {
+    const project = this.getProject(projectId);
+    const cached = this.facetCache.get(project.id);
+    if (cached && !options.force && this.now() - cached.readAt < FACET_CACHE_MS) return structuredClone(cached);
+    const facets = await readForgeFacets(this.gh, project.root, this.now);
+    this.facetCache.set(project.id, facets);
+    return structuredClone(facets);
   }
 
   /**

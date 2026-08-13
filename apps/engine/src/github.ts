@@ -28,15 +28,17 @@ import type {
   GitHubCheck,
   GitHubComment,
   GitHubDetailUnavailable,
+  GitHubFacets,
   GitHubIssue,
   GitHubIssueDetail,
-  GitHubIssueListState,
+  GitHubIssueFilter,
   GitHubIssueRead,
   GitHubMergeMethod,
   GitHubMergeRefusal,
   GitHubMergeResult,
+  GitHubMilestone,
   GitHubPullDetail,
-  GitHubPullListState,
+  GitHubPullFilter,
   GitHubPullRead,
   GitHubPullRequest,
   GitHubReview,
@@ -280,6 +282,35 @@ export function classifyProjectFailure(result: GhResult): "scope" | "failed" {
   return `${result.stderr}\n${result.stdout}`.toLowerCase().includes("read:project") ? "scope" : "failed";
 }
 
+export const DEFAULT_ISSUE_FILTER: GitHubIssueFilter = { state: "open", labels: [] };
+export const DEFAULT_PULL_FILTER: GitHubPullFilter = { state: "open", labels: [] };
+
+/**
+ * The argv for one list read.
+ *
+ * SHARED BY THE ROW CALL AND THE BOARD CALL, which is not a tidiness point: the
+ * boards are folded onto rows BY NUMBER, so a board call filtered differently from
+ * its rows would attach one issue's boards to another's. One builder, one filter,
+ * two `--json` field sets.
+ *
+ * `--label` REPEATS, everything else is single — `gh` takes one assignee and one
+ * author, and it ANDs repeated labels. A label containing a comma is why this
+ * repeats the flag instead of joining: `--label "a,b"` asks for one label named
+ * `a,b`, which is a real label somebody can create.
+ */
+export function listArgv(kind: "issue" | "pr", filter: GitHubIssueFilter | GitHubPullFilter, fields: string): string[] {
+  const argv = [kind, "list", "--state", filter.state, "--limit", String(GITHUB_PAGE_SIZE)];
+  const milestone = (filter as GitHubIssueFilter).milestone;
+  // Issues only. `gh pr list` has no `--milestone`, and passing one would make gh
+  // fail on a flag this cockpit chose rather than on anything the reader did.
+  if (kind === "issue" && milestone) argv.push("--milestone", milestone);
+  if (filter.assignee) argv.push("--assignee", filter.assignee);
+  if (filter.author) argv.push("--author", filter.author);
+  for (const label of filter.labels) argv.push("--label", label);
+  argv.push("--json", fields);
+  return argv;
+}
+
 /**
  * One read of a project's issues and pull requests.
  *
@@ -298,21 +329,16 @@ export async function readGitHub(
   gh: GhRunner,
   cwd: string,
   now: () => number = Date.now,
-  options: { issueState?: GitHubIssueListState; pullState?: GitHubPullListState; skipProjects?: boolean } = {},
+  options: { issues?: GitHubIssueFilter; pulls?: GitHubPullFilter; skipProjects?: boolean } = {},
 ): Promise<GitHubSnapshot> {
-  const issueState = options.issueState ?? "open";
-  const pullState = options.pullState ?? "open";
-  const page = String(GITHUB_PAGE_SIZE);
+  const issueFilter = options.issues ?? DEFAULT_ISSUE_FILTER;
+  const pullFilter = options.pulls ?? DEFAULT_PULL_FILTER;
   const [issues, pulls, repo, issueBoards, pullBoards] = await Promise.all([
-    gh(cwd, ["issue", "list", "--state", issueState, "--limit", page, "--json", ISSUE_FIELDS]),
-    gh(cwd, ["pr", "list", "--state", pullState, "--limit", page, "--json", PULL_FIELDS]),
+    gh(cwd, listArgv("issue", issueFilter, ISSUE_FIELDS)),
+    gh(cwd, listArgv("pr", pullFilter, PULL_FIELDS)),
     gh(cwd, ["repo", "view", "--json", "nameWithOwner"]),
-    options.skipProjects
-      ? Promise.resolve(undefined)
-      : gh(cwd, ["issue", "list", "--state", issueState, "--limit", page, "--json", "number,projectItems"]),
-    options.skipProjects
-      ? Promise.resolve(undefined)
-      : gh(cwd, ["pr", "list", "--state", pullState, "--limit", page, "--json", "number,projectItems"]),
+    options.skipProjects ? Promise.resolve(undefined) : gh(cwd, listArgv("issue", issueFilter, "number,projectItems")),
+    options.skipProjects ? Promise.resolve(undefined) : gh(cwd, listArgv("pr", pullFilter, "number,projectItems")),
   ]);
 
   const repository = (() => {
@@ -368,12 +394,105 @@ export async function readGitHub(
     ...(repository ? { repository } : {}),
     issues: withBoards(issueRead.rows, issueBoardRead.items),
     pulls: withBoards(pullRead.rows, pullBoardRead.items),
-    issueState,
-    pullState,
+    issueFilter,
+    pullFilter,
     ...(projectsUnavailable ? { projectsUnavailable } : {}),
     ...(failure ? { unavailable: failure.unavailable, ...(failure.message ? { message: failure.message } : {}) } : {}),
     readAt: now(),
   };
+}
+
+// ── what there is to filter by ─────────────────────────────────────────────
+
+/**
+ * How many milestones, labels and assignable people one facet read carries.
+ *
+ * A hundred is past the point where a menu is a menu — nobody scrolls a
+ * hundred-item dropdown — and it is `gh`'s own page size, so asking for it costs
+ * one request rather than pagination. A repository with more than this many labels
+ * has a labelling problem the panel cannot fix.
+ */
+export const MAX_FACET_VALUES = 100;
+
+/** `gh api` answers an ARRAY here, unlike the `--json` readers above. Anything that
+ *  is not one is treated as "could not ask", which is the same as "none" for a
+ *  filter menu — the list itself is unaffected either way. */
+function apiArray(result: GhResult): Record<string, unknown>[] {
+  if (result.status !== 0) return [];
+  try {
+    const parsed: unknown = JSON.parse(result.stdout);
+    return Array.isArray(parsed) ? (parsed as Record<string, unknown>[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function parseMilestones(result: GhResult): GitHubMilestone[] {
+  return apiArray(result)
+    .flatMap((row) => {
+      const title = text(row.title);
+      if (!title) return [];
+      const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
+      return [{ title, open: count(row.open_issues), closed: count(row.closed_issues) }];
+    })
+    .slice(0, MAX_FACET_VALUES);
+}
+
+/**
+ * What there is to filter by.
+ *
+ * FOUR CALLS, CONCURRENTLY, AND EVERY ONE OF THEM MAY FAIL ALONE. A repository with
+ * no milestones, a token that cannot list who is assignable, and a `gh` that cannot
+ * answer at all are three different situations and all three come back as an empty
+ * list — because for a filter MENU they mean the same thing, and none of them is a
+ * reason to break the list the menu belongs to.
+ *
+ * `gh api` FOR MILESTONES AND ASSIGNEES because `gh` has no first-class command for
+ * either; `gh label list` exists and is used. The `{owner}/{repo}` placeholders are
+ * `gh`'s own — it resolves them from the checkout, so this never has to parse a
+ * remote URL.
+ */
+export async function readForgeFacets(gh: GhRunner, cwd: string, now: () => number = Date.now): Promise<GitHubFacets> {
+  const page = `per_page=${MAX_FACET_VALUES}`;
+  const [milestones, labels, assignees, viewer] = await Promise.all([
+    gh(cwd, ["api", `repos/{owner}/{repo}/milestones?state=all&${page}`]),
+    gh(cwd, ["label", "list", "--limit", String(MAX_FACET_VALUES), "--json", "name,color"]),
+    gh(cwd, ["api", `repos/{owner}/{repo}/assignees?${page}`]),
+    gh(cwd, ["api", "user"]),
+  ]);
+
+  const viewerLogin = (() => {
+    if (viewer.status !== 0) return undefined;
+    try {
+      return login(JSON.parse(viewer.stdout));
+    } catch {
+      return undefined;
+    }
+  })();
+
+  return {
+    ...(viewerLogin ? { viewer: viewerLogin } : {}),
+    milestones: parseMilestones(milestones),
+    labels: parseLabelList(labels),
+    assignees: apiArray(assignees)
+      .flatMap((row) => {
+        const name = text(row.login);
+        return name ? [name] : [];
+      })
+      .slice(0, MAX_FACET_VALUES),
+    readAt: now(),
+  };
+}
+
+/** `gh label list --json name,color` answers the same shape a row's labels do, so
+ *  the same parser applies — one definition of "a label with no name is not one". */
+export function parseLabelList(result: GhResult) {
+  if (result.status !== 0) return [];
+  try {
+    return labels(JSON.parse(result.stdout)).slice(0, MAX_FACET_VALUES);
+  } catch {
+    return [];
+  }
 }
 
 // ── one issue, one pull request ─────────────────────────────────────────────

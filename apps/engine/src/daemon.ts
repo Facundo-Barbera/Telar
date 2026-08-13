@@ -8,6 +8,7 @@ import path from "node:path";
 import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
+  parseForgeQuery,
   RequestOpenInput,
   TurnModelSelection,
   type EngineDiscovery,
@@ -330,24 +331,36 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
       if (request.method === "GET" && projectGitHub) {
         /**
-         * A STATE PER KIND, because `merged` is not a state an issue can be in.
-         * Anything else is refused rather than passed to `gh --state`, which would
-         * fail with its own message about a flag this client chose.
+         * PARSED BY THE CONTRACT, so the builder and the reader of this query string
+         * are the same file. Two hand-written parsers is how the cockpit's own
+         * adapter came to forward `refresh` and silently drop every filter.
+         *
+         * A bad state throws a plain Error from the parser — `gh` would fail on the
+         * flag and report it as GitHub being broken — and it becomes a 400 here,
+         * which is the one thing the parser cannot know how to do.
          */
-        const issueState = url.searchParams.get("issues") ?? "open";
-        const pullState = url.searchParams.get("pulls") ?? "open";
-        if (!["open", "closed", "all"].includes(issueState)) {
-          throw new HttpError(400, "invalid_request", "issue state must be open, closed or all");
-        }
-        if (!["open", "closed", "merged", "all"].includes(pullState)) {
-          throw new HttpError(400, "invalid_request", "pull request state must be open, closed, merged or all");
+        let filters;
+        try {
+          filters = parseForgeQuery(url.searchParams);
+        } catch (cause) {
+          throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "invalid filter");
         }
         writeJson(response, 200, {
           github: await store.projectGitHub(decodeURIComponent(projectGitHub[1]), {
-            force: url.searchParams.get("refresh") === "1",
-            issueState: issueState as "open" | "closed" | "all",
-            pullState: pullState as "open" | "closed" | "merged" | "all",
+            force: filters.refresh,
+            issues: filters.issues,
+            pulls: filters.pulls,
           }),
+        });
+        return;
+      }
+      /** What there is to filter by. Its own route because it is its own cache — see
+       *  `projectForgeFacets` — and because nothing asks for it until somebody opens
+       *  a filter menu. */
+      const projectFacets = /^\/v2\/projects\/([^/]+)\/github\/facets$/.exec(url.pathname);
+      if (request.method === "GET" && projectFacets) {
+        writeJson(response, 200, {
+          facets: await store.projectForgeFacets(decodeURIComponent(projectFacets[1]), { force: url.searchParams.get("refresh") === "1" }),
         });
         return;
       }

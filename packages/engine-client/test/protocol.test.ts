@@ -15,6 +15,8 @@ import { describe, expect, test } from "bun:test";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
+  forgeQuery,
+  parseForgeQuery,
   EngineEvent,
   Item,
   ItemDetail,
@@ -373,5 +375,55 @@ describe("Warp linkage", () => {
       },
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe("the forge query string", () => {
+  /**
+   * THE ROUND TRIP, PINNED, because a broken one is invisible.
+   *
+   * The bug this exists for: the cockpit built this query correctly, the engine
+   * parsed it correctly, and the Next adapter in between forwarded only `refresh`.
+   * Choosing a milestone typechecked at every layer, passed every test, sent a
+   * request with the milestone in it — and returned every issue in the repository.
+   * Nothing failed. It just did nothing.
+   */
+  test("everything a filter carries survives the trip out and back", () => {
+    const issues = { state: "all" as const, milestone: "Hito 2 · Septiembre", assignee: "@me", author: "ada", labels: ["bug", "área:web"] };
+    const pulls = { state: "merged" as const, assignee: "grace", labels: ["deps"] };
+    const parsed = parseForgeQuery(new URLSearchParams(forgeQuery({ refresh: true, issues, pulls }).slice(1)));
+    expect(parsed.issues).toEqual(issues);
+    expect(parsed.pulls).toEqual(pulls);
+    expect(parsed.refresh).toBe(true);
+  });
+
+  test("a LABEL WITH A COMMA survives, which a joined parameter would not", () => {
+    // `--label "a,b"` asks gh for one label named `a,b`. Somebody can create that
+    // label, so the flag repeats rather than joining.
+    const issues = { state: "open" as const, labels: ["needs: design, maybe", "web"] };
+    const parsed = parseForgeQuery(new URLSearchParams(forgeQuery({ issues }).slice(1)));
+    expect(parsed.issues.labels).toEqual(["needs: design, maybe", "web"]);
+  });
+
+  test("no filters is no query string, and parses to the defaults", () => {
+    expect(forgeQuery({})).toBe("");
+    const parsed = parseForgeQuery(new URLSearchParams(""));
+    expect(parsed).toEqual({ refresh: false, issues: { state: "open", labels: [] }, pulls: { state: "open", labels: [] } });
+  });
+
+  test("a state gh does not have is REFUSED rather than passed on", () => {
+    // gh would fail on the flag and the failure would read as "GitHub is broken".
+    expect(() => parseForgeQuery(new URLSearchParams("issues=merged"))).toThrow(/open, closed or all/);
+    expect(() => parseForgeQuery(new URLSearchParams("pulls=nonsense"))).toThrow(/open, closed, merged or all/);
+    // `merged` IS a pull request state, and only a pull request state.
+    expect(parseForgeQuery(new URLSearchParams("pulls=merged")).pulls.state).toBe("merged");
+  });
+
+  test("blank values are absent rather than empty filters", () => {
+    // `--assignee ""` is a filter nobody meant, and `gh` would match nothing.
+    const parsed = parseForgeQuery(new URLSearchParams("issueAssignee=%20%20&issueLabel=&issueMilestone="));
+    expect(parsed.issues.assignee).toBeUndefined();
+    expect(parsed.issues.milestone).toBeUndefined();
+    expect(parsed.issues.labels).toEqual([]);
   });
 });
