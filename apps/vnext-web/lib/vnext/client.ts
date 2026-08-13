@@ -17,6 +17,7 @@ import type {
   EngineErrorCode,
   EngineEvent,
   EngineHealth,
+  McpOAuthStatus,
   McpServer,
   McpServerSpec,
   ModelSelection,
@@ -346,6 +347,34 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
           ? `/api/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
           : `/api/mcp-servers/${encodeURIComponent(id)}`,
       ),
+    /**
+     * Whether each http server wants a login and whether ours works.
+     *
+     * TWO NETWORK ROUND TRIPS PER SERVER, so this is what a page does when it
+     * opens or when somebody presses refresh — never a poll. It is also why it
+     * is a SEPARATE call from the server list: the list must paint immediately,
+     * and an unreachable server must not hold the whole pane blank.
+     */
+    mcpOAuthStatus: (projectId?: string) =>
+      request<{ statuses: McpOAuthStatus[] }>(
+        fetcher,
+        "GET",
+        projectId ? `/api/mcp/oauth?projectId=${encodeURIComponent(projectId)}` : "/api/mcp/oauth",
+      ),
+    /** Returns the URL to send the browser to. The redirect origin is decided by
+     *  the route from the request, never passed from here — it is the one field
+     *  in an OAuth flow that must not be client-chosen. */
+    connectMcpOAuth: (serverId: string, projectId?: string) =>
+      request<{ authorizationUrl: string }>(fetcher, "POST", "/api/mcp/oauth", {
+        serverId,
+        ...(projectId ? { projectId } : {}),
+      }),
+    disconnectMcpOAuth: (serverId: string, projectId?: string) =>
+      request<{ removed: boolean }>(fetcher, "POST", "/api/mcp/oauth", {
+        action: "disconnect",
+        serverId,
+        ...(projectId ? { projectId } : {}),
+      }),
     /**
      * The configured logins and what the machine says about each, in ONE call —
      * a settings row needs both to render, and two would let it paint a green

@@ -336,6 +336,31 @@ export type TurnAttachment = z.infer<typeof TurnAttachment>;
  * disable-able without being deleted, and it is stored per environment rather
  * than per session — the user configures a tool once, not once per conversation.
  */
+/**
+ * WHAT THE USER MAY PIN ABOUT A SERVER'S OAUTH, and nothing more.
+ *
+ * OAUTH IS DETECTED, NOT DECLARED. The engine asks the server itself — a 401
+ * carrying an RFC 9728 pointer, or a protected-resource-metadata document — so
+ * the absence of this block does NOT mean the server has no OAuth, and its
+ * presence does not turn OAuth on. Every field here is an OVERRIDE for the case
+ * where autodetection cannot get there on its own.
+ *
+ * THERE IS NO CLIENT SECRET, on purpose. Telar registers as a public client and
+ * proves itself with PKCE, which is what OAuth 2.1 asks a native app to do; a
+ * secret shipped to a machine its user administers is not a secret, and storing
+ * one would imply a guarantee this engine cannot make.
+ */
+export const McpOAuthOverrides = z.object({
+  /** Skips protected-resource discovery. For a server that publishes no
+   *  metadata but whose authorization server the user knows. */
+  authorizationServer: z.string().min(1).optional(),
+  /** Pasted from the server's own dashboard, for an authorization server that
+   *  will not register a client on demand. */
+  clientId: z.string().min(1).optional(),
+  scopes: z.array(z.string().min(1)).optional(),
+});
+export type McpOAuthOverrides = z.infer<typeof McpOAuthOverrides>;
+
 export const McpServerSpec = z.discriminatedUnion("transport", [
   z.object({
     transport: z.literal("stdio"),
@@ -345,10 +370,52 @@ export const McpServerSpec = z.discriminatedUnion("transport", [
      *  server still needs PATH and HOME like any other process. */
     env: z.record(z.string(), z.string()).optional(),
   }),
-  z.object({ transport: z.literal("http"), url: z.string().min(1), headers: z.record(z.string(), z.string()).optional() }),
-  z.object({ transport: z.literal("sse"), url: z.string().min(1), headers: z.record(z.string(), z.string()).optional() }),
+  z.object({
+    transport: z.literal("http"),
+    url: z.string().min(1),
+    headers: z.record(z.string(), z.string()).optional(),
+    oauth: McpOAuthOverrides.optional(),
+  }),
+  z.object({
+    transport: z.literal("sse"),
+    url: z.string().min(1),
+    headers: z.record(z.string(), z.string()).optional(),
+    oauth: McpOAuthOverrides.optional(),
+  }),
 ]);
 export type McpServerSpec = z.infer<typeof McpServerSpec>;
+
+/**
+ * WHAT THE SETTINGS ROW KNOWS ABOUT ONE SERVER'S SIGN-IN.
+ *
+ * FOUR SEPARATE FACTS, because collapsing them loses the one the reader needs.
+ * "Does this server want OAuth" and "is our token working" are different
+ * questions with different fixes, and a server that is merely DOWN must not
+ * render as one that needs a login — those two want opposite actions.
+ *
+ * NO TOKEN IS IN THIS SHAPE and none ever will be. `expiresAt` and `scope` are
+ * the non-secret halves of a stored grant; the token itself is reachable only
+ * from the worker claim.
+ */
+export const McpOAuthStatus = z.object({
+  serverId: Id,
+  projectId: Id.optional(),
+  /** Measured from the wire. Best-effort: an unreachable server answers `false`
+   *  rather than `true`, because claiming a login is needed when we could not
+   *  ask is a confident wrong answer. */
+  requiresOAuth: z.boolean(),
+  /** A stored grant exists. Not the same as working — see `health`. */
+  connected: z.boolean(),
+  expiresAt: Timestamp.optional(),
+  scope: z.string().optional(),
+  /** Who issued the grant, for a row that has to say WHICH account this is. */
+  issuer: z.string().optional(),
+  /** A live, authenticated `initialize` against the server. `needs-auth` covers
+   *  both "never signed in" and "expired": from here they are one observation. */
+  health: z.enum(["connected", "needs-auth", "error", "unknown"]),
+  message: z.string().min(1).optional(),
+});
+export type McpOAuthStatus = z.infer<typeof McpOAuthStatus>;
 
 export const McpServer = z.object({
   /** Also the server's NAME as the provider sees it, which is what makes its

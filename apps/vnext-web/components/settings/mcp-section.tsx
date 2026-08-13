@@ -25,19 +25,27 @@
  *
  * CARD SHAPE PORTED FROM `apps/web_old/components/settings/mcp-settings.tsx`:
  * compact by default — name, what it points at, a switch and a gear — with the
- * full editor behind Configure. The donor's OAuth Connect button is NOT here
- * yet; see the note at the foot of this file.
+ * full editor behind Configure, and the donor's Connect button now beside it.
+ *
+ * SIGNING IN IS THE ONE CREDENTIAL TELAR MINTS. Everywhere else the rule is
+ * that Telar adopts logins and never creates them, because `claude` and `codex`
+ * each have their own sign-in and their own store. A third-party MCP server has
+ * neither: nothing else on this machine will hold that grant, so declining to
+ * run the flow means the server does not work at all. The token never reaches
+ * this component — `mcpOAuthStatus` answers booleans, an expiry and an issuer.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { GlobeIcon, PlugIcon, Settings2Icon, TerminalIcon, XIcon } from "lucide-react";
-import type { McpServer, McpServerSpec } from "@telar/engine-client";
+import type { McpOAuthStatus, McpServer, McpServerSpec } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Row, SettingsGroup } from "./settings-shell";
+import { HEALTH_DOT, signInAction, signInSummary, statusFor } from "@/lib/mcp-oauth";
 
 const api = createVNextApi();
 
@@ -65,18 +73,64 @@ function describe(spec: McpServerSpec): string {
   return spec.url;
 }
 
-function ServerRow({ server, scope, onChange }: { server: McpServer; scope: McpScope; onChange: () => void }) {
+function ServerRow({
+  server,
+  scope,
+  status,
+  awaiting,
+  onAwait,
+  onChange,
+}: {
+  server: McpServer;
+  scope: McpScope;
+  status?: McpOAuthStatus;
+  /** A sign-in for this row is happening in another window. */
+  awaiting: boolean;
+  onAwait: (serverId: string) => void;
+  onChange: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [configuring, setConfiguring] = useState(false);
+  const [error, setError] = useState<string>();
   const act = async (run: () => Promise<unknown>) => {
     setBusy(true);
+    setError(undefined);
     try {
       await run();
       onChange();
+    } catch (cause) {
+      setError(cause instanceof VNextApiError ? cause.message : "That did not work.");
     } finally {
       setBusy(false);
     }
   };
+
+  const action = signInAction(status);
+  /**
+   * THE CONSENT SCREEN OPENS WHEREVER THE SHELL SENDS IT, and in the desktop
+   * app that is NOT this window.
+   *
+   * Measured, by pressing the button: `apps/desktop/browser-manager.js`'s
+   * `createExternalLinkPolicy` routes every off-origin navigation to the
+   * system browser and refuses it in-app. So the authorization server, the
+   * consent screen and the callback all happen in Safari; this window does not
+   * move, and the redirect's `?mcpConnected=` — which the browser tab version
+   * of this flow relies on — lands somewhere nobody is looking. The grant was
+   * stored correctly and the pane sat there showing "Sign in".
+   *
+   * That is the RIGHT behaviour to keep, not to work around: a consent screen
+   * belongs in a browser with a real address bar, where the person can see
+   * whose login page they are typing into. It is what every desktop app with
+   * OAuth does. What has to change is this side — the pane cannot assume it
+   * will be the one the callback returns to, so it watches for the grant
+   * instead (`onAwait` below).
+   */
+  const signIn = () =>
+    act(async () => {
+      const { authorizationUrl } = await api.connectMcpOAuth(server.id, scope?.projectId);
+      onAwait(server.id);
+      window.location.assign(authorizationUrl);
+    });
 
   return (
     <>
@@ -86,6 +140,24 @@ function ServerRow({ server, scope, onChange }: { server: McpServer; scope: McpS
         hint={describe(server.spec)}
         control={
           <div className="flex items-center gap-2">
+            {/* Said out loud, because in the desktop app the consent screen is
+                in a DIFFERENT WINDOW and this one looks like nothing happened. */}
+            {awaiting ? (
+              <span className="text-[11px] text-muted-foreground">Finish signing in, in your browser…</span>
+            ) : (
+              (action === "connect" || action === "reconnect") && (
+                <Button type="button" size="sm" variant="outline" className="h-7 text-xs" disabled={busy} onClick={() => void signIn()}>
+                  {action === "connect" ? "Sign in" : "Sign in again"}
+                </Button>
+              )
+            )}
+            {status && (status.connected || status.requiresOAuth) && (
+              <span
+                title={signInSummary(status)}
+                aria-label={signInSummary(status)}
+                className={cn("size-2 shrink-0 rounded-full", HEALTH_DOT[status.health])}
+              />
+            )}
             <Badge variant="outline" className="font-mono text-[10px]">
               {server.id}
             </Badge>
@@ -114,25 +186,53 @@ function ServerRow({ server, scope, onChange }: { server: McpServer; scope: McpS
         }
       />
       {configuring && (
-        <div className="flex items-center justify-between gap-2 bg-muted/20 px-4 py-2">
-          <p className="text-[11px] text-muted-foreground">
-            The id cannot change — every timeline row that already named{" "}
-            <code className="font-mono">mcp__{server.id}__*</code> would be orphaned. Remove it and add it again instead.
-          </p>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="shrink-0 text-muted-foreground hover:text-destructive"
-            disabled={busy}
-            onClick={() => {
-              if (!window.confirm(`Remove "${server.label}"? Sessions stop being offered its tools.`)) return;
-              void act(() => api.removeMcpServer(server.id, scope?.projectId));
-            }}
-          >
-            <XIcon />
-            Remove
-          </Button>
+        <div className="space-y-2 bg-muted/20 px-4 py-2">
+          {status && (status.connected || status.requiresOAuth) && (
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              {signInSummary(status)}
+              {status.scope && (
+                <>
+                  {" "}
+                  Scopes: <code className="font-mono">{status.scope}</code>.
+                </>
+              )}
+            </p>
+          )}
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-muted-foreground">
+              The id cannot change — every timeline row that already named{" "}
+              <code className="font-mono">mcp__{server.id}__*</code> would be orphaned. Remove it and add it again instead.
+            </p>
+            <div className="flex shrink-0 items-center gap-1">
+              {action === "disconnect" && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  disabled={busy}
+                  onClick={() => void act(() => api.disconnectMcpOAuth(server.id, scope?.projectId))}
+                >
+                  Sign out
+                </Button>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="text-muted-foreground hover:text-destructive"
+                disabled={busy}
+                onClick={() => {
+                  if (!window.confirm(`Remove "${server.label}"? Sessions stop being offered its tools.`)) return;
+                  void act(() => api.removeMcpServer(server.id, scope?.projectId));
+                }}
+              >
+                <XIcon />
+                Remove
+              </Button>
+            </div>
+          </div>
+          {error && <p className="text-[11px] text-destructive">{error}</p>}
         </div>
       )}
     </>
@@ -238,7 +338,11 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
 export function McpSection({ scope }: { scope?: McpScope } = {}) {
   const [servers, setServers] = useState<McpServer[]>();
   const [inherited, setInherited] = useState<McpServer[]>([]);
+  const [statuses, setStatuses] = useState<McpOAuthStatus[]>([]);
   const [unreachable, setUnreachable] = useState(false);
+  const [outcome, setOutcome] = useState<{ connected?: string; error?: string }>();
+  /** The server whose sign-in is happening in another window right now. */
+  const [awaiting, setAwaiting] = useState<string>();
 
   // Keyed on the ID, not on the object: a parent rebuilding `{projectId, name}`
   // each render would otherwise give `load` a new identity every paint and turn
@@ -262,13 +366,118 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
     }
   }, [projectId]);
 
+  /**
+   * SIGN-IN STATE IS A SECOND, SEPARATE FETCH, and it is allowed to be slow or
+   * to fail on its own. It costs two network round trips PER SERVER — a
+   * detection probe and an authenticated `initialize` — against third parties
+   * this cockpit does not control. Folded into `load`, one unreachable server
+   * would hold the whole pane blank; kept apart, the list paints immediately
+   * and the dots arrive when they arrive.
+   */
+  const loadStatuses = useCallback(async () => {
+    try {
+      const { statuses: next } = await api.mcpOAuthStatus(projectId);
+      setStatuses(next);
+      // Stop watching the moment the grant appears. Done HERE, where the answer
+      // arrives, rather than in an effect reacting to it: that would be derived
+      // state pretending to be synchronization, and it cascades a render.
+      setAwaiting((watched) => (watched && next.some((status) => status.serverId === watched && status.connected) ? undefined : watched));
+    } catch {
+      setStatuses([]);
+    }
+  }, [projectId]);
+
   useEffect(() => {
-    const task = window.setTimeout(() => void load(), 0);
+    const task = window.setTimeout(() => {
+      void load();
+      void loadStatuses();
+    }, 0);
     return () => window.clearTimeout(task);
-  }, [load]);
+  }, [load, loadStatuses]);
+
+  /**
+   * WATCHING FOR A SIGN-IN THAT IS HAPPENING SOMEWHERE ELSE.
+   *
+   * In the desktop app the consent screen opens in the system browser (see
+   * `signIn` above for the measurement), so the callback's redirect never
+   * reaches this window and there is no message to listen for — the browser and
+   * the app share nothing but the engine. What they DO share is the engine, and
+   * the grant lands there. So this asks the engine.
+   *
+   * FOCUS IS THE REAL SIGNAL and the interval is the backstop. Coming back to
+   * the app is exactly the moment a person expects it to have noticed, and it
+   * costs one request. The 2-second poll covers the case where both windows are
+   * visible at once — on a second monitor, or in a plain browser tab — and it
+   * STOPS AFTER TWO MINUTES rather than polling a third-party server forever
+   * because somebody wandered off mid-consent.
+   */
+  useEffect(() => {
+    if (!awaiting) return;
+    const started = Date.now();
+    const check = () => {
+      if (Date.now() - started > 120_000) {
+        setAwaiting(undefined);
+        return;
+      }
+      void loadStatuses();
+    };
+    const timer = window.setInterval(check, 2_000);
+    window.addEventListener("focus", check);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", check);
+    };
+  }, [awaiting, loadStatuses]);
+
+  /**
+   * WHAT THE CALLBACK CAME BACK WITH, when it came back HERE.
+   *
+   * Only the plain-browser path lands here; the desktop path is handled by the
+   * watcher above. Both are kept because both happen — this cockpit is opened
+   * in a browser as often as in the shell.
+   *
+   * The redirect from `/api/mcp/oauth/callback` carries the result in the query
+   * because it is the only channel that survives a round trip through a third
+   * party's consent screen. Read once and STRIPPED from the URL immediately —
+   * left in place, a refresh or a shared link would replay a sign-in
+   * announcement for something that did not just happen.
+   *
+   * DEFERRED THROUGH A TIMEOUT, like the loads above. Setting state
+   * synchronously in an effect body cascades a second render before the first
+   * has painted, and the address bar is an external system this is reading
+   * from and writing back to — which is the case the rule exists to catch.
+   */
+  useEffect(() => {
+    const task = window.setTimeout(() => {
+      const query = new URLSearchParams(window.location.search);
+      const connected = query.get("mcpConnected");
+      const error = query.get("mcpOAuthError");
+      if (!connected && !error) return;
+      setOutcome({ ...(connected ? { connected } : {}), ...(error ? { error } : {}) });
+      query.delete("mcpConnected");
+      query.delete("mcpOAuthError");
+      // `section` DELIBERATELY SURVIVES. It is not an announcement, it is
+      // where you are: stripping it made a refresh of this page bounce back to
+      // Appearance, which is the same disorientation the redirect was fixed to
+      // avoid. The announcement is spent; the location is not.
+      const rest = query.toString();
+      window.history.replaceState(null, "", `${window.location.pathname}${rest ? `?${rest}` : ""}`);
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, []);
 
   return (
     <>
+      {outcome && (
+        <SettingsGroup title="Sign-in">
+          <Row
+            label={outcome.error ? "That sign-in did not finish" : `Signed in to ${outcome.connected}`}
+            hint={outcome.error ?? "Sessions on this scope now reach it as you."}
+            control={<Badge variant={outcome.error ? "outline" : "secondary"}>{outcome.error ? "Failed" : "Connected"}</Badge>}
+          />
+        </SettingsGroup>
+      )}
+
       <SettingsGroup
         title={scope ? `${scope.projectName}'s servers` : "Machine-wide servers"}
         description={
@@ -289,7 +498,20 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
             control={<Badge variant="outline">None</Badge>}
           />
         ) : (
-          servers.map((server) => <ServerRow key={server.id} server={server} scope={scope} onChange={() => void load()} />)
+          servers.map((server) => (
+            <ServerRow
+              key={server.id}
+              server={server}
+              scope={scope}
+              {...(statusFor(statuses, server) ? { status: statusFor(statuses, server)! } : {})}
+              awaiting={awaiting === server.id}
+              onAwait={setAwaiting}
+              onChange={() => {
+                void load();
+                void loadStatuses();
+              }}
+            />
+          ))
         )}
       </SettingsGroup>
 
@@ -312,30 +534,29 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
         </SettingsGroup>
       )}
 
-      {/* A GAP NAMED AT THE POINT IT BITES. Codex owns its own MCP registry
-          through ~/.codex/config.toml and the shape its app-server accepts for
-          servers is not something the driver can verify against anything —
-          guessing it would fail the whole turn. See apps/engine/src/codex-driver.ts. */}
-      <SettingsGroup title="Which sessions see these" description="One provider reads this list; the other reads its own.">
+      <SettingsGroup title="Which sessions see these" description="Both providers now read this list.">
         <Row label="Claude sessions" hint="Every enabled server above is passed to the Agent SDK for each turn." control={<Badge variant="secondary">Applied</Badge>} />
+        {/* Was "Not applied" until the app-server's own schema was measured:
+            `thread/start`'s `config` overlay takes `mcp_servers` and every
+            transport shape works through it. See apps/engine/src/codex-driver.ts. */}
         <Row
           label="Codex sessions"
-          hint="Codex reads its own ~/.codex/config.toml. Servers configured here are not passed to it."
-          control={<Badge variant="outline">Not applied</Badge>}
+          hint="Passed in each thread's config, alongside whatever ~/.codex/config.toml already defines."
+          control={<Badge variant="secondary">Applied</Badge>}
         />
         {/*
           STILL MISSING, AND SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED.
-          The legacy cockpit could sign in to an HTTPS MCP server on the user's
-          behalf — OAuth 2.1 discovery, PKCE, a token store and refresh, all in
-          packages/core/src/mcp-oauth.ts — and could store a header value as a
-          secret reference instead of a literal. Neither exists in this engine
-          yet, so a server that needs a bearer token needs one typed as a plain
-          header, and `McpServerSpec.headers` is returned verbatim on read.
+          A managed OAuth token now lives in the engine's own 0600 store and
+          never reaches this page. A header TYPED here does not: `spec.headers`
+          is stored as written and returned verbatim on read, so a bearer token
+          pasted in one round-trips to any browser that opens this pane. The
+          fix is the redaction the provider registry already has, and it is not
+          built for MCP servers yet.
         */}
         <Row
-          label="Signing in to an HTTPS server"
-          hint="Not built here yet. A server that needs OAuth cannot be connected from this page, and a header typed here is stored as written."
-          control={<Badge variant="outline">Missing</Badge>}
+          label="A header you type here"
+          hint="Stored as written and shown again on read, unlike a managed sign-in. Prefer Sign in where the server offers it."
+          control={<Badge variant="outline">Not a secret</Badge>}
         />
       </SettingsGroup>
     </>

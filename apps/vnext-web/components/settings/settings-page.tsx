@@ -31,6 +31,7 @@ import { ThemeControl } from "@/components/theme-control";
 import { McpSection } from "./mcp-section";
 import { ProvidersSection } from "./providers-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
+import { useSectionFromUrl } from "./use-section-from-url";
 
 const api = createVNextApi();
 
@@ -87,8 +88,12 @@ function AboutSection({
   );
 }
 
+const SECTION_IDS = SECTIONS.map((section) => section.id);
+
 export function SettingsPage() {
-  const [active, setActive] = useState("appearance");
+  // `?section=mcp` is how a sign-in gets the user back to the pane they left —
+  // see use-section-from-url.ts for the failure that made this necessary.
+  const [active, setActive] = useSectionFromUrl("appearance", SECTION_IDS);
   const [about, setAbout] = useState<{ appVersion: string; stateRoot?: string }>();
   const [health, setHealth] = useState<EngineHealth>();
   const [unreachable, setUnreachable] = useState(false);

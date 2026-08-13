@@ -25,6 +25,7 @@ import {
   type GitignoreResult,
   type ModelCatalogue,
   type SessionDiff,
+  type McpOAuthStatus,
   type McpServer,
   type McpServerSpec,
   type TurnAttachment,
@@ -482,6 +483,48 @@ export class EngineClient {
       ? `/v2/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
       : `/v2/mcp-servers/${encodeURIComponent(id)}`;
     return this.request("DELETE", path);
+  }
+
+  /**
+   * Whether each http server wants a login, and whether ours works.
+   *
+   * COSTS TWO NETWORK ROUND TRIPS PER SERVER — a detection probe and an
+   * authenticated `initialize` — so it is a call a page makes when it opens or
+   * when somebody presses refresh, never a poll.
+   *
+   * `projectId` SCOPES IT the same way the server list does: absent asks about
+   * the machine-wide servers, present asks about the merge that project's
+   * sessions actually run with.
+   */
+  mcpOAuthStatus(projectId?: string): Promise<{ statuses: McpOAuthStatus[] }> {
+    return this.request("GET", projectId ? `/v2/mcp-oauth?projectId=${encodeURIComponent(projectId)}` : "/v2/mcp-oauth");
+  }
+
+  /**
+   * Start a browser sign-in and get the URL to send them to.
+   *
+   * NOTHING SECRET CROSSES THIS CALL IN EITHER DIRECTION. The PKCE verifier and
+   * the state stay in the engine, keyed by the state the authorization server
+   * will echo back; the caller receives only a URL it could have been shown
+   * anyway.
+   *
+   * `redirectOrigin` is the ORIGIN OF THE PAGE the user is looking at, because
+   * the authorization server sends the browser back there — and on a cockpit
+   * reachable by more than one name, a constant would send it to the wrong one.
+   */
+  connectMcpOAuth(input: { serverId: string; projectId?: string; redirectOrigin: string }): Promise<{ authorizationUrl: string }> {
+    return this.request("POST", "/v2/mcp-oauth/connect", input);
+  }
+
+  /** Finish a flow: hand back the `code` and `state` the authorization server
+   *  put on the callback URL. Single-use — a replayed callback finds nothing. */
+  completeMcpOAuth(input: { state: string; code: string }): Promise<{ serverId: string; projectId?: string }> {
+    return this.request("POST", "/v2/mcp-oauth/callback", input);
+  }
+
+  /** Forget a stored grant. Idempotent; `removed` says whether one existed. */
+  disconnectMcpOAuth(input: { serverId: string; projectId?: string }): Promise<{ removed: boolean }> {
+    return this.request("POST", "/v2/mcp-oauth/disconnect", input);
   }
 
   /**

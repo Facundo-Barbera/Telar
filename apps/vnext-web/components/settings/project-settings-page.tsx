@@ -23,6 +23,7 @@ import { createVNextApi } from "@/lib/vnext/client";
 import { Badge } from "@/components/ui/badge";
 import { McpSection } from "./mcp-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
+import { useSectionFromUrl } from "./use-section-from-url";
 
 const api = createVNextApi();
 
@@ -31,8 +32,12 @@ const SECTIONS: SettingsSection[] = [
   { id: "project", label: "Project", icon: FolderGitIcon, group: "This project" },
 ];
 
+const SECTION_IDS = SECTIONS.map((section) => section.id);
+
 export function ProjectSettingsPage({ projectId }: { projectId: string }) {
-  const [active, setActive] = useState("mcp");
+  // Already opens on MCP servers, but a sign-in returning here still names the
+  // section — so the redirect is identical for both scopes.
+  const [active, setActive] = useSectionFromUrl("mcp", SECTION_IDS);
   const [project, setProject] = useState<Project>();
   const [missing, setMissing] = useState(false);
 

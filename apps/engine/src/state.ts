@@ -72,6 +72,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
+import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { ensureTelarGitignore } from "./gitignore";
 import {
@@ -223,6 +224,25 @@ export type EngineStatePaths = {
    * has to remember at each call site.
    */
   providerSecrets: string;
+  /**
+   * Completed MCP OAuth grants — access token, refresh token, the resolved
+   * authorization server and the client they were minted for.
+   *
+   * ITS OWN FILE, AT 0600, FOR THE SAME REASON `providerSecrets` IS: the server
+   * registry beside it is read by a settings page over HTTP, and a token stored
+   * on the record would be echoed back to every browser that opened it. Here
+   * only the claim reads this, and no route returns it.
+   */
+  mcpOAuth: string;
+  /**
+   * Sign-ins currently in flight, keyed by the OAuth `state`.
+   *
+   * ON DISK RATHER THAN IN MEMORY because a flow spans a browser round trip
+   * through a third party, and an engine that restarted in that window would
+   * otherwise strand it with an error the user cannot act on. Entries expire;
+   * each holds a PKCE verifier, which is a secret for the length of one flow.
+   */
+  mcpOAuthPending: string;
   engine: string;
   lock: string;
 };
@@ -270,6 +290,8 @@ export function statePaths(root: string): EngineStatePaths {
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
     providerSecrets: path.join(resolved, "provider-secrets.json"),
+    mcpOAuth: path.join(resolved, "mcp-oauth.json"),
+    mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
@@ -318,6 +340,26 @@ function optionalPatch<K extends string>(
 /** A space separates the two halves because neither an instance id nor an
  *  environment variable name may contain one — so the key cannot be ambiguous. */
 const SECRET_KEY_SEPARATOR = " ";
+
+/**
+ * How long a half-finished sign-in stays on disk.
+ *
+ * Long enough to read a consent screen and pick an account; short enough that a
+ * PKCE verifier is not sitting in a file for an afternoon because somebody shut
+ * the tab. The authorization code's own single-use rule is the real backstop —
+ * this only bounds the window in which one could be used at all.
+ */
+const PENDING_MCP_OAUTH_TTL_MS = 10 * 60_000;
+
+/** One sign-in mid-flight. `ctx` carries the state, the PKCE verifier, the
+ *  resolved authorization server and the exact redirect URI it was started
+ *  with — the callback needs all four and can be given none of them. */
+export type PendingMcpOAuth = {
+  serverId: string;
+  projectId?: string;
+  ctx: ConnectContext;
+  createdAt: number;
+};
 
 function secretKey(instanceId: string, name: string): string {
   return instanceId + SECRET_KEY_SEPARATOR + name;
@@ -730,7 +772,219 @@ export class EngineStore {
     const next = servers.filter((server) => !(server.id === id && server.projectId === projectId));
     if (next.length === servers.length) return false;
     atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
+    // A server that is gone has no grant to keep. Left behind, the record would
+    // silently re-attach to whatever the next server of that id turned out to
+    // be — a token minted for one audience, sent to another.
+    this.deleteMcpOAuthRecord(id, projectId);
     return true;
+  }
+
+  // ── MCP OAuth ─────────────────────────────────────────────────────────────
+  //
+  // TELAR OWNS THIS FLOW, unlike every provider login. The rule elsewhere is
+  // that Telar adopts logins and never creates them, because `claude` and
+  // `codex` already have their own sign-in and their own credential store. A
+  // third-party MCP server has neither: nothing else on this machine will hold
+  // that grant, so if the engine does not run the flow, the server is simply
+  // unusable. That is why the ONE credential this repo mints lives here.
+  //
+  // KEYED BY THE SAME PAIR THE SERVER IS — `(projectId, serverId)` — so a
+  // project's `linear` and the machine's `linear` hold different grants, which
+  // is the whole point of the shadowing they already have.
+
+  /** A space cannot appear in either half: both are `Id`s. */
+  private mcpOAuthKey(serverId: string, projectId?: string): string {
+    return (projectId ?? "") + SECRET_KEY_SEPARATOR + serverId;
+  }
+
+  private readMcpOAuthRecords(): Record<string, McpOAuthRecord> {
+    const stored = readJson(this.paths.mcpOAuth) as { records?: unknown } | undefined;
+    const records = stored?.records;
+    if (!records || typeof records !== "object") return {};
+    return records as Record<string, McpOAuthRecord>;
+  }
+
+  private writeMcpOAuthRecords(records: Record<string, McpOAuthRecord>): void {
+    atomicWrite(this.paths.mcpOAuth, { version: STATE_VERSION, records });
+  }
+
+  /**
+   * The stored grant for one server, TOKENS AND ALL.
+   *
+   * NOT REACHABLE FROM A ROUTE. The daemon calls `mcpOAuthStatus` when a page
+   * asks; this one exists for the claim and for the refresh, which are the two
+   * places a token is actually needed.
+   */
+  getMcpOAuthRecord(serverId: string, projectId?: string): McpOAuthRecord | undefined {
+    const record = this.readMcpOAuthRecords()[this.mcpOAuthKey(serverId, projectId)];
+    return record ? structuredClone(record) : undefined;
+  }
+
+  putMcpOAuthRecord(record: McpOAuthRecord): void {
+    const records = this.readMcpOAuthRecords();
+    records[this.mcpOAuthKey(record.serverId, record.projectId)] = { ...record, updatedAt: this.now() };
+    this.writeMcpOAuthRecords(records);
+  }
+
+  deleteMcpOAuthRecord(serverId: string, projectId?: string): boolean {
+    const records = this.readMcpOAuthRecords();
+    const key = this.mcpOAuthKey(serverId, projectId);
+    if (!(key in records)) return false;
+    delete records[key];
+    this.writeMcpOAuthRecords(records);
+    return true;
+  }
+
+  /**
+   * The client-identity store the ladder needs, and only that.
+   *
+   * A DCR REGISTRATION IS AUTHORIZATION-SERVER SCOPED, not server scoped: three
+   * MCP servers behind one issuer should share one registered client. Minting a
+   * second is how somebody ends up with a list of identical stray OAuth apps in
+   * their account — and some servers reject a freshly-minted client id outright,
+   * which reads as a broken Connect button rather than as what it is.
+   */
+  mcpOAuthClientStore(): OAuthClientStore {
+    return {
+      findProvenDcrClient: (issuer, serverId, projectId) => {
+        const records = this.readMcpOAuthRecords();
+        const proven = (record: McpOAuthRecord | undefined): boolean =>
+          record?.client?.strategy === "dcr" && Boolean(record.client.id) && Boolean(record.tokens?.accessToken);
+        const own = records[this.mcpOAuthKey(serverId, projectId)];
+        if (proven(own)) return structuredClone(own!.client);
+        for (const record of Object.values(records)) {
+          if (record.as?.issuer === issuer && proven(record)) return structuredClone(record.client);
+        }
+        return undefined;
+      },
+      findPendingDcrClient: (serverId, projectId) => {
+        const record = this.readMcpOAuthRecords()[this.mcpOAuthKey(serverId, projectId)];
+        return record?.client?.strategy === "dcr" && record.client.id ? structuredClone(record.client) : undefined;
+      },
+      rememberClient: ({ serverId, projectId, resource, as, client }) => {
+        // Keeps any tokens already there: this runs BEFORE the exchange, and a
+        // reconnect of a working server must not blank its own grant on the way.
+        const existing = this.getMcpOAuthRecord(serverId, projectId);
+        this.putMcpOAuthRecord({
+          serverId,
+          ...(projectId === undefined ? {} : { projectId }),
+          resource,
+          as,
+          client,
+          tokens: existing?.tokens ?? { accessToken: "" },
+          updatedAt: this.now(),
+        });
+      },
+    };
+  }
+
+  /**
+   * Stash an in-flight sign-in, keyed by its own OAuth `state`.
+   *
+   * SWEEPS ON THE WAY IN, so an abandoned flow — the user closed the tab at the
+   * consent screen — cannot accumulate. Ten minutes is the window: long enough
+   * to read a consent screen, short enough that a verifier is not sitting on
+   * disk for an afternoon.
+   */
+  putPendingMcpOAuth(flow: PendingMcpOAuth): void {
+    const flows = this.prunePendingMcpOAuth(this.readPendingMcpOAuth());
+    flows[flow.ctx.state] = flow;
+    atomicWrite(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
+  }
+
+  /**
+   * Take a flow by state — SINGLE USE, so a replayed callback finds nothing.
+   *
+   * The read-modify-write is not atomic across processes, so two simultaneous
+   * callbacks for one state could both observe it. That is acceptable and not
+   * papered over: the authorization code is itself single-use at the token
+   * endpoint, which is the real backstop, and the second exchange fails there.
+   */
+  takePendingMcpOAuth(state: string): PendingMcpOAuth | undefined {
+    if (!state) return undefined;
+    const flows = this.prunePendingMcpOAuth(this.readPendingMcpOAuth());
+    const flow = flows[state];
+    delete flows[state];
+    atomicWrite(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
+    return flow;
+  }
+
+  private readPendingMcpOAuth(): Record<string, PendingMcpOAuth> {
+    const stored = readJson(this.paths.mcpOAuthPending) as { flows?: unknown } | undefined;
+    const flows = stored?.flows;
+    if (!flows || typeof flows !== "object") return {};
+    return flows as Record<string, PendingMcpOAuth>;
+  }
+
+  private prunePendingMcpOAuth(flows: Record<string, PendingMcpOAuth>): Record<string, PendingMcpOAuth> {
+    const cutoff = this.now() - PENDING_MCP_OAUTH_TTL_MS;
+    for (const [state, flow] of Object.entries(flows)) {
+      if (!flow || typeof flow.createdAt !== "number" || flow.createdAt <= cutoff) delete flows[state];
+    }
+    return flows;
+  }
+
+  /**
+   * The grant a server should run with, refreshed if it is about to expire.
+   *
+   * BEST-EFFORT BY CONSTRUCTION. A refresh that fails — revoked, offline, the
+   * server rotated its client — returns the token we have rather than throwing:
+   * a stale token 401s at the server, which is a legible failure inside one
+   * tool call, whereas throwing here would fail the whole turn over a tool the
+   * user may not even have asked for.
+   */
+  async resolveMcpOAuthToken(serverId: string, projectId: string | undefined, fetchImpl?: typeof fetch): Promise<string | undefined> {
+    const record = this.getMcpOAuthRecord(serverId, projectId);
+    if (!record?.tokens.accessToken) return undefined;
+    if (!needsRefresh(record, 120, this.now()) || !record.tokens.refreshToken) return record.tokens.accessToken;
+    try {
+      const tokens = await refreshAccessToken({
+        as: record.as,
+        client: record.client,
+        refreshToken: record.tokens.refreshToken,
+        resource: record.resource,
+        ...(fetchImpl ? { fetchImpl } : {}),
+      });
+      this.putMcpOAuthRecord({ ...record, tokens });
+      return tokens.accessToken;
+    } catch {
+      return record.tokens.accessToken;
+    }
+  }
+
+  /**
+   * Attach the managed bearer to every claimed server that has one.
+   *
+   * SEPARATE FROM `claimNextTurn`, AND ASYNC, FOR ONE REASON: refreshing a
+   * token is a network call, and `claimNextTurn` runs under the daemon's single
+   * state lock. A refresh to a slow authorization server inside that lock would
+   * stall every other session's claim behind it. So the claim stays synchronous
+   * and this runs after it, on the way out.
+   *
+   * KEYED ON A STORED GRANT, NEVER ON THE `oauth` BLOCK. The block is overrides;
+   * having signed in is what makes a server authenticated, which is also why a
+   * server the user never connected is returned untouched.
+   *
+   * A HAND-WRITTEN `Authorization` HEADER WINS. Someone who typed one meant it,
+   * and silently replacing it with a Telar-managed token would be the harder
+   * failure to diagnose of the two.
+   */
+  async authorizeClaimedMcpServers(claim: WorkerClaim, fetchImpl?: typeof fetch): Promise<WorkerClaim> {
+    if (!claim.mcpServers?.length) return claim;
+    const mcpServers = await Promise.all(
+      claim.mcpServers.map(async (server) => {
+        if (server.spec.transport === "stdio") return server;
+        const headers = server.spec.headers ?? {};
+        if (Object.keys(headers).some((name) => name.toLowerCase() === "authorization")) return server;
+        // The grant is keyed by the scope the SERVER came from, which for a
+        // project-scoped server is that project — not the session's, which for
+        // a global server would be a key nothing was ever stored under.
+        const token = await this.resolveMcpOAuthToken(server.id, server.projectId, fetchImpl);
+        if (!token) return server;
+        return { ...server, spec: { ...server.spec, headers: { ...headers, Authorization: `Bearer ${token}` } } };
+      }),
+    );
+    return { ...claim, mcpServers };
   }
 
   // ── provider instances ────────────────────────────────────────────────────

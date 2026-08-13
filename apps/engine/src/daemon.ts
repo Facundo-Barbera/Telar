@@ -15,12 +15,15 @@ import {
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
+  type McpOAuthStatus,
+  type McpServer,
   type ModelSelection,
   type ProviderDriverKind,
   type RuntimeMode,
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
+import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv, type EngineNotifier } from "./state";
 import type { DriverSelector } from "./worker";
@@ -180,6 +183,53 @@ function requestPath(pathname: string): { sessionId: string; requestId: string }
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/requests\/([A-Za-z0-9_-]+)$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), requestId: decodeURIComponent(match[2]) };
+}
+
+/**
+ * What each http server's sign-in looks like right now.
+ *
+ * TWO PROBES PER SERVER, CONCURRENTLY, and neither can fail the request. The
+ * first asks whether the server WANTS OAuth; the second asks whether the
+ * credential we hold actually WORKS. They are separate because their answers
+ * demand different things of the reader — "sign in" versus "the server is
+ * down" — and a row that collapsed them would send people to fix the wrong one.
+ *
+ * `stdio` SERVERS ARE OMITTED, not reported as unauthenticated: a local
+ * subprocess has no sign-in and never will, so a row for it would be a
+ * permanently empty state.
+ *
+ * NEVER THROWS. A settings page must render when the network is down.
+ */
+async function mcpOAuthStatuses(store: EngineStore, servers: McpServer[]): Promise<McpOAuthStatus[]> {
+  return Promise.all(
+    servers
+      .filter((server) => server.spec.transport !== "stdio")
+      .map(async (server): Promise<McpOAuthStatus> => {
+        const url = server.spec.transport === "stdio" ? "" : server.spec.url;
+        const record = store.getMcpOAuthRecord(server.id, server.projectId);
+        // Probe AS US when we hold a grant, anonymously otherwise — an
+        // anonymous probe of a connected server would report `needs-auth` and
+        // offer to fix something that is not broken.
+        const token = record?.tokens.accessToken || undefined;
+        const [requiresOAuth, health] = await Promise.all([
+          probeMcpAuth(url).then((result) => result.requiresOAuth),
+          checkMcpHealth(url, {
+            ...(token ? { token } : {}),
+            ...(server.spec.transport === "stdio" || !server.spec.headers ? {} : { headers: server.spec.headers }),
+          }),
+        ]);
+        return {
+          serverId: server.id,
+          ...(server.projectId === undefined ? {} : { projectId: server.projectId }),
+          requiresOAuth,
+          connected: Boolean(token),
+          ...(record?.tokens.expiresAt === undefined ? {} : { expiresAt: record.tokens.expiresAt }),
+          ...(record?.tokens.scope ? { scope: record.tokens.scope } : {}),
+          ...(record?.as.issuer ? { issuer: record.as.issuer } : {}),
+          health,
+        };
+      }),
+  );
 }
 
 function writeDiscovery(store: EngineStore, discovery: EngineDiscovery): void {
@@ -515,6 +565,111 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * SIGNING IN TO AN MCP SERVER — the one credential Telar mints.
+       *
+       * EVERYWHERE ELSE THE RULE IS THAT TELAR ADOPTS LOGINS AND NEVER CREATES
+       * THEM: `claude` and `codex` each have their own sign-in and their own
+       * credential store, and reaching into either would be Telar holding
+       * something it has no business holding. A third-party MCP server has
+       * neither. Nothing else on this machine will ever hold that grant, so an
+       * engine that declines to run the flow is an engine on which the server
+       * simply does not work. That is the whole of the exception.
+       *
+       * THE FLOW IS SPLIT ACROSS TWO PROCESSES ON PURPOSE. The PKCE verifier and
+       * the state stay HERE, in the engine, keyed by the state the authorization
+       * server will echo; the browser lands on the cockpit, which forwards the
+       * `code` back. So the cockpit never holds a verifier, and a `code`
+       * intercepted on its way through is useless without the half it never saw.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/mcp-oauth") {
+        const projectId = url.searchParams.get("projectId")?.trim() || undefined;
+        const servers = projectId ? resolveMcpServers(store.listMcpServers(), projectId) : store.listMcpServers({ projectId: null });
+        writeJson(response, 200, { statuses: await mcpOAuthStatuses(store, servers) });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/mcp-oauth/connect") {
+        const input = await body(request);
+        const serverId = stringValue(input.serverId, "mcp server id")!;
+        const projectId = stringValue(input.projectId, "project id", true);
+        const redirectOrigin = stringValue(input.redirectOrigin, "redirect origin")!;
+        const server = store
+          .listMcpServers()
+          .find((candidate) => candidate.id === serverId && candidate.projectId === projectId);
+        if (!server) throw new HttpError(404, "not_found", `no MCP server "${serverId}" in this scope`);
+        if (server.spec.transport === "stdio") {
+          throw new HttpError(400, "invalid_request", `"${serverId}" runs as a local command, so there is nothing to sign in to`);
+        }
+        try {
+          const ctx = await beginConnect({
+            serverId,
+            ...(projectId === undefined ? {} : { projectId }),
+            serverUrl: server.spec.url,
+            ...(server.spec.oauth ? { overrides: server.spec.oauth } : {}),
+            redirectOrigin,
+            store: store.mcpOAuthClientStore(),
+            clientName: `Telar — ${server.label}`,
+          });
+          store.putPendingMcpOAuth({
+            serverId,
+            ...(projectId === undefined ? {} : { projectId }),
+            ctx,
+            createdAt: now(),
+          });
+          writeJson(response, 200, { authorizationUrl: ctx.authorizationUrl });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "could not start the sign-in";
+          // The one failure with an action behind it: the authorization server
+          // will not register a client on its own, so the user has to paste one
+          // from its dashboard. Answered as a 400 naming that, rather than a 502
+          // that reads as "the server is broken".
+          if (message.includes(NO_CLIENT_STRATEGY)) {
+            throw new HttpError(
+              400,
+              "invalid_request",
+              `"${server.label}" cannot register Telar automatically — add a client ID from the server's own dashboard, save, then sign in again`,
+            );
+          }
+          throw new HttpError(502, "provider_unavailable", message);
+        }
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/mcp-oauth/callback") {
+        const input = await body(request);
+        const state = stringValue(input.state, "oauth state")!;
+        const code = stringValue(input.code, "authorization code")!;
+        // Single use: a replayed callback finds nothing, and an expired one is
+        // indistinguishable from an unknown one on purpose — neither tells the
+        // caller anything about a flow it did not start.
+        const pending = store.takePendingMcpOAuth(state);
+        if (!pending) throw new HttpError(400, "invalid_request", "this sign-in link has expired or was already used");
+        try {
+          const tokens = await completeConnect({ ctx: pending.ctx, code, returnedState: state });
+          store.putMcpOAuthRecord({
+            serverId: pending.serverId,
+            ...(pending.projectId === undefined ? {} : { projectId: pending.projectId }),
+            resource: pending.ctx.resource,
+            as: pending.ctx.as,
+            client: pending.ctx.client,
+            tokens,
+            updatedAt: now(),
+          });
+          writeJson(response, 200, {
+            serverId: pending.serverId,
+            ...(pending.projectId === undefined ? {} : { projectId: pending.projectId }),
+          });
+        } catch (error) {
+          throw new HttpError(502, "provider_unavailable", error instanceof Error ? error.message : "the token exchange failed");
+        }
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/mcp-oauth/disconnect") {
+        const input = await body(request);
+        const serverId = stringValue(input.serverId, "mcp server id")!;
+        const projectId = stringValue(input.projectId, "project id", true);
+        writeJson(response, 200, { removed: store.deleteMcpOAuthRecord(serverId, projectId) });
+        return;
+      }
+      /**
        * The configured logins — the account registry.
        *
        * THE LIST AND THE PROBE ARRIVE TOGETHER because a settings page needs
@@ -609,7 +764,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           };
           writeJson(response, 200, status);
         } else {
-          writeJson(response, 200, { claim: store.claimNextTurn(workerId) });
+          // The claim itself is synchronous and under the state lock; attaching
+          // managed OAuth bearers is a network call, so it happens out here
+          // rather than stalling every other session's claim behind one slow
+          // authorization server.
+          const claimed = store.claimNextTurn(workerId);
+          writeJson(response, 200, { claim: claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined });
         }
         return;
       }
