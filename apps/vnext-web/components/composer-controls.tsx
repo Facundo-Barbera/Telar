@@ -4,14 +4,7 @@ import { forwardRef, useEffect, useState, type ComponentPropsWithoutRef, type Re
 import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
 import type { ModelCatalogue, ProviderDriverKind, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
-import {
-  CONTEXT_WINDOWS,
-  PROVIDER_EFFORTS,
-  effortLabel,
-  modelLabel,
-  supportsLongContext,
-  type ModelChoice,
-} from "@/lib/models";
+import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
 import { orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "@/lib/model-favorites";
 import { defaultModelId, effortsFor, splitGenerations } from "@/lib/model-generations";
 import { createVNextApi } from "@/lib/vnext/client";
@@ -321,9 +314,9 @@ export function AgentControl({
           <ControlTrigger
             open={open}
             icon={<ProviderIcon provider={driver} size={14} />}
-            label={modelLabel(driver, choice.model)}
+            label={modelLabel(models, choice.model)}
             {...(effort ? { detail: effortLabel(effort) } : {})}
-            ariaLabel={`Model: ${modelLabel(driver, choice.model)} on ${PROVIDER_LABEL[driver]}`}
+            ariaLabel={`Model: ${modelLabel(models, choice.model)} on ${PROVIDER_LABEL[driver]}`}
             // Shrinks rather than forcing the row to overflow: the composer
             // shares the window with the right panel and cannot assume width.
             className="min-w-0 max-w-44 justify-start"
@@ -387,19 +380,18 @@ export function AgentControl({
                     type="button"
                     disabled={readOnly}
                     onClick={() => {
-                      // A model that cannot take the long window drops the
-                      // request rather than carrying it into a call the provider
-                      // would refuse.
-                      // A model that cannot take the long window drops the
-                      // request rather than carrying it into a call the provider
-                      // would refuse.
+                      /**
+                       * A CHOICE THE NEW MODEL CANNOT HONOUR GOES WITH THE OLD
+                       * ONE. An effort it does not list fails the turn outright;
+                       * fast mode it does not offer is a switch that silently
+                       * does nothing. Both are dropped here rather than carried
+                       * into a call the provider would refuse or ignore.
+                       */
                       onChange?.({
                         ...choice,
                         model: option.id,
-                        ...(supportsLongContext(driver, option.id) ? {} : { contextWindow: undefined }),
-                        // An effort the new model does not support would fail
-                        // the turn, so it goes with the model it belonged to.
                         ...(choice.effort && !option.efforts.includes(choice.effort) ? { effort: undefined } : {}),
+                        ...(choice.fastMode && !option.fastMode ? { fastMode: undefined } : {}),
                       });
                       setOpen(false);
                     }}
@@ -515,20 +507,20 @@ export function ReasoningControl({
    * the whole turn. The static list is the fallback for a catalogue that has not
    * loaded or could not be read.
    */
-  const reported = effortsFor(catalogue?.models ?? [], choice.model ?? defaultModelId(catalogue?.models ?? []));
-  const levels = reported.length > 0 ? reported : PROVIDER_EFFORTS[driver];
+  const models = catalogue?.models ?? [];
+  const selected = choice.model ?? defaultModelId(models);
+  const levels = effortsFor(models, selected);
   const readOnly = !onChange;
   /**
-   * BOTH EXTRA GROUPS ARE CLAUDE-ONLY AND SAY SO BY BEING ABSENT.
+   * FAST MODE IS PER MODEL, AND THE MODEL SAYS SO.
    *
-   * The 1M window is an Agent SDK `betas` flag and fast mode is an inline
-   * `settings.fastMode`; the Codex app-server has neither, and its driver
-   * ignores both (see apps/engine/src/codex-driver.ts). A switch that silently
-   * did nothing on half the sessions is the thing this whole cockpit keeps
-   * refusing to ship.
+   * It used to be gated on `driver === "claude"` — right that Codex has no
+   * equivalent, wrong that every Claude model does. Of the six rows the
+   * installed Claude Code reports, two support it. The group is absent on the
+   * rest, because a switch that silently does nothing is the thing this cockpit
+   * keeps refusing to ship.
    */
-  const claude = driver === "claude";
-  const longContext = supportsLongContext(driver, choice.model);
+  const fastMode = models.find((model) => model.id === selected)?.fastMode === true;
 
   /** Every row re-sends the WHOLE choice. Picking an effort must not clear the
    *  model, and picking a window must not clear the effort. */
@@ -545,7 +537,7 @@ export function ReasoningControl({
             open={open}
             icon={<GaugeIcon className="size-3.5" />}
             label={label}
-            {...(choice.contextWindow === "1m" ? { detail: "1M" } : {})}
+            {...(choice.fastMode ? { detail: "Fast" } : {})}
             ariaLabel={`Reasoning effort: ${label}`}
           />
         }
@@ -568,27 +560,15 @@ export function ReasoningControl({
         {choice.effort && !levels.some((level) => level === choice.effort) && (
           <CompactRow label={choice.effort} hint="external" selected disabled onSelect={() => undefined} />
         )}
-
-        {claude && longContext && (
-          <div className="mt-1 border-t border-border pt-1">
-            <MenuHeading>Context window</MenuHeading>
-            {CONTEXT_WINDOWS.map((option) => (
-              <CompactRow
-                key={option.id}
-                label={option.label}
-                {...(option.id === "default" ? { hint: "200K" } : {})}
-                selected={(choice.contextWindow ?? "default") === option.id}
-                disabled={readOnly}
-                // `default` is the ABSENCE of a choice, so it is cleared rather
-                // than stored — the engine should never carry a field that says
-                // "whatever you were going to do anyway".
-                onSelect={() => pick({ contextWindow: option.id === "default" ? undefined : option.id })}
-              />
-            ))}
-          </div>
+        {/* NO HAND-WRITTEN FALLBACK LIST. There used to be one, per provider, and
+            it was wrong: it offered Haiku three levels, which supports none. Auto
+            is the honest floor until the provider answers — and if it could not
+            be asked, its own words say why. */}
+        {levels.length === 0 && catalogue?.message && (
+          <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">{catalogue.message}</p>
         )}
 
-        {claude && (
+        {fastMode && (
           <div className="mt-1 border-t border-border pt-1">
             <MenuHeading>Fast mode</MenuHeading>
             <CompactRow label="Off" selected={choice.fastMode !== true} disabled={readOnly} onSelect={() => pick({ fastMode: undefined })} />
@@ -670,12 +650,12 @@ export function ComposerOverflowMenu({
   onDriverChange?: (driver: ProviderDriverKind) => void;
   onEnvMode?: (mode: "local" | "worktree") => void;
 }) {
-  const claude = driver === "claude";
-  const longContext = supportsLongContext(driver, choice.model);
   const catalogue = useModelCatalogue(driver);
-  // Same per-model rule as the pill's menu — see `ReasoningControl`.
-  const reported = effortsFor(catalogue?.models ?? [], choice.model ?? defaultModelId(catalogue?.models ?? []));
-  const levels = reported.length > 0 ? reported : PROVIDER_EFFORTS[driver];
+  // Same per-model rules as the pill's menus — see `ReasoningControl`.
+  const models = catalogue?.models ?? [];
+  const selected = choice.model ?? defaultModelId(models);
+  const levels = effortsFor(models, selected);
+  const fastMode = models.find((model) => model.id === selected)?.fastMode === true;
 
   return (
     <DropdownMenu>
@@ -719,25 +699,7 @@ export function ComposerOverflowMenu({
           </DropdownMenuGroup>
         )}
 
-        {onChange && claude && longContext && (
-          <>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>Context window</DropdownMenuLabel>
-              {CONTEXT_WINDOWS.map((option) => (
-                <DropdownMenuItem
-                  key={option.id}
-                  onClick={() => onChange({ ...choice, contextWindow: option.id === "default" ? undefined : option.id })}
-                >
-                  <span className="flex-1">{option.label}</span>
-                  {(choice.contextWindow ?? "default") === option.id && <CheckIcon className="size-3.5 text-primary" />}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuGroup>
-          </>
-        )}
-
-        {onChange && claude && (
+        {onChange && fastMode && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>

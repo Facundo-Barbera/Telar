@@ -468,7 +468,6 @@ export function Composer({
   const choice: ModelChoice = {
     ...(stored?.model ? { model: stored.model } : {}),
     ...(stored?.effort ? { effort: stored.effort } : {}),
-    ...(stored?.contextWindow ? { contextWindow: stored.contextWindow } : {}),
     ...(stored?.fastMode === undefined ? {} : { fastMode: stored.fastMode }),
   };
 

@@ -93,15 +93,20 @@ export const Effort = z.string().min(1);
 export type Effort = z.infer<typeof Effort>;
 
 /**
- * Which context window a turn runs with.
+ * THERE IS NO `ContextWindow` HERE ANY MORE, and its absence is the correction.
  *
- * A CLOSED SET, unlike `Effort`, because it is not a provider vocabulary — it is
- * a switch with two positions. `default` is whatever the model ships with and is
- * the absence of a choice; `1m` opts into the long-context beta, which the
- * Agent SDK gates behind a `betas` flag and which not every model supports.
+ * This contract used to carry a two-position switch — `default` | `1m` — which
+ * the Claude driver turned into `betas: ['context-1m-2025-08-07']`. Asking the
+ * installed Claude Code what models it has (see apps/engine/src/models.ts)
+ * showed both halves of that to be wrong: the long window is not a beta any
+ * more, and the provider does not express it as a setting at all. It expresses
+ * it as a MODEL: `claude-opus-5[1m]` and `sonnet[1m]` are rows in its own list,
+ * alongside `sonnet` and `haiku`.
+ *
+ * So the switch is gone and long context is picked the way the provider offers
+ * it — by choosing that model. One control fewer, and it is the provider's own
+ * vocabulary rather than a translation of it.
  */
-export const ContextWindow = z.enum(["default", "1m"]);
-export type ContextWindow = z.infer<typeof ContextWindow>;
 
 /**
  * A model AND/OR AN EFFORT on a configured instance. Routing is by
@@ -126,25 +131,15 @@ export const ModelSelection = z
     model: z.string().min(1).optional(),
     effort: Effort.optional(),
     /**
-     * How much context the model is given.
-     *
-     * `1m` OPTS INTO A BETA — the Agent SDK's `betas: ['context-1m-2025-08-07']`
-     * — so it is absent by default rather than defaulted to a number this
-     * contract would then have to keep true as models change. Claude-only:
-     * Codex has no equivalent and ignores it, which its driver states.
-     */
-    contextWindow: ContextWindow.optional(),
-    /**
      * Trade some quality for latency, where the provider offers it. Reaches the
-     * Agent SDK as an inline `settings: { fastMode }`. Claude-only.
+     * Agent SDK as an inline `settings: { fastMode }`. Claude-only, and not on
+     * every Claude model — the catalogue says which (`ProviderModel.fastMode`).
      */
     fastMode: z.boolean().optional(),
   })
-  .refine(
-    (value) =>
-      value.model !== undefined || value.effort !== undefined || value.contextWindow !== undefined || value.fastMode !== undefined,
-    { message: "a model selection must name at least one of model, effort, context window or fast mode" },
-  );
+  .refine((value) => value.model !== undefined || value.effort !== undefined || value.fastMode !== undefined, {
+    message: "a model selection must name at least one of model, effort or fast mode",
+  });
 export type ModelSelection = z.infer<typeof ModelSelection>;
 
 /**
@@ -396,6 +391,22 @@ export const ProviderModel = z.object({
   hidden: z.boolean(),
   efforts: z.array(Effort),
   defaultEffort: Effort.optional(),
+  /**
+   * The canonical id an ALIAS resolves to right now — `sonnet` → `claude-sonnet-5`.
+   *
+   * Claude Code's list is mostly aliases, and the alias is what a session should
+   * store: it keeps meaning the current model as the provider moves it, which a
+   * pinned wire id does not. This field is what the alias means TODAY, so a
+   * surface can say which model you are actually about to run and a stored wire
+   * id can be matched back to the row that covers it.
+   */
+  resolves: z.string().min(1).optional(),
+  /**
+   * Whether THIS model offers fast mode. Per model, not per provider: of the six
+   * rows the installed Claude Code reports, two support it. A toggle offered on
+   * a model that does not is a control that silently does nothing.
+   */
+  fastMode: z.boolean(),
 });
 export type ProviderModel = z.infer<typeof ProviderModel>;
 

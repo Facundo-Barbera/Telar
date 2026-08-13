@@ -1179,7 +1179,6 @@ export class EngineStore {
               // explicit `undefined` the engine would then hand to a driver.
               ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
-              ...(input.model.contextWindow ? { contextWindow: input.model.contextWindow } : {}),
               ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
             },
           }

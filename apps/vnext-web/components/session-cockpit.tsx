@@ -770,13 +770,12 @@ export function SessionCockpit({
         // the second to fail after the first landed.
         const creationPatch = {
           ...(draftRuntimeMode === "auto" ? {} : { runtimeMode: draftRuntimeMode }),
-          ...(draftModel.model || draftModel.effort || draftModel.contextWindow || draftModel.fastMode !== undefined
+          ...(draftModel.model || draftModel.effort || draftModel.fastMode !== undefined
             ? {
                 model: {
                   instanceId: created.session.providerInstanceId,
                   ...(draftModel.model ? { model: draftModel.model } : {}),
                   ...(draftModel.effort ? { effort: draftModel.effort } : {}),
-                  ...(draftModel.contextWindow ? { contextWindow: draftModel.contextWindow } : {}),
                   ...(draftModel.fastMode === undefined ? {} : { fastMode: draftModel.fastMode }),
                 },
               }
@@ -825,12 +824,11 @@ export function SessionCockpit({
       await api.submitTurn(target, {
         runId,
         input: text,
-        ...(pending?.model || pending?.effort || pending?.contextWindow || pending?.fastMode !== undefined
+        ...(pending?.model || pending?.effort || pending?.fastMode !== undefined
           ? {
               model: {
                 ...(pending.model ? { model: pending.model } : {}),
                 ...(pending.effort ? { effort: pending.effort } : {}),
-                ...(pending.contextWindow ? { contextWindow: pending.contextWindow } : {}),
                 ...(pending.fastMode === undefined ? {} : { fastMode: pending.fastMode }),
               },
             }
@@ -898,12 +896,11 @@ export function SessionCockpit({
          * `undefined` only when BOTH are absent is what clears it.
          */
         model:
-          next.model || next.effort || next.contextWindow || next.fastMode !== undefined
+          next.model || next.effort || next.fastMode !== undefined
             ? {
                 instanceId: session.providerInstanceId,
                 ...(next.model ? { model: next.model } : {}),
                 ...(next.effort ? { effort: next.effort } : {}),
-                ...(next.contextWindow ? { contextWindow: next.contextWindow } : {}),
                 ...(next.fastMode === undefined ? {} : { fastMode: next.fastMode }),
               }
             : // `null`, not `undefined`: JSON.stringify drops an undefined key, so
