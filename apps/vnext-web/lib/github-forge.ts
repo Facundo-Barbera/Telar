@@ -12,7 +12,14 @@
  * difference between a button that refuses and a button that tells you why it
  * would.
  */
-import type { GitHubCheck, GitHubDetailUnavailable, GitHubMergeRefusal, GitHubPullDetail } from "@telar/engine-client";
+import type {
+  GitHubCheck,
+  GitHubComment,
+  GitHubDetailUnavailable,
+  GitHubMergeRefusal,
+  GitHubPullDetail,
+  GitHubReview,
+} from "@telar/engine-client";
 
 /**
  * Why there is nothing to show, and what to do about it.
@@ -229,6 +236,97 @@ export const STATUS_TONE: Record<ForgeStatus, "active" | "done" | "none" | "info
   completed: "done",
   abandoned: "none",
 };
+
+/**
+ * ONE CONVERSATION, IN ORDER.
+ *
+ * The detail view used to draw three separate lists — the body, then every review,
+ * then every comment — which is not how any of it happened. On a pull request where
+ * a review answers a comment, the answer appeared in a different section, above the
+ * thing it answered. A reader had to reconstruct the order themselves, from
+ * timestamps, in a 320px column.
+ *
+ * So it is one timeline: the body, then comments and reviews interleaved by when
+ * they were written. That is also what makes a CARD per entry worth having — with
+ * three sections the boundaries were section headings; with one list the boundary
+ * has to be the entry itself.
+ */
+export type ForgeEntryKind = "body" | "comment" | "review";
+
+export type ForgeEntry = {
+  /** Stable within one thread, for React and for nothing else. */
+  id: string;
+  kind: ForgeEntryKind;
+  at: number;
+  author?: string;
+  /** GitHub's `OWNER` / `MEMBER` / `CONTRIBUTOR`, when it is worth a badge. */
+  association?: string;
+  /** A review's verdict. Absent on a body and on a comment. */
+  state?: string;
+  body: string;
+  minimized?: boolean;
+  minimizedReason?: string;
+  url?: string;
+};
+
+export function buildForgeTimeline(input: {
+  body: string;
+  author?: string;
+  createdAt: number;
+  comments: readonly GitHubComment[];
+  reviews?: readonly GitHubReview[];
+}): ForgeEntry[] {
+  const entries: ForgeEntry[] = input.comments.map((comment) => ({
+    id: comment.url,
+    kind: "comment" as const,
+    at: comment.createdAt,
+    ...(comment.author ? { author: comment.author } : {}),
+    ...(comment.authorAssociation && comment.authorAssociation !== "NONE" ? { association: comment.authorAssociation } : {}),
+    body: comment.body,
+    minimized: comment.minimized,
+    ...(comment.minimizedReason ? { minimizedReason: comment.minimizedReason } : {}),
+    url: comment.url,
+  }));
+
+  for (const [at, review] of (input.reviews ?? []).entries()) {
+    /**
+     * AN EMPTY `COMMENTED` REVIEW IS NOT AN EVENT.
+     *
+     * GitHub creates one every time somebody leaves inline comments on the diff:
+     * the review row exists to hold them and its own body is blank. Rendering those
+     * puts "someone commented" cards with nothing in them through the middle of the
+     * conversation. An empty APPROVED is kept, because who approved and when is the
+     * whole content of an approval.
+     */
+    if (!review.body.trim() && review.state.toUpperCase() === "COMMENTED") continue;
+    entries.push({
+      id: `review-${at}-${review.submittedAt}`,
+      kind: "review",
+      at: review.submittedAt,
+      ...(review.author ? { author: review.author } : {}),
+      state: review.state,
+      body: review.body,
+    });
+  }
+
+  entries.sort((left, right) => left.at - right.at);
+  /**
+   * THE BODY IS ALWAYS FIRST, not sorted with the rest. It is the thing that opened
+   * the thread by definition, and a repository where a bot comments in the same
+   * second the issue is filed would otherwise be able to sort a reply above the
+   * thing it replies to.
+   */
+  return [
+    {
+      id: "body",
+      kind: "body",
+      at: input.createdAt,
+      ...(input.author ? { author: input.author } : {}),
+      body: input.body,
+    },
+    ...entries,
+  ];
+}
 
 /** GitHub's review vocabulary, in words a row has space for. An unfamiliar state
  *  is shown as GitHub sent it rather than dropped. */

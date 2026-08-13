@@ -9,6 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  buildForgeTimeline,
   checkHeadline,
   checkSummary,
   issueStatus,
@@ -148,6 +149,91 @@ describe("pullStatus", () => {
     // it, when in fact nobody is going to.
     expect(pullStatus({ state: "CLOSED", isDraft: true })).toBe("closed");
     expect(pullStatus({ state: "OPEN", isDraft: true })).toBe("draft");
+  });
+});
+
+describe("buildForgeTimeline", () => {
+  const comment = (at: number, body = `c${at}`, over: Record<string, unknown> = {}) => ({
+    body,
+    createdAt: at,
+    minimized: false,
+    url: `https://gh/c${at}`,
+    ...over,
+  });
+  const review = (at: number, state: string, body = "") => ({ state, body, submittedAt: at, author: "grace" });
+
+  test("a review that ANSWERS a comment lands after it", () => {
+    // The defect this fixes: the body, then every review, then every comment, in
+    // three sections — so on a pull request where a review answered a comment, the
+    // answer appeared above the thing it answered, in a different part of the page.
+    const timeline = buildForgeTimeline({
+      body: "the ask",
+      author: "ada",
+      createdAt: 100,
+      comments: [comment(300, "what about X?")],
+      reviews: [review(200, "CHANGES_REQUESTED", "no"), review(400, "APPROVED", "because Y")],
+    });
+    expect(timeline.map((entry) => [entry.kind, entry.at])).toEqual([
+      ["body", 100],
+      ["review", 200],
+      ["comment", 300],
+      ["review", 400],
+    ]);
+  });
+
+  test("the body is first even when something shares its timestamp", () => {
+    // A bot that comments in the same second the issue is filed would otherwise be
+    // able to sort a reply above the thing it replies to.
+    const timeline = buildForgeTimeline({ body: "opened", createdAt: 100, comments: [comment(100, "bot"), comment(50, "impossible")] });
+    expect(timeline[0]).toMatchObject({ kind: "body", body: "opened" });
+  });
+
+  test("an EMPTY `COMMENTED` review is dropped — it is not an event", () => {
+    // GitHub creates one every time somebody leaves inline comments on the diff: the
+    // row exists to hold them and its own body is blank. Rendering those puts
+    // "someone commented" cards with nothing in them through the conversation.
+    const timeline = buildForgeTimeline({
+      body: "b",
+      createdAt: 1,
+      comments: [],
+      reviews: [review(10, "COMMENTED", "   "), review(20, "COMMENTED", "a real note")],
+    });
+    expect(timeline.filter((entry) => entry.kind === "review").map((entry) => entry.body)).toEqual(["a real note"]);
+  });
+
+  test("an EMPTY APPROVED review is KEPT — who approved and when is the whole content", () => {
+    const timeline = buildForgeTimeline({ body: "b", createdAt: 1, comments: [], reviews: [review(10, "APPROVED", "")] });
+    expect(timeline.filter((entry) => entry.kind === "review")).toHaveLength(1);
+    expect(timeline.at(-1)).toMatchObject({ state: "APPROVED", author: "grace" });
+  });
+
+  test("a hidden comment carries its reason so the card can collapse it", () => {
+    const timeline = buildForgeTimeline({
+      body: "b",
+      createdAt: 1,
+      comments: [comment(10, "spam", { minimized: true, minimizedReason: "SPAM", authorAssociation: "NONE" })],
+    });
+    // `NONE` is not worth a badge, so it does not become an association.
+    expect(timeline.at(-1)).toMatchObject({ minimized: true, minimizedReason: "SPAM" });
+    expect(timeline.at(-1)!.association).toBeUndefined();
+  });
+
+  test("an issue with nothing on it is one entry, not zero", () => {
+    // The body IS an entry, so an empty issue still renders one card rather than a
+    // blank surface.
+    expect(buildForgeTimeline({ body: "", createdAt: 5, comments: [] })).toHaveLength(1);
+  });
+
+  test("every entry id is distinct, including two reviews in the same second", () => {
+    // Two reviews submitted in the same second by a bot batch is real, and duplicate
+    // React keys drop one of them silently.
+    const timeline = buildForgeTimeline({
+      body: "b",
+      createdAt: 1,
+      comments: [],
+      reviews: [review(10, "APPROVED", "one"), review(10, "APPROVED", "two")],
+    });
+    expect(new Set(timeline.map((entry) => entry.id)).size).toBe(timeline.length);
   });
 });
 

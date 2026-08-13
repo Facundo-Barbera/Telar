@@ -46,7 +46,6 @@ import {
   ExternalLinkIcon,
   GitMergeIcon,
   GitPullRequestIcon,
-  MessageSquareIcon,
   MilestoneIcon,
   RotateCwIcon,
   SquareKanbanIcon,
@@ -56,16 +55,15 @@ import {
 } from "lucide-react";
 import type {
   GitHubCheck,
-  GitHubComment,
   GitHubIssueDetail,
   GitHubMergeMethod,
   GitHubMergeRefusal,
   GitHubPullDetail,
-  GitHubReview,
 } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { fmtAgo } from "@/lib/format";
 import {
+  buildForgeTimeline,
   checkHeadline,
   checkSummary,
   issueStatus,
@@ -76,6 +74,7 @@ import {
   STATUS_LABEL,
   STATUS_TONE,
   UNAVAILABLE,
+  type ForgeEntry,
 } from "@/lib/github-forge";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
@@ -188,17 +187,6 @@ function ForgeHeader({
   );
 }
 
-/** One line of `label: value` facts. Rows with nothing to say are absent rather
- *  than empty — an assignee row reading "—" is a row that taught you nothing. */
-function MetaRow({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="flex min-w-0 items-baseline gap-1.5 text-[11px] text-muted-foreground">
-      <span className="mt-0.5 flex size-3 shrink-0 items-center justify-center [&_svg]:size-3">{icon}</span>
-      <span className="min-w-0 flex-1">{children}</span>
-    </div>
-  );
-}
-
 /**
  * HEADINGS, RESCALED FOR A PANEL.
  *
@@ -273,56 +261,114 @@ function Markdown({ children, className }: { children: string; className?: strin
   );
 }
 
+/** A review's verdict, in the five-colour vocabulary. Only these three are worth a
+ *  colour; `COMMENTED` and `PENDING` are not verdicts. */
+const REVIEW_TONE: Record<string, string> = {
+  APPROVED: "text-success",
+  CHANGES_REQUESTED: "text-destructive",
+  DISMISSED: "text-muted-foreground",
+};
+
 /**
- * The conversation.
+ * ONE ENTRY IN THE CONVERSATION, AS A CARD.
+ *
+ * THE CARD IS THE WHOLE FIX. This surface used to render the body and every comment
+ * edge to edge with a hairline label between them, and a thread of four became one
+ * wall of prose in a 320px column — nothing said where one person stopped and the
+ * next began, and the body did not read as something anybody had written. A bordered
+ * box with an author bar is the device GitHub uses for exactly this reason, and it
+ * costs one border.
+ *
+ * THE AUTHOR BAR IS TINTED AND THE BODY IS NOT, so the eye can find the boundaries
+ * by scanning one column of grey rather than reading. The time sits at the far right
+ * for the same reason: a ragged left edge of names is scannable, a ragged right edge
+ * of dates is not.
  *
  * A COMMENT GITHUB HID STAYS HIDDEN, behind its reason and a click. Rendering a
  * spam-hidden comment in full beside the real ones shows a reader something the
  * repository decided to hide — and GitHub itself collapses these.
  */
-function CommentBody({ comment }: { comment: GitHubComment }) {
+function EntryCard({ entry }: { entry: ForgeEntry }) {
   const [revealed, setRevealed] = useState(false);
-  if (comment.minimized && !revealed) {
-    return (
-      <button
-        type="button"
-        onClick={() => setRevealed(true)}
-        className="rounded border border-dashed border-border px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
-      >
-        Hidden by the repository{comment.minimizedReason ? ` as ${comment.minimizedReason.toLowerCase().replaceAll("_", " ")}` : ""} — show anyway
-      </button>
-    );
-  }
-  return <Markdown>{comment.body}</Markdown>;
+  const hidden = entry.minimized === true && !revealed;
+  const verdict = entry.state ? (REVIEW_TONE[entry.state.toUpperCase()] ?? "text-muted-foreground") : undefined;
+
+  return (
+    <div className="min-w-0 overflow-hidden rounded-md border border-border">
+      <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground">
+        <span className="min-w-0 truncate font-medium text-foreground">{entry.author ?? "someone"}</span>
+        {/* WHAT THIS ENTRY IS, in the fewest words that distinguish it: the opening
+            post, a plain comment, or a review with a verdict. A plain comment says
+            nothing — it is the default and a word for it would be noise on every
+            card in the thread. */}
+        {entry.kind === "body" && <span className="shrink-0">opened this</span>}
+        {entry.kind === "review" && <span className={cn("shrink-0", verdict)}>{reviewLabel(entry.state ?? "")}</span>}
+        {entry.association && (
+          <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+            {entry.association.toLowerCase()}
+          </Badge>
+        )}
+        <span className="ml-auto shrink-0 tabular-nums" title={when(entry.at)}>
+          {fmtAgo(entry.at)}
+        </span>
+        {entry.url && (
+          <a
+            href={entry.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open this comment on GitHub"
+            className="shrink-0 rounded p-0.5 transition-colors hover:text-foreground"
+          >
+            <ExternalLinkIcon className="size-2.5" />
+          </a>
+        )}
+      </div>
+      <div className="min-w-0 px-2 py-1.5">
+        {hidden ? (
+          <button
+            type="button"
+            onClick={() => setRevealed(true)}
+            className="w-full rounded border border-dashed border-border px-2 py-1 text-left text-[10px] leading-snug text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Hidden by the repository{entry.minimizedReason ? ` as ${entry.minimizedReason.toLowerCase().replaceAll("_", " ")}` : ""} — show anyway
+          </button>
+        ) : entry.body.trim() ? (
+          <Markdown>{entry.body}</Markdown>
+        ) : (
+          /* A bare approval has no body, and that is not a missing one. */
+          <p className="text-[11px] text-muted-foreground">{entry.kind === "review" ? "No comment left with this review." : "No description was written."}</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
-function CommentThread({ comments, older }: { comments: readonly GitHubComment[]; older: number }) {
-  if (comments.length === 0 && older === 0) return null;
+/**
+ * The conversation, in the order it happened.
+ *
+ * ONE LIST RATHER THAN THREE SECTIONS. The body, the reviews and the comments used
+ * to be three lists in that order, which is not how any of it occurred: a review
+ * answering a comment appeared above the thing it answered, in a different section.
+ * See `buildForgeTimeline` for what is merged and what is dropped.
+ */
+function Timeline({ entries, older }: { entries: readonly ForgeEntry[]; older: number }) {
+  const said = entries.filter((entry) => entry.kind !== "body").length;
   return (
     <>
-      <PanelDivider label={`${comments.length + older} ${comments.length + older === 1 ? "comment" : "comments"}`} />
+      <PanelDivider label={said === 0 ? "no replies" : `${said + older} ${said + older === 1 ? "reply" : "replies"}`} />
       {/* NEVER SILENT ABOUT THE CUT. A surface that dropped half a conversation
           without saying so has lied about the conversation. */}
       {older > 0 && (
-        <p className="px-3 pb-2 text-[10px] text-muted-foreground">
+        <p className="px-3 pb-2 text-[10px] leading-snug text-muted-foreground">
           The {older} oldest {older === 1 ? "comment is" : "comments are"} not shown — open it on GitHub for the whole thread.
         </p>
       )}
-      <div className="flex flex-col gap-3 px-3 pb-3">
-        {comments.map((comment) => (
-          <div key={comment.url} className="min-w-0">
-            <p className="mb-1 flex items-baseline gap-1.5 text-[10px] text-muted-foreground">
-              <span className="font-medium text-foreground">{comment.author ?? "someone"}</span>
-              {comment.authorAssociation && comment.authorAssociation !== "NONE" && (
-                <Badge variant="outline" className="px-1 py-0 text-[9px] font-normal">
-                  {comment.authorAssociation.toLowerCase()}
-                </Badge>
-              )}
-              <span title={when(comment.createdAt)}>{fmtAgo(comment.createdAt)}</span>
-            </p>
-            <CommentBody comment={comment} />
-          </div>
-        ))}
+      <div className="flex flex-col gap-2 px-3 pb-3">
+        {entries
+          .filter((entry) => entry.kind !== "body")
+          .map((entry) => (
+            <EntryCard key={entry.id} entry={entry} />
+          ))}
       </div>
     </>
   );
@@ -386,33 +432,6 @@ function ChecksBlock({ checks }: { checks: readonly GitHubCheck[] }) {
           ))}
         </div>
       )}
-    </>
-  );
-}
-
-const REVIEW_TONE: Record<string, string> = {
-  APPROVED: "text-success",
-  CHANGES_REQUESTED: "text-destructive",
-  DISMISSED: "text-muted-foreground",
-};
-
-function ReviewsBlock({ reviews }: { reviews: readonly GitHubReview[] }) {
-  if (reviews.length === 0) return null;
-  return (
-    <>
-      <PanelDivider label={`${reviews.length} ${reviews.length === 1 ? "review" : "reviews"}`} />
-      <div className="flex flex-col gap-2.5 px-3 pb-3">
-        {reviews.map((review, at) => (
-          <div key={`${review.author ?? "?"}-${review.submittedAt}-${at}`} className="min-w-0">
-            <p className="mb-1 flex items-baseline gap-1.5 text-[10px] text-muted-foreground">
-              <span className="font-medium text-foreground">{review.author ?? "someone"}</span>
-              <span className={cn(REVIEW_TONE[review.state.toUpperCase()] ?? "text-muted-foreground")}>{reviewLabel(review.state)}</span>
-              <span title={when(review.submittedAt)}>{fmtAgo(review.submittedAt)}</span>
-            </p>
-            {review.body.trim() && <Markdown>{review.body}</Markdown>}
-          </div>
-        ))}
-      </div>
     </>
   );
 }
@@ -586,19 +605,6 @@ function MergeFooter({
   );
 }
 
-/** `+40 −3 across 2 files`, in the register the diff surface uses. */
-function DiffStat({ pull }: { pull: GitHubPullDetail }) {
-  return (
-    <span className="font-mono tabular-nums">
-      <span className="text-success">+{pull.additions.toLocaleString("en-US")}</span>{" "}
-      <span className="text-destructive">−{pull.deletions.toLocaleString("en-US")}</span>{" "}
-      <span className="text-muted-foreground">
-        across {pull.changedFiles.toLocaleString("en-US")} {pull.changedFiles === 1 ? "file" : "files"}
-      </span>
-    </span>
-  );
-}
-
 export function ForgeDetailSurface({
   kind,
   number,
@@ -690,6 +696,16 @@ export function ForgeDetailSurface({
 
   const mine = kind === "pull" && Boolean(branch) && pull?.headRefName === branch;
   const status = issue ? issueStatus(issue) : pullStatus(pull!);
+  const openedAt = issue ? issue.createdAt : pull!.createdAt;
+  /** The body, then comments and reviews in the order they were written — see
+   *  `buildForgeTimeline` for what it merges and what it drops. */
+  const timeline = buildForgeTimeline({
+    body: thing.body,
+    ...(thing.author ? { author: thing.author } : {}),
+    createdAt: openedAt,
+    comments: thing.comments,
+    ...(pull ? { reviews: pull.reviews } : {}),
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -707,84 +723,105 @@ export function ForgeDetailSurface({
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-1 px-3 py-2.5">
-          <MetaRow icon={<UserIcon />}>
-            <span className="font-medium text-foreground">{thing.author ?? "someone"}</span> opened this{" "}
-            <span title={when(kind === "issue" ? issue!.createdAt : pull!.createdAt)}>{fmtAgo(kind === "issue" ? issue!.createdAt : pull!.createdAt)}</span>
-            {thing.updatedAt > (kind === "issue" ? issue!.createdAt : pull!.createdAt) && (
-              <span className="text-muted-foreground"> · updated {fmtAgo(thing.updatedAt)}</span>
+        {/**
+         * THE FACTS, IN THE SAME GRAMMAR AS A LIST ROW.
+         *
+         * This was four stacked icon rows in four shades of grey, each a sentence,
+         * which is why the top of the panel read as a blob. The list row's shape —
+         * one line of facts, then one line of chips — is the shape that works at
+         * this width, and using it twice means clicking a row does not change the
+         * language it was described in.
+         */}
+        <div className="flex flex-col gap-1.5 px-3 py-2.5">
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+            <span className="font-medium text-foreground">{thing.author ?? "someone"}</span>
+            <span title={when(openedAt)}>opened this {fmtAgo(openedAt)}</span>
+            {thing.updatedAt > openedAt && <span>· updated {fmtAgo(thing.updatedAt)}</span>}
+            {thing.assignees.length > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-foreground" title={`Assigned to ${thing.assignees.join(", ")}`}>
+                <UserIcon className="size-2.5" />
+                {thing.assignees.join(", ")}
+              </span>
             )}
-          </MetaRow>
+          </p>
+
+          {/* THE BRANCH PAIR AND THE DIFFSTAT ON ONE LINE. Two facts about the same
+              thing — what this changes and where it goes — and separating them cost
+              a whole row each for six words. */}
           {pull && (
-            <MetaRow icon={<GitPullRequestIcon />}>
-              <span className="font-mono">{pull.headRefName ?? "?"}</span> → <span className="font-mono">{pull.baseRefName ?? "?"}</span>
+            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+              <span className="text-foreground">{pull.headRefName ?? "?"}</span>
+              <span aria-hidden>→</span>
+              <span className="text-foreground">{pull.baseRefName ?? "?"}</span>
+              <span className="tabular-nums">
+                <span className="text-success">+{pull.additions.toLocaleString("en-US")}</span>{" "}
+                <span className="text-destructive">−{pull.deletions.toLocaleString("en-US")}</span>{" "}
+                <span>
+                  in {pull.changedFiles.toLocaleString("en-US")} {pull.changedFiles === 1 ? "file" : "files"}
+                </span>
+              </span>
               {/* The one badge worth the width on a session's panel: this pull
                   request is FOR THE BRANCH THIS SESSION IS ON. */}
               {mine && (
-                <Badge variant="secondary" className="ml-1.5 px-1 py-0 text-[9px] font-normal">
+                <Badge variant="secondary" className="px-1 py-0 font-sans text-[9px] font-normal">
                   this session
                 </Badge>
               )}
-            </MetaRow>
+            </p>
           )}
-          {pull && (
-            <MetaRow icon={<MessageSquareIcon />}>
-              <DiffStat pull={pull} />
-            </MetaRow>
-          )}
+
           {pull?.mergedAt && (
-            <MetaRow icon={<GitMergeIcon />}>
-              <span className="text-success">Merged</span>
-              {pull.mergedBy ? <span className="text-foreground"> by {pull.mergedBy}</span> : null}{" "}
-              <span title={when(pull.mergedAt)}>{fmtAgo(pull.mergedAt)}</span>
-            </MetaRow>
+            <p className="flex items-center gap-1 text-[11px] text-success">
+              <GitMergeIcon className="size-3" />
+              Merged{pull.mergedBy ? ` by ${pull.mergedBy}` : ""} <span title={when(pull.mergedAt)}>{fmtAgo(pull.mergedAt)}</span>
+            </p>
           )}
-          {(thing.assignees.length > 0 || thing.milestone) && (
-            <MetaRow icon={<MilestoneIcon />}>
-              {[
-                thing.assignees.length > 0 ? `assigned to ${thing.assignees.join(", ")}` : undefined,
-                thing.milestone ? `milestone ${thing.milestone}` : undefined,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </MetaRow>
-          )}
-          {/* THE BOARDS. Absent rather than empty when there are none, and the list
-              surface is where the "no read:project scope" sentence lives — a detail
-              view has no way to tell an unscoped token from an unplaced issue. */}
-          {thing.projects.length > 0 && (
-            <MetaRow icon={<SquareKanbanIcon />}>
-              {thing.projects.map((project) => (
-                <Badge key={project} variant="secondary" className="mr-1 px-1 py-0 text-[9px] font-normal">
-                  {project}
-                </Badge>
-              ))}
-            </MetaRow>
-          )}
-          {thing.labels.length > 0 && (
-            <div className="mt-0.5 flex flex-wrap gap-1">
+
+          {/* THE CHIPS LINE. Labels, then the milestone, then the boards — the same
+              order and the same shapes the list row uses. Absent when there are
+              none, rather than an empty strip. */}
+          {(thing.labels.length > 0 || thing.milestone || thing.projects.length > 0) && (
+            <div className="flex flex-wrap items-center gap-1">
               {thing.labels.map((label) => (
                 <Badge key={label.name} variant="outline" className="px-1 py-0 text-[9px] font-normal">
                   {label.name}
+                </Badge>
+              ))}
+              {thing.milestone && (
+                <Badge variant="outline" className="gap-0.5 px-1 py-0 text-[9px] font-normal" title={`Milestone ${thing.milestone}`}>
+                  <MilestoneIcon className="size-2.5" />
+                  {thing.milestone}
+                </Badge>
+              )}
+              {/* Absent rather than empty when there are none, and the LIST surface is
+                  where the "no read:project scope" sentence lives — a detail view has
+                  no way to tell an unscoped token from an unplaced issue. */}
+              {thing.projects.map((project) => (
+                <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-[9px] font-normal" title={`On the ${project} board`}>
+                  <SquareKanbanIcon className="size-2.5" />
+                  {project}
                 </Badge>
               ))}
             </div>
           )}
         </div>
 
-        {/* THE BODY, and a sentence when there is none. A blank space where a
-            description goes reads as a surface that failed to load one. */}
+        {/**
+         * THE BODY IS THE FIRST CARD, not a bare block above the conversation.
+         *
+         * It is the first thing somebody said, and drawing it as unattributed prose
+         * made the whole surface read as a document with comments stapled underneath.
+         * As a card with an author bar it is the opening of a thread, which is what it
+         * is.
+         */}
         <div className="border-t border-border px-3 py-2.5">
-          {thing.body.trim() ? (
-            <Markdown>{thing.body}</Markdown>
-          ) : (
-            <p className="text-[11px] text-muted-foreground">No description was written.</p>
-          )}
+          <EntryCard entry={timeline[0]!} />
         </div>
 
+        {/* CHECKS BEFORE THE CONVERSATION, because they are status rather than
+            something anybody said — and status is what you came to look at. */}
         {pull && <ChecksBlock checks={pull.checks} />}
-        {pull && <ReviewsBlock reviews={pull.reviews} />}
-        <CommentThread comments={thing.comments} older={thing.olderComments} />
+        <Timeline entries={timeline} older={thing.olderComments} />
       </div>
 
       {pull && <MergeFooter pull={pull} projectId={projectId} onMerged={setPull} onReread={refresh} />}
