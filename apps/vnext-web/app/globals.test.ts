@@ -55,10 +55,12 @@ describe("the design token palette", () => {
      * Tokens supplied from OUTSIDE this stylesheet, which are therefore
      * legitimately read but never defined here:
      *  - `--font-geist-*` are emitted by next/font in layout.tsx.
-     *  - `--sdm-c` / `--shiki-dark` are written by Shiki into inline styles.
+     *  - `--sdm-c`, `--shiki-light` and `--shiki-dark` are written by Shiki into
+     *    inline styles — the first by Streamdown's copy for the transcript's
+     *    code blocks, the other two by the file viewer's own tokens.
      *  - `--shimmer-*` are set by the Shimmer component's own inline style.
      */
-    const external = /^--(?:font-geist-|sdm-c|shiki-dark|shimmer-)/;
+    const external = /^--(?:font-geist-|sdm-c|shiki-light|shiki-dark|shimmer-)/;
 
     const read = new Set([...css.matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((match) => match[1]));
     expect(read.size).toBeGreaterThan(10);

@@ -35,20 +35,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ChevronRightIcon,
-  FileIcon,
-  FolderIcon,
-  FolderOpenIcon,
-  FolderTreeIcon,
-  RotateCwIcon,
-  SearchIcon,
-} from "lucide-react";
+import { ChevronRightIcon, FolderIcon, FolderOpenIcon, FolderTreeIcon, RotateCwIcon, SearchIcon } from "lucide-react";
 import type { GitChangeStatus, TurnState, WorkspaceListing } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "@/lib/file-tree";
 import { directoryReference, fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { REVIEW_STATUS_LETTER } from "@/lib/session-review";
+import { FileKindIcon } from "@/components/session/file-icon";
 import { PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -98,7 +91,7 @@ function FileTreeRow({
   register: (element: HTMLButtonElement | null) => void;
 }) {
   const directory = row.node.kind === "directory";
-  const Icon = directory ? (expanded ? FolderOpenIcon : FolderIcon) : FileIcon;
+  const Folder = expanded ? FolderOpenIcon : FolderIcon;
   return (
     /* Draggable on the WRAPPER, not the button — a draggable <button> fights its
        own click on every browser that has ever shipped. Same note as the Diff
@@ -139,7 +132,17 @@ function FileTreeRow({
           <span className="flex size-3 shrink-0 items-center justify-center">
             {directory && <ChevronRightIcon className={cn("size-3 text-muted-foreground transition-transform", expanded && "rotate-90")} />}
           </span>
-          <Icon className={cn("size-3.5 shrink-0", dirtyInside ? "text-warning" : "text-muted-foreground")} />
+          {/* A DIRECTORY IS A FOLDER; A FILE IS WHAT IT IS. The folder keeps the
+              panel's own colours because a directory has no language — the one
+              exception is the warning tint, which is state and outranks it. A
+              file gets its kind's glyph and tint (lib/file-kinds.ts), which is
+              what makes the tree scannable rather than a column of identical
+              sheets. */}
+          {directory ? (
+            <Folder className={cn("size-3.5 shrink-0", dirtyInside ? "text-warning" : "text-muted-foreground")} />
+          ) : (
+            <FileKindIcon path={row.node.path} className="size-3.5" />
+          )}
           <span className={cn("min-w-0 flex-1 truncate font-mono text-[11px]", directory ? "text-foreground" : "text-muted-foreground")}>
             {row.node.name}
           </span>

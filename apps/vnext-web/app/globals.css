@@ -333,6 +333,23 @@ pre span[style*="--sdm-c"] {
   color: var(--shiki-dark);
 }
 
+/* THE SAME TRICK, FOR THE FILE VIEWER'S OWN MARKUP.
+
+   The viewer draws its own line-numbered table rather than Shiki's `<pre>` (it
+   needs a gutter that does not end up in a copy), so it renders tokens itself
+   with `defaultColor: false` — each span carrying BOTH themes as custom
+   properties. These two rules are what turns that into pixels, and why switching
+   light/dark repaints an open file without re-tokenising a line of it.
+
+   Keyed on `data-shiki` rather than a class for the reason the comment above
+   gives: an attribute cannot be missed by Tailwind's scanner. */
+[data-shiki] span[style*="--shiki-light"] {
+  color: var(--shiki-light);
+}
+.dark [data-shiki] span[style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
+
 /* Streamdown ships its own stylesheet (imported ahead of this one in
    layout.tsx) and marks each block with a data attribute. One structural fix
    belongs here: it emits ONE span per line inside a code block, carrying the

@@ -5,7 +5,7 @@ name: Release desktop app
 # build-desktop.sh computes (via set-desktop-version.mjs), not typed by hand.
 #
 # ALWAYS origin/main, AND NOT A CHOICE. This used to take a `ref` input
-# defaulting to origin/main, which made "which commit is this release?" a
+# defaulting to origin/main, which made "which commit is this release?"
 # question with a per-run answer — a signed, notarized, publicly downloadable
 # artifact could be cut from any branch, including one that had never been
 # reviewed or merged. A released build must be reproducible from the trunk by
