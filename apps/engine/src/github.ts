@@ -26,6 +26,7 @@
 import { execFile } from "node:child_process";
 import type {
   GitHubCheck,
+  GitHubCheckLog,
   GitHubComment,
   GitHubDetailUnavailable,
   GitHubFacets,
@@ -593,6 +594,68 @@ const STATUS_CONTEXT: Record<string, { status: string; conclusion?: string }> = 
  * entry this parser cannot name is dropped, so an unfamiliar shape costs a row
  * and not the panel.
  */
+/**
+ * The Actions job id inside a check's details URL.
+ *
+ * `https://github.com/o/r/actions/runs/18386406777/job/52385857117` — measured, and
+ * the only place `gh`'s rollup carries the job. Anything not shaped like that (a
+ * commit status's `targetUrl`, a third-party check's own dashboard) has no job and
+ * therefore no log to fetch, which is a normal answer rather than a failure.
+ */
+export function parseJobId(url: string): string | undefined {
+  const match = /\/actions\/runs\/\d+\/job\/(\d+)/.exec(url);
+  return match?.[1];
+}
+
+/** How many lines of a failing log travel to a client. Enough to hold a stack
+ *  trace and a test summary; short enough that dropping it into a message does not
+ *  spend the context on runner boilerplate. */
+export const MAX_CHECK_LOG_LINES = 200;
+
+/**
+ * A failing check's log, from the bottom.
+ *
+ * THE TAIL IS THE FAILURE. `--log-failed` opens with the runner's image
+ * provisioner, its Azure region and its worker id; the error is at the end. Capping
+ * from the front would return thirty lines about Ubuntu.
+ *
+ * PREFIXES STRIPPED. Every line is `job / step<TAB>STEP<TAB><ISO timestamp> message`.
+ * The job and step are already on the check that asked, and the timestamp is noise
+ * in a chat message, so only the message survives.
+ */
+export function parseCheckLog(stdout: string): { lines: string[]; truncated: boolean } {
+  const all = stdout
+    .split(/\r?\n/)
+    .map((line) => {
+      // The message is after the last tab; a line with no tabs is already bare.
+      const tail = line.slice(line.lastIndexOf("\t") + 1);
+      // `2026-08-12T16:25:32.4355162Z ` — and a BOM, which the first line carries.
+      return tail.replace(/^﻿/, "").replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s?/, "");
+    })
+    .filter((line) => line.trim().length > 0);
+  if (all.length <= MAX_CHECK_LOG_LINES) return { lines: all, truncated: false };
+  return { lines: all.slice(-MAX_CHECK_LOG_LINES), truncated: true };
+}
+
+/**
+ * Ask for one job's failing log.
+ *
+ * `--log-failed` RATHER THAN `--log`, because a green job's full log is megabytes of
+ * nothing anybody asked about and the question here is always "what broke".
+ */
+export async function readCheckLog(gh: GhRunner, cwd: string, jobId: string): Promise<GitHubCheckLog> {
+  const result = await gh(cwd, ["run", "view", "--job", jobId, "--log-failed"]);
+  if (result.status !== 0) {
+    const message = result.stderr.trim() || result.stdout.trim();
+    return { unavailable: message || "gh could not read this job's log." };
+  }
+  const parsed = parseCheckLog(result.stdout);
+  // A job that failed without a failing STEP — cancelled, or the runner died — has
+  // an empty `--log-failed`. Saying so beats an empty box.
+  if (parsed.lines.length === 0) return { unavailable: "This job has no failing step to show a log for." };
+  return parsed;
+}
+
 export function parseChecks(value: unknown): GitHubCheck[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -606,6 +669,7 @@ export function parseChecks(value: unknown): GitHubCheck[] {
     const status = text(row.status);
     if (status) {
       const conclusion = text(row.conclusion);
+      const jobId = parseJobId(url);
       return [
         {
           name,
@@ -613,6 +677,7 @@ export function parseChecks(value: unknown): GitHubCheck[] {
           ...(conclusion ? { conclusion } : {}),
           ...(workflow ? { workflow } : {}),
           ...(url ? { url } : {}),
+          ...(jobId ? { jobId } : {}),
         },
       ];
     }

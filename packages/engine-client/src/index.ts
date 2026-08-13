@@ -13,6 +13,7 @@ import {
   type BrowserSnapshot,
   type GitCommitEntry,
   forgeQuery,
+  type GitHubCheckLog,
   type GitHubFacets,
   type GitHubIssueFilter,
   type GitHubIssueRead,
@@ -195,6 +196,16 @@ export class EngineClient {
   projectForgeFacets(projectId: string, options: { refresh?: boolean } = {}): Promise<{ facets: GitHubFacets }> {
     const suffix = options.refresh ? "?refresh=1" : "";
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/facets${suffix}`);
+  }
+
+  /**
+   * One failing check's log — the tail of `gh run view --log-failed`.
+   *
+   * NOT CACHED anywhere: a finished job's log never changes, so there is nothing to
+   * save, and a running job's is the one thing that must not be stale.
+   */
+  projectCheckLog(projectId: string, jobId: string): Promise<{ log: GitHubCheckLog }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/checks/${encodeURIComponent(jobId)}/log`);
   }
 
   /**

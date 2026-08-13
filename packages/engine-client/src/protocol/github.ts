@@ -304,8 +304,40 @@ export const GitHubCheck = z.object({
    *  and `name` alone is often a bare word like `test`. */
   workflow: z.string().min(1).optional(),
   url: z.string().min(1).optional(),
+  /**
+   * The Actions job behind this check, when there is one.
+   *
+   * PARSED OUT OF `detailsUrl`, which ends `/actions/runs/<run>/job/<job>` — the
+   * only place `gh`'s rollup carries it. It exists so a failing check can be asked
+   * for its LOG, which is the difference between handing an agent a URL it cannot
+   * read and handing it the error. A commit status has no job and no log.
+   */
+  jobId: z.string().min(1).optional(),
 });
 export type GitHubCheck = z.infer<typeof GitHubCheck>;
+
+/**
+ * The failing part of a check's log.
+ *
+ * THE TAIL, NOT THE HEAD. `gh run view --log-failed` starts with the runner's own
+ * preamble — image provisioner, region, worker id — and the error is at the bottom.
+ * A head-capped excerpt is thirty lines about Ubuntu; the tail is the failure.
+ *
+ * STRIPPED OF `gh`'s PREFIXES. Every line arrives as
+ * `job / step<TAB>STEP NAME<TAB>2026-08-12T16:25:32.4355162Z message`, which triples
+ * the length and buries the message. The job and step are already known from the
+ * check itself, so only the message survives.
+ */
+export const GitHubCheckLog = z.union([
+  z.object({
+    lines: z.array(z.string()),
+    /** True when older lines were dropped to fit the cap — so a surface can say
+     *  "the last 200 lines" rather than implying this is the whole log. */
+    truncated: z.boolean(),
+  }),
+  z.object({ unavailable: z.string().min(1) }),
+]);
+export type GitHubCheckLog = z.infer<typeof GitHubCheckLog>;
 
 /**
  * One issue, opened.

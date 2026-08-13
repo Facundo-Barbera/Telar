@@ -28,7 +28,7 @@
  *  these. Vendor-prefixed and suffixed per RFC 6839. */
 export const REFERENCE_MIME = "application/x-telar-reference+json";
 
-export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task";
+export type ReferenceKind = "issue" | "pull" | "file" | "page" | "task" | "check";
 
 export type TelarReference = {
   kind: ReferenceKind;
@@ -82,6 +82,63 @@ export function directoryReference(path: string): TelarReference {
 
 export function pageReference(page: { title?: string; url: string }): TelarReference {
   return { kind: "page", label: page.title?.trim() || page.url, text: page.url };
+}
+
+/**
+ * A CHECK, AND THE ERROR IT PRODUCED.
+ *
+ * THE ONE REFERENCE THAT CARRIES CONTENT, and the exception is earned. Every other
+ * reference here is an address because the agent can fetch the thing itself: a path
+ * for its Read tool, an issue number for its `gh`. A GitHub Actions log is neither —
+ * it needs an authenticated API call the agent cannot make, so a URL alone turns
+ * "fix this failure" into "go and find out what the failure was, which you cannot".
+ *
+ * WHICH IS WHY IT IS ONLY INCLUDED ONCE IT IS ON SCREEN. The log arrives when a
+ * reader opens the failing check, so what the drag carries is what they were looking
+ * at — the surface's standing promise that what lands in the box is what the agent
+ * gets. A check nobody expanded drags as its name, its status and its URL.
+ *
+ * FENCED, and labelled `log`. Without a fence a stack trace's backticks and hashes
+ * are read as markdown, and the model spends its attention on formatting.
+ */
+export function checkReference(check: {
+  name: string;
+  workflow?: string;
+  status: string;
+  conclusion?: string;
+  url?: string;
+  /** The tail of the failing log, when it has been read. */
+  log?: readonly string[];
+  logTruncated?: boolean;
+}): TelarReference {
+  const verdict = check.conclusion?.toLowerCase() || check.status.toLowerCase().replaceAll("_", " ");
+  const where = check.workflow && check.workflow !== check.name ? `${check.workflow} / ${check.name}` : check.name;
+  const head = `the "${where}" check (${verdict})${check.url ? ` — ${check.url}` : ""}`;
+  if (!check.log?.length) return { kind: "check", label: check.name, text: head };
+  const note = check.logTruncated ? `last ${check.log.length} lines of its failing log` : "its failing log";
+  return {
+    kind: "check",
+    label: check.name,
+    text: `${head}\n\n${note}:\n\n\`\`\`log\n${check.log.join("\n")}\n\`\`\``,
+  };
+}
+
+/**
+ * EVERY FAILING CHECK AT ONCE, which is the gesture people actually want.
+ *
+ * "CI is red, fix it" is one sentence and one drag, not five. The logs of the ones
+ * that have been opened are included and the rest contribute their names — so this
+ * gets better the more of them you looked at, and is never worse than a list.
+ */
+export function failingChecksReference(
+  checks: readonly { name: string; workflow?: string; status: string; conclusion?: string; url?: string; log?: readonly string[]; logTruncated?: boolean }[],
+): TelarReference {
+  if (checks.length === 1) return checkReference(checks[0]!);
+  return {
+    kind: "check",
+    label: `${checks.length} failing checks`,
+    text: `${checks.length} failing checks:\n\n${checks.map((check) => checkReference(check).text).join("\n\n")}`,
+  };
 }
 
 export function taskReference(task: { id: string; title?: string; state: string }): TelarReference {

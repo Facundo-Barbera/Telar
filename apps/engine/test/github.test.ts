@@ -12,18 +12,22 @@ import {
   classifyMergeFailure,
   classifyProjectFailure,
   listArgv,
+  MAX_CHECK_LOG_LINES,
   MAX_FACET_VALUES,
   MAX_THREAD_COMMENTS,
   mergePull,
+  parseCheckLog,
   parseChecks,
   parseComments,
   parseIssueDetail,
   parseIssues,
+  parseJobId,
   parseMergeMethods,
   parseProjectItems,
   parsePullDetail,
   parsePulls,
   parseReviews,
+  readCheckLog,
   readForgeFacets,
   readGitHub,
   readIssue,
@@ -631,6 +635,86 @@ describe("parseChecks", () => {
     expect(parseChecks([{ __typename: "SomethingNew", mystery: true }, { name: "lint", status: "COMPLETED" }])).toEqual([
       { name: "lint", status: "COMPLETED" },
     ]);
+  });
+});
+
+describe("parseJobId", () => {
+  test("the Actions job is inside the check's details URL, and nowhere else", () => {
+    // Measured: `gh`'s rollup carries the job only here.
+    expect(parseJobId("https://github.com/cli/cli/actions/runs/18386406777/job/52385857117")).toBe("52385857117");
+  });
+
+  test("a URL that is not an Actions job has none, which is a normal answer", () => {
+    // A commit status's `targetUrl` points at somebody else's dashboard; there is no
+    // log for this cockpit to fetch and that is not a failure.
+    expect(parseJobId("https://circleci.com/gh/o/r/1234")).toBeUndefined();
+    expect(parseJobId("https://github.com/o/r/actions/runs/123")).toBeUndefined();
+    expect(parseJobId("")).toBeUndefined();
+  });
+});
+
+describe("parseCheckLog", () => {
+  /** Two real lines, in `gh`'s actual shape — measured against a failing cli/cli job.
+   *  The first carries a BOM. */
+  const REAL = [
+    "no-response / noResponse\tUNKNOWN STEP\t﻿2026-08-12T16:25:32.4355162Z Current runner version: '2.336.0'",
+    "no-response / noResponse\tUNKNOWN STEP\t2026-08-12T16:25:32.4391472Z ##[group]Runner Image Provisioner",
+  ].join("\n");
+
+  test("strips the job, the step, the timestamp and the BOM", () => {
+    // Every line arrives three times longer than its message, with the message last.
+    // The job and step are already on the check that asked for this.
+    expect(parseCheckLog(REAL).lines).toEqual(["Current runner version: '2.336.0'", "##[group]Runner Image Provisioner"]);
+  });
+
+  test("KEEPS THE TAIL, because the failure is at the bottom", () => {
+    /**
+     * `--log-failed` opens with the runner's image provisioner, its Azure region and
+     * its worker id — measured. Capping from the front returns thirty lines about
+     * Ubuntu and none about what broke.
+     */
+    const many = Array.from({ length: MAX_CHECK_LOG_LINES + 40 }, (_unused, at) => `line ${at}`).join("\n");
+    const parsed = parseCheckLog(many);
+    expect(parsed.lines).toHaveLength(MAX_CHECK_LOG_LINES);
+    expect(parsed.truncated).toBe(true);
+    expect(parsed.lines.at(-1)).toBe(`line ${MAX_CHECK_LOG_LINES + 39}`);
+    expect(parsed.lines[0]).toBe("line 40");
+  });
+
+  test("blank lines are dropped rather than padding the cap", () => {
+    expect(parseCheckLog("a\n\n   \nb").lines).toEqual(["a", "b"]);
+  });
+
+  test("a line with no prefix at all survives intact", () => {
+    // Not every producer writes gh's three-column shape, and a slice on a tab that
+    // is not there would eat the line.
+    expect(parseCheckLog("plain failure text").lines).toEqual(["plain failure text"]);
+  });
+});
+
+describe("readCheckLog", () => {
+  test("a job with no failing STEP says so rather than showing an empty box", async () => {
+    // A cancelled job, or one whose runner died, has an empty `--log-failed`.
+    const read = await readCheckLog(async () => ok("   \n\n"), "/repo", "42");
+    expect(read).toEqual({ unavailable: "This job has no failing step to show a log for." });
+  });
+
+  test("gh refusing carries its own words", async () => {
+    expect(await readCheckLog(async () => failed("HTTP 404: Not Found"), "/repo", "42")).toEqual({ unavailable: "HTTP 404: Not Found" });
+  });
+
+  test("asks for the FAILING steps of one job, not the whole run", async () => {
+    // A green job's full log is megabytes of nothing anybody asked about.
+    const seen: string[][] = [];
+    await readCheckLog(
+      async (_cwd, args) => {
+        seen.push(args);
+        return ok("x\ty\t2026-01-01T00:00:00.0Z boom");
+      },
+      "/repo",
+      "42",
+    );
+    expect(seen[0]).toEqual(["run", "view", "--job", "42", "--log-failed"]);
   });
 });
 

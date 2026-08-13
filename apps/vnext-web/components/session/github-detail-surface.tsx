@@ -40,12 +40,14 @@
 import { useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import {
   CheckIcon,
+  ChevronRightIcon,
   CircleDotIcon,
   CircleSlashIcon,
   ClockIcon,
   ExternalLinkIcon,
   GitMergeIcon,
   GitPullRequestIcon,
+  GripVerticalIcon,
   MilestoneIcon,
   RotateCwIcon,
   SquareKanbanIcon,
@@ -76,7 +78,7 @@ import {
   UNAVAILABLE,
   type ForgeEntry,
 } from "@/lib/github-forge";
-import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
+import { checkReference, failingChecksReference, issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -385,19 +387,173 @@ function CheckGlyph({ check }: { check: GitHubCheck }) {
   return <XIcon className="size-3 text-destructive" />;
 }
 
+/** Whether a check is one somebody needs to look at — failing, or not finished. */
+function isNotable(check: GitHubCheck): boolean {
+  const conclusion = check.conclusion?.toUpperCase();
+  if (check.status.toUpperCase() !== "COMPLETED" || !conclusion) return true;
+  return conclusion !== "SUCCESS" && conclusion !== "SKIPPED" && conclusion !== "NEUTRAL" && conclusion !== "CANCELLED";
+}
+
+/** Whether it actually failed, as opposed to being skipped or still going — which
+ *  is what decides whether there is a failing log to fetch. */
+function hasFailed(check: GitHubCheck): boolean {
+  return check.status.toUpperCase() === "COMPLETED" && FAILED_CONCLUSIONS.has(check.conclusion?.toUpperCase() ?? "");
+}
+
+const FAILED_CONCLUSIONS = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"]);
+
+/**
+ * ONE CHECK, DRAGGABLE, AND OPENABLE WHEN IT FAILED.
+ *
+ * DRAGGING A CHECK IS THE POINT OF THIS BLOCK. Everything else here is reading;
+ * this is the one row you want to hand to an agent, and a URL alone would not do it
+ * — GitHub Actions logs need an authenticated call the agent cannot make. So opening
+ * a failing check fetches the tail of its log, and from then on the drag carries the
+ * error rather than a link to it (lib/drag-reference.ts).
+ *
+ * A GREEN CHECK IS STILL DRAGGABLE, because "why did this pass when it should not
+ * have" is a real question, and it costs nothing to allow.
+ */
+function CheckRow({
+  check,
+  projectId,
+  log,
+  onLog,
+}: {
+  check: GitHubCheck;
+  projectId: string;
+  log: CheckLogState | undefined;
+  onLog: (jobId: string, state: CheckLogState) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const failed = hasFailed(check);
+  const canOpen = failed && Boolean(check.jobId);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    // Fetched once, on first open. A finished job's log never changes, so there is
+    // nothing to re-ask; a second open reads what is already here.
+    if (!next || !check.jobId || log) return;
+    onLog(check.jobId, { loading: true });
+    void api
+      .projectCheckLog(projectId, check.jobId)
+      .then((read) => onLog(check.jobId!, "unavailable" in read.log ? { unavailable: read.log.unavailable } : { ...read.log }))
+      .catch((cause) => onLog(check.jobId!, { unavailable: cause instanceof VNextApiError ? cause.message : "The log could not be read." }));
+  };
+
+  return (
+    <div className="min-w-0">
+      <div
+        draggable
+        onDragStart={(event) =>
+          startReferenceDrag(
+            event.dataTransfer,
+            checkReference({
+              ...check,
+              ...(log && "lines" in log ? { log: log.lines, logTruncated: log.truncated } : {}),
+            }),
+          )
+        }
+        title={`${check.workflow ? `${check.workflow} · ` : ""}${check.name} — drag into the message to reference it`}
+        className="flex min-w-0 cursor-grab items-center gap-1.5 text-[11px] active:cursor-grabbing"
+      >
+        <CheckGlyph check={check} />
+        {/* THE NAME IS THE DISCLOSURE when there is a log, and inert when there is
+            not — rather than a chevron that does nothing on twenty green rows. */}
+        {canOpen ? (
+          <button type="button" onClick={toggle} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-foreground">
+            <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+            <span className="min-w-0 truncate">{check.name}</span>
+          </button>
+        ) : (
+          <span className="min-w-0 flex-1 truncate">{check.name}</span>
+        )}
+        {check.workflow && check.workflow !== check.name && (
+          <span className="max-w-24 shrink-0 truncate text-[10px] text-muted-foreground">{check.workflow}</span>
+        )}
+        {check.url && (
+          <a
+            href={check.url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={`Open ${check.name} on GitHub`}
+            draggable={false}
+            onClick={(event) => event.stopPropagation()}
+            className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ExternalLinkIcon className="size-3" />
+          </a>
+        )}
+      </div>
+      {open && (
+        <div className="mt-1 mb-2 ml-4">
+          {log?.loading ? (
+            <p className="flex items-center gap-2 text-[10px] text-muted-foreground">
+              <Spinner className="size-3" /> reading the failing step…
+            </p>
+          ) : log?.unavailable !== undefined ? (
+            <p className="text-[10px] leading-snug text-muted-foreground">{log.unavailable}</p>
+          ) : log?.lines ? (
+            <>
+              {/* MONOSPACE, SCROLLED, AND CAPPED IN HEIGHT. A log is the one thing on
+                  this surface that can be thousands of lines, and it must not push the
+                  conversation off the screen. */}
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-muted/40 p-1.5 font-mono text-[10px] leading-snug whitespace-pre-wrap">
+                {log.lines.join("\n")}
+              </pre>
+              {log.truncated && (
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  The last {log.lines.length} lines. Drag this check into the message to send them.
+                </p>
+              )}
+            </>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What we know about one job's log: nothing, in flight, the lines, or why not.
+ *
+ * `loading` IS ON EVERY MEMBER rather than only on the in-flight one, so a render can
+ * ask "is this still fetching" without first narrowing the union — the arrangement
+ * that made the previous version of this a type error at the one place it mattered.
+ */
+type CheckLogState =
+  | { loading: true; lines?: undefined; truncated?: undefined; unavailable?: undefined }
+  | { loading?: false; unavailable: string; lines?: undefined; truncated?: undefined }
+  | { loading?: false; lines: string[]; truncated: boolean; unavailable?: undefined };
+
 /**
  * The head commit's checks.
  *
- * FAILING AND RUNNING ONES ARE LISTED; passing ones are counted. Twenty-five green
- * rows in a 320px column is a wall that hides the one red row in it, and the
- * question this block answers is "is anything wrong", not "what ran".
+ * FAILING AND UNFINISHED ONES ARE OPEN; the green ones are behind a disclosure.
+ * Twenty-five green rows in a 320px column is a wall that hides the one red row in
+ * it — but "show me everything that ran" is a real question too, and answering it
+ * with a count alone was the previous version's mistake.
+ *
+ * THE WHOLE BLOCK IS DRAGGABLE WHEN SOMETHING IS RED, which is the gesture this
+ * exists for: "CI is broken, fix it" is one sentence and one drag rather than five.
  */
-function ChecksBlock({ checks }: { checks: readonly GitHubCheck[] }) {
+function ChecksBlock({ checks, projectId }: { checks: readonly GitHubCheck[]; projectId: string }) {
   const summary = useMemo(() => checkSummary(checks), [checks]);
-  const notable = checks.filter((check) => {
-    const conclusion = check.conclusion?.toUpperCase();
-    if (check.status.toUpperCase() !== "COMPLETED" || !conclusion) return true;
-    return conclusion !== "SUCCESS" && conclusion !== "SKIPPED" && conclusion !== "NEUTRAL" && conclusion !== "CANCELLED";
+  const notable = checks.filter(isNotable);
+  const quiet = checks.filter((check) => !isNotable(check));
+  const failing = checks.filter(hasFailed);
+  const [showAll, setShowAll] = useState(false);
+  /** Keyed by job id rather than held per row, so it survives the disclosure
+   *  collapsing and the drag can read a log the row is no longer showing. */
+  const [logs, setLogs] = useState<Record<string, CheckLogState>>({});
+  const noteLog = (jobId: string, state: CheckLogState) => setLogs((current) => ({ ...current, [jobId]: state }));
+
+  /** What the drag sends: every failing check, each with its log if it has been
+   *  opened. Better the more you looked at, never worse than a list of names. */
+  const failingWithLogs = failing.map((check) => {
+    const log = check.jobId ? logs[check.jobId] : undefined;
+    return { ...check, ...(log && "lines" in log ? { log: log.lines, logTruncated: log.truncated } : {}) };
   });
 
   return (
@@ -410,26 +566,50 @@ function ChecksBlock({ checks }: { checks: readonly GitHubCheck[] }) {
         <p className="px-3 pb-3 text-[11px] text-muted-foreground">No checks ran on this commit.</p>
       ) : (
         <div className="flex flex-col gap-1 px-3 pb-3">
-          <p className={cn("text-[11px]", summary.failed > 0 ? "text-destructive" : "text-muted-foreground")}>{checkHeadline(summary)}</p>
-          {notable.map((check, at) => (
-            <div key={`${check.name}-${at}`} className="flex min-w-0 items-center gap-1.5 text-[11px]">
-              <CheckGlyph check={check} />
-              <span className="min-w-0 flex-1 truncate" title={check.workflow ? `${check.workflow} · ${check.name}` : check.name}>
-                {check.name}
+          <div className="flex min-w-0 items-center gap-2">
+            <p className={cn("min-w-0 flex-1 truncate text-[11px]", summary.failed > 0 ? "text-destructive" : "text-muted-foreground")}>
+              {checkHeadline(summary)}
+            </p>
+            {/* ONE DRAG FOR ALL OF THEM. Only offered when something is actually
+                red — a button to reference nothing is a button that teaches you to
+                ignore this row. */}
+            {failing.length > 0 && (
+              <span
+                draggable
+                onDragStart={(event) => startReferenceDrag(event.dataTransfer, failingChecksReference(failingWithLogs))}
+                title={`Drag ${failing.length === 1 ? "this failure" : `all ${failing.length} failures`} into the message`}
+                className="inline-flex shrink-0 cursor-grab items-center gap-1 rounded border border-destructive/40 px-1 py-0 text-[9px] text-destructive active:cursor-grabbing"
+              >
+                <GripVerticalIcon className="size-2.5" />
+                {failing.length === 1 ? "drag the failure" : `drag all ${failing.length}`}
               </span>
-              {check.url && (
-                <a
-                  href={check.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`Open ${check.name} on GitHub`}
-                  className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  <ExternalLinkIcon className="size-3" />
-                </a>
-              )}
-            </div>
+            )}
+          </div>
+          {notable.map((check, at) => (
+            <CheckRow
+              key={`${check.name}-${at}`}
+              check={check}
+              projectId={projectId}
+              {...(check.jobId && logs[check.jobId] ? { log: logs[check.jobId] } : { log: undefined })}
+              onLog={noteLog}
+            />
           ))}
+          {/* THE GREEN ONES, ON REQUEST. Absent by default because they are not the
+              question; available because "did the deploy job even run" is. */}
+          {quiet.length > 0 &&
+            (showAll ? (
+              quiet.map((check, at) => (
+                <CheckRow key={`quiet-${check.name}-${at}`} check={check} projectId={projectId} log={undefined} onLog={noteLog} />
+              ))
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowAll(true)}
+                className="self-start text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              >
+                show {quiet.length} that {quiet.length === 1 ? "passed or was skipped" : "passed or were skipped"}
+              </button>
+            ))}
         </div>
       )}
     </>
@@ -820,7 +1000,7 @@ export function ForgeDetailSurface({
 
         {/* CHECKS BEFORE THE CONVERSATION, because they are status rather than
             something anybody said — and status is what you came to look at. */}
-        {pull && <ChecksBlock checks={pull.checks} />}
+        {pull && <ChecksBlock checks={pull.checks} projectId={projectId} />}
         <Timeline entries={timeline} older={thing.olderComments} />
       </div>
 

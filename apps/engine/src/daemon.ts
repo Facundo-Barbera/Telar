@@ -354,6 +354,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /**
+       * One failing check's log.
+       *
+       * `(\d+)` IN THE PATTERN, so a job id either is a number or is not this route.
+       * The id came from a check this engine handed out, and it still goes into a `gh`
+       * argv — which is exactly when "we produced it" stops being a reason to trust it.
+       */
+      const projectCheckLog = /^\/v2\/projects\/([^/]+)\/github\/checks\/(\d+)\/log$/.exec(url.pathname);
+      if (request.method === "GET" && projectCheckLog) {
+        writeJson(response, 200, {
+          log: await store.projectCheckLog(decodeURIComponent(projectCheckLog[1]), projectCheckLog[2]),
+        });
+        return;
+      }
       /** What there is to filter by. Its own route because it is its own cache — see
        *  `projectForgeFacets` — and because nothing asks for it until somebody opens
        *  a filter menu. */

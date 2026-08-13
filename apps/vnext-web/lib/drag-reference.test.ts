@@ -8,6 +8,8 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  checkReference,
+  failingChecksReference,
   fileReference,
   insertReference,
   issueReference,
@@ -96,5 +98,57 @@ describe("insertReference", () => {
     // A stale selection index from a textarea that re-rendered under the drop.
     expect(insertReference("abc", "#1", 99).draft).toBe("abc #1 ");
     expect(insertReference("abc", "#1", -5).draft).toBe("#1 abc");
+  });
+});
+
+describe("check references", () => {
+  const failing = { name: "test", workflow: "CI", status: "COMPLETED", conclusion: "FAILURE", url: "https://gh/job/1" };
+
+  test("a check nobody opened drags as its name, status and URL", () => {
+    // Enough for an agent with `gh` to go and look, which is what every other
+    // reference in this module is.
+    expect(checkReference(failing).text).toBe('the "CI / test" check (failure) — https://gh/job/1');
+  });
+
+  test("A CHECK WITH ITS LOG CARRIES THE LOG, which is the one exception in this file", () => {
+    // Every other reference is an address because the agent can fetch the thing. A
+    // GitHub Actions log needs an authenticated call it cannot make, so a URL alone
+    // turns "fix this failure" into "go and find out what it was, which you cannot".
+    const text = checkReference({ ...failing, log: ["FAIL src/a.test.ts", "expected 1, got 2"] }).text;
+    expect(text).toContain("its failing log");
+    // FENCED, or a stack trace's backticks and hashes are read as markdown.
+    expect(text).toContain("```log\nFAIL src/a.test.ts\nexpected 1, got 2\n```");
+  });
+
+  test("a truncated log says how much of it this is", () => {
+    const text = checkReference({ ...failing, log: ["a", "b"], logTruncated: true }).text;
+    expect(text).toContain("last 2 lines of its failing log");
+  });
+
+  test("a workflow that repeats the check name is not said twice", () => {
+    expect(checkReference({ name: "lint", workflow: "lint", status: "COMPLETED", conclusion: "FAILURE" }).text).toBe('the "lint" check (failure)');
+  });
+
+  test("an unfinished check reads as its STATUS, since it has no conclusion", () => {
+    expect(checkReference({ name: "build", status: "IN_PROGRESS" }).text).toBe('the "build" check (in progress)');
+  });
+
+  test("all the failures in one drag, and one failure is just that failure", () => {
+    // "CI is red, fix it" is one sentence and one drag rather than five.
+    const many = failingChecksReference([failing, { name: "build", status: "COMPLETED", conclusion: "TIMED_OUT" }]);
+    expect(many.label).toBe("2 failing checks");
+    expect(many.text).toContain("2 failing checks:");
+    expect(many.text).toContain('"CI / test"');
+    expect(many.text).toContain('"build"');
+    // A single failure does not get a header saying "1 failing checks".
+    expect(failingChecksReference([failing]).text).toBe(checkReference(failing).text);
+  });
+
+  test("every reference still travels as both payloads", () => {
+    const slots = transfer();
+    startReferenceDrag(slots, checkReference({ ...failing, log: ["boom"] }));
+    expect(readReferenceDrag(slots)).toMatchObject({ kind: "check" });
+    // The plain-text half is what lands in a textarea in another application.
+    expect(slots.getData("text/plain")).toContain("boom");
   });
 });

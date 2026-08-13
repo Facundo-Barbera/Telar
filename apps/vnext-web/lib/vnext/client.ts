@@ -1,6 +1,7 @@
 import type {
   BrowserSnapshot,
   GitCommitEntry,
+  GitHubCheckLog,
   GitHubFacets,
   GitHubIssueFilter,
   GitHubIssueRead,
@@ -108,6 +109,14 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
         fetcher,
         "GET",
         `/api/projects/${encodeURIComponent(projectId)}/github/facets${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    /** One failing check's log. Never cached: a finished job's log cannot change and
+     *  a running job's must not be stale. */
+    projectCheckLog: (projectId: string, jobId: string) =>
+      request<{ log: GitHubCheckLog }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/checks/${encodeURIComponent(jobId)}/log`,
       ),
     /** Ignore Telar's own files in a project's repository. No body: the rules are
      *  the engine's, so this cannot be used to append arbitrary lines to a file in

@@ -25,6 +25,7 @@ import {
   type BrowserSnapshot,
   type BrowserTab,
   type GitCommitEntry,
+  type GitHubCheckLog,
   type GitHubFacets,
   type GitHubIssueFilter,
   type GitHubIssueRead,
@@ -72,6 +73,7 @@ import {
   DEFAULT_PULL_FILTER,
   defaultGhRunner,
   mergePull,
+  readCheckLog,
   readForgeFacets,
   readGitHub,
   readIssue,
@@ -832,6 +834,22 @@ export class EngineStore {
     const facets = await readForgeFacets(this.gh, project.root, this.now);
     this.facetCache.set(project.id, facets);
     return structuredClone(facets);
+  }
+
+  /**
+   * One failing check's log.
+   *
+   * NOT CACHED. A job's log is immutable once the job has finished, so a cache would
+   * only ever save a repeat of a request nobody makes twice — and while a job is
+   * still running the log is exactly the thing that must not be stale.
+   *
+   * The job id comes from a check this engine already handed out, so it is a number
+   * we produced; it is still validated, because a client is a client.
+   */
+  projectCheckLog(projectId: string, jobId: string): Promise<GitHubCheckLog> {
+    const project = this.getProject(projectId);
+    if (!/^\d+$/.test(jobId)) throw new EngineStateError("invalid_request", "a job id is a number");
+    return readCheckLog(this.gh, project.root, jobId);
   }
 
   /**
