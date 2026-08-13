@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { Session } from "@telar/engine-client";
+import type { SettleableSession } from "./session-settling";
 import {
   canSettle,
   canSnooze,
@@ -16,21 +16,9 @@ import {
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 1_700_000_000_000;
 
-const session = (over: Partial<Session> = {}): Session => ({
-  id: "session_1",
-  projectId: "project_1",
-  environmentId: "local",
-  title: "A conversation",
-  state: "active",
-  createdAt: NOW - 10 * DAY,
+const session = (over: Partial<SettleableSession> = {}): SettleableSession => ({
+  archived: false,
   updatedAt: NOW,
-  providerInstanceId: "claude:default",
-  driver: "claude",
-  workspace: { mode: "local", path: "/tmp/x" },
-  envMode: "local",
-  runtimeMode: "auto",
-  interactionMode: "default",
-  detached: true,
   ...over,
 });
 
@@ -78,7 +66,7 @@ describe("the explicit pin", () => {
 
   test("archiving outranks a pin to keep it active", () => {
     // Archived is a decision about the conversation, not about the list.
-    expect(isSettled(session({ state: "archived", settledOverride: "active" }), {}, options)).toBe(true);
+    expect(isSettled(session({ archived: true, settledOverride: "active" }), {}, options)).toBe(true);
   });
 });
 

@@ -21,11 +21,12 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArchiveIcon, CircleCheckIcon } from "lucide-react";
+import { ArchiveIcon, CircleCheckIcon, UndoIcon } from "lucide-react";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { bandOf, sessionHref, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
-import { SessionInboxMenu } from "@/components/session/session-inbox-menu";
+import { SessionInboxMenu, patchSession } from "@/components/session/session-inbox-menu";
+import { canSettle } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
@@ -140,6 +141,14 @@ export function SessionRow({
 
   const href = sessionHref(session);
   const settled = bandOf(session, renderedAt) === "settled";
+  /**
+   * SHELVED BY A DECISION, not by neglect — which is the only case the row's
+   * own button can UNDO. A session that drifted onto the shelf because nobody
+   * touched it for three days has nothing to un-press; offering it an undo
+   * would promise a state change that does not exist, and pressing it would
+   * appear to do nothing.
+   */
+  const settledByDecision = session.settledOverride === "settled";
 
   // Archiving the session you are currently VIEWING must not maroon you on it:
   // the survivor rule in deriveSessionList keeps this row visible for as long as
@@ -302,6 +311,30 @@ export function SessionRow({
           but forced visible while any of their popups is open. */}
       {!searchable && (
         <span className="flex shrink-0 items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100">
+          {/**
+           * SETTLE IS ONE TAP AND ASKS NOTHING, which is the whole difference
+           * between it and the archive beside it. Archiving ends the session and
+           * removes its worktree, so it earns a confirmation; settling moves a
+           * row to the shelf and is undone by pressing the same spot — or by
+           * typing at the session, which the engine treats as "not done after
+           * all". A reversible action that asks first teaches people to dismiss
+           * the question, which is how they end up dismissing the other one.
+           */}
+          {!session.archived && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={settledByDecision ? "Return to the list" : "Settle session"}
+              title={settledByDecision ? "Return to the list" : "Settle"}
+              disabled={!settledByDecision && !canSettle({})}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                void patchSession(session.id, { settledOverride: settledByDecision ? null : "settled" }).then(onRefresh);
+              }}
+            >
+              {settledByDecision ? <UndoIcon /> : <CircleCheckIcon />}
+            </Button>
+          )}
           {!settled && (
             <Button
               variant="ghost"
@@ -330,6 +363,7 @@ export function SessionRow({
             session={session}
             settled={settled}
             active={active}
+            now={renderedAt}
             onRename={beginRename}
             onDone={onRefresh}
             onLeave={leaveIfActive}

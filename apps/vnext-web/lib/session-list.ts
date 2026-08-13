@@ -21,9 +21,12 @@
  * you are LOOKING AT visible after it ages into the shelf.
  */
 import type { Session } from "@telar/engine-client";
+import { DEFAULT_AUTO_SETTLE_DAYS, isSettled } from "./session-settling";
 
 export const SESSION_PAGE_SIZE = 20;
-export const SETTLED_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+/** Kept for the callers that describe the window in prose. The rule itself now
+ *  takes the window as a parameter — see `bandOf`. */
+export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * What a row needs to render. A projection of the engine's `Session` plus the
@@ -48,6 +51,14 @@ export type SidebarSession = {
   contextTokens?: number;
   workspacePath: string;
   worktreeBranch?: string;
+  /** The inbox's own state — see `lib/session-settling.ts`. Carried on the
+   *  projection rather than looked up, because `bandOf` runs per row per
+   *  render and the whole point of the projection is that it already has
+   *  everything a row needs. */
+  settledOverride?: "settled" | "active";
+  settledAt?: number;
+  snoozedUntil?: number;
+  snoozedAt?: number;
 };
 
 /** The engine record, flattened into what the rail actually reads. */
@@ -75,6 +86,10 @@ export function toSidebarSession(session: Session, projectName?: string): Sideba
     ...(typeof session.usage?.contextUsed === "number" ? { contextTokens: session.usage.contextUsed } : {}),
     workspacePath: session.workspace.path,
     ...(session.workspace.mode === "worktree" ? { worktreeBranch: session.workspace.branch } : {}),
+    ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
+    ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+    ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+    ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
   };
 }
 
@@ -117,15 +132,21 @@ const createdNewestFirst = (a: SidebarSession, b: SidebarSession) =>
 /**
  * Which shelf a row belongs to.
  *
- * An archived session is settled by decision; a session nobody has touched for
- * three days is settled by neglect. The donor also had an explicit `settledAt`
- * between them, which vNext does not model — the two clauses that remain are
- * the ones the engine can actually answer.
+ * THE THIRD CLAUSE ARRIVED. This used to answer with the two the engine could
+ * back — archived, or quiet for three days — and said so. The engine now stores
+ * an explicit pin in either direction, so the rule moved to
+ * `lib/session-settling.ts` where it can be read in one place and the ordering
+ * that makes it safe (blockers first) is stated once.
+ *
+ * ACTIVITY IS NOT PASSED HERE, and that is a deliberate limit rather than an
+ * oversight: the sidebar lists every session in the project and does not hold a
+ * live turn state for each. A row that is running is therefore classified on
+ * its stored fields alone — which is correct for the pin and the clock, and
+ * means a settled session with a turn running is not rescued into the list
+ * until something tells this list about it. `SessionRow` passes what it knows.
  */
-export function bandOf(session: SidebarSession, now: number): SessionBand {
-  if (session.archived) return "settled";
-  if (now - session.updatedAt >= SETTLED_AFTER_MS) return "settled";
-  return "active";
+export function bandOf(session: SidebarSession, now: number, autoSettleAfterDays: number | null = DEFAULT_AUTO_SETTLE_DAYS): SessionBand {
+  return isSettled(session, {}, { now, autoSettleAfterDays }) ? "settled" : "active";
 }
 
 function pageWithActive(

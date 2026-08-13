@@ -33,11 +33,24 @@ describe("bandOf", () => {
   });
 
   test("shelves a session settled by neglect", () => {
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS }), NOW)).toBe("settled");
-    // One millisecond short of the threshold is still live — the boundary is
-    // where a row visibly moves, so it is worth pinning.
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS - 1 }), NOW)).toBe("settled");
+    // The boundary is where a row visibly moves, so it is worth pinning. It is
+    // now STRICTLY past the window — the donor's comparison — where this used
+    // to shelve a row at exactly the threshold.
     expect(bandOf(row("s1", "Quiet"), NOW)).toBe("active");
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS + 1 }), NOW)).toBe("active");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS }), NOW)).toBe("active");
+  });
+
+  test("an explicit pin beats the clock in both directions", () => {
+    // The third answer the old two-clause rule could not express.
+    expect(bandOf(row("s1", "Shelved", { settledOverride: "settled" }), NOW)).toBe("settled");
+    expect(bandOf(row("s1", "Kept", { updatedAt: NOW - 30 * 24 * 60 * 60 * 1000, settledOverride: "active" }), NOW)).toBe("active");
+  });
+
+  test("the window is a parameter, and null turns the clock off", () => {
+    const stale = row("s1", "Ancient", { updatedAt: NOW - 400 * 24 * 60 * 60 * 1000 });
+    expect(bandOf(stale, NOW, null)).toBe("active");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * 24 * 60 * 60 * 1000 }), NOW, 7)).toBe("active");
   });
 });
 

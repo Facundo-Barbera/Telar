@@ -38,7 +38,23 @@
  * returns — so "is there queued work" is answerable directly.
  */
 
-import type { Session } from "@telar/engine-client";
+/**
+ * ONLY WHAT THE RULE READS, rather than the engine's `Session`.
+ *
+ * The sidebar works on `SidebarSession`, a flattened projection, and the
+ * cockpit works on the record itself. Naming the six fields this actually reads
+ * lets both satisfy it without a conversion, and keeps this module free of the
+ * contract — which is what makes it testable in six lines instead of thirty.
+ */
+export type SettleableSession = {
+  /** The conversation is over. Distinct from settled, which is about the LIST. */
+  archived: boolean;
+  updatedAt: number;
+  settledOverride?: "settled" | "active";
+  settledAt?: number;
+  snoozedUntil?: number;
+  snoozedAt?: number;
+};
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -108,7 +124,7 @@ export function canSnooze(activity: SessionActivity): boolean {
  * CLEARS THE STORED SNOOZE: it only stops the session classifying as snoozed,
  * so if the reason goes away the snooze is still there and still counting.
  */
-export function raisedHandWhileSnoozed(session: Session, activity: SessionActivity): boolean {
+export function raisedHandWhileSnoozed(session: SettleableSession, activity: SessionActivity): boolean {
   if (activity.waitingOnYou) return true;
   const snoozedAt = session.snoozedAt;
   /**
@@ -122,7 +138,7 @@ export function raisedHandWhileSnoozed(session: Session, activity: SessionActivi
 }
 
 /** Hidden until its wake time, unless it has raised its hand. */
-export function isSnoozed(session: Session, activity: SessionActivity, options: Pick<SettlingOptions, "now">): boolean {
+export function isSnoozed(session: SettleableSession, activity: SessionActivity, options: Pick<SettlingOptions, "now">): boolean {
   const until = session.snoozedUntil;
   if (until === undefined) return false;
   // Malformed data never hides a session. Of the two ways to be wrong, showing
@@ -139,7 +155,7 @@ export function isSnoozed(session: Session, activity: SessionActivity, options: 
  * it wakes, because a list that reorders itself while you read it is not a
  * list. So the WAKE has to carry the signal, and that needs a timestamp.
  */
-export function wokeAt(session: Session, activity: SessionActivity, options: Pick<SettlingOptions, "now">): number | undefined {
+export function wokeAt(session: SettleableSession, activity: SessionActivity, options: Pick<SettlingOptions, "now">): number | undefined {
   const until = session.snoozedUntil;
   if (until === undefined || !Number.isFinite(until)) return undefined;
   if (raisedHandWhileSnoozed(session, activity)) {
@@ -161,13 +177,13 @@ export function wokeAt(session: Session, activity: SessionActivity, options: Pic
  * bottom: every early return above the clock is a case where the clock has no
  * business having an opinion.
  */
-export function isSettled(session: Session, activity: SessionActivity, options: SettlingOptions): boolean {
+export function isSettled(session: SettleableSession, activity: SessionActivity, options: SettlingOptions): boolean {
   // 1. Blockers. Even an explicit settle does not survive a parked request:
   // the reader shelved a session they believed was finished with them.
   if (activity.waitingOnYou || activity.working) return false;
   // An archived session is over. It is shelved by a decision that outranks
   // every pin below, including a `settledOverride` of "active".
-  if (session.state === "archived") return true;
+  if (session.archived) return true;
   // 2. The pin.
   if (session.settledOverride === "settled") return true;
   if (session.settledOverride === "active") return false;
