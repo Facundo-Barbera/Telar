@@ -32,7 +32,9 @@ import type {
   TurnState,
 } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
+import type { JournalTask } from "@/lib/vnext/journal";
 import { pageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
+import { TranscriptItem } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
@@ -341,6 +343,15 @@ export function sessionUsage(turns: readonly Turn[]): SessionUsage {
 
 const LIVE_TASK_STATES = new Set<TaskState>(["pending", "running", "waiting"]);
 
+/**
+ * WHICH SUB-AGENT TO OPEN ON, AND HOW MANY TIMES IT HAS BEEN ASKED FOR.
+ *
+ * The count is not decoration: without it, pressing the same chip after
+ * collapsing its row would be a press that does nothing, because nothing about
+ * the request would have changed.
+ */
+export type TaskFocus = { id: string; nonce: number };
+
 export function isLiveTask(task: Task): boolean {
   return LIVE_TASK_STATES.has(task.state);
 }
@@ -492,14 +503,40 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
   );
 }
 
-function TaskRow({ task }: { task: Task }) {
+/**
+ * ONE SUB-AGENT, AND ITS OWN TRANSCRIPT.
+ *
+ * THIS IS WHERE THE STEPS LIVE, now that the conversation carries a chip rather
+ * than a lane. Reading it was the missing half of moving them out: a row that
+ * expands to a paragraph of result told you what the agent concluded and nothing
+ * about how, so "what did it actually run" had no home at all.
+ *
+ * OPEN BY DEFAULT WHEN IT IS THE ONE YOU CAME FOR. Pressing a chip in the
+ * transcript names a task; arriving to find it closed among five others would
+ * make the gesture a navigation that lands you next to the answer.
+ */
+function TaskRow({ task, focused }: { task: JournalTask; focused?: boolean }) {
   const body = task.failure ?? task.resultText;
-  const [open, setOpen] = useState(false);
+  const steps = task.items ?? [];
+  const detail = steps.length > 0 || Boolean(body);
+  /**
+   * OPEN BECAUSE OF HOW YOU ARRIVED, decided once at mount rather than synced
+   * from a prop. A repeat press produces a fresh `key` (see `AgentsSurface`), so
+   * this row is a new one every time a chip asks for it — which is what lets a
+   * reader collapse a focused row and press the same chip again to reopen it.
+   */
+  const [open, setOpen] = useState(Boolean(focused));
+  const anchor = useRef<HTMLDivElement>(null);
   const tokens = task.usage ? task.usage.tokens.input + task.usage.tokens.output : undefined;
   const RowIcon = task.kind === "background" ? TerminalIcon : BotIcon;
 
+  useEffect(() => {
+    if (focused) anchor.current?.scrollIntoView({ block: "nearest" });
+  }, [focused]);
+
   return (
     <div
+      ref={anchor}
       draggable
       onDragStart={(event) =>
         startReferenceDrag(event.dataTransfer, taskReference({ id: task.id, ...(task.title ? { title: task.title } : {}), state: task.state }))
@@ -508,9 +545,9 @@ function TaskRow({ task }: { task: Task }) {
       <PanelRow tone={taskTone(task.state)} className="p-0 pl-0">
         <button
           type="button"
-          className={cn("flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs", body && "hover:bg-muted/60")}
-          disabled={!body}
-          aria-expanded={body ? open : undefined}
+          className={cn("flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs", detail && "hover:bg-muted/60")}
+          disabled={!detail}
+          aria-expanded={detail ? open : undefined}
           onClick={() => setOpen((current) => !current)}
         >
           <RowIcon className={cn("size-3.5 shrink-0", task.state === "failed" ? "text-destructive" : "text-muted-foreground")} />
@@ -518,21 +555,33 @@ function TaskRow({ task }: { task: Task }) {
             <span className="truncate">{task.title ?? task.role ?? "Sub-agent"}</span>
             {task.role && task.title && <span className="truncate text-[10px] text-muted-foreground">{task.role}</span>}
           </span>
+          {steps.length > 0 && (
+            <span className="shrink-0 text-[10px] text-muted-foreground">
+              {steps.length} step{steps.length === 1 ? "" : "s"}
+            </span>
+          )}
           {tokens !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
           <span className={cn("shrink-0 font-mono text-[10px]", task.state === "failed" ? "text-destructive" : "text-muted-foreground")}>
             {TASK_STATE[task.state]}
           </span>
-          {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
+          {detail && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
         </button>
       </PanelRow>
-      {open && body && (
-        <p className={cn("px-4 pb-2 text-[11px] whitespace-pre-wrap", task.failure ? "text-destructive" : "text-muted-foreground")}>{body}</p>
+      {open && detail && (
+        <div className="flex flex-col gap-0.5 px-4 pb-2 text-xs">
+          {steps.map((item) => (
+            <TranscriptItem key={item.id} item={item} />
+          ))}
+          {body && (
+            <p className={cn("pt-1 text-[11px] whitespace-pre-wrap", task.failure ? "text-destructive" : "text-muted-foreground")}>{body}</p>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function AgentsSurface({ tasks }: { tasks: readonly Task[] }) {
+function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
   const live = tasks.filter(isLiveTask);
   const finished = tasks.filter((task) => !isLiveTask(task));
   if (tasks.length === 0) {
@@ -543,15 +592,20 @@ function AgentsSurface({ tasks }: { tasks: readonly Task[] }) {
       </PanelEmpty>
     );
   }
+  /** THE NONCE IS IN THE KEY, which is what makes pressing the same chip twice
+   *  do something the second time: a new key is a new row, opened and scrolled
+   *  to on its own mount. */
+  const row = (task: JournalTask) =>
+    focused?.id === task.id ? (
+      <TaskRow key={`${task.id}:${focused.nonce}`} task={task} focused />
+    ) : (
+      <TaskRow key={task.id} task={task} />
+    );
   return (
     <div className="flex flex-col">
-      {live.map((task) => (
-        <TaskRow key={task.id} task={task} />
-      ))}
+      {live.map(row)}
       {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
-      {finished.map((task) => (
-        <TaskRow key={task.id} task={task} />
-      ))}
+      {finished.map(row)}
     </div>
   );
 }
@@ -598,6 +652,7 @@ export function VNextPanelSurface({
   tab,
   writes,
   tasks,
+  focusedTask,
   turns,
   browser,
   sessionId,
@@ -614,7 +669,9 @@ export function VNextPanelSurface({
   /** What the journal says was written, path → count. The Diff surface's half of
    *  the reconciliation — see `journalWrites`. */
   writes: ReadonlyMap<string, number>;
-  tasks: readonly Task[];
+  tasks: readonly JournalTask[];
+  /** The sub-agent a transcript chip just asked for. */
+  focusedTask?: TaskFocus;
   turns: readonly Turn[];
   browser?: BrowserState;
   /** Absent on a session that does not exist yet. Every surface that needs a
@@ -688,7 +745,7 @@ export function VNextPanelSurface({
         openNumbers={tab === "issues" ? openIssueNumbers : openPullNumbers}
       />
     );
-  if (tab === "agents") return <AgentsSurface tasks={tasks} />;
+  if (tab === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
   return <UsageSurface usage={usage} />;
 }
 
@@ -914,6 +971,7 @@ export function VNextRightPanel({
   branch,
   items = [],
   tasks = [],
+  focusedTask,
   turns = [],
   events = [],
   tabs,
@@ -934,7 +992,10 @@ export function VNextRightPanel({
   projectId?: string;
   branch?: string;
   items?: readonly Item[];
-  tasks?: readonly Task[];
+  tasks?: readonly JournalTask[];
+  /** The sub-agent a transcript chip just asked for. Owned by the cockpit
+   *  because the chip that names one lives over there. */
+  focusedTask?: TaskFocus;
   turns?: readonly Turn[];
   events?: readonly EngineEvent[];
   /** Owned by the cockpit, not by the panel: the pinned summary's rows and the
@@ -1145,6 +1206,7 @@ export function VNextRightPanel({
               writes={writes}
               tasks={tasks}
               turns={turns}
+              {...(focusedTask ? { focusedTask } : {})}
               openPaths={openPaths}
               openIssueNumbers={openIssueNumbers}
               openPullNumbers={openPullNumbers}

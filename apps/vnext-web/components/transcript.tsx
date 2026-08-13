@@ -81,6 +81,15 @@ function actionLabel(item: JournalItem): string {
       return "Searched web";
     case "browser_action":
       return "Browsed";
+    /**
+     * NARRATION, not `assistant_message`. Prose that lands before the turn's
+     * final answer folds into the activity group with the work it narrates, and
+     * `itemLabel` has nothing better to say about it than the contract's own
+     * enum — so a settled fan-out tallied as "assistant_message ×4", which is
+     * the wire leaking into a sentence a person reads.
+     */
+    case "assistant_message":
+      return "Said";
     default:
       return itemLabel(item);
   }
@@ -291,43 +300,54 @@ function PlanRow({ item }: { item: JournalItem }) {
   );
 }
 
-/** A sub-agent: one chip plus its own indented lane. */
-function TaskGroup({ task }: { task: JournalTask }) {
+/**
+ * A SUB-AGENT IS ONE ROW HERE, AND ITS WORK IS SOMEWHERE ELSE.
+ *
+ * This used to expand its whole lane inline, open by default while running —
+ * and a fan-out is precisely when that is unaffordable: two agents at sixteen
+ * and thirteen steps buried the conversation under twenty-nine tool calls that
+ * were never addressed to the reader. The thing you actually wanted, "what did
+ * the main thread do next", was pushed off the bottom of the screen by work the
+ * main thread had DELEGATED so it would not have to think about it.
+ *
+ * So this is the donor's agent chip (`AgentStepRow` in the frozen cockpit),
+ * which says the same thing about it: "the raw input/output detail a normal tool
+ * row would expand inline lives in the subagent's own tab instead, so there is
+ * nothing to expand here." The chip is still in the transcript because WHERE a
+ * fan-out happened is part of the story; what it did is a different surface.
+ *
+ * PRESSING IT OPENS THE AGENTS PANEL on this task. Where the donor switched a
+ * tab strip above the conversation, this cockpit already has a panel with a tab
+ * per surface, and a sub-agent is one — so the gesture is the same one every
+ * other "go and look at that" in this app makes.
+ */
+function AgentChip({ task, onOpen }: { task: JournalTask; onOpen?: (taskId: string) => void }) {
   const live = task.state === "running" || task.state === "pending" || task.state === "waiting";
-  const [open, setOpen] = useState(live);
   const label = task.title ?? task.role ?? "Sub-agent";
   const isError = task.state === "failed";
 
   return (
-    <div className={cn("rounded-md", isError && "bg-destructive/10")}>
-      <button type="button" aria-expanded={open} onClick={() => setOpen((c) => !c)} className={cn(ROW, "hover:bg-muted/60")}>
-        <BotIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
-        {live ? (
-          <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-            {label}
-          </Shimmer>
-        ) : (
-          <span className={cn("min-w-0 flex-1 truncate font-medium", isError && "text-destructive")}>{label}</span>
-        )}
-        <span className="shrink-0 text-[10px] text-muted-foreground">
-          {task.items.length} step{task.items.length === 1 ? "" : "s"}
-        </span>
-        <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-      </button>
-      {open && (
-        <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
-          {task.items.map((row) => (
-            <TranscriptItem key={row.id} item={row} />
-          ))}
-          {task.resultText && (
-            <div className="px-1.5 py-1 text-xs text-muted-foreground">
-              <MessageResponse>{task.resultText}</MessageResponse>
-            </div>
-          )}
-          {task.failure && <p className="px-1.5 py-1 text-xs text-destructive">{task.failure}</p>}
-        </div>
+    <button
+      type="button"
+      onClick={() => onOpen?.(task.id)}
+      title={onOpen ? "Open in the Agents panel" : undefined}
+      className={cn(ROW, "w-full text-left hover:bg-muted/60", isError && "bg-destructive/10")}
+    >
+      <BotIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
+      {live ? (
+        <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
+          {label}
+        </Shimmer>
+      ) : (
+        <span className={cn("min-w-0 flex-1 truncate font-medium", isError && "text-destructive")}>{label}</span>
       )}
-    </div>
+      {/* Counted from the rows this agent PRODUCED, which is the only honest
+          number available while it is still working. */}
+      <span className="shrink-0 text-[10px] text-muted-foreground">
+        {task.items.length} step{task.items.length === 1 ? "" : "s"}
+      </span>
+      <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+    </button>
   );
 }
 
@@ -369,24 +389,43 @@ function tally(items: JournalItem[]): string {
  * A reasoning block the provider opened and never filled renders nothing, and
  * counting it produced the visible lie "6 steps" above five rows. The tally and
  * the list must be derived from the same set.
+ *
+ * A `task` ITEM IS THE SPAWN ITSELF — the tool call that started a sub-agent —
+ * and `TranscriptItem` has always returned null for it, because the agent it
+ * started is already on screen as its own chip. Counting it left the same lie in
+ * a worse place: a fan-out of four read as "8 steps · Map repo structure and
+ * stack · Explore frontend app code · …", a tally naming four things that were
+ * not rows and would never open.
  */
 function renderable(items: JournalItem[]): JournalItem[] {
-  return items.filter((item) => (item.detail.type === "reasoning" ? itemText(item).trim().length > 0 : true));
+  return items.filter((item) =>
+    item.detail.type === "task" ? false : item.detail.type === "reasoning" ? itemText(item).trim().length > 0 : true,
+  );
 }
 
 /**
  * A run of activity rows: a rolling window while live, a tally once settled.
  * Both are the same sentence at two scales, so the grammar is learned once.
  */
-export function ActivityGroup({ items, live, tasks }: { items: JournalItem[]; live: boolean; tasks: JournalTask[] }) {
+export function ActivityGroup({
+  items,
+  live,
+  tasks,
+  onOpenAgent,
+}: {
+  items: JournalItem[];
+  live: boolean;
+  tasks: JournalTask[];
+  onOpenAgent?: (taskId: string) => void;
+}) {
   const anyFailed = useMemo(() => items.some(failed) || tasks.some((task) => task.state === "failed"), [items, tasks]);
   const [open, setOpen] = useState(false);
   const rows = renderable(items);
   if (rows.length === 0 && tasks.length === 0) return null;
 
-  // Sub-agents are never hidden by the window: a fan-out is the most
-  // interesting thing on the screen while it is happening.
-  const agents = tasks.map((task) => <TaskGroup key={task.id} task={task} />);
+  // Sub-agents are never hidden by the window: THAT a fan-out happened is part
+  // of the conversation even when what it did is on another surface.
+  const agents = tasks.map((task) => <AgentChip key={task.id} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />);
 
   if (live) {
     const hidden = Math.max(0, rows.length - 1);

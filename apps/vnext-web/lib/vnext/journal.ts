@@ -53,6 +53,29 @@ export type JournalTurn = {
   usage?: UsageSnapshot;
 };
 
+/**
+ * EVERY SUB-AGENT THE SESSION KNOWS ABOUT, freshest copy first.
+ *
+ * THE PANEL AND THE TRANSCRIPT WERE READING DIFFERENT LISTS, and the difference
+ * was the whole feature: the transcript folds `task.started`/`progress`/
+ * `completed` off the live event tail, while the panel took the snapshot's
+ * `tasks` array — which only changes when a tail response happens to carry a new
+ * snapshot. So two sub-agents could be visibly running in the conversation while
+ * the Agents panel showed "Sub-agents appear here as they work" and a tab with
+ * no count. The panel was not empty by accident; it was reading a list that had
+ * not been told yet.
+ *
+ * THE JOURNAL WINS where both have a task, because it has applied every event up
+ * to now. The snapshot is still merged in rather than discarded: `projectJournal`
+ * files a task under the turn that launched it and drops one whose turn it has
+ * never seen, and a BACKGROUND task is defined by outliving its turn — so the
+ * snapshot is what keeps such a task in the roster.
+ */
+export function taskRoster(snapshot: readonly Task[], journal: readonly JournalTask[]): JournalTask[] {
+  const known = new Set(journal.map((task) => task.id));
+  return [...journal, ...snapshot.filter((task) => !known.has(task.id)).map((task) => ({ ...task, items: [] }))];
+}
+
 /** Merges a cursor page without duplicating durable journal records. */
 export function appendJournalEvents(existing: EngineEvent[], incoming: EngineEvent[]): EngineEvent[] {
   const events = new Map(existing.map((event) => [event.id, event]));

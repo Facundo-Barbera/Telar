@@ -9,6 +9,7 @@ import {
   itemText,
   journalCursor,
   projectJournal,
+  taskRoster,
   toolOutput,
 } from "./journal";
 
@@ -145,6 +146,33 @@ describe("sub-agents", () => {
     // items first would strand the row on the main timeline permanently.
     expect(projected!.items).toEqual([]);
     expect(projected!.tasks[0]!.items.map((row: { id: string }) => row.id)).toEqual(["child"]);
+  });
+
+  test("the roster carries the live copy, so the panel is not reading a stale snapshot", () => {
+    // THE BUG THIS PINS: the transcript folds `task.*` events as they arrive
+    // while the panel took the snapshot's `tasks` array, which only changes when
+    // a tail response happens to carry a new snapshot. Two sub-agents ran in the
+    // conversation while the Agents panel said "Sub-agents appear here as they
+    // work" — a surface reading a list that had not been told yet.
+    const [projected] = projectJournal(
+      [turn],
+      [],
+      [{ ...envelope, id: 1, type: "task.completed", task: { ...task, state: "completed", resultText: "found it" } }],
+      [task],
+    );
+    const roster = taskRoster([task], projected!.tasks);
+    expect(roster).toHaveLength(1);
+    expect(roster[0]).toMatchObject({ state: "completed", resultText: "found it" });
+  });
+
+  test("a task whose turn the journal never saw stays in the roster", () => {
+    // Background work is DEFINED by outliving its turn, and `projectJournal`
+    // files a task under the turn that launched it. Dropping what it cannot file
+    // would lose exactly the tasks the panel most needs to keep showing.
+    const orphan = { ...task, id: "task_b", runId: "run_gone" };
+    const roster = taskRoster([task, orphan], [{ ...task, items: [] }]);
+    expect(roster.map((entry) => entry.id)).toEqual(["task_a", "task_b"]);
+    expect(roster[1]!.items).toEqual([]);
   });
 
   test("a row whose task is not known yet stays visible on the main timeline", () => {

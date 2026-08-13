@@ -16,13 +16,13 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
-import { appendJournalEvents, isActiveTurn, itemText, projectJournal, type JournalTurn } from "@/lib/vnext/journal";
+import { appendJournalEvents, isActiveTurn, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/vnext/journal";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
 import { Composer } from "./composer";
 import { ActivityGroup, Marker, TranscriptItem, WorkingIndicator } from "./transcript";
-import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, VNextRightPanel, type PanelTab } from "./right-panel";
+import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, VNextRightPanel, type PanelTab, type TaskFocus } from "./right-panel";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import {
   canvasPanelKey,
@@ -239,9 +239,13 @@ function SessionTurn({
   onDecide,
   onRetry,
   onDiscard,
+  onOpenAgent,
 }: {
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
+  /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
+   *  the panel on it. */
+  onOpenAgent?: (taskId: string) => void;
   turn: JournalTurn;
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
@@ -295,7 +299,7 @@ function SessionTurn({
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}
-          <ActivityGroup items={activity} tasks={turn.tasks} live={live} />
+          <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
           {closing.map((item) => (
             <TranscriptItem key={item.id} item={item} />
           ))}
@@ -642,6 +646,36 @@ export function SessionCockpit({
 
   const transcript = useMemo(() => projectJournal(turns, items, events, tasks), [turns, items, events, tasks]);
   /**
+   * THE SUB-AGENT ROSTER, FROM THE SAME FOLD THE TRANSCRIPT READS.
+   *
+   * The panel used to take the raw `tasks` snapshot, which only changes when a
+   * tail response happens to carry a new one — so a fan-out could be running in
+   * the conversation while the Agents panel said "Sub-agents appear here as they
+   * work". Two projections of one thing, and the stale one was the surface built
+   * to show it. See `taskRoster`.
+   */
+  const roster = useMemo(() => taskRoster(tasks, transcript.flatMap((turn) => turn.tasks)), [tasks, transcript]);
+  /** Which sub-agent the panel should open on, set by pressing its chip in the
+   *  transcript and cleared once the panel has scrolled to it. */
+  const [focusedTask, setFocusedTask] = useState<TaskFocus>();
+  /**
+   * Pressing a sub-agent's chip in the conversation.
+   *
+   * OPENING THE PANEL IS THE GESTURE, and only when asked. A sub-agent starting
+   * does NOT open it by itself, for the same reason a page the agent opened does
+   * not: what you are reading is yours, and the tab's own running count is how a
+   * fan-out announces itself without taking the screen.
+   */
+  const showAgent = useCallback(
+    (taskId: string) => {
+      // The count rises on every press, so asking for the same agent twice is
+      // two requests rather than one — see `TaskFocus`.
+      setFocusedTask((current) => ({ id: taskId, nonce: (current?.nonce ?? 0) + 1 }));
+      showPanelTab("agents");
+    },
+    [showPanelTab],
+  );
+  /**
    * The turn actually EXECUTING, which is not simply the first active one now
    * that a backlog can exist: `queued` turns are also "active" by the contract's
    * reckoning, and treating one of those as live would put the working indicator
@@ -968,7 +1002,7 @@ export function SessionCockpit({
                 projectId={session?.projectId ?? projectId}
                 {...(projectName ? { projectName } : {})}
                 {...(session ? { session } : {})}
-                tasks={tasks}
+                tasks={roster}
                 {...(browser ? { browser } : {})}
                 onOpenPanel={showPanelTab}
               />
@@ -1003,6 +1037,7 @@ export function SessionCockpit({
                 now={now}
                 requests={openRequests.filter((request) => request.runId === turn.runId)}
                 sending={sending}
+                onOpenAgent={showAgent}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 onDiscard={(item) => void discardAmbiguous(item)}
@@ -1074,7 +1109,8 @@ export function SessionCockpit({
           projectId={session?.projectId ?? projectId}
           {...(session?.workspace.mode === "worktree" ? { branch: session.workspace.branch } : {})}
           items={items}
-          tasks={tasks}
+          tasks={roster}
+          {...(focusedTask ? { focusedTask } : {})}
           turns={turns}
           events={events}
           tabs={panel.tabs}
