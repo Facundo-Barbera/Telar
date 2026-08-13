@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
-import { createProviderProber, providerProcessEnv, signInCommand, signInOf, statusOf } from "../src/provider-instances";
+import { createProviderProber, providerProcessEnv, signInOf, statusOf } from "../src/provider-instances";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -239,12 +239,4 @@ test("one version probe serves every instance of a driver", async () => {
   // A missing binary outranks a sign-in note: there is no point saying the
   // config folder looks fine when the CLI it configures is not installed.
   expect(probes[2]?.message).toBe("not found");
-});
-
-test("the sign-in command is the user's to run, and names the account", () => {
-  expect(signInCommand({ driver: "claude" })).toBe("claude auth login");
-  expect(signInCommand({ driver: "claude", configDir: "~/.claude-work" })).toBe(
-    'CLAUDE_CONFIG_DIR="~/.claude-work" claude auth login',
-  );
-  expect(signInCommand({ driver: "codex", configDir: "~/.codex-work" })).toBe('CODEX_HOME="~/.codex-work" codex login');
 });

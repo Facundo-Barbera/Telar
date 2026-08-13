@@ -24,6 +24,9 @@ import type {
   TurnAttachment,
   TurnModelSelection,
   ProviderDriverKind,
+  ProviderInstance,
+  ProviderInstanceEnvVar,
+  ProviderProbe,
   EngineRequest,
   RequestDecision,
   RuntimeMode,
@@ -82,6 +85,9 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
 export function createVNextApi(fetcher: Fetcher = fetch) {
   return {
     health: () => request<EngineHealth>(fetcher, "GET", "/api/health"),
+    /** Which build this is and where its state lives. Deliberately does NOT go
+     *  through the engine: both answers matter most when the engine is down. */
+    about: () => request<{ appVersion: string; stateRoot?: string }>(fetcher, "GET", "/api/about"),
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
@@ -318,6 +324,34 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ mcpServer: McpServer }>(fetcher, "PUT", "/api/mcp-servers", input),
     removeMcpServer: (id: string) =>
       request<{ removed: boolean }>(fetcher, "DELETE", `/api/mcp-servers/${encodeURIComponent(id)}`),
+    /**
+     * The configured logins and what the machine says about each, in ONE call —
+     * a settings row needs both to render, and two would let it paint a green
+     * dot beside an instance the second is about to report missing.
+     *
+     * `refresh` costs a subprocess per driver, so it is a button and never a
+     * repaint.
+     */
+    providerInstances: (options: { refresh?: boolean } = {}) =>
+      request<{ providerInstances: ProviderInstance[]; probes: ProviderProbe[] }>(
+        fetcher,
+        "GET",
+        `/api/provider-instances${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    /** `null` clears a field; an absent key leaves it alone. Sensitive values
+     *  round-trip as `{ value: "", valueRedacted: true }` and keep their
+     *  stored secret. */
+    saveProviderInstance: (input: {
+      id: string;
+      driver?: ProviderDriverKind;
+      displayName?: string | null;
+      accentColor?: string | null;
+      configDir?: string | null;
+      enabled?: boolean;
+      env?: ProviderInstanceEnvVar[];
+    }) => request<{ providerInstance: ProviderInstance }>(fetcher, "PUT", "/api/provider-instances", input),
+    removeProviderInstance: (id: string) =>
+      request<{ removed: boolean }>(fetcher, "DELETE", `/api/provider-instances/${encodeURIComponent(id)}`),
     stopTurn: (sessionId: string, runId?: string) =>
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>

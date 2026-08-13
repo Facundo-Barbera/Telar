@@ -1,0 +1,393 @@
+"use client";
+
+/**
+ * ONE CONFIGURED LOGIN, as a card.
+ *
+ * Ported from t3 code's `src/components/settings/ProviderInstanceCard.tsx` —
+ * which is also what `apps/web_old`'s `provider-instances.tsx` was modelled on,
+ * so this is the same design arriving from both directions. The shape it wants:
+ * an account is not a separate concept from "a provider you configured", it IS
+ * a configured instance of one. So there is no Providers list beside an Accounts
+ * list; the first row for a driver is its built-in slot and every extra row is
+ * another login of the same driver.
+ *
+ * COLLAPSED, A ROW STATES WHAT IT IS AND WHETHER IT WORKS. Expanded, it holds
+ * everything that makes it that account: the name, the accent, the config
+ * folder, and the environment its provider process runs with.
+ *
+ * NOTHING HERE SIGNS ANYONE IN. A row that cannot prove a login shows the
+ * command to run in a terminal, and that is the whole of Telar's involvement in
+ * auth — the engine reads no credential file (apps/engine/src/provider-instances.ts).
+ *
+ * THREE DEVIATIONS FROM t3, EACH BECAUSE THE ENGINE CANNOT BACK IT:
+ *   · No identity line. t3 prints "Authenticated as <email> · Claude Max"; this
+ *     engine holds no identity, so the auth line says what was measured.
+ *   · No models section. Model choice lives on the composer's own picker here,
+ *     fed by asking the harness (apps/engine/src/models.ts) rather than by a
+ *     per-instance hidden/favourite list.
+ *   · No update advisory. Nothing in Telar knows a provider's latest version.
+ */
+
+import { useState } from "react";
+import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import type { ProviderInstance, ProviderInstanceEnvVar, ProviderProbe } from "@telar/engine-client";
+import { cn } from "@/lib/utils";
+import { displayNameOf, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, versionLabel } from "@/lib/provider-instances";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { ProviderIcon } from "@/components/session/provider-icon";
+import { CopyCommand } from "@/components/settings/copy-command";
+
+/** What a save may carry. `null` clears, absent leaves alone — the engine's own
+ *  three-state rule, mirrored so a form cannot express anything else. */
+export type InstancePatch = {
+  displayName?: string | null;
+  accentColor?: string | null;
+  configDir?: string | null;
+  enabled?: boolean;
+  env?: ProviderInstanceEnvVar[];
+};
+
+/**
+ * An input that reports on BLUR, not on every keystroke.
+ *
+ * Every commit here is an HTTP write. A controlled input wired straight to
+ * `onPatch` would PUT once per character, and the last few would race each
+ * other. Uncontrolled with a `key` derived from the stored value, so an edit
+ * rejected by the engine snaps back to what was actually kept rather than
+ * lingering on screen as if it had saved.
+ */
+function BlurInput({
+  value,
+  onCommit,
+  ...rest
+}: { value: string; onCommit: (next: string) => void } & Omit<React.ComponentProps<"input">, "value" | "onChange" | "onBlur">) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <Input
+      {...rest}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => draft !== value && onCommit(draft)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+        // Escape abandons the edit rather than committing it, which is the one
+        // way out of a half-typed path that does not write anything.
+        if (event.key === "Escape") {
+          setDraft(value);
+          event.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+/**
+ * The accent, as six swatches and a clear.
+ *
+ * IT TINTS THE MARK RATHER THAN FILLING IT. Both provider marks carry their own
+ * colour — Claude's #d97757, Codex's currentColor — and painting a user-chosen
+ * background behind them turned a brand mark into a swatch. As a soft wash plus
+ * a ring it still tells two logins of one provider apart, which is its job.
+ */
+const SWATCHES = ["#2563eb", "#16a34a", "#ea580c", "#dc2626", "#7c3aed", "#0891b2"] as const;
+
+function AccentPicker({ value, onChange }: { value?: string; onChange: (next: string | null) => void }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {SWATCHES.map((colour) => (
+        <button
+          key={colour}
+          type="button"
+          aria-label={`Accent ${colour}`}
+          onClick={() => onChange(colour)}
+          style={{ backgroundColor: colour }}
+          className={cn(
+            "size-5 rounded-full ring-offset-2 ring-offset-background transition",
+            value?.toLowerCase() === colour ? "ring-2 ring-ring" : "hover:scale-110",
+          )}
+        />
+      ))}
+      <button
+        type="button"
+        aria-label="No accent"
+        onClick={() => onChange(null)}
+        className={cn(
+          "flex size-5 items-center justify-center rounded-full border border-dashed border-border text-muted-foreground transition hover:text-foreground",
+          !value && "ring-2 ring-ring ring-offset-2 ring-offset-background",
+        )}
+      >
+        <XIcon className="size-2.5" />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The environment this instance's provider process runs with.
+ *
+ * A SENSITIVE VALUE NEVER COMES BACK FROM THE ENGINE. The placeholder says so,
+ * and leaving the field empty keeps whatever is stored — which is why clearing
+ * a secret means removing the row, not blanking it. A blank field is
+ * indistinguishable from "I did not retype my key".
+ */
+function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange: (next: ProviderInstanceEnvVar[]) => void }) {
+  const patch = (index: number, next: Partial<ProviderInstanceEnvVar>) =>
+    onChange(env.map((variable, at) => (at === index ? { ...variable, ...next } : variable)));
+
+  return (
+    <div className="space-y-1.5">
+      {env.map((variable, index) => (
+        <div key={index} className="flex items-center gap-1.5">
+          <BlurInput
+            value={variable.name}
+            onCommit={(name) => patch(index, { name: name.trim() })}
+            placeholder="NAME"
+            aria-label={`Variable ${index + 1} name`}
+            className="h-7 w-44 font-mono text-xs"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <BlurInput
+            // Keyed so replacing a secret and then blurring shows the stored
+            // placeholder again rather than the value just sent.
+            key={variable.valueRedacted ? "redacted" : "plain"}
+            value={variable.valueRedacted ? "" : variable.value}
+            onCommit={(value) => patch(index, { value, valueRedacted: false })}
+            type={variable.sensitive ? "password" : "text"}
+            placeholder={variable.valueRedacted ? "•••••• stored — type to replace" : "value"}
+            aria-label={`Variable ${index + 1} value`}
+            className="h-7 flex-1 font-mono text-xs"
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+            <input
+              type="checkbox"
+              checked={variable.sensitive}
+              onChange={(event) => patch(index, { sensitive: event.target.checked, valueRedacted: false })}
+              className="size-3"
+              aria-label={`Store ${variable.name || `variable ${index + 1}`} as a secret`}
+            />
+            secret
+          </label>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Remove ${variable.name || `variable ${index + 1}`}`}
+            onClick={() => onChange(env.filter((_, at) => at !== index))}
+          >
+            <XIcon className="size-3" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 text-xs text-muted-foreground"
+        onClick={() => onChange([...env, { name: "", value: "", sensitive: false }])}
+      >
+        <PlusIcon className="size-3" /> Add variable
+      </Button>
+      <p className="text-[11px] leading-snug text-muted-foreground/70">
+        Applied to this login&rsquo;s provider process, over the worker&rsquo;s own environment. A configured instance also stops
+        inheriting the variables its provider owns — an ambient <code className="font-mono">ANTHROPIC_API_KEY</code> would
+        otherwise move a subscription account onto metered billing without saying so.
+      </p>
+    </div>
+  );
+}
+
+export function ProviderInstanceCard({
+  instance,
+  probe,
+  signInCommand,
+  expanded,
+  onExpandedChange,
+  onPatch,
+  onRemove,
+  error,
+}: {
+  instance: ProviderInstance;
+  probe?: ProviderProbe;
+  /** What the user would run in their own terminal to sign this login in. */
+  signInCommand: string;
+  expanded: boolean;
+  onExpandedChange: (next: boolean) => void;
+  onPatch: (patch: InstancePatch) => void;
+  /** Absent on the built-in slot: deleting it would leave a session on that
+   *  driver with nothing to route to, so there is no affordance rather than a
+   *  disabled one. */
+  onRemove?: () => void;
+  error?: string | null;
+}) {
+  const title = displayNameOf(instance);
+  const status = probe?.status ?? (instance.enabled ? "warning" : "disabled");
+  const summary = providerSummary(probe);
+  const version = versionLabel(probe?.version);
+  const isDefault = isDefaultInstance(instance);
+  const needsSignIn = probe?.signIn === "signed-out" || probe?.signIn === "missing-config-dir";
+
+  return (
+    <div className={cn("rounded-xl transition-colors hover:bg-muted/20", !instance.enabled && "opacity-60")}>
+      <div className="px-3 py-3 sm:px-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {/* The provider's REAL MARK, not its first letter — `claude` and
+                  `codex` both start with "c", so a letter chip could not say
+                  the one thing it existed to say. */}
+              <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
+                <span
+                  className="flex size-5 items-center justify-center rounded-[5px] ring-1 ring-inset ring-border/60"
+                  style={
+                    instance.accentColor
+                      ? {
+                          backgroundColor: `color-mix(in srgb, ${instance.accentColor} 22%, transparent)`,
+                          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${instance.accentColor} 55%, transparent)`,
+                        }
+                      : undefined
+                  }
+                >
+                  <ProviderIcon provider={instance.driver} size={13} />
+                </span>
+                <span
+                  title={STATUS_LABEL[status]}
+                  aria-label={`Status: ${STATUS_LABEL[status]}`}
+                  className={cn("pointer-events-none absolute -left-0.5 -top-0.5 size-2 rounded-full ring-2 ring-card", STATUS_DOT[status])}
+                />
+              </span>
+              <h3 className="truncate text-sm font-medium text-foreground">{title}</h3>
+              {/* The routing key, shown when the label is not already it. Every
+                  session stores this string; it never changes. */}
+              {title !== instance.id && (
+                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">{instance.id}</code>
+              )}
+              {version && <code className="text-xs text-muted-foreground">{version}</code>}
+              {isDefault && (
+                <Badge variant="outline" className="text-[10px]" title="The provider's base login, detected rather than added">
+                  built-in
+                </Badge>
+              )}
+            </div>
+            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[13px] leading-[1.45] text-muted-foreground/80">
+              <span>{summary.headline}</span>
+              {summary.detail && <span>— {summary.detail}</span>}
+            </p>
+          </div>
+          {/* THE ACTION CLUSTER IS FIXED and the title row is not: everything
+              left of here wraps, so a long name and a long id cannot push the
+              switch onto a line of its own where it looks like it belongs to
+              nothing. */}
+          <div className="flex w-full shrink-0 items-center gap-1 sm:w-auto sm:justify-end">
+            {onRemove && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="size-7 text-muted-foreground hover:text-destructive"
+                onClick={onRemove}
+                aria-label={`Remove ${title}`}
+              >
+                <Trash2Icon className="size-3.5" />
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => onExpandedChange(!expanded)}
+              aria-label={`Toggle ${title} details`}
+            >
+              <ChevronDownIcon className={cn("size-3.5 transition-transform", expanded && "rotate-180")} />
+            </Button>
+            <Switch
+              className="ml-1"
+              checked={instance.enabled}
+              onCheckedChange={(checked) => onPatch({ enabled: Boolean(checked) })}
+              aria-label={`Enable ${title}`}
+            />
+          </div>
+        </div>
+      </div>
+
+      <Collapsible open={expanded} onOpenChange={onExpandedChange}>
+        <CollapsibleContent>
+          <div className="space-y-4 px-3 pb-4 pt-1 sm:px-4">
+            {needsSignIn && (
+              <div className="space-y-1.5">
+                <span className="text-xs font-medium text-foreground">Sign in</span>
+                <CopyCommand command={signInCommand} />
+                <p className="text-[11px] text-muted-foreground/70">
+                  Run this in your terminal. Telar reads the result — it never signs in for you.
+                </p>
+              </div>
+            )}
+
+            <label className="block">
+              <span className="text-xs font-medium text-foreground">Display name</span>
+              <BlurInput
+                value={instance.displayName ?? ""}
+                onCommit={(next) => onPatch({ displayName: next.trim() || null })}
+                placeholder={title}
+                className="mt-1.5 h-8 text-xs"
+              />
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                Shown in the pickers. The routing key ({instance.id}) never changes.
+              </span>
+            </label>
+
+            <div>
+              <span className="text-xs font-medium text-foreground">Accent colour</span>
+              <div className="mt-1.5">
+                <AccentPicker {...(instance.accentColor ? { value: instance.accentColor } : {})} onChange={(accentColor) => onPatch({ accentColor })} />
+              </div>
+              <span className="mt-1 block text-[11px] text-muted-foreground">Tells this login apart from another on the same provider.</span>
+            </div>
+
+            <label className="block">
+              <span className="text-xs font-medium text-foreground">
+                {instance.driver === "codex" ? "CODEX_HOME folder" : "CLAUDE_CONFIG_DIR folder"}
+              </span>
+              {isDefault ? (
+                /* Stated rather than offered as a field. Pointing
+                   CLAUDE_CONFIG_DIR at ~/.claude reaches a DIFFERENT, empty
+                   Keychain entry and 401s — only an unset variable uses the base
+                   login, which is why this slot has to leave it unset. */
+                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                  Empty — this is the base login. Setting the variable here would reach a different, empty credential store, so Telar
+                  leaves it unset.
+                </p>
+              ) : (
+                <>
+                  <BlurInput
+                    value={instance.configDir ?? ""}
+                    onCommit={(next) => onPatch({ configDir: next.trim() || null })}
+                    placeholder="~/.claude-work"
+                    className="mt-1.5 h-8 font-mono text-xs"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  <span className="mt-1 block text-[11px] text-muted-foreground">
+                    The folder this login is already signed in with. It must already exist.
+                  </span>
+                </>
+              )}
+            </label>
+
+            <div>
+              <span className="text-xs font-medium text-foreground">Environment variables</span>
+              <div className="mt-1.5">
+                <EnvEditor env={instance.env} onChange={(env) => onPatch({ env })} />
+              </div>
+            </div>
+
+            {error && <p className="text-xs text-destructive">{error}</p>}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}

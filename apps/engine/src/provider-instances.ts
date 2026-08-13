@@ -52,23 +52,21 @@ const LOGIN_ARTIFACT: Record<ProviderDriverKind, string> = {
   codex: "auth.json",
 };
 
-/** What the user types to sign this instance in, for them to run themselves.
- *  The config-dir prefix is what makes it account-specific: without it the CLI
- *  signs the BASE login in, which is the one account they were not fixing. */
+/** The variable that relocates a provider's whole config and credential
+ *  directory. Claude: creds in the macOS Keychain, keyed per directory. Codex:
+ *  creds in `auth.json` inside it — file-based, and therefore portable. */
 const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME",
 };
 
-const LOGIN_ARGS: Record<ProviderDriverKind, string> = {
-  claude: "claude auth login",
-  codex: "codex login",
-};
-
-export function signInCommand(instance: Pick<ProviderInstance, "driver" | "configDir">): string {
-  const command = LOGIN_ARGS[instance.driver];
-  return instance.configDir ? `${CONFIG_DIR_ENV[instance.driver]}="${instance.configDir}" ${command}` : command;
-}
+/**
+ * THE SIGN-IN COMMAND IS NOT HERE, deliberately. It is a sentence shown to a
+ * person, it is never executed by anything in this process, and the cockpit is
+ * what renders it — see `apps/vnext-web/lib/provider-instances.ts`. A second
+ * copy in the engine would be a second place for the wording to drift with
+ * nothing that could notice.
+ */
 
 /** `~` is stored rather than an absolute home so a registry survives being
  *  copied between machines; it is expanded here, at the moment it is used. */

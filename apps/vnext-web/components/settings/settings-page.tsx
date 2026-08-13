@@ -3,35 +3,42 @@
 /**
  * Settings, on the frozen app's settings frame.
  *
- * The cockpit used to render three stacked Cards on a centred column, which is a
- * different screen from the rest of Telar: the donor's settings are a fixed
- * side-nav beside an internally-scrolling pane with a sticky sub-header, and its
- * rows are a shared `SettingsGroup`/`Row` grammar rather than per-section markup.
+ * A fixed side-nav beside an internally-scrolling pane with a sticky sub-header,
+ * and rows on one shared `SettingsGroup`/`Row` grammar rather than per-section
+ * markup.
  *
- * THE SECTION LIST IS SHORT ON PURPOSE. The donor carries Accounts, Agent
- * defaults, CLIs, Doctor, MCP, Notifications, Provider instances and Updates —
- * most of them backed by legacy state this cockpit deliberately does not own.
- * What remains is what the vNext engine can actually answer for, and each absent
- * section is stated as a fact rather than left as a gap. MCP is here because the
- * engine now models it: see components/settings/mcp-section.tsx.
+ * THE ENGINE PANE IS GONE, and this is what replaced it. It reported the daemon
+ * id, the protocol version, the worker lease and the launch command — four facts
+ * about a subprocess, on a screen that is packaged as an application. None of
+ * them is actionable by the person reading it: a fresh daemon id tells you the
+ * engine restarted, and there is nothing here to do about that. What survives is
+ * the part that stays true in a shipped app — which build this is, where its
+ * state lives, and whether the engine answered at all — and it is one short
+ * section rather than a pane of its own.
+ *
+ * PROVIDERS IS THE ACCOUNT REGISTRY NOW. It used to be three rows of prose
+ * saying sign-in happens elsewhere. True, and useless: there was nothing to
+ * configure and no way to tell whether anything worked. See
+ * components/settings/providers-section.tsx.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleAlertIcon, PaletteIcon, PlugIcon, ServerIcon, WrenchIcon } from "lucide-react";
+import { InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import { Badge } from "@/components/ui/badge";
 import { ThemeControl } from "@/components/theme-control";
 import { McpSection } from "./mcp-section";
+import { ProvidersSection } from "./providers-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 
 const api = createVNextApi();
 
 const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
-  { id: "engine", label: "Engine", icon: ServerIcon, group: "Runtime" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
+  { id: "about", label: "About", icon: InfoIcon, group: "Cockpit" },
 ];
 
 /** A figure the engine reported, in the register the rest of the app uses for
@@ -40,64 +47,59 @@ function Mono({ children }: { children: React.ReactNode }) {
   return <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{children}</code>;
 }
 
-function EngineSection({ health, unreachable }: { health?: EngineHealth; unreachable: boolean }) {
+function AboutSection({
+  about,
+  health,
+  unreachable,
+}: {
+  about?: { appVersion: string; stateRoot?: string };
+  health?: EngineHealth;
+  unreachable: boolean;
+}) {
   return (
-    <>
-      {unreachable && (
-        <SettingsGroup title="Not connected" description="Everything below is the last thing this page managed to read.">
-          <Row
-            icon={CircleAlertIcon}
-            label="The engine did not answer"
-            hint="Start it with the launcher below, using the same TELAR_HOME."
-            control={<Badge variant="outline">Offline</Badge>}
-          />
-        </SettingsGroup>
-      )}
-
-      <SettingsGroup title="Daemon" description="What this cockpit is talking to right now.">
-        <Row label="Protocol version" hint="The contract this engine answers." control={<Mono>{health ? `v${health.version}` : "—"}</Mono>} />
-        <Row
-          label="Daemon"
-          hint="A fresh id means the engine restarted since this page loaded."
-          control={<Mono>{health ? health.daemonId.slice(0, 8) : "—"}</Mono>}
-        />
-        <Row
-          label="Started"
-          hint="When the current daemon process came up."
-          control={<Mono>{health ? new Date(health.startedAt).toLocaleString() : "—"}</Mono>}
-        />
-      </SettingsGroup>
-
-      <SettingsGroup title="Worker" description="Turns are claimed and run by a worker. Without one, a submitted turn stays queued for ever.">
-        <Row
-          label="Registered"
-          hint="A worker holds a lease and heartbeats to keep it."
-          control={
-            health?.worker.registered ? <Badge variant="secondary">Live</Badge> : <Badge variant="outline">None</Badge>
-          }
-        />
-        <Row label="Worker id" control={<Mono>{health?.worker.workerId?.slice(0, 24) ?? "—"}</Mono>} />
-        <Row label="Active workers" control={<Mono>{health?.worker.activeWorkers ?? "—"}</Mono>} />
-      </SettingsGroup>
-
-      <SettingsGroup title="State" description="vNext runs against its own state root and never reads or writes the legacy one.">
-        <Row
-          label="Launch command"
-          hint="Starts the local engine, its worker, and this app."
-          control={<Mono>bun run dev:vnext</Mono>}
-        />
-        <Row label="State isolation" hint="Enforced before Next boots; a legacy TELAR_HOME is refused." control={<Badge variant="secondary">Protected</Badge>} />
-      </SettingsGroup>
-    </>
+    <SettingsGroup title="This build" description="What is running, and where it keeps its state.">
+      <Row label="Version" control={<Mono>{about ? about.appVersion : "—"}</Mono>} />
+      {/*
+        THE ONE ENGINE FACT WORTH KEEPING. Not the daemon id or the worker
+        lease — whether the thing that runs turns is answering, because that is
+        the difference between "my message is queued" and "my message is lost",
+        and it is the only one of the four a reader can act on.
+      */}
+      <Row
+        label="Engine"
+        hint={unreachable ? "Nothing is claiming turns; a message sent now stays queued." : undefined}
+        control={
+          unreachable ? (
+            <Badge variant="outline">Not answering</Badge>
+          ) : health?.worker.registered ? (
+            <Badge variant="secondary">Running</Badge>
+          ) : (
+            <Badge variant="outline">No worker</Badge>
+          )
+        }
+      />
+      <Row
+        label="State"
+        hint="Sessions, transcripts, worktrees and settings. vNext never reads or writes the legacy state root."
+        control={<Mono>{about?.stateRoot ?? "—"}</Mono>}
+      />
+    </SettingsGroup>
   );
 }
 
 export function SettingsPage() {
   const [active, setActive] = useState("appearance");
+  const [about, setAbout] = useState<{ appVersion: string; stateRoot?: string }>();
   const [health, setHealth] = useState<EngineHealth>();
   const [unreachable, setUnreachable] = useState(false);
 
   const load = useCallback(async () => {
+    // Independently: the engine being down is exactly when the build and state
+    // facts matter, so one failing must not take the other with it.
+    void api
+      .about()
+      .then(setAbout)
+      .catch(() => undefined);
     try {
       setHealth(await api.health());
       setUnreachable(false);
@@ -119,29 +121,11 @@ export function SettingsPage() {
         </SettingsGroup>
       )}
 
-      {active === "engine" && <EngineSection {...(health ? { health } : {})} unreachable={unreachable} />}
-
-      {active === "providers" && (
-        <SettingsGroup title="Provider configuration" description="This cockpit does not manage credentials.">
-          <Row
-            label="Sign-in lives outside Telar"
-            hint="Authenticate Claude Code or Codex on this machine; the worker picks the session up from there."
-            control={<Badge variant="outline">External</Badge>}
-          />
-          <Row
-            label="Which provider runs a session"
-            hint="Chosen when the session is created and fixed for its lifetime — the engine routes turns by provider instance."
-            control={<Badge variant="secondary">Per session</Badge>}
-          />
-          <Row
-            label="Which model runs a turn"
-            hint="Chosen per message in the composer. The provider cannot change with it, because the submission has no field for one."
-            control={<Badge variant="secondary">Per turn</Badge>}
-          />
-        </SettingsGroup>
-      )}
+      {active === "providers" && <ProvidersSection />}
 
       {active === "mcp" && <McpSection />}
+
+      {active === "about" && <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />}
     </SettingsShell>
   );
 }
