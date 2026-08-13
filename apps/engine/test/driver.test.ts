@@ -677,15 +677,71 @@ test("an agent still running when the turn ends is failed, so the session stops 
   expect(closed[0]?.kind === "task.completed" && closed[0].task.state).toBe("failed");
 });
 
+test("a finished task is not resurrected by the SDK still talking about it", async () => {
+  /**
+   * THE REAL SEQUENCE, off a measured turn: a backgrounded `sleep 90` reported
+   * `task_updated{status: killed}` when the turn wound down, and then a
+   * `task_notification` carrying a summary and NO STATUS. Read as `running`,
+   * that notification put a finished task back to working — where nothing was
+   * ever going to correct it, because the stream had ended. The session then
+   * claimed to be busy, and the turn-end sweep marked it FAILED.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_a", description: "Sleep for 90 seconds in background" };
+      yield { type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "killed" } };
+      yield { type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_a", summary: "Sleep for 90 seconds in background" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const reports = sink.observations.filter((o) => o.kind === "task.started" || o.kind === "task.progress" || o.kind === "task.completed");
+  const states = reports.map((o) => ("task" in o ? o.task.state : undefined));
+  // Never back to running, and never swept into a failure it did not have.
+  expect(states).toEqual(["running", "stopped", "stopped"]);
+  expect(states).not.toContain("failed");
+  // The last word is still a completion event, so a client folding these ends
+  // up with a settled task rather than one that reads as in flight.
+  expect(reports.at(-1)?.kind).toBe("task.completed");
+});
+
+test("a notification with no status is an ENDING, because that is the only thing it can mean", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_a", description: "Audit the parser" };
+      yield { type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_a", summary: "found three" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.filter((o) => o.kind === "task.completed");
+  expect(closed).toHaveLength(1);
+  expect(closed[0]?.kind === "task.completed" && closed[0].task).toMatchObject({ state: "completed", resultText: "found three" });
+});
+
 test("task classification is a DENYLIST, so a renamed agent type is unstyled and never invisible", () => {
   expect(taskKindForType("background_shell")).toBe("background");
+  /**
+   * MEASURED against the installed SDK (0.3.224), twice, because the name does
+   * not say it: a Bash call with `run_in_background` announces `task_started`
+   * with `task_type: "local_bash"`, and the same call in the FOREGROUND
+   * announces no task at all. Read as an agent, a backgrounded shell was swept
+   * to "failed" at the end of the turn it was meant to outlive.
+   */
+  expect(taskKindForType("local_bash")).toBe("background");
   expect(taskKindForType("subagent")).toBe("agent");
   // The load-bearing case: an SDK that invents a new agent flavour tomorrow.
   expect(taskKindForType("local_workflow")).toBe("agent");
   expect(taskKindForType(undefined)).toBe("agent");
   expect(taskStateForStatus("killed")).toBe("stopped");
   expect(taskStateForStatus("paused")).toBe("waiting");
+  // The fallback belongs to the CALLER: a start or a progress line with no
+  // status is running, and a notification with no status is over.
   expect(taskStateForStatus(undefined)).toBe("running");
+  expect(taskStateForStatus(undefined, "completed")).toBe("completed");
+  expect(taskStateForStatus("running", "completed")).toBe("running");
 });
 
 test("collapsed labels are derived once, by the engine", () => {

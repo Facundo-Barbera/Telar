@@ -497,17 +497,40 @@ export function titleForToolCall(name: string, detail: ItemDetail): string {
  * dropped real sub-agents the first time a new name appeared. Only the types
  * KNOWN to be background are treated as background; everything else is an agent
  * and shows up unstyled rather than invisible.
+ *
+ * `local_bash` IS ON THE LIST BECAUSE THE SDK WAS ASKED. Two probes against the
+ * installed 0.3.224: a Bash call with `run_in_background` announces
+ * `task_started` with `task_type: "local_bash"`, and the same call in the
+ * foreground announces NO TASK AT ALL. So a `local_bash` task is a shell that
+ * was backgrounded, which is the definition this list is drawing.
+ *
+ * Filed as an agent it was worse than mislabelled: the sweep at the end of a run
+ * closes every live AGENT as failed and deliberately leaves background work
+ * alone, so a `sleep` that outlived its turn — the entire point of backgrounding
+ * it — was recorded as an agent that failed to report back.
  */
-const BACKGROUND_TASK_TYPES = new Set(["background_shell", "background_bash", "monitor", "watch"]);
+const BACKGROUND_TASK_TYPES = new Set(["background_shell", "background_bash", "local_bash", "monitor", "watch"]);
 
 export function taskKindForType(taskType: string | undefined): TaskKind {
   return taskType && BACKGROUND_TASK_TYPES.has(taskType) ? "background" : "agent";
 }
 
-/** The SDK's task status vocabulary onto the contract's. `killed` and `paused`
- *  have no contract equivalent and map to the nearest honest one — a killed
- *  task was stopped, and a paused one is still waiting to resume. */
-export function taskStateForStatus(status: string | undefined): TaskState {
+/**
+ * The SDK's task status vocabulary onto the contract's. `killed` and `paused`
+ * have no contract equivalent and map to the nearest honest one — a killed task
+ * was stopped, and a paused one is still waiting to resume.
+ *
+ * THE FALLBACK IS THE CALLER'S, and that is a correction rather than a
+ * refinement. This defaulted to `running` for everything it did not recognise,
+ * which is right for a start or a progress report and WRONG for a notification —
+ * whose whole meaning is that the task is over. The measured consequence: the
+ * SDK sent `task_updated{status: killed}` for a backgrounded shell and then a
+ * `task_notification` carrying a summary and no status, which this read as
+ * `running` and so RESURRECTED a finished task. It then read as still working
+ * until the turn ended, at which point the sweep below marked it FAILED — a red
+ * row for a task that had done nothing wrong.
+ */
+export function taskStateForStatus(status: string | undefined, fallback: TaskState = "running"): TaskState {
   switch (status) {
     case "completed":
       return "completed";
@@ -519,9 +542,17 @@ export function taskStateForStatus(status: string | undefined): TaskState {
       return "waiting";
     case "pending":
       return "pending";
-    default:
+    case "running":
       return "running";
+    default:
+      return fallback;
   }
+}
+
+const TERMINAL_TASK_STATES = new Set<TaskState>(["completed", "failed", "stopped"]);
+
+export function isTerminalTaskState(state: TaskState): boolean {
+  return TERMINAL_TASK_STATES.has(state);
 }
 
 /**
@@ -674,16 +705,42 @@ export function createClaudeDriver(
         const id = taskIdFor(sdkTaskId, toolUseId);
         if (sdkTaskId) taskIdsBySdkId.set(sdkTaskId, id);
         const known = knownTasks.get(id);
+        /**
+         * THE FIRST ENDING IS THE ENDING. A task that has finished never changes
+         * state again; later reports may still add to it.
+         *
+         * The SDK keeps talking about a task after it ends — a notification
+         * carrying the summary, a progress line that arrives out of order — and
+         * each of those carries a state this fold would otherwise apply.
+         * Measured on a real turn: `task_updated{status: killed}` followed by a
+         * status-less `task_notification` put a stopped task back to `running`,
+         * where it read as still working with nothing left in the stream that
+         * could correct it.
+         *
+         * NOT "THE MOST SPECIFIC WINS", which was the first shape of this and is
+         * subtly worse: the notification above says only "here is the summary",
+         * so its ending is INFERRED, and letting it through rewrote an explicit
+         * `killed` as `completed` — losing the one fact the SDK had actually
+         * stated. Everything else on the patch is still folded in, so the
+         * summary and the usage arrive either way.
+         */
+        const state = known && isTerminalTaskState(known.state) ? known.state : patch.state;
         const task: TaskSeed = {
           ...known,
           ...patch,
           id,
           kind: patch.kind ?? known?.kind ?? "agent",
-          state: patch.state,
+          state,
           ...(sdkTaskId ? { providerTaskId: sdkTaskId } : {}),
         };
         knownTasks.set(id, task);
-        emit(kind === "task.progress" ? { kind, task, ...(message ? { message } : {}) } : { kind, task });
+        // The EVENT follows the state, not the message that carried it: a
+        // notification about an already-finished task must not be announced as
+        // progress, and a resurrection blocked above must not be announced at
+        // all as a completion of something that already completed.
+        const settled = isTerminalTaskState(state);
+        const announced = kind === "task.started" ? kind : settled ? "task.completed" : "task.progress";
+        emit(announced === "task.progress" ? { kind: announced, task, ...(message ? { message } : {}) } : { kind: announced, task });
       };
 
       /** A sub-agent's usage, in the contract's shape. The SDK reports one
@@ -950,7 +1007,11 @@ export function createClaudeDriver(
               "task.completed",
               str(item.task_id),
               {
-                state: taskStateForStatus(str(item.status)),
+                // A NOTIFICATION IS AN ENDING. Its default is `completed` rather
+                // than the shared `running`, because "the task is over and here
+                // is what it produced" is the only thing this message means —
+                // see `taskStateForStatus`.
+                state: taskStateForStatus(str(item.status), "completed"),
                 ...(str(item.summary) ? { resultText: item.summary! } : {}),
                 ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
               },
