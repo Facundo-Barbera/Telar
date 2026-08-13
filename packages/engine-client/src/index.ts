@@ -353,7 +353,17 @@ export class EngineClient {
    */
   updateSession(
     sessionId: string,
-    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
+    patch: {
+      title?: string;
+      runtimeMode?: RuntimeMode;
+      detached?: boolean;
+      model?: ModelSelection | null;
+      /** Shelve or pin this session in the list. `null` hands it back to the
+       *  inactivity rule — see `Session.settledOverride`. */
+      settledOverride?: "settled" | "active" | null;
+      /** Hide it until this instant. `null` cancels. */
+      snoozedUntil?: number | null;
+    },
   ): Promise<{ session: Session }> {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }

@@ -1212,7 +1212,18 @@ export class EngineStore {
     sessionId: string,
     /** `model: null` CLEARS the selection; absent leaves it alone. The two are
      *  different requests and JSON cannot express the difference any other way. */
-    patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelectionValue | null },
+    patch: {
+      title?: string;
+      runtimeMode?: RuntimeMode;
+      detached?: boolean;
+      model?: ModelSelectionValue | null;
+      /** `null` returns the session to the inactivity rule; the two strings pin
+       *  it out of or into the list. Three answers, so not a boolean. */
+      settledOverride?: "settled" | "active" | null;
+      /** `null` cancels a snooze. A time in the past is accepted and simply
+       *  reads as awake — a client's clock is not this engine's to police. */
+      snoozedUntil?: number | null;
+    },
   ): Session {
     const session = this.getSession(sessionId);
     if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
@@ -1263,12 +1274,44 @@ export class EngineStore {
         next.model = parsed.data;
       }
     }
+    /**
+     * SETTLING IS A DECISION ABOUT THE LIST, so it is stamped when it is made.
+     * `settledAt` is what lets a client tell "I shelved this a minute ago" from
+     * "I shelved this last week", which is the difference between a decision
+     * that still stands and one the world has moved past.
+     */
+    if (patch.settledOverride !== undefined) {
+      if (patch.settledOverride === null) {
+        delete next.settledOverride;
+        delete next.settledAt;
+      } else if (patch.settledOverride === "settled" || patch.settledOverride === "active") {
+        next.settledOverride = patch.settledOverride;
+        next.settledAt = this.now();
+      } else {
+        throw new EngineStateError("invalid_request", "settledOverride must be 'settled', 'active' or null");
+      }
+    }
+    if (patch.snoozedUntil !== undefined) {
+      if (patch.snoozedUntil === null) {
+        delete next.snoozedUntil;
+        delete next.snoozedAt;
+      } else {
+        if (!Number.isFinite(patch.snoozedUntil)) throw new EngineStateError("invalid_request", "snoozedUntil must be a timestamp");
+        next.snoozedUntil = Math.floor(patch.snoozedUntil);
+        // BOTH STAMPS, ALWAYS. A wake time with no "set at" cannot answer "has
+        // anything happened since?", which is the whole of the early-wake rule.
+        next.snoozedAt = this.now();
+      }
+    }
+
     // Nothing changed: no write, no event. A client polling a "save" button
     // should not fill the journal with rows that say nothing happened.
     if (
       next.title === session.title &&
       next.runtimeMode === session.runtimeMode &&
       next.detached === session.detached &&
+      next.settledOverride === session.settledOverride &&
+      next.snoozedUntil === session.snoozedUntil &&
       // COMPARED WHOLE, not field by field. The hand-written version listed
       // `model` and `effort`, so when the selection grew a context window and a
       // fast-mode switch, a patch that changed only those looked like a no-op
@@ -1447,6 +1490,9 @@ export class EngineStore {
     queue.turns.push(turn);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
+    // Queueing a message is a human saying they are not done with this after
+    // all, so any shelf or snooze it was under is lifted.
+    this.wakeSessionForNewWork(sessionId);
     // v1 emitted only `{ sequence }` here, which is why the client had to fetch
     // a snapshot to learn the prompt. The whole turn rides the event now.
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
@@ -1983,6 +2029,33 @@ export class EngineStore {
     session.updatedAt = at;
     if (resumeCursor !== undefined) session.resumeCursor = resumeCursor;
     atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
+  }
+
+  /**
+   * A SHELVED SESSION THAT GETS NEW WORK COMES BACK ON ITS OWN.
+   *
+   * The one rule that keeps settling from becoming a place things get lost. A
+   * user settles a session meaning "I am done with this for now"; queueing a
+   * message to it means they are not, and leaving it shelved would hide a
+   * conversation that is actively running. The snooze goes with it for the same
+   * reason — you cannot both be ignoring something until tomorrow and be typing
+   * at it.
+   *
+   * NOT THE SAME AS "THE AGENT DID SOMETHING". Only work a HUMAN queued clears
+   * these; a sub-agent finishing, or a background shell exiting, is exactly the
+   * kind of noise a person settled the row to stop hearing about. Clients still
+   * raise a snoozed row's hand for things that outrank a snooze — that is a
+   * question about presentation and it is answered on their side.
+   */
+  private wakeSessionForNewWork(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    if (session.settledOverride === undefined && session.snoozedUntil === undefined) return;
+    delete session.settledOverride;
+    delete session.settledAt;
+    delete session.snoozedUntil;
+    delete session.snoozedAt;
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
+    this.appendEvent(sessionId, { type: "session.updated", session });
   }
 
   /** Prefer metadata, but let a completed durable turn heal an interrupted metadata write. */

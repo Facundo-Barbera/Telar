@@ -111,6 +111,48 @@ export const Session = z.object({
   /** Cumulative across every turn. Per-turn figures live on the turn. */
   usage: UsageSnapshot.optional(),
 
+  /**
+   * THE INBOX'S OWN STATE, WHICH IS NOT THE SESSION'S LIFECYCLE.
+   *
+   * `state` answers "is this conversation over"; these answer "do I want to see
+   * it right now". A settled session is still live and still resumable — it has
+   * simply been moved off the top of the list — where an archived one is
+   * finished. Conflating the two is what makes people archive things they only
+   * wanted out of the way, and then go looking for them.
+   *
+   * MODELLED ON t3 code's thread settling. Its three-way shape is the part
+   * worth copying exactly:
+   *
+   *   - `settledOverride` is a PIN IN EITHER DIRECTION, not a boolean. "settled"
+   *     shelves a session the inactivity rule would have kept; "active" keeps
+   *     one the inactivity rule would have shelved. Absent means "let the rule
+   *     decide", which is a third answer neither boolean can express.
+   *   - AN OVERRIDE NEVER GOES STALE SILENTLY: the engine clears it when real
+   *     activity happens (a turn is queued), so a settled session that gets a
+   *     new message comes back on its own rather than staying hidden while it
+   *     works.
+   *   - A SNOOZE IS AN OVERLAY, NOT A STATE. The session stays exactly as
+   *     active as it was; it is only suppressed from the list until its wake
+   *     time — and clients raise its hand early when something outranks the
+   *     snooze. That rule lives on the client because it is a question about
+   *     presentation, and the two stamps here are everything it needs.
+   *
+   * WHY THE ENGINE HOLDS THEM AT ALL, rather than a browser's local storage:
+   * the same sessions are read from the desktop shell, a browser tab and
+   * whatever else attaches, and an inbox that disagrees with itself per client
+   * is not an inbox. `readAt` is deliberately still absent — see
+   * `apps/vnext-web/lib/session-list.ts` for what unread would need.
+   */
+  settledOverride: z.enum(["settled", "active"]).optional(),
+  /** When the override was set. Its age is what lets a client tell an old
+   *  decision from a fresh one. */
+  settledAt: Timestamp.optional(),
+  /** Hidden from the list until this passes. */
+  snoozedUntil: Timestamp.optional(),
+  /** When the snooze was set — the baseline "what has happened SINCE" is
+   *  measured from, which is what makes an early wake possible. */
+  snoozedAt: Timestamp.optional(),
+
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
 });

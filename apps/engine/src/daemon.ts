@@ -740,6 +740,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
               // `null` is forwarded rather than dropped: it is how a client says
               // "clear it", which `undefined` cannot express over JSON.
               ...(input.model === undefined ? {} : { model: input.model as ModelSelection | null }),
+              // Both forwarded verbatim, `null` included, and both validated in
+              // the store — same reasoning as the two above: a check that only
+              // ran on this hop would not protect an in-process caller.
+              ...(input.settledOverride === undefined ? {} : { settledOverride: input.settledOverride as "settled" | "active" | null }),
+              ...(input.snoozedUntil === undefined ? {} : { snoozedUntil: input.snoozedUntil as number | null }),
             }),
           });
           return;

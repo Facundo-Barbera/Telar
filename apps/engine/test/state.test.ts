@@ -247,6 +247,42 @@ test("a session can be renamed, and a no-op update writes no journal row", () =>
   expect(() => store.updateSession("session_one", { runtimeMode: "yolo" as "auto" })).toThrow(/unknown runtime mode/);
 });
 
+test("settling is a pin in either direction, and null hands the session back to the clock", () => {
+  const { store } = readyStore();
+  // Three answers, which is why this is an enum and not a boolean: shelve it,
+  // keep it, or let the inactivity rule decide.
+  expect(store.updateSession("session_one", { settledOverride: "settled" })).toMatchObject({ settledOverride: "settled", settledAt: 100 });
+  expect(store.updateSession("session_one", { settledOverride: "active" })).toMatchObject({ settledOverride: "active" });
+  const cleared = store.updateSession("session_one", { settledOverride: null });
+  expect(cleared.settledOverride).toBeUndefined();
+  expect(cleared.settledAt).toBeUndefined();
+  expect(() => store.updateSession("session_one", { settledOverride: "maybe" as "settled" })).toThrow(/settledOverride/);
+});
+
+test("a snooze carries BOTH stamps, because 'has anything happened since' needs a baseline", () => {
+  const { store } = readyStore();
+  const snoozed = store.updateSession("session_one", { snoozedUntil: 9_000 });
+  expect(snoozed).toMatchObject({ snoozedUntil: 9_000, snoozedAt: 100 });
+  const woken = store.updateSession("session_one", { snoozedUntil: null });
+  expect(woken.snoozedUntil).toBeUndefined();
+  expect(woken.snoozedAt).toBeUndefined();
+  expect(() => store.updateSession("session_one", { snoozedUntil: Number.NaN })).toThrow(/timestamp/);
+});
+
+test("a settled or snoozed session comes back on its own when a human queues work", () => {
+  const { store } = readyStore();
+  store.updateSession("session_one", { settledOverride: "settled", snoozedUntil: 9_000 });
+  // THE RULE THAT KEEPS SETTLING FROM BEING A PLACE THINGS GET LOST: a person
+  // settled this meaning "done for now", and typing at it means they are not.
+  store.submitTurn("session_one", { runId: "run_wake", input: "Actually, one more thing" });
+  const session = store.getSession("session_one");
+  expect(session.settledOverride).toBeUndefined();
+  expect(session.snoozedUntil).toBeUndefined();
+  expect(session.snoozedAt).toBeUndefined();
+  // The client is told, rather than having to poll for it.
+  expect(store.readEvents("session_one").filter((event) => event.type === "session.updated")).toHaveLength(2);
+});
+
 test("tasks are journalled AND projected, so a cold session still knows a sub-agent ran", () => {
   const { store, root: stateRoot } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
