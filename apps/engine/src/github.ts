@@ -30,11 +30,13 @@ import type {
   GitHubDetailUnavailable,
   GitHubIssue,
   GitHubIssueDetail,
+  GitHubIssueListState,
   GitHubIssueRead,
   GitHubMergeMethod,
   GitHubMergeRefusal,
   GitHubMergeResult,
   GitHubPullDetail,
+  GitHubPullListState,
   GitHubPullRead,
   GitHubPullRequest,
   GitHubReview,
@@ -127,6 +129,41 @@ function labels(value: unknown) {
   });
 }
 
+/** `gh` nests assignees the way it nests the author, and only the login is
+ *  stable enough to show. */
+function logins(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const name = login(entry);
+    return name ? [name] : [];
+  });
+}
+
+/** A milestone is an object or null; its title is the only part a row has space
+ *  for. */
+function milestone(value: unknown): string | undefined {
+  const title = text((value as { title?: unknown } | null)?.title);
+  return title || undefined;
+}
+
+/**
+ * The fields EVERY row carries, whether it is an issue or a pull request.
+ *
+ * `projects` starts empty and is filled in afterwards, because it comes from a
+ * different `gh` call — see `readProjects` for why it has to.
+ */
+function rowFields(row: Record<string, unknown>) {
+  return {
+    ...(login(row.author) ? { author: login(row.author)! } : {}),
+    labels: labels(row.labels),
+    assignees: logins(row.assignees),
+    ...(milestone(row.milestone) ? { milestone: milestone(row.milestone)! } : {}),
+    projects: [] as string[],
+    updatedAt: epoch(row.updatedAt),
+    url: text(row.url) || `#${typeof row.number === "number" ? row.number : 0}`,
+  };
+}
+
 /**
  * The fields a LIST row and a DETAIL read share, parsed once.
  *
@@ -141,26 +178,26 @@ function issueRow(row: Record<string, unknown>): GitHubIssue | undefined {
     number,
     title: text(row.title),
     state: text(row.state) || "OPEN",
-    ...(login(row.author) ? { author: login(row.author)! } : {}),
-    labels: labels(row.labels),
-    updatedAt: epoch(row.updatedAt),
-    url: text(row.url) || `#${number}`,
+    ...(text(row.stateReason) ? { stateReason: text(row.stateReason) } : {}),
+    ...rowFields(row),
   };
 }
 
 function pullRow(row: Record<string, unknown>): GitHubPullRequest | undefined {
   const number = typeof row.number === "number" ? row.number : 0;
   if (number <= 0) return undefined;
+  const mergedAt = epoch(row.mergedAt);
   return {
     number,
     title: text(row.title),
     state: text(row.state) || "OPEN",
     isDraft: row.isDraft === true,
-    ...(login(row.author) ? { author: login(row.author)! } : {}),
     ...(text(row.headRefName) ? { headRefName: text(row.headRefName) } : {}),
     ...(text(row.reviewDecision) ? { reviewDecision: text(row.reviewDecision) } : {}),
-    updatedAt: epoch(row.updatedAt),
-    url: text(row.url) || `#${number}`,
+    // `epoch` answers 0 for an absent date, and an open pull request has no merge
+    // time — 0 would render as January 1970.
+    ...(mergedAt ? { mergedAt } : {}),
+    ...rowFields(row),
   };
 }
 
@@ -183,8 +220,65 @@ export function parsePulls(stdout: string): GitHubPullRequest[] {
   return rows(stdout, pullRow);
 }
 
-const ISSUE_FIELDS = "number,title,state,labels,author,updatedAt,url";
-const PULL_FIELDS = "number,title,state,isDraft,author,headRefName,updatedAt,url,reviewDecision";
+/**
+ * What a LIST row asks for.
+ *
+ * NO `comments`. `gh` has no count field, so asking for comments returns every
+ * comment BODY for every row: measured at 245KB and 2.81s against a fifty-issue
+ * repository, versus 0.56s without. Five times the read for a number, when the
+ * thread itself is one click away.
+ *
+ * NO `projectItems` EITHER, and that one is not about size — it needs the
+ * `read:project` scope, and a token without it fails the ENTIRE query rather than
+ * omitting the field. Measured against this machine's own `gh`, whose token has
+ * `repo` and not `read:project`: putting it here would blank the Issues list for
+ * anybody on a default token. It gets its own call.
+ */
+const ISSUE_FIELDS = "number,title,state,stateReason,labels,author,assignees,milestone,updatedAt,url";
+const PULL_FIELDS = "number,title,state,isDraft,author,assignees,milestone,labels,headRefName,updatedAt,url,reviewDecision,mergedAt";
+
+/**
+ * Which boards each row is on, keyed by number.
+ *
+ * ITS OWN CALL, FOR ONE MEASURED REASON. `projectItems` requires `read:project`;
+ * a token without that scope makes `gh` fail the whole `--json` query with a
+ * GraphQL scope error, so a single field would take the list, the titles and the
+ * states down with it. Asked separately, the worst case is a column that says why
+ * it is empty.
+ */
+export function parseProjectItems(stdout: string): Map<number, string[]> {
+  const byNumber = new Map<number, string[]>();
+  const parsed: unknown = JSON.parse(stdout);
+  if (!Array.isArray(parsed)) return byNumber;
+  for (const entry of parsed) {
+    const row = entry as Record<string, unknown>;
+    const number = typeof row.number === "number" ? row.number : 0;
+    if (number <= 0) continue;
+    const items = row.projectItems;
+    // `projectItems` is `{ title, ... }` per item; a board with no title is a
+    // board this cockpit cannot name, so it is dropped rather than shown blank.
+    const titles = Array.isArray(items)
+      ? items.flatMap((item) => {
+          const record = item as { title?: unknown; project?: { title?: unknown } } | null;
+          const title = text(record?.title) || text(record?.project?.title);
+          return title ? [title] : [];
+        })
+      : [];
+    if (titles.length > 0) byNumber.set(number, titles);
+  }
+  return byNumber;
+}
+
+/**
+ * Why the boards could not be read.
+ *
+ * `scope` IS THE ORDINARY CASE, not a fault: the token `gh auth login` mints by
+ * default carries `repo` and not `read:project`, so most machines land here. It is
+ * matched on GitHub's own words, which name the scope they want.
+ */
+export function classifyProjectFailure(result: GhResult): "scope" | "failed" {
+  return `${result.stderr}\n${result.stdout}`.toLowerCase().includes("read:project") ? "scope" : "failed";
+}
 
 /**
  * One read of a project's issues and pull requests.
@@ -194,12 +288,31 @@ const PULL_FIELDS = "number,title,state,isDraft,author,headRefName,updatedAt,url
  * sequential network round trips make the second one feel broken. They fail
  * independently — an org that disabled issues still has pull requests, and the
  * shape says so rather than reporting the whole repository as unavailable.
+ *
+ * FIVE CALLS AT MOST, ALL AT ONCE, so the wall clock is the slowest one rather
+ * than their sum: the two lists, the repository name, and the two board reads.
+ * `skipProjects` is how the store stops paying for the last two once a token has
+ * told us it has no `read:project` — see `projectGitHub`.
  */
-export async function readGitHub(gh: GhRunner, cwd: string, now: () => number = Date.now): Promise<GitHubSnapshot> {
-  const [issues, pulls, repo] = await Promise.all([
-    gh(cwd, ["issue", "list", "--limit", String(GITHUB_PAGE_SIZE), "--json", ISSUE_FIELDS]),
-    gh(cwd, ["pr", "list", "--limit", String(GITHUB_PAGE_SIZE), "--json", PULL_FIELDS]),
+export async function readGitHub(
+  gh: GhRunner,
+  cwd: string,
+  now: () => number = Date.now,
+  options: { issueState?: GitHubIssueListState; pullState?: GitHubPullListState; skipProjects?: boolean } = {},
+): Promise<GitHubSnapshot> {
+  const issueState = options.issueState ?? "open";
+  const pullState = options.pullState ?? "open";
+  const page = String(GITHUB_PAGE_SIZE);
+  const [issues, pulls, repo, issueBoards, pullBoards] = await Promise.all([
+    gh(cwd, ["issue", "list", "--state", issueState, "--limit", page, "--json", ISSUE_FIELDS]),
+    gh(cwd, ["pr", "list", "--state", pullState, "--limit", page, "--json", PULL_FIELDS]),
     gh(cwd, ["repo", "view", "--json", "nameWithOwner"]),
+    options.skipProjects
+      ? Promise.resolve(undefined)
+      : gh(cwd, ["issue", "list", "--state", issueState, "--limit", page, "--json", "number,projectItems"]),
+    options.skipProjects
+      ? Promise.resolve(undefined)
+      : gh(cwd, ["pr", "list", "--state", pullState, "--limit", page, "--json", "number,projectItems"]),
   ]);
 
   const repository = (() => {
@@ -229,10 +342,35 @@ export async function readGitHub(gh: GhRunner, cwd: string, now: () => number = 
   // one — both calls run against the same repository with the same credentials.
   const failure = issueRead.failure ?? pullRead.failure;
 
+  /**
+   * The boards, folded onto the rows they belong to.
+   *
+   * A BOARD FAILURE IS NOT A LIST FAILURE. It reports itself in its own field, and
+   * the rows keep their titles, states and assignees — which is the entire reason
+   * this is a separate call.
+   */
+  const boards = (result: GhResult | undefined): { items?: Map<number, string[]>; failed?: "scope" | "failed" } => {
+    if (!result) return {};
+    if (result.status !== 0) return { failed: classifyProjectFailure(result) };
+    try {
+      return { items: parseProjectItems(result.stdout) };
+    } catch {
+      return { failed: "failed" };
+    }
+  };
+  const issueBoardRead = boards(issueBoards);
+  const pullBoardRead = boards(pullBoards);
+  const withBoards = <T extends { number: number; projects: string[] }>(rows: T[], items?: Map<number, string[]>): T[] =>
+    items === undefined ? rows : rows.map((row) => ({ ...row, projects: items.get(row.number) ?? [] }));
+  const projectsUnavailable = issueBoardRead.failed ?? pullBoardRead.failed;
+
   return {
     ...(repository ? { repository } : {}),
-    issues: issueRead.rows,
-    pulls: pullRead.rows,
+    issues: withBoards(issueRead.rows, issueBoardRead.items),
+    pulls: withBoards(pullRead.rows, pullBoardRead.items),
+    issueState,
+    pullState,
+    ...(projectsUnavailable ? { projectsUnavailable } : {}),
     ...(failure ? { unavailable: failure.unavailable, ...(failure.message ? { message: failure.message } : {}) } : {}),
     readAt: now(),
   };
@@ -248,23 +386,6 @@ export async function readGitHub(gh: GhRunner, cwd: string, now: () => number = 
  * the answer so no surface has to pretend it showed the whole thing.
  */
 export const MAX_THREAD_COMMENTS = 100;
-
-/** `gh` nests assignees the way it nests the author, and only the login is
- *  stable enough to show. */
-function logins(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    const name = login(entry);
-    return name ? [name] : [];
-  });
-}
-
-/** A milestone is an object or null; its title is the only part a panel has room
- *  for. */
-function milestone(value: unknown): string | undefined {
-  const title = text((value as { title?: unknown } | null)?.title);
-  return title || undefined;
-}
 
 function comment(entry: unknown): GitHubComment | undefined {
   const row = entry as Record<string, unknown>;
@@ -389,18 +510,18 @@ export function parseChecks(value: unknown): GitHubCheck[] {
   });
 }
 
-export function parseIssueDetail(stdout: string, now: number): GitHubIssueDetail {
+export function parseIssueDetail(stdout: string, now: number, projects: string[] = []): GitHubIssueDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = issueRow(row);
   if (!base) throw new Error("gh returned an issue with no number");
   const thread = parseComments(row.comments);
   const closedAt = epoch(row.closedAt);
   return {
+    // `base` already carries the author, labels, assignees, milestone and state
+    // reason — every field a ROW has, parsed by the one function both readers use.
     ...base,
+    projects,
     body: text(row.body),
-    ...(text(row.stateReason) ? { stateReason: text(row.stateReason) } : {}),
-    assignees: logins(row.assignees),
-    ...(milestone(row.milestone) ? { milestone: milestone(row.milestone)! } : {}),
     comments: thread.comments,
     olderComments: thread.olderComments,
     createdAt: epoch(row.createdAt),
@@ -437,15 +558,22 @@ export function parseMergeMethods(stdout: string): GitHubMergeMethod[] {
 
 const MERGE_METHOD_FIELDS = "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed";
 
-export function parsePullDetail(stdout: string, now: number, mergeMethods: GitHubMergeMethod[] = []): GitHubPullDetail {
+export function parsePullDetail(
+  stdout: string,
+  now: number,
+  mergeMethods: GitHubMergeMethod[] = [],
+  projects: string[] = [],
+): GitHubPullDetail {
   const row = JSON.parse(stdout) as Record<string, unknown>;
   const base = pullRow(row);
   if (!base) throw new Error("gh returned a pull request with no number");
   const thread = parseComments(row.comments);
-  const mergedAt = epoch(row.mergedAt);
   const count = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0);
   return {
+    // Labels, assignees, milestone, the merge time and the review decision all
+    // come from `pullRow`, which the list read uses too.
     ...base,
+    projects,
     body: text(row.body),
     ...(text(row.baseRefName) ? { baseRefName: text(row.baseRefName) } : {}),
     ...(text(row.headRefOid) ? { headRefOid: text(row.headRefOid) } : {}),
@@ -455,10 +583,6 @@ export function parsePullDetail(stdout: string, now: number, mergeMethods: GitHu
     mergeable: text(row.mergeable) || "UNKNOWN",
     mergeStateStatus: text(row.mergeStateStatus) || "UNKNOWN",
     mergeMethods,
-    // A pull request's LIST row carries no labels — nothing on a 320px row had
-    // space for them — so the detail read parses its own.
-    labels: labels(row.labels),
-    assignees: logins(row.assignees),
     additions: count(row.additions),
     deletions: count(row.deletions),
     changedFiles: count(row.changedFiles),
@@ -467,7 +591,6 @@ export function parsePullDetail(stdout: string, now: number, mergeMethods: GitHu
     reviews: parseReviews(row.reviews),
     checks: parseChecks(row.statusCheckRollup),
     createdAt: epoch(row.createdAt),
-    ...(mergedAt ? { mergedAt } : {}),
     ...(login(row.mergedBy) ? { mergedBy: login(row.mergedBy)! } : {}),
     readAt: now,
   };
@@ -489,11 +612,41 @@ export function classifyDetailFailure(result: GhResult): { unavailable: GitHubDe
   return classifyGhFailure(result);
 }
 
-export async function readIssue(gh: GhRunner, cwd: string, number: number, now: () => number = Date.now): Promise<GitHubIssueRead> {
-  const result = await gh(cwd, ["issue", "view", String(number), "--json", ISSUE_DETAIL_FIELDS]);
+/**
+ * The boards ONE issue or pull request is on.
+ *
+ * Its own call for the same measured reason the list's is: `projectItems` needs
+ * `read:project` and a token without it fails the whole `--json` query. Asked
+ * beside the detail rather than inside it, a missing scope costs the board chips
+ * and not the issue.
+ */
+async function readBoards(gh: GhRunner, cwd: string, kind: "issue" | "pr", number: number, skip?: boolean): Promise<string[]> {
+  if (skip) return [];
+  const result = await gh(cwd, [kind, "view", String(number), "--json", "number,projectItems"]);
+  if (result.status !== 0) return [];
+  try {
+    // `view` answers one object where `list` answers an array; the list parser
+    // handles both by being handed a one-element array.
+    return parseProjectItems(`[${result.stdout}]`).get(number) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function readIssue(
+  gh: GhRunner,
+  cwd: string,
+  number: number,
+  now: () => number = Date.now,
+  options: { skipProjects?: boolean } = {},
+): Promise<GitHubIssueRead> {
+  const [result, boards] = await Promise.all([
+    gh(cwd, ["issue", "view", String(number), "--json", ISSUE_DETAIL_FIELDS]),
+    readBoards(gh, cwd, "issue", number, options.skipProjects),
+  ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { issue: parseIssueDetail(result.stdout, now()) };
+    return { issue: parseIssueDetail(result.stdout, now(), boards) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }
@@ -509,14 +662,21 @@ export async function readIssue(gh: GhRunner, cwd: string, number: number, now: 
  * a failure of this read — `parseMergeMethods` widens to all three and the merge
  * itself is what finds out.
  */
-export async function readPull(gh: GhRunner, cwd: string, number: number, now: () => number = Date.now): Promise<GitHubPullRead> {
-  const [result, repo] = await Promise.all([
+export async function readPull(
+  gh: GhRunner,
+  cwd: string,
+  number: number,
+  now: () => number = Date.now,
+  options: { skipProjects?: boolean } = {},
+): Promise<GitHubPullRead> {
+  const [result, repo, boards] = await Promise.all([
     gh(cwd, ["pr", "view", String(number), "--json", PULL_DETAIL_FIELDS]),
     gh(cwd, ["repo", "view", "--json", MERGE_METHOD_FIELDS]),
+    readBoards(gh, cwd, "pr", number, options.skipProjects),
   ]);
   if (result.status !== 0) return classifyDetailFailure(result);
   try {
-    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : "")) };
+    return { pull: parsePullDetail(result.stdout, now(), parseMergeMethods(repo.status === 0 ? repo.stdout : ""), boards) };
   } catch {
     return { unavailable: "failed", message: "gh returned output this engine could not read" };
   }

@@ -1,11 +1,14 @@
 import type {
   BrowserSnapshot,
   GitCommitEntry,
+  GitHubIssueListState,
   GitHubIssueRead,
   GitHubMergeMethod,
   GitHubMergeResult,
+  GitHubPullListState,
   GitHubPullRead,
   GitHubSnapshot,
+  GitignoreResult,
   GitOverview,
   ModelCatalogue,
   SessionDiff,
@@ -90,12 +93,23 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
     /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
      *  `refresh` is what the button sends, and nothing else may send it. */
-    projectGitHub: (projectId: string, options: { refresh?: boolean } = {}) =>
-      request<{ github: GitHubSnapshot }>(
-        fetcher,
-        "GET",
-        `/api/projects/${encodeURIComponent(projectId)}/github${options.refresh ? "?refresh=1" : ""}`,
-      ),
+    projectGitHub: (
+      projectId: string,
+      options: { refresh?: boolean; issueState?: GitHubIssueListState; pullState?: GitHubPullListState } = {},
+    ) => {
+      const query = new URLSearchParams();
+      if (options.refresh) query.set("refresh", "1");
+      // A state per kind: `merged` is not a state an issue can be in.
+      if (options.issueState) query.set("issues", options.issueState);
+      if (options.pullState) query.set("pulls", options.pullState);
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
+      return request<{ github: GitHubSnapshot }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/github${suffix}`);
+    },
+    /** Ignore Telar's own files in a project's repository. No body: the rules are
+     *  the engine's, so this cannot be used to append arbitrary lines to a file in
+     *  somebody's checkout. */
+    projectGitignore: (projectId: string) =>
+      request<{ gitignore: GitignoreResult }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/gitignore`, {}),
     /**
      * ONE issue or ONE pull request, opened as its own panel tab.
      *

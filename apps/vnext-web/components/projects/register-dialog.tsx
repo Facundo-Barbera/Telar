@@ -1,17 +1,21 @@
 "use client";
 
-// Ported from the frozen app's components/projects/register-dialog.tsx.
+// Ported from the frozen app's components/projects/register-dialog.tsx, and both
+// of the things this side had dropped are back.
 //
-// ONE FIELD FEWER. The donor also had a toggle that wrote `telar.yaml` and
-// `.telar` into the repo's .gitignore; the vNext engine registers a project by
-// (name, root) and writes nothing into the repository, so there is no manifest to
-// keep out of Git.
+// THE BROWSE BUTTON should never have gone: an absolute path is the one thing a web
+// page cannot produce, so without a picker the only way in was typing
+// `/Users/you/code/thing` and finding out about the typo from the engine's refusal.
+// It goes through the desktop shell's native dialog where there is one and the
+// adapter's own picker otherwise — see lib/choose-directory.ts.
 //
-// THE BROWSE BUTTON IS BACK, and it should never have been dropped: an absolute
-// path is the one thing a web page cannot produce, so without a picker the only
-// way in was typing `/Users/you/code/thing` and finding out about the typo from
-// the engine's refusal. It goes through the desktop shell's native dialog where
-// there is one and the adapter's own picker otherwise — see lib/choose-directory.ts.
+// THE GITIGNORE TOGGLE is back with an honest label. vNext writes NOTHING into a
+// checkout — every engine write lands under TELAR_HOME, worktrees included — so
+// these rules are defensive rather than necessary, and the checkbox says which
+// rules it will add rather than claiming to tidy up after something. It is a
+// SECOND request after the project registers, on purpose: a repository that could
+// not be written to still gets registered, and the failure gets its own sentence
+// instead of losing the project.
 
 import { useState } from "react";
 import { FolderOpenIcon, FolderPlusIcon, Loader2Icon, XIcon } from "lucide-react";
@@ -30,6 +34,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 
 const api = createVNextApi();
 
@@ -67,6 +72,7 @@ export function RegisterProjectDialog({
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [browsing, setBrowsing] = useState(false);
+  const [ignore, setIgnore] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const basename =
@@ -84,6 +90,7 @@ export function RegisterProjectDialog({
       setError(null);
       setSubmitting(false);
       setBrowsing(false);
+      setIgnore(false);
     }
   };
 
@@ -114,14 +121,36 @@ export function RegisterProjectDialog({
     }
     setSubmitting(true);
     setError(null);
+    let project;
     try {
-      await api.registerProject({ name: name.trim() || basename, root: trimmedRoot });
-      handleOpenChange(false);
-      onRegistered();
+      project = (await api.registerProject({ name: name.trim() || basename, root: trimmedRoot })).project;
     } catch (cause) {
       setError(cause instanceof VNextApiError ? cause.message : String(cause));
       setSubmitting(false);
+      return;
     }
+    /**
+     * A SECOND REQUEST, AND ITS FAILURE IS NOT THE PROJECT'S.
+     *
+     * The project is registered by the time this runs, so a `.gitignore` that could
+     * not be written — a read-only checkout, a permission problem — reports itself
+     * and leaves the project in place. Folding the two into one call would mean
+     * losing a perfectly good registration to a file write.
+     */
+    if (ignore) {
+      try {
+        await api.projectGitignore(project.id);
+      } catch (cause) {
+        setError(
+          `${project.name} was registered, but its .gitignore could not be written: ${cause instanceof VNextApiError ? cause.message : String(cause)}`,
+        );
+        setSubmitting(false);
+        onRegistered();
+        return;
+      }
+    }
+    handleOpenChange(false);
+    onRegistered();
   };
 
   return (
@@ -142,7 +171,10 @@ export function RegisterProjectDialog({
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Register a project</DialogTitle>
-          <DialogDescription>Point the engine at a repo on this machine. Nothing is written into it.</DialogDescription>
+          {/* This used to promise "nothing is written into it", which the toggle
+              below now makes conditionally false. A description that a control on
+              the same screen contradicts is worse than a longer one. */}
+          <DialogDescription>Point the engine at a repo on this machine. Nothing is written into it unless you ask below.</DialogDescription>
         </DialogHeader>
 
         <form
@@ -188,6 +220,25 @@ export function RegisterProjectDialog({
               spellCheck={false}
             />
           </Field>
+
+          {/**
+           * NAMES THE RULES IT WILL WRITE, rather than saying "add Telar's files".
+           * The honest version of this control is the one that shows the two lines
+           * going into somebody's repository — and it is off by default, because
+           * vNext creates none of these files and a checkbox that writes into a
+           * checkout should be a decision rather than a default.
+           */}
+          <label htmlFor="project-gitignore" className="flex cursor-pointer items-start gap-2.5">
+            <Switch id="project-gitignore" checked={ignore} onCheckedChange={setIgnore} className="mt-0.5 shrink-0" />
+            <span className="min-w-0">
+              <span className="block text-xs font-medium text-foreground">Ignore Telar&apos;s files in this repo</span>
+              <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">
+                Appends <span className="font-mono">telar.yaml</span>, <span className="font-mono">.telar/</span> and{" "}
+                <span className="font-mono">.telar-worktrees/</span> to <span className="font-mono">.gitignore</span>, skipping any rule that is
+                already there. vNext writes none of these into a checkout — worktrees live outside it — so this is a precaution, not a cleanup.
+              </span>
+            </span>
+          </label>
 
           {error && (
             <Alert variant="destructive">

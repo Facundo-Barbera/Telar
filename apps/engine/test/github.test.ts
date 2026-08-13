@@ -10,6 +10,7 @@ import {
   classifyDetailFailure,
   classifyGhFailure,
   classifyMergeFailure,
+  classifyProjectFailure,
   MAX_THREAD_COMMENTS,
   mergePull,
   parseChecks,
@@ -17,6 +18,7 @@ import {
   parseIssueDetail,
   parseIssues,
   parseMergeMethods,
+  parseProjectItems,
   parsePullDetail,
   parsePulls,
   parseReviews,
@@ -72,8 +74,11 @@ describe("classifyGhFailure", () => {
 });
 
 describe("parseIssues", () => {
-  test("flattens gh's nested author and converts its ISO time to epoch milliseconds", () => {
-    // Converted once at the seam rather than by every client that renders a date.
+  test("a row carries everything a list can show without a second read", () => {
+    // The whole shape, pinned. Dates converted once at the seam rather than by
+    // every client that renders one; assignees flattened to logins because a bot
+    // has a login and no name; the milestone reduced to its title, which is the
+    // only part a 320px row has space for.
     const [issue] = parseIssues(
       JSON.stringify([
         {
@@ -82,6 +87,8 @@ describe("parseIssues", () => {
           state: "OPEN",
           author: { login: "ada", name: "Ada L" },
           labels: [{ name: "bug", color: "d73a4a" }, { name: "" }],
+          assignees: [{ login: "grace" }, { login: "" }],
+          milestone: { title: "v2", description: "…" },
           updatedAt: "2026-08-08T18:54:57Z",
           url: "https://github.com/o/r/issues/82",
         },
@@ -92,11 +99,26 @@ describe("parseIssues", () => {
       title: "Navigation freezes",
       state: "OPEN",
       author: "ada",
-      // A label with no name is dropped rather than rendered as an empty chip.
+      // A label with no name is dropped rather than rendered as an empty chip, and
+      // so is an assignee with no login.
       labels: [{ name: "bug", color: "d73a4a" }],
+      assignees: ["grace"],
+      milestone: "v2",
+      // EMPTY UNTIL THE BOARD CALL FILLS IT IN. `projectItems` needs a scope this
+      // query does not have, so it is read separately — see the board tests below.
+      projects: [],
       updatedAt: Date.parse("2026-08-08T18:54:57Z"),
       url: "https://github.com/o/r/issues/82",
     });
+  });
+
+  test("a closed row says WHY it closed", () => {
+    // On the row and not just the detail: a list that includes closed issues is a
+    // list where "was this done?" is the question every row raises.
+    const [issue] = parseIssues(
+      JSON.stringify([{ number: 1, title: "t", state: "CLOSED", stateReason: "NOT_PLANNED", url: "u", updatedAt: "2026-01-01T00:00:00Z" }]),
+    );
+    expect(issue).toMatchObject({ state: "CLOSED", stateReason: "NOT_PLANNED" });
   });
 
   test("a row without a number is not a row", () => {
@@ -124,6 +146,28 @@ describe("parsePulls", () => {
       ]),
     );
     expect(pull).toMatchObject({ isDraft: true, headRefName: "telar/session-1", reviewDecision: "CHANGES_REQUESTED" });
+  });
+
+  test("an OPEN pull request has no merge time — not a merge time of 1970", () => {
+    // `epoch` answers 0 for an absent date, and `pullStatus` reads `mergedAt` as
+    // proof a pull request landed, so a 0 here would report every open one as merged.
+    const [open] = parsePulls(JSON.stringify([{ number: 1, title: "t", state: "OPEN", url: "u", updatedAt: "2026-01-01T00:00:00Z" }]));
+    expect(open!.mergedAt).toBeUndefined();
+    const [landed] = parsePulls(
+      JSON.stringify([{ number: 2, title: "t", state: "MERGED", mergedAt: "2026-08-04T00:00:00Z", url: "u", updatedAt: "2026-08-04T00:00:00Z" }]),
+    );
+    expect(landed!.mergedAt).toBe(Date.parse("2026-08-04T00:00:00Z"));
+  });
+
+  test("a pull request row carries labels, which it never used to", () => {
+    // The list row had none — "nothing on a 320px row had space for them" — and
+    // then the row grew a second line, which is exactly where they go.
+    const [pull] = parsePulls(
+      JSON.stringify([
+        { number: 3, title: "t", state: "OPEN", url: "u", updatedAt: "2026-01-01T00:00:00Z", labels: [{ name: "deps" }], assignees: [{ login: "ada" }] },
+      ]),
+    );
+    expect(pull).toMatchObject({ labels: [{ name: "deps" }], assignees: ["ada"] });
   });
 });
 
@@ -165,6 +209,169 @@ describe("readGitHub", () => {
     const snapshot = await readGitHub(runner({ issue: ok("<html>"), pr: ok("[]"), repo: failed("") }), "/repo", () => 0);
     expect(snapshot.unavailable).toBe("failed");
     expect(snapshot.repository).toBeUndefined();
+  });
+});
+
+describe("which rows a list read asks for", () => {
+  /** Every `gh` call this read makes, in the order it made them. */
+  async function argvFor(options: Parameters<typeof readGitHub>[3]) {
+    const seen: string[][] = [];
+    await readGitHub(
+      async (_cwd, args) => {
+        seen.push(args);
+        return args[0] === "repo" ? ok(JSON.stringify({ nameWithOwner: "o/r" })) : ok("[]");
+      },
+      "/repo",
+      () => 1,
+      options,
+    );
+    return seen;
+  }
+
+  test("open by default, and the state travels to gh as --state", async () => {
+    const seen = await argvFor(undefined);
+    expect(seen.find((args) => args[0] === "issue")).toEqual([
+      "issue",
+      "list",
+      "--state",
+      "open",
+      "--limit",
+      "50",
+      "--json",
+      expect.any(String),
+    ]);
+  });
+
+  test("a state PER KIND, because `merged` is not a state an issue can be in", async () => {
+    // One shared filter would put a control on the Issues surface that always
+    // answers nothing.
+    const seen = await argvFor({ issueState: "closed", pullState: "merged" });
+    const state = (verb: string) => {
+      const args = seen.find((entry) => entry[0] === verb && entry[1] === "list" && entry.includes("--state"))!;
+      return args[args.indexOf("--state") + 1];
+    };
+    expect(state("issue")).toBe("closed");
+    expect(state("pr")).toBe("merged");
+  });
+
+  test("the snapshot echoes back which rows these are", async () => {
+    // A surface showing forty closed issues must be able to say so. Without this it
+    // would have to trust that the answer matches the filter it last sent, which a
+    // thirty-second cache makes untrue.
+    const snapshot = await readGitHub(
+      runner({ issue: ok("[]"), pr: ok("[]"), repo: ok(JSON.stringify({ nameWithOwner: "o/r" })) }),
+      "/repo",
+      () => 1,
+      { issueState: "all", pullState: "closed" },
+    );
+    expect(snapshot).toMatchObject({ issueState: "all", pullState: "closed" });
+  });
+});
+
+describe("the boards, in a call that can fail alone", () => {
+  const ROWS = JSON.stringify([
+    { number: 7, title: "a", state: "OPEN", labels: [], updatedAt: "2026-08-01T00:00:00Z", url: "u" },
+    { number: 9, title: "b", state: "OPEN", labels: [], updatedAt: "2026-08-01T00:00:00Z", url: "u" },
+  ]);
+  const BOARDS = JSON.stringify([
+    { number: 7, projectItems: [{ title: "Roadmap" }, { title: "Sprint 4" }] },
+    { number: 9, projectItems: [] },
+  ]);
+
+  /** Keyed by `<verb> <json fields>` so the board call and the row call can answer
+   *  differently — which is the entire point of them being separate. */
+  function boardRunner(board: GhResult): GhRunner {
+    return async (_cwd, args) => {
+      if (args[0] === "repo") return ok(JSON.stringify({ nameWithOwner: "o/r" }));
+      const fields = args[args.indexOf("--json") + 1] ?? "";
+      if (fields === "number,projectItems") return board;
+      return ok(ROWS);
+    };
+  }
+
+  test("board titles are folded onto the rows they belong to", async () => {
+    const snapshot = await readGitHub(boardRunner(ok(BOARDS)), "/repo", () => 1);
+    expect(snapshot.issues.find((issue) => issue.number === 7)!.projects).toEqual(["Roadmap", "Sprint 4"]);
+    expect(snapshot.issues.find((issue) => issue.number === 9)!.projects).toEqual([]);
+    expect(snapshot.projectsUnavailable).toBeUndefined();
+  });
+
+  test("A MISSING SCOPE COSTS THE COLUMN, NOT THE LIST", async () => {
+    /**
+     * The whole reason this is a separate call. Measured on this machine: a token
+     * with `repo` and without `read:project` makes gh answer
+     *
+     *   GraphQL: Your token has not been granted the required scopes to execute
+     *   this query. The 'id' field requires one of the following scopes:
+     *   ['read:project'] …
+     *
+     * and it fails the ENTIRE `--json` query — so `projectItems` in the main field
+     * list would blank the titles, the states and the assignees too.
+     */
+    const snapshot = await readGitHub(
+      boardRunner(failed("GraphQL: Your token has not been granted the required scopes … ['read:project'] …")),
+      "/repo",
+      () => 1,
+    );
+    expect(snapshot.projectsUnavailable).toBe("scope");
+    // The rows survived, in full.
+    expect(snapshot.issues).toHaveLength(2);
+    expect(snapshot.issues[0]!.title).toBe("a");
+    expect(snapshot.issues[0]!.projects).toEqual([]);
+    expect(snapshot.unavailable).toBeUndefined();
+  });
+
+  test("a board failure that is NOT about scopes says so differently", async () => {
+    // "Add the scope" and "GitHub was unwell" need different responses.
+    const snapshot = await readGitHub(boardRunner(failed("HTTP 502")), "/repo", () => 1);
+    expect(snapshot.projectsUnavailable).toBe("failed");
+    expect(snapshot.issues).toHaveLength(2);
+  });
+
+  test("`skipProjects` asks nothing at all, and reports no reason", async () => {
+    // Once a token has said it has no read:project, the store stops paying two
+    // network calls per read to be told again — and an absent column with no
+    // sentence is correct, because nothing was attempted.
+    const seen: string[][] = [];
+    const snapshot = await readGitHub(
+      async (_cwd, args) => {
+        seen.push(args);
+        return args[0] === "repo" ? ok(JSON.stringify({ nameWithOwner: "o/r" })) : ok(ROWS);
+      },
+      "/repo",
+      () => 1,
+      { skipProjects: true },
+    );
+    expect(seen.some((args) => args.includes("number,projectItems"))).toBe(false);
+    expect(snapshot.projectsUnavailable).toBeUndefined();
+  });
+
+  test("output the board parser cannot read is a failure, not silently no boards", async () => {
+    const snapshot = await readGitHub(boardRunner(ok("<html>")), "/repo", () => 1);
+    expect(snapshot.projectsUnavailable).toBe("failed");
+  });
+});
+
+describe("parseProjectItems", () => {
+  test("takes the title, and drops an item that has none", () => {
+    const items = parseProjectItems(
+      JSON.stringify([{ number: 4, projectItems: [{ title: "Roadmap" }, { title: "" }, { project: { title: "Nested" } }] }]),
+    );
+    expect(items.get(4)).toEqual(["Roadmap", "Nested"]);
+  });
+
+  test("a row on no boards is absent rather than an empty array", () => {
+    // The caller defaults to `[]`, so an entry per unplaced row would be a map the
+    // size of the repository for no information.
+    const items = parseProjectItems(JSON.stringify([{ number: 4, projectItems: [] }]));
+    expect(items.has(4)).toBe(false);
+  });
+});
+
+describe("classifyProjectFailure", () => {
+  test("the ordinary case is a scope, and it is named", () => {
+    expect(classifyProjectFailure(failed("… requires one of the following scopes: ['read:project'] …"))).toBe("scope");
+    expect(classifyProjectFailure(failed("HTTP 500"))).toBe("failed");
   });
 });
 

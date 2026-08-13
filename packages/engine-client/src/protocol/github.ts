@@ -43,14 +43,61 @@ export type GitHubUnavailable = z.infer<typeof GitHubUnavailable>;
 export const GitHubLabel = z.object({ name: z.string(), color: z.string().optional() });
 export type GitHubLabel = z.infer<typeof GitHubLabel>;
 
+/**
+ * Which rows a list read asks for.
+ *
+ * TWO ENUMS, NOT ONE, because `merged` is not a state an issue can be in and
+ * offering it would put a filter on the Issues surface that always returns
+ * nothing. These are `gh`'s own words for its `--state` flag.
+ */
+export const GitHubIssueListState = z.enum(["open", "closed", "all"]);
+export type GitHubIssueListState = z.infer<typeof GitHubIssueListState>;
+
+export const GitHubPullListState = z.enum(["open", "closed", "merged", "all"]);
+export type GitHubPullListState = z.infer<typeof GitHubPullListState>;
+
+/**
+ * The fields a LIST row carries, beyond its number and title.
+ *
+ * WHAT IS HERE IS WHAT A ROW CAN SHOW WITHOUT A SECOND READ. Status, who it is
+ * assigned to, which milestone, which board — the questions somebody scanning a
+ * list is actually asking, and every one of them a field `gh` returns alongside
+ * the title for free.
+ *
+ * WHAT IS DELIBERATELY ABSENT IS A COMMENT COUNT. `gh` has no count field: asking
+ * for `comments` returns every comment BODY for every row, which measured at
+ * 245KB and 2.81s against a fifty-issue repository versus 0.56s without — five
+ * times the read for a number nobody asked for. The thread is one click away.
+ */
+const forgeRowFields = {
+  author: z.string().optional(),
+  labels: z.array(GitHubLabel),
+  /** Logins, not names: a bot has a login and no name. */
+  assignees: z.array(z.string()),
+  milestone: z.string().min(1).optional(),
+  /**
+   * The boards this is on, by title.
+   *
+   * READ BY ITS OWN `gh` CALL, because `projectItems` needs the `read:project`
+   * scope and a token without it fails the WHOLE query rather than that field —
+   * measured, and the reason the list would otherwise go blank for anybody on a
+   * default token. Empty means "no boards" OR "could not ask"; the snapshot's
+   * `projectsUnavailable` is what tells those apart.
+   */
+  projects: z.array(z.string()),
+  updatedAt: Timestamp,
+  url: z.string().min(1),
+};
+
 export const GitHubIssue = z.object({
   number: z.number().int().positive(),
   title: z.string(),
   state: z.string(),
-  author: z.string().optional(),
-  labels: z.array(GitHubLabel),
-  updatedAt: Timestamp,
-  url: z.string().min(1),
+  /** Why it closed — `COMPLETED`, `NOT_PLANNED`, `DUPLICATE`. On the ROW as well
+   *  as the detail, because a list that includes closed issues is a list where
+   *  "was this done?" is the question every row raises. */
+  stateReason: z.string().min(1).optional(),
+  ...forgeRowFields,
 });
 export type GitHubIssue = z.infer<typeof GitHubIssue>;
 
@@ -59,7 +106,6 @@ export const GitHubPullRequest = z.object({
   title: z.string(),
   state: z.string(),
   isDraft: z.boolean(),
-  author: z.string().optional(),
   /** The branch the PR is FROM. This is what lets a session recognise its own
    *  pull request: a worktree session's branch is `telar/<session>`, and the
    *  panel marks the row whose head matches. */
@@ -68,8 +114,10 @@ export const GitHubPullRequest = z.object({
    *  passed through rather than mapped, because the mapping is a display
    *  decision and three clients should not each invent one. */
   reviewDecision: z.string().optional(),
-  updatedAt: Timestamp,
-  url: z.string().min(1),
+  /** Set when it landed. `state: "MERGED"` says the same thing, and this says
+   *  WHEN — which is what a row full of closed pull requests is sorted by. */
+  mergedAt: Timestamp.optional(),
+  ...forgeRowFields,
 });
 export type GitHubPullRequest = z.infer<typeof GitHubPullRequest>;
 
@@ -87,6 +135,19 @@ export const GitHubSnapshot = z.object({
   repository: z.string().min(1).optional(),
   issues: z.array(GitHubIssue),
   pulls: z.array(GitHubPullRequest),
+  /** WHICH ROWS THIS IS, echoed back. A surface showing forty closed issues must
+   *  be able to say so; without this it would have to trust that the answer
+   *  matches the filter it last sent, which a cache makes untrue. */
+  issueState: GitHubIssueListState,
+  pullState: GitHubPullListState,
+  /**
+   * Why the board column is empty, when it is.
+   *
+   * `scope` is the common one and is not a failure of anything else: the default
+   * `gh` token has no `read:project`, so this cockpit asks in a call of its own and
+   * carries the reason rather than showing every row as "on no boards".
+   */
+  projectsUnavailable: z.enum(["scope", "failed"]).optional(),
   unavailable: GitHubUnavailable.optional(),
   /** `gh`'s own words when it failed. Never invented here. */
   message: z.string().min(1).optional(),
@@ -179,12 +240,6 @@ export type GitHubCheck = z.infer<typeof GitHubCheck>;
  */
 export const GitHubIssueDetail = GitHubIssue.extend({
   body: z.string(),
-  /** Why it is closed — `COMPLETED`, `NOT_PLANNED`, `DUPLICATE`. A closed issue
-   *  with no reason and a closed issue marked not-planned are different answers
-   *  to "was this done?". */
-  stateReason: z.string().min(1).optional(),
-  assignees: z.array(z.string()),
-  milestone: z.string().min(1).optional(),
   comments: z.array(GitHubComment),
   /**
    * How many OLDER comments were left out.
@@ -253,8 +308,6 @@ export const GitHubPullDetail = GitHubPullRequest.extend({
    * all three rather than none — an unknown setting must not disable merging.
    */
   mergeMethods: z.array(GitHubMergeMethod),
-  labels: z.array(GitHubLabel),
-  assignees: z.array(z.string()),
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),
   changedFiles: z.number().int().nonnegative(),
@@ -269,7 +322,6 @@ export const GitHubPullDetail = GitHubPullRequest.extend({
    *  from every check passing — the surface says which. */
   checks: z.array(GitHubCheck),
   createdAt: Timestamp,
-  mergedAt: Timestamp.optional(),
   mergedBy: z.string().min(1).optional(),
   readAt: Timestamp,
 });

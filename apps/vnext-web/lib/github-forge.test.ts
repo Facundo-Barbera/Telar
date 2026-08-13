@@ -8,7 +8,18 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { checkHeadline, checkSummary, forgeTone, mergeReadiness, MERGE_REFUSAL, reviewLabel, UNAVAILABLE } from "./github-forge";
+import {
+  checkHeadline,
+  checkSummary,
+  issueStatus,
+  mergeReadiness,
+  MERGE_REFUSAL,
+  pullStatus,
+  reviewLabel,
+  STATUS_LABEL,
+  STATUS_TONE,
+  UNAVAILABLE,
+} from "./github-forge";
 
 const check = (conclusion?: string, status = "COMPLETED") => ({ name: "c", status, ...(conclusion ? { conclusion } : {}) });
 
@@ -94,15 +105,49 @@ describe("mergeReadiness", () => {
   });
 });
 
-describe("forgeTone", () => {
-  test("green means finished, which a not-planned issue did not", () => {
+describe("issueStatus", () => {
+  test("SIX outcomes, not two — done and abandoned are different answers", () => {
+    // A list that can show closed rows is a list where "was this done?" is the
+    // question every closed row raises, and one word for both would refuse it.
+    expect(issueStatus({ state: "OPEN" })).toBe("open");
+    expect(issueStatus({ state: "CLOSED", stateReason: "COMPLETED" })).toBe("completed");
+    expect(issueStatus({ state: "CLOSED", stateReason: "NOT_PLANNED" })).toBe("abandoned");
+    // A duplicate is not getting done either, so it wears the same word.
+    expect(issueStatus({ state: "CLOSED", stateReason: "DUPLICATE" })).toBe("abandoned");
+    // Closed with no reason at all is neither: GitHub simply did not say.
+    expect(issueStatus({ state: "CLOSED" })).toBe("closed");
+  });
+
+  test("green is reserved for finishing", () => {
     // Painting every closed thing green would make the app's success colour mean
-    // "closed", which the badge already says in words.
-    expect(forgeTone("MERGED")).toBe("done");
-    expect(forgeTone("CLOSED", { stateReason: "COMPLETED" })).toBe("done");
-    expect(forgeTone("CLOSED", { stateReason: "NOT_PLANNED" })).toBe("none");
-    expect(forgeTone("CLOSED")).toBe("none");
-    expect(forgeTone("OPEN")).toBe("active");
+    // "closed", which the label already says in words.
+    expect(STATUS_TONE[issueStatus({ state: "CLOSED", stateReason: "COMPLETED" })]).toBe("done");
+    expect(STATUS_TONE[issueStatus({ state: "CLOSED", stateReason: "NOT_PLANNED" })]).toBe("none");
+    expect(STATUS_TONE[issueStatus({ state: "OPEN" })]).toBe("active");
+    // And nothing here is destructive: a closed issue is not an error, and
+    // spending red on an ordinary outcome leaves nothing for a failing check.
+    for (const status of ["open", "draft", "merged", "closed", "completed", "abandoned"] as const) {
+      expect(STATUS_TONE[status]).not.toBe("danger");
+      expect(STATUS_LABEL[status].length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("pullStatus", () => {
+  test("merged wins over every other reading", () => {
+    // GitHub reports a merged pull request as CLOSED in some shapes and MERGED in
+    // others, and `mergedAt` is the fact underneath both.
+    expect(pullStatus({ state: "MERGED", isDraft: false })).toBe("merged");
+    expect(pullStatus({ state: "CLOSED", isDraft: false, mergedAt: 1 })).toBe("merged");
+    expect(pullStatus({ state: "CLOSED", isDraft: false })).toBe("closed");
+    expect(pullStatus({ state: "OPEN", isDraft: false })).toBe("open");
+  });
+
+  test("a CLOSED draft is closed, not a draft", () => {
+    // Calling it a draft would suggest it is still waiting for somebody to finish
+    // it, when in fact nobody is going to.
+    expect(pullStatus({ state: "CLOSED", isDraft: true })).toBe("closed");
+    expect(pullStatus({ state: "OPEN", isDraft: true })).toBe("draft");
   });
 });
 

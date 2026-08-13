@@ -428,3 +428,30 @@ export const WorkspaceWriteResult = z.union([
   z.object({ written: z.literal(false), refusal: WorkspaceWriteRefusal, sha256: z.string().min(1).optional() }),
 ]);
 export type WorkspaceWriteResult = z.infer<typeof WorkspaceWriteResult>;
+
+/**
+ * What ignoring Telar's own files in a repository did.
+ *
+ * BOTH HALVES ARE REPORTED, because "added nothing" and "did nothing" look the
+ * same to a reader and mean the opposite: a repository that already ignores every
+ * rule is the success case, and reporting it as an empty result makes the control
+ * look broken to anyone who presses it twice.
+ *
+ * THE RULES ARE THE ENGINE'S, NOT THE CALLER'S, and that is a boundary rather
+ * than a convenience. A client that could name the lines to append could append
+ * anything to a file inside somebody's repository — this is the only write in the
+ * whole contract that touches a file the user did not name.
+ */
+export const GitignoreResult = z.object({
+  /** Rules written just now, in the order they were appended. */
+  added: z.array(z.string()),
+  /** Rules an existing pattern already covered, so nothing was written for them. */
+  present: z.array(z.string()),
+  /** Absolute path of the file that was created or appended to. */
+  path: z.string().min(1),
+  /** True when there was no `.gitignore` and this call created one. Worth its own
+   *  field: creating a file in a repository that had none is a bigger thing than
+   *  adding two lines to one that did. */
+  created: z.boolean(),
+});
+export type GitignoreResult = z.infer<typeof GitignoreResult>;

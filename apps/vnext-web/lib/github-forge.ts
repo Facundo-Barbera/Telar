@@ -170,20 +170,65 @@ export function mergeReadiness(pull: Pick<GitHubPullDetail, "state" | "isDraft" 
 }
 
 /**
- * Which of the five state colours a pull request or issue wears.
+ * WHAT STATUS A ROW IS IN, as one word and one glyph.
  *
- * `done` FOR MERGED AND FOR A COMPLETED ISSUE, `none` for a closed-unplanned one:
- * green is the app's word for "this finished", and an issue closed as not-planned
- * did not finish — it stopped. Painting both green would make the vocabulary
- * mean "closed", which the state badge already says in words.
+ * SIX STATES, NOT TWO. A list that can show closed rows is a list where "open or
+ * not" is the least interesting thing about a row: a merged pull request, one
+ * somebody closed without merging, an issue completed and an issue abandoned are
+ * four different outcomes, and GitHub gives each its own icon precisely because
+ * the difference is what a reader is looking for.
+ *
+ * The names are this cockpit's; the DISTINCTIONS are GitHub's.
  */
-export function forgeTone(state: string, options: { merged?: boolean; stateReason?: string } = {}): "active" | "done" | "danger" | "none" {
-  const upper = state.toUpperCase();
-  if (options.merged || upper === "MERGED") return "done";
-  if (upper === "OPEN") return "active";
-  if (upper === "CLOSED" && options.stateReason?.toUpperCase() === "COMPLETED") return "done";
-  return "none";
+export type ForgeStatus = "open" | "draft" | "merged" | "closed" | "completed" | "abandoned";
+
+export function issueStatus(issue: { state: string; stateReason?: string }): ForgeStatus {
+  if (issue.state.toUpperCase() !== "CLOSED") return "open";
+  const reason = issue.stateReason?.toUpperCase();
+  if (reason === "COMPLETED") return "completed";
+  // `NOT_PLANNED` and `DUPLICATE` both mean "this is not getting done", which is a
+  // different answer from "done" and the reason green is wrong for it.
+  if (reason === "NOT_PLANNED" || reason === "DUPLICATE") return "abandoned";
+  return "closed";
 }
+
+export function pullStatus(pull: { state: string; isDraft: boolean; mergedAt?: number }): ForgeStatus {
+  const state = pull.state.toUpperCase();
+  if (state === "MERGED" || pull.mergedAt) return "merged";
+  if (state === "CLOSED") return "closed";
+  // Draft is checked AFTER merged and closed: a draft that was closed is closed,
+  // and calling it a draft would suggest it is still waiting for somebody.
+  return pull.isDraft ? "draft" : "open";
+}
+
+/** The word under a row. Short enough for a 320px column, and never a repeat of
+ *  what the glyph beside it already said in colour. */
+export const STATUS_LABEL: Record<ForgeStatus, string> = {
+  open: "open",
+  draft: "draft",
+  merged: "merged",
+  closed: "closed",
+  completed: "closed · done",
+  abandoned: "closed · not planned",
+};
+
+/**
+ * Which of the five colours a status wears.
+ *
+ * `merged` AND `completed` ARE THE SAME GREEN because they are the same fact —
+ * this finished. `abandoned` and `closed` are grey: they finished too, and not by
+ * being done. Nothing here is red, deliberately: a closed issue is not an error,
+ * and spending the destructive colour on an ordinary outcome would leave nothing
+ * for a failing check to say.
+ */
+export const STATUS_TONE: Record<ForgeStatus, "active" | "done" | "none" | "info"> = {
+  open: "active",
+  draft: "none",
+  merged: "done",
+  closed: "none",
+  completed: "done",
+  abandoned: "none",
+};
 
 /** GitHub's review vocabulary, in words a row has space for. An unfamiliar state
  *  is shown as GitHub sent it rather than dropped. */

@@ -12,11 +12,14 @@ import {
   EngineDiscovery,
   type BrowserSnapshot,
   type GitCommitEntry,
+  type GitHubIssueListState,
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
+  type GitHubPullListState,
   type GitHubPullRead,
   type GitHubSnapshot,
+  type GitignoreResult,
   type ModelCatalogue,
   type SessionDiff,
   type McpServer,
@@ -172,9 +175,31 @@ export class EngineClient {
    * authenticated on this machine. Cached for thirty seconds in the engine;
    * `refresh` is what a human pressing the button sends.
    */
-  projectGitHub(projectId: string, options: { refresh?: boolean } = {}): Promise<{ github: GitHubSnapshot }> {
-    const suffix = options.refresh ? "?refresh=1" : "";
+  projectGitHub(
+    projectId: string,
+    options: { refresh?: boolean; issueState?: GitHubIssueListState; pullState?: GitHubPullListState } = {},
+  ): Promise<{ github: GitHubSnapshot }> {
+    const query = new URLSearchParams();
+    if (options.refresh) query.set("refresh", "1");
+    // A state PER KIND: `merged` is not a state an issue can be in, so one shared
+    // filter would put a control on the Issues surface that always returns nothing.
+    if (options.issueState) query.set("issues", options.issueState);
+    if (options.pullState) query.set("pulls", options.pullState);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${suffix}`);
+  }
+
+  /**
+   * Ignore Telar's own files in a project's repository.
+   *
+   * NO BODY, AND THAT IS THE SAFETY: the rules are the engine's, so a client
+   * cannot use this to append arbitrary lines to a file in somebody's checkout.
+   * The answer reports what was added AND what a rule already covered, because a
+   * repository that already ignores everything is a success that would otherwise
+   * look like a no-op.
+   */
+  projectGitignore(projectId: string): Promise<{ gitignore: GitignoreResult }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`, {});
   }
 
   /**

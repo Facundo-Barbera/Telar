@@ -329,9 +329,40 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
       if (request.method === "GET" && projectGitHub) {
+        /**
+         * A STATE PER KIND, because `merged` is not a state an issue can be in.
+         * Anything else is refused rather than passed to `gh --state`, which would
+         * fail with its own message about a flag this client chose.
+         */
+        const issueState = url.searchParams.get("issues") ?? "open";
+        const pullState = url.searchParams.get("pulls") ?? "open";
+        if (!["open", "closed", "all"].includes(issueState)) {
+          throw new HttpError(400, "invalid_request", "issue state must be open, closed or all");
+        }
+        if (!["open", "closed", "merged", "all"].includes(pullState)) {
+          throw new HttpError(400, "invalid_request", "pull request state must be open, closed, merged or all");
+        }
         writeJson(response, 200, {
-          github: await store.projectGitHub(decodeURIComponent(projectGitHub[1]), { force: url.searchParams.get("refresh") === "1" }),
+          github: await store.projectGitHub(decodeURIComponent(projectGitHub[1]), {
+            force: url.searchParams.get("refresh") === "1",
+            issueState: issueState as "open" | "closed" | "all",
+            pullState: pullState as "open" | "closed" | "merged" | "all",
+          }),
         });
+        return;
+      }
+      /**
+       * Ignore Telar's own files in a project's repository.
+       *
+       * A POST WITH NO BODY, on purpose: the rules are the engine's (see
+       * `gitignore.ts`) and a caller that could name them could append anything to
+       * a file inside somebody's repository. The answer says what was added and
+       * what was already covered, because those look identical and mean opposite
+       * things.
+       */
+      const projectGitignore = /^\/v2\/projects\/([^/]+)\/gitignore$/.exec(url.pathname);
+      if (request.method === "POST" && projectGitignore) {
+        writeJson(response, 200, { gitignore: store.projectGitignore(decodeURIComponent(projectGitignore[1])) });
         return;
       }
       /**

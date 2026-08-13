@@ -25,11 +25,14 @@ import {
   type BrowserSnapshot,
   type BrowserTab,
   type GitCommitEntry,
+  type GitHubIssueListState,
   type GitHubIssueRead,
   type GitHubMergeMethod,
   type GitHubMergeResult,
+  type GitHubPullListState,
   type GitHubPullRead,
   type GitHubSnapshot,
+  type GitignoreResult,
   type ModelCatalogue,
   type SessionDiff,
   type EngineEvent,
@@ -62,6 +65,7 @@ import {
 } from "@telar/engine-client";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
+import { ensureTelarGitignore } from "./gitignore";
 import { defaultGhRunner, mergePull, readGitHub, readIssue, readPull, type GhRunner } from "./github";
 import { readModelCatalogue } from "./models";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
@@ -516,6 +520,15 @@ export class EngineStore {
    * signed in" for thirty seconds would outlive the `gh auth login` that fixes it.
    */
   private readonly githubDetailCache = new Map<string, GitHubIssueRead | GitHubPullRead>();
+  /**
+   * Whether this machine's `gh` token has told us it cannot read Projects.
+   *
+   * IN MEMORY AND NOT PERSISTED, like the caches beside it: it describes a token
+   * that the user can re-scope at any moment, and a "no" that survived a restart
+   * would outlive the `gh auth refresh` that fixed it. Cleared by any forced read,
+   * so the refresh button is the way back.
+   */
+  private noProjectScope = false;
   /** In memory, like the GitHub cache and for the same reason: it describes
    *  somebody else's installation, which changes without telling us. */
   private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
@@ -715,13 +728,74 @@ export class EngineStore {
     return structuredClone(catalogue);
   }
 
-  async projectGitHub(projectId: string, options: { force?: boolean } = {}): Promise<GitHubSnapshot> {
+  /**
+   * WHICH ROWS, IN THE CACHE KEY.
+   *
+   * Without the states in the key, switching the Pull requests surface from open
+   * to all would be answered instantly from a cache of open ones — a filter that
+   * silently does nothing for thirty seconds, which is worse than a slow one.
+   */
+  private githubKey(projectId: string, issueState: GitHubIssueListState, pullState: GitHubPullListState): string {
+    return `${projectId}:${issueState}:${pullState}`;
+  }
+
+  /**
+   * Drop EVERY cached list for a project, whichever filter it was read under.
+   *
+   * A project id cannot contain a colon (`ID` above), so the prefix is unambiguous.
+   * Deleting one key would leave the others stale, which is precisely the bug the
+   * merge invalidation exists to prevent — and precisely the bug that appeared the
+   * moment the filter joined the key, because the old invalidation deleted a key
+   * shape that no longer existed. Caught by the merge test, not by reasoning.
+   */
+  private forgetGitHub(projectId: string): void {
+    for (const key of [...this.githubCache.keys()]) {
+      if (key === projectId || key.startsWith(`${projectId}:`)) this.githubCache.delete(key);
+    }
+  }
+
+  async projectGitHub(
+    projectId: string,
+    options: { force?: boolean; issueState?: GitHubIssueListState; pullState?: GitHubPullListState } = {},
+  ): Promise<GitHubSnapshot> {
     const project = this.getProject(projectId);
-    const cached = this.githubCache.get(project.id);
+    const issueState = options.issueState ?? "open";
+    const pullState = options.pullState ?? "open";
+    const key = this.githubKey(project.id, issueState, pullState);
+    const cached = this.githubCache.get(key);
     if (cached && !options.force && this.now() - cached.readAt < GITHUB_CACHE_MS) return structuredClone(cached);
-    const snapshot = await readGitHub(this.gh, project.root, this.now);
-    this.githubCache.set(project.id, snapshot);
-    return structuredClone(snapshot);
+    // Once a token has said it has no `read:project`, stop paying two network calls
+    // per read to be told again. A forced read clears the verdict, so adding the
+    // scope and pressing refresh is all it takes to get boards back.
+    const skipProjects = this.noProjectScope && !options.force;
+    const snapshot = await readGitHub(this.gh, project.root, this.now, { issueState, pullState, ...(skipProjects ? { skipProjects: true } : {}) });
+    if (snapshot.projectsUnavailable === "scope") this.noProjectScope = true;
+    else if (snapshot.projectsUnavailable === undefined && options.force) this.noProjectScope = false;
+    /**
+     * THE REASON SURVIVES THE SKIP.
+     *
+     * Found by driving it: the cockpit's own first read consumed the scope failure,
+     * so every read after it reported no reason at all — and a panel opened a minute
+     * later showed every row on no boards with nothing to explain it. "Nothing was
+     * attempted so there is nothing to report" sounded principled and produced a
+     * surface that cannot account for itself. What is true is that boards ARE
+     * unavailable, for a reason we already know; not re-asking does not unlearn it.
+     */
+    const answer = skipProjects && this.noProjectScope ? { ...snapshot, projectsUnavailable: "scope" as const } : snapshot;
+    this.githubCache.set(key, answer);
+    return structuredClone(answer);
+  }
+
+  /**
+   * Ignore Telar's own files in a project's repository.
+   *
+   * THE ONLY WRITE IN THIS STORE THAT TOUCHES A FILE THE USER DID NOT NAME, which
+   * is why the rules live in the engine (`gitignore.ts`) and this method takes a
+   * project id and nothing else. A caller that could pass the lines could append
+   * anything to a file inside somebody's repository.
+   */
+  projectGitignore(projectId: string): GitignoreResult {
+    return ensureTelarGitignore(this.getProject(projectId).root);
   }
 
   /** A positive whole number, because it is going into an argv and a URL. */
@@ -786,7 +860,7 @@ export class EngineStore {
     const result = await mergePull(this.gh, project.root, { number: target, method: input.method, expectedHeadOid: input.expectedHeadOid }, this.now);
     this.githubDetailCache.delete(`${project.id}:pull:${target}`);
     if (result.merged) {
-      this.githubCache.delete(project.id);
+      this.forgetGitHub(project.id);
       // The merge's own re-read is fresher than anything a cache could hold, so
       // it becomes the cached answer rather than being thrown away.
       this.githubDetailCache.set(`${project.id}:pull:${target}`, { pull: result.pull });

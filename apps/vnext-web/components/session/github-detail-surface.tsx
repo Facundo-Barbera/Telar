@@ -49,6 +49,7 @@ import {
   MessageSquareIcon,
   MilestoneIcon,
   RotateCwIcon,
+  SquareKanbanIcon,
   TriangleAlertIcon,
   UserIcon,
   XIcon,
@@ -64,7 +65,18 @@ import type {
 } from "@telar/engine-client";
 import { createVNextApi, VNextApiError } from "@/lib/vnext/client";
 import { fmtAgo } from "@/lib/format";
-import { checkHeadline, checkSummary, forgeTone, mergeReadiness, MERGE_REFUSAL, reviewLabel, UNAVAILABLE } from "@/lib/github-forge";
+import {
+  checkHeadline,
+  checkSummary,
+  issueStatus,
+  mergeReadiness,
+  MERGE_REFUSAL,
+  pullStatus,
+  reviewLabel,
+  STATUS_LABEL,
+  STATUS_TONE,
+  UNAVAILABLE,
+} from "@/lib/github-forge";
 import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -93,24 +105,17 @@ function when(ts: number): string {
 /**
  * The five-colour vocabulary, applied to a state badge.
  *
- * `forgeTone` decides WHICH colour and this maps it to classes — split because
- * the decision is the testable part and belongs with the other decisions about
- * GitHub's words (lib/github-forge.ts).
+ * THE SAME `ForgeStatus` THE LIST ROWS USE, so the badge on this header and the
+ * glyph on the row you clicked to get here cannot disagree about whether an issue
+ * closed as "done" or "not planned" — which they would, immediately, as two
+ * hand-written mappings of GitHub's words.
  */
-const TONE_CLASS: Record<ReturnType<typeof forgeTone>, string> = {
+const TONE_CLASS: Record<"active" | "done" | "info" | "none", string> = {
   active: "text-primary border-primary/40",
   done: "text-success border-success/40",
-  danger: "text-destructive border-destructive/40",
+  info: "text-info border-info/40",
   none: "text-muted-foreground",
 };
-
-/** What the badge says. `MERGED`, `OPEN`, `CLOSED` — and for an issue, why it
- *  closed, which is a different fact from that it closed. */
-function stateWords(state: string, stateReason?: string): string {
-  const upper = state.toUpperCase();
-  if (upper !== "CLOSED" || !stateReason) return upper.toLowerCase();
-  return `closed · ${stateReason.toLowerCase().replaceAll("_", " ")}`;
-}
 
 /**
  * The shared header row.
@@ -134,7 +139,7 @@ function ForgeHeader({
   number: number;
   title: string;
   url: string;
-  state: { words: string; tone: ReturnType<typeof forgeTone> };
+  state: { words: string; tone: keyof typeof TONE_CLASS };
   onRefresh: () => void;
   refreshing: boolean;
   onDrag: (transfer: DataTransfer) => void;
@@ -684,6 +689,7 @@ export function ForgeDetailSurface({
   }
 
   const mine = kind === "pull" && Boolean(branch) && pull?.headRefName === branch;
+  const status = issue ? issueStatus(issue) : pullStatus(pull!);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -692,10 +698,7 @@ export function ForgeDetailSurface({
         number={thing.number}
         title={thing.title}
         url={thing.url}
-        state={{
-          words: pull?.isDraft && pull.state.toUpperCase() === "OPEN" ? "draft" : stateWords(thing.state, issue?.stateReason),
-          tone: forgeTone(thing.state, { ...(issue?.stateReason ? { stateReason: issue.stateReason } : {}) }),
-        }}
+        state={{ words: STATUS_LABEL[status], tone: STATUS_TONE[status] }}
         onRefresh={refresh}
         refreshing={refreshing}
         onDrag={(transfer) =>
@@ -736,21 +739,31 @@ export function ForgeDetailSurface({
               <span title={when(pull.mergedAt)}>{fmtAgo(pull.mergedAt)}</span>
             </MetaRow>
           )}
-          {(issue?.milestone || (issue?.assignees.length ?? 0) > 0 || (pull?.assignees.length ?? 0) > 0) && (
+          {(thing.assignees.length > 0 || thing.milestone) && (
             <MetaRow icon={<MilestoneIcon />}>
               {[
-                (issue?.assignees.length ?? 0) > 0 || (pull?.assignees.length ?? 0) > 0
-                  ? `assigned to ${(issue?.assignees ?? pull?.assignees ?? []).join(", ")}`
-                  : undefined,
-                issue?.milestone ? `milestone ${issue.milestone}` : undefined,
+                thing.assignees.length > 0 ? `assigned to ${thing.assignees.join(", ")}` : undefined,
+                thing.milestone ? `milestone ${thing.milestone}` : undefined,
               ]
                 .filter(Boolean)
                 .join(" · ")}
             </MetaRow>
           )}
-          {(issue?.labels.length ?? pull?.labels.length ?? 0) > 0 && (
+          {/* THE BOARDS. Absent rather than empty when there are none, and the list
+              surface is where the "no read:project scope" sentence lives — a detail
+              view has no way to tell an unscoped token from an unplaced issue. */}
+          {thing.projects.length > 0 && (
+            <MetaRow icon={<SquareKanbanIcon />}>
+              {thing.projects.map((project) => (
+                <Badge key={project} variant="secondary" className="mr-1 px-1 py-0 text-[9px] font-normal">
+                  {project}
+                </Badge>
+              ))}
+            </MetaRow>
+          )}
+          {thing.labels.length > 0 && (
             <div className="mt-0.5 flex flex-wrap gap-1">
-              {(issue?.labels ?? pull?.labels ?? []).map((label) => (
+              {thing.labels.map((label) => (
                 <Badge key={label.name} variant="outline" className="px-1 py-0 text-[9px] font-normal">
                   {label.name}
                 </Badge>
