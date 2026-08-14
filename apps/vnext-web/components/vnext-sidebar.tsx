@@ -6,14 +6,17 @@
 // wordmark; a search field wearing its ⌘K hint and a new-session button beside
 // it; a project scope dropdown with a register button; then the four bands —
 //
-//   PINNED    above the scroll, so it stays where you left it
-//   the list  the only band with no heading, because it is the list
+//   pinned    above the scroll, so it stays where you left it, and unheaded:
+//             a rule UNDER it divides it from the list, and each row wears a
+//             pin rather than the band wearing a word
+//   the list  no heading either — it is the list
 //   SNOOZED   collapsed; work you deferred, soonest wake first
 //   SETTLED   collapsed; work behind you
 //
-// — and Settings in the footer. The three headed bands are RULES rather than
-// rows (see `BandRule`), which is what stops a heading reading as another
-// entry in the list it introduces.
+// — and Settings in the footer. The two shelves are RULES rather than rows (see
+// `BandRule`), which is what stops a heading reading as another entry in the
+// list it introduces. Their rules sit ON TOP because what they divide is above
+// them; the pinned rule sits underneath for the same reason.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
 // Overview, Projects, Looms, Workspace. Those views are deliberately out of
@@ -33,7 +36,6 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
-  PinIcon,
   SearchIcon,
   SettingsIcon,
   XIcon,
@@ -140,47 +142,30 @@ function SidebarEmpty({
 /**
  * A RULE, NOT A ROW.
  *
- * A band header used to look like the rows under it — same box, same hover — so
+ * A shelf header used to look like the rows under it — same box, same hover — so
  * the boundary between "live" and "history" was carried entirely by a chevron.
  * t3 draws a line across the sidebar instead, which is why its Settled group
  * reads as the end of the list rather than as another entry in it.
  *
- * `onToggle` ABSENT MEANS THE BAND DOES NOT COLLAPSE, and then this is a <div>
- * rather than a <button>: a control that cannot do anything must not look like
- * one, and a screen reader should not be offered a press that no-ops.
+ * ONLY THE COLLAPSIBLE SHELVES USE THIS. The pinned band drew its own labelled
+ * rule for one release and it was wrong twice over: the line sat ABOVE a block
+ * that was already the top of the rail, so it divided nothing, and the word
+ * "Pinned" named a state the rows can wear themselves. Both went; what is left
+ * here is a control, so it is unconditionally a <button>.
  */
-function BandRule({
-  icon: Icon,
-  label,
-  count,
-  open,
-  onToggle,
-}: {
-  icon?: React.ComponentType<{ className?: string }>;
-  label: string;
-  count: number;
-  open?: boolean;
-  onToggle?: () => void;
-}) {
-  const body = (
-    <>
-      {onToggle ? (
-        <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-      ) : Icon ? (
-        <Icon className="size-3 shrink-0" />
-      ) : null}
+function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45 hover:text-sidebar-foreground"
+      aria-expanded={open}
+      onClick={onToggle}
+    >
+      <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
       <span className="shrink-0">{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
       <span className="shrink-0 tabular-nums">{count}</span>
-    </>
-  );
-  const className = "flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45";
-  return onToggle ? (
-    <button type="button" className={`${className} hover:text-sidebar-foreground`} aria-expanded={open} onClick={onToggle}>
-      {body}
     </button>
-  ) : (
-    <div className={className}>{body}</div>
   );
 }
 
@@ -562,7 +547,6 @@ function SidebarBody() {
         */}
         {!list.flat && list.pinned.length > 0 && (
           <SidebarGroup className="shrink-0 pb-0">
-            <BandRule icon={PinIcon} label="Pinned" count={list.pinned.length} />
             <SidebarGroupContent className="space-y-0.5">
               {list.pinned.map((session) => (
                 <SessionRow
@@ -577,6 +561,19 @@ function SidebarBody() {
                 />
               ))}
             </SidebarGroupContent>
+            {/*
+              THE RULE GOES UNDER THE BAND, NOT OVER IT, AND CARRIES NO WORD.
+              A line above a block that is already the top of the rail separates
+              it from nothing — the boundary that exists is the one between these
+              rows and the list below, so that is where the line belongs. The
+              two shelves at the bottom are the opposite case: their rule sits on
+              top because what it divides is above it.
+
+              The "Pinned" heading went with it. The rows say so themselves now,
+              with a glyph (see `session-row.tsx`), which also works in search
+              results where this band does not exist.
+            */}
+            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
           </SidebarGroup>
         )}
 

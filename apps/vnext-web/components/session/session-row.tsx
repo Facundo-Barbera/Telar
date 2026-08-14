@@ -28,7 +28,17 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlarmClockIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, ClockIcon, FolderIcon, GitBranchIcon, UndoIcon } from "lucide-react";
+import {
+  AlarmClockIcon,
+  CircleCheckIcon,
+  CircleDashedIcon,
+  CircleDotIcon,
+  ClockIcon,
+  FolderIcon,
+  GitBranchIcon,
+  PinIcon,
+  UndoIcon,
+} from "lucide-react";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
@@ -322,6 +332,27 @@ export function SessionRow({
   );
 
   /**
+   * THE MARK REPLACED THE HEADING.
+   *
+   * The pinned band used to announce itself with the word "Pinned" over a rule.
+   * A band of one or two rows does not need a title telling you what you did to
+   * them — the rows are already at the top, which is the whole observable effect
+   * of pinning. A glyph on the row says the same thing in the space a heading
+   * cost, and it keeps saying it in search results, where the band does not
+   * exist at all and the word could not follow.
+   *
+   * `role="img"` WITH A LABEL, not a decorative icon: this is the only thing
+   * distinguishing a pinned row now, so it has to be readable by something that
+   * cannot see position.
+   */
+  const pinMark =
+    band === "pinned" ? (
+      <span role="img" aria-label="Pinned" title="Pinned" className="shrink-0 text-sidebar-foreground/45">
+        <PinIcon className="size-3" />
+      </span>
+    ) : null;
+
+  /**
    * THE CARD: three lines, and each answers a different question.
    *   project + status  — whose is this, and what is it doing
    *   title             — the only thing anyone scans for
@@ -330,6 +361,7 @@ export function SessionRow({
   const cardBody = (
     <span className="min-w-0 flex-1 space-y-1">
       <span className="flex min-w-0 items-center gap-1.5">
+        {pinMark}
         {showProject && session.projectName ? (
           <>
             <FolderIcon className="size-3 shrink-0 text-sidebar-foreground/40" />
@@ -391,6 +423,7 @@ export function SessionRow({
    */
   const slimBody = (
     <>
+      {pinMark}
       <span className="shrink-0 opacity-40 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0">
         <ProviderIcon provider={session.driver} size={12} />
       </span>
