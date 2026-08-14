@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServer, RequestDecision, TurnObservation } from "@telar/engine-client";
 import { codexMcpServers, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
-import { codexUsage } from "../src/codex/items";
+import { codexApprovalRequest, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
 
 const FAKE_BIN = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
@@ -208,7 +208,7 @@ test("the user's MCP servers ride thread/start's config overlay", async () => {
 
   expect(sent("thread/start").config).toEqual({
     mcp_servers: {
-      local: { default_tools_approval_mode: "approve", command: "node", args: ["server.js"], env: { TOKEN: "x" } },
+      local: { command: "node", args: ["server.js"], env: { TOKEN: "x" } },
       // THE TOKEN TRAVELS ON STDIN, WHICH IS THE WHOLE REASON THIS IS ALLOWED.
       // t3 code injects its own server through `-c` argv and is therefore forced
       // to pass the token as `bearer_token_env_var`, because an argv is
@@ -216,17 +216,10 @@ test("the user's MCP servers ride thread/start's config overlay", async () => {
       // including the sandboxed shells of the agent sessions. The `config`
       // overlay has no such exposure, and `app-server` is still spawned with
       // exactly one argument.
-      linear: {
-        // WITHOUT THIS EVERY TOOL IS UNUSABLE. Codex asks its client before a
-        // model-initiated MCP call, with a request `codexApprovalRequest` does
-        // not know; the transport answers -32601 (RULE TWO) and Codex reads a
-        // refused request as a refusal, reporting "user rejected MCP tool
-        // call" about a user who was never asked. Watched happen on a real
-        // session, with the tool correctly listed the whole time.
-        default_tools_approval_mode: "approve",
-        url: "https://mcp.linear.app/mcp",
-        http_headers: { Authorization: "Bearer managed" },
-      },
+      // NO `default_tools_approval_mode`. Setting it would hand the decision
+      // to Codex's config; the engine answers the approval instead — see the
+      // elicitation test below.
+      linear: { url: "https://mcp.linear.app/mcp", http_headers: { Authorization: "Bearer managed" } },
     },
   });
 });
@@ -236,12 +229,12 @@ test("the translation names Codex's fields, not the contract's", () => {
   // transport from what the server answers. There is no `sse` key to set, and
   // inventing one would be the unknown-key failure that kept this unbuilt.
   expect(codexMcpServers([mcp("events", { transport: "sse", url: "https://mcp.example.com/sse" })])).toEqual({
-    events: { default_tools_approval_mode: "approve", url: "https://mcp.example.com/sse" },
+    events: { url: "https://mcp.example.com/sse" },
   });
   // Empty collections are dropped rather than sent as empty, for the same
   // reason `config` itself is omitted when there is nothing to say.
   expect(codexMcpServers([mcp("bare", { transport: "stdio", command: "node", args: [], env: {} })])).toEqual({
-    bare: { default_tools_approval_mode: "approve", command: "node" },
+    bare: { command: "node" },
   });
   expect(codexMcpServers([])).toBeUndefined();
   expect(codexMcpServers(undefined)).toBeUndefined();
@@ -590,4 +583,77 @@ test("an abort ends the turn rather than waiting out the subprocess", async () =
   const { result } = runTurn("plain", { controller });
   controller.abort(new Error("turn stopped"));
   await expect(result).rejects.toThrow("turn stopped");
+});
+
+test("an MCP tool approval is an elicitation, and the engine answers it", () => {
+  // THE REAL PAYLOAD, copied from a logged turn against codex-cli 0.145.0.
+  // Codex does not send an approval request for MCP tools at all — it sends an
+  // MCP *elicitation*, the protocol's general "ask the human" channel, with the
+  // approval buried in `_meta.codex_approval_kind`. Nothing about the method
+  // name says "approval", which is why it went unrecognised: the transport
+  // answered -32601 (RULE TWO, so the app-server is never left waiting) and
+  // Codex read a refused REQUEST as a refused TOOL, ending the turn with "user
+  // rejected MCP tool call" about a user who was never asked.
+  const approval = codexApprovalRequest("mcpServer/elicitation/request", {
+    threadId: "019ffda0-1892-7510-989e-5efb17c4de3b",
+    turnId: "019ffda0-20dc-7961-914a-26b1a34ed12f",
+    serverName: "probe",
+    mode: "form",
+    _meta: {
+      codex_approval_kind: "mcp_tool_call",
+      persist: ["session", "always"],
+      tool_description: "Answers pong.",
+      tool_params: { query: "x" },
+    },
+    message: 'Allow the probe MCP server to run tool "ping"?',
+    requestedSchema: { type: "object", properties: {} },
+  });
+
+  expect(approval?.kind).toBe("tool_call");
+  // Qualified the way every other MCP row names its tool, so the approval card
+  // and the timeline row it is about spell the same string. The tool name is
+  // ONLY in the prose — `serverName` and `tool_params` are structured, the tool
+  // itself is not — so it is read out of the quotes.
+  expect(approval?.detail).toEqual({
+    kind: "tool_call",
+    call: { name: "mcp__probe__ping", server: "probe", input: { query: "x" } },
+  });
+});
+
+test("an elicitation that is not an approval is not one to answer", () => {
+  // A server may legitimately elicit input — a form, a URL to visit — and the
+  // engine has no answer to invent, which is the rule `user_input` follows in
+  // the contract. Recognising it as an approval would auto-accept somebody's
+  // form on their behalf.
+  expect(
+    codexApprovalRequest("mcpServer/elicitation/request", {
+      serverName: "probe",
+      mode: "url",
+      message: "Open this to link your account",
+      url: "https://example.com/link",
+      elicitationId: "e1",
+    }),
+  ).toBeNull();
+});
+
+test("a declined MCP approval answers in the elicitation's vocabulary, not the approval one", async () => {
+  // THREE VOCABULARIES FOR ONE QUESTION and none of them errors on the wrong
+  // one — the app-server ignores a decision it cannot read, which presents as a
+  // turn that hangs or silently refuses. `action`, not `decision`, and the
+  // values come from MCP rather than from Codex.
+  const seen: DriverRequest[] = [];
+  await runTurn("mcp-elicitation", {
+    onRequest: async (request) => {
+      seen.push(request);
+      return "decline";
+    },
+  }).result;
+
+  expect(seen.map((request) => request.kind)).toEqual(["tool_call"]);
+  expect(replies()[0]?.result).toEqual({ action: "decline" });
+});
+
+test("an accepted MCP approval carries the content field the protocol requires", async () => {
+  await runTurn("mcp-elicitation", { onRequest: async () => "accept" }).result;
+  expect(replies()[0]?.result).toEqual({ action: "accept", content: {} });
 });

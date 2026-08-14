@@ -244,6 +244,7 @@ export function codexApprovalRequest(
   method: string,
   params: Record<string, unknown>,
 ): { kind: RequestKind; detail: RequestDetail; toolUseId: string } | null {
+  if (method === MCP_ELICITATION) return mcpToolApproval(params);
   const isFile = method === "item/fileChange/requestApproval" || method === "applyPatchApproval";
   const isCommand = method === "item/commandExecution/requestApproval" || method === "execCommandApproval";
   if (!isFile && !isCommand) return null;
@@ -280,6 +281,67 @@ export function codexApprovalRequest(
       change: { path: str(first.path) ?? str(params.path) ?? "(unknown)", kind: fileChangeKind(first.kind) },
     },
     toolUseId,
+  };
+}
+
+/**
+ * HOW CODEX ASKS ABOUT AN MCP TOOL — which is not an approval request at all.
+ *
+ * It arrives as an MCP *elicitation*, the protocol's general "ask the human
+ * something" channel, with the approval hidden in `_meta`:
+ *
+ *   mcpServer/elicitation/request {
+ *     serverName: "linear", mode: "form",
+ *     message: 'Allow the linear MCP server to run tool "search"?',
+ *     _meta: { codex_approval_kind: "mcp_tool_call", tool_params: {…} },
+ *     requestedSchema: { type: "object", properties: {} },
+ *   }
+ *
+ * WHY THIS IS WORTH THE PARSING. Without it the request falls through to the
+ * transport's `-32601` — sent so the app-server is never left waiting — and
+ * Codex reads a refused REQUEST as a refused TOOL, ending the turn with "user
+ * rejected MCP tool call" about a user who was never asked. The first fix here
+ * was to pre-approve every tool in the injected config, which worked and was
+ * too blunt: it moved the decision out of the engine entirely. Answering the
+ * question keeps it where every other decision lives.
+ *
+ * THE TOOL NAME IS ONLY IN THE PROSE. `serverName` and `_meta.tool_params` are
+ * structured; the tool itself appears solely inside `message`, so it is read
+ * out of the quotes with the message as the fallback. Verified against
+ * codex-cli 0.145.0 by running a real turn and logging the request.
+ *
+ * AN ELICITATION WITHOUT `codex_approval_kind` IS NOT OURS. A server may
+ * legitimately elicit input — a form, a URL to visit — and the engine has no
+ * answer to invent, which is the same rule `user_input` follows in the
+ * contract. Those return null here and the driver declines them explicitly.
+ */
+export const MCP_ELICITATION = "mcpServer/elicitation/request";
+
+function mcpToolApproval(
+  params: Record<string, unknown>,
+): { kind: RequestKind; detail: RequestDetail; toolUseId: string } | null {
+  const meta = record(params._meta);
+  if (meta.codex_approval_kind !== "mcp_tool_call") return null;
+  const server = str(params.serverName) ?? "mcp";
+  const message = str(params.message) ?? "";
+  const quoted = /"([^"]+)"/.exec(message)?.[1];
+  const tool = quoted ?? message ?? "tool";
+  return {
+    kind: "tool_call",
+    detail: {
+      kind: "tool_call",
+      // Qualified the way every other row names an MCP tool, so an approval
+      // card and the timeline row it is about spell the same string.
+      call: {
+        name: quoted ? `mcp__${server}__${quoted}` : tool,
+        server,
+        ...(meta.tool_params === undefined ? {} : { input: meta.tool_params }),
+      },
+    },
+    // No item id travels on this request — the elicitation is identified by its
+    // own MCP request id, which the app-server does not forward. The turn id is
+    // the most specific thing here that correlates with anything.
+    toolUseId: `mcp_${server}_${str(params.turnId) ?? str(params.threadId) ?? "call"}`,
   };
 }
 

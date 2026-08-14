@@ -249,6 +249,44 @@ async function playTurn() {
       return;
     }
 
+    // HOW CODEX ACTUALLY ASKS ABOUT AN MCP TOOL. Not an approval request at
+    // all: an MCP *elicitation*, with the approval in `_meta` and the tool name
+    // only in the prose. Transcribed from a logged turn against codex-cli
+    // 0.145.0 — the shape was found by running one, not by reading a schema,
+    // because no schema calls this an approval.
+    case "mcp-elicitation": {
+      const reply = ask("mcpServer/elicitation/request", {
+        threadId,
+        turnId,
+        serverName: "probe",
+        mode: "form",
+        _meta: {
+          codex_approval_kind: "mcp_tool_call",
+          persist: ["session", "always"],
+          tool_description: "Answers pong.",
+          tool_params: {},
+          tool_params_display: [],
+        },
+        message: 'Allow the probe MCP server to run tool "ping"?',
+        requestedSchema: { type: "object", properties: {} },
+      });
+      // `action`, not `decision` — the reply shape is MCP's, not Codex's.
+      const action = (await reply).result?.action;
+      done({
+        type: "mcpToolCall",
+        id: "item-mcp",
+        server: "probe",
+        tool: "ping",
+        arguments: {},
+        status: action === "accept" ? "completed" : "declined",
+        ...(action === "accept"
+          ? { result: { content: [{ type: "text", text: "pong" }] } }
+          : { error: { message: "user rejected MCP tool call" } }),
+      });
+      finish(`action=${action}`);
+      return;
+    }
+
     case "approval-file": {
       const reply = ask("item/fileChange/requestApproval", {
         threadId,

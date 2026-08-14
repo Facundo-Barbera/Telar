@@ -20,21 +20,34 @@
  *     an Agent SDK `betas` flag and an inline `settings.fastMode` — and the
  *     app-server exposes no equivalent. `DriverRun` carries them and this driver
  *     ignores them; the cockpit only offers them on a Claude session.
- * WHAT THIS FILE USED TO SAY IT COULD NOT DO, and how that was settled. The
- * header here claimed user-configured MCP servers were unreachable — "the shape
+ *
+ * WHAT THIS FILE USED TO SAY IT COULD NOT DO, and how that was settled — twice,
+ * because the first answer was also wrong.
+ *
+ * The header claimed user-configured MCP servers were unreachable: "the shape
  * its `thread/start` `config` overlay accepts for servers is not something this
  * driver can verify against anything. Guessing it would fail the whole turn on
- * an unknown key." Every clause of that was reasonable and the conclusion was
- * false, because nobody had asked the binary. `codex app-server
- * generate-json-schema` publishes the overlay, and a real MCP server driven
- * through it starts and lists its tools. `codexMcpServers` below carries the
- * measurement. The lesson is cheaper than the bug: the app-server ships its own
- * schema and will answer questions about itself.
+ * an unknown key." Every clause was reasonable and the conclusion was false,
+ * because nobody had asked the binary. `codex app-server generate-json-schema`
+ * publishes the overlay, and a real MCP server driven through it starts and
+ * lists its tools (`codexMcpServers` below).
+ *
+ * Then every injected tool came back "user rejected MCP tool call", and the
+ * first fix was to pre-approve them all in the injected config. That worked and
+ * was wrong for a better reason than it was right: it moved the decision out of
+ * the engine, which everything else in this file exists to prevent. The actual
+ * approval is `mcpServer/elicitation/request` — an MCP elicitation with the
+ * approval in its `_meta` — found by running a turn and logging what the
+ * app-server asked. It is answered through `onRequest` like every other one.
+ *
+ * The lesson is cheaper than either bug: the app-server ships its own schema
+ * and will answer questions about itself, and a workaround that makes the
+ * symptom go away is not evidence that the cause was understood.
  */
 import crypto from "node:crypto";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
-import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage } from "./codex/items";
+import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
 import type { DriverRun, DriverResult, TurnDriver } from "./driver";
 
 /**
@@ -175,10 +188,8 @@ export function codexMcpServers(servers: McpServer[] | undefined): Record<string
   if (!servers?.length) return undefined;
   const out: Record<string, Record<string, unknown>> = {};
   for (const server of servers) {
-    const shared = { default_tools_approval_mode: MCP_TOOL_APPROVAL };
     if (server.spec.transport === "stdio") {
       out[server.id] = {
-        ...shared,
         command: server.spec.command,
         ...(server.spec.args?.length ? { args: server.spec.args } : {}),
         ...(server.spec.env && Object.keys(server.spec.env).length > 0 ? { env: server.spec.env } : {}),
@@ -186,7 +197,6 @@ export function codexMcpServers(servers: McpServer[] | undefined): Record<string
       continue;
     }
     out[server.id] = {
-      ...shared,
       url: server.spec.url,
       ...(server.spec.headers && Object.keys(server.spec.headers).length > 0 ? { http_headers: server.spec.headers } : {}),
     };
@@ -195,33 +205,23 @@ export function codexMcpServers(servers: McpServer[] | undefined): Record<string
 }
 
 /**
- * WITHOUT THIS, EVERY INJECTED TOOL IS UNUSABLE — and it fails in the way that
- * looks most like the model's own decision.
+ * NO `default_tools_approval_mode`, AND THAT IS A REVERSAL WORTH RECORDING.
  *
- * Codex asks its CLIENT before running a model-initiated MCP tool call, and it
- * asks with a request this driver does not recognise. `codexApprovalRequest`
- * knows two generations of file-change and command-execution approvals and
- * nothing else, so the request falls through to the transport's RULE TWO reply
- * — `-32601`, sent so the app-server is never left waiting — and Codex reads a
- * refused request as a refusal. The turn then reports `user rejected MCP tool
- * call`, naming a user who was never asked. Watched happen twice, on a real
- * session, against a real server, with the tool correctly listed in the
- * catalogue the whole time.
+ * The first version of this set `approve` on every injected server, because an
+ * MCP tool call was ending every turn with "user rejected MCP tool call" and
+ * pre-approving made it work. It did work, and it was wrong: it moved the
+ * decision out of the engine and into Codex's config, which is the one thing
+ * this driver's header says must never happen — two parties deciding, only one
+ * of them recorded.
  *
- * `approve` IS THE HONEST VALUE HERE, not the convenient one. The enum is
- * `auto | prompt | writes | approve` (the app-server names all four when it
- * rejects a fifth). Anything that asks produces the failure above, because
- * there is no channel to answer on.
- *
- * WHAT THIS COSTS, SAID PLAINLY: an MCP tool call in a Codex session is
- * RECORDED but not GATED. It arrives as an `mcp_tool_call` row like any other
- * and the engine's own posture still bounds the shell and the filesystem around
- * it, but `autoResolution` never sees it and could not decline it. The moment
- * the app-server exposes this approval as a request `codexApprovalRequest` can
- * recognise, this constant should become `prompt` and the decision should move
- * back to the engine, where every other one lives.
+ * The reason it looked necessary was that the approval had not been FOUND yet.
+ * Codex asks through `mcpServer/elicitation/request` (see `mcpToolApproval` in
+ * ./codex/items.ts), which the driver now answers through the engine's own
+ * gate. `codex app-server` names the enum when it rejects a bad value —
+ * `auto | prompt | writes | approve` — and the right choice among them is to
+ * set none of them and let the client answer, which is also what t3 code does:
+ * it never writes this key.
  */
-const MCP_TOOL_APPROVAL = "approve";
 
 const LEGACY_APPROVAL_METHODS = new Set(["execCommandApproval", "applyPatchApproval"]);
 
@@ -348,18 +348,27 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         // records itself (`RequestDecision` in the contract). Codex only needs
         // to hear yes about this call.
         const accepted = decision === "accept" || decision === "acceptForSession";
-        // Two answer vocabularies for the same question: `accept`/`decline` for
-        // the `item/*` pair, `approved`/`denied` (ReviewDecision) for the
-        // legacy pair. Sending one where the other belongs is not an error the
-        // app-server reports — it is a decision it ignores.
-        const answer = LEGACY_APPROVAL_METHODS.has(request.method)
-          ? accepted
-            ? "approved"
-            : "denied"
-          : accepted
-            ? "accept"
-            : "decline";
-        client.respond(request.id, { decision: answer });
+        // THREE ANSWER VOCABULARIES FOR ONE QUESTION, and none of them errors
+        // when you use the wrong one — the app-server simply ignores a decision
+        // it cannot read, which presents as a turn that hangs or silently
+        // refuses. `accept`/`decline` under `decision` for the `item/*` pair,
+        // `approved`/`denied` (ReviewDecision) for the legacy pair, and
+        // `action` rather than `decision` for an MCP elicitation, whose shape
+        // comes from MCP itself rather than from Codex.
+        client.respond(
+          request.id,
+          request.method === MCP_ELICITATION
+            ? { action: accepted ? "accept" : "decline", ...(accepted ? { content: {} } : {}) }
+            : {
+                decision: LEGACY_APPROVAL_METHODS.has(request.method)
+                  ? accepted
+                    ? "approved"
+                    : "denied"
+                  : accepted
+                    ? "accept"
+                    : "decline",
+              },
+        );
         if (decision === "cancel") {
           // `cancel` withdraws the WHOLE turn, not just this call. The decline
           // still goes out first — a subprocess torn down mid-answer leaves the
@@ -374,9 +383,31 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       // Assigned BEFORE the first await, so no stdout line can be processed
       // against a client that cannot yet answer approvals.
       client.onServerRequest = (request) => {
-        if (!onRequest || !codexApprovalRequest(request.method, request.params)) return false;
-        void answerApproval(request);
-        return true;
+        if (onRequest && codexApprovalRequest(request.method, request.params)) {
+          void answerApproval(request);
+          return true;
+        }
+        /**
+         * AN ELICITATION WE CANNOT ANSWER IS DECLINED, NOT REFUSED.
+         *
+         * A `-32601` and a decline look the same to this process and are not
+         * the same to Codex: it reads a refused REQUEST as a refused TOOL and
+         * reports "user rejected MCP tool call", naming a user who was never
+         * asked. That is exactly how the MCP gap presented before the approval
+         * arm existed, so anything still reaching here — an ungated turn, a
+         * server eliciting a form or a URL the engine has no answer for —
+         * answers in the elicitation's own vocabulary instead.
+         *
+         * DECLINE RATHER THAN ACCEPT for the ungated case too: `onRequest`
+         * being absent means there is no gate to consult, and inventing a yes
+         * on behalf of an absent human is the one answer this engine never
+         * gives (see `user_input` in the contract).
+         */
+        if (request.method === MCP_ELICITATION) {
+          client.respond(request.id, { action: "decline" });
+          return true;
+        }
+        return false;
       };
 
       const itemIdFor = (codexId: string): string => `item_${codexId}`;
