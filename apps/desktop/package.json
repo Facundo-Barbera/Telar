@@ -10,7 +10,7 @@
     "dev": "bun ./dev-runner.js",
     "test": "bun run test:desktop:unit",
     "test:desktop": "bun run test:desktop:unit",
-    "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js",
+    "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js ./window-chrome.test.js",
     "test:desktop:smoke": "electron . --smoke",
     "test:desktop:e2e": "bun ./desktop-e2e-launcher.js",
     "smoke": "bun run test:desktop:smoke",

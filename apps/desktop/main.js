@@ -22,6 +22,7 @@ const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
+const { macWindowChrome } = require("./window-chrome");
 
 const SMOKE = process.argv.includes("--smoke");
 const OVERRIDE_URL = process.env.TELAR_DESKTOP_URL;
@@ -427,6 +428,20 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
 }
 
 // --- (e) Window --------------------------------------------------------------
+
+/**
+ * TELAR OWNS THE TOP OF ITS OWN WINDOW, on macOS only.
+ *
+ * `hiddenInset` removes the titlebar and keeps the traffic lights, which is the
+ * only combination that lets the app's own header BE the titlebar — the rail's
+ * wordmark and collapse trigger move up into the row the system was spending on
+ * an empty grey strip and a title nobody reads. The renderer marks its headers
+ * as drag regions (`app-drag`, in globals.css) so the window still moves, zooms
+ * on double-click and snaps exactly as before.
+ *
+ * The offsets and the platform rule live in ./window-chrome.js, next to the
+ * header height they are derived from.
+ */
 function createWindow(url) {
   const title = windowTitle();
   const icon = developmentIconPath();
@@ -436,6 +451,7 @@ function createWindow(url) {
     backgroundColor: "#0a0a0a",
     show: false,
     title,
+    ...macWindowChrome(),
     ...(icon ? { icon } : {}),
     webPreferences: {
       contextIsolation: true,

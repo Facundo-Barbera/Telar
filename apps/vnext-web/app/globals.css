@@ -358,3 +358,44 @@ pre span[style*="--sdm-c"] {
 .telar-markdown pre code > span {
   display: block;
 }
+
+/* ─── THE APP OWNS ITS TITLEBAR (macOS desktop shell only) ───────────────────
+
+   apps/desktop launches the window with `titleBarStyle: "hiddenInset"`, which
+   removes the system titlebar and leaves the three traffic lights floating over
+   whatever the page draws at the top-left. Two things follow, and both are
+   here rather than in a component because both are conditional on running
+   INSIDE that shell — a browser tab must be untouched.
+
+   `data-telar-shell` IS SET BY THE PRELOAD, before the page's own scripts, for
+   the same reason the theme script runs `beforeInteractive`: the inset changes
+   layout, and discovering it one render late means the header visibly jumps on
+   every launch. <html> already carries `suppressHydrationWarning` for the
+   theme, so a second attribute mutated out from under React is not a new kind
+   of thing here.
+
+   --titlebar-inset IS THE ROOM THE LIGHTS NEED, and it is the one number the
+   two processes have to agree on: x (13) + three 12px lights + two 8px gaps +
+   a margin. apps/desktop/window-chrome.js derives its side of it from the same
+   56px header height. */
+:root {
+  --titlebar-inset: 0px;
+}
+[data-telar-shell="macos"] {
+  --titlebar-inset: 4.75rem;
+}
+
+/* DRAG REGIONS ARE OPT-IN AND SHELL-ONLY. `-webkit-app-region` is inert in a
+   real browser, but `drag` also suppresses text selection and pointer events on
+   descendants — so scoping it to the shell keeps a browser tab from inheriting
+   behaviour that would only ever be a bug there.
+
+   EVERY INTERACTIVE CHILD OF A DRAG REGION NEEDS `app-no-drag`. A button inside
+   a drag region does not receive clicks at all; it moves the window instead.
+   That is the single failure mode of this whole feature, and it is silent. */
+[data-telar-shell] .app-drag {
+  -webkit-app-region: drag;
+}
+[data-telar-shell] .app-no-drag {
+  -webkit-app-region: no-drag;
+}

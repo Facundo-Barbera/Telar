@@ -91,15 +91,28 @@ const APP_SIDEBAR_RESIZABLE = {
     keepsRoomForMain(currentWidth, nextWidth, wrapper.getBoundingClientRect().width, APP_SIDEBAR_MAIN_MIN_WIDTH),
 } satisfies SidebarResizableOptions;
 
+/**
+ * THIS ROW IS THE TITLEBAR on the macOS desktop shell.
+ *
+ * `app-drag` makes it move the window; `--titlebar-inset` reserves the width
+ * the traffic lights float over, so the collapse trigger begins to their RIGHT
+ * rather than underneath them. Both resolve to nothing in a browser tab (see
+ * globals.css), which is why the same markup serves both.
+ *
+ * THE TWO CONTROLS OPT BACK OUT. A button inside a drag region does not get
+ * clicked — it drags the window — and nothing about it looks broken while it
+ * happens, which is the whole reason `app-no-drag` is spelled on each one
+ * rather than assumed.
+ */
 function TelarSidebarHeader() {
   return (
-    <SidebarHeader className="h-14 justify-center border-b border-sidebar-border/60 px-2">
+    <SidebarHeader className="app-drag h-14 justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
       <div className="flex min-w-0 items-center gap-1">
-        <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="shrink-0" />
+        <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="app-no-drag shrink-0" />
         <Link
           href="/"
           title="New conversation"
-          className="mr-auto flex min-w-0 items-center rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="app-no-drag mr-auto flex min-w-0 items-center rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="font-heading text-lg font-semibold tracking-tight">telar</span>
         </Link>

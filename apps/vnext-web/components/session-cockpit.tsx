@@ -19,6 +19,7 @@ import {
 import { createVNextApi, newVNextRunId, retryAmbiguousTurn, VNextApiError } from "@/lib/vnext/client";
 import { appendJournalEvents, isActiveTurn, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/vnext/journal";
 import { canvasHref } from "@/lib/session-list";
+import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
 import { hydrateVNextSession, tailVNextSession } from "@/lib/vnext/session-sync";
@@ -36,7 +37,7 @@ import {
   type PanelTabState,
 } from "@/lib/right-panel-tabs";
 import { ApprovalCard } from "./approval-card";
-import { MainSidebarTrigger } from "./main-sidebar-trigger";
+import { MainSidebarTrigger, useMainIsLeftmost } from "./main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -125,6 +126,8 @@ function SessionMasthead({
    * title is derived from that message.
    */
   const title = session?.title ?? "New conversation";
+  // Whether this header is the window's left edge — see main-sidebar-trigger.
+  const mainIsLeftmost = useMainIsLeftmost();
 
   const commit = () => {
     setEditing(false);
@@ -134,7 +137,19 @@ function SessionMasthead({
   };
 
   return (
-    <header className="flex min-h-11 shrink-0 flex-wrap items-center gap-2 bg-background/65 px-4 py-1.5 backdrop-blur">
+    /* `app-drag` because this row is the top of the window on the macOS shell,
+       and a titlebar you cannot grab is the one thing this must not become.
+       Every control inside it opts back out — see globals.css.
+       THE INSET IS CONDITIONAL because this header is only the window's LEFT
+       edge while the rail is hidden; with the rail open the rail's own header
+       has already left room for the traffic lights, and insetting here too
+       would push the breadcrumb 76px off the wall for no reason. */
+    <header
+      className={cn(
+        "app-drag flex min-h-11 shrink-0 flex-wrap items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
+        mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
+      )}
+    >
       <div className="mr-1 flex min-w-0 items-center gap-2 text-sm">
         {/* Only mounts while the rail is hidden, leaving the workspace at true
             full width when it is not. The folder glyph stands in for it so the
@@ -146,14 +161,14 @@ function SessionMasthead({
             every project and therefore answered a question nobody had asked. */}
         <Link
           href={canvasHref(projectId)}
-          className="shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {projectName ?? session?.projectId ?? projectId}
         </Link>
         <span className="text-border">/</span>
         {editing ? (
           <Input
-            className="h-6 max-w-xs text-base font-semibold"
+            className="app-no-drag h-6 max-w-xs text-base font-semibold"
             aria-label="Session title"
             autoFocus
             value={draftTitle}
@@ -182,7 +197,7 @@ function SessionMasthead({
                 size="icon-xs"
                 aria-label="Rename session"
                 disabled={sending}
-                className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/title:opacity-100 focus-visible:opacity-100"
+                className="app-no-drag shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/title:opacity-100 focus-visible:opacity-100"
                 onClick={() => {
                   setDraftTitle(title);
                   setEditing(true);
@@ -194,7 +209,9 @@ function SessionMasthead({
           </span>
         )}
       </div>
-      <div className="ml-auto flex flex-wrap items-center gap-2">{panel}</div>
+      {/* The whole trailing cluster is controls, so it opts out as a block
+          rather than one button at a time. */}
+      <div className="app-no-drag ml-auto flex flex-wrap items-center gap-2">{panel}</div>
     </header>
   );
 }

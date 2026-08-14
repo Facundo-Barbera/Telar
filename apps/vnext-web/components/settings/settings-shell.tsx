@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
-import { MainSidebarTrigger } from "@/components/main-sidebar-trigger";
+import { MainSidebarTrigger, useMainIsLeftmost } from "@/components/main-sidebar-trigger";
 
 export type SettingsSection = {
   id: string;
@@ -49,6 +49,7 @@ export function SettingsShell({
 }) {
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
   const ActiveIcon = activeSection.icon;
+  const mainIsLeftmost = useMainIsLeftmost();
 
   // Group the nav if any section declares a group; otherwise flat.
   const groups = sections.some((s) => s.group)
@@ -62,16 +63,31 @@ export function SettingsShell({
     <div className="flex h-full min-h-0 bg-background text-foreground">
       {/* Side-nav — fixed, never scrolls the shell */}
       <nav className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar/40 p-3">
-        <div className="px-1 pt-1">
-          {backHref && (
-            <Link
-              href={backHref}
-              className="mb-2 flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              aria-label="Back"
-            >
-              <ArrowLeftIcon className="size-4" />
-            </Link>
-          )}
+        {/*
+          THIS NAV IS THE WINDOW'S LEFT EDGE while the app rail is hidden — it
+          has 240px of its own to the left of the settings header — so it is
+          this strip, not that header, that has to leave room for the macOS
+          traffic lights and be grabbable.
+
+          AND IT IS WHERE THE RESTORE BUTTON BELONGS for the same reason. It
+          used to sit in the settings header, which put it 260px from the left
+          edge with nothing beside it: a control for bringing the rail back,
+          nowhere near where the rail would come back. Here it reads as what it
+          is, next to the other navigation control on this screen.
+        */}
+        <div className={cn("app-drag px-1 pt-1", mainIsLeftmost && "pl-[var(--titlebar-inset)]")}>
+          <div className="mb-2 flex items-center gap-1">
+            {backHref && (
+              <Link
+                href={backHref}
+                className="app-no-drag flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Back"
+              >
+                <ArrowLeftIcon className="size-4" />
+              </Link>
+            )}
+            <MainSidebarTrigger />
+          </div>
           <div className="px-1">
             <h2 className="font-heading text-sm font-semibold tracking-tight text-foreground">
               {title}
@@ -126,13 +142,13 @@ export function SettingsShell({
 
       {/* Content pane — sticky header + internal scroll */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex min-h-13 shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 py-2 text-foreground backdrop-blur">
-          <MainSidebarTrigger />
+        {/* Drag region: the top of the window on the macOS shell. */}
+        <header className="app-drag sticky top-0 z-10 flex min-h-13 shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 py-2 text-foreground backdrop-blur">
           <ActiveIcon className="size-4 text-muted-foreground" />
           <h3 className="font-heading text-sm font-semibold tracking-tight">
             {activeSection.label}
           </h3>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="app-no-drag ml-auto flex items-center gap-2">
             {headerActions}
             {onSave && (
               <>
