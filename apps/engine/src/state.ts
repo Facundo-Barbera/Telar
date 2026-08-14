@@ -1239,7 +1239,22 @@ export class EngineStore {
 
   listProjects(): Project[] {
     const registry = readJson(this.paths.projects);
-    return registry === undefined ? [] : structuredClone(parseRegistry(registry).projects);
+    if (registry === undefined) return [];
+    return structuredClone(parseRegistry(registry).projects).map((project) => {
+      /**
+       * DERIVED HERE, NOT STORED, exactly as `Session.activity` is: HEAD moves,
+       * and a branch written into the registry would be wrong the first time
+       * anybody switched. One `git rev-parse` per project — there are a handful
+       * — is what a sidebar needs to tell a local session where its work lands.
+       *
+       * A DETACHED HEAD ANSWERS "HEAD", which is not a branch and is not worth
+       * showing; an unversioned directory answers non-zero. Both leave the
+       * field absent rather than inventing a name.
+       */
+      const head = this.git(project.root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      const branch = head.status === 0 ? head.stdout.trim() : "";
+      return branch && branch !== "HEAD" ? { ...project, branch } : project;
+    });
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {

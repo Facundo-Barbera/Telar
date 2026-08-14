@@ -51,6 +51,10 @@ export type SidebarSession = {
   contextTokens?: number;
   workspacePath: string;
   worktreeBranch?: string;
+  /** The project checkout's current branch, for a LOCAL session — which has no
+   *  branch of its own because it runs on the project's own checkout. Derived
+   *  per project by the engine, not stored. */
+  projectBranch?: string;
   /** The inbox's own state — see `lib/session-settling.ts`. Carried on the
    *  projection rather than looked up, because `bandOf` runs per row per
    *  render and the whole point of the projection is that it already has
@@ -73,12 +77,13 @@ export type SidebarSession = {
 };
 
 /** The engine record, flattened into what the rail actually reads. */
-export function toSidebarSession(session: Session, projectName?: string): SidebarSession {
+export function toSidebarSession(session: Session, projectName?: string, projectBranch?: string): SidebarSession {
   return {
     id: session.id,
     title: session.title,
     projectId: session.projectId,
     ...(projectName ? { projectName } : {}),
+    ...(projectBranch ? { projectBranch } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     archived: session.state === "archived",

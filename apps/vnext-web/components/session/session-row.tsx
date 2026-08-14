@@ -28,14 +28,15 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArchiveIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, FolderIcon, GitBranchIcon, UndoIcon } from "lucide-react";
+import { CircleCheckIcon, CircleDashedIcon, CircleDotIcon, ClockIcon, FolderIcon, GitBranchIcon, UndoIcon } from "lucide-react";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { bandOf, sessionHref, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, patchSession } from "@/components/session/session-inbox-menu";
-import { canSettle } from "@/lib/session-settling";
+import { canSettle, canSnooze, snoozePresets } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 
@@ -182,6 +183,19 @@ export function SessionRow({
 
   const href = sessionHref(session);
   const settled = bandOf(session, renderedAt) === "settled";
+  /**
+   * The settling module's view of this session, WHICH IS NO LONGER EMPTY.
+   *
+   * Both `canSettle` and `canSnooze` were being handed `{}` — a truthful
+   * "nothing is known" when the engine sent no live state, and stale the moment
+   * it did. It says "you cannot snooze a session that is asking you something"
+   * and "you cannot settle one mid-turn", and with a real `activity` those
+   * rules finally apply instead of always passing.
+   */
+  const sessionActivity = {
+    working: session.activity === "working" || session.activity === "queued",
+    waitingOnYou: session.activity === "blocked",
+  };
   /**
    * SHELVED BY A DECISION, not by neglect — which is the only case the row's
    * own button can UNDO. A session that drifted onto the shelf because nobody
@@ -476,7 +490,15 @@ export function SessionRow({
         yields to the actions rather than being crowded by them.
       */}
       {!searchable && (
-        <span className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-sidebar-accent px-0.5 opacity-0 shadow-sm transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100">
+        <span
+          className={`absolute right-1 z-10 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100 ${
+            // TOP-ALIGNED ON A CARD, as t3 has them: the actions belong to the
+            // header line, where they take the status label's place rather than
+            // floating over the title. A slim row has only one line, so they
+            // centre on it.
+            variant === "card" ? "top-1.5" : "top-1/2 -translate-y-1/2"
+          }`}
+        >
           {/**
            * SETTLE IS ONE TAP AND ASKS NOTHING, which is the whole difference
            * between it and the archive beside it. Archiving ends the session and
@@ -492,7 +514,7 @@ export function SessionRow({
               size="icon-xs"
               aria-label={settledByDecision ? "Return to the list" : "Settle session"}
               title={settledByDecision ? "Return to the list" : "Settle"}
-              disabled={!settledByDecision && !canSettle({})}
+              disabled={!settledByDecision && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
                 void patchSession(session.id, { settledOverride: settledByDecision ? null : "settled" }).then(onRefresh);
@@ -501,34 +523,59 @@ export function SessionRow({
               {settledByDecision ? <UndoIcon /> : <CircleCheckIcon />}
             </Button>
           )}
+          {/**
+           * SNOOZE, WHERE ARCHIVE USED TO BE — and the swap is about which
+           * gesture belongs one click from a row you are skimming.
+           *
+           * Archiving ENDS a session and removes its worktree. It is the
+           * heaviest thing in this menu, it needed a confirm, and it sat
+           * between two reversible actions where a mis-click is cheap. Snooze
+           * is the opposite in every respect: "not now" rather than "never",
+           * undone by the same row, and the thing you actually reach for while
+           * clearing a list. t3 puts exactly these two — snooze and settle —
+           * on the row and nothing else.
+           *
+           * Archive is still one layer away, in the ⋯ menu, with its question
+           * intact. Nothing was removed; it stopped being a hair-trigger.
+           */}
           {!settled && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              aria-label="Archive session"
-              title="Archive"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                // Confirmed, unlike the donor's one-tap Settle: settling was a
-                // reversible band change, and archiving here ends the session
-                // and removes its worktree. Same gesture, heavier consequence,
-                // so it earns the question.
-                if (!window.confirm(`Archive "${session.title || "Untitled session"}"? Its worktree is removed; the branch survives.`)) {
-                  return;
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Snooze session"
+                    title="Snooze"
+                    disabled={!canSnooze(sessionActivity)}
+                    className="text-muted-foreground hover:text-foreground"
+                  />
                 }
-                void fetch(`/api/sessions/${encodeURIComponent(session.id)}/archive`, { method: "POST" }).then(() => {
-                  onRefresh();
-                  leaveIfActive();
-                });
-              }}
-            >
-              <ArchiveIcon />
-            </Button>
+              >
+                <ClockIcon />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                {/* Presets resolved AT OPEN, so "In 1 hour" is an hour from the
+                    click rather than from whenever this row mounted. */}
+                {snoozePresets(new Date(renderedAt)).map((preset) => (
+                  <DropdownMenuItem
+                    key={preset.id}
+                    onClick={() => void patchSession(session.id, { snoozedUntil: preset.until }).then(onRefresh)}
+                  >
+                    <span className="flex-1">{preset.label}</span>
+                    <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">{preset.when}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
           <SessionInboxMenu
             session={session}
             settled={settled}
             active={active}
+            // No longer the default `{}`: the engine reports what this session
+            // is doing, so the menu's own guards can finally apply.
+            activity={sessionActivity}
             now={renderedAt}
             onRename={beginRename}
             onDone={onRefresh}

@@ -126,10 +126,16 @@ export function fmtDuration(startedAt: number, now: number): string {
  * nothing, and the row is two lines rather than three with an empty one.
  */
 export function rowSubtitle(
-  session: { worktreeBranch?: string; projectName?: string; workspacePath: string },
+  session: { worktreeBranch?: string; projectBranch?: string; projectName?: string; workspacePath: string },
   options: { projectShown: boolean } = { projectShown: false },
 ): { text: string; kind: "branch" | "project" | "path" } | null {
   if (session.worktreeBranch) return { text: session.worktreeBranch, kind: "branch" };
+  // A LOCAL SESSION'S BRANCH IS ITS PROJECT'S, because it runs on that
+  // checkout — which is what the composer's own footer has always shown. It is
+  // still the answer to "where does this land", so it takes the same slot; the
+  // difference is that it moves under the session's feet when somebody
+  // switches branches, which is true and worth seeing.
+  if (session.projectBranch) return { text: session.projectBranch, kind: "branch" };
   if (session.projectName) return options.projectShown ? null : { text: session.projectName, kind: "project" };
   // The leaf rather than the whole path: a sidebar column is ~220px, and an
   // absolute path truncates to its least distinctive half.

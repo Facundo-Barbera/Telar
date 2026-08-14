@@ -36,6 +36,24 @@ export const Project = z.object({
   root: z.string().min(1),
   createdAt: Timestamp,
   updatedAt: Timestamp,
+  /**
+   * WHAT THIS CHECKOUT IS ON RIGHT NOW — for the sessions that share it.
+   *
+   * A worktree session carries its own branch on `SessionWorkspace`; a LOCAL
+   * session has none, because it runs on the project's own checkout and the
+   * branch is a property of that checkout rather than of the conversation. So
+   * the sidebar could say where a worktree session's work lands and not where
+   * a local one's does, which is the more common case.
+   *
+   * DERIVED ON LIST, LIKE `Session.activity`, and for the same reason: HEAD
+   * moves, and a stored answer would be wrong the first time somebody switched
+   * branches. One `git rev-parse` per PROJECT rather than per session is what
+   * makes it affordable.
+   *
+   * Absent on an unversioned directory, which `envMode: "local"` exists to
+   * support — not every project is a git repository.
+   */
+  branch: z.string().min(1).optional(),
 });
 export type Project = z.infer<typeof Project>;
 

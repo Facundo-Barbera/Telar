@@ -5,8 +5,8 @@
 // STRUCTURE, TOP TO BOTTOM — this is the donor's, unchanged: a 56px header with
 // the collapse trigger and the wordmark; a search field wearing its ⌘K hint and
 // a new-session button beside it; a project scope dropdown with a register
-// button; filter chips carrying live counts; the "Recent" band; a collapsed
-// "Settled" shelf under it; Settings in the footer.
+// button; the "Recent" band; a collapsed "Settled" shelf under it; Settings in
+// the footer.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
 // Overview, Projects, Looms, Workspace. Those views are deliberately out of
@@ -40,7 +40,6 @@ import {
   SESSION_PAGE_SIZE,
   sessionHref,
   toSidebarSession,
-  type SessionFilter,
   type SidebarSession,
 } from "@/lib/session-list";
 import {
@@ -98,78 +97,20 @@ function TelarSidebarHeader() {
   );
 }
 
-// The inbox's slice selector. A chip is a view over the same list, never a
-// different screen — picking one flattens the shelf away (see deriveSessionList's
-// `flat`) because a filtered list that still hides rows behind a collapsed shelf
-// is the thing the filter was meant to stop.
-const FILTERS: readonly { id: SessionFilter; label: string; count?: "active" | "archived" }[] = [
-  { id: "all", label: "All" },
-  { id: "active", label: "Active", count: "active" },
-  { id: "archived", label: "Archived", count: "archived" },
-];
-
-function FilterChips({
-  value,
-  onChange,
-  activeCount,
-  archivedCount,
-}: {
-  value: SessionFilter;
-  onChange: (next: SessionFilter) => void;
-  activeCount: number;
-  archivedCount: number;
-}) {
-  return (
-    <div role="tablist" aria-label="Session filter" className="flex items-center gap-1">
-      {FILTERS.map(({ id, label, count }) => {
-        const badge = count === "active" ? activeCount : count === "archived" ? archivedCount : 0;
-        // An empty Archived chip is noise — nothing has been retired, so there
-        // is nothing to switch to. Active stays put: it is the count you scan.
-        if (count === "archived" && badge === 0 && value !== id) return null;
-        const active = value === id;
-        return (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            onClick={() => onChange(id)}
-            className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-              active
-                ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                : "text-sidebar-foreground/55 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
-            }`}
-          >
-            {label}
-            {count && badge > 0 ? <span className="font-mono text-[9px] text-sidebar-foreground/45">{badge}</span> : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// An empty chip view means "you are done with this slice", not "something is
-// missing" — each one says so in its own terms rather than reusing the
-// no-sessions-yet copy, which would read as if the filter had broken.
-const EMPTY_BY_FILTER: Record<SessionFilter, { icon: React.ComponentType<{ className?: string }>; title: string; detail: string }> = {
-  all: {
-    icon: MessageSquareIcon,
-    title: "No sessions yet",
-    detail: "Start a new session from the button above.",
-  },
-  active: {
-    icon: CheckIcon,
-    title: "Nothing active",
-    detail: "Every session here has been archived.",
-  },
-  archived: {
-    icon: MessageSquareIcon,
-    title: "Nothing archived",
-    detail: "Archive a session when you are done with it.",
-  },
-};
-
+/**
+ * THE FILTER CHIPS ARE GONE, and with them the third place a session could
+ * hide.
+ *
+ * All / Active / Archived cost a permanent row of chrome at the top of the rail
+ * to offer three views of one list — and two of them were views the shelf
+ * already gives you. "Archived" in particular was a slice of a lifecycle that
+ * is itself being folded into settling: a session you are done with is settled,
+ * and one you want gone is deleted. Two words for "off my list" is one too
+ * many, and the chip was the surface that kept insisting they were different.
+ *
+ * What is left is the banded view that was always the default: the live list,
+ * then a collapsed shelf. Search still flattens both.
+ */
 function SidebarEmpty({
   icon: Icon,
   title,
@@ -283,9 +224,6 @@ function SidebarBody() {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
-  // Deliberately NOT persisted, for the same reason scope is not: a filter you
-  // forget you set is a bug report about missing sessions.
-  const [filter, setFilter] = useState<SessionFilter>("all");
   const [sessionLimit, setSessionLimit] = useState(SESSION_PAGE_SIZE);
   const [settledLimit, setSettledLimit] = useState(SESSION_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
@@ -302,6 +240,9 @@ function SidebarBody() {
     try {
       const result = await api.projects();
       const names = new Map(result.projects.map((project) => [project.id, project.name]));
+      // The checkout's current branch, for the local sessions that share it —
+      // they have no branch of their own. Derived per project by the engine.
+      const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
       setProjects(result.projects);
       setUnavailable(false);
       // One request per project, in parallel, because the engine lists sessions
@@ -311,7 +252,11 @@ function SidebarBody() {
       const pages = await Promise.allSettled(result.projects.map((project) => api.sessions(project.id)));
       setSessions(
         pages.flatMap((page) =>
-          page.status === "fulfilled" ? page.value.sessions.map((session) => toSidebarSession(session, names.get(session.projectId))) : [],
+          page.status === "fulfilled"
+            ? page.value.sessions.map((session) =>
+                toSidebarSession(session, names.get(session.projectId), branches.get(session.projectId)),
+              )
+            : [],
         ),
       );
       setRenderedAt(Date.now());
@@ -370,22 +315,18 @@ function SidebarBody() {
     sessions,
     ...(selectedScope ? { projectId: selectedScope } : {}),
     query,
-    filter,
+    // "all" is the banded view — live list, then the settled shelf — and with
+    // the chips gone it is the only one. Passed explicitly so the derivation's
+    // own default is not what this rail silently depends on.
+    filter: "all",
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
     limit: sessionLimit,
     settledLimit,
   });
-  // The chip badges are counted over the scope ALONE — no query, no active chip
-  // — so they stay still while you type and keep saying how much is actually
-  // there rather than how much the current view happens to show. limit 0 makes
-  // this a counting pass: no rows are materialized.
-  const totals = deriveSessionList({
-    sessions,
-    ...(selectedScope ? { projectId: selectedScope } : {}),
-    now: renderedAt,
-    limit: 0,
-  });
+  // The counting pass that badged the chips went with them: nothing displays a
+  // total any more, and `deriveSessionList` was being run twice per render to
+  // produce two numbers.
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -396,11 +337,6 @@ function SidebarBody() {
 
   const selectScope = (next?: string) => {
     setScope(next);
-    resetPaging();
-  };
-
-  const selectFilter = (next: SessionFilter) => {
-    setFilter(next);
     resetPaging();
   };
 
@@ -557,13 +493,11 @@ function SidebarBody() {
             </DropdownMenu>
             <RegisterProjectDialog onRegistered={() => void loadAll()} compact />
           </div>
-
-          <FilterChips value={filter} onChange={selectFilter} activeCount={totals.activeCount} archivedCount={totals.archivedCount} />
         </div>
 
         <SidebarGroup className="min-h-0 flex-1">
           <SidebarGroupLabel>
-            {query ? "Search results" : filter === "all" ? "Recent" : (FILTERS.find((entry) => entry.id === filter)?.label ?? "Recent")}
+            {query ? "Search results" : "Recent"}
           </SidebarGroupLabel>
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
             {unavailable ? (
@@ -572,23 +506,9 @@ function SidebarBody() {
               <SidebarEmpty icon={FolderPlusIcon} title="No projects yet" detail="Register a project to start a session." />
             ) : list.sessions.length === 0 && (list.flat || !list.settledCount) ? (
               <SidebarEmpty
-                icon={query ? MessageSquareIcon : EMPTY_BY_FILTER[filter].icon}
-                title={
-                  query
-                    ? "No sessions found"
-                    : filter !== "all"
-                      ? EMPTY_BY_FILTER[filter].title
-                      : selectedScope
-                        ? "No sessions in this project"
-                        : "No sessions yet"
-                }
-                detail={
-                  query
-                    ? "Try another title or project name."
-                    : filter !== "all"
-                      ? EMPTY_BY_FILTER[filter].detail
-                      : "Start a new session from the button above."
-                }
+                icon={MessageSquareIcon}
+                title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
+                detail={query ? "Try another title or project name." : "Start a new session from the button above."}
               />
             ) : (
               list.sessions.map((session, index) => (
