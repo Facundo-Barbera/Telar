@@ -23,6 +23,7 @@ import {
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
+  type InboxPolicy,
   type ModelCatalogue,
   type SessionDiff,
   type McpOAuthStatus,
@@ -168,6 +169,16 @@ export class EngineClient {
 
   registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
     return this.request("POST", "/v2/projects", input);
+  }
+
+  /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every
+   *  client that reads this engine bands its list the same way. */
+  inboxPolicy(): Promise<{ inbox: InboxPolicy }> {
+    return this.request("GET", "/v2/inbox");
+  }
+
+  setInboxPolicy(patch: { autoSettleAfterDays?: number | null }): Promise<{ inbox: InboxPolicy }> {
+    return this.request("PATCH", "/v2/inbox", patch);
   }
 
   /** A project's git state — branch, dirty count, divergence, worktrees.

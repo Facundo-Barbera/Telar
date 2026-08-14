@@ -28,13 +28,13 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CircleCheckIcon, CircleDashedIcon, CircleDotIcon, ClockIcon, FolderIcon, GitBranchIcon, UndoIcon } from "lucide-react";
+import { AlarmClockIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, ClockIcon, FolderIcon, GitBranchIcon, UndoIcon } from "lucide-react";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
-import { bandOf, sessionHref, type SidebarSession } from "@/lib/session-list";
+import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, patchSession } from "@/components/session/session-inbox-menu";
-import { canSettle, canSnooze, snoozePresets } from "@/lib/session-settling";
+import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -147,6 +147,7 @@ export function SessionRow({
   active,
   showProject,
   variant = "card",
+  band = "active",
   searchable = false,
   searchSelected = false,
   renderedAt,
@@ -157,11 +158,20 @@ export function SessionRow({
   showProject: boolean;
   /**
    * HOW MUCH ROOM THIS ROW HAS EARNED. `card` for the live list, `slim` for the
-   * settled shelf and for search results — a result list is answering a
-   * question you already asked, so every row in it is equally relevant and
-   * density beats detail.
+   * shelves and for search results — a result list is answering a question you
+   * already asked, so every row in it is equally relevant and density beats
+   * detail.
    */
   variant?: "card" | "slim";
+  /**
+   * WHICH BAND THE LIST PUT THIS ROW IN — decided once by `bandOf` and handed
+   * down, rather than recomputed here off a window this component would have to
+   * be told anyway. It is what picks between Snooze and Wake, and it is not
+   * always the band the row is DRAWN in: the survivor rule renders the session
+   * you are reading in the live list even when it is snoozed, and that row
+   * still needs the snoozed affordance.
+   */
+  band?: SessionBand;
   searchable?: boolean;
   searchSelected?: boolean;
   renderedAt: number;
@@ -182,7 +192,7 @@ export function SessionRow({
   }, [renaming]);
 
   const href = sessionHref(session);
-  const settled = bandOf(session, renderedAt) === "settled";
+  const snoozing = band === "snoozed";
   /**
    * The settling module's view of this session, WHICH IS NO LONGER EMPTY.
    *
@@ -191,11 +201,12 @@ export function SessionRow({
    * it did. It says "you cannot snooze a session that is asking you something"
    * and "you cannot settle one mid-turn", and with a real `activity` those
    * rules finally apply instead of always passing.
+   *
+   * FOLDED IN `lib/session-list.ts` rather than here, because the list bands on
+   * the same answer: a row offering a Snooze the list would decline to honour
+   * is a button that does nothing.
    */
-  const sessionActivity = {
-    working: session.activity === "working" || session.activity === "queued",
-    waitingOnYou: session.activity === "blocked",
-  };
+  const sessionActivity = settlingActivity(session);
   /**
    * SHELVED BY A DECISION, not by neglect — which is the only case the row's
    * own button can UNDO. A session that drifted onto the shelf because nobody
@@ -205,15 +216,16 @@ export function SessionRow({
    */
   const settledByDecision = session.settledOverride === "settled";
 
-  // Archiving the session you are currently VIEWING must not maroon you on it:
+  // Deleting the session you are currently VIEWING must not maroon you on it:
   // the survivor rule in deriveSessionList keeps this row visible for as long as
   // the URL names it, which is right for every other case and exactly wrong
-  // here. Hand the reader back to the project's session list instead.
+  // here. Hand the reader a fresh canvas in the same project instead.
+  //
+  // IT USED TO PUSH `/projects`, and that was one of the four routes that kept
+  // stranding people on a management table nobody had asked for. A composer in
+  // the project you were just working in is where you were going anyway.
   const leaveIfActive = () => {
-    // `/projects`, not `/`: `/` is a composer now, and archiving the session you
-    // were reading should hand you the list you came from rather than a blank
-    // message box you did not ask for.
-    if (active) router.push("/projects");
+    if (active) router.push(canvasHref(session.projectId));
   };
 
   const beginRename = () => {
@@ -276,7 +288,20 @@ export function SessionRow({
   // so a status left underneath them would show through — and t3's rule is
   // that a read-only label yields to an action rather than competing with it.
   const yieldOnHover = "transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0";
-  const statusSlot = badge ? (
+  /**
+   * A SLEEPING ROW SAYS WHEN IT COMES BACK, NOT HOW OLD IT IS.
+   *
+   * "4h ago" on a snoozed row is the one fact about it nobody needs — you are
+   * looking at this shelf to ask what returns next, and the shelf is sorted by
+   * exactly that. The countdown is the same one t3 puts on its snoozed rows,
+   * and it takes the timestamp's place rather than sitting beside it.
+   */
+  const statusSlot = snoozing && session.snoozedUntil !== undefined ? (
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
+      <AlarmClockIcon className="size-3" />
+      {wakeLabel(session.snoozedUntil, renderedAt)}
+    </span>
+  ) : badge ? (
     <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${ACTIVITY_TONE[badge.tone]} ${yieldOnHover}`}>
       {/* A SPINNER FOR "STILL GOING", A DOT FOR "STOPPED AND WAITING". The
           motion is the fastest read in the list — you see that something is
@@ -538,36 +563,56 @@ export function SessionRow({
            * Archive is still one layer away, in the ⋯ menu, with its question
            * intact. Nothing was removed; it stopped being a hair-trigger.
            */}
-          {!settled && (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label="Snooze session"
-                    title="Snooze"
-                    disabled={!canSnooze(sessionActivity)}
-                    className="text-muted-foreground hover:text-foreground"
-                  />
-                }
-              >
-                <ClockIcon />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52">
-                {/* Presets resolved AT OPEN, so "In 1 hour" is an hour from the
-                    click rather than from whenever this row mounted. */}
-                {snoozePresets(new Date(renderedAt)).map((preset) => (
-                  <DropdownMenuItem
-                    key={preset.id}
-                    onClick={() => void patchSession(session.id, { snoozedUntil: preset.until }).then(onRefresh)}
-                  >
-                    <span className="flex-1">{preset.label}</span>
-                    <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">{preset.when}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+          {/**
+           * ONE SPOT, TWO DIRECTIONS. A sleeping row's clock is the way back —
+           * pressing the same place that put it to sleep is the whole reason
+           * this is undoable without opening a menu. A menu of presets on a
+           * row that is already snoozed would be asking you to re-decide a
+           * question you have answered.
+           */}
+          {snoozing ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Wake session now"
+              title="Wake now"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={() => void patchSession(session.id, { snoozedUntil: null }).then(onRefresh)}
+            >
+              <AlarmClockIcon />
+            </Button>
+          ) : (
+            band !== "settled" && (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Snooze session"
+                      title="Snooze"
+                      disabled={!canSnooze(sessionActivity)}
+                      className="text-muted-foreground hover:text-foreground"
+                    />
+                  }
+                >
+                  <ClockIcon />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  {/* Presets resolved AT OPEN, so "In 1 hour" is an hour from the
+                      click rather than from whenever this row mounted. */}
+                  {snoozePresets(new Date(renderedAt)).map((preset) => (
+                    <DropdownMenuItem
+                      key={preset.id}
+                      onClick={() => void patchSession(session.id, { snoozedUntil: preset.until }).then(onRefresh)}
+                    >
+                      <span className="flex-1">{preset.label}</span>
+                      <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">{preset.when}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )
           )}
           <SessionInboxMenu
             session={session}

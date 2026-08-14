@@ -20,6 +20,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CircleAlertIcon, FolderGitIcon, WrenchIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
+import { canvasHref } from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
 import { McpSection } from "./mcp-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
@@ -64,7 +65,9 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
       sections={SECTIONS}
       active={active}
       onSelect={setActive}
-      backHref="/projects"
+      // Back to this project's composer. It was `/projects` — a table that no
+      // longer exists, and would have been a dead link.
+      backHref={canvasHref(projectId)}
     >
       {missing && (
         <SettingsGroup title="Not registered">

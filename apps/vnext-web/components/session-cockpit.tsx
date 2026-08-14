@@ -140,10 +140,12 @@ function SessionMasthead({
             full width when it is not. The folder glyph stands in for it so the
             breadcrumb does not shift sideways when the rail opens. */}
         <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
-        {/* `/projects`, not `/`: the breadcrumb names the PROJECT, so pressing
-            it should show that project — and `/` is now a composer. */}
+        {/* The breadcrumb names the PROJECT, so pressing it lands in that
+            project — on its canvas, which is what "this project, right now"
+            looks like. It pointed at the retired `/projects` table, which named
+            every project and therefore answered a question nobody had asked. */}
         <Link
-          href="/projects"
+          href={canvasHref(projectId)}
           className="shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {projectName ?? session?.projectId ?? projectId}

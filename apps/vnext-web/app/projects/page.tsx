@@ -1,14 +1,20 @@
-import { ProjectsCockpit } from "@/components/projects-cockpit";
+import { redirect } from "next/navigation";
 
 /**
- * Managing projects: register a root, see what is registered, open a session.
+ * THE PROJECTS TABLE IS GONE; THIS IS THE DOOR CLOSING BEHIND IT.
  *
- * IT MOVED HERE FROM `/` so the front door could be a composer. Nothing about
- * the screen changed — what changed is that you now arrive at it on purpose,
- * rather than passing through it on the way to typing something.
+ * A REDIRECT RATHER THAN A DELETED ROUTE, and the difference is the entire
+ * point of removing the screen. Deleting the file leaves a 404 — which is
+ * honest, and is still a page you can be stuck on: a reload, a restored window,
+ * a bookmark or a stale history entry all put you back on a dead end, which is
+ * exactly the complaint that retired the table ("the app reloads and I land on
+ * this page"). Every one of those now arrives at a composer instead.
+ *
+ * It costs four lines and it can be deleted the day nothing in anyone's history
+ * says `/projects` — which is to say, never, so it stays.
  */
 export const dynamic = "force-dynamic";
 
-export default function ProjectsPage() {
-  return <ProjectsCockpit />;
+export default function RetiredProjectsPage() {
+  redirect("/");
 }

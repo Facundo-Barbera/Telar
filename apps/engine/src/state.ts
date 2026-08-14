@@ -11,7 +11,11 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
+  DEFAULT_INBOX_POLICY,
+  InboxPolicy as InboxPolicySchema,
   Item as ItemSchema,
+  MAX_AUTO_SETTLE_DAYS,
+  MIN_AUTO_SETTLE_DAYS,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
@@ -39,6 +43,7 @@ import {
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
+  type InboxPolicy,
   type ModelCatalogue,
   type SessionDiff,
   type EngineEvent,
@@ -243,6 +248,14 @@ export type EngineStatePaths = {
    * each holds a PKCE verifier, which is a secret for the length of one flow.
    */
   mcpOAuthPending: string;
+  /**
+   * How the reader wants their session list banded — see `InboxPolicy`.
+   *
+   * ENVIRONMENT-SCOPED, beside projects.json, for the same reason mcp-servers is:
+   * it is configured once and read by every client. A per-browser copy would put
+   * the same session in two different bands depending on which window you opened.
+   */
+  inbox: string;
   engine: string;
   lock: string;
 };
@@ -292,6 +305,7 @@ export function statePaths(root: string): EngineStatePaths {
     providerSecrets: path.join(resolved, "provider-secrets.json"),
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
+    inbox: path.join(resolved, "inbox.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
@@ -486,9 +500,47 @@ function parseSession(value: unknown): Session {
  * boundary rather than at each of the six call sites, so a seventh cannot
  * forget.
  */
-function storedSession(session: Session): Omit<Session, "activity" | "activityAt"> {
-  const { activity: _activity, activityAt: _activityAt, ...stored } = session;
+function storedSession(
+  session: Session,
+): Omit<Session, "activity" | "activityAt" | "lastTurnEndedAt" | "lastTurnFailed"> {
+  const {
+    activity: _activity,
+    activityAt: _activityAt,
+    // Read off the queue on the same pass as `activity`, and stripped for the
+    // same reason: the queue is where the answer lives, so a copy here could
+    // only ever be a stale second one.
+    lastTurnEndedAt: _lastTurnEndedAt,
+    lastTurnFailed: _lastTurnFailed,
+    ...stored
+  } = session;
   return stored;
+}
+
+/**
+ * The most recently FINISHED turn, whatever it finished as.
+ *
+ * `completedAt` is the test rather than a list of states, because the states
+ * that set it are exactly the states that ended: completed, failed, stopped and
+ * discarded all stamp it, and nothing else does. An enumeration here would be a
+ * second copy of that fact, and the copy is the one that would fall behind.
+ *
+ * Chosen by MAXIMUM rather than by position. Turns run one at a time per
+ * session so the array is very nearly in finish order, and "very nearly" is the
+ * kind of thing that yields a wrong answer once a month.
+ *
+ * `>=`, NOT `>`, AND A TEST CAUGHT IT. Timestamps are milliseconds, two turns
+ * can finish inside one, and with a strict comparison a tie kept the EARLIER
+ * turn — so a session that failed and was then retried successfully in the same
+ * millisecond would keep reporting the failure. Ties break toward queue order,
+ * which is finish order.
+ */
+function lastEndedTurn(turns: readonly Turn[]): Turn | undefined {
+  let latest: Turn | undefined;
+  for (const turn of turns) {
+    if (turn.completedAt === undefined) continue;
+    if (latest?.completedAt === undefined || turn.completedAt >= latest.completedAt) latest = turn;
+  }
+  return latest;
 }
 
 function parseQueue(value: unknown, sessionId: string): SessionQueue {
@@ -792,6 +844,56 @@ export class EngineStore {
     // be — a token minted for one audience, sent to another.
     this.deleteMcpOAuthRecord(id, projectId);
     return true;
+  }
+
+  /**
+   * The inbox's standing rule, or the default when nothing has set one.
+   *
+   * NEVER THROWS ON A BAD DOCUMENT. Every other registry here refuses to parse
+   * garbage, because a malformed MCP server is a server that must not run. A
+   * malformed settling window is a preference, and the worst thing it can do is
+   * band a list wrongly — so a file somebody hand-edited into nonsense costs the
+   * preference, never the sidebar it configures.
+   *
+   * THE try/catch IS AROUND `readJson`, NOT JUST THE SCHEMA, and a test caught
+   * that too: `readJson` swallows a missing file and rethrows a parse error, so
+   * "the shape is wrong" was handled and "it is not JSON at all" was not.
+   */
+  getInboxPolicy(): InboxPolicy {
+    try {
+      const parsed = InboxPolicySchema.safeParse(readJson(this.paths.inbox));
+      return parsed.success ? parsed.data : { ...DEFAULT_INBOX_POLICY };
+    } catch {
+      return { ...DEFAULT_INBOX_POLICY };
+    }
+  }
+
+  /**
+   * `autoSettleAfterDays: null` is the clock OFF, and is a value rather than an
+   * omission — so the patch is by presence, like every other one here.
+   *
+   * TAKES `unknown` AND VALIDATES HERE, as `saveMcpServer` does with its spec:
+   * the bound belongs next to the schema that states it, not spelled a second
+   * time in the route that happens to be the way in today.
+   */
+  setInboxPolicy(patch: { autoSettleAfterDays?: unknown }): InboxPolicy {
+    const next: InboxPolicy = { ...this.getInboxPolicy() };
+    if (patch.autoSettleAfterDays !== undefined) {
+      if (patch.autoSettleAfterDays === null) {
+        next.autoSettleAfterDays = null;
+      } else {
+        const parsed = InboxPolicySchema.shape.autoSettleAfterDays.safeParse(patch.autoSettleAfterDays);
+        if (!parsed.success) {
+          throw new EngineStateError(
+            "invalid_request",
+            `auto-settle window must be a whole number of days between ${MIN_AUTO_SETTLE_DAYS} and ${MAX_AUTO_SETTLE_DAYS}, or null`,
+          );
+        }
+        next.autoSettleAfterDays = parsed.data;
+      }
+    }
+    atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });
+    return { ...next };
   }
 
   // ── MCP OAuth ─────────────────────────────────────────────────────────────
@@ -1958,22 +2060,35 @@ export class EngineStore {
    * them is the reader's to act on. Decided here so every client agrees.
    */
   private withActivity(session: Session): Session {
+    const turns = this.readQueue(session.id).turns;
+    /**
+     * THE QUEUE IS NOW READ ON EVERY PATH, including the blocked one that used
+     * to return before reaching it. A blocked session has a history too, and
+     * `lastTurnEndedAt` is read by a rule about a session that is HIDDEN — so
+     * an answer that is present for three activity states and absent for the
+     * fourth would be a field clients could not trust.
+     */
+    const ended = lastEndedTurn(turns);
+    const base: Session = {
+      ...session,
+      ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
+      ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
+    };
     const open = [...this.readRequests(session.id).values()].filter((request) => request.state === "open");
     if (open.length > 0) {
       // The OLDEST open request, not the newest: it dates how long this session
       // has been waiting, which is the number that should embarrass us.
       const since = Math.min(...open.map((request) => request.openedAt));
-      return { ...session, activity: "blocked", activityAt: since };
+      return { ...base, activity: "blocked", activityAt: since };
     }
-    const turns = this.readQueue(session.id).turns;
     const running = turns.find((turn) => turn.state === "running");
-    if (running) return { ...session, activity: "working", activityAt: running.startedAt ?? running.updatedAt };
+    if (running) return { ...base, activity: "working", activityAt: running.startedAt ?? running.updatedAt };
     const waiting = turns.find((turn) => turn.state === "queued" || turn.state === "claimed");
-    if (waiting) return { ...session, activity: "queued", activityAt: waiting.acceptedAt };
+    if (waiting) return { ...base, activity: "queued", activityAt: waiting.acceptedAt };
     // `activityAt` is deliberately absent on idle: there is no event to date.
     // How long ago the session last did anything is `updatedAt`, which every
     // caller already has.
-    return { ...session, activity: "idle" };
+    return { ...base, activity: "idle" };
   }
 
   listSessions(projectId: string): Session[] {

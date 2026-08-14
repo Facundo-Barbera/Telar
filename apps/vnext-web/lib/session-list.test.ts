@@ -1,16 +1,28 @@
 /**
  * The rail's inbox derivation.
  *
- * What matters is that the LIST, the SHELF and the COUNTS beside each filter all
- * come out of one function, so the rail can never say `Archived 3` above a list
- * that contradicts it — and that a session you are currently LOOKING AT cannot
- * disappear out from under you when it ages into the shelf.
+ * What matters is that every band comes out of ONE function, so the rail can
+ * never draw a shelf that contradicts the list above it — and that a session you
+ * are currently LOOKING AT cannot disappear out from under you when it drops
+ * into one.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { bandOf, canvasHref, deriveSessionList, sessionHref, SETTLED_AFTER_MS, toSidebarSession, type SidebarSession } from "./session-list";
+import {
+  bandOf,
+  canvasHref,
+  deriveSessionList,
+  sessionHref,
+  SETTLED_AFTER_MS,
+  settlingActivity,
+  toSidebarSession,
+  type SidebarSession,
+} from "./session-list";
 
 const NOW = 1_800_000_000_000;
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+const opts = { now: NOW, autoSettleAfterDays: 3 };
 
 const row = (id: string, title: string, over: Partial<SidebarSession> = {}): SidebarSession => ({
   id,
@@ -30,28 +42,73 @@ const titles = (list: readonly SidebarSession[]) => list.map((entry) => entry.ti
 
 describe("bandOf", () => {
   test("shelves a session archived by decision", () => {
-    expect(bandOf(row("s1", "Done", { archived: true }), NOW)).toBe("settled");
+    expect(bandOf(row("s1", "Done", { archived: true }), opts)).toBe("settled");
   });
 
   test("shelves a session settled by neglect", () => {
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS - 1 }), NOW)).toBe("settled");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS - 1 }), opts)).toBe("settled");
     // The boundary is where a row visibly moves, so it is worth pinning. It is
     // now STRICTLY past the window — the donor's comparison — where this used
     // to shelve a row at exactly the threshold.
-    expect(bandOf(row("s1", "Quiet"), NOW)).toBe("active");
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS }), NOW)).toBe("active");
+    expect(bandOf(row("s1", "Quiet"), opts)).toBe("active");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - SETTLED_AFTER_MS }), opts)).toBe("active");
   });
 
-  test("an explicit pin beats the clock in both directions", () => {
-    // The third answer the old two-clause rule could not express.
-    expect(bandOf(row("s1", "Shelved", { settledOverride: "settled" }), NOW)).toBe("settled");
-    expect(bandOf(row("s1", "Kept", { updatedAt: NOW - 30 * 24 * 60 * 60 * 1000, settledOverride: "active" }), NOW)).toBe("active");
+  test("an explicit pin beats the clock, and gets a band of its own", () => {
+    expect(bandOf(row("s1", "Shelved", { settledOverride: "settled" }), opts)).toBe("settled");
+    expect(bandOf(row("s1", "Kept", { updatedAt: NOW - 30 * DAY, settledOverride: "active" }), opts)).toBe("pinned");
   });
 
   test("the window is a parameter, and null turns the clock off", () => {
-    const stale = row("s1", "Ancient", { updatedAt: NOW - 400 * 24 * 60 * 60 * 1000 });
-    expect(bandOf(stale, NOW, null)).toBe("active");
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * 24 * 60 * 60 * 1000 }), NOW, 7)).toBe("active");
+    const stale = row("s1", "Ancient", { updatedAt: NOW - 400 * DAY });
+    expect(bandOf(stale, { now: NOW, autoSettleAfterDays: null })).toBe("active");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * DAY }), { now: NOW, autoSettleAfterDays: 7 })).toBe("active");
+  });
+
+  test("a snooze hides a row, and outranks the pin it survives underneath", () => {
+    // The whole point, and the thing that was written down and never called:
+    // pressing a preset used to change nothing at all on screen.
+    expect(bandOf(row("s1", "Later", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 60_000 }), opts)).toBe("snoozed");
+    expect(
+      bandOf(row("s1", "Later", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 60_000, settledOverride: "active" }), opts),
+    ).toBe("snoozed");
+    // Past its wake time it is simply not snoozed any more — which is why the
+    // feature needs no timer, only this comparison.
+    expect(bandOf(row("s1", "Woken", { snoozedUntil: NOW - 1, snoozedAt: NOW - HOUR }), opts)).toBe("active");
+  });
+
+  test("a blocker outranks the snooze that hid it", () => {
+    const asking = row("s1", "Needs you", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 60_000, activity: "blocked" });
+    expect(bandOf(asking, opts)).toBe("active");
+    // And the work you snoozed FINISHING wakes it too — the fact the engine
+    // had no way to report until it started deriving the last ended turn.
+    const finished = row("s2", "Done early", {
+      snoozedUntil: NOW + HOUR,
+      snoozedAt: NOW - 60_000,
+      lastTurnEndedAt: NOW - 30_000,
+    });
+    expect(bandOf(finished, opts)).toBe("active");
+  });
+
+  test("a blocker outranks a settle, however it was reached", () => {
+    const blocked = row("s1", "Shelved but asking", { settledOverride: "settled", activity: "blocked" });
+    expect(bandOf(blocked, opts)).toBe("active");
+    const working = row("s2", "Stale but running", { updatedAt: NOW - 30 * DAY, activity: "working" });
+    expect(bandOf(working, opts)).toBe("active");
+  });
+});
+
+describe("settlingActivity", () => {
+  test("queued counts as working, because a turn is on its way", () => {
+    expect(settlingActivity(row("s1", "Q", { activity: "queued" })).working).toBe(true);
+    expect(settlingActivity(row("s1", "B", { activity: "blocked" })).waitingOnYou).toBe(true);
+    expect(settlingActivity(row("s1", "I", { activity: "idle" })).working).toBe(false);
+  });
+
+  test("a failure is dated by the turn that failed", () => {
+    const activity = settlingActivity(row("s1", "Broke", { lastTurnFailed: true, lastTurnEndedAt: NOW - 5_000 }));
+    expect(activity.failed).toBe(true);
+    expect(activity.failedAt).toBe(NOW - 5_000);
   });
 });
 
@@ -69,20 +126,28 @@ describe("deriveSessionList", () => {
     expect(list.flat).toBe(false);
   });
 
-  test("a chip flattens the shelf away rather than filtering above it", () => {
-    const archived = deriveSessionList({ sessions: FIXTURE, filter: "archived", now: NOW });
-    expect(titles(archived.sessions)).toEqual(["Old spike"]);
-    // The whole point of the chip: nothing may remain hidden behind a shelf.
-    expect(archived.settled).toEqual([]);
-    expect(archived.flat).toBe(true);
+  test("the pinned band is separate, and never paged", () => {
+    const rows = [...FIXTURE, row("s4", "Keep this", { settledOverride: "active", createdAt: NOW - 4_000 })];
+    const list = deriveSessionList({ sessions: rows, now: NOW, limit: 1 });
+    expect(titles(list.pinned)).toEqual(["Keep this"]);
+    // A pin is not a row in the list it was lifted out of.
+    expect(titles(list.sessions)).not.toContain("Keep this");
+    // `limit: 1` pages the live list and leaves the pin whole.
+    expect(list.sessions).toHaveLength(1);
+    expect(list.hasMoreSessions).toBe(true);
   });
 
-  test("counts are taken over the scope, not over the visible page", () => {
-    const list = deriveSessionList({ sessions: FIXTURE, now: NOW, limit: 1 });
-    expect(list.sessions).toHaveLength(1);
-    expect(list.activeCount).toBe(2);
-    expect(list.archivedCount).toBe(1);
-    expect(list.hasMoreSessions).toBe(true);
+  test("the snoozed shelf is sorted by what comes back FIRST", () => {
+    const rows = [
+      row("s4", "Next week", { snoozedUntil: NOW + 7 * DAY, snoozedAt: NOW - 1_000, createdAt: NOW - 9_000 }),
+      row("s5", "In an hour", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 1_000, createdAt: NOW - 8_000 }),
+    ];
+    const list = deriveSessionList({ sessions: rows, now: NOW });
+    // Everywhere else this rail sorts by recency; here recency is the wrong
+    // end of the session, and the shelf answers "what returns next".
+    expect(titles(list.snoozed)).toEqual(["In an hour", "Next week"]);
+    expect(list.snoozedCount).toBe(2);
+    expect(list.sessions).toEqual([]);
   });
 
   test("search reaches into the shelf and searches the project NAME too", () => {
@@ -93,8 +158,13 @@ describe("deriveSessionList", () => {
     expect(titles(deriveSessionList({ sessions: FIXTURE, query: "spike", now: NOW }).sessions)).toEqual(["Old spike"]);
   });
 
-  test("a chip stays honored underneath a query", () => {
-    expect(deriveSessionList({ sessions: FIXTURE, filter: "active", query: "spike", now: NOW }).sessions).toEqual([]);
+  test("search reaches into the snoozed shelf too", () => {
+    // The only way to reach a snoozed row on purpose rather than by waiting.
+    const rows = [row("s4", "Deferred thing", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 1_000 })];
+    const list = deriveSessionList({ sessions: rows, query: "deferred", now: NOW });
+    expect(titles(list.sessions)).toEqual(["Deferred thing"]);
+    expect(list.snoozed).toEqual([]);
+    expect(list.flat).toBe(true);
   });
 
   test("ignores case and surrounding whitespace in the query", () => {
@@ -111,6 +181,16 @@ describe("deriveSessionList", () => {
     expect(titles(list.settled)).not.toContain("Old spike");
     // It left the shelf, so the shelf's count must agree.
     expect(list.settledCount).toBe(0);
+  });
+
+  test("the open session survives a SNOOZE too", () => {
+    // Reading a session you snoozed from another window is exactly as
+    // disorienting as reading one that aged out, so the rule covers both.
+    const rows = [row("s4", "Asleep", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 1_000 })];
+    const list = deriveSessionList({ sessions: rows, activeSessionId: "s4", now: NOW });
+    expect(titles(list.sessions)).toEqual(["Asleep"]);
+    expect(list.snoozed).toEqual([]);
+    expect(list.snoozedCount).toBe(0);
   });
 
   test("the open session is pinned onto the page even past the limit", () => {

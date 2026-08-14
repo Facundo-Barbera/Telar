@@ -340,6 +340,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * The inbox's standing rule. Not under a session, because it is not about
+       * one: it decides how EVERY session bands, which is why it is a document
+       * of the environment rather than a field on each record.
+       */
+      if (url.pathname === "/v2/inbox" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { inbox: store.getInboxPolicy() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          inbox: store.setInboxPolicy({
+            // PRESENT-BUT-NULL IS THE OFF SWITCH, so `in` rather than a
+            // truthiness test: `null` and "not mentioned" are different
+            // requests and JSON can only tell them apart by the key.
+            ...("autoSettleAfterDays" in input ? { autoSettleAfterDays: input.autoSettleAfterDays } : {}),
+          }),
+        });
+        return;
+      }
+      /**
        * A project's git state, for the composer's pinned environment.
        *
        * Under /v2/projects/:id/ rather than /v2/sessions/:id/ because it

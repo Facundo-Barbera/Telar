@@ -24,7 +24,7 @@ import { useState } from "react";
 import { AlarmClockIcon, MoreHorizontalIcon, PencilIcon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SidebarSession } from "@/lib/session-list";
-import { canSnooze, isSnoozed, snoozePresets, wakeLabel, type SessionActivity } from "@/lib/session-settling";
+import { canSnooze, isSnoozed, snoozePresets, wakeLabel, type SettlingActivity } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -58,9 +58,9 @@ export function SessionInboxMenu({
   now,
 }: {
   session: SidebarSession;
-  /** What the list knows about this session right now. Empty is the honest
-   *  default: the sidebar does not hold a live turn state per row. */
-  activity?: SessionActivity;
+  /** What the list knows about this session right now — `settlingActivity` in
+   *  lib/session-list.ts folds it out of the engine's report. */
+  activity?: SettlingActivity;
   /** ONE STAMP FOR THE WHOLE LIST, passed in rather than read here. Every row
    *  reading its own `Date.now()` mid-render makes the component impure and
    *  gives two rows different ideas of "now" in the same paint. */

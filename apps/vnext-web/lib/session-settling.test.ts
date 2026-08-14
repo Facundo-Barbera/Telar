@@ -10,7 +10,6 @@ import {
   snoozePresets,
   wakeLabel,
   wokeAt,
-  DEFAULT_AUTO_SETTLE_DAYS,
 } from "./session-settling";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -22,7 +21,10 @@ const session = (over: Partial<SettleableSession> = {}): SettleableSession => ({
   ...over,
 });
 
-const options = { now: NOW, autoSettleAfterDays: DEFAULT_AUTO_SETTLE_DAYS };
+// The contract owns the default and the 1..90 bound, because the engine
+// validates against them; this module takes the window as an argument and has
+// no opinion about which one is usual.
+const options = { now: NOW, autoSettleAfterDays: 3 };
 
 describe("blockers beat everything", () => {
   test("a session waiting on a human is never settled, even when explicitly settled", () => {

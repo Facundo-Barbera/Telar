@@ -173,6 +173,25 @@ export const Session = z.object({
   activityAt: Timestamp.optional(),
 
   /**
+   * WHEN THE LAST TURN ENDED, AND WHETHER IT ENDED BADLY.
+   *
+   * Derived beside `activity`, off the same queue read, and here for exactly
+   * one rule: A SNOOZE IS "NOT NOW", NOT "NEVER". A session may be snoozed
+   * while a turn is running — that is the whole difference between snoozing and
+   * settling — so the work you deferred can finish while the row is hidden, and
+   * a client with no way to notice keeps it hidden until a wake time chosen
+   * before the answer existed.
+   *
+   * `lastTurnFailed` is the second half of the same rule and is not a duplicate
+   * of `activity`: a failure is not a state a session is IN, it is something
+   * that happened to it, and by the time anyone reads this the session is idle
+   * again. Both are absent until a turn has ended, which is not the same as
+   * zero.
+   */
+  lastTurnEndedAt: Timestamp.optional(),
+  lastTurnFailed: z.boolean().optional(),
+
+  /**
    * THE INBOX'S OWN STATE, WHICH IS NOT THE SESSION'S LIFECYCLE.
    *
    * `state` answers "is this conversation over"; these answer "do I want to see
@@ -218,6 +237,38 @@ export const Session = z.object({
   resumeCursor: z.string().min(1).optional(),
 });
 export type Session = z.infer<typeof Session>;
+
+/** Ported verbatim from t3 code's `MIN/MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS`. */
+export const MIN_AUTO_SETTLE_DAYS = 1;
+export const MAX_AUTO_SETTLE_DAYS = 90;
+export const DEFAULT_AUTO_SETTLE_DAYS = 3;
+
+/**
+ * HOW THE READER WANTS THEIR LIST BANDED — the POLICY half of settling.
+ *
+ * The per-session half (`settledOverride`, `snoozedUntil`) is a decision about
+ * one conversation; this is a standing rule about all of them, and the two are
+ * different kinds of thing. It is here rather than in a browser's local storage
+ * for the reason stated on those fields: the same sessions are read from the
+ * desktop shell and from a browser tab, and a window that differed between them
+ * would put the same row in two different bands on one machine. Theme can
+ * differ per window because it is about the window. This is about the work.
+ *
+ * `null` TURNS THE CLOCK OFF — nothing settles by neglect, only by decision.
+ * Distinct from a very large number, and the reason this is nullable rather
+ * than a number with a sentinel: "never" is an answer, not a duration.
+ *
+ * ONE FIELD, AND DELIBERATELY NOT A SETTINGS BAG. An engine document called
+ * `preferences` invites everything anyone ever wants to remember; this one is
+ * named for the surface it governs, and a second field belongs here only if it
+ * also decides what the inbox shows.
+ */
+export const InboxPolicy = z.object({
+  autoSettleAfterDays: z.number().int().min(MIN_AUTO_SETTLE_DAYS).max(MAX_AUTO_SETTLE_DAYS).nullable(),
+});
+export type InboxPolicy = z.infer<typeof InboxPolicy>;
+
+export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterDays: DEFAULT_AUTO_SETTLE_DAYS };
 
 /**
  * The live process. Not user-owned state — the engine's handle on something it

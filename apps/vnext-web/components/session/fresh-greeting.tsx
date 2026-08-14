@@ -109,7 +109,13 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
               </DropdownMenuItem>
             ))}
             {projects.length > 0 && <DropdownMenuSeparator />}
-            <DropdownMenuItem onClick={() => router.push("/projects")}>Manage projects…</DropdownMenuItem>
+            {/* THIS PROJECT'S settings, not a list of every project. It said
+                "Manage projects…" and went to a table that has been retired —
+                and the thing a person wants from a menu that already names the
+                project they are in is that project's own screen. */}
+            <DropdownMenuItem onClick={() => router.push(`/projects/${encodeURIComponent(projectId)}/settings`)}>
+              Project settings…
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         <button

@@ -60,18 +60,19 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/** The default quiet window, and the one the frozen sidebar already used. */
-export const DEFAULT_AUTO_SETTLE_DAYS = 3;
-
 /**
  * What settling needs to know about a session BEYOND its record.
  *
- * Kept as an explicit input rather than read from the session, because none of
- * it is on the session: whether a turn is live and whether a request is parked
- * are answers the cockpit already holds for the row it is looking at, and the
- * sidebar holds for the rest.
+ * Kept as an explicit input rather than read from the session, because this is
+ * not the shape any one caller has: the engine reports an `activity` enum and a
+ * last-turn stamp, and the four questions the rules below actually ask are a
+ * fold over those. `lib/session-list.ts` does that fold once.
+ *
+ * NOT `SessionActivity`, which is the contract's four-state enum. The two used
+ * to share a name across two modules that are imported together, which is the
+ * kind of collision you only notice from a type error three files away.
  */
-export type SessionActivity = {
+export type SettlingActivity = {
   /** A turn is queued, claimed or running. */
   working?: boolean;
   /** A request is parked on a human — an approval, or a question. */
@@ -100,7 +101,7 @@ export type SettlingOptions = {
  * the button appears to do nothing — which reads as a broken control rather
  * than as a rule.
  */
-export function canSettle(activity: SessionActivity): boolean {
+export function canSettle(activity: SettlingActivity): boolean {
   return !activity.waitingOnYou && !activity.working;
 }
 
@@ -112,7 +113,7 @@ export function canSettle(activity: SessionActivity): boolean {
  * so hiding work in progress is a legitimate thing to want. Hiding a question
  * that is waiting on you defeats the question.
  */
-export function canSnooze(activity: SessionActivity): boolean {
+export function canSnooze(activity: SettlingActivity): boolean {
   return !activity.waitingOnYou;
 }
 
@@ -124,7 +125,7 @@ export function canSnooze(activity: SessionActivity): boolean {
  * CLEARS THE STORED SNOOZE: it only stops the session classifying as snoozed,
  * so if the reason goes away the snooze is still there and still counting.
  */
-export function raisedHandWhileSnoozed(session: SettleableSession, activity: SessionActivity): boolean {
+export function raisedHandWhileSnoozed(session: SettleableSession, activity: SettlingActivity): boolean {
   if (activity.waitingOnYou) return true;
   const snoozedAt = session.snoozedAt;
   /**
@@ -138,7 +139,7 @@ export function raisedHandWhileSnoozed(session: SettleableSession, activity: Ses
 }
 
 /** Hidden until its wake time, unless it has raised its hand. */
-export function isSnoozed(session: SettleableSession, activity: SessionActivity, options: Pick<SettlingOptions, "now">): boolean {
+export function isSnoozed(session: SettleableSession, activity: SettlingActivity, options: Pick<SettlingOptions, "now">): boolean {
   const until = session.snoozedUntil;
   if (until === undefined) return false;
   // Malformed data never hides a session. Of the two ways to be wrong, showing
@@ -155,7 +156,7 @@ export function isSnoozed(session: SettleableSession, activity: SessionActivity,
  * it wakes, because a list that reorders itself while you read it is not a
  * list. So the WAKE has to carry the signal, and that needs a timestamp.
  */
-export function wokeAt(session: SettleableSession, activity: SessionActivity, options: Pick<SettlingOptions, "now">): number | undefined {
+export function wokeAt(session: SettleableSession, activity: SettlingActivity, options: Pick<SettlingOptions, "now">): number | undefined {
   const until = session.snoozedUntil;
   if (until === undefined || !Number.isFinite(until)) return undefined;
   if (raisedHandWhileSnoozed(session, activity)) {
@@ -177,7 +178,7 @@ export function wokeAt(session: SettleableSession, activity: SessionActivity, op
  * bottom: every early return above the clock is a case where the clock has no
  * business having an opinion.
  */
-export function isSettled(session: SettleableSession, activity: SessionActivity, options: SettlingOptions): boolean {
+export function isSettled(session: SettleableSession, activity: SettlingActivity, options: SettlingOptions): boolean {
   // 1. Blockers. Even an explicit settle does not survive a parked request:
   // the reader shelved a session they believed was finished with them.
   if (activity.waitingOnYou || activity.working) return false;

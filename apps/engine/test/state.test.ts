@@ -970,8 +970,82 @@ test("activity is derived on read and never written to disk", () => {
   const onDisk = JSON.parse(fs.readFileSync(path.join(stateRoot, "sessions", "session_one", "session.json"), "utf8"));
   expect("activity" in onDisk).toBe(false);
   expect("activityAt" in onDisk).toBe(false);
+  expect("lastTurnEndedAt" in onDisk).toBe(false);
+  expect("lastTurnFailed" in onDisk).toBe(false);
   // …and the derived answer survives the round trip unchanged.
   expect(store.getSession("session_one").activity).toBe("working");
+});
+
+test("a session reports when its last turn ended, and whether it ended badly", () => {
+  // WHAT A SNOOZE NEEDS TO BE "NOT NOW" RATHER THAN "NEVER". A session can be
+  // snoozed while a turn is running, so the work you deferred can finish while
+  // the row is hidden — and a client with no way to notice would keep it hidden
+  // until a wake time chosen before the answer existed.
+  const { store } = readyStore();
+  expect(store.getSession("session_one").lastTurnEndedAt).toBeUndefined();
+  // Absent, never zero: no turn has ended is not "a turn ended at the epoch".
+  expect(store.getSession("session_one").lastTurnFailed).toBeUndefined();
+
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const first = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_one", first.turn.claim!.token);
+  // Still running: nothing has ended yet.
+  expect(store.getSession("session_one").lastTurnEndedAt).toBeUndefined();
+  store.completeTurn("session_one", "run_one", first.turn.claim!.token, { text: "Done" });
+
+  const completed = store.getSession("session_one");
+  expect(completed.lastTurnEndedAt).toBe(completed.updatedAt);
+  expect(completed.lastTurnFailed).toBeUndefined();
+
+  // A LATER FAILURE REPLACES IT, and says so — a failure is not a state the
+  // session is IN (it is idle again by now), it is something that happened.
+  store.submitTurn("session_one", { runId: "run_two", input: "Again" });
+  const second = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_two", second.turn.claim!.token);
+  store.failTurn("session_one", "run_two", second.turn.claim!.token, { code: "driver_failed", message: "boom" });
+
+  const failed = store.getSession("session_one");
+  expect(failed.activity).toBe("idle");
+  // THE CLOCK IN THIS FIXTURE IS FROZEN, so both turns ended at the same
+  // instant — which is the interesting case, not an artefact. Real timestamps
+  // are milliseconds and two turns can finish inside one; a strict `>` kept the
+  // EARLIER turn, so this assertion is what found it.
+  expect(failed.lastTurnEndedAt).toBe(completed.lastTurnEndedAt!);
+  expect(failed.lastTurnFailed).toBe(true);
+});
+
+test("the inbox policy is one document, defaulted rather than absent", () => {
+  // THE POLICY HALF OF SETTLING. The per-session pin says "not this one"; this
+  // says how long anything stays in the list at all — and it is on the engine
+  // so the desktop shell and a browser tab band the same sessions the same way.
+  const { store } = readyStore();
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+
+  expect(store.setInboxPolicy({ autoSettleAfterDays: 14 })).toEqual({ autoSettleAfterDays: 14 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 14 });
+
+  // `null` IS THE OFF SWITCH, and it is a value rather than an omission:
+  // "never" is an answer, not a very large duration.
+  expect(store.setInboxPolicy({ autoSettleAfterDays: null })).toEqual({ autoSettleAfterDays: null });
+  // An empty patch changes nothing rather than resetting anything.
+  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterDays: null });
+
+  for (const bad of [0, 91, 3.5, "7", Number.NaN]) {
+    expect(() => store.setInboxPolicy({ autoSettleAfterDays: bad })).toThrow(EngineStateError);
+  }
+  // …and the refusal left the stored answer alone.
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: null });
+});
+
+test("a malformed inbox document costs the preference, never the sidebar", () => {
+  // EVERY OTHER REGISTRY HERE REFUSES TO PARSE GARBAGE, because a malformed MCP
+  // server is a server that must not run. A malformed settling window is a
+  // preference, and the worst it can do is band a list wrongly.
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":1,"autoSettleAfterDays":"soon"}');
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), "not json at all");
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
 });
 
 test("deleting a session removes everything it owns, and refuses mid-turn", () => {

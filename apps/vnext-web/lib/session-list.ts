@@ -2,29 +2,35 @@
  * The sidebar inbox's derivation, ported from the frozen app's
  * `lib/session-list.ts`.
  *
- * WHAT CHANGED AND WHY. The donor's inbox is built on four pieces of per-session
- * state the legacy store persisted — `readAt`, `snoozedUntil`, `settledAt` and a
- * per-request `live`/`needsApproval` join. The vNext engine's `Session` models
- * none of them (see `packages/engine-client/src/protocol/entities.ts`), and
- * `GET /v2/sessions` answers with Session records alone. So:
+ * FOUR BANDS, IN THE DONOR'S PRECEDENCE ORDER — and the order IS the design:
  *
- *   - UNREAD and SNOOZED are gone, not faked. A chip counting a number nothing
- *     backs is worse than no chip.
- *   - SETTLED SURVIVES, because it was always mostly derived: the donor shelves
- *     a row that is explicitly settled, archived, OR simply quiet for three
- *     days. `state: "archived"` and `updatedAt` back the second and third
- *     clauses exactly, so the banded list — live rows above, a collapsed shelf
- *     below — reads the same as it always did.
+ *   1. SNOOZED, which outranks everything including the pin. "Hide this until
+ *      Tuesday" temporarily suspends "keep this on top"; the pin survives
+ *      underneath and the row returns to it on waking.
+ *   2. PINNED — `settledOverride: "active"`, the explicit keep-in-the-list.
+ *      Fixed at the top, and never paged: a band you chose the contents of is
+ *      not one that should make you press "Show more".
+ *   3. SETTLED, by decision or by the clock.
+ *   4. ACTIVE, which is everything left.
+ *
+ * SNOOZE USED TO BE WRITTEN DOWN AND THEN IGNORED. The engine stored
+ * `snoozedUntil`, the row offered five presets, `lib/session-settling.ts`
+ * implemented the whole rule including early wakes — and this file never called
+ * `isSnoozed`, so pressing "In 1 hour" wrote a timestamp and changed nothing on
+ * screen. That is the worst kind of missing feature, because every part of it
+ * that a reader can see says it works.
+ *
+ * `readAt` REMAINS UNMODELLED, so unread is still absent rather than faked.
  *
  * Everything else here is the donor's logic verbatim: the same sort, the same
  * "search flattens every band", the same survivor rule that keeps the session
- * you are LOOKING AT visible after it ages into the shelf.
+ * you are LOOKING AT visible after it drops into a shelf.
  */
-import type { Session, SessionActivity } from "@telar/engine-client";
-import { DEFAULT_AUTO_SETTLE_DAYS, isSettled } from "./session-settling";
+import { DEFAULT_AUTO_SETTLE_DAYS, type Session, type SessionActivity } from "@telar/engine-client";
+import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
 
 export const SESSION_PAGE_SIZE = 20;
-/** Kept for the callers that describe the window in prose. The rule itself now
+/** Kept for the callers that describe the window in prose. The rule itself
  *  takes the window as a parameter — see `bandOf`. */
 export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_DAYS * 24 * 60 * 60 * 1000;
 
@@ -74,6 +80,10 @@ export type SidebarSession = {
   /** When that began — for "Working 3m". Absent on `idle`, which has no event
    *  to date. */
   activityAt?: number;
+  /** When the last turn ended, and whether it ended badly — the two facts the
+   *  early-wake rule is made of. See `settlingActivity`. */
+  lastTurnEndedAt?: number;
+  lastTurnFailed?: boolean;
 };
 
 /** The engine record, flattened into what the rail actually reads. */
@@ -108,39 +118,62 @@ export function toSidebarSession(session: Session, projectName?: string, project
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
     activity: session.activity,
     ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
+    ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
+    ...(session.lastTurnFailed ? { lastTurnFailed: true } : {}),
   };
 }
 
 /**
- * Which slice of the inbox the list is showing. "all" is the banded default
- * (active list + shelf); the other two are flat, shelf-less views over a single
- * predicate, which is what makes a chip feel like a filter rather than another
- * place shelves can hide rows.
+ * The engine's four-state `activity` and its last-turn stamp, folded into the
+ * four questions the settling rules actually ask.
+ *
+ * ONE PLACE, because both the list and the row need it and they must not answer
+ * differently: a row whose Snooze button is enabled while the list would refuse
+ * to hide it is a control that does nothing. `session-row.tsx` had its own
+ * two-field version of this, which is exactly how that drift starts.
+ *
+ * `queued` COUNTS AS WORKING. It is not running yet, but a turn is on its way,
+ * and settling a session that is about to answer you is the same mistake as
+ * settling one mid-answer.
  */
-export type SessionFilter = "all" | "active" | "archived";
+export function settlingActivity(session: SidebarSession): SettlingActivity {
+  return {
+    working: session.activity === "working" || session.activity === "queued",
+    waitingOnYou: session.activity === "blocked",
+    ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
+    // A failure is dated by when the turn ended, because that IS when it
+    // failed — the engine derives both from the same turn.
+    ...(session.lastTurnFailed ? { failed: true, ...(session.lastTurnEndedAt === undefined ? {} : { failedAt: session.lastTurnEndedAt }) } : {}),
+  };
+}
 
-export type SessionBand = "active" | "settled";
+export type SessionBand = "pinned" | "active" | "snoozed" | "settled";
 
 export type SessionListInput = {
   sessions: readonly SidebarSession[];
   projectId?: string;
   query?: string;
-  filter?: SessionFilter;
   activeSessionId?: string;
   now?: number;
+  /** `null` turns the inactivity clock off. Comes from the engine — one answer
+   *  per machine, not per browser. See `InboxPolicy`. */
+  autoSettleAfterDays?: number | null;
   limit?: number;
   settledLimit?: number;
 };
 
 export type SessionListResult = {
+  /** Fixed at the top, unpaged, and outside `sessions` so the rail can rule a
+   *  line under it. */
+  pinned: SidebarSession[];
   sessions: SidebarSession[];
+  snoozed: SidebarSession[];
+  snoozedCount: number;
   settled: SidebarSession[];
   settledCount: number;
-  activeCount: number;
-  archivedCount: number;
   hasMoreSessions: boolean;
   hasMoreSettled: boolean;
-  /** True when the result is a flat, shelf-less view (search or a chip). */
+  /** True when the result is a flat, shelf-less view — i.e. a search. */
   flat: boolean;
 };
 
@@ -148,23 +181,23 @@ const createdNewestFirst = (a: SidebarSession, b: SidebarSession) =>
   b.createdAt - a.createdAt || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
 
 /**
- * Which shelf a row belongs to.
+ * Which band a row belongs to, in the precedence order stated at the top of
+ * this file.
  *
- * THE THIRD CLAUSE ARRIVED. This used to answer with the two the engine could
- * back — archived, or quiet for three days — and said so. The engine now stores
- * an explicit pin in either direction, so the rule moved to
- * `lib/session-settling.ts` where it can be read in one place and the ordering
- * that makes it safe (blockers first) is stated once.
- *
- * ACTIVITY IS NOT PASSED HERE, and that is a deliberate limit rather than an
- * oversight: the sidebar lists every session in the project and does not hold a
- * live turn state for each. A row that is running is therefore classified on
- * its stored fields alone — which is correct for the pin and the clock, and
- * means a settled session with a turn running is not rescued into the list
- * until something tells this list about it. `SessionRow` passes what it knows.
+ * ACTIVITY IS NO LONGER MISSING, and that was the whole limitation this comment
+ * used to describe. The engine derives what each session is doing on the list
+ * read (`Session.activity`), so a row that is blocked or running is classified
+ * on what it is actually doing rather than on its stored fields alone — which
+ * is what makes "a blocker beats every pin" true here and not just in the rules
+ * module.
  */
-export function bandOf(session: SidebarSession, now: number, autoSettleAfterDays: number | null = DEFAULT_AUTO_SETTLE_DAYS): SessionBand {
-  return isSettled(session, {}, { now, autoSettleAfterDays }) ? "settled" : "active";
+export function bandOf(session: SidebarSession, options: SettlingOptions): SessionBand {
+  const activity = settlingActivity(session);
+  if (isSnoozed(session, activity, options)) return "snoozed";
+  // The pin, checked after the snooze and before the clock. `isSettled` already
+  // answers false for it; naming it here is what gives it a band of its own.
+  if (session.settledOverride === "active") return "pinned";
+  return isSettled(session, activity, options) ? "settled" : "active";
 }
 
 function pageWithActive(
@@ -183,12 +216,13 @@ export function deriveSessionList({
   sessions,
   projectId,
   query = "",
-  filter = "all",
   activeSessionId,
   now = Date.now(),
+  autoSettleAfterDays = DEFAULT_AUTO_SETTLE_DAYS,
   limit = SESSION_PAGE_SIZE,
   settledLimit = limit,
 }: SessionListInput): SessionListResult {
+  const options: SettlingOptions = { now, autoSettleAfterDays };
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const eligible = sessions
     .filter((session) => !projectId || session.projectId === projectId)
@@ -198,59 +232,61 @@ export function deriveSessionList({
     })
     .sort(createdNewestFirst);
 
-  // Counted over the whole scope, not the visible page — these are the numbers
-  // the chips wear, and a badge that only counts what is already on screen tells
-  // you nothing you could not already see.
-  const archivedCount = eligible.filter((session) => session.archived).length;
-  const activeCount = eligible.length - archivedCount;
-
   // Search deliberately flattens every band. It is a transient command-like view
-  // and should be able to recover a settled or archived session immediately. A
-  // chip stays honored underneath it, so "archived" + a query reads as "archived
-  // sessions matching this", not as a silently widened search.
-  const flatPredicate =
-    filter === "active"
-      ? (session: SidebarSession) => !session.archived
-      : filter === "archived"
-        ? (session: SidebarSession) => session.archived
-        : null;
-
-  if (normalizedQuery || flatPredicate) {
-    const rows = flatPredicate ? eligible.filter(flatPredicate) : eligible;
-    const page = pageWithActive(rows, limit, activeSessionId);
+  // and should be able to recover a snoozed or settled session immediately —
+  // which is also the only way to reach a snoozed row without waiting for it.
+  if (normalizedQuery) {
+    const page = pageWithActive(eligible, limit, activeSessionId);
     return {
+      pinned: [],
+      sessions: page.rows,
+      snoozed: [],
+      snoozedCount: 0,
       settled: [],
       settledCount: 0,
-      sessions: page.rows,
-      activeCount,
-      archivedCount,
       hasMoreSessions: page.hasMore,
       hasMoreSettled: false,
       flat: true,
     };
   }
 
+  const pinned: SidebarSession[] = [];
   const current: SidebarSession[] = [];
+  const snoozed: SidebarSession[] = [];
   const settled: SidebarSession[] = [];
   for (const session of eligible) {
-    (bandOf(session, now) === "settled" ? settled : current).push(session);
+    const band = bandOf(session, options);
+    (band === "pinned" ? pinned : band === "snoozed" ? snoozed : band === "settled" ? settled : current).push(session);
   }
 
-  // An open session remains reachable even when it has aged into the shelf.
-  // Moving it into the live band avoids rendering the same row twice.
-  const activeShelved = activeSessionId ? settled.find((session) => session.id === activeSessionId) : undefined;
+  // An open session remains reachable even when it has dropped into a shelf.
+  // Moving it into the live band avoids rendering the same row twice, and it
+  // covers BOTH shelves: reading a session you snoozed from another window is
+  // exactly as disorienting as reading one that aged out.
+  const shelved = [...snoozed, ...settled];
+  const activeShelved = activeSessionId ? shelved.find((session) => session.id === activeSessionId) : undefined;
   const currentWithSurvivor = activeShelved ? [...current, activeShelved].sort(createdNewestFirst) : current;
-  const settledRest = activeShelved ? settled.filter((session) => session.id !== activeShelved.id) : settled;
+  const withoutSurvivor = (rows: SidebarSession[]) =>
+    activeShelved ? rows.filter((session) => session.id !== activeShelved.id) : rows;
+  const snoozedRest = withoutSurvivor(snoozed);
+  const settledRest = withoutSurvivor(settled);
 
   const currentPage = pageWithActive(currentWithSurvivor, limit, activeSessionId);
   const settledPage = pageWithActive(settledRest, settledLimit);
 
   return {
+    // NOT PAGED. You chose every row in this band by hand, so there is nothing
+    // here you did not ask to see — and a "Show more" under six pinned rows
+    // would be chrome guarding against a list you built yourself.
+    pinned,
     sessions: currentPage.rows,
+    // SOONEST WAKE FIRST, which is the only question this shelf answers: what
+    // comes back next. Everywhere else sorts by recency; here recency is the
+    // wrong end of the session.
+    snoozed: snoozedRest.slice().sort((left, right) => (left.snoozedUntil ?? 0) - (right.snoozedUntil ?? 0)),
+    snoozedCount: snoozedRest.length,
     settled: settledPage.rows,
     settledCount: settledRest.length,
-    activeCount,
-    archivedCount,
     hasMoreSessions: currentPage.hasMore,
     hasMoreSettled: settledPage.hasMore,
     flat: false,

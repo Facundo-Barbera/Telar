@@ -12,6 +12,7 @@ import type {
   GitHubSnapshot,
   GitignoreResult,
   GitOverview,
+  InboxPolicy,
   ModelCatalogue,
   SessionDiff,
   EngineErrorCode,
@@ -92,6 +93,11 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
+    /** How this machine's inbox bands — the auto-settle window, or `null` for
+     *  no clock at all. One answer for every client of this engine. */
+    inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
+    setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
+      request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
     /** Which models a provider says it has — asked of the provider where it can
      *  answer, and this cockpit's own short list where it cannot. */
     modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {

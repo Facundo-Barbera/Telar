@@ -23,11 +23,12 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
+import { InboxIcon, InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import { Badge } from "@/components/ui/badge";
 import { ThemeControl } from "@/components/theme-control";
+import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
 import { ProvidersSection } from "./providers-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
@@ -37,6 +38,13 @@ const api = createVNextApi();
 
 const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
+  /**
+   * UNDER "COCKPIT" RATHER THAN "RUNTIME", because settling changes what you
+   * are shown and nothing about what runs. It sits beside Appearance for that
+   * reason and not because they are alike — the split in this nav is between
+   * decisions about the surface and decisions about the machine.
+   */
+  { id: "inbox", label: "Inbox", icon: InboxIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
   { id: "about", label: "About", icon: InfoIcon, group: "Cockpit" },
@@ -125,6 +133,8 @@ export function SettingsPage() {
           <Row label="Colour scheme" hint="System follows the OS setting and changes with it." control={<ThemeControl />} />
         </SettingsGroup>
       )}
+
+      {active === "inbox" && <InboxSection />}
 
       {active === "providers" && <ProvidersSection />}
 

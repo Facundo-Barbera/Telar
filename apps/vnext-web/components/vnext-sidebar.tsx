@@ -2,18 +2,24 @@
 
 // The app sidebar, ported from the frozen app's components/app-sidebar.tsx.
 //
-// STRUCTURE, TOP TO BOTTOM — this is the donor's, unchanged: a 56px header with
-// the collapse trigger and the wordmark; a search field wearing its ⌘K hint and
-// a new-session button beside it; a project scope dropdown with a register
-// button; the "Recent" band; a collapsed "Settled" shelf under it; Settings in
-// the footer.
+// STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
+// wordmark; a search field wearing its ⌘K hint and a new-session button beside
+// it; a project scope dropdown with a register button; then the four bands —
+//
+//   PINNED    above the scroll, so it stays where you left it
+//   the list  the only band with no heading, because it is the list
+//   SNOOZED   collapsed; work you deferred, soonest wake first
+//   SETTLED   collapsed; work behind you
+//
+// — and Settings in the footer. The three headed bands are RULES rather than
+// rows (see `BandRule`), which is what stops a heading reading as another
+// entry in the list it introduces.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
 // Overview, Projects, Looms, Workspace. Those views are deliberately out of
 // scope for this rebuild, and a glyph that navigates nowhere is worse than a
-// header without one. The Unread and Snoozed chips are gone for the reason given
-// in lib/session-list.ts: the engine models neither, and a chip with an
-// unbackable count is a lie with a number on it.
+// header without one. The Unread chip is gone because `readAt` is unmodelled,
+// and a chip with an unbackable count is a lie with a number on it.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -27,14 +33,17 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
+  PinIcon,
   SearchIcon,
   SettingsIcon,
   XIcon,
 } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
+import { useInboxPolicy } from "@/lib/inbox-policy";
 import {
   activeSessionFromPathname,
+  bandOf,
   canvasHref,
   deriveSessionList,
   SESSION_PAGE_SIZE,
@@ -48,7 +57,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarRail,
   SidebarTrigger,
@@ -108,8 +116,8 @@ function TelarSidebarHeader() {
  * and one you want gone is deleted. Two words for "off my list" is one too
  * many, and the chip was the surface that kept insisting they were different.
  *
- * What is left is the banded view that was always the default: the live list,
- * then a collapsed shelf. Search still flattens both.
+ * What is left is the banded view that was always the default. Search still
+ * flattens every band, which is the one thing the chips were genuinely for.
  */
 function SidebarEmpty({
   icon: Icon,
@@ -129,6 +137,53 @@ function SidebarEmpty({
   );
 }
 
+/**
+ * A RULE, NOT A ROW.
+ *
+ * A band header used to look like the rows under it — same box, same hover — so
+ * the boundary between "live" and "history" was carried entirely by a chevron.
+ * t3 draws a line across the sidebar instead, which is why its Settled group
+ * reads as the end of the list rather than as another entry in it.
+ *
+ * `onToggle` ABSENT MEANS THE BAND DOES NOT COLLAPSE, and then this is a <div>
+ * rather than a <button>: a control that cannot do anything must not look like
+ * one, and a screen reader should not be offered a press that no-ops.
+ */
+function BandRule({
+  icon: Icon,
+  label,
+  count,
+  open,
+  onToggle,
+}: {
+  icon?: React.ComponentType<{ className?: string }>;
+  label: string;
+  count: number;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
+  const body = (
+    <>
+      {onToggle ? (
+        <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+      ) : Icon ? (
+        <Icon className="size-3 shrink-0" />
+      ) : null}
+      <span className="shrink-0">{label}</span>
+      <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
+      <span className="shrink-0 tabular-nums">{count}</span>
+    </>
+  );
+  const className = "flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45";
+  return onToggle ? (
+    <button type="button" className={`${className} hover:text-sidebar-foreground`} aria-expanded={open} onClick={onToggle}>
+      {body}
+    </button>
+  ) : (
+    <div className={className}>{body}</div>
+  );
+}
+
 // A collapsed band of rows below the live list. Renders nothing at all when
 // empty: an always-present "Settled (0)" header would cost a row of chrome to
 // say nothing.
@@ -144,6 +199,7 @@ function SessionShelf({
   activeSessionId,
   showProject,
   renderedAt,
+  autoSettleAfterDays,
   onRefresh,
 }: {
   label: string;
@@ -151,49 +207,37 @@ function SessionShelf({
   rows: SidebarSession[];
   open: boolean;
   onToggle: () => void;
-  hasMore: boolean;
-  onShowMore: () => void;
-  limit: number;
+  hasMore?: boolean;
+  onShowMore?: () => void;
+  limit?: number;
   activeSessionId?: string;
   showProject: boolean;
   renderedAt: number;
+  autoSettleAfterDays: number | null;
   onRefresh: () => void;
 }) {
   if (count === 0) return null;
   return (
     <SidebarGroup className="pt-0">
-      {/* A RULE, NOT A ROW. The shelf header used to look like the rows under
-          it — same box, same hover — so the boundary between "live" and
-          "history" was carried entirely by a chevron. t3 draws a line across
-          the sidebar instead, which is why its Settled group reads as the end
-          of the list rather than as another entry in it. */}
-      <button
-        type="button"
-        className="group/shelf flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45 hover:text-sidebar-foreground"
-        aria-expanded={open}
-        onClick={onToggle}
-      >
-        <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-        <span className="shrink-0">{label}</span>
-        <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-        <span className="shrink-0 tabular-nums">{count}</span>
-      </button>
+      <BandRule label={label} count={count} open={open} onToggle={onToggle} />
       {open && (
         <SidebarGroupContent className="space-y-0.5">
-          {rows.slice(0, limit).map((session) => (
+          {(limit === undefined ? rows : rows.slice(0, limit)).map((session) => (
             <SessionRow
               key={session.id}
               session={session}
               active={session.id === activeSessionId}
               showProject={showProject}
-              // THE SHELF IS HISTORY, so its rows give their space back — one
-              // dim line each. See session-row.tsx for the two volumes.
+              // A SHELF IS OFF THE LIST — history behind you or work deferred
+              // ahead of you — so its rows give their space back, one dim line
+              // each. See session-row.tsx for the two volumes.
               variant="slim"
+              band={bandOf(session, { now: renderedAt, autoSettleAfterDays })}
               renderedAt={renderedAt}
               onRefresh={onRefresh}
             />
           ))}
-          {hasMore && (
+          {hasMore && onShowMore && (
             <button
               type="button"
               className="w-full rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
@@ -215,6 +259,13 @@ function SidebarBody() {
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
+  /**
+   * How long a quiet session stays in the list, from the ENGINE rather than
+   * from this browser — so the desktop shell and a browser tab band the same
+   * sessions the same way. See lib/inbox-policy.ts.
+   */
+  const { policy } = useInboxPolicy();
+  const autoSettleAfterDays = policy.autoSettleAfterDays;
   // The server and first client render must use the same clock. Reading
   // Date.now() independently on each side crosses minute boundaries often
   // enough to produce a hydration mismatch and force React to regenerate the
@@ -224,6 +275,9 @@ function SidebarBody() {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
+  // Collapsed by default, like t3's: out of the way, never gone. The whole
+  // point of snoozing is not to see these until they come back on their own.
+  const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [sessionLimit, setSessionLimit] = useState(SESSION_PAGE_SIZE);
   const [settledLimit, setSettledLimit] = useState(SESSION_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
@@ -315,18 +369,16 @@ function SidebarBody() {
     sessions,
     ...(selectedScope ? { projectId: selectedScope } : {}),
     query,
-    // "all" is the banded view — live list, then the settled shelf — and with
-    // the chips gone it is the only one. Passed explicitly so the derivation's
-    // own default is not what this rail silently depends on.
-    filter: "all",
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
+    autoSettleAfterDays,
     limit: sessionLimit,
     settledLimit,
   });
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
+  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterDays });
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -474,14 +526,17 @@ function SidebarBody() {
                         <span className="w-4">{selectedScope === project.id ? <CheckIcon /> : null}</span>
                         <span className="truncate">{project.name}</span>
                       </DropdownMenuItem>
+                      {/* THIS project's settings. It went to the retired
+                          `/projects` table — a glyph beside one project's name
+                          that showed you all of them. */}
                       <Button
                         variant="ghost"
                         size="icon-xs"
-                        aria-label={`Open ${project.name}`}
+                        aria-label={`Settings for ${project.name}`}
                         title={project.root}
                         onClick={() => {
                           onNavigate();
-                          router.push("/projects");
+                          router.push(`/projects/${encodeURIComponent(project.id)}/settings`);
                         }}
                       >
                         <MoreHorizontalIcon />
@@ -495,16 +550,55 @@ function SidebarBody() {
           </div>
         </div>
 
+        {/*
+          PINNED SITS ABOVE THE SCROLL, NOT INSIDE IT — which is what makes it
+          stay put. `settledOverride: "active"` is the pin, and the point of
+          pinning is that the row is where you left it: inside the scrolling
+          list it would still be first, but "first" scrolls away.
+
+          NOT COLLAPSIBLE, and not paged. Both shelves below hide rows you have
+          finished with or deferred; this band holds the ones you said to keep
+          in front of you, and a control that hides them would be arguing.
+        */}
+        {!list.flat && list.pinned.length > 0 && (
+          <SidebarGroup className="shrink-0 pb-0">
+            <BandRule icon={PinIcon} label="Pinned" count={list.pinned.length} />
+            <SidebarGroupContent className="space-y-0.5">
+              {list.pinned.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  active={session.id === activeSessionId}
+                  showProject={showProject}
+                  variant="card"
+                  band="pinned"
+                  renderedAt={renderedAt}
+                  onRefresh={() => void loadAll()}
+                />
+              ))}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {/*
+          NO "RECENT" HEADING. It labelled the only unlabelled thing on the
+          screen — the list itself — with a word that describes the sort order
+          rather than naming a band, and it sat directly under a search field
+          whose results it then had to relabel. The ruled headers below carry
+          the structure; the list needs no title to be the list.
+        */}
         <SidebarGroup className="min-h-0 flex-1">
-          <SidebarGroupLabel>
-            {query ? "Search results" : "Recent"}
-          </SidebarGroupLabel>
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
             {unavailable ? (
               <SidebarEmpty icon={MessageSquareIcon} title="Engine unavailable" detail="Start the local engine, then this list refills itself." />
             ) : projects.length === 0 ? (
               <SidebarEmpty icon={FolderPlusIcon} title="No projects yet" detail="Register a project to start a session." />
-            ) : list.sessions.length === 0 && (list.flat || !list.settledCount) ? (
+            ) : list.sessions.length === 0 &&
+              // Empty only when nothing is anywhere. A rail whose every row is
+              // pinned, snoozed or settled has plenty on it, and telling that
+              // reader they have "No sessions yet" contradicts the four rows
+              // they can see.
+              (list.flat || !(list.settledCount || list.snoozedCount || list.pinned.length)) ? (
               <SidebarEmpty
                 icon={MessageSquareIcon}
                 title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
@@ -521,6 +615,12 @@ function SidebarBody() {
                   // asked, so every row in it is equally relevant and density
                   // beats detail — cards would make ten matches a scroll.
                   variant={query ? "slim" : "card"}
+                  // Per row rather than per band, because this list is not one
+                  // band: the survivor rule pulls the session you are READING
+                  // out of a shelf and into it, and that row still needs the
+                  // shelf's affordance — a snoozed one you are looking at
+                  // offers Wake, not Snooze.
+                  band={bandFor(session)}
                   searchSelected={Boolean(query) && index === selectedSearchIndex}
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
@@ -540,24 +640,42 @@ function SidebarBody() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* The shelf exists only in the banded view. A chip or a search has
-            already flattened everything it matched into the list above, so a
-            second collapsed place for rows to hide would defeat the filter. */}
+        {/* The shelves exist only in the banded view. A search has already
+            flattened everything it matched into the list above, so a second
+            collapsed place for rows to hide would defeat it. */}
         {!list.flat && (
-          <SessionShelf
-            label="Settled"
-            count={list.settledCount}
-            rows={list.settled}
-            open={settledOpen}
-            onToggle={() => setSettledOpen((open) => !open)}
-            hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
-            onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
-            limit={settledLimit}
-            {...(activeSessionId ? { activeSessionId } : {})}
-            showProject={showProject}
-            renderedAt={renderedAt}
-            onRefresh={() => void loadAll()}
-          />
+          <>
+            {/* SNOOZED ABOVE SETTLED, because the two shelves face opposite
+                directions: settled is behind you and snoozed is ahead of you,
+                and the one that is coming back belongs nearer the live list. */}
+            <SessionShelf
+              label="Snoozed"
+              count={list.snoozedCount}
+              rows={list.snoozed}
+              open={snoozedOpen}
+              onToggle={() => setSnoozedOpen((open) => !open)}
+              {...(activeSessionId ? { activeSessionId } : {})}
+              showProject={showProject}
+              renderedAt={renderedAt}
+              autoSettleAfterDays={autoSettleAfterDays}
+              onRefresh={() => void loadAll()}
+            />
+            <SessionShelf
+              label="Settled"
+              count={list.settledCount}
+              rows={list.settled}
+              open={settledOpen}
+              onToggle={() => setSettledOpen((open) => !open)}
+              hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
+              onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
+              limit={settledLimit}
+              {...(activeSessionId ? { activeSessionId } : {})}
+              showProject={showProject}
+              renderedAt={renderedAt}
+              autoSettleAfterDays={autoSettleAfterDays}
+              onRefresh={() => void loadAll()}
+            />
+          </>
         )}
       </SidebarContent>
 
