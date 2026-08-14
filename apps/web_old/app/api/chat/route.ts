@@ -1001,10 +1001,17 @@ export async function POST(req: Request) {
   //   · THE COMPOSER'S READ FAILED. `ultraWakeAppendix` wraps its read in
   //     `safeLiveContext`, which degrades to "" — so the mailbox can be full
   //     while the block is absent, and the failure is silent by design.
-  //   · THE PROVIDER DISCARDS THE APPENDIX. `runCodexTurn` below takes no
-  //     `systemPrompt` at all, so on a Codex turn nothing composed here reaches
-  //     the model. Ultra is Claude-only today, but a session that launched a run
-  //     on Claude and then switched provider is an ordinary way to get here.
+  //   · A PROVIDER PATH DISCARDS THE APPENDIX. When this gate was written,
+  //     `runCodexTurn` took no `systemPrompt` at all, and a blanket
+  //     `provider !== "codex"` guard stood in front of this whole block. The
+  //     harness-port commit then wired the SAME appendix into Codex as
+  //     `instructions` (see the runCodexTurn call below), which made that
+  //     guard actively wrong: a Codex session RECEIVED the outcome block on
+  //     every turn but never acked it, so the model was told the same
+  //     completion forever while the client's pending badge never cleared.
+  //     The per-run delivery check below is the durable form of the guard —
+  //     it asks the composed prompt itself, provider by provider, turn by
+  //     turn, and needs no updating when a provider's wiring changes.
   // `appendixCarriesUltraWake` asks the composed prompt itself, against the same
   // marker the formatter renders, so the two cannot drift.
   //
@@ -1031,7 +1038,7 @@ export async function POST(req: Request) {
   // that follows. Captured here because the wake records are consumed (acked)
   // in this same block.
   let ultraWakeMarkers: Array<{ text: string; attention?: boolean }> = [];
-  if (typeof sessionId === "string" && sessionId && provider !== "codex") {
+  if (typeof sessionId === "string" && sessionId) {
     try {
       const pendingWakes = pendingUltraWakes(sessionId);
       const carried = pendingWakes

@@ -79,6 +79,7 @@ import {
   currentCompaction,
   emptyCompactionFold,
   foldCompactionEvent,
+  isFoldMintedKey,
   seedCompactedContext,
   seedTranscriptCompactions,
   upsertCompaction,
@@ -104,6 +105,7 @@ import type { WorkState } from "@/components/session/working-indicator";
 import {
   browserQueueStorage,
   isTerminalQueueState,
+  isUserQueueItem,
   pendingView,
   plainQueueError,
   queueStorageKey,
@@ -112,6 +114,7 @@ import {
   stripQueuedAttachments,
   writeQueue,
   type QueuedMessage,
+  type QueueItemKind,
   type QueueItemLifecycle,
   type QueueItemState,
 } from "@/lib/message-queue";
@@ -124,6 +127,11 @@ type SessionQueuedMessage = QueuedMessage<PromptInputMessage["files"][number]> &
   revision?: number;
   state?: QueueItemState;
   error?: string;
+  /** Server-authored machinery (`wake`/`watch`), absent for anything a human
+   *  typed. Tracked so the 2s poll still measures these items and pendingView
+   *  can keep them out of the strip; see its header. */
+  kind?: QueueItemKind;
+  hidden?: boolean;
 };
 import {
   ComposerAutocompleteMenus,
@@ -132,7 +140,7 @@ import {
 import { ComposerDraft } from "@/components/session/composer-draft";
 import { ComposerControls } from "@/components/session/composer-settings";
 import { useLoomHandoff } from "@/components/session/use-loom-handoff";
-import { useSessionInjections } from "@/components/session/use-session-injections";
+import { useWatcherAlerts } from "@/components/session/use-watcher-alerts";
 import { WorkspaceEnvironment } from "@/components/session/workspace-environment";
 import { WorkspaceInspector } from "@/components/session/workspace-inspector";
 import { RightPanel, RightPanelTrigger } from "@/components/right-panel/right-panel";
@@ -1198,15 +1206,18 @@ function SessionWorkspace({
   // Aborting only closes THIS reader, never the detached server run.
   const reconnectAbortRef = useRef<AbortController | null>(null);
   /** TRUE while the feed subscriber is rendering a TURN (window→done in
-   *  cursor mode, events-flowing in replay mode) — the synchronous truth the
-   *  injection/drain gates read. NOT "the subscriber is armed": the
-   *  subscriber is armed whenever no local POST runs (feel contract rule 7 —
-   *  a server-drained queued turn must stream into this very mount), and
-   *  gating sends on mere armedness would block them forever. */
+   *  cursor mode, events-flowing in replay mode). NOT "the subscriber is
+   *  armed": the subscriber is armed whenever no local POST runs (feel
+   *  contract rule 7 — a server-drained queued turn must stream into this very
+   *  mount), so armedness says nothing about a turn being live.
+   *
+   *  IT HAD A STATE TWIN (`reconnectLive`) and no longer needs one. The twin
+   *  existed only so the injection drain's effect could DEPEND on this ref
+   *  changing; that drain is gone with the client-side machinery producers
+   *  (see use-watcher-alerts.ts), and every remaining reader is inside the
+   *  subscriber that writes it, where the ref alone is the synchronous
+   *  truth. */
   const feedTurnLiveRef = useRef(false);
-  /** State twin of `feedTurnLiveRef`, existing ONLY so the gate effects can
-   *  depend on it — the ref stays the synchronous truth. */
-  const [reconnectLive, setReconnectLive] = useState(false);
   /** Last server-advanced feed cursor — where this mount's rendering stopped.
    *  Null means "replay the open window from its start" (fresh mount). */
   const feedCursorRef = useRef<{ win: number; seq: number } | null>(null);
@@ -2315,16 +2326,12 @@ function SessionWorkspace({
     reconnectAbortRef.current = abort;
 
     const enterTurn = () => {
-      if (!feedTurnLiveRef.current) {
-        feedTurnLiveRef.current = true;
-        setReconnectLive(true);
-      }
+      feedTurnLiveRef.current = true;
       setStatus((s) => (s === "ready" || s === "error" ? "streaming" : s));
     };
     const exitTurn = () => {
       if (feedTurnLiveRef.current) {
         feedTurnLiveRef.current = false;
-        setReconnectLive(false);
         setStatus((s) => (s === "streaming" ? "ready" : s));
       }
     };
@@ -2404,9 +2411,27 @@ function SessionWorkspace({
             }, retryMs);
             abort.signal.addEventListener("abort", onAbort, { once: true });
           });
-          // A replay-mode transport drop rebuilds from line zero next round;
-          // id-based updates are authoritative (old behavior, kept).
-          if (!cursorMode && sawEvent) asstIdRef.current = null;
+          // A replay round that received a cursor (the feed-backed server
+          // hands one after its first drain) resumes STRICTLY AFTER next
+          // round — everything applied stands, bubble and dividers alike.
+          // Only the cursor-less round (the events route's degraded
+          // live.ndjson fallback) still rebuilds from line zero, and a
+          // rebuild must start from EMPTY state: fresh bubble (id-based
+          // updates are authoritative, old behavior) AND a fresh compaction
+          // fold. The fold's own rule — a repeated event opens a NEW
+          // compaction — is correct for genuinely-new events and blind to
+          // redelivery, so re-folding a replay through last round's state
+          // minted a second divider for the same compaction (the duplicate
+          // "Compacted · manual · …" pair). The replay re-mints the same
+          // c-keys from zero, so dropping last round's fold-minted entries
+          // first is what makes the rebuild converge instead of stack;
+          // seeded (stored-*) entries describe completed turns the replay
+          // never carries, so they stand.
+          if (!cursorMode && sawEvent && feedCursorRef.current === null) {
+            asstIdRef.current = null;
+            compactionFoldRef.current = emptyCompactionFold<TranscriptCompaction>();
+            setCompactions((list) => list.filter((c) => !isFoldMintedKey(c.key)));
+          }
         }
       } catch {
         // Aborted (local send / unmount / session change) or dropped — the
@@ -2432,7 +2457,6 @@ function SessionWorkspace({
       reconnectAbortRef.current?.abort();
       reconnectAbortRef.current = null;
       feedTurnLiveRef.current = false;
-      setReconnectLive(false);
     };
   }, [sessionId, armFeedSubscriber]);
 
@@ -2514,7 +2538,6 @@ function SessionWorkspace({
       reconnectAbortRef.current?.abort();
       reconnectAbortRef.current = null;
       feedTurnLiveRef.current = false;
-      setReconnectLive(false);
       windowHandoffRef.current = null;
       const asstId = `m${nextId.current++}`;
       // Named before the array literal below so the Ultra annotation can be
@@ -2809,10 +2832,24 @@ function SessionWorkspace({
     // cancelled server-side (nothing left for the engine to drain at turn
     // end) and kept in the strip as ordinary editable messages under one
     // "Held" line. The next send — or the strip's Send now — releases them.
+    //
+    // THE USER'S MESSAGES, AND ONLY THOSE. `messageQueue` tracks the engine's
+    // own machinery tickets too (so the poll keeps measuring them), and this
+    // filter had no author check: a queued wake was DELETEd like a draft, which
+    // cancels it server-side while its key stays in the envelope forever, then
+    // re-enqueued through buildTurnPayload — which cannot carry `kind`/`hidden`
+    // — where the retained key handed back the cancelled item. The outcome was
+    // lost with no later scan able to mint it again, the strip's "Waking for …"
+    // marker never cleared, and the wake poll never quiesced. Stop is about the
+    // human's queue; machinery stays the engine's.
     turnInterruptedRef.current = true;
     setHeldAfterStop(true);
     const pullBack = messageQueue.filter(
-      (item) => item.accepted && item.state === "queued" && item.revision !== undefined,
+      (item) =>
+        item.accepted &&
+        item.state === "queued" &&
+        item.revision !== undefined &&
+        isUserQueueItem(item),
     );
     for (const item of pullBack) {
       // Inline (removeEngineQueueItem is declared later in the component and
@@ -2829,7 +2866,7 @@ function SessionWorkspace({
     }
     setMessageQueue((q) =>
       q.map((item) =>
-        item.accepted && item.state === "queued"
+        item.accepted && item.state === "queued" && isUserQueueItem(item)
           ? { ...item, accepted: false, state: undefined, revision: undefined }
           : item,
       ),
@@ -2965,10 +3002,13 @@ function SessionWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [escalation, sessionId, send]);
 
-  // §6.C-bis — story 4.1 / AC1: the Ultra completion wake. Sibling to the
-  // watcher subscriber above and, like it, this only ENQUEUES — the §6.D drain
-  // below owns when the turn actually fires, and reusing that gate untouched is
-  // what keeps a wake from POSTing a second concurrent turn.
+  // Story 4.1 / AC1's mailbox, READ-ONLY here. This used to be half a producer:
+  // the poll's `pending` was the trigger the injection hook turned into a hidden
+  // turn. The trigger is the engine's now (scanSessionMachinery), so what is left
+  // is display — the strip's "Waking for …" marker below, which is the only
+  // honest thing a reader has to look at while a wake turn is being authored.
+  // NOTHING IN THIS FILE MAY FIRE A TURN FROM THIS STATE AGAIN: a client that can
+  // mint a wake can announce an outcome the mailbox never recorded.
   //
   // A POLL, NOT A STREAM (NFR-X-15 / §5.5-D9): one small session-scoped question
   // answered on the house cadence. `/api/ultra/[id]/events` exists and is story
@@ -3190,7 +3230,7 @@ function SessionWorkspace({
   // deliverable. Keying on WHICH runs are terminal fires exactly once per run
   // that settles, and one fetch is all that is needed: a wake that exists then
   // lands in `pending`, which opens the wake hook's own interval and keeps it
-  // open until the §6.D drain has fired the turn.
+  // open until the engine's wake ticket has run its turn and the route acked it.
   const settledRunKey = useMemo(
     () =>
       ultraRunList
@@ -3205,18 +3245,12 @@ function SessionWorkspace({
     void reloadUltraWake();
   }, [settledRunKey, reloadUltraWake]);
 
-  // Turns this session dispatches on its own — loom watchers and Ultra
-  // completion wakes — plus the one idleness gate that decides when they may
-  // fire. See use-session-injections.ts; that gate must not be duplicated here.
-  const { watcherAlerts, dismissAlert } = useSessionInjections({
-    sessionId,
-    status,
-    reconnectLive,
-    pendingWakes,
-    abortRef,
-    feedTurnLiveRef,
-    send,
-  });
+  // Cards for the human when a watched loom reaches a trigger state. THIS
+  // SURFACE AUTHORS NO TURNS: the watcher turn and the Ultra wake are
+  // server-authored queue tickets now (session-engine's scanSessionMachinery),
+  // because a producer living here only ran while a tab was mounted. See
+  // use-watcher-alerts.ts' header and docs/session-context-integrity.md.
+  const { watcherAlerts, dismissAlert } = useWatcherAlerts({ sessionId, status });
 
   const queueUploadsRef = useRef<Set<string>>(new Set());
 
@@ -3303,6 +3337,8 @@ function SessionWorkspace({
         idempotencyKey: string;
         revision: number;
         state: QueueItemLifecycle;
+        kind?: QueueItemKind;
+        hidden?: boolean;
         payload?: { message?: string };
         error?: string;
       }>;
@@ -3313,17 +3349,26 @@ function SessionWorkspace({
     // Terminal items are dropped HERE and nowhere else: `messageQueue` is the
     // set the 2s poll's stop condition measures, so a committed item left in it
     // would keep this session polling forever. Which of the survivors the user
-    // is actually shown is `queueView`'s decision, not this one — an in-flight
-    // item must stay tracked here so the poll keeps running until it commits.
+    // is actually shown is `pendingView`'s decision, not this one — an in-flight
+    // item must stay tracked here so the poll keeps running until it commits,
+    // and a machinery ticket (`kind`) is tracked for exactly that reason while
+    // rendering no line at all.
+    //
+    // `entry`, NOT `item`: INV-8g forbids the substring `item.kind` in this
+    // file, because a transcript kind dispatch here is the defect it watches
+    // for. A queue ticket's author is a different `kind` entirely, and the scan
+    // is by name — so the name is the one thing that has to give.
     const active = (envelope.items ?? [])
-      .filter((item) => !isTerminalQueueState(item.state))
-      .map<SessionQueuedMessage>((item) => ({
-        id: item.idempotencyKey,
-        text: item.payload?.message ?? "Queued message",
+      .filter((entry) => !isTerminalQueueState(entry.state))
+      .map<SessionQueuedMessage>((entry) => ({
+        id: entry.idempotencyKey,
+        text: entry.payload?.message ?? "Queued message",
         accepted: true,
-        revision: item.revision,
-        state: item.state as SessionQueuedMessage["state"],
-        error: item.error,
+        revision: entry.revision,
+        state: entry.state as SessionQueuedMessage["state"],
+        kind: entry.kind,
+        hidden: entry.hidden,
+        error: entry.error,
       }));
     setMessageQueue((current) => [
       ...current.filter((item) => !item.accepted),
@@ -4385,6 +4430,24 @@ function SessionWorkspace({
                 >
                   Remove this exchange
                 </Button>
+              </div>
+            )}
+            {/* THE MACHINERY MARKER (loop-graph question 5). A wake turn used
+                to render nothing at all until words arrived — the session sat
+                idle-looking while the engine was about to speak unprompted.
+                This is a MARKER AND NOT A STRIP LINE: every line below is
+                editable and cancellable, and this is neither the user's text
+                nor theirs to withdraw. The names come from the mailbox poll
+                because the ticket itself carries only the sentinel (the facts
+                ride the system-prompt appendix, server-side), and the mailbox
+                empties the instant the route acks — so this clears as the wake
+                turn starts speaking, which is exactly when the transcript takes
+                over. */}
+            {pendingWakes.length > 0 && (
+              <div className="mb-2 flex items-center rounded-xl border border-border bg-muted/40 px-3 py-1.5">
+                <span className="min-w-0 truncate text-xs text-muted-foreground">
+                  Waking for {pendingWakes.map((w) => w.name).join(", ")}…
+                </span>
               </div>
             )}
             {pendingLines.length > 0 && (

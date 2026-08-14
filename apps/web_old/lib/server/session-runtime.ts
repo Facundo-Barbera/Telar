@@ -268,7 +268,24 @@ function pumpMessage(rt: RuntimeInternals, msg: SDKMessage): void {
     // turn feed or the window sink below, where the projector turns it into
     // the client's "tasks" event; this assignment is the server's own copy,
     // read by the teardown's window decisions and the done payload.
+    const hadTasks = rt.liveTasks.length > 0;
     rt.liveTasks = normalizeBackgroundTasks(m.tasks);
+    // THE WAKE IS EXPECTED, NOT DISCOVERED (issue #71 — the lost ".5
+    // shipped" response, third dropped wake in one day). The roster
+    // emptying is exactly what triggers the SDK's auto-continuation, and
+    // the continuation's first output arrives after MODEL LATENCY —
+    // measured at multiples of the short linger. The old rule armed the
+    // watchdog only once generation was SEEN, so the window settled inside
+    // the latency gap and the response was generated into a sink-less
+    // runtime: marker → 1.5s of silence → closed → answer, dropped from
+    // screen and store alike. The roster's empty transition now opens the
+    // continuation hold itself; the continuation's own result — or the
+    // watchdog, for a wake that never comes — returns the window to rest.
+    // Detached only: mid-turn, the turn's own feed renders whatever the
+    // wake produces and `result` resets the flag as ever.
+    if (hadTasks && rt.liveTasks.length === 0 && !rt.turnActive) {
+      rt._continuationOpen = true;
+    }
   }
 
   if (rt.turnActive && rt._turn) {
@@ -359,6 +376,26 @@ async function pump(rt: RuntimeInternals): Promise<void> {
     }
   } finally {
     rt.closed = true;
+    // The process died out from under the window — the one teardown path
+    // issue #76's sweep missed. The sink's accumulated state (completions in
+    // taskStatuses, continuation parts past the persist mark) exists ONLY in
+    // that closure until a flush writes it through, and without this call a
+    // CLI crash mid-window dropped everything a connected client had already
+    // watched arrive over SSE — and never emitted "closed", so a reconnecting
+    // tail could hang on a window nothing would ever end.
+    {
+      const sink = rt.windowSink;
+      rt.windowSink = null;
+      if (sink) {
+        try {
+          sink.onSettled();
+        } catch {
+          // best-effort, same posture as the settle path
+        }
+      }
+    }
+    if (rt._settle) clearTimeout(rt._settle);
+    rt._settle = null;
     endTurnFeed(rt);
     if (runtimes.get(rt.key) === rt) runtimes.delete(rt.key);
   }

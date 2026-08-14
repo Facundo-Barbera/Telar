@@ -40,6 +40,18 @@ export async function POST(
   if (!body.payload || typeof body.payload !== "object" || Array.isArray(body.payload)) {
     return Response.json({ error: "payload must be a complete chat request object" }, { status: 400 });
   }
+  // REFUSED, NOT IGNORED. `kind`/`hidden` mark a SERVER-authored machinery
+  // ticket (session-engine's scanSessionMachinery); a client that could mint one
+  // could author a wake for an outcome that never happened, and a hidden turn is
+  // by definition one no reader can see it did. This door enqueues user turns
+  // only, and a caller sending these fields is wrong about the contract rather
+  // than about a value — so it hears that, instead of watching them vanish.
+  if (body.kind !== undefined || body.hidden !== undefined) {
+    return Response.json(
+      { error: "kind and hidden are server-authored; this endpoint enqueues user turns" },
+      { status: 400 },
+    );
+  }
   const payload = { ...body.payload, sessionId } as JsonValue;
   try {
     const item = enqueueSessionTurn(sessionId, {
