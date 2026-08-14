@@ -568,6 +568,61 @@ export function defaultInstanceIdForDriver(driver: ProviderDriverKind): string {
 export const ProviderSignIn = z.enum(["signed-in", "signed-out", "missing-config-dir", "unknown"]);
 export type ProviderSignIn = z.infer<typeof ProviderSignIn>;
 
+/**
+ * WHETHER A NEWER CLI EXISTS, AND WHAT WOULD INSTALL IT.
+ *
+ * A FACT ABOUT THE BINARY, NOT ABOUT THIS LOGIN. Every instance of a driver
+ * runs the same executable, so this is identical across them and updating from
+ * one row updates all of them — the same way `version` already behaves.
+ *
+ * `pinned` IS THE STATE WORTH READING TWICE. It means a newer version is
+ * published AND the installed one is exactly what this build of Telar pairs
+ * with. There is deliberately no `command` on it: the wrapper and the CLI speak
+ * a control protocol to each other, an install sitting on the tested pairing is
+ * the best state Telar can verify, and a one-click button that moved it off
+ * would be Telar breaking its own pairing on its own advice. The newer version
+ * is reported so the choice stays with the person; the command is not.
+ *
+ * See apps/engine/src/cli-updates.ts for the measurement, and for why a
+ * Homebrew install is compared against Homebrew rather than npm.
+ */
+export const ProviderUpdate = z.object({
+  status: z.enum(["current", "behind", "pinned", "unknown"]),
+  /** The newest published version, when a registry answered. Absent means the
+   *  check failed, was switched off, or there was no installed version to
+   *  compare — never "there is nothing newer". */
+  latest: z.string().min(1).optional(),
+  /** How it was installed, when the path said so. Absent is a real answer: a
+   *  binary somewhere unrecognised is one Telar must not guess an installer
+   *  for. */
+  method: z.enum(["native", "homebrew", "npm", "bun", "pnpm", "vite-plus", "unknown"]).optional(),
+  /** The exact command that updates it — shown, copied, and what the engine
+   *  runs. Present only on `behind`. */
+  command: z.string().min(1).optional(),
+});
+export type ProviderUpdate = z.infer<typeof ProviderUpdate>;
+
+/**
+ * WHAT HAPPENED WHEN TELAR RAN THE UPDATE.
+ *
+ * THE COMMAND COMES BACK IN THE ANSWER, not just in the request, because the
+ * caller never sent one — the engine derived it from the install it found. A
+ * report that said "it failed" without naming what ran would leave the reader
+ * unable to try it themselves, which is the first thing anybody does next.
+ *
+ * `output` IS THE INSTALLER'S OWN WORDS, capped and otherwise unedited. A
+ * paraphrase of a package manager's error is a second thing to keep true.
+ */
+export const ProviderUpdateRun = z.object({
+  ok: z.boolean(),
+  command: z.string().min(1),
+  exitCode: z.number().int().optional(),
+  timedOut: z.boolean(),
+  output: z.string().min(1).optional(),
+  message: z.string().min(1),
+});
+export type ProviderUpdateRun = z.infer<typeof ProviderUpdateRun>;
+
 export const ProviderProbe = z.object({
   instanceId: Id,
   driver: ProviderDriverKind,
@@ -575,6 +630,7 @@ export const ProviderProbe = z.object({
   status: z.enum(["ready", "warning", "error", "disabled"]),
   installed: z.boolean(),
   version: z.string().min(1).optional(),
+  update: ProviderUpdate.optional(),
   signIn: ProviderSignIn,
   /** What the harness said when it could not answer. Verbatim, because a
    *  paraphrase of a provider's own error is a second thing to keep true. */

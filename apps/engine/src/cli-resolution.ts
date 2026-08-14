@@ -25,7 +25,7 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -65,6 +65,16 @@ export type CliResolution = {
   status: CliStatus;
   /** Absent only when status is `missing`. */
   path?: string;
+  /**
+   * `path` with every symlink followed, when it could be read.
+   *
+   * BOTH ARE KEPT because the two answer different questions and the install
+   * detector in `cli-updates.ts` needs each. `~/.local/bin/claude` is a symlink
+   * into `~/.local/share/claude/versions/`, and an npm global install is a
+   * symlink from a bin directory into `lib/node_modules/` — so the link says
+   * where it is invoked from and the target says who put it there.
+   */
+  realPath?: string;
   /** The CLI's own reported version, e.g. `2.1.222`. */
   version?: string;
   /** What this build pairs with, when such a thing exists. Codex has no wrapper
@@ -177,15 +187,40 @@ const pathCandidates = (bin: string): string[] =>
     .map((dir) => path.join(dir, bin))
     .filter((candidate) => path.isAbsolute(candidate));
 
+/**
+ * Everywhere a binary of this name might be, best first.
+ *
+ * TAKES A BARE NAME rather than a `CliId` because the CLIs are not the only
+ * thing this app has to find. Updating a provider means running its package
+ * manager — `npm`, `brew`, `bun` — and a packaged app spawning a bare `npm`
+ * fails exactly the way a bare `claude` did, for exactly the same reason. One
+ * search order, so a helper cannot be looked for somewhere a CLI would not be.
+ */
+export function candidatePathsFor(bin: string, override?: string | undefined): string[] {
+  return [
+    override,
+    path.join(os.homedir(), ".local", "bin", bin),
+    `/opt/homebrew/bin/${bin}`,
+    `/usr/local/bin/${bin}`,
+    ...pathCandidates(bin),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+}
+
 export function cliCandidatePaths(id: CliId): string[] {
   const spec = SPECS[id];
-  return [
-    process.env[spec.overrideEnv],
-    path.join(os.homedir(), ".local", "bin", spec.bin),
-    `/opt/homebrew/bin/${spec.bin}`,
-    `/usr/local/bin/${spec.bin}`,
-    ...pathCandidates(spec.bin),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  return candidatePathsFor(spec.bin, process.env[spec.overrideEnv]);
+}
+
+/** The first candidate that exists, or nothing. The un-judged half of
+ *  `resolveCli` — used for helpers that have no version to check. */
+export function findExecutable(bin: string): string | undefined {
+  return candidatePathsFor(bin).find((candidate) => existsSync(candidate));
+}
+
+/** The brand name, without resolving anything. For the messages that have to
+ *  be written before a resolution exists. */
+export function cliLabel(id: CliId): string {
+  return SPECS[id].label;
 }
 
 /** Keyed on (path, mtime) rather than for the process lifetime, so a CLI that
@@ -203,6 +238,21 @@ function cacheKey(executable: string): string {
   } catch {
     return executable;
   }
+}
+
+/**
+ * Throw the version cache away.
+ *
+ * BELT AND BRACES, called after Telar itself updates a CLI. The (path, mtime)
+ * key already invalidates itself for every installer seen so far — a new binary
+ * has a new mtime, and a retargeted symlink stats through to the new file. But
+ * "so far" is doing real work in that sentence: an installer that preserves
+ * timestamps would leave this reporting the version it replaced, and the moment
+ * that matters most is the one right after an update, when the pane is about to
+ * be re-read to prove the update worked.
+ */
+export function forgetCliVersions(): void {
+  versionCache.clear();
 }
 
 // `claude --version` says "2.1.222 (Claude Code)"; `codex --version` says
@@ -314,8 +364,19 @@ function locate(spec: CliSpec): Located {
 // call — the subprocess — and share every judgement. Two copies of the
 // classification would be two places for the settings pane and the spawn gate to
 // disagree about the same machine.
+/** Followed, or nothing — a dangling link is not an error worth failing a
+ *  resolution over, it is simply one less thing known about the install. */
+function realPathOf(executable: string): { realPath?: string } {
+  try {
+    const resolved = realpathSync(executable);
+    return resolved === executable ? {} : { realPath: resolved };
+  } catch {
+    return {};
+  }
+}
+
 function classify(spec: CliSpec, executable: string, version: string | null, expected: string | undefined): CliResolution {
-  const base = { id: spec.id, label: spec.label } as const;
+  const base = { id: spec.id, label: spec.label, ...realPathOf(executable) } as const;
 
   if (!version) {
     return {

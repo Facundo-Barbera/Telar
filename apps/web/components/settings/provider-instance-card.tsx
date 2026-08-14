@@ -19,22 +19,26 @@
  * command to run in a terminal, and that is the whole of Telar's involvement in
  * auth — the engine reads no credential file (apps/engine/src/provider-instances.ts).
  *
- * THREE DEVIATIONS FROM t3, EACH BECAUSE THE ENGINE CANNOT BACK IT:
+ * TWO DEVIATIONS FROM t3, EACH BECAUSE THE ENGINE CANNOT BACK IT:
  *   · No identity line. t3 prints "Authenticated as <email> · Claude Max"; this
  *     engine holds no identity, so the auth line says what was measured.
  *   · No models section. Model choice lives on the composer's own picker here,
  *     fed by asking the harness (apps/engine/src/models.ts) rather than by a
  *     per-instance hidden/favourite list.
- *   · No update advisory. Nothing in Telar knows a provider's latest version.
+ *
+ * THE UPDATE ADVISORY IS A FACT ABOUT THE BINARY, not about this login. Every
+ * row for a driver shows the same one and updating from any of them updates all
+ * of them — the same way the version beside the name already behaves.
  */
 
 import { useState } from "react";
-import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArrowUpCircleIcon, ChevronDownIcon, DownloadIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { ProviderInstance, ProviderInstanceEnvVar, ProviderProbe } from "@telar/engine-client";
 import { cn } from "@/lib/utils";
-import { displayNameOf, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, versionLabel } from "@/lib/provider-instances";
+import { displayNameOf, DRIVER_LABEL, isDefaultInstance, providerSummary, STATUS_DOT, STATUS_LABEL, updateAdvisory, versionLabel } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -257,6 +261,8 @@ export function ProviderInstanceCard({
   onExpandedChange,
   onPatch,
   onRemove,
+  onUpdateCli,
+  updating,
   error,
 }: {
   instance: ProviderInstance;
@@ -266,6 +272,13 @@ export function ProviderInstanceCard({
   expanded: boolean;
   onExpandedChange: (next: boolean) => void;
   onPatch: (patch: InstancePatch) => void;
+  /** Runs the update the engine derived. Absent when the caller has no way to,
+   *  which is also how a `pinned` advisory renders without a button — the
+   *  engine sends no command in that state and the rule stays in one place. */
+  onUpdateCli?: () => void;
+  /** An update of THIS DRIVER is running — set on every row that shares the
+   *  binary, because they all change together. */
+  updating?: boolean;
   /** Absent on the built-in slot: deleting it would leave a session on that
    *  driver with nothing to route to, so there is no affordance rather than a
    *  disabled one. */
@@ -278,6 +291,9 @@ export function ProviderInstanceCard({
   const version = versionLabel(probe?.version);
   const isDefault = isDefaultInstance(instance);
   const needsSignIn = probe?.signIn === "signed-out" || probe?.signIn === "missing-config-dir";
+  // Named for the PROVIDER rather than this login, because that is what the
+  // sentence is about — "Claude Code 2.1.232 is out", not "Day job 2.1.232".
+  const advisory = updateAdvisory(probe, DRIVER_LABEL[instance.driver]);
 
   return (
     <div className={cn("rounded-xl transition-colors hover:bg-muted/20", !instance.enabled && "opacity-60")}>
@@ -315,6 +331,22 @@ export function ProviderInstanceCard({
                 <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">{instance.id}</code>
               )}
               {version && <code className="text-xs text-muted-foreground">{version}</code>}
+              {/* THE MARKER IS A WAY IN, not a decoration: it sits beside the
+                  version it is about, and pressing it opens the body where the
+                  sentence and the command actually are. Collapsed rows are how
+                  this pane is normally read, so an advisory with no affordance
+                  on the collapsed row is one nobody finds. */}
+              {advisory && (
+                <button
+                  type="button"
+                  onClick={() => onExpandedChange(true)}
+                  title={advisory.headline}
+                  aria-label={`${advisory.headline} — ${title}`}
+                  className="inline-flex items-center rounded-sm text-warning transition-opacity hover:opacity-80"
+                >
+                  <ArrowUpCircleIcon className="size-3.5" />
+                </button>
+              )}
               {isDefault && (
                 <Badge variant="outline" className="text-[10px]" title="The provider's base login, detected rather than added">
                   built-in
@@ -364,6 +396,33 @@ export function ProviderInstanceCard({
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-4 px-3 pb-4 pt-1 sm:px-4">
+            {advisory && (
+              <div className="space-y-1.5 rounded-lg border border-border/70 bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium text-foreground">{advisory.headline}</span>
+                  {/* Offered only when the engine sent a command. A `pinned`
+                      advisory has none, and this is where that shows up: the
+                      sentence explains itself and there is nothing to press. */}
+                  {advisory.command && onUpdateCli && (
+                    <Button size="sm" className="h-7 px-2 text-xs" disabled={updating} onClick={onUpdateCli}>
+                      {updating ? <Spinner /> : <DownloadIcon className="size-3.5" />}
+                      {updating ? "Updating" : "Update now"}
+                    </Button>
+                  )}
+                </div>
+                <p className="text-[11px] leading-snug text-muted-foreground">{advisory.detail}</p>
+                {advisory.command && (
+                  <>
+                    <CopyCommand command={advisory.command} />
+                    <p className="text-[11px] leading-snug text-muted-foreground/70">
+                      Telar picked this from how the CLI was installed, and runs exactly it. Every login of{" "}
+                      {DRIVER_LABEL[instance.driver]} shares the binary, so they all move together.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
+
             {needsSignIn && (
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-foreground">Sign in</span>

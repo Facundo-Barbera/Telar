@@ -114,6 +114,51 @@ export function versionLabel(version: string | undefined): string | null {
 }
 
 /**
+ * WHAT THE ROW SAYS ABOUT A NEWER CLI, AND WHETHER IT OFFERS TO GET IT.
+ *
+ * Ported from t3 code's `getProviderVersionAdvisoryPresentation`, which returns
+ * `null` for "current" and "unknown" for the same reason this does: an advisory
+ * that renders when there is nothing to say is a permanent mark on a healthy
+ * row, and people stop reading marks that are always there.
+ *
+ * `pinned` IS THE STATE THE DONOR HAS NO NAME FOR, and it is the one that has to
+ * read carefully. Something newer exists, the installed version is exactly the
+ * one this build of Telar pairs with, and Telar therefore declines to update it
+ * — while still saying the newer version is out, because the choice belongs to
+ * the person and not to the app. The engine withholds the command in that state
+ * (apps/engine/src/cli-updates.ts) and this surface does not invent one.
+ *
+ * A `behind` WITH NO COMMAND is the honest gap: the CLI is old and Telar could
+ * not tell how it was installed. Saying so beats offering a guessed installer
+ * that would silently replace, say, a self-built binary with a published one.
+ */
+export function updateAdvisory(
+  probe: Pick<ProviderProbe, "update"> | undefined,
+  label: string,
+): { headline: string; detail: string; command?: string } | null {
+  const update = probe?.update;
+  if (!update || update.status === "current" || update.status === "unknown") return null;
+  const latest = update.latest ? (versionLabel(update.latest) ?? update.latest) : null;
+
+  if (update.status === "pinned") {
+    return {
+      headline: "Newer, but not for this build",
+      detail:
+        `${label} ${latest} is out. What you have is exactly the version this build of Telar was tested against — ` +
+        "updating would move off that pairing, which is the first thing to suspect when tool calls are cancelled " +
+        "nobody cancelled. So there is no button here; update it yourself if you want to.",
+    };
+  }
+  return {
+    headline: "Update available",
+    detail: update.command
+      ? `${label} ${latest ?? "a newer version"} is out.`
+      : `${label} ${latest ?? "a newer version"} is out. Telar could not tell how this one was installed, so update it the way you installed it.`,
+    ...(update.command ? { command: update.command } : {}),
+  };
+}
+
+/**
  * `codex_personal` → "Codex Personal". Splits on `_`/`-` and camelCase and
  * title-cases each token.
  *

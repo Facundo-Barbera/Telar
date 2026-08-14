@@ -43,6 +43,8 @@ import {
   type ProviderInstance,
   type ProviderInstanceEnvVar,
   type ProviderProbe,
+  type ProviderUpdate,
+  type ProviderUpdateRun,
   type Session,
   type Task,
   type EngineRequest,
@@ -551,6 +553,27 @@ export class EngineClient {
    */
   listProviderInstances(options: { refresh?: boolean } = {}): Promise<{ providerInstances: ProviderInstance[]; probes: ProviderProbe[] }> {
     return this.request("GET", `/v2/provider-instances${options.refresh ? "?refresh=1" : ""}`);
+  }
+
+  /**
+   * Update the CLI behind a driver, and report what happened.
+   *
+   * THERE IS NO COMMAND IN THIS CALL. The driver name is the whole input; the
+   * engine derives what to run from the install it found on disk. Anything else
+   * would make this a remote shell with a settings button on it.
+   *
+   * KEYED ON THE DRIVER because the binary is what gets updated — every login
+   * of a provider runs the same one, and all of their rows change together.
+   *
+   * THE FRESH PROBES COME BACK IN THE SAME ANSWER, past every cache, so the
+   * caller cannot paint the version it just replaced.
+   */
+  updateProviderCli(driver: ProviderDriverKind): Promise<{
+    result: ProviderUpdateRun;
+    providerInstances: ProviderInstance[];
+    probes: ProviderProbe[];
+  }> {
+    return this.request("POST", `/v2/provider-updates/${encodeURIComponent(driver)}`, {});
   }
 
   /** `null` clears a field, an absent key leaves it alone. Two different

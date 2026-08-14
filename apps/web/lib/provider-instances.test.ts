@@ -18,6 +18,7 @@ import {
   sortInstances,
   STATUS_DOT,
   suggestInstanceId,
+  updateAdvisory,
   versionLabel,
 } from "./provider-instances";
 
@@ -155,4 +156,47 @@ test("the sign-in command is the user's to run, and names the account", () => {
     'CLAUDE_CONFIG_DIR="~/.claude-work" claude auth login',
   );
   expect(signInCommand({ driver: "codex", configDir: "~/.codex-work" })).toBe('CODEX_HOME="~/.codex-work" codex login');
+});
+
+describe("updateAdvisory", () => {
+  test("a healthy row says nothing at all", () => {
+    // An advisory that renders when there is nothing to say becomes a permanent
+    // mark on every row, and people stop reading marks that are always there.
+    expect(updateAdvisory({ update: { status: "current", latest: "2.1.232" } }, "Claude")).toBeNull();
+    expect(updateAdvisory({ update: { status: "unknown" } }, "Claude")).toBeNull();
+    // No engine answer yet, and a probe from a build that did not send one.
+    expect(updateAdvisory(undefined, "Claude")).toBeNull();
+    expect(updateAdvisory({}, "Claude")).toBeNull();
+  });
+
+  test("behind names the version and hands over the command", () => {
+    const advisory = updateAdvisory(
+      { update: { status: "behind", latest: "2.1.232", method: "native", command: "claude update" } },
+      "Claude",
+    );
+    expect(advisory?.detail).toContain("v2.1.232");
+    expect(advisory?.command).toBe("claude update");
+  });
+
+  test("behind with no command explains why there is no button", () => {
+    // The honest gap: the CLI is old and Telar could not tell how it was
+    // installed. Saying so beats offering a guessed installer that would
+    // silently replace a self-built binary with a published one.
+    const advisory = updateAdvisory({ update: { status: "behind", latest: "0.147.0" } }, "Codex");
+    expect(advisory?.command).toBeUndefined();
+    expect(advisory?.detail).toContain("the way you installed it");
+  });
+
+  test("pinned reports the newer version and refuses to offer it", () => {
+    /**
+     * THE STATE THE DONOR HAS NO NAME FOR. Something newer exists AND what is
+     * installed is exactly what this build of Telar pairs with. The version is
+     * still named — the choice belongs to the person — but there is no command,
+     * because the engine sends none and this surface must not invent one.
+     */
+    const advisory = updateAdvisory({ update: { status: "pinned", latest: "2.1.232" } }, "Claude");
+    expect(advisory?.detail).toContain("v2.1.232");
+    expect(advisory?.detail).toContain("tested against");
+    expect(advisory?.command).toBeUndefined();
+  });
 });

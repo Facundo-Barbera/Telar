@@ -24,8 +24,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn } from "@telar/engine-client";
+import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn, ProviderUpdate } from "@telar/engine-client";
 import { cliUsable, resolveCliAsync } from "./cli-resolution";
+import { cliUpdateFor } from "./cli-updates";
 
 /**
  * A version probe costs a subprocess per driver, and this is read from a
@@ -131,6 +132,9 @@ export type VersionProbe = {
   message?: string;
   /** Found, and a turn would still be refused — see `statusOf`. */
   usable?: boolean;
+  /** Whether something newer is published, and what would install it. A fact
+   *  about the BINARY, so every instance of a driver carries the same one. */
+  update?: ProviderUpdate;
 };
 
 /**
@@ -145,7 +149,7 @@ export type VersionProbe = {
  * version that answered them, and in a packaged app the pane could report a
  * healthy install for a provider that could not start.
  */
-async function probeVersion(driver: ProviderDriverKind): Promise<VersionProbe> {
+async function probeVersion(driver: ProviderDriverKind, force = false): Promise<VersionProbe> {
   const resolution = await resolveCliAsync(driver);
   if (resolution.status === "missing") {
     return { installed: false, ...(resolution.message ? { message: resolution.message } : {}) };
@@ -153,6 +157,10 @@ async function probeVersion(driver: ProviderDriverKind): Promise<VersionProbe> {
   return {
     installed: true,
     ...(resolution.version ? { version: resolution.version } : {}),
+    // The one network call on this path, capped at four seconds and failing
+    // soft to `unknown` — a settings page that cannot load without the network
+    // would be a worse thing than an absent advisory.
+    update: await cliUpdateFor(resolution, { force }),
     // Carried through for every status that has something to say — a drifted or
     // incompatible CLI is installed AND worth a sentence.
     ...(resolution.message ? { message: resolution.message } : {}),
@@ -226,7 +234,7 @@ export function statusOf(input: {
 }
 
 export type ProviderProbeDeps = {
-  version?: (driver: ProviderDriverKind) => Promise<VersionProbe>;
+  version?: (driver: ProviderDriverKind, force: boolean) => Promise<VersionProbe>;
   now?: () => number;
 };
 
@@ -238,7 +246,10 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
   const versionFor = async (driver: ProviderDriverKind, force: boolean): Promise<VersionProbe> => {
     const hit = cache.get(driver);
     if (!force && hit && now() - hit.at < VERSION_CACHE_MS) return hit.probe;
-    const probe = await version(driver);
+    // `force` reaches all the way down: Re-check means ask the machine AND the
+    // registry again, not "re-run the subprocess and re-read an hour-old
+    // answer about what is published".
+    const probe = await version(driver, force);
     cache.set(driver, { at: now(), probe });
     return probe;
   };
@@ -287,6 +298,9 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
         signIn: sign.signIn,
         checkedAt,
         ...(found.version ? { version: found.version } : {}),
+        // Identical on every instance of a driver, because it is a fact about
+        // the binary they share rather than about any one login.
+        ...(found.update ? { update: found.update } : {}),
         ...(message ? { message } : {}),
       };
     });

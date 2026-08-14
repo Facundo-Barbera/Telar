@@ -22,8 +22,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
-import type { ProviderDriverKind, ProviderInstance, ProviderProbe } from "@telar/engine-client";
+import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderUpdateRun } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { cn } from "@/lib/utils";
 import { DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, sortInstances, suggestInstanceId } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -199,6 +200,10 @@ export function ProvidersSection() {
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [adding, setAdding] = useState(false);
   const [rechecking, setRechecking] = useState(false);
+  /** Which DRIVER is updating, not which instance — the binary is what
+   *  changes, so every row for it is busy at once. */
+  const [updating, setUpdating] = useState<ProviderDriverKind | null>(null);
+  const [updateReport, setUpdateReport] = useState<{ driver: ProviderDriverKind; run?: ProviderUpdateRun; error?: string } | null>(null);
 
   const load = useCallback(async (refresh = false) => {
     try {
@@ -265,6 +270,38 @@ export function ProvidersSection() {
     setRechecking(false);
   };
 
+  /**
+   * Update the CLI behind a driver.
+   *
+   * NO COMMAND IS SENT. The driver name is the whole request; the engine
+   * derives what to run from the install it found on disk, and refuses with a
+   * sentence when it cannot — no install, an install it does not recognise, a
+   * package manager that is not here, or a version pinned to this build's
+   * pairing.
+   *
+   * THE ANSWER CARRIES FRESH PROBES, so the version on screen is the one that
+   * is now installed rather than the one that was. The alternative — re-reading
+   * afterwards — would race the engine's own caches and could paint the old
+   * number for a minute, which reads exactly like an update that did nothing.
+   */
+  const runUpdate = async (driver: ProviderDriverKind) => {
+    setUpdating(driver);
+    setUpdateReport(null);
+    try {
+      const answer = await api.updateProviderCli(driver);
+      setInstances(sortInstances(answer.providerInstances));
+      setProbes(answer.probes);
+      setUpdateReport({ driver, run: answer.result });
+    } catch (cause) {
+      setUpdateReport({
+        driver,
+        error: cause instanceof EngineApiError ? cause.message : "That update could not be run.",
+      });
+    } finally {
+      setUpdating(null);
+    }
+  };
+
   const probeFor = (id: string) => probes.find((probe) => probe.instanceId === id);
   const missing = probes.filter((probe) => !probe.installed);
 
@@ -291,6 +328,10 @@ export function ProvidersSection() {
               // No delete on the built-in slot: a session on that driver would
               // have nothing left to route to.
               {...(isDefaultInstance(instance) ? {} : { onRemove: () => void remove(instance) })}
+              onUpdateCli={() => void runUpdate(instance.driver)}
+              // Busy on the DRIVER, so the other logins of the same provider go
+              // busy too rather than offering a second press at one binary.
+              updating={updating === instance.driver}
               error={errors[instance.id] ?? null}
             />
           ))
@@ -307,6 +348,32 @@ export function ProvidersSection() {
           Re-check
         </Button>
       </div>
+
+      {/* WHAT THE INSTALLER ACTUALLY SAID, kept after the run rather than
+          replaced by a green tick. A package manager that exits non-zero has
+          usually explained itself, and the explanation is the only thing that
+          helps — "the update failed" on its own sends people to re-press the
+          button that just failed. Collapsed by default, because a successful
+          `npm install -g` also prints a screenful nobody needs. */}
+      {updateReport && (
+        <div className="mb-6 space-y-1.5 rounded-lg border border-border/70 bg-muted/20 p-3">
+          <div className="flex items-center gap-2">
+            <span className={cn("size-2 shrink-0 rounded-full", updateReport.run?.ok ? "bg-success" : "bg-destructive")} />
+            <span className="text-xs font-medium text-foreground">
+              {DRIVER_LABEL[updateReport.driver]} — {updateReport.error ?? updateReport.run?.message}
+            </span>
+          </div>
+          {updateReport.run && <code className="block truncate font-mono text-[11px] text-muted-foreground">{updateReport.run.command}</code>}
+          {updateReport.run?.output && (
+            <details className="text-[11px] text-muted-foreground">
+              <summary className="cursor-pointer select-none text-muted-foreground/80 hover:text-foreground">Installer output</summary>
+              <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-[10px] leading-snug">
+                {updateReport.run.output}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
 
       {missing.length > 0 && (
         <SettingsGroup title="Not on this machine">

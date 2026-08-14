@@ -23,6 +23,7 @@ import {
   type TurnSubmissionResult,
   type WorkerStatus,
 } from "@telar/engine-client";
+import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
@@ -69,7 +70,10 @@ export type EngineDaemonOptions = {
    * a test supplies its own so the suite never depends on which CLIs happen to
    * be installed on the machine running it.
    */
-  probeProviderVersion?: (driver: ProviderDriverKind) => Promise<VersionProbe>;
+  probeProviderVersion?: (driver: ProviderDriverKind, force: boolean) => Promise<VersionProbe>;
+  /** INJECTED for the same reason as the probe: a test must never actually run
+   *  `npm install -g`. The default spawns for real. */
+  runProviderUpdate?: (driver: ProviderDriverKind) => Promise<CliUpdateRun>;
 };
 
 export type EngineDaemon = {
@@ -291,6 +295,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.probeProviderVersion ? { version: options.probeProviderVersion } : {}),
     now,
   });
+  const updateProvider = options.runProviderUpdate ?? ((driver: ProviderDriverKind) => runCliUpdate(driver));
   const pruneWorkers = (): void => {
     const expired = [...workers.values()].filter((worker) => now() - worker.heartbeatAt > workerLeaseMs);
     for (const worker of expired) {
@@ -713,6 +718,32 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           providerInstances,
           probes: await probeProviders(providerInstances, { force: url.searchParams.get("refresh") === "1" }),
         });
+        return;
+      }
+      /**
+       * UPDATE THE CLI BEHIND A DRIVER.
+       *
+       * KEYED ON THE DRIVER, NOT AN INSTANCE, because the thing being updated
+       * is the binary — five logins of one provider run the same executable,
+       * and pretending this is per-instance would invite five buttons that all
+       * do the same thing to each other.
+       *
+       * THE COMMAND IS NOT IN THE REQUEST AND NEVER WILL BE. The body is empty;
+       * the driver name is the whole input. `cli-updates.ts` derives what to
+       * run from the install it detected on disk. A route that accepted a
+       * command string would be a remote shell wearing a settings button — and
+       * this daemon is already reachable by anything on the tailnet.
+       *
+       * THE FRESH PROBES COME BACK WITH IT, forced past both caches, so the
+       * pane cannot spend the next minute showing the version it just replaced.
+       */
+      const providerUpdate = /^\/v2\/provider-updates\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
+      if (providerUpdate && request.method === "POST") {
+        const driver = decodeURIComponent(providerUpdate[1]!) as ProviderDriverKind;
+        if (driver !== "claude" && driver !== "codex") throw new HttpError(404, "not_found", `unknown provider ${driver}`);
+        const result = await updateProvider(driver);
+        const providerInstances = store.listProviderInstances();
+        writeJson(response, 200, { result, providerInstances, probes: await probeProviders(providerInstances, { force: true }) });
         return;
       }
       const providerInstance = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
