@@ -773,6 +773,54 @@ function updatePrefsPath() {
   return path.join(app.getPath("userData"), "update-prefs.json");
 }
 
+// The userData directory this app used before `productName` was set in
+// package.json. `build.productName` already named the BUNDLE "Telar", but
+// `app.getName()` falls back to package.json `name` — so the data directory was
+// "telar-desktop" while the app in /Applications was Telar.app.
+const LEGACY_USER_DATA_NAME = "telar-desktop";
+
+/**
+ * ADOPT THE PREVIOUS INSTALL'S UPDATE PREFERENCES, ONCE.
+ *
+ * WITHOUT THIS, SHIPPING THE RENAME SILENTLY MOVES EVERY EXISTING INSTALL TO
+ * THE DEFAULT CHANNEL. The app on this machine is on `nightly`;
+ * `DEFAULT_UPDATE_PREFS.channel` is `beta`. The new build reads a different
+ * directory, finds nothing, and defaults — so a nightly user takes exactly one
+ * more update and then goes quiet on a stream they never chose. Nothing errors,
+ * and the only visible symptom is updates that stop arriving.
+ *
+ * ONLY THIS FILE. The rest of the old directory is Chromium's — caches, Local
+ * Storage, cookies — and copying a leveldb between profiles to preserve a theme
+ * choice is a bad trade. localStorage resets once; that is a fresh origin doing
+ * what a fresh origin does, and it is cosmetic.
+ *
+ * NEVER OVERWRITES, so it is a no-op on every run after the first and on a
+ * genuinely new install.
+ */
+function adoptLegacyUpdatePrefs() {
+  const fs = require("node:fs");
+  try {
+    if (fs.existsSync(updatePrefsPath())) return;
+    const legacy = path.join(app.getPath("appData"), LEGACY_USER_DATA_NAME, "update-prefs.json");
+    if (!fs.existsSync(legacy)) return;
+    // Read through the validating reader rather than copying bytes: the old
+    // file is as user-editable as the new one, and a bad channel name adopted
+    // verbatim would point electron-updater at a feed that does not exist.
+    const raw = JSON.parse(fs.readFileSync(legacy, "utf8"));
+    const prefs = {
+      channel: UPDATE_CHANNELS.includes(raw.channel) ? raw.channel : DEFAULT_UPDATE_PREFS.channel,
+      installOnQuit: raw.installOnQuit === true,
+    };
+    writeUpdatePrefs(prefs);
+    console.log(`[telar-desktop] adopted update preferences from the previous install (channel ${prefs.channel})`);
+  } catch (err) {
+    // A first run that cannot read the old directory is a first run, not a
+    // crash. The default channel is a survivable wrong answer; failing to start
+    // is not.
+    console.error("[telar-desktop] could not adopt previous update preferences:", err.message);
+  }
+}
+
 function readUpdatePrefs() {
   const fs = require("node:fs");
   try {
@@ -1090,6 +1138,9 @@ if (SMOKE) {
       try {
         applyDevelopmentAppIcon();
         buildApplicationMenu();
+        // Before anything reads the update preferences, and before the updater
+        // is configured with a channel.
+        adoptLegacyUpdatePrefs();
         const configuredControlPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
         browserControlConfig = {
           port: Number.isInteger(configuredControlPort) && configuredControlPort > 0
