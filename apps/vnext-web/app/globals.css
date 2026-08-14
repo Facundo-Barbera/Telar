@@ -380,6 +380,22 @@ pre span[style*="--sdm-c"] {
    56px header height. */
 :root {
   --titlebar-inset: 0px;
+  /**
+   * ONE HEIGHT FOR THE WHOLE TOP BAND, and it is a contract with the shell.
+   *
+   * The traffic lights are parked at a FIXED point in the window (see
+   * apps/desktop/window-chrome.js, which centres them in this exact number), so
+   * every pane that can be the window's left edge has to agree on how tall its
+   * header is — otherwise the lights are centred for one of them and visibly
+   * low in the other. They were: the rail's header was 56px and the session
+   * masthead 44px, so hiding the rail dropped the lights 6px below the
+   * breadcrumb beside them.
+   *
+   * UNCONDITIONAL, not shell-only. Two headers of different heights sitting
+   * side by side is worth fixing in a browser tab too — the rail's header and
+   * the masthead are one row across the window, and they should read as one.
+   */
+  --titlebar-height: 3.5rem;
 }
 [data-telar-shell="macos"] {
   --titlebar-inset: 4.75rem;

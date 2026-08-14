@@ -153,7 +153,7 @@ function SessionMasthead({
        row at every width. */
     <header
       className={cn(
-        "app-drag flex min-h-11 shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
+        "app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
         mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
       )}
     >
@@ -269,12 +269,17 @@ function SessionTurn({
   onRetry,
   onDiscard,
   onOpenAgent,
+  onOpenTab,
 }: {
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
    *  the panel on it. */
   onOpenAgent?: (taskId: string) => void;
+  /** Pressing an issue, pull request or file chip in the message you SENT. The
+   *  reference was actionable enough for the agent; it should be actionable for
+   *  the person who wrote it. */
+  onOpenTab?: (tab: PanelTab) => void;
   turn: JournalTurn;
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
@@ -308,7 +313,7 @@ function SessionTurn({
               reappearing as `#409 "…" (https://github.com/…)`, URL and all.
               Nothing is stored to fix it: the draft has always been plain text
               with the chips derived from it, and this reads it the same way. */}
-          <PromptText text={turn.prompt} />
+          <PromptText text={turn.prompt} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
           {/* WHAT WAS SENT, not what the model made of it. A transcript that
               shows the words and not the screenshot has lost half the message —
               and re-reading it later is exactly when that half matters. Named
@@ -1118,6 +1123,7 @@ export function SessionCockpit({
                 requests={openRequests.filter((request) => request.runId === turn.runId)}
                 sending={sending}
                 onOpenAgent={showAgent}
+                onOpenTab={showPanelTab}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 onDiscard={(item) => void discardAmbiguous(item)}

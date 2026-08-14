@@ -106,7 +106,7 @@ const APP_SIDEBAR_RESIZABLE = {
  */
 function TelarSidebarHeader() {
   return (
-    <SidebarHeader className="app-drag h-14 justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
+    <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="app-no-drag shrink-0" />
         <Link
