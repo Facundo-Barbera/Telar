@@ -39,24 +39,35 @@ Both converge on the electron-builder `build` config in [`apps/desktop/package.j
 2. **Fetch + verify the ref**: `git fetch --prune origin`, then `git rev-parse --verify "${REF}^{commit}"` — refuses to proceed if the ref doesn't resolve after fetch. An extra guard confirms the resolved SHA is reachable from an `origin/*` branch (`git branch -r --contains "$SHA" | grep -q 'origin/'`), so a stale local-only ref can never sneak through.
 3. **Pristine snapshot worktree**: `git worktree add --detach "$SNAP" "$SHA"` into a `mktemp -d` temp dir. A `trap cleanup EXIT` removes the worktree and temp root unconditionally. All worktree operations name only the temp path — the live checkout and its `bun.lock` are never read or written.
 4. **Frozen install** inside the snapshot: `NODE_OPTIONS= bun install --frozen-lockfile` — uses the snapshot's own committed `bun.lock`, not the live one.
-5. **Standalone web build**: `bash apps/desktop/build-web.sh`, run from inside the snapshot (see below).
+5. **App build (web + engine)**: `bash apps/desktop/build-app.sh`, run from inside the snapshot (see below).
 6. **Stamp `build-info.json`** into `apps/web/.next-desktop/standalone/build-info.json` *before* packaging: `{ shortSha, sha, ref, commitDate, builtAt }`. This lands at `<Resources>/standalone/build-info.json` inside the packaged `.app` and is read by `apps/desktop/main.js`'s `readBuildInfo()` to set the window title to `Telar <shortSha>`.
 7. **Package**: `cd apps/desktop && bunx electron-builder --dir` (target set is `--targets`, default `dir`; the release/nightly CI workflows pass `zip,dmg`/`zip`); asserts the built app exists at `release/mac-arm64/Telar.app`.
 8. **Atomic swap into `--out`**: stage a copy beside the destination (`.Telar.app.staging.$$`), move any existing destination to a backup (`.Telar.app.old.$$`), `mv` (atomic rename, same filesystem) the staged copy into place, remove the backup.
-9. **Smoke test**: runs `"$DEST_APP/Contents/MacOS/Telar" --smoke`, greps the output for the literal line `^SMOKE_OK`, fails the whole script if absent.
+9. **Smoke test**: runs `env -u ELECTRON_RUN_AS_NODE "$DEST_APP/Contents/MacOS/Telar" --smoke`, greps the output for the literal line `^SMOKE_OK`, fails the whole script if absent. Smoke now boots the ENGINE first and waits for `/v2/health` (`ENGINE_OK`) before starting the web server, so a bundle that ships but cannot boot fails here rather than at somebody's first session. The `env -u` is load-bearing: `main.js` sets `ELECTRON_RUN_AS_NODE` for the children it forks, so any shell descended from a running Telar turns the app binary into a bare node, which exits with `bad option: --smoke` before any Telar code runs.
 10. Prints `BUILD OK`, the final app path, and the short SHA/ref. **Optional, only with `--publish-r2`**: uploads the produced artifacts plus electron-updater's `<channel>-mac.yml`/`.blockmap` files to a Cloudflare R2 bucket over the S3-compatible API — see [Integration Architecture](./integration-architecture.md#update-channel--r2-topology).
 
 Additional flags not exercised by a bare local run, used by CI: `--channel beta|nightly` bumps the version to the next prerelease for that channel before packaging (via `scripts/set-desktop-version.mjs`); `--version <x.y.z>` uses an explicit version instead of deriving one (used when a git tag already named it); `--publish-r2` requires `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `UPDATE_PROXY_URL`, `UPDATE_PROXY_KEY` in the environment and the `aws` CLI on `PATH`.
 
-### `apps/desktop/build-web.sh` — building the standalone web bundle
+### `apps/desktop/build-app.sh` — building the two children
 
-Called by step 5 above (and independently runnable via `bun run build:web` in `apps/desktop`):
+Called by step 5 above (and independently runnable via `bun run build:app` in `apps/desktop`).
+**It builds two things, because the app is two processes**: the cockpit draws and the engine
+runs sessions. Packaging only the web tier produces an app where every page loads and every
+action answers `engine_unavailable`.
 
 1. `cd apps/web`; runs `NEXT_OUTPUT=standalone NEXT_DIST_DIR=.next-desktop NODE_OPTIONS= bunx next build`. `NEXT_DIST_DIR=.next-desktop` keeps this build isolated from the dev server's own `.next` dir (see [Web Build & Serving](#web-build--serving) for how both env vars are read in `next.config.ts`).
 2. Copies assets Next's standalone output omits: `static/` into `standalone/apps/web/.next-desktop/static`, and `public/` (if present) into `standalone/apps/web/public`.
-3. **Materializes `@playwright/mcp`**: resolves the real (symlink-dereferenced) package dir, walks up to the bun store's `node_modules` (mcp + its `playwright`/`playwright-core` runtime deps), `cp -RL`s that whole tree into `.next-desktop/playwright-mcp/node_modules` (dereferencing bun's `.bun`-store symlinks into real files), asserts `cli.js` exists or exits 1. Needed because `@playwright/mcp` is a devDependency — Next's output tracing never pulls it into standalone, and it isn't on a Finder-launched app's `PATH`. This is what lets the packaged Verifier's Critic Panel drive a real browser.
-4. **Materializes the `@anthropic-ai/claude-agent-sdk-<os>-<arch>` native CLI binary** (~226MB): resolves the true source binary dir via `createRequire(sdk.mjs).resolve(...)`, asserts it's executable, finds the single `@anthropic-ai+claude-agent-sdk@*` version-hash dir under the just-built standalone's `.bun` store, and `cp -RL`s the real binary + package into the exact `node_modules` slot the SDK's runtime `createRequire(...).resolve(...)` call will look in. Needed because the SDK loads this binary dynamically (never a static import), so Next's tracing drops it and bun's peer symlink doesn't survive packaging.
-5. Prints the final standalone path and `du -sh` sizes.
+3. **Bundles the engine**: `bun build src/main.ts --target=node --format=esm --external @anthropic-ai/claude-agent-sdk` into `apps/engine/dist/engine.mjs` (~0.8MB). There is no `bun install` inside a `.app` and no bun binary in it either, so the engine cannot ship as the TypeScript the dev stack runs; `--target=node` because the shell forks it with `ELECTRON_RUN_AS_NODE`, exactly as it forks the Next server.
+4. **Materializes the Agent SDK** beside that bundle (`engine/dist/node_modules/@anthropic-ai/claude-agent-sdk`, 3.9MB). Kept **external** rather than inlined — it imports nothing but node builtins, so bundling would work — because `apps/engine/src/cli-resolution.ts` reads the SDK's own `package.json` to derive which Claude Code CLI version this build pairs with, and that read resolves from disk. Bundle it away and the drift check silently downgrades to `unverified` in the one build where a wrapper/CLI mismatch is hardest to notice.
+5. **Materializes `@playwright/mcp`** beside the engine: resolves the real (symlink-dereferenced) package dir, walks up to the bun store's `node_modules` (mcp + its `playwright`/`playwright-core` runtime deps), `cp -RL`s that whole tree into `engine/dist/playwright-mcp/node_modules`, asserts `cli.js` exists or exits 1. Needed because `@playwright/mcp` is a devDependency Next's tracing never pulled in and it isn't on a Finder-launched app's `PATH`. It ships with the engine because the engine is what spawns it (`src/browser/transport.ts`).
+6. Prints the final paths and `du -sh` sizes.
+
+**The SDK's ~272MB native CLI binary is deliberately NOT shipped**, and this is a change from
+the pipeline that preceded it. The engine resolves the user's own Claude Code install
+(`CLAUDE_CODE_EXECUTABLE` → `~/.local/bin` → the brew prefixes → `PATH` last) and passes it as
+`pathToClaudeCodeExecutable`, refusing the turn with an actionable message when there is none —
+the same thing it has always done for Codex. T3 Code makes the same call: its `app.asar` carries
+the SDK's three JavaScript files and no binary.
 
 ### Packaging config (electron-builder, `apps/desktop/package.json` → `build`)
 
@@ -70,12 +81,13 @@ missing four `files` entries and still showed `identity: null`, which no longer 
   "asar": true,
   "files": [
     "main.js", "browser-manager.js", "browser-control-server.js",
-    "command-keys.js", "preload.js", "server-preload.js", "package.json"
+    "command-keys.js", "preload.js", "server-preload.js", "window-chrome.js", "package.json"
   ],
   "extraResources": [
     { "from": "../web/.next-desktop/standalone", "to": "standalone" },
     { "from": "../web/.next-desktop/standalone/node_modules/.bun", "to": "standalone/node_modules/.bun" },
-    { "from": "../web/.next-desktop/playwright-mcp/node_modules", "to": "playwright-mcp/node_modules" }
+    { "from": "../engine/dist", "to": "engine" },
+    { "from": "../engine/dist/node_modules", "to": "engine/node_modules" }
   ],
   "directories": { "output": "release" },
   "mac": { "target": [{ "target": "dir", "arch": "arm64" }], "hardenedRuntime": true },
@@ -83,8 +95,9 @@ missing four `files` entries and still showed `identity: null`, which no longer 
 }
 ```
 
-- `files` covers only the desktop shell's own JS (`main.js`, `browser-manager.js`, `browser-control-server.js`, `command-keys.js`, `preload.js`, `server-preload.js`, `package.json`); the entire Next server, its deps, the Playwright MCP CLI, and the native Claude binary are delivered via `extraResources`, which sits outside the asar archive under `Contents/Resources`.
-- The second `extraResources` entry (re-copying `standalone/node_modules/.bun`) is load-bearing, not redundant: it's the slot `build-web.sh` step 4 injects the real Claude binary into, and this entry ensures that injected content is captured even though the first entry already covers `standalone` generally.
+- `files` covers only the desktop shell's own JS; the entire Next server, its deps, the engine bundle, the Agent SDK and the Playwright MCP CLI are delivered via `extraResources`, which sits outside the asar archive under `Contents/Resources`.
+- **The two `node_modules` entries are load-bearing, not redundant.** electron-builder silently drops a TOP-LEVEL `node_modules` from an extraResources copy, and says nothing about it. Both trees this app ships have one: the standalone tree's holds `next` itself, and the engine bundle's holds the Agent SDK. The symptom is never "a file is missing" — it is `Cannot find module 'next'` from a `server.js` that is plainly there, or a Claude session that fails at the first turn in an app whose every other surface works. A NESTED `node_modules` copies fine (`engine/dist/playwright-mcp/node_modules` does), which is what makes the rule easy to believe you have already satisfied. `apps/desktop/packaging.test.js` pins both entries.
+- `files` must list every local module `main.js` requires. `window-chrome.js` was once added to `main.js` and never added here, which threw MODULE_NOT_FOUND on the packaged app's first line while the dev checkout — which reads the file straight off disk — worked perfectly. The same test derives the required list from `main.js` itself.
 - `mac.target` is `dir` only in the committed config — no `dmg`/`zip`/`pkg` by default, just an unpacked `.app` directory; `--targets` on the command line (see [End-to-end steps](#end-to-end-steps-scriptsbuild-desktopsh) above) overrides this per-invocation, and both release workflows pass `zip,dmg`/`zip`. `arch: arm64` only — no universal/x64 build, no `win`/`linux` targets — macOS-only today.
 - **Signing is no longer forced off at the electron-builder config level, but local packaging still forces it off at the script level.** The previous `identity: null` (which forced an unsigned build regardless of an available cert) has been removed from `package.json`'s `build` block. electron-builder now auto-signs whenever a "Developer ID Application" certificate is discoverable in the active Keychain: `.github/workflows/release-desktop.yml` and `nightly-desktop.yml` both import one into a temporary keychain before building, so CI-produced betas and nightlies are signed. A plain local `bun run desktop:package` (via `scripts/package-desktop.sh`) still produces an unsigned build — but not because no cert is available: the script explicitly exports `CSC_IDENTITY_AUTO_DISCOVERY=false` before invoking electron-builder (comment: "Force unsigned regardless of any Developer ID cert sitting in Keychain — this script is for fast local iteration, not a release build"), so even a developer with a valid Developer ID cert in their own Keychain gets an unsigned local build.
 - **Notarization is separate from signing**, gated on `APPLE_API_KEY`/`APPLE_API_KEY_ID`/`APPLE_API_ISSUER` being set: `release-desktop.yml` sets them (betas are notarized, since they are also downloaded by hand as GitHub Release assets, where Gatekeeper's quarantine bit matters); `nightly-desktop.yml` deliberately omits them (nightlies are signed but not notarized — they only ever arrive via the auto-update channel, which does not carry the quarantine bit, so Gatekeeper never checks notarization for them; see the workflow file's own cost-analysis comment, ~35 billable macOS-runner minutes saved per nightly).
@@ -156,7 +169,7 @@ const nextConfig: NextConfig = {
 - `NEXT_OUTPUT=standalone` — switches Next to standalone output mode (a self-contained `server.js` plus a pruned `node_modules`), used exclusively by desktop packaging. A plain `next build` (dev or normal production serving) leaves this unset and gets Next's default (non-standalone) output, served via `next start`.
 - `transpilePackages: ["@telar/core"]` — required because `apps/web` imports `@telar/core` via `workspace:*` as TypeScript source (`packages/core`'s `exports` field points at `./src/index.ts` directly, no build step of its own); Next must transpile it as part of the web build rather than expecting pre-built JS.
 
-Both the desktop build (`apps/desktop/build-web.sh`) and the [`scripts/telar`](../scripts/telar) stable-cockpit launcher ultimately drive this same `next build`/`next start` pair — the desktop path additionally sets `NEXT_OUTPUT=standalone` and hand-patches two runtime dependencies into the output (see [Desktop Packaging Pipeline](#desktop-packaging-pipeline)); the launcher path runs a plain (non-standalone) `next build` + `next start` in a separate, dedicated checkout.
+The desktop build (`apps/desktop/build-app.sh`) drives this same `next build` pair, additionally setting `NEXT_OUTPUT=standalone` and laying down the engine beside it (see [Desktop Packaging Pipeline](#desktop-packaging-pipeline)). [`scripts/telar`](../scripts/telar) still points at the FROZEN `apps/web_old` and runs a plain (non-standalone) `next build` + `next start` in a separate, dedicated checkout — it launches the legacy cockpit, not this one.
 
 ### `scripts/telar` — the stable cockpit launcher
 

@@ -33,6 +33,7 @@ A green verify only moves a loom to `ready` — the human always accepts.
 | --- | --- |
 | `apps/web` | **The app being built.** Standalone Next.js cockpit over the engine. |
 | `apps/engine` | The Telar control plane — a local authenticated daemon owning projects, sessions and a durable turn journal. |
+| `apps/desktop` | The Electron shell. Forks the engine, then the cockpit's standalone server, and owns auto-update and the browser host. |
 | `packages/engine-client` | The dependency-free engine protocol types + HTTP client. |
 | `apps/web_old` | **FROZEN.** The legacy cockpit — looms, orchestration, verification, accept / steer / reject. Read-only design source for the Telar rebuild; see `apps/web_old/AGENTS.md`. |
 | `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
@@ -44,9 +45,12 @@ It was renamed from `apps/web` so it is not worked on by accident, and it was
 retired from verification in the same change: `bun run verify` and CI no longer
 typecheck it, lint it, or run its tests, and the invariants in
 `packages/core/test/invariants.test.ts` that scanned it were retired alongside
-it. Each retirement carries a note naming what stopped being checked. Desktop
-packaging and the legacy launchers were repointed at the new path rather than
-retired, so the legacy app still builds and runs.
+it. Each retirement carries a note naming what stopped being checked.
+
+Desktop packaging now builds `apps/web` and `apps/engine` — the shipped app is
+the rebuild. What still points at the frozen tree is `scripts/telar` (the legacy
+stable-cockpit launcher) and `scripts/backfill-tool-detail.ts`, so the legacy app
+remains independently runnable.
 
 ## Getting started
 
@@ -154,6 +158,13 @@ The packed app lands at `apps/desktop/release/mac-arm64/Telar.app`, stamped with
 the commit it came from — the smoke log prints `BUILD Telar <sha>`, so you can
 confirm you launched what you just built.
 
+**The packaged app runs YOUR Claude Code and YOUR Codex.** It does not bundle
+either — the engine resolves your own install (`CLAUDE_CODE_EXECUTABLE` or
+`CODEX_BIN`, then `~/.local/bin`, the Homebrew prefixes, then `PATH`) and refuses
+a turn with an actionable message when there is none. Settings → Providers
+reports the exact binary and version that will answer you, and warns when a
+Claude Code release drifts from the control protocol this build pairs with.
+
 This is intentionally an unsigned, local-only `.app` flow; it does not publish,
 auto-update, sign, or notarize anything. On the first launch, macOS may block
 the app because it is unsigned. In Finder, Control-click `Telar.app`, choose
@@ -165,10 +176,10 @@ added later without changing this local workflow.
 A type error naming a route absent from the tree — say
 `Cannot find module '../../app/api/proxy/adopt/route.js'` — means a stale
 `.next/` from an older build is being type-checked alongside `.next-desktop/`,
-since `apps/web_old/tsconfig.json` includes both. Clear it and package again:
+since `apps/web/tsconfig.json` includes both. Clear it and package again:
 
 ```bash
-rm -rf apps/web_old/.next
+rm -rf apps/web/.next
 ```
 
 ## Design docs

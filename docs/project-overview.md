@@ -87,7 +87,7 @@ without an external auth library.
 | web | Lint | ESLint + `eslint-config-next` | ^9 / 16.2.10 |
 | desktop | Shell runtime | Electron | ^43.1.1 |
 | desktop | Packaging | electron-builder | ^26.15.3 |
-| desktop | Payload | Bundles `apps/web`'s Next.js standalone build + `@playwright/mcp` CLI + the claude-agent-sdk native binary | n/a |
+| desktop | Payload | Bundles `apps/web`'s Next.js standalone build + the `apps/engine` daemon bundle + the Agent SDK's JavaScript + `@playwright/mcp` CLI. The SDK's native Claude binary is NOT bundled — the engine runs the user's own install. | n/a |
 | tooling | Type checking | TypeScript | web ^5, core ^6.0.3 (not unified) |
 
 Note: TypeScript is **not** version-unified across the monorepo — `apps/web`
@@ -106,7 +106,7 @@ telar/
 │   └── desktop/         Electron shell ("viable tier"). No custom menus/tray/IPC/auto-update.
 │       ├── main.js, server-preload.js   forks the packaged Next standalone server, opens a BrowserWindow
 │       ├── build-web.sh, install-app.sh
-│       └── package.json  electron-builder config (extraResources bundles the Next standalone output + playwright-mcp + claude-agent-sdk native binary)
+│       └── package.json  electron-builder config (extraResources bundles the Next standalone output + the engine bundle + the Agent SDK + playwright-mcp)
 ├── packages/
 │   └── core/             @telar/core — the loom engine (pure TypeScript library, no build step; exports source directly)
 │       ├── src/           59 non-test modules: engine.ts, tick.ts, weave.ts, executor.ts, verifier.ts,
@@ -160,7 +160,7 @@ described further here): `.cleanup-archives/`, `_bmad/`, `_bmad-output/`,
   environment/bundling glue: it forks the packaged Next.js standalone server (built
   from `apps/web`) as a child process, captures a login-shell `PATH` so CLI tools
   resolve, picks a stable persisted port, and hand-stamps two runtime dependencies
-  (`@playwright/mcp` CLI, the claude-agent-sdk native binary) into the standalone
+  (`@playwright/mcp` CLI, the Agent SDK's JavaScript) beside the engine bundle and the standalone
   bundle since Next's tracing drops both. A `--smoke` mode boots the real server,
   curls it, and verifies both bundled binaries work — a fail-closed gate used by
   `scripts/build-desktop.sh` after packaging. See

@@ -77,7 +77,7 @@ There is no single `ANTHROPIC_API_KEY`-style env var Telar requires globally. Au
 
 ### Desktop build env vars
 
-`apps/desktop/build-web.sh` sets `NEXT_OUTPUT=standalone NEXT_DIST_DIR=.next-desktop` when invoking `next build`, so the desktop's standalone output tree never collides with the dev server's own `.next`.
+`apps/desktop/build-app.sh` sets `NEXT_OUTPUT=standalone NEXT_DIST_DIR=.next-desktop` when invoking `next build`, so the desktop's standalone output tree never collides with the dev server's own `.next`.
 
 ### `.env` files
 
@@ -109,7 +109,7 @@ Desktop has no dev-mode hot-reload workflow of its own — it boots the **alread
 
 ```bash
 cd apps/desktop
-bun run build:web      # bash ./build-web.sh — builds the standalone Next server into apps/web/.next-desktop
+bun run build:app      # bash ./build-app.sh — builds BOTH children: the standalone Next server into apps/web/.next-desktop, and the engine daemon into apps/engine/dist
 bun run smoke            # electron . --smoke — headless smoke check, exits after printing SMOKE_OK
 bun run pack              # builds + smoke-tests the current working tree into release/mac-arm64/Telar.app
 bun run install:local     # builds + smoke-tests, then installs to ~/Applications/Telar.app
@@ -127,7 +127,11 @@ bun run desktop:install -- --system
 The local package is unsigned and intended for development/use on the current
 Mac only. It does not publish, sign, notarize, or auto-update.
 
-`build-web.sh` does more than a plain `next build`: it also hand-copies `static`/`public` into the standalone tree (Next's standalone output omits them), materializes a self-contained `@playwright/mcp` closure next to the standalone tree (a devDependency Next's tracing drops, needed at runtime for the packaged Verifier's Critic Panel), and materializes the `@anthropic-ai/claude-agent-sdk-<os>-<arch>` native CLI binary (~226MB, loaded via `createRequire` at runtime, so static tracing also drops it) into the exact `node_modules` slot the SDK resolves. See [../apps/desktop/build-web.sh](../apps/desktop/build-web.sh) for the full commented pipeline.
+`build-app.sh` builds **two** children, because the app has two: the cockpit draws and the engine runs sessions. Shipping only the web tier produces an app where every page loads and every action answers `engine_unavailable`.
+
+Beyond a plain `next build` it: hand-copies `static`/`public` into the standalone tree (Next's standalone output omits them); bundles `apps/engine` into a single `engine.mjs` with `bun build --target=node`, since there is no `bun install` inside a `.app` and no bun binary in it either; copies the Agent SDK (3.9MB of JavaScript) beside that bundle, kept **external** so `cli-resolution.ts` can read the Claude Code version this build pairs with; and materializes a self-contained `@playwright/mcp` closure beside the engine, which is what spawns it.
+
+**The SDK's ~272MB native CLI binary is deliberately NOT shipped.** The engine resolves the user's own Claude Code install and refuses the turn with an actionable message when there is none — the same thing it has always done for Codex, and the same call T3 Code makes (its `app.asar` carries the SDK's three JavaScript files and no binary). See [../apps/desktop/build-app.sh](../apps/desktop/build-app.sh) for the full commented pipeline.
 
 For a **repeatable, from-scratch, origin-only build** (never from your dirty working tree), use `scripts/build-desktop.sh` instead — see [Repo Tooling & Scripts](#repo-tooling--scripts).
 
@@ -282,7 +286,7 @@ bash scripts/build-desktop.sh --ref origin/some-branch --out ./out-dir
 1. `git fetch --prune origin`, resolves `<ref>^{commit}`, refuses to proceed unless the SHA is reachable from some `origin/*` branch.
 2. Creates a throwaway `git worktree add --detach` snapshot in a temp dir (cleaned up via `trap cleanup EXIT`); the live checkout and its `bun.lock` are never touched.
 3. `NODE_OPTIONS= bun install --frozen-lockfile` inside the snapshot (uses the snapshot's own committed `bun.lock`).
-4. Runs `apps/desktop/build-web.sh` inside the snapshot.
+4. Runs `apps/desktop/build-app.sh` inside the snapshot.
 5. Stamps `build-info.json` (`{ shortSha, sha, ref, commitDate, builtAt }`) into the standalone output before packaging.
 6. `bunx electron-builder --dir`, asserts `release/mac-arm64/Telar.app` exists.
 7. Atomic swap into `--out`: stage → back up any existing dest → `mv` (atomic rename) → remove backup.

@@ -106,7 +106,7 @@ telar/                              Bun-workspaces monorepo (workspaces: apps/*,
 │       │                           Finder-launched apps inherit a bare PATH but Telar shells out to
 │       │                           git/gh/claude/bun
 │       ├── server-preload.js       Preload script for the BrowserWindow's renderer process
-│       ├── build-web.sh            Builds apps/web as a Next "standalone" output into
+│       ├── build-app.sh            Builds apps/web as a Next "standalone" output into
 │       │                           apps/web/.next-desktop/standalone, copies static/public assets in
 │       │                           (Next doesn't), and materializes two runtime deps standalone tracing
 │       │                           misses: @playwright/mcp (for the packaged Verifier) and the
@@ -187,7 +187,7 @@ telar/                              Bun-workspaces monorepo (workspaces: apps/*,
     │                               origin ref (default origin/main) — never the working tree — via
     │                               `git worktree add --detach` into a temp dir, so uncommitted local
     │                               changes can never leak into a packaged build. Pipeline: fetch →
-    │                               pristine worktree checkout → frozen install → build-web.sh → stamp
+    │                               pristine worktree checkout → frozen install → build-app.sh → stamp
     │                               build-info.json → `electron-builder --dir` → atomic swap into --out →
     │                               run the built app with --smoke (must print SMOKE_OK) → cleanup
     ├── backfill-tool-detail.ts     One-off/maintenance data-migration script
@@ -218,7 +218,7 @@ telar/                              Bun-workspaces monorepo (workspaces: apps/*,
   verifier-report-card) and live chat/session UI respectively.
 - **`apps/desktop/`** — a thin shell: it contains no application logic of its own, only the Electron
   boot process (`main.js`), a build script that assembles a Next.js standalone bundle
-  (`build-web.sh`), and electron-builder packaging config.
+  (`build-app.sh`), and electron-builder packaging config.
 - **`scripts/e2e/greenfield-next/`** — the project's own scripted end-to-end scenario, exercising a
   "greenfield Next.js project" through Telar's loom lifecycle from the outside.
 
@@ -240,15 +240,15 @@ telar/                              Bun-workspaces monorepo (workspaces: apps/*,
   package's `exports["."]` points straight at `./src/index.ts`). Consumed from route handlers (e.g. the
   `looms/` API tree) and from `apps/web/instrumentation.ts`, `apps/web/lib/loom-mcp.ts`, and
   `apps/web/lib/ultra-mcp.ts`.
-- **`apps/desktop` → `apps/web`**: `apps/desktop/build-web.sh` runs `next build` inside `apps/web` with
+- **`apps/desktop` → `apps/web`**: `apps/desktop/build-app.sh` runs `next build` inside `apps/web` with
   `NEXT_OUTPUT=standalone NEXT_DIST_DIR=.next-desktop`, producing a standalone server tree at
   `apps/web/.next-desktop/standalone/apps/web/server.js`. `apps/desktop/main.js` forks that
   `server.js` as a child process and points its `BrowserWindow` at the resulting local URL. Because
-  Next's output tracing misses two runtime dependencies, `build-web.sh` also manually copies in
+  Next's output tracing misses two runtime dependencies, `build-app.sh` also manually copies in
   `@playwright/mcp` (for the packaged, sandboxed Verifier) and the `@anthropic-ai/claude-agent-sdk`
   platform-specific native CLI binary.
-- **`scripts/build-desktop.sh` → `apps/desktop/build-web.sh`**: the top-level orchestrator (fetch a
-  pristine `git worktree` of an origin ref → frozen install → invoke `build-web.sh` → stamp
+- **`scripts/build-desktop.sh` → `apps/desktop/build-app.sh`**: the top-level orchestrator (fetch a
+  pristine `git worktree` of an origin ref → frozen install → invoke `build-app.sh` → stamp
   `build-info.json` → `electron-builder --dir` → atomic swap into `--out` → smoke-test the result).
   It deliberately never reads the working tree, so uncommitted local changes can never ship.
 - **`apps/desktop/package.json` `build.extraResources`**: pulls `apps/web/.next-desktop/standalone`
