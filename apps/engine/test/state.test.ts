@@ -1014,6 +1014,88 @@ test("a session reports when its last turn ended, and whether it ended badly", (
   expect(failed.lastTurnFailed).toBe(true);
 });
 
+test("a turn that ends takes its sub-agents with it, however it ended", () => {
+  /**
+   * FOUND IN REAL DOGFOOD DATA, not by a test: one session had an `agent` task
+   * sitting at `running` long after its turn was discarded — a roster showing a
+   * live sub-agent that no process anywhere was running. The driver sweeps its
+   * own happy path and says why in a comment; what it cannot cover is a turn
+   * ended by a HUMAN after recovery, which has no driver attached at all.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_a", kind: "agent", state: "running", title: "Explore" } },
+    // Outliving its turn is the DEFINITION of background, so this one is not
+    // swept — the contract says so on `TaskKind`.
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
+  ]);
+  expect(store.getSession("session_one").activity).toBe("working");
+
+  store.stopTurn("session_one", "run_one");
+
+  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  expect(byId.get("task_a")).toMatchObject({ state: "failed", failure: "the turn was stopped before this agent reported back" });
+  expect(byId.get("task_b")).toMatchObject({ state: "running" });
+  // The journal carries the closure, so a live client is not left rendering a
+  // sub-agent the store has already given up on.
+  expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
+});
+
+test("a session with live background work is not idle, and says which kind", () => {
+  /**
+   * THE HOLE THE CONTRACT ALREADY NAMED. `TaskKind` says a background task
+   * "continues after the turn that started it settles. This is why a session
+   * can be 'still working' with no active turn" — and `activity` was derived
+   * from the queue alone, so every one of those sessions reported `idle`. The
+   * row went quiet while the work went on.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Started the watcher" });
+
+  // The queue is empty and the watcher is not.
+  const monitoring = store.getSession("session_one");
+  expect(monitoring.activity).toBe("monitoring");
+  expect(monitoring.activityAt).toBe(100);
+
+  // A LIVE AGENT OUTRANKS IT — `livenessOf`'s own rule, applied here rather
+  // than restated: a fan-out mid-flight reads as working even while a log tail
+  // is also running.
+  store.submitTurn("session_one", { runId: "run_two", input: "And fan out" });
+  const second = store.claimNextTurn("worker_one")!;
+  const secondToken = second.turn.claim!.token;
+  store.markRunning("session_one", "run_two", secondToken);
+  store.ingestObservations("session_one", "run_two", secondToken, [
+    { kind: "task.started", task: { id: "task_c", kind: "agent", state: "running", title: "Explore" } },
+  ]);
+  // A background task of its own does NOT get swept, so completing the turn
+  // leaves the agent closed and the watcher alive.
+  store.completeTurn("session_one", "run_two", secondToken, { text: "Done" });
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+
+  // And once the watcher stops, the session is genuinely idle.
+  store.submitTurn("session_one", { runId: "run_three", input: "Stop it" });
+  const third = store.claimNextTurn("worker_one")!;
+  const thirdToken = third.turn.claim!.token;
+  store.markRunning("session_one", "run_three", thirdToken);
+  store.ingestObservations("session_one", "run_three", thirdToken, [
+    { kind: "task.completed", task: { id: "task_b", kind: "background", state: "completed" } },
+  ]);
+  store.completeTurn("session_one", "run_three", thirdToken, { text: "Stopped" });
+  expect(store.getSession("session_one").activity).toBe("idle");
+  expect(store.getSession("session_one").activityAt).toBeUndefined();
+});
+
 test("the inbox policy is one document, defaulted rather than absent", () => {
   // THE POLICY HALF OF SETTLING. The per-session pin says "not this one"; this
   // says how long anything stays in the list at all — and it is on the engine

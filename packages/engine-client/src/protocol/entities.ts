@@ -65,17 +65,29 @@ export type SessionState = z.infer<typeof SessionState>;
 /**
  * WHAT A SESSION IS DOING, ordered by what it wants from the reader.
  *
- *   blocked  a request is open and nobody has answered it — it wants YOU
- *   working  a turn is running; it wants nothing, it is busy
- *   queued   a turn is waiting for a worker to pick it up
- *   idle     nothing in flight
+ *   blocked     a request is open and nobody has answered it — it wants YOU
+ *   working     a turn is running, or a sub-agent is; it wants nothing, it is busy
+ *   queued      a turn is waiting for a worker to pick it up
+ *   monitoring  no turn, no agent — but a watch loop or long shell is alive
+ *   idle        nothing in flight
  *
  * THE ORDER IS THE POINT and it is not the order of severity — `blocked` is not
  * worse than `working`, it is more ACTIONABLE, and a sidebar exists to answer
  * "what needs me" before "what is happening". A session that is both blocked
  * and working reports blocked.
+ *
+ * `monitoring` EXISTS BECAUSE A SESSION CAN BE ALIVE WITH NO TURN. `TaskKind`
+ * says so in as many words — a background task "continues after the turn that
+ * started it settles. This is why a session can be 'still working' with no
+ * active turn" — and until it was added, every such session reported `idle`. The
+ * row went quiet while the work went on, which is the one thing an inbox may not
+ * do. `livenessOf` in ./tasks.ts is the fold, and the engine applies it.
+ *
+ * IT IS BELOW `queued` AND ABOVE `idle` on purpose: background watching is real
+ * work and deserves a badge, but it is nobody's turn and it can run for hours,
+ * so it must not outrank a turn that is actually about to answer you.
  */
-export const SessionActivity = z.enum(["blocked", "working", "queued", "idle"]);
+export const SessionActivity = z.enum(["blocked", "working", "queued", "monitoring", "idle"]);
 export type SessionActivity = z.infer<typeof SessionActivity>;
 
 /**

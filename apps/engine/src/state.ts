@@ -11,6 +11,7 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
+  livenessOf,
   DEFAULT_INBOX_POLICY,
   InboxPolicy as InboxPolicySchema,
   Item as ItemSchema,
@@ -534,6 +535,17 @@ function storedSession(
  * millisecond would keep reporting the failure. Ties break toward queue order,
  * which is finish order.
  */
+/**
+ * The states `livenessOf` counts as alive, spelled once beside it.
+ *
+ * The contract decides WHETHER a session is live; this only has to date it, and
+ * dating it off a different set of states than the one that classified it is
+ * how `activityAt` ends up describing a task that already finished.
+ */
+function isLiveTask(task: Task): boolean {
+  return task.state === "pending" || task.state === "running" || task.state === "waiting";
+}
+
 function lastEndedTurn(turns: readonly Turn[]): Turn | undefined {
   let latest: Turn | undefined;
   for (const turn of turns) {
@@ -2085,6 +2097,28 @@ export class EngineStore {
     if (running) return { ...base, activity: "working", activityAt: running.startedAt ?? running.updatedAt };
     const waiting = turns.find((turn) => turn.state === "queued" || turn.state === "claimed");
     if (waiting) return { ...base, activity: "queued", activityAt: waiting.acceptedAt };
+    /**
+     * A THIRD FILE READ, AND IT CLOSES A HOLE THE CONTRACT ALREADY NAMED.
+     *
+     * `TaskKind` says a background task "continues after the turn that started
+     * it settles. This is why a session can be 'still working' with no active
+     * turn" — and until this read existed, every one of those sessions reported
+     * `idle`. The queue was empty, so the row went quiet while the work went on.
+     *
+     * `livenessOf` IS THE CONTRACT'S OWN FOLD, not a second one written here,
+     * for the reason stated on it: the sidebar pill, the session list and the
+     * notification policy all need the same answer, and three independent folds
+     * over task state is three answers that disagree under load.
+     */
+    const tasks = [...this.readTasks(session.id).values()];
+    const live = livenessOf(tasks);
+    if (live) {
+      // Dated by the OLDEST live task, matching the blocked path above: the
+      // number worth showing is how long this has been going, not when the most
+      // recent thing joined it.
+      const since = Math.min(...tasks.filter(isLiveTask).map((task) => task.startedAt));
+      return { ...base, activity: live === "working" ? "working" : "monitoring", activityAt: since };
+    }
     // `activityAt` is deliberately absent on idle: there is no event to date.
     // How long ago the session last did anything is `updatedAt`, which every
     // caller already has.
@@ -2391,6 +2425,7 @@ export class EngineStore {
       turn.providerSessionId = input.providerSessionId;
     }
     this.writeQueue(sessionId, queue);
+    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
     this.touchSession(sessionId, at, input.providerSessionId);
     this.appendEvent(
       sessionId,
@@ -2422,6 +2457,7 @@ export class EngineStore {
     turn.updatedAt = at;
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
     this.writeQueue(sessionId, queue);
+    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn failed before this agent reported back");
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     return structuredClone(turn);
@@ -2440,6 +2476,7 @@ export class EngineStore {
     turn.completedAt = at;
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
+    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     return { turn: structuredClone(turn), stopped: true };
@@ -2465,6 +2502,7 @@ export class EngineStore {
     // The stale worker claim must not remain usable after human resolution.
     delete turn.claim;
     this.writeQueue(sessionId, queue);
+    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
     return structuredClone(turn);
@@ -2714,6 +2752,23 @@ export class EngineStore {
     const ambiguous: string[] = [];
     for (const session of this.allSessions()) {
       const queue = this.readQueue(session.id);
+      /**
+       * FIRST, THE TASKS THAT WERE ALREADY STRANDED.
+       *
+       * `closeOrphanedTasks` runs at each terminal turn transition from here
+       * on, but a session whose turn ended before that existed still holds an
+       * `agent` at `running` — one dogfood session had one weeks old. Nothing
+       * revisits a terminal turn, so without this those never close, and a
+       * session's activity (which now reads task state) would report `working`
+       * for the rest of its life.
+       *
+       * Keyed on the TURN being terminal rather than on a timestamp: an agent
+       * whose turn is still queued or running is not stranded, it is waiting.
+       */
+      for (const turn of queue.turns) {
+        if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
+        this.closeOrphanedTasks(session.id, turn.runId, this.now(), "the turn ended before this agent reported back");
+      }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.requeued" | "turn.ambiguous"; runId: string }> = [];
       const at = this.now();
@@ -2741,6 +2796,10 @@ export class EngineStore {
           turn.updatedAt = at;
           ambiguous.push(turn.runId);
           recoveryEvents.push({ type: "turn.ambiguous", runId: turn.runId });
+          // Same reasoning as `recoverInactiveWorker`: the process that was
+          // running these agents did not survive the restart, whatever we
+          // eventually decide about the turn itself.
+          this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
           changed = true;
         }
       }
@@ -2783,6 +2842,10 @@ export class EngineStore {
           turn.updatedAt = at;
           ambiguous.push(turn.runId);
           this.appendEvent(session.id, { type: "turn.ambiguous", reason: "worker_unavailable" }, turn.runId);
+          // The WORKER is what was running these, and it is gone. Whether the
+          // turn reached the provider is still undecided; whether its agents
+          // are still running is not.
+          this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
           changed = true;
         }
       }
@@ -2926,6 +2989,44 @@ export class EngineStore {
 
   private writeTasks(sessionId: string, tasks: Map<string, Task>): void {
     atomicWrite(tasksFile(this.paths, sessionId), { version: STATE_VERSION, tasks: [...tasks.values()] });
+  }
+
+  /**
+   * A TURN THAT ENDED TAKES ITS SUB-AGENTS WITH IT.
+   *
+   * The driver already does this on its own happy path, and its comment says
+   * exactly why: "a sub-agent stuck at `running` makes a finished detached
+   * session claim it is still busy — forever, with no live stream to correct it
+   * and nothing for a human to stop." What it could not cover is every OTHER
+   * way a turn ends. A turn adjudicated by a human after recovery has no driver
+   * attached; neither has one stopped from the cockpit, or one the engine
+   * declared ambiguous when a worker vanished.
+   *
+   * FOUND BY AUDIT, IN REAL DATA: one dogfood session had an `agent` task
+   * sitting at `running` weeks after its turn was discarded — the roster showed
+   * a live sub-agent that no process anywhere was running.
+   *
+   * A BACKGROUND TASK IS LEFT ALONE. Outliving its turn is the definition of
+   * background, and the contract says so on `TaskKind`.
+   *
+   * Idempotent, so calling it on a path the driver already swept is a no-op
+   * rather than a second event.
+   */
+  private closeOrphanedTasks(sessionId: string, runId: string, at: number, failure: string): void {
+    const tasks = this.readTasks(sessionId);
+    let changed = false;
+    for (const [id, task] of tasks) {
+      if (task.runId !== runId || task.kind === "background") continue;
+      if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
+      const closed: Task = { ...task, state: "failed", failure, updatedAt: at, completedAt: at };
+      tasks.set(id, closed);
+      // `failed` RATHER THAN `stopped`, matching the driver's own choice for
+      // the same situation: two spellings for one cause would render as two
+      // different colours in the roster depending on which path got there.
+      this.appendEvent(sessionId, { type: "task.completed", task: closed }, runId);
+      changed = true;
+    }
+    if (changed) this.writeTasks(sessionId, tasks);
   }
 
   private readRequests(sessionId: string): Map<string, EngineRequest> {

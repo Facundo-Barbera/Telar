@@ -27,6 +27,7 @@ import { Composer } from "./composer";
 import { ActivityGroup, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, VNextRightPanel, type PanelTab, type TaskFocus } from "./right-panel";
 import { WorkspaceInspector } from "./session/workspace-inspector";
+import { PromptText } from "./session/prompt-text";
 import {
   canvasPanelKey,
   closePanelTab,
@@ -144,13 +145,19 @@ function SessionMasthead({
        edge while the rail is hidden; with the rail open the rail's own header
        has already left room for the traffic lights, and insetting here too
        would push the breadcrumb 76px off the wall for no reason. */
+    /* NOT `flex-wrap`, AND THAT WAS A REAL BUG. A long session title plus the
+       right panel open pushed the panel triggers onto a second row, where they
+       floated over the transcript with nothing beside them — a control that had
+       visibly come loose from its header. The title is the only thing here that
+       can give ground, so it truncates (`min-w-0` below) and the row stays one
+       row at every width. */
     <header
       className={cn(
-        "app-drag flex min-h-11 shrink-0 flex-wrap items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
+        "app-drag flex min-h-11 shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
         mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
       )}
     >
-      <div className="mr-1 flex min-w-0 items-center gap-2 text-sm">
+      <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
         {/* Only mounts while the rail is hidden, leaving the workspace at true
             full width when it is not. The folder glyph stands in for it so the
             breadcrumb does not shift sideways when the rail opens. */}
@@ -210,8 +217,9 @@ function SessionMasthead({
         )}
       </div>
       {/* The whole trailing cluster is controls, so it opts out as a block
-          rather than one button at a time. */}
-      <div className="app-no-drag ml-auto flex flex-wrap items-center gap-2">{panel}</div>
+          rather than one button at a time. `shrink-0`: these are fixed-size
+          glyphs, and the title beside them is what absorbs a narrow window. */}
+      <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">{panel}</div>
     </header>
   );
 }
@@ -294,7 +302,13 @@ function SessionTurn({
     <div className="flex flex-col gap-8">
       <Message from="user">
         <MessageContent from="user">
-          <p className="whitespace-pre-wrap">{turn.prompt}</p>
+          {/* THE SAME CHIPS THE COMPOSER DREW. This was `{turn.prompt}` in a
+              bare paragraph, so every reference a gesture had put in the box
+              came back as raw text the moment it was sent — a dropped issue
+              reappearing as `#409 "…" (https://github.com/…)`, URL and all.
+              Nothing is stored to fix it: the draft has always been plain text
+              with the chips derived from it, and this reads it the same way. */}
+          <PromptText text={turn.prompt} />
           {/* WHAT WAS SENT, not what the model made of it. A transcript that
               shows the words and not the screenshot has lost half the message —
               and re-reading it later is exactly when that half matters. Named

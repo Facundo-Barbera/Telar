@@ -50,6 +50,18 @@ export function activityBadge(activity: SessionActivity): ActivityBadge | null {
       return { label: "Working", tone: "live", ticking: true };
     case "queued":
       return { label: "Queued", tone: "quiet", ticking: false };
+    case "monitoring":
+      /**
+       * t3's own word for this, and the state that used to render as nothing:
+       * a watch loop or a long shell outliving the turn that started it, with
+       * the row reporting `idle` while it ran.
+       *
+       * QUIET AND TICKING, which no other state is. Quiet because nobody is
+       * waiting on you and nothing is about to answer — but ticking, because
+       * the one question a person has about a background watcher is how long
+       * it has been going, and that is exactly what a still label cannot say.
+       */
+      return { label: "Monitoring", tone: "quiet", ticking: true };
     case "idle":
       // No badge at all — the row falls back to its timestamp. A "Idle" pill on
       // every resting row is chrome that says only "this row exists".

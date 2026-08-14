@@ -42,29 +42,20 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { chipPath, replaceTextRange, segmentDraft } from "@/lib/composer-tokens";
+import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "@/lib/composer-chip";
+import { replaceTextRange, segmentDraft } from "@/lib/composer-tokens";
 import { insertReference, type TelarReference } from "@/lib/drag-reference";
 import { chipGlyphFor, glyphElement } from "@/lib/glyph-paths";
 import { cn } from "@/lib/utils";
 
 /**
- * Ported from t3 code's `composerInlineChip.ts`, metrics included.
- *
- * EVERY MEASUREMENT IS IN `em`, which is the part worth copying: the chip has to
- * scale with the prompt text it sits inside, and a chip pinned to 12px inside
- * 15px prose sits visibly low and breaks the line's rhythm.
- */
-const CHIP_CLASS =
-  "inline-flex max-w-full select-none items-center gap-[0.33em] rounded-[0.5em] border border-border/70 bg-accent/40 px-[0.5em] py-[0.08em] align-middle text-[0.86em] font-medium leading-[1.1] text-foreground";
-const CHIP_ICON_CLASS = "size-[1.17em] shrink-0";
-const CHIP_LABEL_CLASS = "truncate leading-tight";
-
-/** Longest tooltip a chip will carry. A failing check's reference is a
- *  paragraph, and a tooltip the height of the screen is not a tooltip. */
-const MAX_CHIP_TITLE = 300;
-
-/**
  * One chip.
+ *
+ * THE LOOK MOVED TO `lib/composer-chip.ts` and is now shared with the
+ * transcript, which draws the same chips in React once a message is sent (see
+ * `components/session/prompt-text.tsx`). Two mechanisms — this one builds DOM
+ * because a `contenteditable` needs nodes a caret can stand between — and they
+ * must not be two appearances.
  *
  * `data-chip-text` IS THE SERIALIZATION. Everything else in this element is
  * decoration — the glyph, the shortened label, the tooltip — and none of it is
@@ -78,8 +69,7 @@ function chipElement(reference: TelarReference): HTMLElement {
   chip.spellcheck = false;
   chip.dataset.chipText = reference.text;
   chip.dataset.chipKind = reference.kind;
-  const full = reference.kind === "file" ? chipPath(reference) : reference.text;
-  chip.title = full.length > MAX_CHIP_TITLE ? `${full.slice(0, MAX_CHIP_TITLE)}…` : full;
+  chip.title = chipTitle(reference);
 
   const { markup, tint } = chipGlyphFor(reference);
   chip.append(glyphElement(markup, cn(CHIP_ICON_CLASS, tint)));
