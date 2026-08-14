@@ -476,6 +476,21 @@ function parseSession(value: unknown): Session {
   return session.data;
 }
 
+/**
+ * The half of a session that BELONGS ON DISK.
+ *
+ * `activity` is derived from the queue and the open requests on every read, so
+ * writing it would persist an answer that outlives the thing it describes: a
+ * stored `working` survives the worker that was working, and the next process
+ * to open the file would report a turn that nobody is running. Stripped at the
+ * boundary rather than at each of the six call sites, so a seventh cannot
+ * forget.
+ */
+function storedSession(session: Session): Omit<Session, "activity" | "activityAt"> {
+  const { activity: _activity, activityAt: _activityAt, ...stored } = session;
+  return stored;
+}
+
 function parseQueue(value: unknown, sessionId: string): SessionQueue {
   assertStateVersion(value, "session queue");
   const stored = value as { sessionId?: unknown; nextSequence?: unknown; turns?: unknown };
@@ -1763,8 +1778,12 @@ export class EngineStore {
       runtimeMode: detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE,
       interactionMode: "default",
       detached,
+      // Derived on every read (`withActivity`) and stripped before every write
+      // (`storedSession`); named here only because the wire shape requires it,
+      // and a session with no queue yet is genuinely idle.
+      activity: "idle",
     };
-    atomicWrite(metadata, session);
+    atomicWrite(metadata, storedSession(session));
     atomicWrite(sessionQueueFile(this.paths, id), emptyQueue(id));
     this.appendEvent(id, { type: "session.created", session });
     return structuredClone(session);
@@ -1899,7 +1918,7 @@ export class EngineStore {
       return structuredClone(session);
     }
     next.updatedAt = this.now();
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), next);
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.updated", session: next });
     return structuredClone(next);
   }
@@ -1907,7 +1926,39 @@ export class EngineStore {
   getSession(sessionId: string): Session {
     const stored = readJson(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
-    return structuredClone(parseSession(stored));
+    return this.withActivity(structuredClone(parseSession(stored)));
+  }
+
+  /**
+   * What this session is doing, read from the queue and the open requests.
+   *
+   * TWO EXTRA FILE READS PER SESSION, and worth them. Without this a sidebar
+   * can only sort by recency — every row reads the same and "8h ago" is the
+   * most it can say — while the two facts a person actually scans for, "is one
+   * of these waiting on me" and "is one still going", are sitting unread on
+   * disk. The alternative is a client polling each session's queue separately,
+   * which is the same reads plus a round trip each.
+   *
+   * `blocked` OUTRANKS `working` because both are true at once and only one of
+   * them is the reader's to act on. Decided here so every client agrees.
+   */
+  private withActivity(session: Session): Session {
+    const open = [...this.readRequests(session.id).values()].filter((request) => request.state === "open");
+    if (open.length > 0) {
+      // The OLDEST open request, not the newest: it dates how long this session
+      // has been waiting, which is the number that should embarrass us.
+      const since = Math.min(...open.map((request) => request.openedAt));
+      return { ...session, activity: "blocked", activityAt: since };
+    }
+    const turns = this.readQueue(session.id).turns;
+    const running = turns.find((turn) => turn.state === "running");
+    if (running) return { ...session, activity: "working", activityAt: running.startedAt ?? running.updatedAt };
+    const waiting = turns.find((turn) => turn.state === "queued" || turn.state === "claimed");
+    if (waiting) return { ...session, activity: "queued", activityAt: waiting.acceptedAt };
+    // `activityAt` is deliberately absent on idle: there is no event to date.
+    // How long ago the session last did anything is `updatedAt`, which every
+    // caller already has.
+    return { ...session, activity: "idle" };
   }
 
   listSessions(projectId: string): Session[] {
@@ -2323,7 +2374,7 @@ export class EngineStore {
     const at = this.now();
     session.state = "archived";
     session.updatedAt = at;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     this.appendEvent(sessionId, { type: "session.archived" });
     return structuredClone(session);
   }
@@ -2520,7 +2571,7 @@ export class EngineStore {
       }
       if (changed || metadataChanged) {
         if (changed && !metadataChanged) this.touchSession(session.id, at);
-        else atomicWrite(sessionMetadataFile(this.paths, session.id), session);
+        else atomicWrite(sessionMetadataFile(this.paths, session.id), storedSession(session));
       }
       if (changed) {
         for (const event of recoveryEvents) {
@@ -2620,7 +2671,7 @@ export class EngineStore {
     const session = this.getSession(sessionId);
     session.updatedAt = at;
     if (resumeCursor !== undefined) session.resumeCursor = resumeCursor;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
   }
 
   /**
@@ -2646,7 +2697,7 @@ export class EngineStore {
     delete session.settledAt;
     delete session.snoozedUntil;
     delete session.snoozedAt;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), session);
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     this.appendEvent(sessionId, { type: "session.updated", session });
   }
 
@@ -2657,7 +2708,7 @@ export class EngineStore {
     if (!recovered) return undefined;
     session.resumeCursor = recovered;
     session.updatedAt = this.now();
-    atomicWrite(sessionMetadataFile(this.paths, session.id), session);
+    atomicWrite(sessionMetadataFile(this.paths, session.id), storedSession(session));
     return recovered;
   }
 

@@ -45,6 +45,22 @@ export const SessionState = z.enum(["active", "archived"]);
 export type SessionState = z.infer<typeof SessionState>;
 
 /**
+ * WHAT A SESSION IS DOING, ordered by what it wants from the reader.
+ *
+ *   blocked  a request is open and nobody has answered it — it wants YOU
+ *   working  a turn is running; it wants nothing, it is busy
+ *   queued   a turn is waiting for a worker to pick it up
+ *   idle     nothing in flight
+ *
+ * THE ORDER IS THE POINT and it is not the order of severity — `blocked` is not
+ * worse than `working`, it is more ACTIONABLE, and a sidebar exists to answer
+ * "what needs me" before "what is happening". A session that is both blocked
+ * and working reports blocked.
+ */
+export const SessionActivity = z.enum(["blocked", "working", "queued", "idle"]);
+export type SessionActivity = z.infer<typeof SessionActivity>;
+
+/**
  * Where a session's work lands on disk. `worktree` sessions get a checkout of
  * their own, created through `packages/core/src/vcs.ts`, so N detached sessions
  * on one project do not collide.
@@ -110,6 +126,33 @@ export const Session = z.object({
 
   /** Cumulative across every turn. Per-turn figures live on the turn. */
   usage: UsageSnapshot.optional(),
+
+  /**
+   * WHAT THIS SESSION IS DOING RIGHT NOW — the field that makes a list an inbox.
+   *
+   * A sidebar without this can only sort by recency, so every row reads the
+   * same and "8h ago" is the most it can say. What a person actually scans for
+   * is the opposite: which of these is asking me something, which is still
+   * going, which is finished. `updatedAt` cannot answer any of the three.
+   *
+   * `blocked` OUTRANKS `working` DELIBERATELY. A session with a parked request
+   * IS still running a turn, so both are true at once — and only one of them is
+   * the reader's to act on. Sorting the union by "what does this want from me"
+   * is the whole design, and it is decided here rather than in each client.
+   *
+   * DERIVED, NEVER STORED. It is a read over the queue and the open requests,
+   * so it cannot drift from them the way a cached flag would when a worker dies
+   * mid-turn.
+   */
+  activity: SessionActivity.default("idle"),
+  /**
+   * When the current activity began — for "Working 3m", not for sorting.
+   *
+   * Absent on `idle`, because there is no event to date: a session that is
+   * doing nothing has been doing nothing since its last turn ended, which
+   * `updatedAt` already says.
+   */
+  activityAt: Timestamp.optional(),
 
   /**
    * THE INBOX'S OWN STATE, WHICH IS NOT THE SESSION'S LIFECYCLE.

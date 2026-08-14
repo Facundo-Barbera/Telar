@@ -18,6 +18,7 @@ const session: Session = {
   runtimeMode: "auto",
   interactionMode: "default",
   detached: true,
+  activity: "idle",
 };
 const turn: Turn = {
   runId: "run_1",

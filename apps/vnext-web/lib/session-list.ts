@@ -20,7 +20,7 @@
  * "search flattens every band", the same survivor rule that keeps the session
  * you are LOOKING AT visible after it ages into the shelf.
  */
-import type { Session } from "@telar/engine-client";
+import type { Session, SessionActivity } from "@telar/engine-client";
 import { DEFAULT_AUTO_SETTLE_DAYS, isSettled } from "./session-settling";
 
 export const SESSION_PAGE_SIZE = 20;
@@ -59,6 +59,17 @@ export type SidebarSession = {
   settledAt?: number;
   snoozedUntil?: number;
   snoozedAt?: number;
+  /**
+   * WHAT THIS SESSION IS DOING, straight from the engine.
+   *
+   * The field that turns this list into an inbox: without it a row can only
+   * report recency, which is also the sort order, so the line restates the
+   * position. See `lib/session-activity.ts` for what a row does with it.
+   */
+  activity: SessionActivity;
+  /** When that began — for "Working 3m". Absent on `idle`, which has no event
+   *  to date. */
+  activityAt?: number;
 };
 
 /** The engine record, flattened into what the rail actually reads. */
@@ -90,6 +101,8 @@ export function toSidebarSession(session: Session, projectName?: string): Sideba
     ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
     ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+    activity: session.activity,
+    ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
   };
 }
 

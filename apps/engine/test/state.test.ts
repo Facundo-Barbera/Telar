@@ -917,3 +917,59 @@ test("an MCP server belongs to a project or to the machine, and the project's wi
     EngineStateError,
   );
 });
+
+test("a session says what it is doing, and a parked request outranks a running turn", () => {
+  // THE FIELD THAT MAKES A LIST AN INBOX. Without it a sidebar can only sort by
+  // recency — every row reads the same, and the two questions a person actually
+  // has ("is one waiting on me", "is one still going") are unanswerable.
+  const { store } = readyStore();
+  expect(store.getSession("session_one").activity).toBe("idle");
+  // Nothing to date on idle: how long ago it last did anything is `updatedAt`,
+  // which every caller already has.
+  expect(store.getSession("session_one").activityAt).toBeUndefined();
+
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.getSession("session_one").activity).toBe("queued");
+
+  const claim = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_one", claim.turn.claim!.token);
+  expect(store.getSession("session_one").activity).toBe("working");
+
+  // A mode that actually PARKS. Under the default posture this request
+  // auto-resolves and the session stays "working", which is correct and is why
+  // the mode has to be named here rather than assumed.
+  store.updateSession("session_one", { runtimeMode: "approval-required" });
+  store.openRequest("session_one", "run_one", claim.turn.claim!.token, {
+    requestId: "req_one",
+    kind: "command_execution",
+    detail: { kind: "command_execution", command: { command: "rm -rf /" } },
+  });
+  // BOTH ARE TRUE AT ONCE — the turn is still running — and only one of them is
+  // the reader's to act on. Decided in the engine so every client agrees.
+  expect(store.getSession("session_one").activity).toBe("blocked");
+  // And it dates the WAIT, not the turn: the number that should embarrass us.
+  expect(store.getSession("session_one").activityAt).toBe(100);
+
+  // Answering it hands the session back to the work it was doing.
+  store.resolveRequest("session_one", "req_one", "accept");
+  expect(store.getSession("session_one").activity).toBe("working");
+});
+
+test("activity is derived on read and never written to disk", () => {
+  // A stored "working" outlives the worker that was working: the next process
+  // to open the file would report a turn nobody is running. Every write goes
+  // through `storedSession`, so the field cannot reach the document.
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claim = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_one", claim.turn.claim!.token);
+  expect(store.getSession("session_one").activity).toBe("working");
+
+  // Force a metadata write while the turn is running, then read the raw file.
+  store.updateSession("session_one", { title: "Renamed mid-turn" });
+  const onDisk = JSON.parse(fs.readFileSync(path.join(stateRoot, "sessions", "session_one", "session.json"), "utf8"));
+  expect("activity" in onDisk).toBe(false);
+  expect("activityAt" in onDisk).toBe(false);
+  // …and the derived answer survives the round trip unchanged.
+  expect(store.getSession("session_one").activity).toBe("working");
+});

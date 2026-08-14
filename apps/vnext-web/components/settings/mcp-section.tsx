@@ -534,31 +534,24 @@ export function McpSection({ scope }: { scope?: McpScope } = {}) {
         </SettingsGroup>
       )}
 
-      <SettingsGroup title="Which sessions see these" description="Both providers now read this list.">
-        <Row label="Claude sessions" hint="Every enabled server above is passed to the Agent SDK for each turn." control={<Badge variant="secondary">Applied</Badge>} />
-        {/* Was "Not applied" until the app-server's own schema was measured:
-            `thread/start`'s `config` overlay takes `mcp_servers` and every
-            transport shape works through it. See apps/engine/src/codex-driver.ts. */}
-        <Row
-          label="Codex sessions"
-          hint="Passed in each thread's config, alongside whatever ~/.codex/config.toml already defines."
-          control={<Badge variant="secondary">Applied</Badge>}
-        />
-        {/*
-          STILL MISSING, AND SAID OUT LOUD RATHER THAN LEFT TO BE DISCOVERED.
-          A managed OAuth token now lives in the engine's own 0600 store and
-          never reaches this page. A header TYPED here does not: `spec.headers`
-          is stored as written and returned verbatim on read, so a bearer token
-          pasted in one round-trips to any browser that opens this pane. The
-          fix is the redaction the provider registry already has, and it is not
-          built for MCP servers yet.
-        */}
-        <Row
-          label="A header you type here"
-          hint="Stored as written and shown again on read, unlike a managed sign-in. Prefer Sign in where the server offers it."
-          control={<Badge variant="outline">Not a secret</Badge>}
-        />
-      </SettingsGroup>
+      {/*
+        THE SECTION THAT USED TO BE HERE WAS A COMMENT WEARING A SECTION'S
+        CLOTHES. "Which sessions see these" listed Claude and Codex, both
+        reading "Applied" — a row that can only ever say one thing is not
+        state, it is prose — beside a warning about typing a header, which this
+        form has no field for. Three rows of chrome, nothing to act on.
+
+        The two facts in it are still true and still worth writing down, so
+        they live where they bite instead:
+          · Both providers get this list — apps/engine/src/driver.ts for the
+            Agent SDK translation, apps/engine/src/codex-driver.ts for the
+            thread/start overlay.
+          · `spec.headers` is stored as written and returned verbatim on read,
+            so a bearer token set through the API round-trips to any browser
+            that opens this pane. A managed sign-in does not: its token lives
+            in the engine's own 0600 store. The fix is the redaction the
+            provider registry already has, not yet built for MCP servers.
+      */}
     </>
   );
 }

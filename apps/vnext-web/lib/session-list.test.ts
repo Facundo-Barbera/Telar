@@ -17,6 +17,7 @@ const row = (id: string, title: string, over: Partial<SidebarSession> = {}): Sid
   title,
   projectId: "p1",
   projectName: "telar-vnext",
+  activity: "idle",
   createdAt: NOW - 1_000,
   updatedAt: NOW - 1_000,
   archived: false,

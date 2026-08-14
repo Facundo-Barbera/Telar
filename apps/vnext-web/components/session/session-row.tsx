@@ -1,28 +1,36 @@
 "use client";
 
-// One session in the sidebar inbox. Ported from the frozen app's
-// components/session/session-row.tsx.
+// One session in the sidebar inbox, at one of TWO VOLUMES.
+//
+// THE SPLIT IS THE WHOLE IDEA, and it is t3 code's (`src/components/Sidebar.tsx`,
+// `variant: "card" | "slim"`): a row should cost as much space as it wants from
+// you. A live session gets a card — project, status, title, branch, provider —
+// and a settled one collapses to a single dim line that gives its space back.
+// Scanning the list then means scanning the cards, which are exactly the rows
+// with something happening in them.
+//
+// WHAT THIS REPLACED, AND WHY IT HAD TO GO. Every row used to be the same two
+// lines: title, then "8h ago · project". True of everything and therefore
+// useful about nothing — the only fact on offer was recency, which is also the
+// sort order, so the second line restated the row's position. Twenty rows of
+// that read as a wall.
+//
+// THE COMMENT ABOVE THIS ONE USED TO SAY THE LIVE STATES WERE UNREACHABLE:
+// "Rather than paint a dot nothing can turn on, the row shows what the engine
+// actually knows". That was true and is not any more — `Session.activity` is
+// derived from the queue and the open requests (apps/engine/src/state.ts), so
+// "Waiting on you" and "Working 3m" are measured rather than painted.
 //
 // LAYOUT DOCTRINE (unchanged): the title is the only thing you scan for, so it
-// leads. Project is meta, shown only when the sidebar says it earns the space
-// (`showProject`). SPEND IS DELIBERATELY ABSENT from the row — it is a number
-// you audit, not one you scan, and a right-aligned mono figure on every line
-// drew the eye away from the title. It lives in the hover card with the rest,
-// and it is measured in TOKENS: see lib/format.ts for why money left.
-//
-// WHAT THE DONOR HAD THAT THIS CANNOT. The legacy row carried five live states:
-// running, unread, snoozed, needs-approval, and background runs. Every one of
-// them came from a per-request join the legacy `GET /api/chats` performed over
-// registries the vNext engine does not have — and `GET /v2/sessions` answers
-// with `Session` records alone (see lib/session-list.ts). Rather than paint a
-// dot nothing can turn on, the row shows what the engine actually knows:
-// identity, provider, recency, and whether the session has been archived.
+// leads. SPEND IS DELIBERATELY ABSENT from the row — a number you audit, not
+// one you scan — and lives in the hover card, in TOKENS: see lib/format.ts.
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArchiveIcon, CircleCheckIcon, UndoIcon } from "lucide-react";
+import { ArchiveIcon, CircleCheckIcon, CircleDashedIcon, CircleDotIcon, FolderIcon, GitBranchIcon, UndoIcon } from "lucide-react";
 import { fmtAgo, fmtTokens } from "@/lib/format";
+import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { bandOf, sessionHref, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { SessionInboxMenu, patchSession } from "@/components/session/session-inbox-menu";
@@ -30,6 +38,31 @@ import { canSettle } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+
+/**
+ * A duration that TICKS, because a frozen one is worse than none.
+ *
+ * "Working 3m" that still says 3m four minutes later is not stale data, it is a
+ * wrong claim about the present — and it is the reading a person uses to decide
+ * whether something has hung. Its own component so one interval runs per
+ * working row rather than one re-render per second for the whole sidebar.
+ *
+ * The state is set INSIDE the interval callback, never in the effect body: the
+ * effect subscribes to the clock, which is the external system the rule about
+ * cascading renders exists to permit.
+ */
+function TickingDuration({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(startedAt);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    tick();
+    // Every 5s, not every second: below a minute the label is in seconds and
+    // 5s of lag is invisible; above it, the label only changes once a minute.
+    const timer = window.setInterval(tick, 5_000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return <span className="tabular-nums">{fmtDuration(startedAt, now)}</span>;
+}
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
@@ -112,6 +145,7 @@ export function SessionRow({
   session,
   active,
   showProject,
+  variant = "card",
   searchable = false,
   searchSelected = false,
   renderedAt,
@@ -120,6 +154,13 @@ export function SessionRow({
   session: SidebarSession;
   active: boolean;
   showProject: boolean;
+  /**
+   * HOW MUCH ROOM THIS ROW HAS EARNED. `card` for the live list, `slim` for the
+   * settled shelf and for search results — a result list is answering a
+   * question you already asked, so every row in it is equally relevant and
+   * density beats detail.
+   */
+  variant?: "card" | "slim";
   searchable?: boolean;
   searchSelected?: boolean;
   renderedAt: number;
@@ -205,36 +246,147 @@ export function SessionRow({
     );
   }
 
-  // Shared by both branches below so the row looks identical whether or not it
-  // is wrapped in a hover card.
-  const rowBody = (
-    <>
-      <span className="relative flex size-3.5 shrink-0 items-center justify-center">
-        <ProviderIcon provider={session.driver} size={14} />
+  const { badge, time } = rowStatusText(session, renderedAt);
+  // The header line already names the project when `showProject`, so the
+  // subtitle must not repeat it one line below — which is what it did.
+  const subtitle = rowSubtitle(session, { projectShown: showProject });
+
+  /**
+   * THE STATUS SITS WHERE THE TIMESTAMP WOULD, never beside it.
+   *
+   * t3's choice, and the one that keeps a card readable: a row showing both
+   * "Working" and "8h ago" invites the question of which one is now, and the
+   * honest answer — "both, about different things" — is not worth the pixel.
+   */
+  // FADES AS THE ACTIONS ARRIVE. The controls overlay this corner of the row,
+  // so a status left underneath them would show through — and t3's rule is
+  // that a read-only label yields to an action rather than competing with it.
+  const yieldOnHover = "transition-opacity group-hover/session:opacity-0 group-focus-within/session:opacity-0";
+  const statusSlot = badge ? (
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${ACTIVITY_TONE[badge.tone]} ${yieldOnHover}`}>
+      {/* A SPINNER FOR "STILL GOING", A DOT FOR "STOPPED AND WAITING". The
+          motion is the fastest read in the list — you see that something is
+          alive before you read which row it is — and a request that has parked
+          is exactly the thing that is NOT moving, so it gets a still mark. */}
+      {badge.ticking ? (
+        <CircleDashedIcon className="size-3 animate-spin [animation-duration:3s]" />
+      ) : badge.tone === "attention" ? (
+        <CircleDotIcon className="size-3" />
+      ) : null}
+      {/* `role="status"` on the LABEL alone. Wrapping the ticking duration in
+          one would make a screen reader announce every tick. */}
+      <span role="status">{badge.label}</span>
+      {badge.ticking && session.activityAt !== undefined ? <TickingDuration startedAt={session.activityAt} /> : null}
+    </span>
+  ) : (
+    <span className={`shrink-0 text-[11px] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
+  );
+
+  /**
+   * THE CARD: three lines, and each answers a different question.
+   *   project + status  — whose is this, and what is it doing
+   *   title             — the only thing anyone scans for
+   *   branch + provider — where the work lands, and who is doing it
+   */
+  const cardBody = (
+    <span className="min-w-0 flex-1 space-y-1">
+      <span className="flex min-w-0 items-center gap-1.5">
+        {showProject && session.projectName ? (
+          <>
+            <FolderIcon className="size-3 shrink-0 text-sidebar-foreground/40" />
+            <span className="min-w-0 flex-1 truncate text-[11px] text-sidebar-foreground/50">{session.projectName}</span>
+          </>
+        ) : (
+          <span className="flex-1" />
+        )}
+        {statusSlot}
       </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs font-medium text-sidebar-foreground">
+      <span className="flex min-w-0 items-center gap-1.5">
+        {/* THE TITLE CARRIES THE CARD, so it is a size up from everything
+            around it. At `text-xs` it weighed the same as the project name
+            above and the branch below, and a card whose three lines are all
+            the same size is a paragraph rather than a row. */}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium leading-snug text-sidebar-foreground">
           {session.title || "Untitled session"}
         </span>
-        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-sidebar-foreground/45">
-          <span className="shrink-0">{fmtAgo(session.updatedAt, renderedAt)}</span>
-          {showProject && session.projectName ? (
-            <>
-              <span aria-hidden>·</span>
-              <span className="min-w-0 truncate">{session.projectName}</span>
-            </>
-          ) : null}
-        </span>
+        {/* The provider mark is IDENTITY, not status, so it rides at the end at
+            reduced opacity rather than competing with the badge above it. It
+            sits on the TITLE line so it survives the third line's absence. */}
+        {!subtitle && (
+          <span className="shrink-0 opacity-50">
+            <ProviderIcon provider={session.driver} size={11} />
+          </span>
+        )}
       </span>
+      {/*
+        NO THIRD LINE UNLESS IT SAYS SOMETHING THIS ROW ALONE WOULD SAY.
+        Two versions of this were wrong before it was right. It first fell back
+        to the project name, which the header line above already carried — the
+        same word twice, one line apart. Then it fell back to the model, which
+        is worse in the way that is harder to see: every row read "Claude", so
+        a line existed on twenty cards to tell you nothing that distinguished
+        any of them. That is the exact failure this whole rebuild was for.
+
+        A branch differs per row and says where the work lands, so it earns the
+        space. Nothing else does, and a card with nothing to add is two lines.
+      */}
+      {subtitle && (
+        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-sidebar-foreground/45">
+          {subtitle.kind === "branch" ? <GitBranchIcon className="size-3 shrink-0" /> : null}
+          <span className="min-w-0 flex-1 truncate">{subtitle.text}</span>
+          <span className="shrink-0 opacity-60">
+            <ProviderIcon provider={session.driver} size={11} />
+          </span>
+        </span>
+      )}
+    </span>
+  );
+
+  /**
+   * THE SLIM ROW: one line, and it gives its space back.
+   *
+   * A settled session is history — you scan the tail when hunting, not when
+   * working — so the mark is dimmed and desaturated at rest and restored on
+   * hover, which is t3's "settled history recedes" behaviour. The status still
+   * appears if there IS one: a settled row can go back to work.
+   */
+  const slimBody = (
+    <>
+      <span className="shrink-0 opacity-40 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0">
+        <ProviderIcon provider={session.driver} size={12} />
+      </span>
+      <span className="min-w-0 flex-1 truncate text-xs text-sidebar-foreground/60 group-hover/session:text-sidebar-foreground">
+        {session.title || "Untitled session"}
+      </span>
+      {statusSlot}
     </>
   );
 
+  const rowBody = variant === "card" ? cardBody : slimBody;
+
   return (
+    /**
+     * THREE WEIGHTS, NOT TWO, AND THE THIRD IS THE ONE THAT MATTERS.
+     *
+     * `card` versus `slim` separates live from history, but inside the live
+     * band a session that is WORKING or WAITING ON YOU is not the same as one
+     * that merely happens to be recent — and in t3's sidebar those are exactly
+     * the rows carrying the emphasis. A hairline in the status colour, drawn on
+     * the leading edge, is enough: it reads down a column of twenty rows
+     * without adding height, and it uses the colour the badge already
+     * established rather than inventing a second language for the same fact.
+     */
     <div
       ref={rowRef}
       className={`group/session relative flex items-center rounded-md ${
         active || searchSelected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"
-      } ${session.archived ? "opacity-60" : ""}`}
+      } ${session.archived ? "opacity-60" : ""} ${
+        badge && variant === "card"
+          ? `before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full ${
+              badge.tone === "attention" ? "before:bg-warning" : "before:bg-primary"
+            }`
+          : ""
+      }`}
     >
       {/* NO HOVER CARD IN THE MOBILE SHEET, AND THAT IS THE WHOLE BUG.
           Under 768px <Sidebar> stops being a docked panel and renders the mobile
@@ -276,7 +428,9 @@ export function SessionRow({
                   event.preventDefault();
                   beginRename();
                 }}
-                className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pl-2 pr-1 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className={`flex min-w-0 flex-1 items-center gap-2 px-2 outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  variant === "card" ? "py-2.5" : "py-1"
+                }`}
               />
             }
           >
@@ -306,11 +460,23 @@ export function SessionRow({
         </HoverCard>
       )}
 
-      {/* The transition worth one click sits on the row itself; the long tail
-          stays in the menu. Hidden until hover so a resting list is just titles,
-          but forced visible while any of their popups is open. */}
+      {/*
+        THE CONTROLS OVERLAY THE ROW; THEY DO NOT SIT IN IT.
+        This was `opacity-0` alone, which hides a thing without unreserving its
+        space — so three buttons' worth of width was subtracted from every
+        title, on every row, permanently. Titles truncated as though the
+        controls were showing, because as far as layout was concerned they
+        were. Reported as "the controls feel always present", which is exactly
+        right and is a description of the layout rather than of the opacity.
+
+        Positioned absolutely so a resting row is all title, with a background
+        so the buttons are legible over whatever they cover on hover. The
+        status/time slot beneath fades as they arrive (`group-hover` in the
+        card and slim bodies), which is t3's own swap: the read-only label
+        yields to the actions rather than being crowded by them.
+      */}
       {!searchable && (
-        <span className="flex shrink-0 items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100">
+        <span className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5 rounded-md bg-sidebar-accent px-0.5 opacity-0 shadow-sm transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100 has-data-popup-open:opacity-100">
           {/**
            * SETTLE IS ONE TAP AND ASKS NOTHING, which is the whole difference
            * between it and the archive beside it. Archiving ends the session and

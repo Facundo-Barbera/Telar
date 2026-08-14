@@ -221,15 +221,21 @@ function SessionShelf({
   if (count === 0) return null;
   return (
     <SidebarGroup className="pt-0">
+      {/* A RULE, NOT A ROW. The shelf header used to look like the rows under
+          it — same box, same hover — so the boundary between "live" and
+          "history" was carried entirely by a chevron. t3 draws a line across
+          the sidebar instead, which is why its Settled group reads as the end
+          of the list rather than as another entry in it. */}
       <button
         type="button"
-        className="flex w-full items-center gap-1 px-2 py-1 text-xs font-medium text-sidebar-foreground/60 hover:text-sidebar-foreground"
+        className="group/shelf flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45 hover:text-sidebar-foreground"
         aria-expanded={open}
         onClick={onToggle}
       >
-        <ChevronRightIcon className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} />
-        {label}
-        <span className="ml-auto font-mono text-[10px]">{count}</span>
+        <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+        <span className="shrink-0">{label}</span>
+        <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
+        <span className="shrink-0 tabular-nums">{count}</span>
       </button>
       {open && (
         <SidebarGroupContent className="space-y-0.5">
@@ -239,6 +245,9 @@ function SessionShelf({
               session={session}
               active={session.id === activeSessionId}
               showProject={showProject}
+              // THE SHELF IS HISTORY, so its rows give their space back — one
+              // dim line each. See session-row.tsx for the two volumes.
+              variant="slim"
               renderedAt={renderedAt}
               onRefresh={onRefresh}
             />
@@ -316,14 +325,27 @@ function SidebarBody() {
     return () => window.clearTimeout(task);
   }, [loadAll]);
 
-  // Sessions advance without a local action — a detached turn finishes, a title
-  // is derived — and there is no cross-session event stream to subscribe to, so
-  // the rail re-reads on a slow timer. Slow on purpose: this is N+1 requests
-  // over the project list, and it is a list of titles, not a live transcript.
+  /**
+   * Sessions advance without a local action — a detached turn finishes, a title
+   * is derived — and there is no cross-session event stream to subscribe to, so
+   * the rail re-reads on a timer.
+   *
+   * IT CANNOT BE SLOWER THAN THE THING IT REPORTS. This was a flat 10s, chosen
+   * when a row said nothing but a title and an age: a minute of staleness on
+   * "1d ago" is invisible. A row that says "Working 3m" is a claim about right
+   * now, and at 10s a turn that ran for fifteen seconds could start and finish
+   * between two reads — the badge never appeared at all. Watched happen while
+   * trying to photograph it.
+   *
+   * SO THE CADENCE FOLLOWS WHAT IS ON SCREEN. Anything live and it tightens to
+   * 3s; an entirely quiet list goes back to 10s, because then it is a list of
+   * titles again and this is N+1 requests over the project list.
+   */
+  const anyLive = sessions.some((session) => session.activity !== "idle");
   useEffect(() => {
-    const timer = window.setInterval(() => void loadAll(), 10_000);
+    const timer = window.setInterval(() => void loadAll(), anyLive ? 3_000 : 10_000);
     return () => window.clearInterval(timer);
-  }, [loadAll]);
+  }, [loadAll, anyLive]);
 
   useEffect(() => {
     const focusSearch = (event: KeyboardEvent) => {
@@ -575,6 +597,10 @@ function SidebarBody() {
                   session={session}
                   active={session.id === activeSessionId}
                   showProject={showProject}
+                  // A SEARCH RESULT IS ALREADY THE ANSWER to a question you
+                  // asked, so every row in it is equally relevant and density
+                  // beats detail — cards would make ten matches a scroll.
+                  variant={query ? "slim" : "card"}
                   searchSelected={Boolean(query) && index === selectedSearchIndex}
                   searchable={Boolean(query)}
                   renderedAt={renderedAt}
