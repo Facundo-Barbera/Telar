@@ -358,7 +358,17 @@ function announce(resolution: CliResolution): void {
   if (resolution.message) console.log(`[telar] ${resolution.label} CLI: ${resolution.message}`);
 }
 
-type Located = { kind: "found"; executable: string; expected?: string } | { kind: "settled"; resolution: CliResolution };
+type Located =
+  | {
+      kind: "found";
+      executable: string;
+      expected?: string;
+      /** OTHER runnable copies of the same binary — see `alsoFound`. Collected
+       *  only when nothing was pinned, because a pinned path was chosen and
+       *  listing what else exists would be noise. */
+      alternatives?: string[];
+    }
+  | { kind: "settled"; resolution: CliResolution };
 
 /**
  * WHAT THE USER PINNED, and how to describe it back to them.
@@ -435,8 +445,13 @@ function locate(spec: CliSpec, binaryPath?: string): Located {
   // Either the default binary name, or a bare name the user pinned — both are
   // looked up the same way, which is what keeps "claude" in the settings field
   // meaning exactly what typing `claude` in a terminal means.
+  //
+  // EVERY MATCH, NOT THE FIRST. The extra work is a stat per PATH entry, which
+  // is nothing beside the `--version` subprocess this resolution is about to
+  // run — and knowing a SECOND copy exists is the difference between an
+  // incompatible verdict being a mystery and being a two-install machine.
   const bin = pin?.value ?? spec.bin;
-  const executable = candidatePathsFor(bin).find(isExecutableFile);
+  const [executable, ...alternatives] = candidatePathsFor(bin).filter(isExecutableFile);
   if (!executable) {
     return missing(
       pin
@@ -444,7 +459,38 @@ function locate(spec: CliSpec, binaryPath?: string): Located {
         : `No ${spec.label} installation found. Telar does not bundle one. ${spec.installHint}`,
     );
   }
-  return { kind: "found", executable, ...(expected ? { expected } : {}) };
+  return {
+    kind: "found",
+    executable,
+    ...(expected ? { expected } : {}),
+    ...(pin || alternatives.length === 0 ? {} : { alternatives }),
+  };
+}
+
+/**
+ * The sentence that turns "why is this suddenly broken" into a diagnosis.
+ *
+ * ONLY EVER APPENDED TO A MESSAGE THAT ALREADY EXISTS, so a healthy install
+ * says nothing about copies it is not using. It matters on exactly one machine
+ * shape and matters a lot there: two installs of the same CLI, where the one
+ * PATH resolves first is a version this build cannot speak to. Telar then
+ * REFUSES EVERY TURN — correctly, since the wrapper and the CLI would otherwise
+ * misbehave at the protocol level — and without this the reader has no way to
+ * know a working copy is sitting right there.
+ *
+ * It is also what makes the search order's change of behaviour explicable.
+ * Telar used to prefer three known directories over PATH; it now runs what the
+ * terminal runs, and someone whose two copies disagree needs to be told that is
+ * what happened rather than left to conclude the app broke.
+ */
+function alsoFound(spec: CliSpec, alternatives: readonly string[] | undefined): string {
+  if (!alternatives?.length) return "";
+  const shown = alternatives.slice(0, 3).join(", ");
+  const rest = alternatives.length > 3 ? ` (and ${alternatives.length - 3} more)` : "";
+  return (
+    ` This machine has ${alternatives.length === 1 ? "another copy" : `${alternatives.length} other copies`} of \`${spec.bin}\`: ${shown}${rest}. ` +
+    "Telar runs whichever one your PATH resolves first, exactly as your terminal does — set this login's binary path to choose a different one."
+  );
 }
 
 // PROBE AND VERDICT ARE SPLIT so the sync and async paths differ in exactly one
@@ -462,8 +508,15 @@ function realPathOf(executable: string): { realPath?: string } {
   }
 }
 
-function classify(spec: CliSpec, executable: string, version: string | null, expected: string | undefined): CliResolution {
+function classify(
+  spec: CliSpec,
+  executable: string,
+  version: string | null,
+  expected: string | undefined,
+  alternatives?: readonly string[],
+): CliResolution {
   const base = { id: spec.id, label: spec.label, ...realPathOf(executable) } as const;
+  const others = alsoFound(spec, alternatives);
 
   if (!version) {
     return {
@@ -473,7 +526,7 @@ function classify(spec: CliSpec, executable: string, version: string | null, exp
       ...(expected ? { expected } : {}),
       message:
         `Found ${spec.label} at ${executable} but it would not report a version. ` +
-        "It may be a broken install, a wrapper script, or not executable by this user.",
+        `It may be a broken install, a wrapper script, or not executable by this user.${others}`,
     };
   }
   if (!expected) {
@@ -491,6 +544,8 @@ function classify(spec: CliSpec, executable: string, version: string | null, exp
   }
 
   const verdict = spec.verdict?.(version, expected, executable);
+  // A HEALTHY INSTALL SAYS NOTHING about copies it is not using. Duplicates are
+  // only worth a sentence when they might explain the problem being reported.
   if (!verdict || verdict.status === "ok") return { ...base, status: "ok", path: executable, version, expected };
   return {
     ...base,
@@ -498,7 +553,7 @@ function classify(spec: CliSpec, executable: string, version: string | null, exp
     path: executable,
     version,
     expected,
-    ...(verdict.message ? { message: verdict.message } : {}),
+    ...(verdict.message ? { message: `${verdict.message}${others}` } : {}),
   };
 }
 
@@ -522,7 +577,9 @@ export function resolveCli(id: CliId, options: CliResolveOptions = {}): CliResol
   const spec = SPECS[id];
   const located = locate(spec, options.binaryPath);
   const resolution =
-    located.kind === "settled" ? located.resolution : classify(spec, located.executable, detectVersion(located.executable), located.expected);
+    located.kind === "settled"
+      ? located.resolution
+      : classify(spec, located.executable, detectVersion(located.executable), located.expected, located.alternatives);
   announce(resolution);
   return resolution;
 }
@@ -538,7 +595,7 @@ export async function resolveCliAsync(id: CliId, options: CliResolveOptions = {}
     return located.resolution;
   }
   const version = await detectVersionAsync(located.executable);
-  const resolution = classify(spec, located.executable, version, located.expected);
+  const resolution = classify(spec, located.executable, version, located.expected, located.alternatives);
   announce(resolution);
   return resolution;
 }

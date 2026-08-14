@@ -144,3 +144,59 @@ test("the realpath comes back with the link, because the install detector needs 
   // realpath follows every hop, which is what the install detector wants.
   expect(resolution.realPath).toBe(fs.realpathSync(real));
 });
+
+test("a second install is named when the chosen one is not usable", () => {
+  /**
+   * THE ONE THING THE SEARCH-ORDER CHANGE CAN BREAK. Telar used to prefer three
+   * known directories over PATH; it now runs what the terminal runs. On a
+   * machine with two installs whose versions disagree, that can flip a working
+   * setup to `incompatible` — which refuses every turn, correctly, because the
+   * wrapper and the CLI would otherwise misbehave at the protocol level rather
+   * than fail cleanly.
+   *
+   * Refusing is right. Refusing without mentioning that a compatible copy is
+   * sitting in the next directory along is not.
+   */
+  const first = root();
+  const second = root();
+  fakeCli(first, "claude", "2.0.5"); // a different major.minor: incompatible
+  fakeCli(second, "claude", "2.1.224");
+  process.env.PATH = `${first}:${second}`;
+
+  const resolution = resolveCli("claude");
+  expect(resolution.status).toBe("incompatible");
+  // Plural or singular depending on what else this machine has; the load-bearing
+  // part is that the OTHER path is named.
+  expect(resolution.message).toMatch(/other cop(y|ies)|another copy/);
+  expect(resolution.message).toContain(path.join(second, "claude"));
+  // And it says what to do about it, in this app's own terms.
+  expect(resolution.message).toContain("binary path");
+});
+
+test("a healthy install says nothing about copies it is not using", () => {
+  // Duplicates are only worth a sentence when they might explain a problem;
+  // otherwise this is a permanent note on a working row, which people stop
+  // reading. Two Codex copies is the shape this machine actually has.
+  const first = root();
+  const second = root();
+  fakeCli(first, "codex", "0.147.0");
+  fakeCli(second, "codex", "0.145.0");
+  process.env.PATH = `${first}:${second}`;
+
+  const resolution = resolveCli("codex");
+  expect(resolution.status).toBe("ok");
+  expect(resolution.message).toBeUndefined();
+});
+
+test("a pinned login is not told about copies it deliberately did not choose", () => {
+  // Pinning IS the choice. Listing the alternatives back would be noise.
+  const first = root();
+  const second = root();
+  const pinned = fakeCli(first, "claude", "2.0.5");
+  fakeCli(second, "claude", "2.1.224");
+  process.env.PATH = `${first}:${second}`;
+
+  const resolution = resolveCli("claude", { binaryPath: pinned });
+  expect(resolution.status).toBe("incompatible");
+  expect(resolution.message).not.toMatch(/other cop(y|ies)|another copy/);
+});
