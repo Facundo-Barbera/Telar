@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { InboxIcon, InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
+import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import { ThemeControl } from "@/components/theme-control";
 import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
 import { ProvidersSection } from "./providers-section";
+import { UpdatesSection } from "./updates-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
 
@@ -47,6 +48,12 @@ const SECTIONS: SettingsSection[] = [
   { id: "inbox", label: "Inbox", icon: InboxIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
+  /**
+   * UNDER "COCKPIT", beside About, because an update is a fact about THIS
+   * INSTALL — its channel, its version, its feed — and nothing about the
+   * machine the sessions run on.
+   */
+  { id: "updates", label: "Updates", icon: DownloadIcon, group: "Cockpit" },
   { id: "about", label: "About", icon: InfoIcon, group: "Cockpit" },
 ];
 
@@ -139,6 +146,8 @@ export function SettingsPage() {
       {active === "providers" && <ProvidersSection />}
 
       {active === "mcp" && <McpSection />}
+
+      {active === "updates" && <UpdatesSection />}
 
       {active === "about" && <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />}
     </SettingsShell>
