@@ -43,6 +43,7 @@ import {
 import type { Project } from "@telar/engine-client";
 import { createVNextApi } from "@/lib/vnext/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
+import { useCommandKeys } from "@/lib/use-command-keys";
 import {
   activeSessionFromPathname,
   bandOf,
@@ -364,6 +365,16 @@ function SidebarBody() {
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
   const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterDays });
+
+  /**
+   * ⌘N, ⌘T, ⌘1..⌘9 and ⌘, — mounted HERE because this is the one component
+   * alive on every route that already holds both the session list and the
+   * active session id, so the keys and the rows they index cannot disagree.
+   *
+   * The desktop menu has carried these accelerators the whole time; nothing in
+   * this cockpit was listening for them, so they did nothing.
+   */
+  useCommandKeys(sessions, activeSessionId, autoSettleAfterDays);
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
