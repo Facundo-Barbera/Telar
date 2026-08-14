@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { candidatePathsFor, findExecutable, isExecutableFile, resolveCli } from "../src/cli-resolution";
+import { candidatePathsFor, expectedClaudeCliVersion, findExecutable, isExecutableFile, resolveCli } from "../src/cli-resolution";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -165,9 +165,8 @@ test("a second install is named when the chosen one is not usable", () => {
 
   const resolution = resolveCli("claude");
   expect(resolution.status).toBe("incompatible");
-  // Plural or singular depending on what else this machine has; the load-bearing
-  // part is that the OTHER path is named.
-  expect(resolution.message).toMatch(/other cop(y|ies)|another copy/);
+  // The load-bearing part is that the OTHER path is named.
+  expect(resolution.message).toContain("Also on this machine");
   expect(resolution.message).toContain(path.join(second, "claude"));
   // And it says what to do about it, in this app's own terms.
   expect(resolution.message).toContain("binary path");
@@ -198,5 +197,38 @@ test("a pinned login is not told about copies it deliberately did not choose", (
 
   const resolution = resolveCli("claude", { binaryPath: pinned });
   expect(resolution.status).toBe("incompatible");
-  expect(resolution.message).not.toMatch(/other cop(y|ies)|another copy/);
+  expect(resolution.message).not.toContain("Also on this machine");
+});
+
+test("the pairing version is readable at all, which the packaged app proved it was not", () => {
+  /**
+   * THE REGRESSION THIS GUARDS. The pairing used to be read with
+   * `require("@anthropic-ai/claude-agent-sdk/package.json")`. Node refuses that
+   * — the SDK's `exports` map has no `./package.json` — but Bun allows it, so
+   * the check passed here and silently returned `undefined` in the packaged
+   * app. Every shipped CLI ran `unverified`, with no compatibility check at
+   * all, in the one build where it matters most.
+   *
+   * A NOTE ON WHAT THIS TEST CAN AND CANNOT DO: run under Bun, the old code
+   * would still pass, because Bun's resolver is the lenient one. The
+   * node-only half was verified directly against
+   * /Applications/Telar.app/.../engine/node_modules — deep require refused with
+   * ERR_PACKAGE_PATH_NOT_EXPORTED, entry resolution and the walk-up succeeded.
+   * What this pins is the invariant itself: a pairing must be derivable.
+   */
+  expect(expectedClaudeCliVersion()).toMatch(/^2\.1\.\d+$/);
+});
+
+test("the messages are short enough to read on a settings row", () => {
+  // They are hints under a name, not paragraphs. The one that prompted this was
+  // 180 characters of explanation with the two useful facts buried in it.
+  const directory = root();
+  const pinned = fakeCli(directory, "claude", "2.0.5");
+  process.env.PATH = directory;
+  // Pinned, so no duplicate-copy note: this is the sentence on its own.
+  expect(resolveCli("claude", { binaryPath: pinned }).message.length).toBeLessThan(140);
+
+  // Unpinned on a machine with duplicates appends their paths, which are as
+  // long as the machine makes them — still one readable line, not a paragraph.
+  expect(resolveCli("claude").message.length).toBeLessThan(360);
 });

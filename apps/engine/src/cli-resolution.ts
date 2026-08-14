@@ -25,7 +25,7 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -114,9 +114,40 @@ type CliSpec = {
 export function expectedClaudeCliVersion(): string | undefined {
   try {
     const require_ = createRequire(import.meta.url);
-    const pkg = require_("@anthropic-ai/claude-agent-sdk/package.json") as { version?: string };
-    const patch = pkg.version?.split(".")[2];
-    return patch ? `2.1.${patch}` : undefined;
+    /**
+     * READ THROUGH THE DOOR THAT IS OPEN.
+     *
+     * This used to `require("@anthropic-ai/claude-agent-sdk/package.json")`,
+     * which Node refuses with ERR_PACKAGE_PATH_NOT_EXPORTED: the SDK's
+     * `exports` map lists `.`, `./extract`, `./browser`, `./bridge` and the
+     * sdk-tools, and NOT `./package.json`. Bun's resolver allows the deep
+     * import anyway — so the pairing check worked in dev and silently did not
+     * in the packaged app, which reported `unverified` and ran every CLI
+     * without a compatibility check. The one build where the check matters
+     * most was the one build without it.
+     *
+     * The entry point IS exported, so resolve that and walk up to the manifest
+     * beside it. `exports` governs specifiers, not the filesystem.
+     */
+    let dir = path.dirname(require_.resolve("@anthropic-ai/claude-agent-sdk"));
+    // Bounded: a package entry is never far from its own manifest, and an
+    // unbounded walk would climb out of node_modules and read somebody else's.
+    for (let hop = 0; hop < 5; hop += 1) {
+      const manifest = path.join(dir, "package.json");
+      if (existsSync(manifest)) {
+        const pkg = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; version?: string };
+        // Checked by name, so a nested manifest cannot be mistaken for the
+        // SDK's own and pair us against the wrong version entirely.
+        if (pkg.name === "@anthropic-ai/claude-agent-sdk") {
+          const patch = pkg.version?.split(".")[2];
+          return patch ? `2.1.${patch}` : undefined;
+        }
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -138,18 +169,18 @@ const SPECS: Record<CliId, CliSpec> = {
       if (major !== xMajor || minor !== xMinor) {
         return {
           status: "incompatible",
-          message:
-            `Claude Code ${version} at ${executable} is not compatible with this build of Telar, ` +
-            `which speaks the ${xMajor}.${xMinor}.x control protocol (expects ${expected}). ` +
-            "Update Telar, or install a matching Claude Code.",
+          // SHORT ENOUGH TO READ ON A SETTINGS ROW. These are hints under a
+          // name, not paragraphs; the earlier wording explained the control
+          // protocol at length and buried the two facts that matter — which
+          // version is wrong, and what to do.
+          message: `Needs Claude Code ${xMajor}.${xMinor}.x, found ${version}. Update Telar, or install a matching Claude Code.`,
         };
       }
       if (version !== expected) {
         return {
           status: "drifted",
-          message:
-            `Claude Code ${version} differs from the ${expected} this build was tested against. ` +
-            "This usually works — but if tool calls are cancelled without you refusing them, suspect this first.",
+          // No path: this one is working, and the version pair is the point.
+          message: `Tested against Claude Code ${expected}; you have ${version}. Usually fine — suspect it first if tool calls cancel themselves.`,
         };
       }
       return { status: "ok" };
@@ -487,10 +518,7 @@ function alsoFound(spec: CliSpec, alternatives: readonly string[] | undefined): 
   if (!alternatives?.length) return "";
   const shown = alternatives.slice(0, 3).join(", ");
   const rest = alternatives.length > 3 ? ` (and ${alternatives.length - 3} more)` : "";
-  return (
-    ` This machine has ${alternatives.length === 1 ? "another copy" : `${alternatives.length} other copies`} of \`${spec.bin}\`: ${shown}${rest}. ` +
-    "Telar runs whichever one your PATH resolves first, exactly as your terminal does — set this login's binary path to choose a different one."
-  );
+  return ` Also on this machine: ${shown}${rest}. Telar uses whichever your PATH finds first; set a binary path below to pick one.`;
 }
 
 // PROBE AND VERDICT ARE SPLIT so the sync and async paths differ in exactly one
@@ -524,9 +552,8 @@ function classify(
       status: "unknown",
       path: executable,
       ...(expected ? { expected } : {}),
-      message:
-        `Found ${spec.label} at ${executable} but it would not report a version. ` +
-        `It may be a broken install, a wrapper script, or not executable by this user.${others}`,
+      // Keeps the path, because knowing WHAT it found is the whole question.
+      message: `${executable} would not report a version — a broken install, a wrapper script, or not executable by you.${others}`,
     };
   }
   if (!expected) {
@@ -536,9 +563,9 @@ function classify(
           status: "unverified",
           path: executable,
           version,
-          message:
-            `Found ${spec.label} ${version} at ${executable}, but Telar could not read the version it ` +
-            "expects to pair with, so no compatibility check was made. The CLI is being used as-is.",
+          // Should now be rare: it means the SDK manifest was unreadable, which
+          // `expectedClaudeCliVersion` no longer trips over on its own.
+          message: `Using ${spec.label} ${version} unchecked — Telar could not read the version it pairs with.`,
         }
       : { ...base, status: "ok", path: executable, version };
   }
