@@ -143,3 +143,32 @@ describe("desktop external-link wiring", () => {
     expect(managerCode).not.toContain("setWindowOpenHandler");
   });
 });
+
+describe("loopback aliases are the same server", () => {
+  // localhost and 127.0.0.1 ARE the same machine, and comparing origins as
+  // strings says otherwise. The shell loads the cockpit as 127.0.0.1, so a
+  // navigation spelling it `localhost` was cancelled and handed to the system
+  // browser — one browser window per attempt, while the app sat on "This page
+  // couldn't load". Found by driving the real window, ten Firefox windows later.
+  test("the app's own UI under another loopback name stays in-app", () => {
+    const policy = createExternalLinkPolicy({ appUrl: APP_URL });
+    for (const target of [
+      "http://localhost:42731/settings",
+      "http://127.0.0.1:42731/settings",
+      "http://[::1]:42731/settings",
+    ]) {
+      expect(policy.decide(target)).toEqual({ action: "allow", openExternal: null });
+    }
+  });
+
+  test("but only at the same port, and only over the same scheme", () => {
+    const policy = createExternalLinkPolicy({ appUrl: APP_URL });
+    // A different port on loopback is a DIFFERENT SERVER — someone's Vite, a
+    // second Telar — and must keep leaving. This is the line the widening
+    // above must not cross.
+    expect(policy.decide("http://localhost:5173/").openExternal).toBe("http://localhost:5173/");
+    expect(policy.decide("https://localhost:42731/").openExternal).toBe("https://localhost:42731/");
+    // And a real host that merely CONTAINS a loopback name is not loopback.
+    expect(policy.decide("http://localhost.evil.com:42731/").openExternal).toBe("http://localhost.evil.com:42731/");
+  });
+});

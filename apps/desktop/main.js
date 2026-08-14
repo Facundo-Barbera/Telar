@@ -466,6 +466,32 @@ function createWindow(url) {
     e.preventDefault();
     win.setTitle(title);
   });
+  /**
+   * A DEAD LOAD RETRIES INSTEAD OF STRANDING ON THE ERROR PAGE.
+   *
+   * In dev the cockpit is a Next server that restarts whenever a file it
+   * watches changes, and a reload landing in that window fails outright. The
+   * shell had no `did-fail-load` handler, so the app sat on Chromium's "This
+   * page couldn't load" until someone restarted it by hand — while the server
+   * it was waiting for came back a second later.
+   *
+   * ONLY THE MAIN FRAME AND ONLY OUR OWN URL. A subframe failing is the page's
+   * business, and reloading the window for it would fight the page. `-3` is
+   * ERR_ABORTED, which is what a navigation cancelled ON PURPOSE reports —
+   * including one the external-link policy just declined — so retrying it would
+   * undo that decision in a loop.
+   */
+  let retryTimer = null;
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, failedUrl, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3 || win.isDestroyed()) return;
+    console.error(`[telar-desktop] load failed (${errorCode} ${errorDescription}): ${failedUrl} — retrying`);
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      if (!win.isDestroyed()) win.loadURL(url);
+    }, 1_000);
+  });
+  win.on("closed", () => clearTimeout(retryTimer));
+
   win.once("ready-to-show", () => win.show());
   win.setTitle(title);
   win.loadURL(url);

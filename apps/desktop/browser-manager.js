@@ -65,6 +65,30 @@ function parseUrl(value) {
   }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * `localhost:3000` AND `127.0.0.1:3000` ARE THE SAME SERVER, and a string
+ * comparison of origins says they are not.
+ *
+ * The shell loads the cockpit as `http://127.0.0.1:<port>/`, so a link, a
+ * redirect or an automated navigation that spells the same server `localhost`
+ * was read as the open web: the navigation was cancelled and the page handed to
+ * the system browser. Every attempt opened another browser window while the app
+ * itself sat on "This page couldn't load", which is precisely the pair of
+ * symptoms that made this worth finding.
+ *
+ * THE PORT AND SCHEME STILL HAVE TO MATCH. A different port on loopback is a
+ * different server — a Vite dev server, someone else's app — and that case must
+ * keep leaving for the browser. This widens the app's own identity by exactly
+ * the set of names that resolve to this machine, and by nothing else.
+ */
+function sameLoopbackServer(target, appUrl) {
+  if (target.protocol !== appUrl.protocol) return false;
+  if (target.port !== appUrl.port) return false;
+  return LOOPBACK_HOSTS.has(target.hostname) && LOOPBACK_HOSTS.has(appUrl.hostname);
+}
+
 function createExternalLinkPolicy({ appUrl, now = Date.now, dedupeMs = EXTERNAL_OPEN_DEDUPE_MS } = {}) {
   const parsedAppUrl = parseUrl(appUrl);
   // AD-11: without a usable origin this policy cannot tell Telar's own UI from
@@ -86,7 +110,10 @@ function createExternalLinkPolicy({ appUrl, now = Date.now, dedupeMs = EXTERNAL_
       // about:blank is the app opening a surface it navigates itself; that
       // navigation returns through this same policy, so allowing the blank
       // window costs nothing and leaves ordinary popup code working.
-      if (parsed && (parsed.href === "about:blank" || parsed.origin === appOrigin)) {
+      if (
+        parsed &&
+        (parsed.href === "about:blank" || parsed.origin === appOrigin || sameLoopbackServer(parsed, parsedAppUrl))
+      ) {
         return { action: "allow", openExternal: null };
       }
       // shell.openExternal hands whatever it is given to the OS — file://,
