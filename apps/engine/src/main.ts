@@ -8,14 +8,14 @@ import { startEngine } from "./daemon";
  * `worker_unavailable` until a separate `bun run worker` registered — which
  * made "the engine runs on its own" false in the most literal way.
  *
- * TELAR_VNEXT_EMBEDDED_WORKER=0 turns it off, for the deployment where the
+ * TELAR_EMBEDDED_WORKER=0 turns it off, for the deployment where the
  * worker is deliberately its own process (provider crashes stay out of the
  * control plane, and `worker-main.ts` still exists for exactly that).
  */
-const embeddedWorker = process.env.TELAR_VNEXT_EMBEDDED_WORKER?.trim() !== "0";
+const embeddedWorker = process.env.TELAR_EMBEDDED_WORKER?.trim() !== "0";
 const daemon = await startEngine({ embeddedWorker });
 process.stdout.write(
-  `Telar vNext engine listening on ${daemon.discovery.host}:${daemon.discovery.port}` +
+  `Telar engine listening on ${daemon.discovery.host}:${daemon.discovery.port}` +
     `${daemon.worker ? ` with embedded worker ${daemon.worker.workerId}` : " (no embedded worker)"}\n`,
 );
 

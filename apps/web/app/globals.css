@@ -1,0 +1,417 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* The `dark` variant keys off a class on <html>, set before first paint by the
+   init script in layout.tsx. Deliberately the plain form: adding a
+   `:not(:is(.light *))` half would push every `dark:` rule from (0,1,0) to
+   (0,2,0) and make any element wearing a bare `light` class silently lose dark
+   mode inside it. */
+@custom-variant dark (&:is(.dark *));
+
+/* THE PALETTE BELOW IS PORTED VERBATIM FROM THE FROZEN APP (apps/web_old/app/
+   globals.css) AND ITS VALUES ARE NOT FREE PARAMETERS. Each one was tuned
+   against a named contrast floor on a named surface, and the comments state
+   which. this app previously carried a hand-rolled twelve-token approximation of
+   this system; that is what made the cockpit read as a different product. If a
+   colour looks wrong here, the fix is a component using the wrong token, not a
+   nudge to the token. */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* next/font emits these variables in layout.tsx. Reading the variable rather
+     than the family name means a missing font degrades to the stack instead of
+     to whatever the browser picks. */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  /* Tailwind v4 only emits a utility for a --color-* name it can see in THIS
+     block, so a token declared in :root and nowhere else is unreachable:
+     `text-success` would compile to nothing and leave the text whatever it
+     inherited. These four are the state vocabulary catching up to
+     --destructive, which already had its bridge. */
+  --color-info: var(--info);
+  --color-verify: var(--verify);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+  /* Outside the proportional scale on purpose — see --control-radius below. */
+  --radius-control: var(--control-radius);
+}
+
+:root {
+  /* The canvas sits a half-step off white so a card can BE white and actually
+     read as raised. Telar once shipped --background and --card both at
+     oklch(1 0 0), which is why light mode had no elevation anywhere. The
+     neutral spine carries a zinc tint — hue 286, chroma never above 0.016 —
+     because a chroma-0 light UI reads cold and clinical, and 0.016 is small
+     enough that tokens used at partial opacity compose the same way. */
+  --background: oklch(0.992 0 0);
+  --foreground: oklch(0.274 0.006 286);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.274 0.006 286);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.274 0.006 286);
+
+  /* Hue 264 is the anchor and it means one thing: A PERSON. The focus ring, the
+     link, the button a human presses — never anything an agent resolves on its
+     own. Chroma is pinned at 0.16 in both themes so only lightness moves
+     between them, and 0.16 is also where hue 264 stays inside sRGB at the
+     lightness dark mode needs. */
+  --primary: oklch(0.488 0.16 264);
+  --primary-foreground: oklch(1 0 0);
+
+  /* 0.96, not 0.985. Badge and Button render `secondary` as `bg-secondary` on a
+     base class with a transparent border and no shadow, so the fill IS the
+     whole chip — at 0.985 it was a two-level step off the canvas and read as
+     loose body text rather than a chip. 0.96 puts it at 1.10:1 off the canvas,
+     one notch lighter than --accent so a resting chip still sits above a hover
+     surface. */
+  --secondary: oklch(0.96 0.002 286);
+  --secondary-foreground: oklch(0.274 0.006 286);
+  --muted: oklch(0.967 0.001 286);
+  /* 0.525 is a floor, not a round number. --muted-foreground is the app's
+     heaviest token by an order of magnitude and has to clear 4.5:1 on the
+     quietest surface it lands on — a hovered sidebar row — which it does at
+     4.61:1. One notch lighter and every quiet label in the app fails AA on
+     hover. */
+  --muted-foreground: oklch(0.525 0.016 286);
+  --accent: oklch(0.955 0.002 286);
+  --accent-foreground: oklch(0.21 0.006 286);
+
+  /* Five states, one token each, every one tuned as TEXT on the quietest
+     surface it can land on — because that is how the app uses them
+     (`bg-destructive/10 text-destructive`, dots, hairlines), and a value that
+     clears 4.5:1 as text is automatically past 3:1 as a dot. A SOLID fill of
+     any of them takes `text-background`, in both themes; that falls out of
+     tuning them this way and is why there are no -foreground companions.
+
+     "Blocked" folds into --warning on purpose: both mean a person has to move,
+     and 22 degrees of hue is not enough to tell amber from orange once light
+     mode has darkened them both to brown. --info stays at 215 rather than
+     moving toward 235: that would buy distance from --success but lose more to
+     --primary, and 225-235 fall outside sRGB at this lightness.
+
+     /15 is the deepest tint any of them carries as a text backing and it clears
+     4.5:1 on canvas, card and popover in both themes. If you need a deeper fill
+     than /15, it is a solid and it takes `text-background`, not `text-X`.
+
+     Do not add a sixth ramp. New state colours go on this vocabulary. */
+  --info: oklch(0.51 0.09 215);
+  --verify: oklch(0.545 0.2 293);
+  --success: oklch(0.495 0.108 162);
+  --warning: oklch(0.515 0.11 72);
+  --destructive: oklch(0.50 0.19 25.5);
+
+  --border: oklch(0.92 0.004 286);
+  /* --input is far darker than --border deliberately. --border is the hairline
+     the base layer puts on EVERY element; pushed to 3:1 it would draw a box
+     around the whole app. --input marks a control boundary, where WCAG 1.4.11
+     does ask for 3:1, so it sits at 3.12:1 against a card.
+
+     That 3:1 is a claim about three surfaces, not all of them: canvas 3.05,
+     card and popover 3.12. It does NOT hold on --sidebar (2.87), --muted
+     (2.83), --secondary (2.98) or --accent (2.73). Nest a field in one of those
+     and it needs its own border. */
+  --input: oklch(0.66 0.008 286);
+  --ring: var(--primary);
+
+  /* The anchor plus four even 72-degree steps, all at one lightness so no
+     series reads as "more" than another. Deliberately NOT the status tokens: a
+     chart of session states should reach for --success and --warning and mean
+     it. Chroma is whatever sRGB allows at L 0.56, which is why hue 192 only
+     gets 0.095 — cyan runs out of gamut first. */
+  --chart-1: oklch(0.56 0.16 264);
+  --chart-2: oklch(0.56 0.15 336);
+  --chart-3: oklch(0.56 0.15 48);
+  --chart-4: oklch(0.56 0.13 120);
+  --chart-5: oklch(0.56 0.095 192);
+
+  --radius: 0.625rem;
+  /* Two radii, because a button and a dialog are not the same object. --radius
+     is the container value the whole scale derives from. --control-radius is
+     authored rather than derived: on something the size of a button, a chip or
+     a field, 10px of corner starts eating the label, and the value has to hold
+     at 8px even if someone later rounds the containers harder. The hierarchy
+     this lands: 8px controls, 10px fields and popovers, 18px cards and
+     dialogs. */
+  --control-radius: 0.5rem;
+
+  /* The rail always steps TOWARD mid-grey from the canvas: it recesses here
+     because there is no room above white, and lifts in dark because there is no
+     room below the base. Everything else derives from the core tokens so the
+     rail cannot drift out of family. --sidebar-accent is the one value the rail
+     authors for itself, because a row hover has to read against 0.972, not the
+     canvas. */
+  --sidebar: oklch(0.972 0.001 286);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.945 0.003 286);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+.dark {
+  /* Dark holds chroma at exactly 0 across the whole spine, so surfaces lift out
+     of one black family rather than starting from a milky grey — and because
+     status dots and syntax-highlighted code already put a lot of hue on this
+     screen, and tinted grey underneath them fights it. Four rungs, each a real
+     step: canvas, rail, card, popover. */
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.97 0 0);
+  --card: oklch(0.2 0 0);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.225 0 0);
+  --popover-foreground: oklch(0.97 0 0);
+
+  /* Same hue, same chroma, more lightness — and the fill/text polarity flips,
+     which is not cosmetic. A 264 blue dark enough to carry white text tops out
+     near L 0.56; the same token has to reach about L 0.585 before it is legible
+     as `text-primary` on the canvas. The two windows do not overlap, so one
+     side has to give, and the app's `text-primary` sites plus its
+     `bg-primary/15` chips make this the right side to keep. */
+  --primary: oklch(0.68 0.16 264);
+  --primary-foreground: oklch(0.17 0.04 264);
+
+  /* Opaque, not `white / 4%`. Tailwind v4 compiles `bg-muted/40` to a
+     color-mix against transparent, so alpha on the TOKEN multiplies rather than
+     replaces — against a 4-6% token those land at 1-3% white, which is nothing.
+     The translucency a translucent token gets for free has to be paid for in
+     opaque steps here, so muted sits above the popover rung and accent one step
+     above muted, keeping a hover on a muted chip visible. */
+  --secondary: oklch(0.265 0 0);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.265 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.305 0 0);
+  --accent-foreground: oklch(0.97 0 0);
+
+  /* Same five meanings, same five hues, lifted for a dark surface. Each still
+     clears 4.5:1 as text on every rung including --accent, and a solid fill
+     still takes `text-background` — the polarity of that pairing flips between
+     themes but the class does not, which is the point. */
+  --info: oklch(0.74 0.125 215);
+  --verify: oklch(0.7 0.17 293);
+  --success: oklch(0.73 0.15 162);
+  --warning: oklch(0.78 0.15 72);
+  --destructive: oklch(0.7 0.19 25.5);
+
+  /* These two split on whether the value has to promise a number. --border is
+     decorative — the base layer puts it on every element, a 3:1 hairline
+     everywhere would be a wireframe — and its job is to sit correctly on all
+     four rungs of the elevation ladder from ONE value, which is exactly what
+     alpha is for. --input cannot work that way: it is the sole boundary of
+     every bg-transparent field and WCAG 1.4.11 asks it for a fixed 3:1, but a
+     translucent value's contrast floats with whatever is behind it. So it goes
+     opaque and holds 3.43:1 on card, 3.75 on canvas, 3.24 on popover. */
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(0.53 0 0);
+  --ring: var(--primary);
+
+  --chart-1: oklch(0.74 0.13 264);
+  --chart-2: oklch(0.74 0.15 336);
+  --chart-3: oklch(0.74 0.15 48);
+  --chart-4: oklch(0.74 0.15 120);
+  --chart-5: oklch(0.74 0.11 192);
+
+  /* The rail lifts off the canvas here because there is no usable room below
+     0.145, and stops short of --card so a card inside the rail still reads. */
+  --sidebar: oklch(0.175 0 0);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.265 0 0);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+/* WebKit 26.x crashes its renderer on keyframe animations that fade
+   fixed-position layers in/out from near-zero opacity — exactly what overlay
+   enter/exit animations do. Disable enter/exit animations everywhere (dialogs
+   just appear); animate-pulse / animate-spin are unaffected. */
+[class*="animate-in"],
+[class*="animate-out"] {
+  animation-name: none !important;
+}
+
+/* THE SHIMMER SWEEP, IN CSS RATHER THAN AN ANIMATION RUNTIME.
+   Animating mask-position directly (rather than a `--shimmer-x` variable) is
+   deliberate: custom properties are not interpolable unless registered with
+   @property, so a variable-based keyframe would STEP rather than sweep. Both
+   the prefixed and unprefixed properties are set because WebKit still needs
+   -webkit-mask-position. Consumers carry the `motion-safe:` variant, so the
+   sweep simply does not run for users who asked for less animation. */
+@keyframes telar-shimmer {
+  from {
+    -webkit-mask-position: 100% center;
+    mask-position: 100% center;
+  }
+  to {
+    -webkit-mask-position: 0% center;
+    mask-position: 0% center;
+  }
+}
+
+/* Chromium's default scrollbars paint a stark near-white thumb over the dark
+   shell. The standard properties (which supersede ::-webkit-scrollbar when set)
+   tint the thumb from theme tokens so it re-themes with light/dark. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent)
+    transparent;
+}
+
+/* SYNTAX HIGHLIGHTING ACTUALLY REACHING THE PIXELS.
+
+   Streamdown highlights fenced code with Shiki and emits, per token, a span
+   carrying its colours as CUSTOM PROPERTIES (`--sdm-c` light, `--shiki-dark`
+   dark) plus Tailwind ARBITRARY-VALUE classes that read them. Those classes
+   never exist in the stylesheet: Tailwind v4 builds its CSS by scanning source
+   files at build time, and these class strings are generated at RUNTIME inside
+   node_modules, so the scanner never sees them and emits no rule. The result is
+   every token carrying correct colour variables and computing to the same
+   inherited foreground — code reads as flat monospace.
+
+   Consuming the variables directly is what makes this independent of the
+   scanner: the attribute selectors match the inline `style` Shiki wrote, so no
+   class has to survive a build step. Scoped to `pre` so it can only ever
+   repaint code blocks. */
+pre span[style*="--sdm-c"] {
+  color: var(--sdm-c);
+}
+.dark pre span[style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
+
+/* THE SAME TRICK, FOR THE FILE VIEWER'S OWN MARKUP.
+
+   The viewer draws its own line-numbered table rather than Shiki's `<pre>` (it
+   needs a gutter that does not end up in a copy), so it renders tokens itself
+   with `defaultColor: false` — each span carrying BOTH themes as custom
+   properties. These two rules are what turns that into pixels, and why switching
+   light/dark repaints an open file without re-tokenising a line of it.
+
+   Keyed on `data-shiki` rather than a class for the reason the comment above
+   gives: an attribute cannot be missed by Tailwind's scanner. */
+[data-shiki] span[style*="--shiki-light"] {
+  color: var(--shiki-light);
+}
+.dark [data-shiki] span[style*="--shiki-dark"] {
+  color: var(--shiki-dark);
+}
+
+/* Streamdown ships its own stylesheet (imported ahead of this one in
+   layout.tsx) and marks each block with a data attribute. One structural fix
+   belongs here: it emits ONE span per line inside a code block, carrying the
+   Tailwind utility `block` — which does not exist unless Tailwind scanned it.
+   Without this rule every fenced block collapses to a single wrapped line. */
+.telar-markdown pre code > span {
+  display: block;
+}
+
+/* ─── THE APP OWNS ITS TITLEBAR (macOS desktop shell only) ───────────────────
+
+   apps/desktop launches the window with `titleBarStyle: "hiddenInset"`, which
+   removes the system titlebar and leaves the three traffic lights floating over
+   whatever the page draws at the top-left. Two things follow, and both are
+   here rather than in a component because both are conditional on running
+   INSIDE that shell — a browser tab must be untouched.
+
+   `data-telar-shell` IS SET BY THE PRELOAD, before the page's own scripts, for
+   the same reason the theme script runs `beforeInteractive`: the inset changes
+   layout, and discovering it one render late means the header visibly jumps on
+   every launch. <html> already carries `suppressHydrationWarning` for the
+   theme, so a second attribute mutated out from under React is not a new kind
+   of thing here.
+
+   --titlebar-inset IS THE ROOM THE LIGHTS NEED, and it is the one number the
+   two processes have to agree on: x (13) + three 12px lights + two 8px gaps +
+   a margin. apps/desktop/window-chrome.js derives its side of it from the same
+   56px header height. */
+:root {
+  --titlebar-inset: 0px;
+  /**
+   * ONE HEIGHT FOR THE WHOLE TOP BAND, and it is a contract with the shell.
+   *
+   * The traffic lights are parked at a FIXED point in the window (see
+   * apps/desktop/window-chrome.js, which centres them in this exact number), so
+   * every pane that can be the window's left edge has to agree on how tall its
+   * header is — otherwise the lights are centred for one of them and visibly
+   * low in the other. They were: the rail's header was 56px and the session
+   * masthead 44px, so hiding the rail dropped the lights 6px below the
+   * breadcrumb beside them.
+   *
+   * UNCONDITIONAL, not shell-only. Two headers of different heights sitting
+   * side by side is worth fixing in a browser tab too — the rail's header and
+   * the masthead are one row across the window, and they should read as one.
+   */
+  --titlebar-height: 3.5rem;
+}
+[data-telar-shell="macos"] {
+  --titlebar-inset: 4.75rem;
+}
+
+/* DRAG REGIONS ARE OPT-IN AND SHELL-ONLY. `-webkit-app-region` is inert in a
+   real browser, but `drag` also suppresses text selection and pointer events on
+   descendants — so scoping it to the shell keeps a browser tab from inheriting
+   behaviour that would only ever be a bug there.
+
+   EVERY INTERACTIVE CHILD OF A DRAG REGION NEEDS `app-no-drag`. A button inside
+   a drag region does not receive clicks at all; it moves the window instead.
+   That is the single failure mode of this whole feature, and it is silent. */
+[data-telar-shell] .app-drag {
+  -webkit-app-region: drag;
+}
+[data-telar-shell] .app-no-drag {
+  -webkit-app-region: no-drag;
+}

@@ -1,7 +1,7 @@
 /**
- * vNext engine protocol v2.
+ * engine protocol v2.
  *
- * The model is `docs/vnext-engine-contract-v2.md`; read that before changing
+ * The model is `docs/engine-contract-v2.md`; read that before changing
  * shapes here, because several of them encode decisions rather than data.
  *
  * Module map, in dependency order:

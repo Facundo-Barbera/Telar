@@ -15,7 +15,7 @@ import { createProviderProber, providerProcessEnv, signInOf, statusOf } from "..
 
 const roots: string[] = [];
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-provider-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-provider-"));
   roots.push(directory);
   return directory;
 };

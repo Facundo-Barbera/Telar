@@ -70,22 +70,22 @@ jobs:
       # the failure lands in the right place in the log.
       #
       # DELIBERATELY ABSENT: apps/web_old. The legacy cockpit is frozen as a
-      # read-only design source for the vNext rebuild and is no longer verified
+      # read-only design source for the Telar rebuild and is no longer verified
       # here — no typecheck, no lint ceiling, no test suite. Its lint ceiling
       # (scripts/lint-ceiling.mjs) was deleted with the gate rather than left
-      # behind to rot. Do not re-add it: work belongs in apps/vnext-web.
+      # behind to rot. Do not re-add it: work belongs in apps/web.
 
       # Cheapest first. Includes core's test tree, which nothing typechecked
       # until this branch — pinned as a ceiling by scripts/typecheck-ceiling.mjs.
-      - name: Typecheck core, engine, vnext-web, and core's test tree against its ceiling
+      - name: Typecheck core, engine, web, and core's test tree against its ceiling
         run: bun run typecheck
 
-      - name: Lint apps/vnext-web
+      - name: Lint apps/web
         run: bun run lint
 
       # Desktop is the unit tier only. Smoke and e2e need a real Electron and a
       # built bundle, and stay on the mac release path.
-      - name: Run the core, engine, vnext-web, and desktop unit suites
+      - name: Run the core, engine, web, and desktop unit suites
         run: bun run test
 
       # DELIBERATELY ABSENT: `next build`. A reader may assume "Verify" proves

@@ -3,7 +3,7 @@
  * PKCE, the code exchange and the refresh.
  *
  * Ported from `packages/core/src/mcp-oauth.ts`, which is the working
- * implementation this repo already had and which nothing in vNext could reach:
+ * implementation this repo already had and which nothing in the engine could reach:
  * that one is bound to `~/.telar`'s manifest and secret store, and this engine
  * has neither. What changed, and why:
  *

@@ -133,7 +133,7 @@ function walkUpForPlaywrightMcpBin(startDir: string | undefined): string | null 
     // lookup that usually has nothing.
     //
     // `apps/web` was renamed to `apps/web_old` (see apps/web_old/AGENTS.md) and
-    // vNext's engine now owns the headless browser, so the old candidate
+    // Telar's engine now owns the headless browser, so the old candidate
     // pointed at a path that no longer exists on any checkout. Both live
     // installs are listed, engine first: the frozen tree is a design source we
     // do not want anything resolving against by preference.

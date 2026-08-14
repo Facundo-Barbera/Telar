@@ -9,10 +9,10 @@
  * approval card and a second definition of "what did this turn cost". A
  * provider driver is a leaf: it reports what it saw and owns no state.
  *
- * WHAT IT DOES NOT DO, deliberately, because the legacy bridge did and vNext
+ * WHAT IT DOES NOT DO, deliberately, because the legacy bridge did and this engine
  * has nowhere to put it yet:
  *   - no dynamic tools. Telar's in-process tool namespaces do not exist in
- *     vNext, and declaring `dynamicTools: []` is WORSE than silence (see the
+ *     the engine, and declaring `dynamicTools: []` is WORSE than silence (see the
  *     omit-when-empty note on `threadParams`).
  *   - no on-demand compaction or rollback. Those are session operations, not
  *     turn operations, and `TurnDriver` runs turns.
@@ -73,7 +73,7 @@ export type CodexDriverOptions = {
   serviceTier?: string;
   /** Overlaid on `process.env` for the subprocess. The child needs PATH and the
    *  Codex home like any other process; this is for tests and for an account's
-   *  credentials once vNext has accounts. */
+   *  credentials once Telar has accounts. */
   env?: Record<string, string | undefined>;
   /** The seam for `codexExecutablePath()` from `@telar/core` — see
    *  `resolveCodexBinary`'s header for why it is not imported here. */

@@ -26,7 +26,7 @@ afterEach(() => {
 
 /** A throwaway repository with one commit, so `HEAD` resolves. */
 function repo(): string {
-  const root = tmp("telar-vnext-wt-repo-");
+  const root = tmp("telar-wt-repo-");
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   git("init", "-q", "-b", "main");
@@ -40,8 +40,8 @@ function repo(): string {
 
 test("a worktree session gets its own checkout on a named branch", () => {
   const projectRoot = repo();
-  const vnextRoot = tmp("telar-vnext-wt-state-");
-  const cut = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "session_one" });
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "session_one" });
 
   expect(fs.existsSync(path.join(cut.path, "README.md"))).toBe(true);
   expect(cut.branch).toBe("telar/session_one");
@@ -51,15 +51,15 @@ test("a worktree session gets its own checkout on a named branch", () => {
   const head = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: cut.path, encoding: "utf8" }).trim();
   expect(head).toBe("telar/session_one");
   // Inside the engine's own root, never a sibling of core's `worktrees`.
-  expect(cut.path.startsWith(path.join(vnextRoot, "worktrees"))).toBe(true);
+  expect(cut.path.startsWith(path.join(engineRoot, "worktrees"))).toBe(true);
 });
 
 test("two sessions on one project get separate checkouts", () => {
   // The whole point: N detached sessions must not fight over one working copy.
   const projectRoot = repo();
-  const vnextRoot = tmp("telar-vnext-wt-state-");
-  const first = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "one" });
-  const second = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "two" });
+  const engineRoot = tmp("telar-wt-state-");
+  const first = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
+  const second = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "two" });
   expect(first.path).not.toBe(second.path);
   expect(first.branch).not.toBe(second.branch);
 
@@ -68,20 +68,20 @@ test("two sessions on one project get separate checkouts", () => {
 });
 
 test("a non-git project is refused with an actionable message rather than a git error", () => {
-  const projectRoot = tmp("telar-vnext-wt-plain-");
-  const vnextRoot = tmp("telar-vnext-wt-state-");
-  expect(() => createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "one" })).toThrow(WorktreeError);
-  expect(() => createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "one" })).toThrow(/envMode "local"/);
+  const projectRoot = tmp("telar-wt-plain-");
+  const engineRoot = tmp("telar-wt-state-");
+  expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" })).toThrow(WorktreeError);
+  expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" })).toThrow(/envMode "local"/);
 });
 
 test("recreating a session's worktree after a reap succeeds instead of failing on the branch name", () => {
   // `-B` rather than `-b`. With `-b`, a session whose worktree was reaped could
   // never be recreated: the branch still exists and git refuses.
   const projectRoot = repo();
-  const vnextRoot = tmp("telar-vnext-wt-state-");
-  const first = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "one" });
+  const engineRoot = tmp("telar-wt-state-");
+  const first = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
   expect(removeSessionWorktree(defaultGitRunner, projectRoot, first.path)).toBe(true);
-  const again = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "one" });
+  const again = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
   expect(fs.existsSync(again.path)).toBe(true);
 });
 
@@ -90,18 +90,18 @@ test("removal reports whether the directory is ACTUALLY gone", () => {
   // back as a non-zero status rather than an exception, and the trailing
   // prune would otherwise hide it.
   const projectRoot = repo();
-  const vnextRoot = tmp("telar-vnext-wt-state-");
-  const cut = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "one" });
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one" });
   expect(removeSessionWorktree(defaultGitRunner, projectRoot, cut.path)).toBe(true);
 
   const deaf: GitRunner = () => ({ status: 1, stdout: "", stderr: "nope" });
-  const stubborn = createSessionWorktree(defaultGitRunner, { vnextRoot, projectRoot, sessionId: "two" });
+  const stubborn = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "two" });
   expect(removeSessionWorktree(deaf, projectRoot, stubborn.path)).toBe(false);
 });
 
 test("a session created with envMode worktree records its branch and base", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-vnext-wt-engine-"), () => 100);
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
 
@@ -120,15 +120,15 @@ test("a session created with envMode worktree records its branch and base", () =
 test("a failed worktree cut leaves no half-created session behind", () => {
   // The worktree is cut BEFORE the session document is written, so there is
   // nothing to repair on read.
-  const store = new EngineStore(tmp("telar-vnext-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: tmp("telar-vnext-wt-plain-") });
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
   expect(() => store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
   expect(() => store.getSession("session_one")).toThrow(EngineStateError);
 });
 
 test("archiving frees the checkout and KEEPS the branch", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-vnext-wt-engine-"), () => 100);
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
@@ -150,7 +150,7 @@ test("archiving refuses while a turn is in flight", () => {
   // Pulling the checkout out from under a live provider process is how a
   // half-written file becomes a corrupt commit.
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-vnext-wt-engine-"), () => 100);
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
@@ -161,7 +161,7 @@ test("archiving refuses while a turn is in flight", () => {
 });
 
 test("archiving is idempotent", () => {
-  const store = new EngineStore(tmp("telar-vnext-wt-engine-"), () => 100);
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.archiveSession("session_one").state).toBe("archived");

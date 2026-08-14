@@ -3,7 +3,7 @@
  *
  * WHAT vNEXT ACTUALLY WRITES INTO A CHECKOUT: nothing. Every write this engine
  * makes lands under `TELAR_HOME` — the state directory, the journals, the
- * attachments, and worktrees, which go to `<TELAR_HOME>/vnext/worktrees` for the
+ * attachments, and worktrees, which go to `<TELAR_HOME>/engine/worktrees` for the
  * reasons `worktree.ts` sets out. The single exception is `writeWorkspaceFile`,
  * which saves a file a person opened and edited on purpose.
  *
@@ -54,7 +54,7 @@ export const TELAR_IGNORE_RULES: IgnoreRule[] = [
   {
     rule: ".telar-worktrees/",
     alreadyCovered: [".telar-worktrees/", ".telar-worktrees", "/.telar-worktrees/", "/.telar-worktrees"],
-    why: "reserved: vNext keeps worktrees outside the repository today",
+    why: "reserved: Telar keeps worktrees outside the repository today",
   },
 ];
 

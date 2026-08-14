@@ -1,5 +1,5 @@
 /**
- * vNext engine client — protocol v2.
+ * engine client — protocol v2.
  *
  * PROTOCOL v1 IS GONE, not deprecated. Its eleven flat `turn.*` events were not
  * a subset of v2 and there is no dual-emit path; an engine speaking v2 answers
@@ -113,19 +113,19 @@ export class EngineClient {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch {
-      throw new EngineClientError("engine_unavailable", "vNext engine is unreachable");
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
     }
 
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      throw new EngineClientError("engine_unavailable", "vNext engine returned an invalid response", response.status);
+      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status);
     }
     if (!response.ok) {
       const error = (payload as EngineErrorBody | null)?.error;
       const code: EngineErrorCode = error?.code ?? "engine_unavailable";
-      throw new EngineClientError(code, error?.message ?? "vNext engine request failed", response.status);
+      throw new EngineClientError(code, error?.message ?? "engine request failed", response.status);
     }
     return payload as T;
   }
@@ -144,17 +144,17 @@ export class EngineClient {
         body: new Uint8Array(bytes) as unknown as BodyInit,
       });
     } catch {
-      throw new EngineClientError("engine_unavailable", "vNext engine is unreachable");
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
     }
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      throw new EngineClientError("engine_unavailable", "vNext engine returned an invalid response", response.status);
+      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status);
     }
     if (!response.ok) {
       const error = (payload as EngineErrorBody | null)?.error;
-      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "vNext engine request failed", response.status);
+      throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status);
     }
     return payload as T;
   }

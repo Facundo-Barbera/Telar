@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — the durable entities.
+ * engine protocol v2 — the durable entities.
  *
  *   Environment
  *     └── Project      a registered repo
@@ -233,7 +233,7 @@ export const Session = z.object({
    * the same sessions are read from the desktop shell, a browser tab and
    * whatever else attaches, and an inbox that disagrees with itself per client
    * is not an inbox. `readAt` is deliberately still absent — see
-   * `apps/vnext-web/lib/session-list.ts` for what unread would need.
+   * `apps/web/lib/session-list.ts` for what unread would need.
    */
   settledOverride: z.enum(["settled", "active"]).optional(),
   /** When the override was set. Its age is what lets a client tell an old

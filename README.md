@@ -31,10 +31,10 @@ A green verify only moves a loom to `ready` — the human always accepts.
 
 | Path | What |
 | --- | --- |
-| `apps/vnext-web` | **The app being built.** Standalone Next.js cockpit over the vNext engine. |
-| `apps/engine` | The vNext control plane — a local authenticated daemon owning projects, sessions and a durable turn journal. |
+| `apps/web` | **The app being built.** Standalone Next.js cockpit over the engine. |
+| `apps/engine` | The Telar control plane — a local authenticated daemon owning projects, sessions and a durable turn journal. |
 | `packages/engine-client` | The dependency-free engine protocol types + HTTP client. |
-| `apps/web_old` | **FROZEN.** The legacy cockpit — looms, orchestration, verification, accept / steer / reject. Read-only design source for the vNext rebuild; see `apps/web_old/AGENTS.md`. |
+| `apps/web_old` | **FROZEN.** The legacy cockpit — looms, orchestration, verification, accept / steer / reject. Read-only design source for the Telar rebuild; see `apps/web_old/AGENTS.md`. |
 | `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
 | `docs/` | Fresh project documentation is being regenerated here; legacy design docs are archived in `.cleanup-archives/docs-legacy-2026-07-17/`. |
 
@@ -54,7 +54,7 @@ Requires [Bun](https://bun.sh).
 
 ```bash
 bun install
-bun run dev:vnext            # the vNext cockpit — see below
+bun run dev            # the cockpit — see below
 ```
 
 The frozen legacy cockpit, if you need to run it for reference:
@@ -63,26 +63,26 @@ The frozen legacy cockpit, if you need to run it for reference:
 cd apps/web_old && bun run dev
 ```
 
-### vNext dogfood cockpit
+### dogfood cockpit
 
-The supported browser-only vNext development door is:
+The supported browser-only Telar development door is:
 
 ```bash
-bun run dev:vnext
+bun run dev
 ```
 
-It uses the isolated `TELAR_HOME=$HOME/.telar-vnext-dogfood` by default (or an
+It uses the isolated `TELAR_HOME=$HOME/.telar-dogfood` by default (or an
 absolute dedicated `TELAR_HOME` you set), starts or attaches the engine, starts
-one vNext worker unless the attached engine already has a live registered
-worker, then opens the standalone vNext web app at `http://127.0.0.1:3000/`. Set
-`TELAR_VNEXT_WEB_PORT` to use a different explicit port. The launcher checks
+one worker unless the attached engine already has a live registered
+worker, then opens the standalone web app at `http://127.0.0.1:3000/`. Set
+`TELAR_WEB_PORT` to use a different explicit port. The launcher checks
 the selected loopback port before it starts anything and passes that exact port
 to both Next and the desktop shell; it fails rather than silently using Next's
 automatic fallback. It never uses `~/.telar` or `~/.telar-dev`.
 
 ### Reaching the cockpit from another device
 
-`TELAR_VNEXT_WEB_HOST` chooses the interface the cockpit binds. It defaults to
+`TELAR_WEB_HOST` chooses the interface the cockpit binds. It defaults to
 `127.0.0.1`, and that default is a security boundary rather than a convenience:
 **the cockpit has no login**, its route handlers hold the engine token, and a
 session's default runtime mode is `auto` — so whoever can open the port can run
@@ -91,7 +91,7 @@ shell commands and write files on the host.
 Bind ONE private interface, not a wildcard:
 
 ```sh
-TELAR_VNEXT_WEB_HOST=100.x.y.z bun run dev:vnext   # a Tailscale address
+TELAR_WEB_HOST=100.x.y.z bun run dev   # a Tailscale address
 ```
 
 The launcher prints a warning whenever the bind is not loopback, and refuses to
@@ -101,26 +101,26 @@ next. Note that binding one address is exclusive: with a tailnet address bound,
 `localhost:3000` on the host itself stops working, and you use the tailnet
 address there too.
 
-`apps/vnext-web` is an independent Next app with its own root-relative routes,
+`apps/web` is an independent Next app with its own root-relative routes,
 styles, API adapters, and engine client. It does not mount or compile the legacy
 sidebar, dock, Loom/Workspace navigation, account registry, desktop/browser host,
 or the legacy app's state/runtime modules. The legacy `apps/web_old` route tree
 and desktop package remain independently runnable during this transition; its
-former in-app vNext cockpit is superseded by this standalone app. `/settings` in the
+former in-app cockpit is superseded by this standalone app. `/settings` in the
 standalone app is a read-only local-runtime guide; it does not manage
 accounts, credentials, or provider configuration.
 
 To use the same cockpit in the development Electron shell, run:
 
 ```bash
-bun run dev:vnext:desktop
+bun run dev:desktop
 ```
 
-This starts the engine, worker, and one web server exactly as `dev:vnext` does,
+This starts the engine, worker, and one web server exactly as `bun run dev` does,
 then launches the existing desktop development runner with
 `TELAR_DESKTOP_URL` set to the same selected `http://127.0.0.1:<port>/`
 route. It therefore does not start a second Next server. Ctrl-C stops only the worker, web, and desktop processes
-this command launched; when it attaches to an already healthy vNext engine, it
+this command launched; when it attaches to an already healthy engine, it
 deliberately leaves that engine running. Legacy `bun run dev:desktop` and all
 desktop package/install commands remain unchanged.
 

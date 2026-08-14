@@ -49,7 +49,7 @@ describe("the lights sit on the app header's centreline", () => {
   });
 
   test("the renderer reserves at least as much width as the lights occupy", () => {
-    // `--titlebar-inset` in apps/vnext-web/app/globals.css is the other half of
+    // `--titlebar-inset` in apps/web/app/globals.css is the other half of
     // this contract, and the two live in different apps — so the number is read
     // from the stylesheet rather than restated here, where it could drift.
     const insetPx = Number(cssVar(/--titlebar-inset:\s*([\d.]+)rem/)) * 16;
@@ -74,7 +74,7 @@ describe("the lights sit on the app header's centreline", () => {
 
 /** Pull a declared value out of the cockpit's stylesheet. */
 function cssVar(pattern) {
-  const css = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "vnext-web", "app", "globals.css"), "utf8");
+  const css = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "web", "app", "globals.css"), "utf8");
   const found = pattern.exec(css);
   if (!found) throw new Error(`globals.css declares nothing matching ${pattern}`);
   return found[1];

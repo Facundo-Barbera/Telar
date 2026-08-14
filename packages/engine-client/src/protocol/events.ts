@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — the event journal.
+ * engine protocol v2 — the event journal.
  *
  * ONE append-only, monotonically-numbered stream per session. Every client
  * state is a fold over it and there is no second source of truth; the entity
@@ -14,7 +14,7 @@
  * WHY A DISCRIMINATED UNION AND NOT v1's `{ type, data: Record<string,
  * unknown> }`: narrowing on `type` in a `switch` gives the exact payload that
  * event carries. v1's shape pushed that work to every call site, which is
- * visible in `apps/vnext-web/lib/vnext/journal.ts` hand-checking `typeof
+ * visible in `apps/web/lib/engine/journal.ts` hand-checking `typeof
  * event.data.text === "string"` before it dares use a field.
  */
 import { z } from "zod";

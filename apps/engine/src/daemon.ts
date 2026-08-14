@@ -1,4 +1,4 @@
-// The engine owns its loopback listener and the only writable vNext state root.
+// The engine owns its loopback listener and the only writable engine state root.
 // It intentionally has no provider imports: Phase 1 proves ownership and crash
 // semantics before a driver is allowed to execute an agent turn.
 import crypto from "node:crypto";
@@ -25,13 +25,13 @@ import {
 } from "@telar/engine-client";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
-import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv, type EngineNotifier } from "./state";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import type { DriverSelector } from "./worker";
 
 type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
 
 export type EngineDaemonOptions = {
-  vnextRoot?: string;
+  engineRoot?: string;
   port?: number;
   now?: () => number;
   /** Worker liveness is deliberately short, but a lost running process remains ambiguous rather than replayed. */
@@ -50,7 +50,7 @@ export type EngineDaemonOptions = {
    * accepts turns and then refuses them — `POST /turns` 503s with
    * `worker_unavailable` until a SEPARATE `bun run worker` process registers.
    * "The engine runs on its own" was therefore false in the most literal sense:
-   * one process was never enough. `scripts/vnext-dev.mjs` papered over it by
+   * one process was never enough. `scripts/dev.mjs` papered over it by
    * launching both.
    *
    * The out-of-process worker is NOT going away and is still the right shape
@@ -96,7 +96,7 @@ function errorFor(error: unknown): HttpError {
   if (error instanceof EngineStateError) {
     return new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code, error.message);
   }
-  return new HttpError(500, "internal_error", "vNext engine encountered an internal error");
+  return new HttpError(500, "internal_error", "engine encountered an internal error");
 }
 
 function writeJson(response: http.ServerResponse, status: number, body: unknown): void {
@@ -267,7 +267,13 @@ function closeServer(server: http.Server): Promise<void> {
 }
 
 export async function startEngine(options: EngineDaemonOptions = {}): Promise<EngineDaemon> {
-  const root = options.vnextRoot ?? vnextRootFromEnv();
+  const root = options.engineRoot ?? engineRootFromEnv();
+  // Before the store opens, and before the lock: the daemon is the only process
+  // allowed to move this tree, and it must do it while nothing has a handle on
+  // either name.
+  if (migrateLegacyEngineRoot(root)) {
+    process.stdout.write(`Telar engine: moved the existing store from vnext/ to ${path.basename(root)}/\n`);
+  }
   const store = new EngineStore(root, options.now, { ...(options.notifier ? { notifier: options.notifier } : {}) });
   const lock = acquireDaemonLock(statePaths(root));
   const daemonId = crypto.randomUUID();
@@ -295,7 +301,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const activeWorker = (workerId: string): RegisteredWorker => {
     pruneWorkers();
     const worker = workers.get(workerId);
-    if (!worker) throw new HttpError(503, "worker_unavailable", "vNext worker is not registered or its lease expired");
+    if (!worker) throw new HttpError(503, "worker_unavailable", "worker is not registered or its lease expired");
     return worker;
   };
   const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
@@ -318,7 +324,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (!bearerIsValid(request.headers.authorization, token)) {
-        throw new HttpError(401, "engine_unauthorized", "vNext engine authentication failed");
+        throw new HttpError(401, "engine_unauthorized", "engine authentication failed");
       }
       if (request.method === "GET" && url.pathname === "/v2/health") {
         writeJson(response, 200, health());
@@ -979,7 +985,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "POST" && session.tail === "/turns") {
           pruneWorkers();
-          if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no vNext worker is registered");
+          if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
           const input = await body(request);
           const model = TurnModelSelection.safeParse(input.model);
           if (input.model !== undefined && !model.success) {
@@ -1037,7 +1043,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
       }
-      throw new HttpError(404, "not_found", "vNext engine endpoint does not exist");
+      throw new HttpError(404, "not_found", "engine endpoint does not exist");
     } catch (error) {
       const normalized = errorFor(error);
       writeJson(response, normalized.status, { error: { code: normalized.code, message: normalized.message } });
@@ -1059,7 +1065,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       server.listen(options.port ?? 0, "127.0.0.1");
     });
     const address = server.address();
-    if (!address || typeof address === "string") throw new Error("vNext engine did not bind a TCP port");
+    if (!address || typeof address === "string") throw new Error("engine did not bind a TCP port");
     const discovery: EngineDiscovery = {
       version: ENGINE_PROTOCOL_VERSION,
       daemonId,

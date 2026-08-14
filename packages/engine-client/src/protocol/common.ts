@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — shared primitives.
+ * engine protocol v2 — shared primitives.
  *
  * WHY THIS PACKAGE HAS A DEPENDENCY NOW, and why it is only this one. The v1
  * header said these types were "deliberately dependency-free so browser clients
@@ -14,7 +14,7 @@
  *     ending in a `value is EngineDiscovery` assertion that TypeScript takes on
  *     trust. Add a field to the type and forget a line here, and the check
  *     silently weakens with nothing to report it.
- *   - `apps/vnext-web/lib/vnext/journal.ts` — `typeof event.data.text ===
+ *   - `apps/web/lib/engine/journal.ts` — `typeof event.data.text ===
  *     "string"` written by hand, because v1 typed every event payload as
  *     `Record<string, unknown>` and the type system genuinely did not know.
  * v2 carries ~50 event shapes across three trust boundaries (provider SDK →
@@ -37,7 +37,7 @@ import { z } from "zod";
  * Bumped from 1 to 2 as a HARD BREAK. v1's eleven flat `turn.*` events are not
  * a subset of this contract and there is no dual-emit path: an engine speaking
  * v2 refuses a v1 client rather than degrading. The only consumer is
- * `apps/vnext-web`, which we control, and the dogfood home holds throwaway
+ * `apps/web`, which we control, and the dogfood home holds throwaway
  * sessions.
  */
 export const ENGINE_PROTOCOL_VERSION = 2 as const;

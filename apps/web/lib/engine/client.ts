@@ -1,0 +1,478 @@
+import type {
+  BrowserSnapshot,
+  GitCommitEntry,
+  GitHubCheckLog,
+  GitHubFacets,
+  GitHubIssueFilter,
+  GitHubIssueRead,
+  GitHubMergeMethod,
+  GitHubMergeResult,
+  GitHubPullFilter,
+  GitHubPullRead,
+  GitHubSnapshot,
+  GitignoreResult,
+  GitOverview,
+  InboxPolicy,
+  ModelCatalogue,
+  SessionDiff,
+  EngineErrorCode,
+  EngineEvent,
+  EngineHealth,
+  McpOAuthStatus,
+  McpServer,
+  McpServerSpec,
+  ModelSelection,
+  Project,
+  TurnAttachment,
+  TurnModelSelection,
+  ProviderDriverKind,
+  ProviderInstance,
+  ProviderInstanceEnvVar,
+  ProviderProbe,
+  EngineRequest,
+  RequestDecision,
+  RuntimeMode,
+  Session,
+  SessionSnapshot,
+  Turn,
+  TurnSubmissionResult,
+  WorkspaceFile,
+  WorkspaceListing,
+  WorkspaceWriteResult,
+} from "@telar/engine-client";
+import { forgeQuery } from "@telar/engine-client";
+
+/**
+ * DERIVED FROM THE CONTRACT, not re-listed beside it. This union used to be ten
+ * hand-written literals that had to be kept in step with the engine's own
+ * `EngineErrorCode` by hand — and when v2 added `protocol_mismatch`, the copy
+ * here was the thing that went stale. An alias cannot.
+ */
+export type EngineApiErrorCode = EngineErrorCode;
+
+export class EngineApiError extends Error {
+  constructor(readonly code: EngineApiErrorCode, message: string, readonly status?: number) {
+    super(message);
+    this.name = "EngineApiError";
+  }
+}
+
+type Fetcher = typeof fetch;
+
+async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetcher(pathname, {
+      method,
+      headers: body === undefined ? undefined : { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new EngineApiError("engine_unavailable", "The cockpit cannot reach its local adapter.");
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new EngineApiError("engine_unavailable", "The engine adapter returned an invalid response.", response.status);
+  }
+  if (!response.ok) {
+    const error = (payload as { error?: { code?: EngineApiErrorCode; message?: string } } | null)?.error;
+    throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "The engine request failed.", response.status);
+  }
+  return payload as T;
+}
+
+export function createEngineApi(fetcher: Fetcher = fetch) {
+  return {
+    health: () => request<EngineHealth>(fetcher, "GET", "/api/health"),
+    /** Which build this is and where its state lives. Deliberately does NOT go
+     *  through the engine: both answers matter most when the engine is down. */
+    about: () => request<{ appVersion: string; stateRoot?: string }>(fetcher, "GET", "/api/about"),
+    projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
+    registerProject: (input: { name: string; root: string }) =>
+      request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
+    /** How this machine's inbox bands — the auto-settle window, or `null` for
+     *  no clock at all. One answer for every client of this engine. */
+    inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
+    setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
+      request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** Which models a provider says it has — asked of the provider where it can
+     *  answer, and this cockpit's own short list where it cannot. */
+    modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {
+      const query = new URLSearchParams({ driver });
+      if (options.refresh) query.set("refresh", "1");
+      return request<{ catalogue: ModelCatalogue }>(fetcher, "GET", `/api/models?${query.toString()}`);
+    },
+    projectGit: (projectId: string) =>
+      request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
+    /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
+     *  `refresh` is what the button sends, and nothing else may send it. */
+    projectGitHub: (projectId: string, options: { refresh?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}) =>
+      // `forgeQuery` is the CONTRACT's own builder, not a second copy: the engine
+      // route parses these names, and two hand-written versions of the same query
+      // string would drift on the first filter anybody adds.
+      request<{ github: GitHubSnapshot }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/github${forgeQuery(options)}`),
+    /** What there is to filter by. Asked only when a filter menu opens, and cached
+     *  for five minutes in the engine — milestones change on the timescale of a
+     *  sprint. */
+    projectForgeFacets: (projectId: string, options: { refresh?: boolean } = {}) =>
+      request<{ facets: GitHubFacets }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/facets${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    /** One failing check's log. Never cached: a finished job's log cannot change and
+     *  a running job's must not be stale. */
+    projectCheckLog: (projectId: string, jobId: string) =>
+      request<{ log: GitHubCheckLog }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/checks/${encodeURIComponent(jobId)}/log`,
+      ),
+    /** Ignore Telar's own files in a project's repository. No body: the rules are
+     *  the engine's, so this cannot be used to append arbitrary lines to a file in
+     *  somebody's checkout. */
+    projectGitignore: (projectId: string) =>
+      request<{ gitignore: GitignoreResult }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/gitignore`, {}),
+    /**
+     * ONE issue or ONE pull request, opened as its own panel tab.
+     *
+     * THE ANSWER IS A UNION rather than a throw — `{ issue }` or
+     * `{ unavailable, message? }` — because a detail tab restored from a previous
+     * run can open into a machine where `gh` has since been logged out, and the
+     * five sentences that say what to do about that are the answer.
+     */
+    projectIssue: (projectId: string, number: number, options: { refresh?: boolean } = {}) =>
+      request<GitHubIssueRead>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/issues/${number}${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    projectPull: (projectId: string, number: number, options: { refresh?: boolean } = {}) =>
+      request<GitHubPullRead>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    /**
+     * Merge a pull request.
+     *
+     * `expectedHeadOid` is the head the person pressing the button reviewed, and
+     * it is required: it becomes `--match-head-commit`, so a commit pushed since
+     * the read makes GitHub refuse rather than merge code nobody saw. A refusal
+     * arrives as `merged: false` with one of seven reasons, not as a thrown error.
+     */
+    mergeProjectPull: (projectId: string, number: number, input: { method: GitHubMergeMethod; expectedHeadOid: string }) =>
+      request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
+    sessions: (projectId: string) =>
+      request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
+    createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>
+      request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, input),
+    // The contract's own snapshot type, not a hand-copied structural twin: this
+    // route proxies the engine verbatim, so a field the engine adds is already
+    // arriving and a local re-declaration only hides it.
+    session: (sessionId: string) =>
+      request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+    /** Rename, change the model, or change what the session may do without
+     *  asking. The model must belong to the session's provider instance — the
+     *  engine rejects anything else, because a turn is routed by that instance
+     *  and the provider owns the resume cursor. */
+    updateSession: (
+      sessionId: string,
+      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
+    ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /** End a session and free its worktree. The branch survives. */
+    archiveSession: (sessionId: string) =>
+      request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),
+    /** REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
+     *  and the engine refuses while a turn is in flight. */
+    deleteSession: (sessionId: string) =>
+      request<{ deleted: boolean }>(fetcher, "DELETE", `/api/sessions/${encodeURIComponent(sessionId)}`),
+    /** `answers` is only meaningful for a `user_input` request — the route has
+     *  always forwarded it; this signature simply never offered it, so the one
+     *  request kind that asks a question could not be answered from the UI. */
+    resolveRequest: (
+      sessionId: string,
+      requestId: string,
+      input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown> },
+    ) =>
+      request<{ request: EngineRequest }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input),
+    events: (sessionId: string, after: number) =>
+      request<{ events: EngineEvent[]; cursor: number; more: boolean }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`),
+    /** `model` rides with THIS message — queue three with different models and
+     *  each runs on the one it was written under. It cannot name a provider
+     *  instance, so the session's provider is fixed for its whole life. */
+    submitTurn: (sessionId: string, input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] }) =>
+      request<TurnSubmissionResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns`, input),
+    /**
+     * Put a file where the session's provider can reach it.
+     *
+     * A `File` goes over the wire as ITS OWN BODY rather than as base64 inside
+     * JSON: base64 costs a third again on the largest thing this client ever
+     * sends, and the JSON limit on every other route is deliberately small.
+     */
+    uploadAttachment: async (sessionId: string, file: File): Promise<{ attachment: TurnAttachment }> => {
+      let response: Response;
+      try {
+        response = await fetcher(`/api/sessions/${encodeURIComponent(sessionId)}/attachments`, {
+          method: "POST",
+          headers: {
+            "content-type": file.type || "application/octet-stream",
+            // Encoded because a filename may hold bytes a header may not.
+            "x-telar-attachment-name": encodeURIComponent(file.name),
+          },
+          body: file,
+        });
+      } catch {
+        throw new EngineApiError("engine_unavailable", "The cockpit cannot reach its local adapter.");
+      }
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) {
+        const error = (payload as { error?: { code?: EngineApiErrorCode; message?: string } } | null)?.error;
+        throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "That file could not be attached.", response.status);
+      }
+      return payload as { attachment: TurnAttachment };
+    },
+    /** What is uncommitted in a project right now — what the canvas reviews
+     *  before its conversation exists. */
+    projectDiff: (projectId: string) =>
+      request<{ diff: SessionDiff }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/diff`),
+    projectFilePatch: (projectId: string, path: string, options: { untracked?: boolean } = {}) => {
+      const query = new URLSearchParams({ path });
+      if (options.untracked) query.set("untracked", "1");
+      return request<{ file: { patch: string; binary: boolean } }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/diff?${query.toString()}`,
+      );
+    },
+    /** What this session has done to the repository since it started — committed
+     *  and uncommitted together, from the base recorded at creation. */
+    sessionDiff: (sessionId: string) =>
+      request<{ diff: SessionDiff }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/diff`),
+    /** One file's patch, opened on demand. */
+    sessionFilePatch: (sessionId: string, path: string, options: { untracked?: boolean } = {}) => {
+      const query = new URLSearchParams({ path });
+      if (options.untracked) query.set("untracked", "1");
+      return request<{ file: { patch: string; binary: boolean } }>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/diff?${query.toString()}`,
+      );
+    },
+    /**
+     * Every file in a checkout, for the Files tree — and one file's text.
+     *
+     * NEITHER IS POLLED. The listing is git reading an index it already has, but a
+     * tree that reorders itself under the cursor on a timer is hostile in a way a
+     * stale figure is not; both surfaces have a refresh button and re-read when a
+     * turn settles.
+     */
+    projectFiles: (projectId: string) =>
+      request<{ listing: WorkspaceListing }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/files`),
+    sessionFiles: (sessionId: string) =>
+      request<{ listing: WorkspaceListing }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/files`),
+    projectFile: (projectId: string, path: string) =>
+      request<{ file: WorkspaceFile }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`,
+      ),
+    sessionFile: (sessionId: string, path: string) =>
+      request<{ file: WorkspaceFile }>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
+      ),
+    /**
+     * Save an edited file.
+     *
+     * `expectedSha256` is the hash the read returned. The engine refuses the write
+     * when disk no longer matches — an agent writing the same file mid-turn is the
+     * case this exists for — and a refusal arrives as `written: false` rather than
+     * as a thrown error, because "the file changed under you" is something the
+     * editor has to render.
+     */
+    writeProjectFile: (projectId: string, path: string, text: string, expectedSha256: string) =>
+      request<WorkspaceWriteResult>(
+        fetcher,
+        "PUT",
+        `/api/projects/${encodeURIComponent(projectId)}/files?${new URLSearchParams({ path }).toString()}`,
+        { text, expectedSha256 },
+      ),
+    writeSessionFile: (sessionId: string, path: string, text: string, expectedSha256: string) =>
+      request<WorkspaceWriteResult>(
+        fetcher,
+        "PUT",
+        `/api/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
+        { text, expectedSha256 },
+      ),
+    /** Snapshot the session's work as one commit. A refusal ("nothing to commit",
+     *  a hook that said no) comes back as `committed: false` with a reason, not
+     *  as a thrown error — it is an answer about the repository. */
+    commitSessionWork: (sessionId: string, message: string) =>
+      request<{ committed: boolean; commit?: GitCommitEntry; reason?: string }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/git/commit`,
+        { message },
+      ),
+    /** What the session's browser is looking at. `screenshot` costs a round trip
+     *  through Chromium and `start` would LAUNCH one, so both are opt-in. */
+    browserState: (sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}) => {
+      const query = new URLSearchParams();
+      if (options.screenshot) query.set("screenshot", "1");
+      if (options.start) query.set("start", "1");
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
+      return request<{ browser: BrowserSnapshot }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
+    },
+    /** The MACHINE-WIDE MCP servers — the ones every project sees. A project's
+     *  own live under `projectMcpServers`, and the URL is what says which scope
+     *  a write lands in. */
+    mcpServers: () => request<{ mcpServers: McpServer[] }>(fetcher, "GET", "/api/mcp-servers"),
+    /** This project's servers, plus `effective` — the merge its sessions run
+     *  with, computed by the engine rather than re-derived here. */
+    projectMcpServers: (projectId: string) =>
+      request<{ mcpServers: McpServer[]; effective: McpServer[] }>(
+        fetcher,
+        "GET",
+        `/api/projects/${encodeURIComponent(projectId)}/mcp-servers`,
+      ),
+    saveMcpServer: (input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: McpServerSpec }) => {
+      const { projectId, ...rest } = input;
+      return request<{ mcpServer: McpServer }>(
+        fetcher,
+        "PUT",
+        projectId ? `/api/projects/${encodeURIComponent(projectId)}/mcp-servers` : "/api/mcp-servers",
+        rest,
+      );
+    },
+    removeMcpServer: (id: string, projectId?: string) =>
+      request<{ removed: boolean }>(
+        fetcher,
+        "DELETE",
+        projectId
+          ? `/api/projects/${encodeURIComponent(projectId)}/mcp-servers/${encodeURIComponent(id)}`
+          : `/api/mcp-servers/${encodeURIComponent(id)}`,
+      ),
+    /**
+     * Whether each http server wants a login and whether ours works.
+     *
+     * TWO NETWORK ROUND TRIPS PER SERVER, so this is what a page does when it
+     * opens or when somebody presses refresh — never a poll. It is also why it
+     * is a SEPARATE call from the server list: the list must paint immediately,
+     * and an unreachable server must not hold the whole pane blank.
+     */
+    mcpOAuthStatus: (projectId?: string) =>
+      request<{ statuses: McpOAuthStatus[] }>(
+        fetcher,
+        "GET",
+        projectId ? `/api/mcp/oauth?projectId=${encodeURIComponent(projectId)}` : "/api/mcp/oauth",
+      ),
+    /** Returns the URL to send the browser to. The redirect origin is decided by
+     *  the route from the request, never passed from here — it is the one field
+     *  in an OAuth flow that must not be client-chosen. */
+    connectMcpOAuth: (serverId: string, projectId?: string) =>
+      request<{ authorizationUrl: string }>(fetcher, "POST", "/api/mcp/oauth", {
+        serverId,
+        ...(projectId ? { projectId } : {}),
+      }),
+    disconnectMcpOAuth: (serverId: string, projectId?: string) =>
+      request<{ removed: boolean }>(fetcher, "POST", "/api/mcp/oauth", {
+        action: "disconnect",
+        serverId,
+        ...(projectId ? { projectId } : {}),
+      }),
+    /**
+     * The configured logins and what the machine says about each, in ONE call —
+     * a settings row needs both to render, and two would let it paint a green
+     * dot beside an instance the second is about to report missing.
+     *
+     * `refresh` costs a subprocess per driver, so it is a button and never a
+     * repaint.
+     */
+    providerInstances: (options: { refresh?: boolean } = {}) =>
+      request<{ providerInstances: ProviderInstance[]; probes: ProviderProbe[] }>(
+        fetcher,
+        "GET",
+        `/api/provider-instances${options.refresh ? "?refresh=1" : ""}`,
+      ),
+    /** `null` clears a field; an absent key leaves it alone. Sensitive values
+     *  round-trip as `{ value: "", valueRedacted: true }` and keep their
+     *  stored secret. */
+    saveProviderInstance: (input: {
+      id: string;
+      driver?: ProviderDriverKind;
+      displayName?: string | null;
+      accentColor?: string | null;
+      configDir?: string | null;
+      enabled?: boolean;
+      env?: ProviderInstanceEnvVar[];
+    }) => request<{ providerInstance: ProviderInstance }>(fetcher, "PUT", "/api/provider-instances", input),
+    removeProviderInstance: (id: string) =>
+      request<{ removed: boolean }>(fetcher, "DELETE", `/api/provider-instances/${encodeURIComponent(id)}`),
+    stopTurn: (sessionId: string, runId?: string) =>
+      request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
+    discardAmbiguousTurn: (sessionId: string, runId: string) =>
+      request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
+  };
+}
+
+/**
+ * A UUID, INCLUDING ON ORIGINS THE BROWSER DOES NOT CALL SECURE.
+ *
+ * `crypto.randomUUID` exists ONLY IN A SECURE CONTEXT — HTTPS, or a loopback
+ * host. Served over plain HTTP from any other address it is simply not there,
+ * and this cockpit is served that way the moment it is bound to something other
+ * than localhost so another machine can reach it.
+ *
+ * THE FAILURE LANDED ON THE FIRST MESSAGE OF A NEW CONVERSATION, which is the
+ * worst place it could have: `submit` mints a run id before it does anything
+ * else, so the whole app worked until you tried to say something, and then threw
+ * `crypto.randomUUID is not a function` from inside a click handler.
+ *
+ * `getRandomValues` CARRIES NO SUCH RESTRICTION, so the fallback is the same
+ * randomness with the version and variant bits set by hand. Deliberately NOT
+ * `Math.random`, which is what most snippets substitute here: this id is the
+ * idempotency key a retried submission is matched on, and a weak one turns a
+ * collision from impossible into merely unlikely.
+ */
+function randomUuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 1
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Browser-generated ids are stable if the submission has to be retried. */
+export function newRunId(uuid: () => string = randomUuid): string {
+  return `run_${uuid().replaceAll("-", "")}`;
+}
+
+type TurnApi = Pick<ReturnType<typeof createEngineApi>, "discardAmbiguousTurn" | "submitTurn">;
+
+/**
+ * Retrying uncertain work is deliberately a two-command flow: first persist
+ * the human discard decision, then submit the same prompt under a new id.
+ * The ambiguous run id is never replayed.
+ */
+export async function retryAmbiguousTurn(
+  api: TurnApi,
+  sessionId: string,
+  turn: Pick<Turn, "runId" | "state" | "input">,
+  createRunId: () => string = newRunId,
+): Promise<TurnSubmissionResult> {
+  if (turn.state !== "ambiguous") {
+    throw new EngineApiError("conflict", "Only an ambiguous turn requires explicit discard before retrying.");
+  }
+  await api.discardAmbiguousTurn(sessionId, turn.runId);
+  const runId = createRunId();
+  if (runId === turn.runId) {
+    throw new EngineApiError("conflict", "Retry must use a fresh run id.");
+  }
+  return api.submitTurn(sessionId, { runId, input: turn.input });
+}

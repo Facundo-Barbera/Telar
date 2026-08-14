@@ -313,7 +313,7 @@ describe("track-e prove-run", () => {
     // directory silently, so leaving stale roots here would have degraded this
     // scan into a narrower one without saying so. The anti-vacuity check below
     // is what keeps the remaining roots honest.
-    const roots = ["packages/core/src", "apps/vnext-web/lib", "apps/vnext-web/app", "scripts"];
+    const roots = ["packages/core/src", "apps/web/lib", "apps/web/app", "scripts"];
     const composing: string[] = [];
     const walk = (dir: string) => {
       let entries: fs.Dirent[];

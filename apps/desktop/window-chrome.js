@@ -11,7 +11,7 @@
 // (`h-14`), and the traffic lights have to sit on its centreline rather than in
 // a strip above it — otherwise the whole point is lost and the window simply
 // gains a shorter grey bar. Both offsets below derive from that one number, and
-// apps/vnext-web/app/globals.css derives `--titlebar-inset` from the same
+// apps/web/app/globals.css derives `--titlebar-inset` from the same
 // geometry to reserve the width. If the header height changes, all three move.
 
 /** The renderer's sidebar header height, in CSS pixels (`h-14`). */

@@ -63,7 +63,7 @@ const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
 /**
  * THE SIGN-IN COMMAND IS NOT HERE, deliberately. It is a sentence shown to a
  * person, it is never executed by anything in this process, and the cockpit is
- * what renders it — see `apps/vnext-web/lib/provider-instances.ts`. A second
+ * what renders it — see `apps/web/lib/provider-instances.ts`. A second
  * copy in the engine would be a second place for the wording to drift with
  * nothing that could notice.
  */

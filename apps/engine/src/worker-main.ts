@@ -3,15 +3,15 @@ import path from "node:path";
 import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { browserCapability, createDefaultDrivers } from "./drivers";
-import { vnextRootFromEnv } from "./state";
+import { engineRootFromEnv } from "./state";
 import { EngineWorker } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
 
-const root = vnextRootFromEnv();
-const workerId = process.env.TELAR_VNEXT_WORKER_ID?.trim() || `worker_vnext_${process.pid}_${crypto.randomUUID().replaceAll("-", "")}`;
+const root = engineRootFromEnv();
+const workerId = process.env.TELAR_WORKER_ID?.trim() || `worker_${process.pid}_${crypto.randomUUID().replaceAll("-", "")}`;
 
 if (!/^[A-Za-z0-9_-]+$/.test(workerId)) {
-  throw new Error("TELAR_VNEXT_WORKER_ID must contain only letters, numbers, underscores, or hyphens");
+  throw new Error("TELAR_WORKER_ID must contain only letters, numbers, underscores, or hyphens");
 }
 
 let stopping = false;
@@ -44,7 +44,7 @@ const supervisor = new WorkerReconnectController({
 });
 
 await supervisor.start();
-process.stdout.write(`Telar vNext worker ${workerId} registered\n`);
+process.stdout.write(`Telar worker ${workerId} registered\n`);
 
 const stop = async (exitCode: number) => {
   if (stopping) return;

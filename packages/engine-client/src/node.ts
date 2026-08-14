@@ -12,10 +12,10 @@ import path from "node:path";
 import { EngineClient, EngineClientError, type FetchLike } from "./index";
 import { EngineDiscovery } from "./protocol";
 
-const discoveryFile = (vnextRoot: string): string => path.join(vnextRoot, "engine.json");
+const discoveryFile = (engineRoot: string): string => path.join(engineRoot, "engine.json");
 
 /**
- * Reads only the vNext discovery document; it never touches legacy Telar state.
+ * Reads only the Telar discovery document; it never touches legacy Telar state.
  *
  * VALIDATION IS THE SCHEMA'S JOB NOW. This used to be `isDiscovery()`, fifteen
  * hand-written checks ending in a `value is EngineDiscovery` assertion the
@@ -24,20 +24,20 @@ const discoveryFile = (vnextRoot: string): string => path.join(vnextRoot, "engin
  * 32-character minimum token, a real port) and cannot drift from the type,
  * because the type is derived from it.
  */
-export async function discoverEngine(vnextRoot: string): Promise<EngineDiscovery> {
+export async function discoverEngine(engineRoot: string): Promise<EngineDiscovery> {
   try {
-    const raw = await fs.readFile(discoveryFile(vnextRoot), "utf8");
+    const raw = await fs.readFile(discoveryFile(engineRoot), "utf8");
     const discovery = EngineDiscovery.safeParse(JSON.parse(raw) as unknown);
     if (!discovery.success) {
-      throw new EngineClientError("engine_unavailable", "vNext engine discovery is invalid");
+      throw new EngineClientError("engine_unavailable", "engine discovery is invalid");
     }
     return discovery.data;
   } catch (error) {
     if (error instanceof EngineClientError) throw error;
-    throw new EngineClientError("engine_unavailable", "vNext engine is not discoverable");
+    throw new EngineClientError("engine_unavailable", "engine is not discoverable");
   }
 }
 
-export async function connectEngine(vnextRoot: string, fetchImpl?: FetchLike): Promise<EngineClient> {
-  return new EngineClient(await discoverEngine(vnextRoot), fetchImpl);
+export async function connectEngine(engineRoot: string, fetchImpl?: FetchLike): Promise<EngineClient> {
+  return new EngineClient(await discoverEngine(engineRoot), fetchImpl);
 }

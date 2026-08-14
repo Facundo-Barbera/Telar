@@ -20,7 +20,7 @@
  *      daemon is a new island that "never imports legacy Telar storage", and
  *      that promise is worth more than the ~40 lines saved here.
  *
- * So the engine owns `<TELAR_HOME>/vnext/worktrees` — inside its own root, not
+ * So the engine owns `<TELAR_HOME>/engine/worktrees` — inside its own root, not
  * a sibling of core's.
  */
 import crypto from "node:crypto";
@@ -54,8 +54,8 @@ function sanitize(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64) || "session";
 }
 
-export function worktreesRoot(vnextRoot: string): string {
-  return path.join(vnextRoot, "worktrees");
+export function worktreesRoot(engineRoot: string): string {
+  return path.join(engineRoot, "worktrees");
 }
 
 /**
@@ -69,7 +69,7 @@ export function worktreesRoot(vnextRoot: string): string {
  */
 export function createSessionWorktree(
   git: GitRunner,
-  input: { vnextRoot: string; projectRoot: string; sessionId: string; baseRef?: string },
+  input: { engineRoot: string; projectRoot: string; sessionId: string; baseRef?: string },
 ): { path: string; branch: string; baseRef: string } {
   const inside = git(input.projectRoot, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || inside.stdout.trim() !== "true") {
@@ -86,7 +86,7 @@ export function createSessionWorktree(
   const baseSha = head.stdout.trim();
 
   const id = sanitize(input.sessionId);
-  const root = worktreesRoot(input.vnextRoot);
+  const root = worktreesRoot(input.engineRoot);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   // The suffix keeps a retry after a partial failure from colliding with the
   // corpse of the previous attempt, which `git worktree add` refuses to reuse.

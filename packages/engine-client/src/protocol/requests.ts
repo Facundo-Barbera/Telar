@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — requests: the things that need a human.
+ * engine protocol v2 — requests: the things that need a human.
  *
  * A request is opened by the engine when a turn wants to do something its
  * session's `RuntimeMode` does not already permit, and it stays open until

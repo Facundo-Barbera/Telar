@@ -20,7 +20,7 @@ const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-requests-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-requests-"));
   roots.push(directory);
   return directory;
 };
@@ -182,7 +182,7 @@ test("a resolution is offered to the worker that holds the running claim, and no
 });
 
 test("a driver blocked on a human is unblocked by the heartbeat, end to end", async () => {
-  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 2_000, notifier: () => true });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 2_000, notifier: () => true });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -224,7 +224,7 @@ test("a stop while a human is deciding settles the driver instead of hanging the
   // THE DEADLOCK THIS PREVENTS: canUseTool has no park deadline, so a worker
   // blocked on an answer that never comes would keep the turn running for the
   // life of the process.
-  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 2_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 2_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });

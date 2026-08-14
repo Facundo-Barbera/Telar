@@ -2,11 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { acquireDaemonLock, EngineStateError, EngineStore, statePaths, vnextRootFromEnv } from "../src/state";
+import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
 
 const roots: string[] = [];
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-engine-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-engine-"));
   roots.push(directory);
   return directory;
 };
@@ -23,14 +23,62 @@ function readyStore(): { store: EngineStore; root: string } {
   return { store, root: stateRoot };
 }
 
-test("the engine requires an explicit absolute home and writes only beneath its vNext root", () => {
-  expect(() => vnextRootFromEnv({})).toThrow(EngineStateError);
-  expect(() => vnextRootFromEnv({ TELAR_HOME: "relative" })).toThrow(EngineStateError);
-  expect(vnextRootFromEnv({ TELAR_HOME: "/tmp/telar" })).toBe(path.join(fs.realpathSync.native("/tmp"), "telar", "vnext"));
+test("the engine requires an explicit absolute home and writes only beneath its Telar root", () => {
+  expect(() => engineRootFromEnv({})).toThrow(EngineStateError);
+  expect(() => engineRootFromEnv({ TELAR_HOME: "relative" })).toThrow(EngineStateError);
+  expect(engineRootFromEnv({ TELAR_HOME: "/tmp/telar" })).toBe(path.join(fs.realpathSync.native("/tmp"), "telar", "engine"));
   const { root: stateRoot } = readyStore();
   expect(fs.existsSync(path.join(stateRoot, "projects.json"))).toBe(true);
   expect(fs.existsSync(path.join(stateRoot, "sessions", "session_one", "session.json"))).toBe(true);
   expect(fs.existsSync(path.join(path.dirname(stateRoot), "chats.json"))).toBe(false);
+});
+
+describe("the store survives being renamed out of vnext/", () => {
+  /**
+   * THE FAILURE THIS PREVENTS IS SILENT AND TOTAL. The engine root moved from
+   * `<TELAR_HOME>/vnext` to `<TELAR_HOME>/engine` when the app stopped being
+   * called vNext. Without the migration the daemon finds an empty directory,
+   * creates it, and comes up perfectly healthy with every project and session
+   * gone — no error anywhere, because nothing was ever wrong with the new root.
+   */
+  test("an existing vnext/ store is renamed into place", () => {
+    const home = root();
+    const legacy = path.join(home, "vnext");
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "projects.json"), '{"projects":[]}', "utf8");
+
+    expect(migrateLegacyEngineRoot(path.join(home, "engine"))).toBe(true);
+    expect(fs.existsSync(path.join(home, "engine", "projects.json"))).toBe(true);
+    expect(fs.existsSync(legacy)).toBe(false);
+  });
+
+  test("a store already in place is never overwritten by a stale vnext/", () => {
+    // Both names existing means somebody ran an old build after a new one. The
+    // CURRENT root wins; renaming over it would replace live state with older
+    // state, which is worse than the leftover directory.
+    const home = root();
+    fs.mkdirSync(path.join(home, "vnext"), { recursive: true });
+    fs.mkdirSync(path.join(home, "engine"), { recursive: true });
+    fs.writeFileSync(path.join(home, "engine", "projects.json"), '{"projects":[]}', "utf8");
+
+    expect(migrateLegacyEngineRoot(path.join(home, "engine"))).toBe(false);
+    expect(fs.existsSync(path.join(home, "vnext"))).toBe(true);
+  });
+
+  test("nothing to migrate is not an error, and says nothing", () => {
+    expect(migrateLegacyEngineRoot(path.join(root(), "engine"))).toBe(false);
+  });
+
+  test("a root explicitly pinned AT the old name is left exactly where it is", () => {
+    // Tests and anyone who passed `--engine-root .../vnext` by hand. Renaming a
+    // directory onto itself is either a no-op or a crash, depending on the
+    // platform; neither is something to find out at somebody's boot.
+    const home = root();
+    const pinned = path.join(home, "vnext");
+    fs.mkdirSync(pinned, { recursive: true });
+    expect(migrateLegacyEngineRoot(pinned)).toBe(false);
+    expect(fs.existsSync(pinned)).toBe(true);
+  });
 });
 
 test("submitting a stable run id is idempotent and a session has only one active turn", () => {
@@ -405,8 +453,8 @@ test("project roots are canonical existing directories and legacy homes are reje
   const legacy = path.join(os.homedir(), ".telar");
   const alias = path.join(stateRoot, "legacy-link");
   fs.symlinkSync(legacy, alias);
-  expect(() => vnextRootFromEnv({ TELAR_HOME: legacy })).toThrow(/legacy Telar state/);
-  expect(() => vnextRootFromEnv({ TELAR_HOME: alias })).toThrow(/legacy Telar state/);
+  expect(() => engineRootFromEnv({ TELAR_HOME: legacy })).toThrow(/legacy Telar state/);
+  expect(() => engineRootFromEnv({ TELAR_HOME: alias })).toThrow(/legacy Telar state/);
 });
 
 test("an interrupted final journal append is truncated, while malformed complete records are rejected", () => {

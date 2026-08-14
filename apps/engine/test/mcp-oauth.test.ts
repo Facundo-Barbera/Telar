@@ -34,7 +34,7 @@ import { EngineStore } from "../src/state";
 
 const roots: string[] = [];
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-mcp-oauth-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-mcp-oauth-"));
   roots.push(directory);
   return directory;
 };

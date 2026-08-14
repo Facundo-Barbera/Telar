@@ -6,7 +6,7 @@
 // The value carried over is the part that cannot be re-derived: every method
 // name, item.type spelling and field name below was taken from a live trace
 // against a real `codex app-server` 0.145.0. What was DROPPED is the
-// `thread/compact/start` machinery and its scenarios — vNext's `TurnDriver`
+// `thread/compact/start` machinery and its scenarios — Telar's `TurnDriver`
 // runs turns, and an on-demand compaction is a session operation with no
 // caller here. Auto-compaction MID-TURN is kept, because a turn can hit it.
 //

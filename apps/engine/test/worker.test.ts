@@ -12,7 +12,7 @@ const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-worker-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-worker-"));
   roots.push(directory);
   return directory;
 };
@@ -38,7 +38,7 @@ async function eventually(check: () => void | Promise<void>): Promise<void> {
 }
 
 async function setup(driver: TurnDriver): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
-  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -154,7 +154,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
       return { text: label };
     },
   });
-  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -181,7 +181,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
 });
 
 test("a session whose provider this worker cannot serve fails the turn instead of hanging", async () => {
-  const daemon = await startEngine({ vnextRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });

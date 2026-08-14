@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — GitHub, as the `gh` CLI reports it.
+ * engine protocol v2 — GitHub, as the `gh` CLI reports it.
  *
  * NAMED FOR THE THING IT ACTUALLY IS. Not `Forge`, not `Issue`: these shapes are
  * whatever `gh issue list --json` and `gh pr list --json` hand back, and a

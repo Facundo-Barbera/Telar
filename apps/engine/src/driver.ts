@@ -1,5 +1,5 @@
 /**
- * Provider code is deliberately a leaf of vNext. It receives an AbortSignal and
+ * Provider code is deliberately a leaf of the engine. It receives an AbortSignal and
  * can only REPORT what it saw; it cannot mutate project or session state. The
  * worker relays those observations to the engine, which owns the durable
  * journal and the terminal transition.
@@ -8,7 +8,7 @@
  * used to read `text_delta` and assistant text blocks and DROP `tool_use`,
  * `tool_result` and `thinking` on the floor. A session therefore rendered as a
  * wall of prose with no tool timeline, no reasoning, and nothing to approve.
- * Every surface the frozen cockpit has and `apps/vnext-web` does not was
+ * Every surface the frozen cockpit has and `apps/web` does not was
  * downstream of that one omission.
  */
 import crypto from "node:crypto";

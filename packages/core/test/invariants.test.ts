@@ -151,13 +151,22 @@ type SourceFile = {
 // owns usage.ndjson, which story 1.1 moved into core). An invariant that scans
 // prose fails on documentation of itself.
 // `apps/web_old` is deliberately NOT a root. The legacy cockpit was frozen as a
-// read-only design source for the vNext rebuild and retired from verification
+// read-only design source for the Telar rebuild and retired from verification
 // wholesale — no typecheck, no lint ceiling, no test suite, and no invariant.
 // Every invariant that read it was retired WITH it in the same change rather
 // than left pointing at the renamed tree, because an invariant over a frozen
 // tree can only ever report that the freeze held. The retired set is named in
 // the RETIRED-WITH-apps/web note below so a reader can see what stopped being
-// checked and what has to come back when vNext grows the same surface.
+// checked and what has to come back when Telar grows the same surface.
+//
+// `apps/web` IN THIS FILE MEANS THE FROZEN TREE, which lives at `apps/web_old`
+// today. Every path and note here was written while the legacy cockpit still
+// held that name, and the rebuild has since taken it (`apps/vnext-web` →
+// `apps/web`). They were left as written rather than rewritten to point at a
+// tree nothing scans: a retired invariant is a record of what WAS checked, and
+// silently repointing eighty-seven of them at the live app would read as though
+// they still applied to it. Chase any `apps/web/...` path below under
+// `apps/web_old/`.
 const ROOTS = [
   "packages/core/src",
   "packages/core/test",
@@ -842,7 +851,7 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     //   - the *-mcp.ts floor (was 2: loom-mcp.ts, ultra-mcp.ts). Both files, and
     //     the other two MCP surfaces, were apps/web modules. ZERO remain, which
     //     is why INV-1a/b/c are retired too.
-    // When vNext grows its own client components or MCP surfaces, restore these
+    // When Telar grows its own client components or MCP surfaces, restore these
     // floors AND the invariants they guard — a floor without its invariant is
     // just a file count.
     const broken: string[] = [];
@@ -1144,7 +1153,7 @@ describe("INV-1 the Human-Accept Moat holds by construction — AD-1", () => {
   // it, INV-1f proves it refuses a blank `by` at runtime, and INV-1d proves the
   // accept-shaped-name scanner reports a rogue tool.
   //
-  // WHEN vNext GROWS MCP SURFACES, restore the exact-set pin and the inventory
+  // WHEN Telar GROWS MCP SURFACES, restore the exact-set pin and the inventory
   // together with a freshly measured MCP_INVENTORY. Do not restore the pin
   // alone: an inventory nothing scans is a comment.
 
@@ -1291,7 +1300,7 @@ describe("INV-1 the Human-Accept Moat holds by construction — AD-1", () => {
   // lib/server/turn-hooks.ts, lib/loom-mcp.ts — was an apps/web module.
   //
   // THIS IS THE LARGEST SINGLE THING THAT STOPPED BEING CHECKED, and it is the
-  // one to restore FIRST when vNext grows a tool layer: the engine's driver
+  // one to restore FIRST when Telar grows a tool layer: the engine's driver
   // currently passes permissionMode "default" with no canUseTool and no hooks
   // at all (apps/engine/src/driver.ts), so there is no tool-layer gate in vNext
   // for an invariant to guard yet. When one lands, this test is the shape it
@@ -1731,8 +1740,8 @@ const AD5_SITES = [
   //   chats.json                ← lib/store.ts
   //
   // THIS IS THE ONE RETIREMENT THAT LEAVES REAL STATE UNATTENDED rather than
-  // merely unchecked: an operator's ~/.telar still holds all five. vNext writes
-  // none of them and reads none of them. When vNext grows persistence for
+  // merely unchecked: an operator's ~/.telar still holds all five. Telar writes
+  // none of them and reads none of them. When Telar grows persistence for
   // sessions/transcripts/permissions, do NOT re-add these paths from memory —
   // decide the layout fresh, then pin the new sites here.
   "packages/core/src/accounts.ts :: accounts.json",
@@ -1839,9 +1848,9 @@ const KNOWN_VIOLATIONS = [
     recorded: "story 1.1 review findings; _bmad-output/implementation-artifacts/deferred-work.md",
   },
   {
-    file: "scripts/vnext-dev.mjs",
+    file: "scripts/dev.mjs",
     invariant: "INV-3",
-    owner: "the vNext dogfood launcher — a dev entry point, outside packages/core",
+    owner: "the dogfood launcher — a dev entry point, outside packages/core",
     why:
       "it composes path.join(os.homedir(), \".telar\") INSIDE a `legacyHomes` guard set whose " +
       "whole purpose is to REFUSE that root — the launcher defaults to ~/.telar-vnext-dogfood and " +
@@ -1991,7 +2000,7 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     // can be extended quietly is a suppression with extra steps.
     //
     // RAISED 1 → 2 WHEN apps/web WAS FROZEN, and this mechanism did its job:
-    // scripts/vnext-dev.mjs's `legacyHomes` derivation was ALREADY violating
+    // scripts/dev.mjs's `legacyHomes` derivation was ALREADY violating
     // and was already red before that change — it was simply not the first
     // failure INV-3e reported, so nobody had read it. Freezing apps/web moved
     // it to the front of the queue. It is quarantined with a full `why` (it
@@ -2001,7 +2010,7 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     if (KNOWN_VIOLATIONS.length !== 2) {
       throw new Error(
         `KNOWN_VIOLATIONS holds ${KNOWN_VIOLATIONS.length} entries; this test was written when it ` +
-          `held exactly 2 (scripts/backfill-tool-detail.ts and scripts/vnext-dev.mjs, both INV-3). ` +
+          `held exactly 2 (scripts/backfill-tool-detail.ts and scripts/dev.mjs, both INV-3). ` +
           `Each entry is a REAL violation of a REAL invariant left in place only because the file ` +
           `belongs to another track's write set. CONSEQUENCE: a list that grows without a reviewer ` +
           `noticing is how an invariant becomes decorative. NEXT STEP: if the new entry is ` +
@@ -2086,13 +2095,13 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
 // scripts) hold ONE file with the directive. The rule needs a client tree to
 // hold over, and there is not one here any more.
 //
-// THE RULE ITSELF DID NOT LAPSE — apps/vnext-web enforces the same boundary
+// THE RULE ITSELF DID NOT LAPSE — apps/web enforces the same boundary
 // from the other side and more strictly, by source text rather than by import
-// graph: apps/vnext-web/lib/vnext/source-boundary.test.ts bans "@telar/core",
+// graph: apps/web/lib/engine/source-boundary.test.ts bans "@telar/core",
 // the Claude Agent SDK and the legacy tree outright across app/, components/
-// and lib/. That test is the live guard while vNext is small.
+// and lib/. That test is the live guard while Telar is small.
 //
-// RESTORE THIS INVARIANT when apps/vnext-web outgrows a blanket ban — the day
+// RESTORE THIS INVARIANT when apps/web outgrows a blanket ban — the day
 // it legitimately needs SOME core import on the server, the substring test
 // stops being expressible and the BFS is what replaces it. INV-4e is the piece
 // to read first: it MEASURED that a substring check for `"use client"` is wrong
@@ -2204,7 +2213,7 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
     // with the freeze, so the one-caller-per-owner-kind correspondence is now
     // BROKEN ON THE session ARM: the enum still has three kinds and only two
     // are written. That is not a bug to paper over — it is the honest state of
-    // a tree whose only session-turn writer is gone. vNext logs no usage at all
+    // a tree whose only session-turn writer is gone. Telar logs no usage at all
     // (the engine's driver reports text and nothing else), so a `session`-owned
     // spend record cannot currently be produced by anything.
     expect(callers.sort()).toEqual([ULTRA_STORAGE, WEAVE].sort());
@@ -2212,7 +2221,7 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
     // route relied on the SCHEMA DEFAULT instead, which was LOAD-BEARING rather
     // than a placeholder — it is what made a pre-attribution record still fold
     // into the session-scoped projections. The default is still asserted below
-    // because it is the contract vNext's eventual usage writer will inherit.
+    // because it is the contract Telar's eventual usage writer will inherit.
     expect(byRel.get(WEAVE)!.code).toContain('ownerKind: "loom"');
     expect(byRel.get(ULTRA_STORAGE)!.code).toContain('ownerKind: "ultra"');
     expect(byRel.get(SCHEMAS)!.code).toContain('UsageOwnerKind.default("session")');
@@ -2230,12 +2239,12 @@ describe("INV-5 no module writes a shared runtime service's state directly — A
   //
   // FR-RF-2 — "two numbers for one spend, and the wrong one on screen" — is the
   // failure this prevented, and it is the exact failure a new UI invites: the
-  // fastest way to put a cost on a vNext screen is a local accumulator over the
+  // fastest way to put a cost on a Telar screen is a local accumulator over the
   // event stream. INV-5a still holds the CORE half (exactly one module composes
   // usage.ndjson's path), so the port cannot be bypassed from inside core. What
   // lapsed is the guarantee that CONSUMERS go through it.
   //
-  // WHEN vNext RENDERS SPEND, restore this against its store module — the pin
+  // WHEN Telar RENDERS SPEND, restore this against its store module — the pin
   // is three lines and it is the cheapest of all the retired invariants to
   // bring back.
 
@@ -2574,8 +2583,8 @@ describe("INV-6 no SessionProfile field can widen a tool grant — AD-10, the mo
   // resolveSessionProfile throw on every chat request while tsc, lint and the
   // whole test suite stayed green.
   //
-  // vNext HAS NO EQUIVALENT ROUTE YET AND WILL NEED THIS ORDERING WHEN IT DOES.
-  // apps/vnext-web/app/api/sessions/[sessionId]/turns/route.ts accepts a turn
+  // Telar HAS NO EQUIVALENT ROUTE YET AND WILL NEED THIS ORDERING WHEN IT DOES.
+  // apps/web/app/api/sessions/[sessionId]/turns/route.ts accepts a turn
   // and returns; the engine owns execution, so there is no profile resolution,
   // no capability gate and no in-request stream to order against. The moment a
   // turn route grows a pre-stream failure path, restore this test against it.
@@ -3316,7 +3325,7 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
     // The distinction matters: a mechanism with zero users is dead code that
     // nothing would notice breaking, which is exactly what this check is for.
     // Removing "injected" from the list entirely would hide that. Naming it here
-    // keeps the fact in front of the next reader, and the moment a vNext test
+    // keeps the fact in front of the next reader, and the moment a Telar test
     // injects a root, DELETE IT FROM THIS SET so the floor starts guarding it
     // again. The other three arms still have users and are still enforced.
     const MECHANISMS_WITHOUT_USERS = new Set(["injected"]);
@@ -3380,7 +3389,7 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
   // INV-7b and INV-7d still run: the invariant and its discriminator survive,
   // and INV-7d is now the ONLY thing proving the scanner is not blind.
   //
-  // RESTORE A POSITIVE CONTROL AS SOON AS ANY vNext TEST TOUCHES STATE. It does
+  // RESTORE A POSITIVE CONTROL AS SOON AS ANY Telar TEST TOUCHES STATE. It does
   // not have to be these two files — it has to be a real file, pinned by name
   // and mechanism, that the scanner is known to see.
 
@@ -3590,8 +3599,8 @@ describe("INV-7 no test reaches the operator's real state root — AD-5, INV-3's
 // skips every dist dir next.config.ts advertises (8j).
 //
 // ALL OF IT SCANNED apps/web AND ONLY apps/web. Every file, every pinned id,
-// every prop name. There is no vNext equivalent to repoint it at: the vNext
-// cockpit renders a flat prompt/response journal (apps/vnext-web/lib/vnext/
+// every prop name. There is no Telar equivalent to repoint it at: the vNext
+// cockpit renders a flat prompt/response journal (apps/web/lib/engine/
 // journal.ts) with no kind registry, no shell/adapter split, and no right
 // panel, because the engine contract carries no tool, thinking, or permission
 // events for one to render.
@@ -3840,7 +3849,7 @@ describe("INV-9 a module's declared event names and delivery classes are contrac
 //
 // Its three files were apps/web/components/session/ultra-anchor.tsx,
 // apps/web/lib/ultra-runs.ts and apps/web/lib/demo-gallery/conversation/
-// shell.tsx. All three are frozen. vNext has no Ultra surface at all — the
+// shell.tsx. All three are frozen. Telar has no Ultra surface at all — the
 // engine exposes no ultra entity — so there is nothing to re-anchor.
 //
 // RESTORE IT WITH THE ULTRA SURFACE, not before, and restore it together with
@@ -3990,18 +3999,18 @@ describe("INV-11 the workspace item store is reachable only through its port —
     // an empty set otherwise. The ONLY granter in the tree was
     // apps/web/lib/codex-app-server.ts's writableRoots, and it was frozen with
     // the cockpit. There are ZERO grant expressions in the remaining roots —
-    // vNext's driver hands the SDK a cwd and nothing else, no --add-dir, no
+    // Telar's driver hands the SDK a cwd and nothing else, no --add-dir, no
     // additionalDirectories — so the `violations` check below genuinely does
     // hold over the empty set.
     //
     // IT IS KEPT RATHER THAN DELETED for one reason: it is a NEGATIVE that
-    // becomes live the instant vNext adds its first sandbox grant, and that is
+    // becomes live the instant Telar adds its first sandbox grant, and that is
     // precisely the change that would silently widen a session's write boundary
     // onto every project's items. The runtime discriminator below is what keeps
     // it from being decorative in the meantime — it proves both predicates
     // still classify correctly, which is the part a blind scan would fail.
     //
-    // WHEN vNext GRANTS ITS FIRST DIRECTORY, restore the floor at 1 and pin the
+    // WHEN Telar GRANTS ITS FIRST DIRECTORY, restore the floor at 1 and pin the
     // new granter by name, exactly as the retired line did.
     expect(granters).toEqual([]);
 
@@ -4033,7 +4042,7 @@ describe("INV-11 the workspace item store is reachable only through its port —
     // CORRECT grant that must not fire — a naive co-occurrence scan flagging it
     // would be an invariant nobody keeps. That file is frozen and there is no
     // real grant expression left in the tree, so the control is now a fixture
-    // only. Re-point it at the first genuine vNext grant site.
+    // only. Re-point it at the first genuine Telar grant site.
     const good = `const opts = { ${grantWord}: [cwd] };`;
     expect(GRANT.test(good)).toBe(true);
     expect(NAMES_WORKSPACE.test(good)).toBe(false);
@@ -4057,7 +4066,7 @@ describe("INV-11 the workspace item store is reachable only through its port —
   // breaks on, e.g. `reject_*` and `answer_blocked`.
   //
   // acceptShapedTokens() is still in this file and still tested by INV-1d. When
-  // the vNext workspace tool surface exists, this test is roughly six lines:
+  // the Telar workspace tool surface exists, this test is roughly six lines:
   // read the constants, map them through acceptShapedTokens, expect empty.
 
 
@@ -4138,7 +4147,7 @@ describe("INV-11 the workspace item store is reachable only through its port —
   // Both survive as DESIGN CONSTRAINTS on packages/core/src/workspace/store.ts,
   // which is untouched and still tested by INV-11a and INV-11d. What lapsed is
   // the guarantee that the TOOL SURFACE over it honours them — and there is no
-  // tool surface at all right now, in vNext or anywhere.
+  // tool surface at all right now, in Telar or anywhere.
 
 
   // RETIRED WITH apps/web — INV-11g. THE MOST IMPORTANT ONE ON THIS LIST for
@@ -4157,10 +4166,10 @@ describe("INV-11 the workspace item store is reachable only through its port —
   // agent-callable accept tool — work committed without the human who owns it
   // ever seeing the scope.
   //
-  // vNext HAS NO PERMISSION MODES AT ALL. apps/engine/src/driver.ts passes
+  // Telar HAS NO PERMISSION MODES AT ALL. apps/engine/src/driver.ts passes
   // permissionMode "default" with no canUseTool and no hooks, so there is
   // currently no mode for a weave to escape through and nothing to gate. THAT
-  // IS THE POINT TO WATCH: the moment vNext grows permission modes AND a
+  // IS THE POINT TO WATCH: the moment Telar grows permission modes AND a
   // workspace weave, this invariant has to exist BEFORE the two meet, not
   // after. Restoring it later means auditing a surface that already shipped.
 
@@ -4168,7 +4177,7 @@ describe("INV-11 the workspace item store is reachable only through its port —
   test("INV-11f the quarantine did not grow — INV-11 added no KNOWN_VIOLATIONS entry", () => {
     // The shape INV-7f / INV-9e already use (INV-8h and INV-10e went with
     // apps/web). KNOWN_VIOLATIONS held at exactly ONE entry across nine
-    // stories and is now TWO — the second is scripts/vnext-dev.mjs under INV-3,
+    // stories and is now TWO — the second is scripts/dev.mjs under INV-3,
     // added when freezing apps/web surfaced a pre-existing derivation. INV-3f
     // pins the LENGTH and explains the raise; this still pins the thing it was
     // written to pin, which is that INV-11 did not reach for the quarantine.

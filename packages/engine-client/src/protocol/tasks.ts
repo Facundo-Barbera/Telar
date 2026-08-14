@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — tasks: sub-agents, background work, and Warp.
+ * engine protocol v2 — tasks: sub-agents, background work, and Warp.
  *
  * THE STRUCTURAL DECISION THIS FILE EXISTS TO ENCODE: aggregation is a
  * PROJECTION over the session's one event stream, not a parallel universe

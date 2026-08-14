@@ -17,7 +17,7 @@ const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-embedded-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-embedded-"));
   roots.push(directory);
   return directory;
 };
@@ -46,7 +46,7 @@ const echo: TurnDriver = { run: async ({ prompt }) => ({ text: `echo:${prompt}` 
 
 test("a daemon with an embedded worker executes a turn with no second process", async () => {
   const daemon = await startEngine({
-    vnextRoot: root(),
+    engineRoot: root(),
     workerLeaseMs: 2_000,
     embeddedWorker: { createDriver: () => echo, pollMs: 25 },
   });
@@ -68,7 +68,7 @@ test("without an embedded worker a lone daemon still refuses turns, and says why
   // The behaviour the embedded worker exists to fix, pinned so the fix cannot
   // silently become the only path — the out-of-process worker deployment
   // depends on this refusal being real.
-  const daemon = await startEngine({ vnextRoot: root() });
+  const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -84,7 +84,7 @@ test("an embedded worker registers through discovery, like every other client", 
   // Not through a private in-process shortcut: one code path for
   // claim/heartbeat/observe rather than two that can diverge.
   const daemon = await startEngine({
-    vnextRoot: root(),
+    engineRoot: root(),
     workerLeaseMs: 2_000,
     embeddedWorker: { workerId: "worker_embedded_one", createDriver: () => echo, pollMs: 25 },
   });
@@ -97,7 +97,7 @@ test("closing the daemon stops the worker BEFORE the server, so no claim outlive
   // A claim that outlives the server it reports to becomes an ambiguous turn
   // on the next start — a human decision the operator never needed to make.
   const daemon = await startEngine({
-    vnextRoot: root(),
+    engineRoot: root(),
     workerLeaseMs: 2_000,
     embeddedWorker: { createDriver: () => echo, pollMs: 25 },
   });
@@ -110,7 +110,7 @@ test("closing the daemon stops the worker BEFORE the server, so no claim outlive
   });
 
   await daemon.close();
-  const restarted = await startEngine({ vnextRoot: daemon.store.paths.root });
+  const restarted = await startEngine({ engineRoot: daemon.store.paths.root });
   daemons.push(restarted);
   expect(restarted.store.turns("session_one")[0]?.state).toBe("completed");
 });
@@ -120,12 +120,12 @@ test("a daemon started WITHOUT an embedded worker never loads the provider SDK",
   // and eagerly importing the driver would drag the Claude SDK into all of
   // them. Asserted by construction — a driver factory that throws is never
   // called.
-  const daemon = await startEngine({ vnextRoot: root() });
+  const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   expect(daemon.worker).toBeUndefined();
 
   const exploding = await startEngine({
-    vnextRoot: root(),
+    engineRoot: root(),
     embeddedWorker: {
       createDriver: () => {
         throw new Error("driver was constructed");

@@ -1,11 +1,11 @@
 /**
- * vNext engine protocol v2 — timeline items.
+ * engine protocol v2 — timeline items.
  *
  * THIS FILE IS THE POINT OF v2. Protocol v1's driver read `text_delta` and
  * assistant text blocks and dropped `tool_use`, `tool_result` and `thinking` on
  * the floor (`apps/engine/src/driver.ts`), so a session rendered as a wall of
  * prose with no tool timeline, no reasoning, and nothing to approve. Every
- * surface the frozen cockpit has and `apps/vnext-web` does not was downstream
+ * surface the frozen cockpit has and `apps/web` does not was downstream
  * of that one omission.
  *
  * An ITEM is one row in a turn's timeline. Items have a lifecycle
@@ -171,7 +171,7 @@ export type ErrorDetail = z.infer<typeof ErrorDetail>;
  * A DISCRIMINATED UNION ON `type`, not an optional grab-bag, so that narrowing
  * on the type in a renderer gives you exactly the fields that type has. v1's
  * `data: Record<string, unknown>` is the thing this replaces, and it is why
- * `apps/vnext-web/lib/vnext/journal.ts` had to hand-check `typeof
+ * `apps/web/lib/engine/journal.ts` had to hand-check `typeof
  * event.data.text === "string"` at the point of use.
  */
 export const ItemDetail = z.discriminatedUnion("type", [

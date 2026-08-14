@@ -207,7 +207,7 @@ export class EngineWorker {
       const failure =
         error instanceof ProviderUnavailableError || error instanceof UnsupportedDriverError
           ? { code: "provider_unavailable" as const, message: error.message }
-          : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "vNext driver failed" };
+          : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "Telar driver failed" };
       try {
         await this.options.client.failTurn(sessionId, runId, claimToken, failure);
       } catch (settleError) {

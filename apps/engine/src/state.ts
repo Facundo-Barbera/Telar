@@ -1,5 +1,5 @@
-// vNext state is intentionally a new island: every document lives below the
-// explicit `<TELAR_HOME>/vnext` root.  This module never imports legacy Telar
+// engine state is intentionally a new island: every document lives below the
+// explicit `<TELAR_HOME>/engine` root.  This module never imports legacy Telar
 // storage, so starting the daemon cannot create a `chats.json`, cutover marker,
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
@@ -261,13 +261,13 @@ export type EngineStatePaths = {
   lock: string;
 };
 
-export function vnextRootFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+export function engineRootFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.TELAR_HOME?.trim();
   if (!home) {
-    throw new EngineStateError("invalid_request", "TELAR_HOME must be explicitly set for the vNext engine");
+    throw new EngineStateError("invalid_request", "TELAR_HOME must be explicitly set for the engine");
   }
   if (!path.isAbsolute(home)) {
-    throw new EngineStateError("invalid_request", "TELAR_HOME must be an absolute path for the vNext engine");
+    throw new EngineStateError("invalid_request", "TELAR_HOME must be an absolute path for the engine");
   }
   const resolved = canonicalPath(home);
   for (const legacy of [".telar", ".telar-dev"]) {
@@ -276,7 +276,42 @@ export function vnextRootFromEnv(env: NodeJS.ProcessEnv = process.env): string {
       throw new EngineStateError("invalid_request", "TELAR_HOME must not point at legacy Telar state");
     }
   }
-  return path.join(resolved, "vnext");
+  return path.join(resolved, "engine");
+}
+
+/**
+ * The name this subtree used to have.
+ *
+ * WHY THE ENGINE STILL HAS A SUBTREE AT ALL, rather than being TELAR_HOME
+ * itself: the packaged shell points TELAR_HOME at Electron's own userData
+ * directory, which already holds `Cache/`, `Local Storage/`, `update-prefs.json`
+ * and `server-port.json`. Dropping `projects.json`, `sessions/` and `worktrees/`
+ * in beside them would leave two owners of one directory, and no way to tell by
+ * looking which files may be deleted.
+ */
+const LEGACY_ROOT_NAME = "vnext";
+
+/**
+ * Carry an existing store across the rename, once.
+ *
+ * A RENAME, NOT A COPY: it is atomic within a filesystem, so there is no window
+ * where half the sessions exist under both names. It runs only when the new root
+ * does not exist yet — a second engine, or a second launch, finds nothing to do
+ * and says nothing.
+ *
+ * Returns whether it moved anything, so the caller can say so out loud. A silent
+ * migration is indistinguishable from data loss to the person watching their
+ * session list come back empty.
+ */
+export function migrateLegacyEngineRoot(engineRoot: string): boolean {
+  const resolved = path.resolve(engineRoot);
+  const legacy = path.join(path.dirname(resolved), LEGACY_ROOT_NAME);
+  // A root that IS the legacy path (tests, and anyone who pinned it explicitly)
+  // has nothing to migrate and must not be renamed onto itself.
+  if (legacy === resolved) return false;
+  if (fs.existsSync(resolved) || !fs.existsSync(legacy)) return false;
+  fs.renameSync(legacy, resolved);
+  return true;
 }
 
 /** Resolve existing symlinks while also handling a not-yet-created state root. */
@@ -456,11 +491,11 @@ function assertStateVersion(value: unknown, document: string): void {
   if (version === 1) {
     throw new EngineStateError(
       "invalid_request",
-      `this ${document} was written by protocol v1, which vNext no longer reads. ` +
-        `v2 is a deliberate hard break with no migration — clear the vNext state root (TELAR_HOME/vnext) and start fresh.`,
+      `this ${document} was written by protocol v1, which this engine no longer reads. ` +
+        `v2 is a deliberate hard break with no migration — clear the engine state root (TELAR_HOME/engine) and start fresh.`,
     );
   }
-  throw new EngineStateError("invalid_request", `invalid vNext ${document}`);
+  throw new EngineStateError("invalid_request", `invalid ${document}`);
 }
 
 function latestProviderSessionId(queue: SessionQueue): string | undefined {
@@ -478,14 +513,14 @@ function latestProviderSessionId(queue: SessionQueue): string | undefined {
 function parseRegistry(value: unknown): ProjectRegistry {
   assertStateVersion(value, "project registry");
   const projects = ProjectSchema.array().safeParse((value as { projects?: unknown }).projects);
-  if (!projects.success) throw new EngineStateError("invalid_request", "invalid vNext project registry");
+  if (!projects.success) throw new EngineStateError("invalid_request", "invalid project registry");
   for (const project of projects.data) assertAbsolutePath(project.root, "project root");
   return { version: STATE_VERSION, projects: projects.data };
 }
 
 function parseSession(value: unknown): Session {
   const session = SessionSchema.safeParse(value);
-  if (!session.success) throw new EngineStateError("invalid_request", "invalid vNext session metadata");
+  if (!session.success) throw new EngineStateError("invalid_request", "invalid session metadata");
   assertId(session.data.id, "session id");
   assertId(session.data.projectId, "project id");
   return session.data;
@@ -559,14 +594,14 @@ function parseQueue(value: unknown, sessionId: string): SessionQueue {
   assertStateVersion(value, "session queue");
   const stored = value as { sessionId?: unknown; nextSequence?: unknown; turns?: unknown };
   if (stored.sessionId !== sessionId || !Number.isSafeInteger(stored.nextSequence)) {
-    throw new EngineStateError("invalid_request", "invalid vNext session queue");
+    throw new EngineStateError("invalid_request", "invalid session queue");
   }
   const turns = TurnSchema.array().safeParse(stored.turns);
-  if (!turns.success) throw new EngineStateError("invalid_request", "invalid vNext session queue");
+  if (!turns.success) throw new EngineStateError("invalid_request", "invalid session queue");
   const ids = new Set<string>();
   for (const turn of turns.data) {
     assertId(turn.runId, "run id");
-    if (ids.has(turn.runId)) throw new EngineStateError("invalid_request", "duplicate vNext turn id");
+    if (ids.has(turn.runId)) throw new EngineStateError("invalid_request", "duplicate Telar turn id");
     ids.add(turn.runId);
   }
   return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: turns.data };
@@ -665,7 +700,7 @@ function readJournal(file: string): EngineEvent[] {
       throw error;
     }
     if (!Number.isSafeInteger(event.id) || event.id < 1 || !Number.isFinite(event.at) || typeof event.type !== "string") {
-      throw new Error("invalid vNext event journal");
+      throw new Error("invalid event journal");
     }
     events.push(event);
   }
@@ -810,7 +845,7 @@ export class EngineStore {
   listMcpServers(scope?: { projectId: string | null }): McpServer[] {
     const stored = readJson(this.paths.mcpServers) as { mcpServers?: unknown } | undefined;
     const parsed = McpServerSchema.array().safeParse(stored?.mcpServers ?? []);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext MCP server registry");
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid MCP server registry");
     const all = structuredClone(parsed.data);
     if (scope === undefined) return all;
     if (scope.projectId === null) return all.filter((server) => server.projectId === undefined);
@@ -1282,7 +1317,7 @@ export class EngineStore {
       return seeded;
     }
     const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext provider instance registry");
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid provider instance registry");
     return parsed.data;
   }
 
@@ -1290,7 +1325,7 @@ export class EngineStore {
     const stored = readJson(this.paths.providerSecrets) as { secrets?: unknown } | undefined;
     const secrets = stored?.secrets;
     if (secrets === undefined || secrets === null) return {};
-    if (typeof secrets !== "object") throw new EngineStateError("invalid_request", "invalid vNext provider secret store");
+    if (typeof secrets !== "object") throw new EngineStateError("invalid_request", "invalid provider secret store");
     const out: Record<string, string> = {};
     for (const [key, value] of Object.entries(secrets as Record<string, unknown>)) {
       if (typeof value === "string") out[key] = value;
@@ -1863,7 +1898,7 @@ export class EngineStore {
       envMode === "worktree"
         ? (() => {
             const cut = createSessionWorktree(this.git, {
-              vnextRoot: this.paths.root,
+              engineRoot: this.paths.root,
               projectRoot: project.root,
               sessionId: id,
             });
@@ -2964,7 +2999,7 @@ export class EngineStore {
     const stored = readJson(itemsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext item projection");
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
     return new Map(parsed.data.map((item) => [item.id, item]));
   }
 
@@ -2983,7 +3018,7 @@ export class EngineStore {
     const stored = readJson(tasksFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = TaskSchema.array().safeParse((stored as { tasks?: unknown }).tasks);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext task projection");
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid task projection");
     return new Map(parsed.data.map((task) => [task.id, task]));
   }
 
@@ -3033,7 +3068,7 @@ export class EngineStore {
     const stored = readJson(requestsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = RequestSchema.array().safeParse((stored as { requests?: unknown }).requests);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid vNext request projection");
+    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid request projection");
     return new Map(parsed.data.map((request) => [request.id, request]));
   }
 
@@ -3220,7 +3255,7 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
         // A torn stale lock cannot establish a live owner. The retry below is
         // still guarded by unlink + O_EXCL and never replaces an active lock.
       }
-      if (processExists(owner.pid ?? -1)) throw new EngineStateError("conflict", "vNext engine state root is already locked");
+      if (processExists(owner.pid ?? -1)) throw new EngineStateError("conflict", "engine state root is already locked");
       const breakerToken = crypto.randomUUID();
       try {
         const descriptor = fs.openSync(breaker, "wx", 0o600);
@@ -3230,7 +3265,7 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
         if ((breakError as NodeJS.ErrnoException).code === "EEXIST") {
           // Another stale-lock breaker owns the compare-and-delete window;
           // never race it by unlinking its freshly acquired daemon lock.
-          throw new EngineStateError("conflict", "vNext engine state root is already being recovered");
+          throw new EngineStateError("conflict", "engine state root is already being recovered");
         }
         throw breakError;
       }
@@ -3254,5 +3289,5 @@ export function acquireDaemonLock(paths: EngineStatePaths): DaemonLock {
       }
     }
   }
-  throw new EngineStateError("conflict", "vNext engine state root is already locked");
+  throw new EngineStateError("conflict", "engine state root is already locked");
 }

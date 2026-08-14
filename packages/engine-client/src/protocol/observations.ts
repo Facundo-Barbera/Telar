@@ -1,5 +1,5 @@
 /**
- * vNext engine protocol v2 — worker → engine observations.
+ * engine protocol v2 — worker → engine observations.
  *
  * THE INVARIANT THIS SHAPE PROTECTS: a worker is an EXECUTOR ONLY. It never
  * writes state and never assigns an event id; it reports what it saw and the

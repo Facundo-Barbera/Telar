@@ -9,7 +9,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-vnext-daemon-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-daemon-"));
   roots.push(directory);
   return directory;
 };
@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 test("daemon is authenticated, loopback-only, and discovers a typed engine client", async () => {
-  const daemon = await startEngine({ vnextRoot: root() });
+  const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   expect(daemon.discovery.host).toBe("127.0.0.1");
   expect(fs.statSync(daemon.store.paths.engine).mode & 0o777).toBe(0o600);
@@ -40,7 +40,7 @@ test("daemon is authenticated, loopback-only, and discovers a typed engine clien
 });
 
 test("the API rejects an unregistered worker and then durably schedules a claimable turn", async () => {
-  const daemon = await startEngine({ vnextRoot: root() });
+  const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -59,7 +59,7 @@ test("the API rejects an unregistered worker and then durably schedules a claima
 });
 
 test("the authenticated API journals explicit ambiguous-turn discard before allowing a fresh run", async () => {
-  const daemon = await startEngine({ vnextRoot: root() });
+  const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -89,7 +89,7 @@ test("the authenticated API journals explicit ambiguous-turn discard before allo
 
 test("lease expiry is pruned without another worker control request", async () => {
   let time = 0;
-  const daemon = await startEngine({ vnextRoot: root(), now: () => time, workerLeaseMs: 5, workerPruneIntervalMs: 1 });
+  const daemon = await startEngine({ engineRoot: root(), now: () => time, workerLeaseMs: 5, workerPruneIntervalMs: 1 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -104,7 +104,7 @@ test("lease expiry is pruned without another worker control request", async () =
 });
 
 test("attachments upload as raw bytes, ride the turn, and the browser answers even with no browser", async () => {
-  const daemon = await startEngine({ vnextRoot: root() });
+  const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ name: "One", root: "/tmp" });
@@ -146,7 +146,7 @@ test("attachments upload as raw bytes, ride the turn, and the browser answers ev
 
 test("MCP servers are environment-scoped and survive a daemon restart", async () => {
   const stateRoot = root();
-  const first = await startEngine({ vnextRoot: stateRoot });
+  const first = await startEngine({ engineRoot: stateRoot });
   daemons.push(first);
   const client = new EngineClient(first.discovery);
   await client.saveMcpServer({ id: "linear", label: "Linear", spec: { transport: "http", url: "https://mcp.linear.app" } });
@@ -161,7 +161,7 @@ test("MCP servers are environment-scoped and survive a daemon restart", async ()
 
   // Written beside projects.json rather than into a session, so a tool
   // configured once is still configured after a restart.
-  const second = await startEngine({ vnextRoot: stateRoot });
+  const second = await startEngine({ engineRoot: stateRoot });
   daemons.push(second);
   const reconnected = new EngineClient(second.discovery);
   await expect(reconnected.listMcpServers()).resolves.toEqual({
@@ -172,7 +172,7 @@ test("MCP servers are environment-scoped and survive a daemon restart", async ()
 
 test("the provider registry answers with its probe, and never with a secret", async () => {
   const daemon = await startEngine({
-    vnextRoot: root(),
+    engineRoot: root(),
     // Injected so the suite never depends on which CLIs happen to be installed
     // on the machine running it.
     probeProviderVersion: async (driver) =>
