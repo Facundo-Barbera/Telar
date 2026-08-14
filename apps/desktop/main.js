@@ -39,6 +39,32 @@ if (E2E_USER_DATA) {
     "userData",
     fs.mkdtempSync(path.join(os.tmpdir(), "telar-electron-smoke-")),
   );
+} else if (!app.isPackaged) {
+  /**
+   * A DEV SHELL AND AN INSTALLED TELAR MUST BOTH BE ABLE TO RUN.
+   *
+   * The rule above was already written for the E2E shell and is the same rule:
+   * the lock is scoped through userData. The dev shell simply never got it, and
+   * once `productName` made both resolve `app.getName()` to "Telar", they
+   * shared a directory and therefore a lock. Whichever started first won, and
+   * the loser called `app.quit()` — no window, no output, no crash report. It
+   * looked exactly like a broken build, and cost an afternoon proving it was
+   * not one.
+   *
+   * The engine store is NOT affected: `scripts/dev.mjs` always exports
+   * TELAR_HOME (~/.telar-dogfood by default) and `telarHome()` prefers it, so
+   * dogfood sessions stay where they are. What moves is this shell's own
+   * Chromium state and its two small JSON files — a one-time reset of dev
+   * localStorage, which is the price of the two coexisting.
+   *
+   * THE NAME MOVES TOO, but expect less of it than it sounds: on macOS the
+   * process and menu-bar name come from the BUNDLE, so a dev shell still shows
+   * as "Electron" — measured, not assumed. What this changes is
+   * `app.getName()` and the places derived from it, which is enough to keep the
+   * userData default consistent with the explicit path set below.
+   */
+  app.setName("Telar (dev)");
+  app.setPath("userData", path.join(app.getPath("appData"), "Telar (dev)"));
 }
 
 let serverChild = null;
@@ -1124,6 +1150,15 @@ if (SMOKE) {
 } else {
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
+    // SAY WHOSE LOCK IT WAS. Quitting silently here is correct behaviour and
+    // was also completely unreadable: an app that exits with no window, no
+    // output and no crash report is indistinguishable from one that crashed on
+    // its first line. Naming the directory the lock is scoped to is enough to
+    // find the other instance — and to notice when it is a DIFFERENT build of
+    // Telar rather than a second copy of this one.
+    console.error(
+      `[telar-desktop] another instance already holds the lock for ${app.getPath("userData")} — focusing it and quitting.`,
+    );
     app.quit();
   } else {
     app.on("second-instance", () => {
