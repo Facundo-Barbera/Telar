@@ -556,24 +556,26 @@ export class EngineClient {
   }
 
   /**
-   * Update the CLI behind a driver, and report what happened.
+   * Update the CLI behind one login, and report what happened.
    *
-   * THERE IS NO COMMAND IN THIS CALL. The driver name is the whole input; the
-   * engine derives what to run from the install it found on disk. Anything else
-   * would make this a remote shell with a settings button on it.
+   * THERE IS NO COMMAND IN THIS CALL. The instance id is the whole input; the
+   * engine resolves which binary that login runs and derives what would update
+   * it from the install it found. Anything else would make this a remote shell
+   * with a settings button on it.
    *
-   * KEYED ON THE DRIVER because the binary is what gets updated — every login
-   * of a provider runs the same one, and all of their rows change together.
+   * KEYED ON THE LOGIN, not the driver, because a login can pin its own
+   * `binaryPath`. Rows sharing a binary still all change together — that falls
+   * out of them resolving to the same file, rather than being assumed.
    *
    * THE FRESH PROBES COME BACK IN THE SAME ANSWER, past every cache, so the
    * caller cannot paint the version it just replaced.
    */
-  updateProviderCli(driver: ProviderDriverKind): Promise<{
+  updateProviderCli(instanceId: string): Promise<{
     result: ProviderUpdateRun;
     providerInstances: ProviderInstance[];
     probes: ProviderProbe[];
   }> {
-    return this.request("POST", `/v2/provider-updates/${encodeURIComponent(driver)}`, {});
+    return this.request("POST", `/v2/provider-updates/${encodeURIComponent(instanceId)}`, {});
   }
 
   /** `null` clears a field, an absent key leaves it alone. Two different
@@ -584,6 +586,7 @@ export class EngineClient {
     displayName?: string | null;
     accentColor?: string | null;
     configDir?: string | null;
+    binaryPath?: string | null;
     enabled?: boolean;
     env?: ProviderInstanceEnvVar[];
   }): Promise<{ providerInstance: ProviderInstance }> {

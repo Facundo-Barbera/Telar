@@ -3,9 +3,18 @@ import path from "node:path";
 import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { browserCapability, createDefaultDrivers } from "./drivers";
+import { hydrateHostPath } from "./host-path";
 import { engineRootFromEnv } from "./state";
 import { EngineWorker } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
+
+/**
+ * THE WORKER IS THE PROCESS THAT SPAWNS PROVIDERS, so it needs the repaired
+ * PATH at least as much as the daemon does. Harmless when it is a child of a
+ * daemon that already did this — it inherits the merged value and merging it
+ * again is a no-op — and load-bearing when it is not.
+ */
+hydrateHostPath();
 
 const root = engineRootFromEnv();
 const workerId = process.env.TELAR_WORKER_ID?.trim() || `worker_${process.pid}_${crypto.randomUUID().replaceAll("-", "")}`;

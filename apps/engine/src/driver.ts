@@ -106,6 +106,15 @@ export type DriverRun = {
    */
   env?: Record<string, string | undefined>;
   /**
+   * The binary THIS LOGIN runs, when it pinned one — an absolute path, or a
+   * bare name to look up the way a terminal would.
+   *
+   * SEPARATE FROM `env` because it is not one: it decides which executable is
+   * spawned, not what that executable inherits. Absent means the driver's own
+   * default name, which is what every login had before this existed.
+   */
+  binaryPath?: string;
+  /**
    * Scopes this turn's browser. Sessions are the natural boundary: two
    * sessions must not share a tab, and a session's tabs must survive between
    * its turns.
@@ -631,9 +640,9 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
  * Codex does, rather than as an internal error with a good message attached to
  * the wrong shape.
  */
-function defaultClaudeExecutable(): string {
+function defaultClaudeExecutable(binaryPath?: string): string {
   try {
-    return requireCli("claude");
+    return requireCli("claude", { ...(binaryPath ? { binaryPath } : {}) });
   } catch (error) {
     throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
   }
@@ -656,8 +665,14 @@ export function createClaudeDriver(
      * Code and refuses the turn when there is none — see `cli-resolution.ts`.
      * Returning `undefined` means "say nothing", which leaves the SDK's own
      * lookup exactly as it was.
+     *
+     * TAKES THE TURN'S OWN BINARY PATH, because which binary to run is a fact
+     * about the LOGIN this turn runs as, not about the driver. Without the
+     * argument a login pinned to a beta build would be probed as the beta and
+     * then run on the default — the pane describing one binary while another
+     * answers, which is the failure `cli-resolution.ts` exists to prevent.
      */
-    resolveExecutable?: () => string | undefined;
+    resolveExecutable?: (binaryPath?: string) => string | undefined;
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
@@ -672,6 +687,7 @@ export function createClaudeDriver(
       attachments,
       mcpServers: userMcpServers,
       env,
+      binaryPath,
       onObservations,
       onRequest,
       providerSessionId,
@@ -956,7 +972,7 @@ export function createClaudeDriver(
             // itself between two turns of the same session, and the resolver's
             // cache is keyed on (path, mtime) so noticing that costs nothing.
             ...(() => {
-              const executable = resolveExecutable();
+              const executable = resolveExecutable(binaryPath);
               return executable ? { pathToClaudeCodeExecutable: executable } : {};
             })(),
           },

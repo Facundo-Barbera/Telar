@@ -151,6 +151,11 @@ export class EngineWorker {
         // absence means "run exactly as this worker's own environment does",
         // which is what every session did before the registry existed.
         ...(claim.providerInstance ? { env: providerProcessEnv(claim.providerInstance) } : {}),
+        // WHICH BINARY, as opposed to what it inherits. A login may pin its own
+        // — a beta build, a second install — and the driver must spawn that one
+        // rather than the driver's default, or the settings pane would be
+        // describing an executable no turn ever runs.
+        ...(claim.providerInstance?.binaryPath ? { binaryPath: claim.providerInstance.binaryPath } : {}),
         providerSessionId,
         // Sessions are the browser's natural boundary: two sessions must not
         // share a tab, and a session's tabs must survive between its turns.

@@ -205,9 +205,9 @@ export class CodexAppServer {
  * a different binary produces a session running against something the operator
  * did not choose, and never says so.
  */
-export function resolveCodexBinary(): string {
+export function resolveCodexBinary(binaryPath?: string): string {
   try {
-    return requireCli("codex");
+    return requireCli("codex", { ...(binaryPath ? { binaryPath } : {}) });
   } catch (error) {
     throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
   }

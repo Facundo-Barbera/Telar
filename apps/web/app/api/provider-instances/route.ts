@@ -41,6 +41,7 @@ export async function PUT(request: Request) {
       ...(body.displayName === undefined ? {} : { displayName: body.displayName as string | null }),
       ...(body.accentColor === undefined ? {} : { accentColor: body.accentColor as string | null }),
       ...(body.configDir === undefined ? {} : { configDir: body.configDir as string | null }),
+      ...(body.binaryPath === undefined ? {} : { binaryPath: body.binaryPath as string | null }),
       ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
       ...(body.env === undefined ? {} : { env: body.env as never }),
     });

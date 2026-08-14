@@ -51,6 +51,7 @@ export type InstancePatch = {
   displayName?: string | null;
   accentColor?: string | null;
   configDir?: string | null;
+  binaryPath?: string | null;
   enabled?: boolean;
   env?: ProviderInstanceEnvVar[];
 };
@@ -276,8 +277,8 @@ export function ProviderInstanceCard({
    *  which is also how a `pinned` advisory renders without a button — the
    *  engine sends no command in that state and the rule stays in one place. */
   onUpdateCli?: () => void;
-  /** An update of THIS DRIVER is running — set on every row that shares the
-   *  binary, because they all change together. */
+  /** An update that touches THIS ROW'S BINARY is running. Set on every row
+   *  resolving to the same executable, since they do all change together. */
   updating?: boolean;
   /** Absent on the built-in slot: deleting it would leave a session on that
    *  driver with nothing to route to, so there is no affordance rather than a
@@ -415,8 +416,8 @@ export function ProviderInstanceCard({
                   <>
                     <CopyCommand command={advisory.command} />
                     <p className="text-[11px] leading-snug text-muted-foreground/70">
-                      Telar picked this from how the CLI was installed, and runs exactly it. Every login of{" "}
-                      {DRIVER_LABEL[instance.driver]} shares the binary, so they all move together.
+                      Telar picked this from how the CLI was installed, and runs exactly it. Any other login of{" "}
+                      {DRIVER_LABEL[instance.driver]} pointing at the same binary moves with it.
                     </p>
                   </>
                 )}
@@ -482,6 +483,29 @@ export function ProviderInstanceCard({
                   </span>
                 </>
               )}
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-medium text-foreground">Binary path</span>
+              <BlurInput
+                value={instance.binaryPath ?? ""}
+                onCommit={(next) => onPatch({ binaryPath: next.trim() || null })}
+                placeholder={instance.driver}
+                className="mt-1.5 h-8 font-mono text-xs"
+                spellCheck={false}
+                autoComplete="off"
+              />
+              {/* THE TWO SHAPES ARE THE POINT, and worth spelling out: a bare
+                  name means "whatever my shell finds", which travels between
+                  machines, and a full path means one exact build. Offering only
+                  the second would make every export of these settings machine-
+                  specific for no reason. */}
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                Empty uses <code className="font-mono">{instance.driver}</code> as your shell would resolve it. A bare name looks that
+                name up on PATH; a full path runs exactly that file. Beats{" "}
+                <code className="font-mono">{instance.driver === "codex" ? "CODEX_BIN" : "CLAUDE_CODE_EXECUTABLE"}</code> when both are
+                set.
+              </span>
             </label>
 
             <div>

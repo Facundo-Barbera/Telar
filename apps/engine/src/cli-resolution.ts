@@ -25,7 +25,7 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -169,12 +169,17 @@ const SPECS: Record<CliId, CliSpec> = {
 };
 
 /**
- * The directories on PATH, as a last-resort candidate list.
+ * The directories on PATH, which is the authoritative list.
  *
- * LAST, deliberately. PATH is the thing that fails for a Finder-launched app, so
- * it must never shadow an explicit location — but it is also the only reason a
- * CLI installed by npm/nvm/bun (whose bin directory is none of the three below)
- * has ever worked.
+ * IT WAS LAST, AND THAT WAS WRONG. The reasoning was that PATH is the thing a
+ * Finder-launched app cannot trust, so three known install directories were
+ * searched ahead of it. But the fix for a bad PATH is to repair the PATH
+ * (`host-path.ts` now does, at boot, from the login shell), and searching a
+ * fixed list first means Telar can run a DIFFERENT BINARY THAN THE USER'S OWN
+ * TERMINAL DOES — a stale `~/.local/bin/claude` beating the nvm/mise/bun copy
+ * their shell resolves. The pane would then report a version nobody could
+ * reproduce, which is the exact failure this module's header exists to prevent.
+ * T3 Code has no such list at all: bare name, PATH, done.
  *
  * ABSOLUTE ONLY, and that is not pedantry: a PATH entry of "." or "bin" joins to
  * a bare or cwd-relative name (`path.join(".", "codex") === "codex"`), which is
@@ -188,6 +193,20 @@ const pathCandidates = (bin: string): string[] =>
     .filter((candidate) => path.isAbsolute(candidate));
 
 /**
+ * The three well-known install directories, as a NET rather than a preference.
+ *
+ * Reached only after PATH, and they earn their place solely in the case that
+ * remains after `host-path.ts`: a machine whose login shell would not answer
+ * and whose `launchctl` PATH is empty too. Without them that machine finds
+ * nothing at all; ahead of PATH they would override a working answer.
+ */
+const FALLBACK_DIRS = (bin: string): string[] => [
+  path.join(os.homedir(), ".local", "bin", bin),
+  `/opt/homebrew/bin/${bin}`,
+  `/usr/local/bin/${bin}`,
+];
+
+/**
  * Everywhere a binary of this name might be, best first.
  *
  * TAKES A BARE NAME rather than a `CliId` because the CLIs are not the only
@@ -197,13 +216,33 @@ const pathCandidates = (bin: string): string[] =>
  * search order, so a helper cannot be looked for somewhere a CLI would not be.
  */
 export function candidatePathsFor(bin: string, override?: string | undefined): string[] {
-  return [
-    override,
-    path.join(os.homedir(), ".local", "bin", bin),
-    `/opt/homebrew/bin/${bin}`,
-    `/usr/local/bin/${bin}`,
-    ...pathCandidates(bin),
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  const seen = new Set<string>();
+  return [override, ...pathCandidates(bin), ...FALLBACK_DIRS(bin)]
+    .filter((candidate): candidate is string => Boolean(candidate))
+    .filter((candidate) => {
+      if (seen.has(candidate)) return false;
+      seen.add(candidate);
+      return true;
+    });
+}
+
+/**
+ * A file this process could actually run.
+ *
+ * `existsSync` WAS NOT THE QUESTION. A directory named `claude`, or a file
+ * without its executable bit — an interrupted install, a `git checkout` that
+ * dropped the mode, a copy off a FAT volume — counted as found, and the failure
+ * surfaced later as a spawn EACCES with nothing naming the cause. T3 Code
+ * checks `X_OK`; so does this now.
+ */
+export function isExecutableFile(candidate: string): boolean {
+  try {
+    if (!statSync(candidate).isFile()) return false;
+    accessSync(candidate, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function cliCandidatePaths(id: CliId): string[] {
@@ -211,10 +250,10 @@ export function cliCandidatePaths(id: CliId): string[] {
   return candidatePathsFor(spec.bin, process.env[spec.overrideEnv]);
 }
 
-/** The first candidate that exists, or nothing. The un-judged half of
- *  `resolveCli` — used for helpers that have no version to check. */
+/** The first runnable candidate, or nothing. The un-judged half of `resolveCli`
+ *  — used for helpers that have no version to check. */
 export function findExecutable(bin: string): string | undefined {
-  return candidatePathsFor(bin).find((candidate) => existsSync(candidate));
+  return candidatePathsFor(bin).find(isExecutableFile);
 }
 
 /** The brand name, without resolving anything. For the messages that have to
@@ -303,13 +342,15 @@ async function detectVersionAsync(executable: string): Promise<string | null> {
   return probe;
 }
 
-/** Announced ONCE per process per CLI, not per turn. Which CLI a session is
- *  actually talking to was unknowable before this. */
-const announced = new Set<CliId>();
+/** Announced ONCE per process per BINARY, not per turn — keyed on the path
+ *  rather than the id, because two logins may now pin two different `claude`s
+ *  and a log line that only ever named the first would be worse than none. */
+const announced = new Set<string>();
 
 function announce(resolution: CliResolution): void {
-  if (announced.has(resolution.id)) return;
-  announced.add(resolution.id);
+  const key = `${resolution.id}:${resolution.path ?? "-"}`;
+  if (announced.has(key)) return;
+  announced.add(key);
   const where = resolution.path ?? "not found";
   const what = resolution.version ?? "version unknown";
   const against = resolution.expected ? ` (Telar expects ${resolution.expected})` : "";
@@ -319,43 +360,89 @@ function announce(resolution: CliResolution): void {
 
 type Located = { kind: "found"; executable: string; expected?: string } | { kind: "settled"; resolution: CliResolution };
 
-function locate(spec: CliSpec): Located {
-  const expected = spec.expectedVersion?.();
-  const base = { id: spec.id, label: spec.label } as const;
+/**
+ * WHAT THE USER PINNED, and how to describe it back to them.
+ *
+ * TWO SOURCES, MOST SPECIFIC FIRST. A login's own binary path beats the
+ * machine-wide env var, for the same reason `providerProcessEnv` lets an
+ * instance's declared variable beat an inherited one: the more specific
+ * declaration is the one somebody made on purpose about THIS account.
+ */
+type Pin = { value: string; what: string; howToClear: string };
 
-  // AN EXPLICIT OVERRIDE THAT DOES NOT EXIST IS AN ERROR, NOT A HINT. The
-  // override env is the escape hatch the install message advertises, so the user
-  // most likely to set it is the user least able to notice it being ignored.
-  // Treating a typo as merely one more candidate means falling through to a
-  // DIFFERENT binary, which then runs — and reports a green "ok" naming a path
-  // nobody chose.
-  const override = process.env[spec.overrideEnv];
-  if (override && !existsSync(override)) {
+/** `~` is stored rather than an absolute home so a registry survives being
+ *  copied between machines; it is expanded here, at the moment it is used. */
+const expandHome = (value: string): string => (value.startsWith("~") ? path.join(os.homedir(), value.slice(1)) : value);
+
+function pinFor(spec: CliSpec, binaryPath: string | undefined): Pin | undefined {
+  const own = binaryPath?.trim();
+  if (own) {
     return {
-      kind: "settled",
-      resolution: {
-        ...base,
-        status: "missing",
-        ...(expected ? { expected } : {}),
-        message:
-          `${spec.overrideEnv} is set to ${override}, but nothing is there. ` +
-          `Telar will not silently fall back to a different ${spec.label} than the one you pinned — ` +
-          `fix the path or unset ${spec.overrideEnv} to use the usual locations.`,
-      },
+      // Described with what the user TYPED and resolved with the expansion, so
+      // the error names the value they can find in the field.
+      value: expandHome(own),
+      what: `This login's binary path is set to ${own}`,
+      howToClear: "clear the binary path on this login to use the usual locations",
     };
   }
-
-  const executable = cliCandidatePaths(spec.id).find((candidate) => existsSync(candidate));
-  if (!executable) {
+  const override = process.env[spec.overrideEnv]?.trim();
+  if (override) {
     return {
-      kind: "settled",
-      resolution: {
-        ...base,
-        status: "missing",
-        ...(expected ? { expected } : {}),
-        message: `No ${spec.label} installation found. Telar does not bundle one. ${spec.installHint}`,
-      },
+      value: expandHome(override),
+      what: `${spec.overrideEnv} is set to ${override}`,
+      howToClear: `fix the path or unset ${spec.overrideEnv} to use the usual locations`,
     };
+  }
+  return undefined;
+}
+
+function locate(spec: CliSpec, binaryPath?: string): Located {
+  const expected = spec.expectedVersion?.();
+  const base = { id: spec.id, label: spec.label } as const;
+  const missing = (message: string): Located => ({
+    kind: "settled",
+    resolution: { ...base, status: "missing", ...(expected ? { expected } : {}), message },
+  });
+
+  const pin = pinFor(spec, binaryPath);
+
+  /**
+   * A PIN WITH A SEPARATOR IN IT IS AN EXPLICIT PATH; a bare name is a name to
+   * look up. This is T3 Code's rule (`resolveCommandPath`), and it is what makes
+   * the settings field usable: "claude" means "whichever one my shell finds",
+   * "/opt/beta/claude" means that file and nothing else.
+   */
+  if (pin && (pin.value.includes("/") || pin.value.includes("\\"))) {
+    // AN EXPLICIT PIN THAT DOES NOT RESOLVE IS AN ERROR, NOT A HINT. The user
+    // most likely to set one is the user least able to notice it being ignored,
+    // and falling through to a different binary would report a green "ok"
+    // naming a path nobody chose.
+    if (!existsSync(pin.value)) {
+      return missing(
+        `${pin.what}, but nothing is there. ` +
+          `Telar will not silently fall back to a different ${spec.label} than the one you pinned — ${pin.howToClear}.`,
+      );
+    }
+    if (!isExecutableFile(pin.value)) {
+      return missing(
+        `${pin.what}, but it is not an executable file. ` +
+          `Check that it is a file rather than a directory and that it has its executable bit (chmod +x), or ${pin.howToClear}.`,
+      );
+    }
+    return { kind: "found", executable: pin.value, ...(expected ? { expected } : {}) };
+  }
+
+  // Either the default binary name, or a bare name the user pinned — both are
+  // looked up the same way, which is what keeps "claude" in the settings field
+  // meaning exactly what typing `claude` in a terminal means.
+  const bin = pin?.value ?? spec.bin;
+  const executable = candidatePathsFor(bin).find(isExecutableFile);
+  if (!executable) {
+    return missing(
+      pin
+        ? `${pin.what}, and no runnable \`${bin}\` was found on PATH. Use a full path, or ${pin.howToClear}.`
+        : `No ${spec.label} installation found. Telar does not bundle one. ${spec.installHint}`,
+    );
   }
   return { kind: "found", executable, ...(expected ? { expected } : {}) };
 }
@@ -415,11 +502,25 @@ function classify(spec: CliSpec, executable: string, version: string | null, exp
   };
 }
 
+/**
+ * Which binary a particular login runs, when it says so.
+ *
+ * ONE OPTION, THREADED EVERYWHERE, because a probe and a turn that disagree
+ * about which binary they mean is the bug this whole module exists to stop. A
+ * pane that reported the version of one `claude` while turns ran another would
+ * be worse than no version at all.
+ */
+export type CliResolveOptions = {
+  /** This login's own binary path — an absolute path, or a bare name to look
+   *  up. Absent means the driver's default name. */
+  binaryPath?: string | undefined;
+};
+
 /** Where the CLI is, what version it is, and whether that is a version this
  *  build expects to be able to talk to. */
-export function resolveCli(id: CliId): CliResolution {
+export function resolveCli(id: CliId, options: CliResolveOptions = {}): CliResolution {
   const spec = SPECS[id];
-  const located = locate(spec);
+  const located = locate(spec, options.binaryPath);
   const resolution =
     located.kind === "settled" ? located.resolution : classify(spec, located.executable, detectVersion(located.executable), located.expected);
   announce(resolution);
@@ -429,9 +530,9 @@ export function resolveCli(id: CliId): CliResolution {
 /** The same verdict, without blocking the event loop. Shares the cache and the
  *  classification, so the two can report different answers only if the CLI
  *  itself changed between them. */
-export async function resolveCliAsync(id: CliId): Promise<CliResolution> {
+export async function resolveCliAsync(id: CliId, options: CliResolveOptions = {}): Promise<CliResolution> {
   const spec = SPECS[id];
-  const located = locate(spec);
+  const located = locate(spec, options.binaryPath);
   if (located.kind === "settled") {
     announce(located.resolution);
     return located.resolution;
@@ -460,8 +561,8 @@ export function cliUsable(resolution: Pick<CliResolution, "status">): boolean {
  * install. The message is the resolution's own, so the reader learns what to
  * install rather than an errno.
  */
-export function requireCli(id: CliId): string {
-  const resolution = resolveCli(id);
+export function requireCli(id: CliId, options: CliResolveOptions = {}): string {
+  const resolution = resolveCli(id, options);
   if (!cliUsable(resolution)) {
     throw new Error(resolution.message ?? `No ${SPECS[id].label} installation found.`);
   }

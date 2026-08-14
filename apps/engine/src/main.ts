@@ -1,4 +1,21 @@
 import { startEngine } from "./daemon";
+import { hydrateHostPath } from "./host-path";
+
+/**
+ * BEFORE ANYTHING RESOLVES A BINARY, and therefore the first statement here.
+ *
+ * A Finder-launched app gets a four-entry PATH, so every version-managed
+ * install — nvm, fnm, mise, asdf, volta, bun, pnpm — is invisible to it. This
+ * asks the login shell once and repairs `process.env.PATH` in place, which is
+ * what lets `cli-resolution.ts` trust PATH instead of enumerating install
+ * directories it can never finish enumerating.
+ *
+ * ON THE ENTRY POINTS RATHER THAN IN `startEngine`: spawning an interactive
+ * shell is a thing a PROCESS does once, not a thing a library call should do —
+ * and every engine test constructs a daemon, none of which should be paying for
+ * a shell or inheriting whatever this machine's profile exports.
+ */
+hydrateHostPath();
 
 /**
  * ONE PROCESS IS A WORKING ENGINE.

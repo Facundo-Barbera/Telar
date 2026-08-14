@@ -282,3 +282,28 @@ test("one version probe serves every instance of a driver", async () => {
   // config folder looks fine when the CLI it configures is not installed.
   expect(probes[2]?.message).toBe("not found");
 });
+
+test("two logins on the same driver get separate probes when they pin separate binaries", async () => {
+  /**
+   * THE CACHE KEY THAT HAD TO CHANGE. It was per DRIVER, on the reasoning that
+   * two instances of one driver run the same binary and only their config
+   * folders differ. `binaryPath` ended that, and the failure would have been
+   * silent in the worst way: the second login reporting the first one's
+   * version — a real number, about an executable that login never runs.
+   */
+  const asked: Array<string | undefined> = [];
+  const prober = createProviderProber({
+    version: async (_driver, binaryPath) => {
+      asked.push(binaryPath);
+      return { installed: true, version: binaryPath ? "2.2.0" : "2.1.232" };
+    },
+    now: () => 500,
+  });
+  const at = 100;
+  const instance = (id: string, over = {}) => ({ id, driver: "claude" as const, enabled: true, env: [], createdAt: at, updatedAt: at, ...over });
+
+  const probes = await prober([instance("claude"), instance("claude_work"), instance("claude_beta", { binaryPath: "/opt/beta/claude" })]);
+  // One subprocess for the two that share the default, one for the pinned one.
+  expect(asked).toEqual([undefined, "/opt/beta/claude"]);
+  expect(probes.map((probe) => probe.version)).toEqual(["2.1.232", "2.1.232", "2.2.0"]);
+});

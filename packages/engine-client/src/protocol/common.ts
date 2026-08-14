@@ -534,6 +534,22 @@ export const ProviderInstance = z.object({
    * base login is the one that must leave the variable unset.
    */
   configDir: z.string().min(1).optional(),
+  /**
+   * WHICH BINARY THIS LOGIN RUNS. Absent means the driver's own name, resolved
+   * the way a terminal would resolve it.
+   *
+   * TWO SHAPES, ONE FIELD, which is T3 Code's rule and the reason it is usable:
+   * a value with a path separator in it is THAT FILE and nothing else, and a
+   * bare name (`claude`, `claude-beta`) is a name to look up on PATH. So
+   * "whichever one my shell finds" and "this exact build" are both expressible,
+   * and the common case needs no absolute path that would break on another
+   * machine.
+   *
+   * It beats `CLAUDE_CODE_EXECUTABLE` / `CODEX_BIN` when both are set: the
+   * per-login declaration is the more specific one, the same way an instance's
+   * declared environment variable beats an inherited one.
+   */
+  binaryPath: z.string().min(1).optional(),
   env: z.array(ProviderInstanceEnvVar),
   createdAt: Timestamp,
   updatedAt: Timestamp,

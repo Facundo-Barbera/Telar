@@ -1193,6 +1193,7 @@ export class EngineStore {
     accentColor?: string | null;
     enabled?: boolean;
     configDir?: string | null;
+    binaryPath?: string | null;
     env?: unknown;
   }): ProviderInstance {
     assertInstanceId(input.id);
@@ -1233,6 +1234,21 @@ export class EngineStore {
           throw new EngineStateError("invalid_request", "config directory must be an absolute or ~-relative path");
         }
         return dir;
+      }),
+      /**
+       * A PATH OR A NAME, AND NOTHING IN BETWEEN. `cli-resolution.ts` reads a
+       * separator as "this exact file" and its absence as "look this name up",
+       * so the only shapes refused here are the ones that would be neither: a
+       * relative path like `bin/claude`, which would resolve against whatever
+       * the worker's cwd happened to be — a different binary per session.
+       */
+      ...optionalPatch("binaryPath", input.binaryPath, existing?.binaryPath, (value) => {
+        const binary = value.trim();
+        const looksLikePath = binary.includes("/") || binary.includes("\\");
+        if (looksLikePath && !binary.startsWith("/") && !binary.startsWith("~")) {
+          throw new EngineStateError("invalid_request", "binary path must be an absolute path, a ~-relative path, or a bare command name");
+        }
+        return binary;
       }),
     };
     const parsed = ProviderInstanceSchema.safeParse(instance);

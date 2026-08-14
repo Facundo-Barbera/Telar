@@ -77,7 +77,7 @@ export type CodexDriverOptions = {
   env?: Record<string, string | undefined>;
   /** The seam for `codexExecutablePath()` from `@telar/core` — see
    *  `resolveCodexBinary`'s header for why it is not imported here. */
-  resolveBin?: () => string;
+  resolveBin?: (binaryPath?: string) => string;
   threadConfig?: CodexThreadConfig;
 };
 
@@ -263,6 +263,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       attachments,
       providerSessionId,
       env: instanceEnv,
+      binaryPath,
       mcpServers: userMcpServers,
       onObservations,
       onRequest,
@@ -279,7 +280,10 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       // Throws `ProviderUnavailableError` when Codex is not installed, BEFORE a
       // subprocess exists — a missing CLI must read as a missing CLI, not as an
       // app-server that exited with a null code.
-      const bin = resolveBin();
+      //
+      // The LOGIN'S OWN BINARY when it pinned one, on the same "most specific
+      // wins" rule as `model` and `env` above it.
+      const bin = resolveBin(binaryPath);
       const threadConfig = options.threadConfig ?? defaultThreadConfig(Boolean(onRequest));
       /**
        * THE TURN'S INSTANCE WINS OVER THE DEPLOYMENT'S DEFAULT, the same

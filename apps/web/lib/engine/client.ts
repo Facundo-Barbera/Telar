@@ -409,24 +409,26 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       displayName?: string | null;
       accentColor?: string | null;
       configDir?: string | null;
+      binaryPath?: string | null;
       enabled?: boolean;
       env?: ProviderInstanceEnvVar[];
     }) => request<{ providerInstance: ProviderInstance }>(fetcher, "PUT", "/api/provider-instances", input),
     removeProviderInstance: (id: string) =>
       request<{ removed: boolean }>(fetcher, "DELETE", `/api/provider-instances/${encodeURIComponent(id)}`),
     /**
-     * Update the CLI behind a driver, and get the re-probed list back with it.
+     * Update the CLI behind one login, and get the re-probed list back with it.
      *
-     * NO COMMAND CROSSES THIS CALL — the driver name is the whole input, and the
-     * engine derives what to run from the install it found. Keyed on the driver
-     * because the binary is what changes: every login of that provider updates
-     * at once, which is why the answer carries fresh probes for all of them.
+     * NO COMMAND CROSSES THIS CALL — the instance id is the whole input, and the
+     * engine resolves which binary that login runs before deciding what would
+     * update it. Keyed on the login rather than the driver because a login can
+     * pin its own binary; rows that share one still change together, because
+     * they resolve to the same file.
      */
-    updateProviderCli: (driver: ProviderDriverKind) =>
+    updateProviderCli: (instanceId: string) =>
       request<{ result: ProviderUpdateRun; providerInstances: ProviderInstance[]; probes: ProviderProbe[] }>(
         fetcher,
         "POST",
-        `/api/provider-updates/${encodeURIComponent(driver)}`,
+        `/api/provider-updates/${encodeURIComponent(instanceId)}`,
         {},
       ),
     stopTurn: (sessionId: string, runId?: string) =>

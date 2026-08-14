@@ -407,9 +407,15 @@ const RUN_OUTPUT_MAX = 10_000;
  *  added on one side only. */
 export type CliUpdateRun = ProviderUpdateRun;
 
-/** One update per CLI at a time — a second press is refused rather than
- *  queued, because the first is already doing the thing being asked for. */
-const running = new Set<CliId>();
+/**
+ * One update per BINARY at a time — a second press is refused rather than
+ * queued, because the first is already doing the thing being asked for.
+ *
+ * KEYED ON THE RESOLVED PATH, not the driver: two logins that pin two different
+ * `claude` builds are two independent installs and must both be updatable,
+ * while five logins sharing one binary must not all start an installer on it.
+ */
+const running = new Set<string>();
 
 /** Updates that drive the same package manager wait for each other. Concurrent
  *  `npm install -g` runs interleave writes into one global tree. */
@@ -481,9 +487,12 @@ async function spawnUpdate(plan: UpdatePlan): Promise<CliUpdateRun> {
 }
 
 export type CliUpdateRunDeps = CliUpdateDeps & {
+  /** The login's own binary, when it pinned one — the update has to act on the
+   *  binary that login actually runs, not the driver's default. */
+  binaryPath?: string | undefined;
   /** INJECTED so a test can reach the refusals without a machine that happens
    *  to have the right CLI installed the right way. */
-  resolve?: (id: CliId) => Promise<CliResolution>;
+  resolve?: (id: CliId, options: { binaryPath?: string | undefined }) => Promise<CliResolution>;
   /** INJECTED so a test never actually runs `npm install -g`. */
   spawn?: (plan: UpdatePlan) => Promise<CliUpdateRun>;
 };
@@ -492,9 +501,9 @@ export type CliUpdateRunDeps = CliUpdateDeps & {
  * Update one CLI, and say what happened.
  *
  * THE COMMAND IS DERIVED HERE AND NEVER ACCEPTED FROM A CALLER. The route above
- * this takes a driver name and nothing else. A route that took a command string
- * would be a remote shell wearing a settings button, and this daemon is already
- * reachable by anything on the tailnet.
+ * this takes an instance id and nothing else. A route that took a command
+ * string would be a remote shell wearing a settings button, and this daemon is
+ * already reachable by anything on the tailnet.
  *
  * REFUSES RATHER THAN GUESSES, in four different ways — no install, an install
  * nobody recognises, a manager that is not here, and a pinned version. Each
@@ -507,20 +516,27 @@ export async function runCliUpdate(id: CliId, deps: CliUpdateRunDeps = {}): Prom
    * and both spawn an installer — the exact race a lock exists to stop, made
    * invisible by the fact that a single-threaded runtime looks like it cannot
    * have one.
+   *
+   * KEYED ON WHAT IS KNOWN SYNCHRONOUSLY — the driver and the login's pin —
+   * rather than the resolved path, which only exists after a resolution this
+   * must happen before. Two logins that pin different binaries proceed
+   * independently and are still serialized by `lockKey` if they share a package
+   * manager, which is the collision that actually corrupts anything.
    */
-  if (running.has(id)) {
+  const key = `${id} ${deps.binaryPath ?? ""}`;
+  if (running.has(key)) {
     throw new EngineStateError("conflict", `An update of ${cliLabel(id)} is already running.`);
   }
-  running.add(id);
+  running.add(key);
   try {
     return await update(id, deps);
   } finally {
-    running.delete(id);
+    running.delete(key);
   }
 }
 
 async function update(id: CliId, deps: CliUpdateRunDeps): Promise<CliUpdateRun> {
-  const resolution = await (deps.resolve ?? resolveCliAsync)(id);
+  const resolution = await (deps.resolve ?? resolveCliAsync)(id, { ...(deps.binaryPath ? { binaryPath: deps.binaryPath } : {}) });
   if (resolution.status === "missing") {
     throw new EngineStateError("invalid_request", resolution.message ?? `No ${id} installation to update.`);
   }

@@ -29,10 +29,16 @@ import { cliUsable, resolveCliAsync } from "./cli-resolution";
 import { cliUpdateFor } from "./cli-updates";
 
 /**
- * A version probe costs a subprocess per driver, and this is read from a
- * settings page that repaints. Cached per driver — not per instance, because
- * two instances of one driver run the same binary; only their config folders
- * differ, and that check is a stat.
+ * A version probe costs a subprocess, and this is read from a settings page
+ * that repaints.
+ *
+ * CACHED PER (DRIVER, BINARY PATH) rather than per driver. It used to be per
+ * driver, on the reasoning that two instances of one driver run the same binary
+ * and only their config folders differ. That stopped being true the moment a
+ * login could pin its own `binaryPath` — and the failure would have been
+ * silent: the second login would report the first one's version, which is
+ * precisely the "the pane is not describing the binary that answers you" bug
+ * this file already carries a warning about.
  */
 const VERSION_CACHE_MS = 60_000;
 
@@ -149,8 +155,8 @@ export type VersionProbe = {
  * version that answered them, and in a packaged app the pane could report a
  * healthy install for a provider that could not start.
  */
-async function probeVersion(driver: ProviderDriverKind, force = false): Promise<VersionProbe> {
-  const resolution = await resolveCliAsync(driver);
+async function probeVersion(driver: ProviderDriverKind, binaryPath?: string, force = false): Promise<VersionProbe> {
+  const resolution = await resolveCliAsync(driver, { ...(binaryPath ? { binaryPath } : {}) });
   if (resolution.status === "missing") {
     return { installed: false, ...(resolution.message ? { message: resolution.message } : {}) };
   }
@@ -234,23 +240,29 @@ export function statusOf(input: {
 }
 
 export type ProviderProbeDeps = {
-  version?: (driver: ProviderDriverKind, force: boolean) => Promise<VersionProbe>;
+  version?: (driver: ProviderDriverKind, binaryPath: string | undefined, force: boolean) => Promise<VersionProbe>;
   now?: () => number;
 };
 
 export function createProviderProber(deps: ProviderProbeDeps = {}) {
   const version = deps.version ?? probeVersion;
   const now = deps.now ?? Date.now;
-  const cache = new Map<ProviderDriverKind, { at: number; probe: VersionProbe }>();
+  const cache = new Map<string, { at: number; probe: VersionProbe }>();
 
-  const versionFor = async (driver: ProviderDriverKind, force: boolean): Promise<VersionProbe> => {
-    const hit = cache.get(driver);
+  /** What two instances must agree on to share one probe. An unpinned login and
+   *  one pinned to the same bare name are still two keys — cheap, and the
+   *  alternative is normalising a string whose meaning depends on PATH. */
+  const keyFor = (driver: ProviderDriverKind, binaryPath: string | undefined): string => `${driver} ${binaryPath ?? ""}`;
+
+  const versionFor = async (driver: ProviderDriverKind, binaryPath: string | undefined, force: boolean): Promise<VersionProbe> => {
+    const key = keyFor(driver, binaryPath);
+    const hit = cache.get(key);
     if (!force && hit && now() - hit.at < VERSION_CACHE_MS) return hit.probe;
     // `force` reaches all the way down: Re-check means ask the machine AND the
     // registry again, not "re-run the subprocess and re-read an hour-old
     // answer about what is published".
-    const probe = await version(driver, force);
-    cache.set(driver, { at: now(), probe });
+    const probe = await version(driver, binaryPath, force);
+    cache.set(key, { at: now(), probe });
     return probe;
   };
 
@@ -258,18 +270,25 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
     instances: readonly ProviderInstance[],
     options: { force?: boolean } = {},
   ): Promise<ProviderProbe[]> {
-    // One version probe per DRIVER even when five instances share it: the
-    // binary is the same and the answer cannot differ between them.
-    const drivers = [...new Set(instances.map((instance) => instance.driver))];
-    const versions = new Map<ProviderDriverKind, VersionProbe>();
+    // ONE PROBE PER DISTINCT BINARY, not per instance and no longer per driver:
+    // five logins sharing the default `claude` cost one subprocess between them,
+    // and a login that pinned its own gets its own answer.
+    const wanted = new Map<string, { driver: ProviderDriverKind; binaryPath?: string }>();
+    for (const instance of instances) {
+      wanted.set(keyFor(instance.driver, instance.binaryPath), {
+        driver: instance.driver,
+        ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}),
+      });
+    }
+    const versions = new Map<string, VersionProbe>();
     await Promise.all(
-      drivers.map(async (driver) => {
-        versions.set(driver, await versionFor(driver, options.force === true));
+      [...wanted].map(async ([key, target]) => {
+        versions.set(key, await versionFor(target.driver, target.binaryPath, options.force === true));
       }),
     );
     const checkedAt = now();
     return instances.map((instance) => {
-      const found = versions.get(instance.driver) ?? { installed: false };
+      const found = versions.get(keyFor(instance.driver, instance.binaryPath)) ?? { installed: false };
       const sign = signInOf(instance);
       const status = statusOf({
         enabled: instance.enabled,
@@ -298,8 +317,8 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
         signIn: sign.signIn,
         checkedAt,
         ...(found.version ? { version: found.version } : {}),
-        // Identical on every instance of a driver, because it is a fact about
-        // the binary they share rather than about any one login.
+        // A fact about the BINARY, so it is shared by every login that resolves
+        // to the same one and differs for a login that pinned its own.
         ...(found.update ? { update: found.update } : {}),
         ...(message ? { message } : {}),
       };

@@ -25,7 +25,7 @@ import { PlusIcon, RotateCwIcon } from "lucide-react";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderUpdateRun } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { cn } from "@/lib/utils";
-import { DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, sortInstances, suggestInstanceId } from "@/lib/provider-instances";
+import { displayNameOf, DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, sortInstances, suggestInstanceId } from "@/lib/provider-instances";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -200,10 +200,13 @@ export function ProvidersSection() {
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [adding, setAdding] = useState(false);
   const [rechecking, setRechecking] = useState(false);
-  /** Which DRIVER is updating, not which instance — the binary is what
-   *  changes, so every row for it is busy at once. */
-  const [updating, setUpdating] = useState<ProviderDriverKind | null>(null);
-  const [updateReport, setUpdateReport] = useState<{ driver: ProviderDriverKind; run?: ProviderUpdateRun; error?: string } | null>(null);
+  /** Which BINARY is updating, expressed as the driver plus the pin that
+   *  selects it — so every row resolving to that executable goes busy together
+   *  and a row pinned to a different one stays pressable. */
+  const [updating, setUpdating] = useState<string | null>(null);
+  const [updateReport, setUpdateReport] = useState<{ label: string; run?: ProviderUpdateRun; error?: string } | null>(null);
+
+  const binaryKey = (instance: ProviderInstance): string => `${instance.driver} ${instance.binaryPath ?? ""}`;
 
   const load = useCallback(async (refresh = false) => {
     try {
@@ -271,30 +274,31 @@ export function ProvidersSection() {
   };
 
   /**
-   * Update the CLI behind a driver.
+   * Update the CLI behind one login.
    *
-   * NO COMMAND IS SENT. The driver name is the whole request; the engine
-   * derives what to run from the install it found on disk, and refuses with a
-   * sentence when it cannot — no install, an install it does not recognise, a
-   * package manager that is not here, or a version pinned to this build's
-   * pairing.
+   * NO COMMAND IS SENT. The instance id is the whole request; the engine
+   * resolves which binary that login runs, derives what would update it from
+   * the install it finds, and refuses with a sentence when it cannot — no
+   * install, an install it does not recognise, a package manager that is not
+   * here, or a version pinned to this build's pairing.
    *
    * THE ANSWER CARRIES FRESH PROBES, so the version on screen is the one that
    * is now installed rather than the one that was. The alternative — re-reading
    * afterwards — would race the engine's own caches and could paint the old
    * number for a minute, which reads exactly like an update that did nothing.
    */
-  const runUpdate = async (driver: ProviderDriverKind) => {
-    setUpdating(driver);
+  const runUpdate = async (instance: ProviderInstance) => {
+    const label = displayNameOf(instance);
+    setUpdating(binaryKey(instance));
     setUpdateReport(null);
     try {
-      const answer = await api.updateProviderCli(driver);
+      const answer = await api.updateProviderCli(instance.id);
       setInstances(sortInstances(answer.providerInstances));
       setProbes(answer.probes);
-      setUpdateReport({ driver, run: answer.result });
+      setUpdateReport({ label, run: answer.result });
     } catch (cause) {
       setUpdateReport({
-        driver,
+        label,
         error: cause instanceof EngineApiError ? cause.message : "That update could not be run.",
       });
     } finally {
@@ -328,10 +332,10 @@ export function ProvidersSection() {
               // No delete on the built-in slot: a session on that driver would
               // have nothing left to route to.
               {...(isDefaultInstance(instance) ? {} : { onRemove: () => void remove(instance) })}
-              onUpdateCli={() => void runUpdate(instance.driver)}
-              // Busy on the DRIVER, so the other logins of the same provider go
-              // busy too rather than offering a second press at one binary.
-              updating={updating === instance.driver}
+              onUpdateCli={() => void runUpdate(instance)}
+              // Busy on the BINARY, so other logins pointing at the same one go
+              // busy too rather than offering a second press at one executable.
+              updating={updating === binaryKey(instance)}
               error={errors[instance.id] ?? null}
             />
           ))
@@ -360,7 +364,7 @@ export function ProvidersSection() {
           <div className="flex items-center gap-2">
             <span className={cn("size-2 shrink-0 rounded-full", updateReport.run?.ok ? "bg-success" : "bg-destructive")} />
             <span className="text-xs font-medium text-foreground">
-              {DRIVER_LABEL[updateReport.driver]} — {updateReport.error ?? updateReport.run?.message}
+              {updateReport.label} — {updateReport.error ?? updateReport.run?.message}
             </span>
           </div>
           {updateReport.run && <code className="block truncate font-mono text-[11px] text-muted-foreground">{updateReport.run.command}</code>}
