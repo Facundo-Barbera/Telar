@@ -6,7 +6,7 @@
 //
 // Both halves of the app read this exact array — main.js requires it
 // directly to build the Electron menu's native accelerators, and
-// apps/web_old/lib/command-keys.ts imports it by relative path (see the long
+// apps/web/lib/command-keys.ts imports it by relative path (see the long
 // comment there for why a relative cross-app import, rather than a
 // packages/* workspace dependency, is the deliberate choice). Nothing in
 // this file may depend on Electron, Node, or the DOM: main.js only reads
@@ -52,7 +52,7 @@ const COMMAND_KEY_BINDINGS = [
   },
   // cmd+1..cmd+9: jump to the Nth most recent conversation. Generated, not
   // hand-written nine times — see recentSessionsForCommandKeys in
-  // apps/web_old/lib/session-list.ts for exactly what "recent" is ordered by.
+  // apps/web/lib/session-list.ts for exactly what "recent" is ordered by.
   ...Array.from({ length: 9 }, (_, i) => {
     const n = i + 1;
     return {
@@ -99,7 +99,7 @@ function matchesCommandKeyEvent(binding, event) {
  * Deliberately does NOT know about focus/editable targets — this module has
  * no DOM, so it cannot ask "is the user typing in a text field". That check
  * (issue #16's focus rule) lives one layer up, in
- * apps/web_old/lib/command-keys.ts's resolveWebCommandKeyAction, which wraps
+ * apps/web/lib/command-keys.ts's resolveWebCommandKeyAction, which wraps
  * this and is the only thing the web app should call directly.
  *
  * @param {{ key: string, metaKey?: boolean, ctrlKey?: boolean, altKey?: boolean, shiftKey?: boolean }} event

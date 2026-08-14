@@ -41,3 +41,7 @@ _bmad/
 .agents/
 .cleanup-archives/
 telar.yaml
+
+# The packaged engine: a bundle, its Agent SDK copy and its playwright-mcp
+# closure, all produced by apps/desktop/build-app.sh. Build output, never source.
+apps/engine/dist/

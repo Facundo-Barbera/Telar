@@ -37,6 +37,20 @@ const nextConfig: NextConfig = {
   transpilePackages: ["@telar/engine-client"],
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
   /**
+   * THE PACKAGED APP'S SERVER, and only when asked for.
+   *
+   * `standalone` makes Next emit a `server.js` plus the traced subset of
+   * node_modules it actually needs, which is what the desktop shell forks —
+   * there is no `bun install` inside a .app. It is opt-in through the env rather
+   * than always-on because it changes what a build PRODUCES, and a developer
+   * running `next build` to check for type errors should not pay for a
+   * deployment artefact.
+   *
+   * Composed with NEXT_DIST_DIR above by the same script, so a packaging build
+   * never collides with the dev server's `.next`.
+   */
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
+  /**
    * Next's dev indicator defaults to `bottom-left`, which is exactly where this
    * app's sidebar puts its session list — it sat on top of the last row and
    * clipped its title. Moved rather than disabled: it still surfaces compile and

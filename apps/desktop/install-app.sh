@@ -84,7 +84,7 @@ test -x "$APP/Contents/MacOS/Telar" || {
 
 if [ "$VERIFIED" -eq 0 ]; then
   echo "==> smoke the packed app"
-  "$APP/Contents/MacOS/Telar" --smoke
+  env -u ELECTRON_RUN_AS_NODE "$APP/Contents/MacOS/Telar" --smoke
 fi
 
 install_atomic() {

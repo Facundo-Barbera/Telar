@@ -33,6 +33,7 @@ import type {
 // The tool NAMING rule lives in the contract, not here — see ./protocol/tools.ts
 // in engine-client. Every client renders these names too.
 import { displayToolName, parseToolName, qualifyTelarTool, TELAR_MCP_SERVER } from "@telar/engine-client";
+import { requireCli } from "./cli-resolution";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 
 /** What the provider wants to do, in the contract's vocabulary. */
@@ -297,6 +298,20 @@ type ClaudeSdk = {
       resume?: string;
       canUseTool?: SdkCanUseTool;
       mcpServers?: Record<string, SdkMcpServer>;
+      /**
+       * WHICH BINARY ANSWERS THE TURN.
+       *
+       * Omitted, the SDK resolves an optional ~272MB platform package it ships
+       * for itself. That package is not in a packaged Telar (and T3 Code does
+       * not ship it either), so in an installed app the option is the
+       * difference between a turn running and "native CLI binary not found".
+       *
+       * It matters in a dev checkout too, where the package IS installed: the
+       * Providers pane probes the CLI on the user's own PATH, so without this
+       * the version somebody reads in Settings is not the binary that answered
+       * them.
+       */
+      pathToClaudeCodeExecutable?: string;
     };
   }): AsyncIterable<unknown>;
   /** OPTIONAL because the fake SDKs the tests inject only implement `query`.
@@ -609,6 +624,22 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
 }
 
 /**
+ * The user's own Claude Code, or a refusal naming what to install.
+ *
+ * `requireCli` throws a plain Error carrying the actionable message; it becomes
+ * a `ProviderUnavailableError` here so the turn fails the same way a missing
+ * Codex does, rather than as an internal error with a good message attached to
+ * the wrong shape.
+ */
+function defaultClaudeExecutable(): string {
+  try {
+    return requireCli("claude");
+  } catch (error) {
+    throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
  * Thin, injectable bridge to the locally installed Agent SDK. It does not
  * import Telar's legacy route/core execution layer and leaves approvals at the
  * SDK's normal default — `canUseTool` and hooks arrive in stage 2, and until
@@ -617,8 +648,19 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
  */
 export function createClaudeDriver(
   loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>,
-  options: { browser?: BrowserCapability } = {},
+  options: {
+    browser?: BrowserCapability;
+    /**
+     * INJECTED so a test never depends on which CLIs the machine running it
+     * happens to have installed. The default resolves the user's own Claude
+     * Code and refuses the turn when there is none — see `cli-resolution.ts`.
+     * Returning `undefined` means "say nothing", which leaves the SDK's own
+     * lookup exactly as it was.
+     */
+    resolveExecutable?: () => string | undefined;
+  } = {},
 ): TurnDriver {
+  const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   return {
     async run({
       prompt,
@@ -910,6 +952,13 @@ export function createClaudeDriver(
             // from — and a key patched to `undefined` genuinely disappears,
             // which is how a configured instance stops inheriting a credential.
             ...(env ? { env: { ...process.env, ...env } } : {}),
+            // Resolved per turn rather than per process: the CLI can upgrade
+            // itself between two turns of the same session, and the resolver's
+            // cache is keyed on (path, mtime) so noticing that costs nothing.
+            ...(() => {
+              const executable = resolveExecutable();
+              return executable ? { pathToClaudeCodeExecutable: executable } : {};
+            })(),
           },
         })) {
           const item = message as {

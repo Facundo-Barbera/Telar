@@ -8,7 +8,7 @@
 # into what we package. All git-worktree operations name ONLY that temp path,
 # so the repo's own checkout and its bun.lock are never touched.
 #
-# Pipeline: fetch -> pristine worktree of ref -> frozen install -> build-web ->
+# Pipeline: fetch -> pristine worktree of ref -> frozen install -> build-app ->
 # stamp build-info.json into the desktop resources -> electron-builder --dir ->
 # atomically swap the new Telar.app into --out -> run it --smoke (fail unless
 # SMOKE_OK) -> clean up the temp worktree/dirs -> echo final path + sha.
@@ -131,13 +131,13 @@ log "bun install --frozen-lockfile (snapshot)"
 NODE_OPTIONS= bun install --frozen-lockfile
 
 # --- standalone web build ----------------------------------------------------
-log "build-web.sh (standalone Next server)"
-NODE_OPTIONS= bash apps/desktop/build-web.sh
+log "build-app.sh (standalone Next server)"
+NODE_OPTIONS= bash apps/desktop/build-app.sh
 
 # --- stamp build-info.json into the desktop resources (BEFORE packaging) -----
 # It lands at the root of the standalone tree, which electron-builder copies to
 # <Resources>/standalone/build-info.json, so it is inside the packaged .app.
-STANDALONE="$SNAP/apps/web_old/.next-desktop/standalone"
+STANDALONE="$SNAP/apps/web/.next-desktop/standalone"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > "$STANDALONE/build-info.json" <<JSON
 {
@@ -279,7 +279,10 @@ fi
 log "smoke: $DEST_APP --smoke"
 SMOKE_OUT="$TMP_ROOT/smoke.log"
 set +e
-"$DEST_APP/Contents/MacOS/Telar" --smoke >"$SMOKE_OUT" 2>&1
+# See package-desktop.sh: a shell descended from a running Telar carries
+# ELECTRON_RUN_AS_NODE=1, which turns the app binary into a bare node and makes
+# this exit with "bad option: --smoke" before any Telar code runs.
+env -u ELECTRON_RUN_AS_NODE "$DEST_APP/Contents/MacOS/Telar" --smoke >"$SMOKE_OUT" 2>&1
 set -e
 cat "$SMOKE_OUT"
 if ! grep -q '^SMOKE_OK' "$SMOKE_OUT"; then

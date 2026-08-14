@@ -211,6 +211,48 @@ test("disabled outranks every other status", () => {
   expect(statusOf({ enabled: true, installed: true, signIn: "unknown" })).toBe("ready");
 });
 
+test("a CLI that is installed AND unusable is an error, not a green tick", () => {
+  /**
+   * `installed` alone answers "is there a binary", which is not the question the
+   * pane is really asking. A Claude Code whose control protocol this build does
+   * not speak (`cli-resolution.ts` → `incompatible`) is present, reports a
+   * version, and refuses every turn submitted to it. Reported `ready`, the pane
+   * would be the only place that looked fine.
+   */
+  expect(statusOf({ enabled: true, installed: true, signIn: "unknown", usable: false })).toBe("error");
+  // Absent means "the resolver had no opinion" — every existing caller — and
+  // must not change the answer.
+  expect(statusOf({ enabled: true, installed: true, signIn: "unknown" })).toBe("ready");
+  expect(statusOf({ enabled: true, installed: true, signIn: "unknown", usable: true })).toBe("ready");
+  // Still outranked by the switch, like everything else.
+  expect(statusOf({ enabled: false, installed: true, signIn: "unknown", usable: false })).toBe("disabled");
+});
+
+test("what the CLI resolution says outranks the sign-in note", async () => {
+  /**
+   * THE DRIFT WARNING EXISTED AND WAS NEVER DISPLAYED. Every healthy Claude
+   * instance carries the sign-in note "credentials live in the Keychain, so this
+   * cannot be confirmed from disk" — a statement that nothing can be known.
+   * While that won the tie, "this CLI is a protocol version this build was not
+   * tested against; suspect it first if tool calls are cancelled" — the one
+   * sentence worth acting on — was dropped on the floor.
+   */
+  const prober = createProviderProber({
+    version: async () => ({
+      installed: true,
+      version: "2.1.229",
+      message: "Claude Code 2.1.229 differs from the 2.1.224 this build was tested against.",
+      usable: true,
+    }),
+    now: () => 500,
+  });
+  const [probe] = await prober([
+    { id: "claude", driver: "claude", enabled: true, env: [], createdAt: 1, updatedAt: 1 },
+  ]);
+  expect(probe?.message).toContain("2.1.224");
+  expect(probe?.status).toBe("ready");
+});
+
 test("one version probe serves every instance of a driver", async () => {
   const calls: string[] = [];
   const prober = createProviderProber({

@@ -42,6 +42,7 @@ if (E2E_USER_DATA) {
 }
 
 let serverChild = null;
+let engineChild = null;
 let browserManager = null;
 let browserControl = null;
 let browserControlConfig = null;
@@ -167,7 +168,7 @@ function readBuildInfo() {
   const fs = require("node:fs");
   const candidates = app.isPackaged
     ? [path.join(process.resourcesPath, "standalone", "build-info.json")]
-    : [path.join(__dirname, "..", "web_old", ".next-desktop", "standalone", "build-info.json")];
+    : [path.join(__dirname, "..", "web", ".next-desktop", "standalone", "build-info.json")];
   for (const c of candidates) {
     try {
       if (fs.existsSync(c)) return JSON.parse(fs.readFileSync(c, "utf8"));
@@ -196,99 +197,103 @@ function applyDevelopmentAppIcon() {
 }
 
 // --- Bundled @playwright/mcp CLI --------------------------------------------
-// build-web.sh materializes a self-contained, symlink-dereferenced @playwright/
-// mcp closure (cli.js + playwright/playwright-core) that electron-builder copies
-// to <Resources>/playwright-mcp. Packaged: point at that. Dev-repo: the same
-// closure lives under .next-desktop (build:web writes it there too) — used only
-// by --smoke's existence check; the running dev-repo Verifier resolves via the
-// core resolver's walk-up, so we never force the env there.
+// build-app.sh materializes a self-contained, symlink-dereferenced @playwright/
+// mcp closure (cli.js + playwright/playwright-core) beside the engine bundle,
+// which electron-builder copies to <Resources>/engine/playwright-mcp. The ENGINE
+// is what spawns it (src/browser/transport.ts), so it ships with the engine.
 function bundledPlaywrightMcpCli() {
   return app.isPackaged
-    ? path.join(process.resourcesPath, "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js")
-    : path.join(__dirname, "..", "web_old", ".next-desktop", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
+    ? path.join(process.resourcesPath, "engine", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js")
+    : path.join(__dirname, "..", "engine", "dist", "playwright-mcp", "node_modules", "@playwright", "mcp", "cli.js");
 }
 
-// --- Bundled claude-agent-sdk native CLI binary -----------------------------
-// The SDK loads its platform binary (@anthropic-ai/claude-agent-sdk-<os>-<arch>/claude) via
-// createRequire(sdk.mjs).resolve at runtime — never a static import — so build-web.sh
-// materializes a dereferenced real copy into the standalone .bun store, the exact slot that
-// resolution checks. This resolves it the SAME way the SDK will, so --smoke proves the bundle
-// from the SDK's own vantage point. Returns null if the SDK entry can't be located.
-function resolveBundledClaudeBinary() {
-  const fs = require("node:fs");
-  const { createRequire } = require("node:module");
-  let sdkMjs = null;
-  if (app.isPackaged) {
-    // The traced SDK lives under one version-hash dir in the standalone .bun store.
-    const bun = path.join(process.resourcesPath, "standalone", "node_modules", ".bun");
-    try {
-      for (const d of fs.readdirSync(bun)) {
-        if (!d.startsWith("@anthropic-ai+claude-agent-sdk@")) continue;
-        const cand = path.join(bun, d, "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
-        if (fs.existsSync(cand)) {
-          sdkMjs = cand;
-          break;
-        }
-      }
-    } catch {
-      /* .bun missing — treated as unresolved below */
-    }
-  } else {
-    // Dev-repo: resolve the SDK from the web app's install, exactly as the server does.
-    try {
-      sdkMjs = require.resolve("@anthropic-ai/claude-agent-sdk", {
-        paths: [path.join(__dirname, "..", "web_old")],
-      });
-    } catch {
-      /* not installed — unresolved */
-    }
+// --- Bundled Agent SDK ------------------------------------------------------
+// The engine bundle keeps `@anthropic-ai/claude-agent-sdk` EXTERNAL and resolves
+// it from disk beside itself, so a missing copy is a Claude session that cannot
+// start. --smoke proves it is there.
+//
+// WHAT IS DELIBERATELY NOT HERE ANY MORE: a check for the SDK's ~272MB native
+// CLI binary. This app used to ship it and fail --smoke without it. It does not
+// ship it now — the engine resolves the USER's Claude Code and refuses the turn
+// with an actionable message when there is none (apps/engine/src/cli-resolution.ts).
+// Whether a given machine has Claude Code installed is not a property of the
+// bundle, and asserting it here would fail every release build on a CI runner
+// that has no reason to have one.
+function bundledAgentSdkEntry() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "engine", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs")
+    : path.join(__dirname, "..", "engine", "dist", "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk.mjs");
+}
+
+// --- Resolve the engine bundle ----------------------------------------------
+// Dev-repo layout:  apps/engine/dist/engine.mjs
+// Packaged layout:  <Resources>/engine/engine.mjs   (extraResources)
+function resolveEngineJs() {
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "engine", "engine.mjs")]
+    : [path.join(__dirname, "..", "engine", "dist", "engine.mjs")];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
   }
-  if (!sdkMjs) return null;
-  try {
-    return createRequire(sdkMjs).resolve(
-      `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/claude`,
-    );
-  } catch {
-    return null;
-  }
+  throw new Error(
+    `engine bundle not found (looked in: ${candidates.join(", ")}). Run \`bun run build:app\` first.`,
+  );
 }
 
 // --- Resolve the standalone server.js ---------------------------------------
-// Dev-repo layout:  apps/web_old/.next-desktop/standalone/apps/web_old/server.js
-// Packaged layout:  <Resources>/standalone/apps/web_old/server.js  (extraResources)
+// Dev-repo layout:  apps/web/.next-desktop/standalone/apps/web/server.js
+// Packaged layout:  <Resources>/standalone/apps/web/server.js  (extraResources)
 function resolveServerJs() {
   const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "standalone", "apps", "web_old", "server.js")]
-    : [path.join(__dirname, "..", "web_old", ".next-desktop", "standalone", "apps", "web_old", "server.js")];
+    ? [path.join(process.resourcesPath, "standalone", "apps", "web", "server.js")]
+    : [path.join(__dirname, "..", "web", ".next-desktop", "standalone", "apps", "web", "server.js")];
   const fs = require("node:fs");
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
   throw new Error(
     `standalone server.js not found (looked in: ${candidates.join(", ")}). ` +
-      `Run \`bun run build:web\` first.`,
+      `Run \`bun run build:app\` first.`,
   );
 }
 
-// --- (c) Boot the standalone server as a child ------------------------------
-function startServer(port) {
-  const serverJs = resolveServerJs();
-  // A smoke boot is a REAL server, and the engine's boot reconciliation marks
-  // any in-flight loom it doesn't own as failed — so a verification boot
-  // against the user's ~/.telar kills their live looms. Smoke always gets a
-  // throwaway store: it proves the bundle, never touches real state.
-  const smokeHome = SMOKE
-    ? require("node:fs").mkdtempSync(
-        path.join(require("node:os").tmpdir(), "telar-smoke-"),
-      )
-    : null;
-  // In packaged Electron there is no separate node binary — run an Electron
-  // binary as node via ELECTRON_RUN_AS_NODE. On macOS the MAIN binary still
-  // registers with LaunchServices as a Foreground app even under RUN_AS_NODE,
-  // putting a second, dead "Telar" (the next-server child) in the Dock. The
-  // Helper binary is LSUIElement in its Info.plist — same runtime, no Dock
-  // entry — so prefer it when packaged.
-  let nodeExecPath = process.execPath;
+// --- Where this install keeps its state -------------------------------------
+/**
+ * TELAR_HOME FOR A PACKAGED APP, decided once and shared by both children.
+ *
+ * `app.getPath("userData")` — ~/Library/Application Support/Telar on macOS — is
+ * chosen over `~/.telar` because that dotdir belongs to the LEGACY product and
+ * has a completely different layout inside it. The engine refuses to open it at
+ * all (apps/engine/src/state.ts), which is the guard that stops a canon build
+ * from writing `sessions/` on top of somebody's old install. The engine takes an
+ * `engine/` subtree inside this directory rather than the directory itself,
+ * because Electron already owns files here (Cache/, Local Storage/,
+ * update-prefs.json, server-port.json).
+ *
+ * AN EXPLICIT TELAR_HOME STILL WINS — it is how the dev stack points a packaged
+ * build at a dogfood store, and overruling it would make that untestable.
+ *
+ * SMOKE ALWAYS GETS A THROWAWAY. A smoke boot is a REAL engine, and its boot
+ * reconciliation marks any in-flight turn it does not own as failed — so
+ * verifying a build against the user's own store would kill their live sessions.
+ */
+let smokeHome = null;
+function telarHome() {
+  if (SMOKE) {
+    smokeHome ??= fs.mkdtempSync(path.join(os.tmpdir(), "telar-smoke-"));
+    return smokeHome;
+  }
+  return process.env.TELAR_HOME?.trim() || app.getPath("userData");
+}
+
+/**
+ * In packaged Electron there is no separate node binary — run an Electron binary
+ * as node via ELECTRON_RUN_AS_NODE. On macOS the MAIN binary still registers
+ * with LaunchServices as a Foreground app even under RUN_AS_NODE, putting a
+ * second, dead "Telar" in the Dock per child. The Helper binary is LSUIElement
+ * in its Info.plist — same runtime, no Dock entry — so prefer it when packaged.
+ */
+function nodeExecPath() {
   if (app.isPackaged && process.platform === "darwin") {
     const helper = path.join(
       path.dirname(process.execPath),
@@ -299,34 +304,152 @@ function startServer(port) {
       "MacOS",
       "Telar Helper",
     );
-    if (require("node:fs").existsSync(helper)) nodeExecPath = helper;
+    if (fs.existsSync(helper)) return helper;
   }
+  return process.execPath;
+}
+
+/** What both children need to reach the tools this app does not bundle. */
+function childEnv(home) {
+  return {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: "1",
+    TELAR_HOME: home,
+    ...(browserControlConfig
+      ? {
+          TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(browserControlConfig.port),
+          TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: browserControlConfig.token,
+        }
+      : {}),
+  };
+}
+
+// --- (c0) Boot the engine daemon as a child ---------------------------------
+/**
+ * THE APP HAS A BACK END NOW, and this is it.
+ *
+ * The cockpit is only an authenticated engine client: every route handler it
+ * serves proxies to this daemon, discovered through a document the daemon writes
+ * under TELAR_HOME. Shipping the web tier alone produces an app where every page
+ * loads and every action answers `engine_unavailable`.
+ *
+ * ONE PROCESS, DAEMON AND WORKER. `TELAR_EMBEDDED_WORKER` defaults on, so this
+ * child both accepts turns and executes them. The out-of-process worker still
+ * exists for the deployment that wants provider crashes kept out of the control
+ * plane; a desktop app is not that deployment.
+ */
+function startEngineChild(home) {
+  const engineJs = resolveEngineJs();
+  engineChild = fork(engineJs, [], {
+    cwd: path.dirname(engineJs),
+    execPath: nodeExecPath(),
+    // Same lifetime tie as the Next server: the preload self-exits when our IPC
+    // channel closes, so a SIGKILL or native crash of this process cannot orphan
+    // a daemon holding a LISTEN socket and the store's lock.
+    execArgv: ["--require", path.join(__dirname, "server-preload.js")],
+    env: {
+      ...childEnv(home),
+      NODE_ENV: "production",
+      // @playwright/mcp is neither traced into the bundle nor on a
+      // Finder-launched app's PATH, so the engine's walk-up resolver would find
+      // nothing. Point it at the bundled cli.js unless the user already named
+      // one — their choice wins. Dev-repo runs are left alone: the walk-up
+      // resolves the repo's own install there.
+      ...(app.isPackaged && !process.env.TELAR_PLAYWRIGHT_MCP_BIN
+        ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
+        : {}),
+    },
+    stdio: ["ignore", "inherit", "inherit", "ipc"],
+  });
+  engineChild.on("exit", (code, signal) => {
+    engineChild = null;
+    // The cockpit without the engine is a window full of errors. Quit rather
+    // than leave one standing.
+    if (!SMOKE && !app.isQuitting) {
+      console.error(`[telar-desktop] engine exited (code=${code} signal=${signal})`);
+      app.quit();
+    }
+  });
+  return engineChild;
+}
+
+/**
+ * Wait until the engine is actually answering, not merely spawned.
+ *
+ * TWO STEPS, because there are two ways to be not-ready and they need different
+ * waits: the discovery document does not exist yet (the daemon is still
+ * starting), and it exists but names a port nothing is listening on yet. Reading
+ * the token and asking `/v2/health` covers both, and proves the SAME thing the
+ * cockpit will need a moment later — a stale document from a previous run is
+ * caught here rather than as a mystifying 503 on the first page load.
+ */
+function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150 } = {}) {
+  // The subdirectory `engineRootFromEnv` composes in apps/engine/src/state.ts,
+  // and the same one the cockpit reads. Three places know this name; a test in
+  // this app pins that they agree.
+  const discoveryFile = path.join(home, "engine", "engine.json");
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      let discovery = null;
+      try {
+        discovery = JSON.parse(fs.readFileSync(discoveryFile, "utf8"));
+      } catch {
+        /* not written yet, or half-written — retry */
+      }
+      if (discovery?.port && discovery?.token) {
+        const request = http.request(
+          {
+            host: discovery.host || "127.0.0.1",
+            port: discovery.port,
+            path: "/v2/health",
+            headers: { authorization: `Bearer ${discovery.token}` },
+            timeout: 2_000,
+          },
+          (response) => {
+            response.resume();
+            if (response.statusCode === 200) return resolve(discovery);
+            retry();
+          },
+        );
+        request.on("error", retry);
+        request.on("timeout", () => {
+          request.destroy();
+          retry();
+        });
+        request.end();
+        return;
+      }
+      retry();
+    };
+    const retry = () => {
+      if (Date.now() >= deadline) reject(new Error(`engine did not become healthy within ${timeoutMs}ms`));
+      else setTimeout(tick, intervalMs);
+    };
+    tick();
+  });
+}
+
+// --- (c) Boot the standalone server as a child ------------------------------
+function startServer(port, home) {
+  const serverJs = resolveServerJs();
   serverChild = fork(serverJs, [], {
     cwd: path.dirname(serverJs),
-    execPath: nodeExecPath,
+    execPath: nodeExecPath(),
     // Tie the child's lifetime to ours: the preload self-exits when our IPC
     // channel closes, so a SIGKILL / native crash of this main process (which
     // runs none of the cleanup handlers below) can't orphan the Next server.
     execArgv: ["--require", path.join(__dirname, "server-preload.js")],
     env: {
-      ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
+      ...childEnv(home),
       PORT: String(port),
       HOSTNAME: "127.0.0.1",
       NODE_ENV: "production",
-      ...(browserControlConfig ? {
-        TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(browserControlConfig.port),
-        TELAR_DESKTOP_BROWSER_CONTROL_TOKEN: browserControlConfig.token,
-      } : {}),
-      // Packaged only: @playwright/mcp isn't traced into the standalone bundle
-      // nor on PATH, so the core resolver (explicit -> ENV -> walk-up -> PATH)
-      // would find nothing. Point it at the bundled cli.js unless the user
-      // already set the env (their choice wins). Dev-repo mode is left untouched
-      // — the walk-up resolves the repo's install there.
-      ...(app.isPackaged && !process.env.TELAR_PLAYWRIGHT_MCP_BIN
-        ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
-        : {}),
-      ...(smokeHome ? { TELAR_HOME: smokeHome } : {}),
+      // THE LAUNCHER MARKER. The cockpit's server-side engine discovery refuses
+      // to resolve a state root unless it is set (apps/web/lib/engine/
+      // engine-server.ts), which is what keeps a stray `next start` from
+      // pointing at somebody's store. The shell IS a launcher, so it says so.
+      TELAR_COCKPIT: "1",
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
@@ -522,7 +645,7 @@ function requireBrowserManager() {
 // --- Application menu (issue #16 — command keys) -----------------------------
 // The ONE place accelerators are wired to Electron's native menu. Every
 // binding (id, label, accelerator) comes from ./command-keys.js — the single
-// source of truth apps/web_old/lib/command-keys.ts also reads, by relative
+// source of truth apps/web/lib/command-keys.ts also reads, by relative
 // import, since this process runs under real Node with no TypeScript (see
 // the long comment there). This file never repeats a key combination; it
 // only turns the shared table into a Menu template and forwards clicks to
@@ -836,14 +959,25 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
 });
 
 // --- (f) Teardown ------------------------------------------------------------
+/**
+ * BOTH CHILDREN, and the engine LAST.
+ *
+ * The cockpit proxies to the engine, so killing the engine first leaves a live
+ * server answering `engine_unavailable` for however long the shutdown takes. The
+ * engine also holds the store's lock and reconciles in-flight turns on the way
+ * out; giving it the later signal means it is not doing that while a request is
+ * still arriving.
+ */
 function killServer() {
-  if (serverChild && !serverChild.killed) {
+  for (const [name, child] of [["server", serverChild], ["engine", engineChild]]) {
+    if (!child || child.killed) continue;
     try {
-      serverChild.kill("SIGTERM");
+      child.kill("SIGTERM");
     } catch {
       /* already gone */
     }
-    serverChild = null;
+    if (name === "server") serverChild = null;
+    else engineChild = null;
   }
 }
 function closeBrowserControl() {
@@ -872,17 +1006,24 @@ async function runSmoke() {
       port = u.port ? Number(u.port) : u.protocol === "https:" ? 443 : 80;
     } else {
       captureLoginShellEnv();
+      const home = telarHome();
+      startEngineChild(home);
+      // PROVES THE ENGINE, NOT JUST ITS FILE. A bundle can be present and still
+      // fail to boot — a bad import in the bundled graph, a store it cannot
+      // open. `/v2/health` answering is the difference between "the file
+      // shipped" and "the app has a back end".
+      await waitForEngine(home);
+      console.log("ENGINE_OK");
       port = await findFreePort();
-      startServer(port);
+      startServer(port, home);
     }
     await waitForServer(port);
     console.log(`BUILD ${windowTitle()}`);
     console.log("SMOKE_OK");
-    // Verify the bundled @playwright/mcp cli.js the packaged Verifier depends on
-    // actually shipped. Packaged: a hard failure (the Verifier can't drive a
-    // browser without it). Dev-repo: best-effort — the walk-up resolver, not the
-    // bundle, is the real path there.
-    const fs = require("node:fs");
+    // Verify the bundled @playwright/mcp cli.js the engine's browser depends on
+    // actually shipped. Packaged: a hard failure (no browser tools without it).
+    // Dev-repo: best-effort — the walk-up resolver, not the bundle, is the real
+    // path there.
     const cli = bundledPlaywrightMcpCli();
     if (fs.existsSync(cli)) {
       console.log("PLAYWRIGHT_MCP_BUNDLED_OK");
@@ -895,29 +1036,26 @@ async function runSmoke() {
         return;
       }
     }
-    // Verify the claude-agent-sdk native CLI binary shipped and actually runs. Resolve it the
-    // same way the SDK will (createRequire(sdk.mjs)) and execute --version (zero-quota, no agent
-    // turn). Packaged: fail-closed — a Claude session can't start without it. Dev-repo:
-    // best-effort, the repo install is the real path there.
-    const claudeBin = resolveBundledClaudeBinary();
-    let claudeOk = false;
-    if (claudeBin && fs.existsSync(claudeBin)) {
-      try {
-        execFileSync(claudeBin, ["--version"], { stdio: "ignore", timeout: 20_000 });
-        claudeOk = true;
-      } catch (e) {
-        console.error("CLAUDE_BIN_EXEC_FAIL:", claudeBin, e && e.message ? e.message : e);
-      }
+    // The Agent SDK is kept EXTERNAL to the engine bundle, so a Claude session
+    // cannot start without this file beside it. Packaged: fail-closed.
+    //
+    // WHAT THIS DELIBERATELY NO LONGER CHECKS is the SDK's ~272MB native CLI
+    // binary. The app does not ship one; the engine resolves the USER's Claude
+    // Code install and refuses the turn with an actionable message when there is
+    // none. Asserting an install here would fail every release build on a CI
+    // runner that has no reason to have one — and would be asserting a property
+    // of the machine, not of the artefact this command exists to verify.
+    const sdk = bundledAgentSdkEntry();
+    if (fs.existsSync(sdk)) {
+      console.log("AGENT_SDK_BUNDLED_OK");
     } else {
-      console.error("CLAUDE_BIN_MISSING:", claudeBin || "(unresolved)");
-    }
-    if (claudeOk) {
-      console.log("CLAUDE_BIN_OK");
-    } else if (app.isPackaged) {
-      app.isQuitting = true;
-      killServer();
-      app.exit(1);
-      return;
+      console.error("AGENT_SDK_BUNDLED_MISSING:", sdk);
+      if (app.isPackaged) {
+        app.isQuitting = true;
+        killServer();
+        app.exit(1);
+        return;
+      }
     }
     app.isQuitting = true;
     killServer();
@@ -966,8 +1104,16 @@ if (SMOKE) {
         let url = OVERRIDE_URL;
         if (!url) {
           captureLoginShellEnv();
+          // THE ENGINE FIRST, AND WAITED FOR. The cockpit's server components
+          // ask the engine for the session list while rendering the first page;
+          // starting them together means that first paint races a daemon that
+          // may not be listening yet, and loses often enough to be the thing
+          // people report as "it opens empty sometimes".
+          const home = telarHome();
+          startEngineChild(home);
+          await waitForEngine(home);
           const port = await getStablePort();
-          startServer(port);
+          startServer(port, home);
           await waitForServer(port);
           url = `http://127.0.0.1:${port}/`;
         }

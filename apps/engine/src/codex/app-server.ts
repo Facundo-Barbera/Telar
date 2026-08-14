@@ -19,10 +19,8 @@
  * driver above it never sees a raw JSON-RPC envelope.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { createInterface } from "node:readline";
+import { requireCli } from "../cli-resolution";
 import { ProviderUnavailableError } from "../driver";
 
 /** A notification: a method with no id, so nothing is owed in reply. */
@@ -194,38 +192,23 @@ export class CodexAppServer {
 /**
  * WHERE THE CODEX CLI ACTUALLY IS.
  *
- * Transcribed from `packages/core/src/cli-resolution.ts`'s candidate order —
- * `CODEX_BIN`, then `~/.local/bin` (the standalone installer's own directory),
- * the two brew prefixes, and PATH LAST because PATH is the thing a
- * Finder-launched app does not reliably have. Not imported: `apps/engine` does
- * not depend on `@telar/core` and adding that dependency is not this file's to
- * make. `createCodexDriver({ resolveBin })` is the seam for handing it the real
- * `codexExecutablePath()` once the engine does depend on core.
+ * THIS USED TO BE THE CANDIDATE LIST ITSELF — a transcription of core's
+ * `cli-resolution.ts`, written because `apps/engine` deliberately does not
+ * depend on `@telar/core`, and ending with a note that it was waiting for a
+ * resolver of its own. `./cli-resolution.ts` is that resolver: the engine now
+ * has one candidate order, one version cache and one refusal shape, shared with
+ * Claude, rather than two lists that can drift apart the next time somebody
+ * learns where an installer puts things.
  *
- * A CODEX_BIN THAT POINTS NOWHERE IS LOUD, not merely skipped: core learned
- * that a typo falling through to a different binary produces a session that
- * runs against something the operator did not choose and never says so.
+ * The behaviour it kept: `CODEX_BIN` still wins, and a CODEX_BIN THAT POINTS
+ * NOWHERE IS STILL LOUD rather than merely skipped — a typo falling through to
+ * a different binary produces a session running against something the operator
+ * did not choose, and never says so.
  */
 export function resolveCodexBinary(): string {
-  const override = process.env.CODEX_BIN;
-  if (override) {
-    if (existsSync(override)) return override;
-    throw new ProviderUnavailableError(`CODEX_BIN points at ${override}, which does not exist`);
+  try {
+    return requireCli("codex");
+  } catch (error) {
+    throw new ProviderUnavailableError(error instanceof Error ? error.message : String(error));
   }
-  const onPath = (process.env.PATH ?? "")
-    .split(path.delimiter)
-    .filter(Boolean)
-    .map((dir) => path.join(dir, "codex"))
-    .filter((candidate) => path.isAbsolute(candidate));
-  const found = [
-    path.join(os.homedir(), ".local", "bin", "codex"),
-    "/opt/homebrew/bin/codex",
-    "/usr/local/bin/codex",
-    ...onPath,
-  ].find((candidate) => existsSync(candidate));
-  if (found) return found;
-  throw new ProviderUnavailableError(
-    "The Codex CLI is not installed. Install it (https://github.com/openai/codex) and sign in, " +
-      "or set CODEX_BIN to its full path, then retry this turn.",
-  );
 }

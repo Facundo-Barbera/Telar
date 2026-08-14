@@ -21,21 +21,11 @@
  * answer about somebody's working account, which is exactly the failure (1)
  * exists to avoid.
  */
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn } from "@telar/engine-client";
-
-const execFileP = promisify(execFile);
-
-/**
- * Long enough for a cold CLI start on a laptop that just woke up, short enough
- * that a wedged binary leaves a settings page that says so rather than a row
- * that never resolves.
- */
-const VERSION_TIMEOUT_MS = 5_000;
+import { cliUsable, resolveCliAsync } from "./cli-resolution";
 
 /**
  * A version probe costs a subprocess per driver, and this is read from a
@@ -135,24 +125,42 @@ export function providerProcessEnv(instance: ProviderInstance): Record<string, s
   return patch;
 }
 
-export type VersionProbe = { installed: boolean; version?: string; message?: string };
+export type VersionProbe = {
+  installed: boolean;
+  version?: string;
+  message?: string;
+  /** Found, and a turn would still be refused — see `statusOf`. */
+  usable?: boolean;
+};
 
+/**
+ * ASKS THE SAME RESOLVER A TURN DOES, and that is the whole point of this
+ * function existing rather than an `execFile(driver, ["--version"])`.
+ *
+ * It used to run the bare binary name, which resolves off PATH. A turn does not:
+ * it spawns the path `cli-resolution.ts` picked (`CLAUDE_CODE_EXECUTABLE`, then
+ * `~/.local/bin`, the brew prefixes, and PATH last), and before this file was
+ * changed, a Claude turn did not spawn a binary at all — the Agent SDK resolved
+ * its own bundled one. So the version somebody read on this pane was not the
+ * version that answered them, and in a packaged app the pane could report a
+ * healthy install for a provider that could not start.
+ */
 async function probeVersion(driver: ProviderDriverKind): Promise<VersionProbe> {
-  try {
-    const { stdout } = await execFileP(driver, ["--version"], {
-      timeout: VERSION_TIMEOUT_MS,
-      env: process.env,
-      maxBuffer: 1 << 20,
-    });
-    const version = stdout.trim().split("\n")[0]?.trim();
-    return version ? { installed: true, version } : { installed: true };
-  } catch (error) {
-    // ENOENT, a non-zero exit and a timeout all mean the same thing to a
-    // detector: this cannot be proven installed. The reason is carried through
-    // verbatim so "not on PATH" and "crashed on start" stay distinguishable.
-    const message = error instanceof Error ? error.message.split("\n")[0] : String(error);
-    return { installed: false, ...(message ? { message } : {}) };
+  const resolution = await resolveCliAsync(driver);
+  if (resolution.status === "missing") {
+    return { installed: false, ...(resolution.message ? { message: resolution.message } : {}) };
   }
+  return {
+    installed: true,
+    ...(resolution.version ? { version: resolution.version } : {}),
+    // Carried through for every status that has something to say — a drifted or
+    // incompatible CLI is installed AND worth a sentence.
+    ...(resolution.message ? { message: resolution.message } : {}),
+    // `installed` alone would paint an incompatible CLI green while every turn
+    // on it is refused. The resolver already knows the difference; this is the
+    // one place it has to be told.
+    usable: cliUsable(resolution),
+  };
 }
 
 /**
@@ -198,9 +206,21 @@ export function statusOf(input: {
   enabled: boolean;
   installed: boolean;
   signIn: ProviderSignIn;
+  /**
+   * Found, but a turn would be REFUSED — a CLI whose control protocol this
+   * build does not speak (`cli-resolution.ts`). Optional because the sign-in
+   * half of this function has no opinion about it.
+   *
+   * IT IS AN ERROR, NOT A WARNING, and not "ready with a note": every session
+   * on this provider fails at submit. Painting it green because a binary
+   * exists is the same class of wrong answer as reporting a version from PATH
+   * while a different binary does the work.
+   */
+  usable?: boolean;
 }): ProviderProbe["status"] {
   if (!input.enabled) return "disabled";
   if (!input.installed) return "error";
+  if (input.usable === false) return "error";
   if (input.signIn === "missing-config-dir" || input.signIn === "signed-out") return "warning";
   return "ready";
 }
@@ -240,11 +260,25 @@ export function createProviderProber(deps: ProviderProbeDeps = {}) {
     return instances.map((instance) => {
       const found = versions.get(instance.driver) ?? { installed: false };
       const sign = signInOf(instance);
-      const status = statusOf({ enabled: instance.enabled, installed: found.installed, signIn: sign.signIn });
-      // The message says the most actionable true thing, and a missing binary
-      // outranks a sign-in note: there is no point telling somebody their
-      // config folder looks fine when the CLI it configures is not installed.
-      const message = found.installed ? sign.message : (found.message ?? `${instance.driver} was not found on PATH.`);
+      const status = statusOf({
+        enabled: instance.enabled,
+        installed: found.installed,
+        signIn: sign.signIn,
+        ...(found.usable === undefined ? {} : { usable: found.usable }),
+      });
+      // The message says the most actionable true thing, in that order: a
+      // missing binary, then anything the CLI resolution has to report about the
+      // one it found, then the sign-in note.
+      //
+      // THE RESOLUTION OUTRANKS THE SIGN-IN NOTE because of what they say. "This
+      // CLI is a protocol version this build was not tested against — suspect it
+      // first if tool calls are cancelled" is a thing to act on; "sign-in cannot
+      // be confirmed from disk" is a statement that nothing can be known, shown
+      // on every healthy Claude instance there is. Left in the old order, the
+      // drift warning existed and was never once displayed.
+      const message = found.installed
+        ? (found.message ?? sign.message)
+        : (found.message ?? `${instance.driver} was not found on PATH.`);
       return {
         instanceId: instance.id,
         driver: instance.driver,

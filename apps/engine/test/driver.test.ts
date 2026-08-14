@@ -5,7 +5,7 @@ import path from "node:path";
 import type { TurnObservation } from "@telar/engine-client";
 import { unifiedDiff } from "../src/diff";
 import {
-  createClaudeDriver,
+  createClaudeDriver as createRealClaudeDriver,
   itemDetailForToolCall,
   planDetailForTodos,
   ProviderUnavailableError,
@@ -13,6 +13,19 @@ import {
   taskStateForStatus,
   titleForToolCall,
 } from "../src/driver";
+
+/**
+ * EVERY TEST BELOW RUNS AGAINST A FAKE SDK, so none of them should care whether
+ * this machine has Claude Code installed.
+ *
+ * The default resolver does care, deliberately — it refuses the turn when there
+ * is no install (`cli-resolution.ts`). Left to it, this whole suite would pass
+ * on a laptop with Claude Code and fail in CI, where there is none, on thirty
+ * tests that are not about resolution at all. So the fake SDK gets a fake path,
+ * and the real resolver is exercised by the two tests that are about it.
+ */
+const createClaudeDriver: typeof createRealClaudeDriver = (loadSdk, options = {}) =>
+  createRealClaudeDriver(loadSdk, { resolveExecutable: () => "/fake/bin/claude", ...options });
 
 /** Collect everything a run reports, in order, the way the worker relays it. */
 function recorder() {
@@ -819,4 +832,69 @@ test("fast mode reaches the SDK only when a session asked for it, and no beta ev
     { betas: undefined, settings: { fastMode: true } },
     { betas: undefined, settings: undefined },
   ]);
+});
+
+/**
+ * WHICH BINARY ANSWERS THE TURN — the option that makes a packaged app work.
+ *
+ * Without `pathToClaudeCodeExecutable` the Agent SDK resolves an optional
+ * ~272MB platform package it ships for itself. Telar does not bundle that (nor
+ * does T3 Code), so in an installed app its absence is the difference between a
+ * turn running and "native CLI binary not found" — and in a dev checkout, where
+ * the package IS present, its absence means the Providers pane reports a version
+ * from PATH while a completely different binary does the work.
+ */
+test("the Claude seam tells the SDK which executable to spawn", async () => {
+  let received: string | undefined;
+  const driver = createRealClaudeDriver(
+    async () => ({
+      async *query(input) {
+        received = input.options.pathToClaudeCodeExecutable;
+        yield { type: "result", subtype: "success" };
+      },
+    }),
+    { resolveExecutable: () => "/opt/homebrew/bin/claude" },
+  );
+  await run(driver).result;
+  expect(received).toBe("/opt/homebrew/bin/claude");
+});
+
+test("a resolver with nothing to offer leaves the SDK's own lookup alone", async () => {
+  // Not the same as pointing it at a path that does not exist: an absent option
+  // is the SDK's documented default, and inventing a path would turn "we could
+  // not find one" into a spawn failure naming a file nobody chose.
+  let seen = false;
+  let received: string | undefined = "untouched";
+  const driver = createRealClaudeDriver(
+    async () => ({
+      async *query(input) {
+        seen = true;
+        received = input.options.pathToClaudeCodeExecutable;
+        yield { type: "result", subtype: "success" };
+      },
+    }),
+    { resolveExecutable: () => undefined },
+  );
+  await run(driver).result;
+  expect(seen).toBe(true);
+  expect(received).toBeUndefined();
+});
+
+test("no Claude Code on this machine fails the turn with what to install", async () => {
+  // AD-11: a harness Telar cannot honour fails the turn rather than degrading.
+  // The message is the resolver's own, so the reader learns what to install
+  // instead of reading an errno from a spawn three layers down.
+  const driver = createRealClaudeDriver(
+    async () => ({
+      async *query() {
+        throw new Error("the SDK must never be reached when there is no binary to run");
+      },
+    }),
+    {
+      resolveExecutable: () => {
+        throw new ProviderUnavailableError("No Claude Code installation found. Telar does not bundle one.");
+      },
+    },
+  );
+  await expect(run(driver).result).rejects.toThrow(ProviderUnavailableError);
 });

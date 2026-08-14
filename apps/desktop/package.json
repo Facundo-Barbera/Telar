@@ -2,15 +2,17 @@
   "name": "telar-desktop",
   "version": "0.1.0",
   "private": true,
+  "//productName": "NAMES THE USER-DATA DIRECTORY, not just the window. Electron's app.getName() prefers this over `name`, and app.getPath('userData') is composed from it — so without it this app's state lives in ~/Library/Application Support/telar-desktop, a directory named after the shell package rather than the product. That directory is now TELAR_HOME for a packaged build (main.js), which makes the name a thing people will read.",
+  "productName": "Telar",
   "description": "Telar desktop shell with a shared Electron-owned browser host.",
   "author": "Facundo Barbera <facundo.barbera@gmail.com>",
   "main": "main.js",
   "scripts": {
-    "build:web": "bash ./build-web.sh",
+    "build:app": "bash ./build-app.sh",
     "dev": "bun ./dev-runner.js",
     "test": "bun run test:desktop:unit",
     "test:desktop": "bun run test:desktop:unit",
-    "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js ./window-chrome.test.js",
+    "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js ./window-chrome.test.js ./packaging.test.js",
     "test:desktop:smoke": "electron . --smoke",
     "test:desktop:e2e": "bun ./desktop-e2e-launcher.js",
     "smoke": "bun run test:desktop:smoke",
@@ -33,20 +35,25 @@
       "command-keys.js",
       "preload.js",
       "server-preload.js",
+      "window-chrome.js",
       "package.json"
     ],
     "extraResources": [
       {
-        "from": "../web_old/.next-desktop/standalone",
+        "from": "../web/.next-desktop/standalone",
         "to": "standalone"
       },
       {
-        "from": "../web_old/.next-desktop/standalone/node_modules/.bun",
+        "from": "../web/.next-desktop/standalone/node_modules/.bun",
         "to": "standalone/node_modules/.bun"
       },
       {
-        "from": "../web_old/.next-desktop/playwright-mcp/node_modules",
-        "to": "playwright-mcp/node_modules"
+        "from": "../engine/dist",
+        "to": "engine"
+      },
+      {
+        "from": "../engine/dist/node_modules",
+        "to": "engine/node_modules"
       }
     ],
     "directories": {

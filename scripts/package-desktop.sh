@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DESKTOP_DIR="$REPO_ROOT/apps/desktop"
-WEB_DIR="$REPO_ROOT/apps/web_old"
+WEB_DIR="$REPO_ROOT/apps/web"
 STANDALONE="$WEB_DIR/.next-desktop/standalone"
 INSTALL=0
 INSTALL_ARGS=()
@@ -63,7 +63,7 @@ command -v bun >/dev/null 2>&1 \
   || { echo "!! Bun is required — install it from https://bun.sh" >&2; exit 1; }
 
 echo "==> build standalone web app"
-NODE_OPTIONS= bash "$DESKTOP_DIR/build-web.sh"
+NODE_OPTIONS= bash "$DESKTOP_DIR/build-app.sh"
 
 if git -C "$REPO_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
   FULL_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
@@ -93,7 +93,13 @@ test -d "$APP" || { echo "!! expected app not found at $APP" >&2; exit 1; }
 test -x "$APP/Contents/MacOS/Telar" || { echo "!! packaged executable missing at $APP" >&2; exit 1; }
 
 echo "==> smoke packaged app"
-"$APP/Contents/MacOS/Telar" --smoke
+# ELECTRON_RUN_AS_NODE IS UNSET FOR THIS LINE, and it is not paranoia: main.js
+# sets it for the children it forks, so any shell descended from a running Telar
+# — including one an agent session opens — has it. Inherited here it turns the
+# app binary into a bare node, which parses `--smoke` as a node flag and exits
+# with "bad option: --smoke" long before any Telar code runs. The failure names
+# the flag, not the cause, and reads like the packaging broke.
+env -u ELECTRON_RUN_AS_NODE "$APP/Contents/MacOS/Telar" --smoke
 echo "==> packaged app ready: $APP"
 
 if [ "$INSTALL" -eq 1 ]; then
