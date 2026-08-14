@@ -1001,6 +1001,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { session: store.archiveSession(session.sessionId) });
           return;
         }
+        /**
+         * DELETE ON THE SESSION ITSELF, not a `/delete` verb hanging off it.
+         * The method IS the operation here, and a POST that destroys a resource
+         * is the shape that makes a stray retry expensive.
+         */
+        if (request.method === "DELETE" && session.tail === "") {
+          writeJson(response, 200, { deleted: store.deleteSession(session.sessionId) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
           writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));

@@ -973,3 +973,29 @@ test("activity is derived on read and never written to disk", () => {
   // …and the derived answer survives the round trip unchanged.
   expect(store.getSession("session_one").activity).toBe("working");
 });
+
+test("deleting a session removes everything it owns, and refuses mid-turn", () => {
+  // THE OTHER END OF THE LIFECYCLE. Settling is now the only way to put a
+  // session down, so the way to get rid of one has to be real — a "delete" that
+  // leaves the record behind is the dishonest version of exactly the thing
+  // archive was.
+  const { store, root: stateRoot } = readyStore();
+  const directory = path.join(stateRoot, "sessions", "session_one");
+  expect(fs.existsSync(directory)).toBe(true);
+
+  // A turn in flight refuses: the journal is still being appended to, and the
+  // checkout is under a live provider process.
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(() => store.deleteSession("session_one")).toThrow(EngineStateError);
+  expect(fs.existsSync(directory)).toBe(true);
+
+  // Finish the turn and it goes — metadata, queue, journal, the lot.
+  const claim = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_one", claim.turn.claim!.token);
+  store.completeTurn("session_one", "run_one", claim.turn.claim!.token, { text: "done" });
+  expect(store.deleteSession("session_one")).toBe(true);
+  expect(fs.existsSync(directory)).toBe(false);
+  expect(() => store.getSession("session_one")).toThrow(EngineStateError);
+  // And it is gone from the list rather than lingering as an unreadable entry.
+  expect(store.listSessions("project_one")).toEqual([]);
+});

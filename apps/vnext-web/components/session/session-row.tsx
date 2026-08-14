@@ -571,7 +571,6 @@ export function SessionRow({
           )}
           <SessionInboxMenu
             session={session}
-            settled={settled}
             active={active}
             // No longer the default `{}`: the engine reports what this session
             // is doing, so the menu's own guards can finally apply.

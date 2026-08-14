@@ -13,13 +13,15 @@
 // exist now, so they are here. Mark read/unread still is not — `readAt` remains
 // unmodelled, and a chip counting a number nothing backs is worse than no chip.
 //
-// ARCHIVING IS STILL ONE-WAY: the engine removes the session's worktree on the
-// way out (apps/engine/src/state.ts), so there is no "Restore" to offer. That
-// is exactly why settling exists beside it — a reversible way to get a row out
-// of the list without ending the conversation behind it.
+// ARCHIVE IS GONE; THE PAIR IS SETTLE AND DELETE. Archiving and settling were
+// two names for "off my list", and keeping both cost a chip, a menu item and a
+// lifecycle field to insist they differed. Where they DID differ was the wrong
+// way round: archive was the irreversible one and the one that looked
+// reversible, because the record survived and the row merely vanished. Settle
+// is reversible and touches no disk; delete says what it does and asks twice.
 
 import { useState } from "react";
-import { AlarmClockIcon, ArchiveIcon, CircleCheckIcon, MoreHorizontalIcon, PencilIcon, PinIcon, PinOffIcon } from "lucide-react";
+import { AlarmClockIcon, MoreHorizontalIcon, PencilIcon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SidebarSession } from "@/lib/session-list";
 import { canSnooze, isSnoozed, snoozePresets, wakeLabel, type SessionActivity } from "@/lib/session-settling";
@@ -47,7 +49,6 @@ export async function patchSession(sessionId: string, patch: { settledOverride?:
 
 export function SessionInboxMenu({
   session,
-  settled,
   active = false,
   onRename,
   onDone,
@@ -57,8 +58,6 @@ export function SessionInboxMenu({
   now,
 }: {
   session: SidebarSession;
-  /** Whether the row currently sits in the settled shelf, for either reason. */
-  settled: boolean;
   /** What the list knows about this session right now. Empty is the honest
    *  default: the sidebar does not hold a live turn state per row. */
   activity?: SessionActivity;
@@ -173,41 +172,42 @@ export function SessionInboxMenu({
 
         <DropdownMenuSeparator />
 
-        {session.archived ? (
-          <DropdownMenuItem disabled>
-            <CircleCheckIcon />
-            Archived
-          </DropdownMenuItem>
-        ) : settled ? (
-          // Shelved by neglect rather than by decision: the row is already out
-          // of the way, so archiving it is still offered — it is what actually
-          // frees the worktree — but the label says which state it is in.
-          <DropdownMenuItem
-            onClick={() => {
-              if (!window.confirm(`Archive "${session.title || "Untitled session"}"? Its worktree is removed; the branch survives.`)) return;
-              void run(() => fetch(`/api/sessions/${encodeURIComponent(session.id)}/archive`, { method: "POST" })).then(() => {
-                if (active) onLeave?.();
-              });
-            }}
-          >
-            <ArchiveIcon />
-            Archive — quiet for 3 days
-          </DropdownMenuItem>
-        ) : (
-          <DropdownMenuItem
-            onClick={() => {
-              // Archiving ends the session and removes its worktree. Nothing in
-              // this menu undoes it, so it asks first.
-              if (!window.confirm(`Archive "${session.title || "Untitled session"}"? Its worktree is removed; the branch survives.`)) return;
-              void run(() => fetch(`/api/sessions/${encodeURIComponent(session.id)}/archive`, { method: "POST" })).then(() => {
-                if (active) onLeave?.();
-              });
-            }}
-          >
-            <ArchiveIcon />
-            Archive
-          </DropdownMenuItem>
-        )}
+        {/**
+         * DELETE, WHERE ARCHIVE WAS — and archive is gone rather than demoted.
+         *
+         * Archiving and settling were two names for "off my list", and keeping
+         * both cost a chip, a menu item and a lifecycle field to insist they
+         * differed. They did differ in one respect nobody wanted: archive was
+         * the irreversible one, and it was the one that LOOKED reversible,
+         * because the record survived and the row simply vanished.
+         *
+         * So the pair is settle and delete now. Settle is reversible and does
+         * nothing to disk. Delete says exactly what it does and asks twice: the
+         * transcript goes with the worktree, and there is no restore anywhere
+         * in this app.
+         *
+         * A SESSION ARCHIVED BEFORE THIS still exists on disk and now appears in
+         * the settled shelf (see `isSettled`), which is where it always
+         * belonged — so the eleven of them are readable and deletable rather
+         * than stranded behind a chip that no longer exists.
+         */}
+        <DropdownMenuItem
+          variant="destructive"
+          onClick={() => {
+            const name = session.title || "Untitled session";
+            // TWO PRESSES, AND THE SECOND ONE NAMES WHAT GOES. The first
+            // question is the one people learn to dismiss; the second states
+            // the consequence that is not recoverable.
+            if (!window.confirm(`Delete "${name}"?`)) return;
+            if (!window.confirm(`This removes the transcript and the worktree for "${name}". It cannot be undone.`)) return;
+            void run(() => fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" })).then(() => {
+              if (active) onLeave?.();
+            });
+          }}
+        >
+          <Trash2Icon />
+          Delete session
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

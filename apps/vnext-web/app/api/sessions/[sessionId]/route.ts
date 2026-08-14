@@ -27,3 +27,19 @@ export async function PATCH(request: Request, context: Context) {
     return vnextErrorResponse(error);
   }
 }
+
+/**
+ * REMOVE A SESSION AND EVERYTHING IT OWNS. There is no undo.
+ *
+ * The engine holds the guards — a turn in flight refuses, the worktree and the
+ * browser are freed, the directory goes — so this route forwards and nothing
+ * else. The confirmation belongs in the UI, where the person is.
+ */
+export async function DELETE(_request: Request, context: Context) {
+  try {
+    const { sessionId } = await context.params;
+    return Response.json(await (await vnextEngine()).deleteSession(sessionId));
+  } catch (error) {
+    return vnextErrorResponse(error);
+  }
+}

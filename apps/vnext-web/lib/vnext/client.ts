@@ -180,6 +180,10 @@ export function createVNextApi(fetcher: Fetcher = fetch) {
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),
+    /** REMOVE A SESSION AND EVERYTHING IT OWNS — transcript included. No undo,
+     *  and the engine refuses while a turn is in flight. */
+    deleteSession: (sessionId: string) =>
+      request<{ deleted: boolean }>(fetcher, "DELETE", `/api/sessions/${encodeURIComponent(sessionId)}`),
     /** `answers` is only meaningful for a `user_input` request — the route has
      *  always forwarded it; this signature simply never offered it, so the one
      *  request kind that asks a question could not be answered from the UI. */

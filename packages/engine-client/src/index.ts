@@ -573,6 +573,20 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/archive`, {});
   }
 
+  /**
+   * REMOVE A SESSION AND EVERYTHING IT OWNS. There is no undo.
+   *
+   * Distinct from `archiveSession` in the only way that matters: archiving
+   * keeps the record and the transcript, this does not. It exists because
+   * settling is now the way to put a session down, and a lifecycle whose only
+   * exit is the concept you retired has no exit at all.
+   *
+   * Refuses while a turn is in flight — the journal is still being written to.
+   */
+  deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
+    return this.request("DELETE", `/v2/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
   /** Explicit human resolution for a turn whose provider effects are uncertain. */
   discardAmbiguousTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});

@@ -2394,6 +2394,54 @@ export class EngineStore {
     return structuredClone(session);
   }
 
+  /**
+   * REMOVE A SESSION AND EVERYTHING IT OWNS. There is no undo.
+   *
+   * WHY THIS EXISTS AT ALL, given `archiveSession` beside it: archiving and
+   * settling were two names for "off my list", and a cockpit that offers both
+   * spends a chip, a menu item and a lifecycle field insisting they differ.
+   * Settling is now the only way to put a session down. So the other end of the
+   * lifecycle has to be real — you cannot retire a concept whose only exit was
+   * the thing you removed — and "delete" that leaves the record behind is the
+   * dishonest version of exactly that.
+   *
+   * WHAT IT TAKES WITH IT: the browser (or Chromium instances accumulate until
+   * the pool's LRU evicts them, hundreds of megabytes on a machine running
+   * detached work), the worktree, and the session's own directory — metadata,
+   * queue, journal, items, requests, attachments.
+   *
+   * WHAT IT REFUSES: a session with a turn in flight, for `archiveSession`'s
+   * reason and more sharply. Archiving under a running turn pulls the checkout
+   * out from under a live provider process; deleting under one also removes the
+   * journal that process is still appending to. Stop it first.
+   *
+   * THE WORKTREE REMOVAL IS BEST-EFFORT AND THE DIRECTORY REMOVAL IS NOT. A
+   * leaked worktree is bounded inside the engine's root and reapable later, so
+   * git being unhappy must not strand a session nobody can delete. A partly
+   * removed session directory is the opposite: it would parse as corruption on
+   * the next read, so it either goes or the call fails with it intact.
+   */
+  deleteSession(sessionId: string): boolean {
+    const session = this.getSession(sessionId);
+    const active = this.readQueue(sessionId).turns.find(
+      (turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running",
+    );
+    if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before deleting");
+
+    void this.browser?.release(sessionId, "session deleted");
+
+    if (session.workspace.mode === "worktree") {
+      const project = this.getProject(session.projectId);
+      removeSessionWorktree(this.git, project.root, session.workspace.path);
+    }
+
+    // The event is appended BEFORE the directory goes, so a subscriber watching
+    // this session is told why its stream ended rather than simply losing it.
+    this.appendEvent(sessionId, { type: "session.archived" });
+    fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
+    return true;
+  }
+
   requests(sessionId: string): EngineRequest[] {
     this.getSession(sessionId);
     return structuredClone([...this.readRequests(sessionId).values()]);
