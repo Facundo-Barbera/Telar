@@ -259,7 +259,22 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
   return { runId: turn.runId, state: turn.state, input: turn.prompt };
 }
 
-function SessionTurn({
+/**
+ * ONE TURN, RENDERED — your message, then everything the agent did about it.
+ *
+ * EXPORTED, AND IT COSTS NOTHING TO EXPORT: this component reads `projectId`
+ * zero times. It was written for the project cockpit and turns out to be the
+ * shared conversation shell the Spool's master chat needed — the extraction the
+ * donor planned, already done by accident because nothing in a rendered turn is
+ * a property of a repository.
+ *
+ * So the master chat consumes THIS rather than hand-rebuilding a second
+ * transcript. The donor's own rule for that situation was to stop rather than
+ * build the second one, and the reason is visible here: approvals, sub-agent
+ * chips, the activity fold, the live step window and the ambiguous-turn recovery
+ * are all decided in this function. A copy would start identical and drift.
+ */
+export function SessionTurn({
   turn,
   requests,
   sending,

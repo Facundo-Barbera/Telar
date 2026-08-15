@@ -16,13 +16,24 @@ const PREFIX = "telar:draft:";
 /** Long enough for a real message, short of filling the quota with one key. */
 const MAX_DRAFT = 20_000;
 
-function key(sessionId: string | undefined, projectId: string): string {
-  // A fresh canvas has no session id, so it is keyed by project — which is the
-  // scope its message will be created in anyway.
-  return `${PREFIX}${sessionId ?? `new:${projectId}`}`;
+/**
+ * BOTH HALVES ARE OPTIONAL, and each absence means something different.
+ *
+ * No SESSION is a fresh canvas: it is keyed by project, which is the scope its
+ * message will be created in anyway. No PROJECT is the Spool's master chat,
+ * which has one — a project-less session always exists before anyone can type
+ * into it, so the project half is never reached for it.
+ *
+ * The `new:` arm with neither is unreachable today and is spelled anyway rather
+ * than asserted away: one shared key for "a composer belonging to nothing" is a
+ * dull failure, and a thrown error inside a draft save is the loud one this
+ * module exists to avoid.
+ */
+function key(sessionId: string | undefined, projectId: string | undefined): string {
+  return `${PREFIX}${sessionId ?? `new:${projectId ?? "none"}`}`;
 }
 
-export function readDraft(sessionId: string | undefined, projectId: string): string {
+export function readDraft(sessionId: string | undefined, projectId: string | undefined): string {
   if (typeof window === "undefined") return "";
   try {
     return window.localStorage.getItem(key(sessionId, projectId)) ?? "";
@@ -31,7 +42,7 @@ export function readDraft(sessionId: string | undefined, projectId: string): str
   }
 }
 
-export function writeDraft(sessionId: string | undefined, projectId: string, draft: string): void {
+export function writeDraft(sessionId: string | undefined, projectId: string | undefined, draft: string): void {
   if (typeof window === "undefined") return;
   try {
     // An empty draft is a REMOVAL, not an empty string: leaving the key behind
