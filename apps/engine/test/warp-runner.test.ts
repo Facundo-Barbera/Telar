@@ -11,7 +11,7 @@
  * or a token.
  */
 import { expect, test } from "bun:test";
-import type { TaskSeed } from "@telar/engine-client";
+import { TaskSeed } from "@telar/engine-client";
 import { compileWarpScript } from "../src/warp/sandbox";
 import { createWarpRunner, type WarpSpawn } from "../src/warp/runner";
 
@@ -101,8 +101,36 @@ test("the linkage repeats on every row, not just the first", async () => {
     expect(row.warp?.warpRunId).toBe(run.runId);
     expect(row.warp?.phaseTitle).toBe("Scan");
     expect(row.title).toBe("look");
-    expect(row.model?.instanceId).toBe("claude");
   }
+});
+
+test("every emitted row satisfies the contract, model selection included", async () => {
+  /**
+   * THE TRAP THIS EXISTS FOR, and it was live until this test was written:
+   * `ModelSelection` carries a refine — "must name at least one of model, effort
+   * or fast mode" — so a row that named only the login FAILED validation, and
+   * `ingestObservations` rejects the whole BATCH when one observation is
+   * invalid. Every row of a fan-out would have vanished because one agent
+   * inherited the session's model, which is the ordinary case. A unit test on
+   * the runner's own shape could not have caught it; parsing with the real
+   * schema does.
+   */
+  const { emitted, start, compile } = harness(echo);
+  const run = start(
+    compile(`
+      await agent("inherits everything");
+      await agent("names a model", { model: "claude-opus-5", effort: "high" });
+    `),
+    { instanceId: "claude" },
+  );
+  await run.done;
+
+  for (const seed of emitted) expect(TaskSeed.safeParse(seed).success).toBe(true);
+
+  const inherited = emitted.find((seed) => seed.title === "inherits everything")!;
+  expect(inherited.model).toBeUndefined();
+  const named = emitted.find((seed) => seed.title === "names a model")!;
+  expect(named.model).toEqual({ instanceId: "claude", model: "claude-opus-5", effort: "high" });
 });
 
 test("a dead agent is null, and the fan-out survives it", async () => {

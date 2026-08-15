@@ -226,13 +226,17 @@ export function createWarpRunner(deps: WarpRunnerDeps) {
   return function start(
     script: CompiledWarpScript,
     /**
-     * `instanceId` IS REQUIRED, and that is the contract talking rather than
-     * ceremony: a Task's `model` is a `ModelSelection`, which is "which login,
-     * and which model on it" — not a bare string. A warp child runs as the
-     * session's own login, so the caller always knows it, and a row that named a
-     * model without naming whose account ran it would be unattributable.
+     * `instanceId` NAMES THE LOGIN, and it is the contract that asks for it
+     * rather than ceremony: a Task's `model` is a `ModelSelection`, which is
+     * "which login, and which model on it" — not a bare string. A row that named
+     * a model without naming whose account ran it would be unattributable.
+     *
+     * OPTIONAL, because a driver assembled without one is a real configuration
+     * (every task had no selection at all before warps existed). Absent means
+     * the rows carry no `model`, which costs a display detail and nothing else —
+     * the child still runs with whatever the script asked for.
      */
-    options: { instanceId: string; args?: unknown; runId?: string },
+    options: { instanceId?: string; args?: unknown; runId?: string },
   ): WarpRun {
     const runId = options.runId ?? deps.newId("warp");
     const name = script.meta.name;
@@ -284,14 +288,29 @@ export function createWarpRunner(deps: WarpRunnerDeps) {
         state,
         title: record.label,
         parentTaskId: runId,
-        // ALWAYS PRESENT, because the login is always known even when the
-        // script named no model — absent `model` inside it is the honest
-        // "inherited the session's", not "unknown".
-        model: {
-          instanceId: options.instanceId,
-          ...(record.opts.model ? { model: record.opts.model } : {}),
-          ...(record.opts.effort ? { effort: record.opts.effort } : {}),
-        },
+        /**
+         * PRESENT ONLY WHEN THE SCRIPT OVERRODE SOMETHING, and the contract is
+         * what decides that: `ModelSelection` carries a refine — "a model
+         * selection must name at least one of model, effort or fast mode" — so
+         * an instance-only selection is not merely uninformative, it fails
+         * validation and the engine rejects the WHOLE observation batch as
+         * invalid. Every row of a fan-out would vanish because one of them
+         * inherited the session's model, which is the common case.
+         *
+         * A child that names nothing therefore carries no selection, which is
+         * the same thing `DriverRun.model` means by absence: "the provider's own
+         * default". Whose login ran it is not lost — the task belongs to the
+         * session, and the session names its instance.
+         */
+        ...(options.instanceId && (record.opts.model || record.opts.effort)
+          ? {
+              model: {
+                instanceId: options.instanceId,
+                ...(record.opts.model ? { model: record.opts.model } : {}),
+                ...(record.opts.effort ? { effort: record.opts.effort } : {}),
+              },
+            }
+          : {}),
         ...(record.opts.effort ? { effort: record.opts.effort } : {}),
         ...(record.usage ? { usage: record.usage } : {}),
         ...(record.resultText ? { resultText: record.resultText } : {}),

@@ -13,6 +13,7 @@
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { z } from "zod";
 import type {
   BrowserProvider,
   BrowserTab,
@@ -35,6 +36,9 @@ import type {
 import { displayToolName, parseToolName, qualifyTelarTool, TELAR_MCP_SERVER } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
+import { createWarpRunner, type WarpSpawn } from "./warp/runner";
+import { compileWarpScript } from "./warp/sandbox";
+import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -115,6 +119,17 @@ export type DriverRun = {
    */
   binaryPath?: string;
   /**
+   * WHICH CONFIGURED LOGIN this turn runs as, by id.
+   *
+   * The driver does not spend it — `env` and `binaryPath` are what actually
+   * shape the child process. It is here because a WARP agent's task row carries
+   * a `ModelSelection`, and the contract defines that as "which login, and which
+   * model on it": a row that named a model without naming whose account ran it
+   * would be unattributable. Absent means no selection is recorded, which is
+   * what every task did before warps existed.
+   */
+  providerInstanceId?: string;
+  /**
    * Scopes this turn's browser. Sessions are the natural boundary: two
    * sessions must not share a tab, and a session's tabs must survive between
    * its turns.
@@ -170,7 +185,18 @@ type SdkMcpServer = unknown;
  */
 type SdkUserMessage = {
   type: "user";
-  message: { role: "user"; content: Array<Record<string, unknown>> };
+  /**
+   * `content` IS THE API'S OWN UNION, not the array arm alone.
+   *
+   * This was narrowed to `Array<…>` because attachments are the only reason the
+   * driver builds one — and the SDK's `SDKUserMessage.message` is a
+   * `MessageParam`, whose content is `string | ContentBlockParam[]`. Narrowing a
+   * borrowed type to the arm you happen to use makes every OTHER caller look
+   * wrong: a warp child steers with plain prose and had to be cast past this
+   * declaration to say so. The type now describes the SDK rather than one use
+   * of it.
+   */
+  message: { role: "user"; content: string | Array<Record<string, unknown>> };
   parent_tool_use_id: null;
 };
 
@@ -335,23 +361,28 @@ type ClaudeSdk = {
 };
 
 /**
- * Wrap the engine's browser as an in-process MCP server the SDK can call.
+ * The engine's browser, as MCP tools.
+ *
+ * RETURNS TOOLS RATHER THAN A SERVER, because Telar has more than one capability
+ * to offer and there is exactly ONE server for all of them — see
+ * `telarMcpServer` below. A session with no browser still gets `warp`, which is
+ * not true if the browser is what builds the server.
  *
  * `gate` RETURNS FALSE FOR A DECLINE and the tool answers with `isError`
  * rather than throwing. A thrown handler reads to the model as a broken tool
  * and it retries; an error result reads as "you may not do that" and it adapts.
  * That distinction is the whole reason a decline carries a reason.
  */
-async function buildBrowserMcpServer(
+function browserTools(
   sdk: ClaudeSdk,
   browser: BrowserCapability,
   scopeKey: string,
   gate: (name: string, args: Record<string, unknown>) => Promise<boolean>,
   onNavigated: () => void,
-): Promise<SdkMcpServer | undefined> {
-  const { createSdkMcpServer, tool } = sdk;
-  if (!createSdkMcpServer || !tool) return undefined;
-  const tools = browser.tools.map((definition) =>
+): unknown[] {
+  const { tool } = sdk;
+  if (!tool) return [];
+  return browser.tools.map((definition) =>
     tool(
       definition.name,
       definition.description,
@@ -370,8 +401,150 @@ async function buildBrowserMcpServer(
       },
     ),
   );
-  // ONE server for every Telar capability, not one per toolkit.
-  return createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools });
+}
+
+/**
+ * WHAT THE DIRECTING AGENT READS, and the only documentation of Warp that a
+ * model ever sees.
+ *
+ * Written as instructions for choosing, not as a description of parameters: the
+ * failure this guards against is not a malformed call, it is a warp launched for
+ * work that one agent should have done in a straight line. A fan-out costs a
+ * real process per child on the user's own machine.
+ */
+const WARP_DESCRIPTION = `Run a Warp: a script that fans work out across several sub-agents and returns their combined result.
+
+The script is JavaScript and it is where the structure lives — loops, conditionals, fan-out and the plain code between stages are yours to write, and they run deterministically rather than being decided turn by turn. Reach for this when the work is wide (many files, many angles, many candidates) or when confidence matters more than speed (independent attempts, adversarial verification). For anything a single straight line of work covers, do it yourself — this spawns a real process per concurrent child.
+
+The script must begin with a pure object literal:
+
+  export const meta = { name: 'find-flaky-tests', description: 'Find flaky tests and propose fixes', phases: [{ title: 'Scan' }, { title: 'Fix' }] }
+
+Then write statements at the top level. Top-level await and top-level return both work; whatever you return becomes this tool's result. Available as globals:
+
+- agent(prompt, opts?) -> Promise<any>. One sub-agent. Resolves to its final text, or — with opts.schema (a JSON Schema) — to a validated object, which is what makes the code between stages ordinary code instead of another agent hired to read the last one's paragraphs. Resolves to null if the child died, so .filter(Boolean) before using results. opts: { model, effort, schema, label, phase, maxTurns, agentType }. Omit model to inherit the session's.
+- parallel(thunks) -> Promise<any[]>. Concurrent, WITH A BARRIER: everything settles before it resolves. Correct only when the next step genuinely needs all of the previous one at once — a dedupe across the whole set, an early exit on a total, a prompt that compares one finding against the others.
+- pipeline(items, ...stages) -> Promise<any[]>. Each item through every stage independently, NO barrier. This is the default for multi-stage work: item A can be in stage 3 while item B is still in stage 1, so the run costs the slowest single chain rather than the sum of the slowest-per-stage. Every stage receives (previousResult, originalItem, index). A stage that throws drops that item to null and keeps the others flowing.
+- phase(title) opens a progress group; log(message) narrates to the human; args is the JSON value passed alongside the script.
+
+Date.now(), new Date() and Math.random() THROW — a script that branched on the clock could not be replayed. require, import, process and fs are absent; the script orchestrates agents and does not touch the host itself. A script that cannot parse, is missing its meta, or reaches for a banned name is refused before anything is spent, with the line number.
+
+A Warp child may not itself fan out: the Agent, Task and Workflow tools are withheld from it, so the script is the only place parallelism is expressed. Children run in the same checkout as this session and inherit its permissions.`;
+
+/**
+ * `warp`, as an MCP tool.
+ *
+ * IT BLOCKS UNTIL THE RUN SETTLES, and that is a decision worth stating rather
+ * than a limitation to apologise for. The harness this borrows its surface from
+ * returns a handle immediately and re-invokes the model when the run finishes —
+ * it can, because it owns the loop. Telar's worker does not: a turn ends when
+ * the driver returns, `onObservations` is documented as never called after that,
+ * and a run still emitting rows would have nowhere to send them. So the tool
+ * call IS the run's lifetime, exactly as the Agent tool's call is a sub-agent's,
+ * and the directing agent gets the result rather than a receipt.
+ *
+ * INLINE SCRIPT ONLY — no `name`, no `scriptPath`. Resolving a path here would
+ * put a file read inside a tool handler, outside the store boundary every other
+ * engine read is fenced at. The agent has a Read tool; a script it has read is a
+ * string it can pass.
+ */
+function warpTool(
+  sdk: ClaudeSdk,
+  deps: {
+    spawn: WarpSpawn;
+    /** Every row the run produces, in order. The driver decides which event
+     *  kind each is — it is the party that knows what it has already announced. */
+    onTask: (seed: TaskSeed) => void;
+    instanceId?: string;
+    /** The turn's own signal. A human pressing Stop stops the fan-out; without
+     *  this the turn would settle while four children kept spending. */
+    signal: AbortSignal;
+    concurrency?: number;
+  },
+): unknown | undefined {
+  const { tool } = sdk;
+  if (!tool) return undefined;
+  const start = createWarpRunner({
+    spawn: deps.spawn,
+    emit: deps.onTask,
+    newId: (prefix) => `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`,
+    ...(deps.concurrency === undefined ? {} : { concurrency: deps.concurrency }),
+  });
+
+  return tool(
+    "warp",
+    WARP_DESCRIPTION,
+    { script: z.string().min(1), args: z.unknown().optional() },
+    async (input) => {
+      const compiled = compileWarpScript(String(input.script ?? ""));
+      if (!compiled.ok) {
+        /**
+         * REFUSED BEFORE A runId EXISTS and before one token is spent, and the
+         * refusal is addressed to the AUTHOR: the kind so it can branch, the
+         * line so it can fix the right one without re-reading the whole script.
+         * `isError` rather than a throw, so the model treats it as "that script
+         * is wrong" and rewrites, instead of "the tool is broken" and retries.
+         */
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: compiled.error, kind: compiled.kind, detail: compiled.detail, line: compiled.line }, null, 2),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const run = start(compiled, {
+        ...(deps.instanceId ? { instanceId: deps.instanceId } : {}),
+        ...(input.args === undefined ? {} : { args: input.args }),
+      });
+      const stop = () => run.stop("the turn was stopped");
+      if (deps.signal.aborted) stop();
+      else deps.signal.addEventListener("abort", stop, { once: true });
+
+      let snapshot;
+      try {
+        snapshot = await run.done;
+      } finally {
+        deps.signal.removeEventListener("abort", stop);
+      }
+
+      const failed = snapshot.agents.filter((agent) => agent.state === "failed");
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                runId: snapshot.runId,
+                name: snapshot.name,
+                state: snapshot.state,
+                agents: { total: snapshot.agents.length, failed: failed.length },
+                // NAMED, NOT COUNTED. "2 agents failed" tells the author nothing
+                // it can act on; which ones, and why, is what decides whether to
+                // re-run, narrow the prompt, or accept a partial answer.
+                ...(failed.length > 0
+                  ? { failures: failed.map((agent) => ({ label: agent.label, failure: agent.failure })) }
+                  : {}),
+                ...(snapshot.logs.length > 0 ? { logs: snapshot.logs } : {}),
+                ...(snapshot.failure ? { failure: snapshot.failure } : {}),
+                ...(snapshot.result === undefined ? {} : { result: snapshot.result }),
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+        // A run that was stopped or threw is an error to the CALLER even though
+        // the rows are all correctly recorded: it did not produce what it was
+        // asked for, and a model reading `state: "failed"` inside a success
+        // result routinely carries on as though it had.
+        ...(snapshot.state === "completed" ? {} : { isError: true }),
+      };
+    },
+  );
 }
 
 /**
@@ -691,6 +864,7 @@ export function createClaudeDriver(
       onObservations,
       onRequest,
       providerSessionId,
+      providerInstanceId,
       browserScopeKey,
     }) {
       let sdk: ClaudeSdk;
@@ -824,10 +998,33 @@ export function createClaudeDriver(
       };
 
       const pending: TurnObservation[] = [];
-      const flush = async (): Promise<void> => {
-        if (pending.length === 0) return;
-        const batch = pending.splice(0, pending.length);
-        await onObservations(batch);
+      /**
+       * FLUSHES ARE SERIALISED, and that became load-bearing the moment a warp
+       * could report.
+       *
+       * The main loop only ever ran `emit(); await flush();` in sequence, so
+       * nothing overlapped and a plain async function was enough. A fan-out is
+       * different in kind: four children settle whenever they settle, and none
+       * of them can await the batch — the turn would be serialised behind its own
+       * agents. Left unchained, two in-flight `onObservations` calls can resolve
+       * in the opposite order to the one they were spliced in, and the engine
+       * folds a `running` over a `completed` it has already stored. The task then
+       * reads as live for ever, with nothing left in the stream to correct it.
+       *
+       * Same failure mode `reportBrowserState` avoids with its own queue, for the
+       * same reason; this generalises it to every observation.
+       */
+      let flushQueue: Promise<unknown> = Promise.resolve();
+      const flush = (): Promise<void> => {
+        const next = flushQueue.then(async () => {
+          if (pending.length === 0) return;
+          const batch = pending.splice(0, pending.length);
+          await onObservations(batch);
+        });
+        // The CHAIN must survive a rejection or every later flush inherits it;
+        // the caller still sees the failure on the promise it was handed.
+        flushQueue = next.catch(() => undefined);
+        return next;
       };
       const emit = (observation: TurnObservation): void => {
         pending.push(observation);
@@ -907,29 +1104,103 @@ export function createClaudeDriver(
        * which is exactly why a passing unit test on `itemDetailForToolCall` did
        * not catch it — the mapping was right and the input to it was wrong.
        */
+      /**
+       * A warp row, announced as the right KIND of event.
+       *
+       * The runner emits whole seeds and knows nothing about the three event
+       * kinds; this is the only party that knows what it has already told the
+       * engine, so it is the one that can tell a start from a progress. Folded
+       * into `knownTasks` as well, which buys the end-of-turn sweep below for
+       * free: an agent somehow left running when the turn ends gets closed
+       * rather than claiming the session is still working forever.
+       */
+      const announced = new Set<string>();
+      const onWarpTask = (seed: TaskSeed): void => {
+        const settled = isTerminalTaskState(seed.state);
+        const kind = !announced.has(seed.id) ? "task.started" : settled ? "task.completed" : "task.progress";
+        announced.add(seed.id);
+        knownTasks.set(seed.id, seed);
+        emit({ kind, task: seed });
+        /**
+         * NOT AWAITED — a child cannot wait for the engine to acknowledge its
+         * row without serialising the whole fan-out behind one HTTP round trip
+         * each. Order is still guaranteed: `flush` chains, so these arrive in
+         * the sequence they were emitted whatever order they settle in.
+         *
+         * The rejection is swallowed HERE rather than left unhandled. A batch of
+         * task rows that could not be reported is a connectivity failure, and the
+         * main loop's own next flush surfaces it as the turn's failure — which
+         * is the right place for it, since that one can still stop the turn.
+         */
+        void flush().catch(() => undefined);
+      };
+
+      /**
+       * TELAR'S TOOLS, IN ONE SERVER.
+       *
+       * The browser's are conditional on there being a browser; `warp` is not
+       * conditional on anything, which is the whole reason the browser builder
+       * returns TOOLS rather than a server now. A session with no browser scope
+       * still gets to fan out.
+       */
+      const telarTools: unknown[] = [
+        ...(options.browser && browserScopeKey
+          ? browserTools(
+              sdk,
+              options.browser,
+              browserScopeKey,
+              async (name, args) => {
+                if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
+                const decision = await onRequest({
+                  kind: "tool_call",
+                  // The QUALIFIED name, so the approval and the timeline row
+                  // name the same tool. A client shortens it for display
+                  // (`displayToolName`); the data does not lie about which
+                  // server it belongs to.
+                  detail: { kind: "tool_call", call: { name: qualifyTelarTool(name), server: TELAR_MCP_SERVER, input: args } },
+                  toolUseId: `${TELAR_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
+                });
+                return decision === "accept" || decision === "acceptForSession";
+              },
+              reportBrowserState,
+            )
+          : []),
+      ];
+
+      const warp = warpTool(sdk, {
+        /**
+         * A CHILD IS A REAL `claude` PROCESS, spawned with this turn's own
+         * checkout, login and binary — so a warp inherits everything the session
+         * was configured with rather than a default the driver invents.
+         *
+         * `mcpServers` is the USER's only: Telar's own server is withheld, or a
+         * child could call `warp` and recurse without bound, and four children
+         * would fight over one browser scope. `canUseTool` is passed, because a
+         * session that asks before editing asks for a child's edits too.
+         */
+        spawn: createWarpSpawn({
+          sdk,
+          cwd,
+          ...(model ? { model } : {}),
+          ...(sdkEffort ? { effort: sdkEffort } : {}),
+          ...(fastMode === undefined ? {} : { fastMode }),
+          ...(env ? { env } : {}),
+          ...(userServers ? { mcpServers: userServers } : {}),
+          ...(canUseTool ? { canUseTool } : {}),
+          ...(() => {
+            const executable = resolveExecutable(binaryPath);
+            return executable ? { executable } : {};
+          })(),
+        }),
+        onTask: onWarpTask,
+        ...(providerInstanceId ? { instanceId: providerInstanceId } : {}),
+        signal: controller.signal,
+      });
+      if (warp) telarTools.push(warp);
+
       const telarServer =
-        options.browser && browserScopeKey
-          ? {
-              [TELAR_MCP_SERVER]: await buildBrowserMcpServer(
-                sdk,
-                options.browser,
-                browserScopeKey,
-                async (name, args) => {
-                  if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
-                  const decision = await onRequest({
-                    kind: "tool_call",
-                    // The QUALIFIED name, so the approval and the timeline row
-                    // name the same tool. A client shortens it for display
-                    // (`displayToolName`); the data does not lie about which
-                    // server it belongs to.
-                    detail: { kind: "tool_call", call: { name: qualifyTelarTool(name), server: TELAR_MCP_SERVER, input: args } },
-                    toolUseId: `${TELAR_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
-                  });
-                  return decision === "accept" || decision === "acceptForSession";
-                },
-                reportBrowserState,
-              ),
-            }
+        telarTools.length > 0 && sdk.createSdkMcpServer
+          ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
           : undefined;
 
       /**

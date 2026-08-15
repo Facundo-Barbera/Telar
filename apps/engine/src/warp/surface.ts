@@ -75,13 +75,32 @@ export type WarpAgentOpts = {
    * the runner's default.
    */
   maxTurns?: number;
-  /** A fresh git worktree, for agents that mutate in parallel and would
-   *  otherwise collide. Narrows WHERE writes land, never WHETHER a child may
-   *  write — there is no per-agent permission knob. */
-  isolation?: boolean;
-  /** A named sub-agent definition instead of the default Warp child. */
+  /**
+   * A named agent definition from the user's own `.claude/agents/`, applied to
+   * this child's system prompt, tools and model.
+   *
+   * The SAME REGISTRY the Agent tool reads, which is what makes a type the
+   * author already uses work here unchanged — and it reaches the child through
+   * the SDK's `agent` option rather than by spawning one, because a Warp child
+   * may not fan out (see `warp/spawn.ts`).
+   */
   agentType?: string;
 };
+
+/**
+ * THERE IS NO `isolation` HERE, and its absence is a decision rather than an
+ * omission.
+ *
+ * The legacy offered a fresh git worktree per agent and the harness the authoring
+ * agent has read offers one too, so leaving the field in place and ignoring it
+ * would be the easy path — and a lie: a script that asked for isolation would get
+ * four agents writing to one checkout and produce exactly the unattributable diff
+ * the option exists to prevent. Telar's worktrees are SESSION-scoped by
+ * construction (`worktree.ts` cuts one branch named `telar/<sessionId>`), so a
+ * per-agent one needs its own naming, its own reaping and an engine root the
+ * driver does not currently hold. Until that exists the honest surface is one
+ * that does not offer it.
+ */
 
 /**
  * Everything a script can reach.
