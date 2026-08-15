@@ -162,6 +162,21 @@ export const WorkerClaim = z.object({
    * token as the MCP server specs beside it, which carry their own secrets.
    */
   providerInstance: ProviderInstance.optional(),
+  /**
+   * The project's NAME, as opposed to its id or its root.
+   *
+   * IT IS HERE FOR THE SAME REASON `projectRoot` AND `model` ARE — the worker
+   * holds no store handle, so anything it needs to execute arrives with the
+   * work. What needs it is the spool toolkit: a spool item's `project` is a
+   * free-form LABEL, not an id, so scoping a session to its own slice means
+   * comparing names, and the worker has no registry to look one up in.
+   *
+   * ABSENT MEANS UNSCOPED, which is the project-less master's case — it sees
+   * every project's items, because having no project is the whole point of it.
+   * An older engine that sends nothing therefore degrades to the master's view
+   * rather than to an empty one, and the toolkit says which scope it resolved.
+   */
+  project: z.string().min(1).optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
   turn: Turn,

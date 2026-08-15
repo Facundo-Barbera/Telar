@@ -19,10 +19,15 @@
 // them; the pinned rule sits underneath for the same reason.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
-// Overview, Projects, Looms, Workspace. Those views are deliberately out of
-// scope for this rebuild, and a glyph that navigates nowhere is worse than a
-// header without one. The Unread chip is gone because `readAt` is unmodelled,
-// and a chip with an unbackable count is a lie with a number on it.
+// Overview, Projects, Looms, Workspace. Three are still out of scope, and a
+// glyph that navigates nowhere is worse than a header without one. The Unread
+// chip is gone because `readAt` is unmodelled, and a chip with an unbackable
+// count is a lie with a number on it.
+//
+// THE FOURTH ARRIVED. The donor's Workspace is this app's Spool, and it is a
+// real destination now — in the FOOTER beside Settings rather than as a header
+// glyph, because it is a place rather than a filter over the list. See
+// `SpoolButton` for why it carries no count.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -38,6 +43,7 @@ import {
   MoreHorizontalIcon,
   SearchIcon,
   SettingsIcon,
+  SpoolIcon,
   XIcon,
 } from "lucide-react";
 import type { Project } from "@telar/engine-client";
@@ -307,7 +313,16 @@ function SidebarBody() {
         pages.flatMap((page) =>
           page.status === "fulfilled"
             ? page.value.sessions.map((session) =>
-                toSidebarSession(session, names.get(session.projectId), branches.get(session.projectId)),
+                // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
+                // project-scoped list and the Spool's master chat is a
+                // destination, not a conversation in it — the engine's reads
+                // already exclude it, and this keeps that true if one ever
+                // arrives by another path.
+                toSidebarSession(
+                  session,
+                  session.projectId ? names.get(session.projectId) : undefined,
+                  session.projectId ? branches.get(session.projectId) : undefined,
+                ),
               )
             : [],
         ),
@@ -702,10 +717,41 @@ function SidebarBody() {
 
       <SidebarFooter>
         <div className="p-1">
+          <SpoolButton onNavigate={onNavigate} />
           <SettingsButton onNavigate={onNavigate} />
         </div>
       </SidebarFooter>
     </>
+  );
+}
+
+/**
+ * The Spool — the item store, and the app's second destination.
+ *
+ * IN THE FOOTER BESIDE SETTINGS, not in the list above it, because the list IS
+ * the session inbox: every row there is a conversation, and a destination among
+ * them would read as one. The Spool is a place, like Settings.
+ *
+ * NO COUNT ON IT, deliberately. A badge is a push, and this module's first law
+ * is that it never notifies, badges or interrupts — it answers when arrived at.
+ * A number here would be the one piece of chrome in the app that violated the
+ * surface it points to.
+ */
+function SpoolButton({ onNavigate }: { onNavigate: () => void }) {
+  const pathname = usePathname();
+  const active = pathname.startsWith("/spool");
+  return (
+    <Link
+      href="/spool"
+      title="Spool"
+      onClick={onNavigate}
+      className={`flex items-center gap-2 rounded-md text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
+        active ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ""
+      } w-full p-2`}
+    >
+      <SpoolIcon className="size-4 shrink-0" />
+      <span>Spool</span>
+    </Link>
   );
 }
 

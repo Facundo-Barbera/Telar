@@ -374,6 +374,177 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * THE SPOOL — the item store behind SPEC-organization-workspace.
+       *
+       * NOT UNDER A PROJECT, and that is the module's premise rather than a
+       * routing convenience: an item's project is an OPTIONAL field on it, and
+       * absent means floating, which is a valid resting state. A
+       * `/v2/projects/:id/spool` shape would make the one thing the store is for
+       * — holding work that has not been placed yet — unaddressable. A
+       * project-scoped view is a filter over `rows`, not a different endpoint.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/spool") {
+        writeJson(response, 200, store.spoolSnapshot());
+        return;
+      }
+      /**
+       * The Spool's master chat, ensured.
+       *
+       * A GET THAT MAY CREATE, which is unusual enough to justify: the master is
+       * a SINGLETON front door, so "get me the master" and "make one if there
+       * has never been one" are the same request from the caller's side, and
+       * splitting them would make every client do the two-step. It is
+       * idempotent — a second call returns the first one's session — which is
+       * the property that actually matters here.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/spool/master") {
+        writeJson(response, 200, { session: store.ensureMasterSession() });
+        return;
+      }
+      if (url.pathname === "/v2/spool/lanes" && (request.method === "GET" || request.method === "POST")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { lanes: store.spoolLanes() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 201, {
+          lane: store.createSpoolLane({
+            label: String(input.label ?? ""),
+            window: String(input.window ?? ""),
+            ...(typeof input.note === "string" ? { note: input.note } : {}),
+          }),
+        });
+        return;
+      }
+      /**
+       * Split rows out of a lane into a new one. A COMPOSITION of the lane verbs
+       * beside it, never a fifth primitive — and human-only, like all of them.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/spool/lanes/split") {
+        const input = await body(request);
+        writeJson(
+          response,
+          200,
+          store.splitSpoolLane(
+            String(input.sourceKey ?? ""),
+            {
+              label: String(input.label ?? ""),
+              window: String(input.window ?? ""),
+              ...(typeof input.note === "string" ? { note: input.note } : {}),
+            },
+            (input.items ?? []) as string[],
+          ),
+        );
+        return;
+      }
+      const spoolLaneReorder = /^\/v2\/spool\/lanes\/([^/]+)\/reorder$/.exec(url.pathname);
+      if (request.method === "POST" && spoolLaneReorder) {
+        const input = await body(request);
+        writeJson(response, 200, {
+          lane: store.reorderSpoolLane(decodeURIComponent(spoolLaneReorder[1]), (input.items ?? []) as string[]),
+        });
+        return;
+      }
+      const spoolLane = /^\/v2\/spool\/lanes\/([^/]+)$/.exec(url.pathname);
+      if (spoolLane && (request.method === "PATCH" || request.method === "DELETE")) {
+        const key = decodeURIComponent(spoolLane[1]);
+        if (request.method === "PATCH") {
+          const input = await body(request);
+          writeJson(response, 200, { lane: store.renameSpoolLane(key, String(input.label ?? "")) });
+          return;
+        }
+        /**
+         * A REFUSAL IS 200 WITH `ok: false`, not a 4xx, and the distinction is
+         * not pedantry. Every refusal the store produces is a sentence naming
+         * what the human must move first — it is the ANSWER to "can I retire
+         * this?", not a malformed request. A 400 would let a client render it as
+         * an error toast and drop the sentence that made it actionable.
+         */
+        writeJson(response, 200, store.retireSpoolLane(key));
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/spool/items") {
+        const input = await body(request);
+        writeJson(response, 201, {
+          item: store.createSpoolItem({
+            title: String(input.title ?? ""),
+            ...(typeof input.project === "string" ? { project: input.project } : {}),
+            ...(typeof input.lane === "string" ? { lane: input.lane } : {}),
+            ...(typeof input.raw === "string" ? { raw: input.raw } : {}),
+            ...(typeof input.rawSource === "string" ? { rawSource: input.rawSource } : {}),
+            ...(typeof input.creationNote === "string" ? { creationNote: input.creationNote } : {}),
+          }),
+        });
+        return;
+      }
+      const spoolExpert = /^\/v2\/spool\/items\/([^/]+)\/expert$/.exec(url.pathname);
+      if (request.method === "POST" && spoolExpert) {
+        /**
+         * THE LONGEST-RUNNING ROUTE ON THIS DAEMON, and knowingly so: it awaits a
+         * model turn, which is seconds to minutes rather than the milliseconds
+         * every other handler here costs.
+         *
+         * SYNCHRONOUS ANYWAY, for now. The alternative is a job record with a
+         * poll or a stream, and that is the right shape once the OVERNIGHT
+         * runner exists and nobody is watching — at which point the job store is
+         * the thing that reports what ran while you slept, and building a second
+         * one here first would mean throwing it away. A human who clicked
+         * "consult" is, by definition, watching.
+         *
+         * A REFUSAL IS A 200 WITH ITS SENTENCE. Same reasoning as the lane
+         * retire above: "the expert cannot read this because the item is
+         * floating" is the ANSWER, not a malformed request.
+         */
+        writeJson(response, 200, await store.consultSpoolExpert(decodeURIComponent(spoolExpert[1])));
+        return;
+      }
+      const spoolPromote = /^\/v2\/spool\/items\/([^/]+)\/subtasks\/([^/]+)\/promote$/.exec(url.pathname);
+      if (request.method === "POST" && spoolPromote) {
+        writeJson(
+          response,
+          200,
+          store.promoteSpoolSubtask(decodeURIComponent(spoolPromote[1]), decodeURIComponent(spoolPromote[2])),
+        );
+        return;
+      }
+      const spoolSubtask = /^\/v2\/spool\/items\/([^/]+)\/subtasks\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "PATCH" && spoolSubtask) {
+        const input = await body(request);
+        writeJson(response, 200, {
+          item: store.setSpoolSubtaskDone(
+            decodeURIComponent(spoolSubtask[1]),
+            decodeURIComponent(spoolSubtask[2]),
+            input.done === true,
+          ),
+        });
+        return;
+      }
+      const spoolSubtasks = /^\/v2\/spool\/items\/([^/]+)\/subtasks$/.exec(url.pathname);
+      if (request.method === "POST" && spoolSubtasks) {
+        const input = await body(request);
+        writeJson(response, 201, {
+          item: store.addSpoolSubtask(decodeURIComponent(spoolSubtasks[1]), String(input.title ?? "")),
+        });
+        return;
+      }
+      const spoolItem = /^\/v2\/spool\/items\/([^/]+)$/.exec(url.pathname);
+      if (spoolItem && (request.method === "GET" || request.method === "PATCH")) {
+        const id = decodeURIComponent(spoolItem[1]);
+        if (request.method === "GET") {
+          writeJson(response, 200, store.spoolItem(id));
+          return;
+        }
+        /**
+         * FORWARDED WHOLE, deliberately. The store refuses a forbidden key by
+         * NAME and throws a sentence saying which one and why — filtering the
+         * body here would turn "you cannot rewrite the user's own words" into a
+         * silent no-op, which is the exact failure that refusal exists to
+         * prevent. The engine's error translation carries the sentence out.
+         */
+        writeJson(response, 200, { item: store.updateSpoolItem(id, await body(request)) });
+        return;
+      }
+      /**
        * A project's git state, for the composer's pinned environment.
        *
        * Under /v2/projects/:id/ rather than /v2/sessions/:id/ because it

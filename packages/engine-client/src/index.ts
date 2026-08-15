@@ -24,6 +24,12 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type SpoolDeadline,
+  type SpoolExpertOutcome,
+  type SpoolItem,
+  type SpoolItemDetail,
+  type SpoolLane,
+  type SpoolSnapshot,
   type ModelCatalogue,
   type SessionDiff,
   type McpOAuthStatus,
@@ -181,6 +187,131 @@ export class EngineClient {
 
   setInboxPolicy(patch: { autoSettleAfterDays?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  // ── Spool ─────────────────────────────────────────────────────────────────
+  //
+  // NOT PROJECT-SCOPED, and that is the module's premise rather than a routing
+  // convenience: an item's project is optional, and absent means floating — a
+  // valid resting state. A project-scoped view is a filter over `rows`.
+
+  /** Everything the queue renders, in one read — lanes, rows, desk, the
+   *  diagnostic channel, and the two live numbers the footer states. */
+  spool(): Promise<SpoolSnapshot> {
+    return this.request("GET", "/v2/spool");
+  }
+
+  /** One item, with the lane and rank the STACKS give it — never the packet's
+   *  own recovery hint. Both absent means unfiled, which is a resting state. */
+  spoolItem(id: string): Promise<SpoolItemDetail> {
+    return this.request("GET", `/v2/spool/items/${encodeURIComponent(id)}`);
+  }
+
+  createSpoolItem(input: {
+    title: string;
+    project?: string;
+    lane?: string;
+    raw?: string;
+    rawSource?: string;
+    creationNote?: string;
+  }): Promise<{ item: SpoolItem }> {
+    return this.request("POST", "/v2/spool/items", input);
+  }
+
+  /**
+   * Patch an item. The permitted keys are the engine's to police, not this
+   * client's: naming a forbidden one — `raw`, `promotedFrom`, `tracking` — is
+   * refused there with a sentence saying which and why, and a client-side filter
+   * would turn that refusal into a silent no-op.
+   */
+  updateSpoolItem(
+    id: string,
+    patch: {
+      title?: string;
+      lane?: string;
+      project?: string;
+      desk?: boolean;
+      unplaced?: boolean;
+      mirrored?: string;
+      deadline?: SpoolDeadline;
+    },
+  ): Promise<{ item: SpoolItem }> {
+    return this.request("PATCH", `/v2/spool/items/${encodeURIComponent(id)}`, patch);
+  }
+
+  addSpoolSubtask(id: string, title: string): Promise<{ item: SpoolItem }> {
+    return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/subtasks`, { title });
+  }
+
+  setSpoolSubtaskDone(id: string, subtaskId: string, done: boolean): Promise<{ item: SpoolItem }> {
+    return this.request(
+      "PATCH",
+      `/v2/spool/items/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}`,
+      { done },
+    );
+  }
+
+  /** THE ONLY PROMOTION PATH. No tool surface reaches it — a human click does. */
+  promoteSpoolSubtask(id: string, subtaskId: string): Promise<{ parent: SpoolItem; promoted: SpoolItem }> {
+    return this.request(
+      "POST",
+      `/v2/spool/items/${encodeURIComponent(id)}/subtasks/${encodeURIComponent(subtaskId)}/promote`,
+    );
+  }
+
+  /**
+   * Ask the item's own project expert to read it — the interpreter.
+   *
+   * SLOW BY NATURE: this awaits a model turn, so it is seconds to minutes where
+   * every other method here is milliseconds. A caller needs a busy state, and
+   * one that races two consultations on one item will append two passes' worth
+   * of timeline events, because a pass is deliberately not idempotent — the
+   * packet is the audit trail.
+   *
+   * NEVER REJECTS FOR A REFUSAL. A floating item or an unreachable expert comes
+   * back as `{ok: false, reason}` with the sentence intact; only transport and
+   * genuine engine faults throw.
+   */
+  consultSpoolExpert(id: string): Promise<SpoolExpertOutcome> {
+    return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/expert`);
+  }
+
+  /** The Spool's project-less master chat, ensured. A SINGLETON: calling this
+   *  twice returns the same session, so it is safe on every page load. */
+  spoolMaster(): Promise<{ session: Session }> {
+    return this.request("GET", "/v2/spool/master");
+  }
+
+  spoolLanes(): Promise<{ lanes: SpoolLane[] }> {
+    return this.request("GET", "/v2/spool/lanes");
+  }
+
+  createSpoolLane(input: { label: string; window: string; note?: string }): Promise<{ lane: SpoolLane }> {
+    return this.request("POST", "/v2/spool/lanes", input);
+  }
+
+  renameSpoolLane(key: string, label: string): Promise<{ lane: SpoolLane }> {
+    return this.request("PATCH", `/v2/spool/lanes/${encodeURIComponent(key)}`, { label });
+  }
+
+  /** A REFUSAL IS A RESULT, not a thrown error: the reason names what the human
+   *  must move first, and it is the answer to the question rather than a fault. */
+  retireSpoolLane(key: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    return this.request("DELETE", `/v2/spool/lanes/${encodeURIComponent(key)}`);
+  }
+
+  reorderSpoolLane(key: string, items: string[]): Promise<{ lane: SpoolLane }> {
+    return this.request("POST", `/v2/spool/lanes/${encodeURIComponent(key)}/reorder`, { items });
+  }
+
+  /** Split rows out of a lane into a new one — `createLane` plus two reorders,
+   *  never a fifth lane primitive, and reachable only from a human's click. */
+  splitSpoolLane(
+    sourceKey: string,
+    input: { label: string; window: string; note?: string },
+    items: string[],
+  ): Promise<{ source: SpoolLane; created: SpoolLane }> {
+    return this.request("POST", "/v2/spool/lanes/split", { sourceKey, ...input, items });
   }
 
   /** A project's git state — branch, dirty count, divergence, worktrees.

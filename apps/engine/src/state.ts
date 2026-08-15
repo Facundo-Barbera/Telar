@@ -68,6 +68,10 @@ import {
   type Turn,
   type TurnFailureCode,
   type TurnObservation,
+  type SpoolItem,
+  type SpoolItemDetail,
+  type SpoolLane,
+  type SpoolSnapshot,
   type UsageSnapshot,
   type EnvMode,
   type ModelSelection as ModelSelectionValue,
@@ -77,7 +81,35 @@ import {
   type WorkspaceListing,
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
+import { atomicWrite } from "./atomic";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
+import {
+  addSubtask as addSpoolSubtask,
+  agentsAddedCount as spoolAgentsAdded,
+  attachmentTally as spoolAttachmentTally,
+  createItem as createSpoolItem,
+  ensureSpool as ensureSpoolStore,
+  createLane as createSpoolLane,
+  deskSlice as spoolDeskSlice,
+  getSpoolItem,
+  listItems as listSpoolItems,
+  promoteSubtask as promoteSpoolSubtask,
+  queueSlice as spoolQueueSlice,
+  rankOf as spoolRankOf,
+  readLanes as readSpoolLanes,
+  readPacketAttachments as readSpoolAttachments,
+  renameLane as renameSpoolLane,
+  reorderLane as reorderSpoolLane,
+  retireLane as retireSpoolLane,
+  setSubtaskDone as setSpoolSubtaskDone,
+  spoolPaths,
+  subjectSlice as spoolSubjectSlice,
+  updateItem as updateSpoolItem,
+  type NewSpoolItem,
+  type SpoolItemPatch,
+  type SpoolPaths,
+} from "./spool/store";
+import { floatingExpertRefusal, runExpertPass, type ExpertPassOutcome } from "./spool/expert";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
 import { ensureTelarGitignore } from "./gitignore";
@@ -453,22 +485,10 @@ function assertAbsolutePath(value: unknown, label: string): asserts value is str
   }
 }
 
-/** Document writes use a unique temp file + rename; journals are the explicit O_APPEND exception. */
-function atomicWrite(file: string, value: unknown, mode = 0o600): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode });
-    fs.renameSync(temporary, file);
-    fs.chmodSync(file, mode);
-  } finally {
-    try {
-      fs.unlinkSync(temporary);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-}
+// `atomicWrite` MOVED TO `./atomic` and is imported at the top of this file.
+// It is unchanged; it left because `spool/store.ts` needs the same writer and
+// this module imports the spool store, so a spool module reaching back here for
+// it would be a cycle. See that file's header.
 
 /**
  * DOCUMENT VERSIONS TRACK THE PROTOCOL, and v2 is a HARD BREAK: a v1 document
@@ -522,7 +542,20 @@ function parseSession(value: unknown): Session {
   const session = SessionSchema.safeParse(value);
   if (!session.success) throw new EngineStateError("invalid_request", "invalid session metadata");
   assertId(session.data.id, "session id");
-  assertId(session.data.projectId, "project id");
+  /**
+   * ONLY WHEN PRESENT. A project-less session — the Spool's master chat — has no
+   * project id to validate, and asserting one unconditionally made it
+   * unreadable the moment it was written: the mint succeeded and every
+   * subsequent read of it 400'd. That is the failure mode `Session.projectId`'s
+   * own comment warns about, "a reader that treats absence as an error turns the
+   * front door into a bug report", reached here first because this is the first
+   * reader every other one goes through.
+   *
+   * The check still binds when there IS an id, which is what it was for: a
+   * hand-edited or corrupted metadata file must not smuggle a path fragment
+   * through as a project.
+   */
+  if (session.data.projectId !== undefined) assertId(session.data.projectId, "project id");
   return session.data;
 }
 
@@ -941,6 +974,314 @@ export class EngineStore {
     }
     atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });
     return { ...next };
+  }
+
+  // ── Spool ─────────────────────────────────────────────────────────────────
+  //
+  // THIN DELEGATION, AND DELIBERATELY SO. `spool/store.ts` owns the subtree and
+  // every rule about it — the reconcile rule, the tolerant read, the version
+  // ladder, what may and may not be patched. Nothing here re-decides any of
+  // that; this block exists to do the two things a store module should not:
+  // compose the projections a surface asks for in one call, and translate the
+  // store's failure vocabulary into the engine's.
+  //
+  // THE TRANSLATION IS THE POINT. The store's contract is "a read is tolerant, a
+  // write is loud": readers return `null` or `[]` for anything they cannot make
+  // sense of, and writers THROW with a sentence a human can act on. The daemon
+  // needs status codes. So `null` becomes a typed `not_found` and a thrown
+  // sentence becomes `invalid_request` WITH ITS TEXT PRESERVED — the store's
+  // messages name the file, the rule and the next step, and replacing them with
+  // a generic "bad request" would throw away the only useful part.
+
+  /** Resolved once from the state root; the store composes nothing itself. */
+  get spool(): SpoolPaths {
+    return spoolPaths(this.paths.root);
+  }
+
+  /**
+   * Turn a store write's throw into a typed engine error, keeping its sentence.
+   *
+   * NOT A CATCH-ALL. Only the store's own `Error`s are translated; anything else
+   * — an EACCES, a bug — rethrows untouched, because reporting a disk failure as
+   * `invalid_request` would tell the user their input was wrong when it was not.
+   */
+  private spoolWrite<T>(run: () => T): T {
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof EngineStateError) throw error;
+      if (error instanceof Error && !(error as NodeJS.ErrnoException).code) {
+        throw new EngineStateError("invalid_request", error.message);
+      }
+      throw error;
+    }
+  }
+
+  private spoolFound<T>(value: T | null, what: string): T {
+    if (value === null) throw new EngineStateError("not_found", what);
+    return value;
+  }
+
+  /** Everything the queue surface renders, in one read. */
+  spoolSnapshot(): SpoolSnapshot {
+    const lanes = readSpoolLanes(this.spool);
+    const { items, unreadable } = listSpoolItems(this.spool);
+    return {
+      lanes,
+      rows: spoolQueueSlice(lanes, items),
+      // BOTH AXES OFF ONE READ of `lanes` and `items`. Two reads could catch a
+      // write between them and ship a queue and a subject list that disagree
+      // about what is in the store — and the surfaces would have no way to tell.
+      subjects: spoolSubjectSlice(lanes, items),
+      desk: spoolDeskSlice(items),
+      unreadable,
+      totalItems: items.length,
+      agentsAdded: spoolAgentsAdded(items),
+    };
+  }
+
+  spoolItem(id: string): SpoolItemDetail {
+    const item = this.spoolFound(getSpoolItem(this.spool, id), "spool item not found");
+    const lanes = readSpoolLanes(this.spool);
+    // The AUTHORITATIVE lane — the stack that actually holds the id — with the
+    // packet's own hint as the fallback the reconcile rule's orphan arm uses.
+    const stacked = lanes.find((l) => l.items.includes(id));
+    const rank = spoolRankOf(lanes, id);
+    const lane = stacked?.key ?? (item.lane && lanes.some((l) => l.key === item.lane) ? item.lane : undefined);
+    const attachments = readSpoolAttachments(this.spool, id);
+    return {
+      item,
+      ...(lane ? { lane } : {}),
+      ...(rank !== null ? { rank } : {}),
+      attachments,
+      tally: spoolAttachmentTally(attachments),
+    };
+  }
+
+  createSpoolItem(input: NewSpoolItem): SpoolItem {
+    if (typeof input?.title !== "string" || input.title.trim() === "") {
+      throw new EngineStateError("invalid_request", "a spool item needs a title");
+    }
+    return this.spoolWrite(() => createSpoolItem(this.spool, input));
+  }
+
+  updateSpoolItem(id: string, patch: SpoolItemPatch): SpoolItem {
+    return this.spoolFound(
+      this.spoolWrite(() => updateSpoolItem(this.spool, id, patch)),
+      "spool item not found",
+    );
+  }
+
+  addSpoolSubtask(id: string, title: string): SpoolItem {
+    if (typeof title !== "string" || title.trim() === "") {
+      throw new EngineStateError("invalid_request", "a sub-task needs a title");
+    }
+    return this.spoolFound(
+      this.spoolWrite(() => addSpoolSubtask(this.spool, id, title)),
+      "spool item not found",
+    );
+  }
+
+  setSpoolSubtaskDone(id: string, subtaskId: string, done: boolean): SpoolItem {
+    return this.spoolFound(
+      this.spoolWrite(() => setSpoolSubtaskDone(this.spool, id, subtaskId, done)),
+      "spool item or sub-task not found",
+    );
+  }
+
+  /** THE ONLY PROMOTION PATH, and it is reachable only from here — no tool
+   *  surface names it. See the store's own note. */
+  promoteSpoolSubtask(id: string, subtaskId: string): { parent: SpoolItem; promoted: SpoolItem } {
+    return this.spoolFound(
+      this.spoolWrite(() => promoteSpoolSubtask(this.spool, id, subtaskId)),
+      "spool item or sub-task not found",
+    );
+  }
+
+  /**
+   * RUN THE ITEM'S PROJECT EXPERT OVER IT — the interpreter, reachable at last.
+   *
+   * THE ONLY ASYNC METHOD IN THE SPOOL BLOCK, because it is the only one that
+   * spends money. Everything else here is a disk read or an atomic write; this
+   * one awaits a model. A caller that treats it like its neighbours will hold an
+   * HTTP request open for the length of a turn — see the route's own note.
+   *
+   * IT RETURNS AN OUTCOME AND DOES NOT THROW for anything the user can act on.
+   * A floating item, a name the store cannot address, a project this machine has
+   * not registered, a model that never answered — each is an ANSWER to "can the
+   * expert read this?", and each already carries a sentence naming the next
+   * move. Turning those into `invalid_request` would be the second time this
+   * module threw away a good sentence for a status code.
+   */
+  async consultSpoolExpert(
+    id: string,
+    options: { abort?: AbortController } = {},
+  ): Promise<ExpertPassOutcome> {
+    const item = this.spoolFound(getSpoolItem(this.spool, id), "spool item not found");
+    if (!item.project) return { ok: false, reason: floatingExpertRefusal(item.title) };
+
+    /**
+     * A FREE-FORM LABEL RESOLVED AGAINST THE REGISTRY, name first and then id —
+     * the same two-step, in the same order, that the packet page's "Start a
+     * session" uses, because a human typing a project into a packet types its
+     * NAME and a caller that already knew the id passes the id.
+     *
+     * NO MATCH IS NOT A FAILURE. CAP-9's claim is that the DIGEST is enough, so
+     * an unregistered or mirrored project simply means the expert reasons from
+     * the digest and the packet with no tree to read. The outcome reports which
+     * it was, so a surface can say so rather than implying the expert looked at
+     * files it never had.
+     */
+    const projects = this.listProjects();
+    const registered =
+      projects.find((candidate) => candidate.name === item.project) ??
+      projects.find((candidate) => candidate.id === item.project);
+
+    return runExpertPass(this.spool, {
+      itemId: id,
+      project: item.project,
+      ...(registered ? { cwd: registered.root } : {}),
+      ...(options.abort ? { abort: options.abort } : {}),
+    });
+  }
+
+  /**
+   * THE MASTER CHAT — the Spool's project-less front door, as a session.
+   *
+   * A SINGLETON, and that is the contract rather than an optimisation: CAP-1
+   * says "ONE project-less conversation — the module's front door", and the
+   * whole calm mechanism depends on there being one place to arrive at. A `new
+   * master chat` button would turn the front door into a list of front doors.
+   * So this is `ensure`, not `create`: it returns the existing one or mints it,
+   * and it is safe to call on every page load.
+   *
+   * ITS SHAPE, and why each field is what it is:
+   *
+   *   · NO PROJECT. Not a synthetic one, not a placeholder — the field is
+   *     absent, because the master answers across projects and its per-project
+   *     experts are each scoped to their own. A master carrying a project would
+   *     be scoped to the one thing it must not be scoped to. Downstream this is
+   *     what makes the spool toolkit report "all projects" and MCP resolution
+   *     hand it the environment's global servers only.
+   *   · cwd = `spool/home`, A DEDICATED EMPTY DIRECTORY. Both harnesses key
+   *     history and trust PER DIRECTORY, so one stable home accrues a single
+   *     continuous bucket where scratch directories fragment it. It holds no
+   *     store files — `lanes.json` and `packets/` are its SIBLINGS — and the
+   *     store's own header is emphatic that this layout defeats a relative-path
+   *     accident and nothing more. The real boundary is still owed.
+   *   · `local`, never a worktree. There is no repository to cut one from.
+   *   · NEVER the user's home directory. Trust does not persist there, and a
+   *     harness rooted there treats the whole machine as the working set.
+   *
+   * `ensureSpool` runs first so the cwd exists before a session names it: a
+   * session whose working directory does not exist is unusable, and failing
+   * here leaves nothing behind to repair.
+   */
+  ensureMasterSession(): Session {
+    ensureSpoolStore(this.spool);
+    const existing = this.readSessions().find((session) => session.projectId === undefined);
+    if (existing) return structuredClone(existing);
+
+    const id = `session_${crypto.randomUUID().replaceAll("-", "")}`;
+    const at = this.now();
+    const session: Session = SessionSchema.parse({
+      id,
+      environmentId: "local",
+      title: "Spool",
+      state: "active",
+      createdAt: at,
+      updatedAt: at,
+      providerInstanceId: defaultInstanceIdForDriver("claude"),
+      driver: "claude",
+      workspace: { mode: "local", path: this.spool.home },
+      envMode: "local",
+      runtimeMode: DEFAULT_ATTENDED_RUNTIME_MODE,
+      interactionMode: "default",
+      // ATTENDED, unlike an ordinary session's default. The master is a front
+      // door a person arrives at; it has no business running unattended, and
+      // the module's first law is that it answers when arrived at rather than
+      // acting on its own.
+      detached: false,
+      activity: "idle",
+    });
+    atomicWrite(sessionMetadataFile(this.paths, id), session);
+    this.appendEvent(id, { type: "session.created", session });
+    return structuredClone(session);
+  }
+
+  spoolLanes(): SpoolLane[] {
+    return readSpoolLanes(this.spool);
+  }
+
+  createSpoolLane(input: { label: string; window: string; note?: string }): SpoolLane {
+    if (typeof input?.label !== "string" || input.label.trim() === "") {
+      throw new EngineStateError("invalid_request", "a lane needs a label");
+    }
+    if (typeof input?.window !== "string") {
+      throw new EngineStateError("invalid_request", "a lane needs a window, even a coarse one");
+    }
+    return this.spoolWrite(() => createSpoolLane(this.spool, input));
+  }
+
+  renameSpoolLane(key: string, label: string): SpoolLane {
+    if (typeof label !== "string" || label.trim() === "") {
+      throw new EngineStateError("invalid_request", "a lane needs a label");
+    }
+    return this.spoolFound(
+      this.spoolWrite(() => renameSpoolLane(this.spool, key, label)),
+      "lane not found",
+    );
+  }
+
+  /**
+   * Retire a lane. REFUSAL IS A RESULT, NOT AN ERROR, and that shape is carried
+   * out to the caller rather than flattened into a throw: every refusal reason
+   * the store produces is a sentence telling the human what to move first, and a
+   * 400 with a generic body would lose it.
+   */
+  retireSpoolLane(key: string): { ok: true } | { ok: false; reason: string } {
+    return this.spoolWrite(() => retireSpoolLane(this.spool, key));
+  }
+
+  /**
+   * Split rows out of a lane into a new one.
+   *
+   * NOT A FIFTH LANE PRIMITIVE — it is `createLane` followed by two
+   * `reorderLane` calls, and saying so matters: the store's four lane verbs are
+   * the only things that change lane structure, and a split that reached past
+   * them would be a second definition of what a lane is.
+   *
+   * THE HUMAN-APPROVAL GATE IS STRUCTURAL HERE, not a card. The master may
+   * PROPOSE a split; this is only reachable from a human's own click, because no
+   * tool surface names it. That is the whole of the gate.
+   *
+   * THE SOURCE IS READ BEFORE ANYTHING MOVES, so "what stays behind" is computed
+   * against the stack as it was rather than against a stack the first reorder
+   * has already emptied.
+   */
+  splitSpoolLane(
+    sourceKey: string,
+    input: { label: string; window: string; note?: string },
+    moveItemIds: string[],
+  ): { source: SpoolLane; created: SpoolLane } {
+    return this.spoolWrite(() => {
+      const before = readSpoolLanes(this.spool).find((l) => l.key === sourceKey);
+      if (!before) throw new EngineStateError("not_found", `No lane named "${sourceKey}" exists.`);
+      const created = reorderSpoolLane(this.spool, createSpoolLane(this.spool, input).key, moveItemIds);
+      const source = reorderSpoolLane(
+        this.spool,
+        sourceKey,
+        before.items.filter((id) => !moveItemIds.includes(id)),
+      );
+      return { source, created };
+    });
+  }
+
+  reorderSpoolLane(key: string, orderedItemIds: string[]): SpoolLane {
+    if (!Array.isArray(orderedItemIds) || orderedItemIds.some((id) => typeof id !== "string")) {
+      throw new EngineStateError("invalid_request", "a reorder is a list of item ids");
+    }
+    return this.spoolWrite(() => reorderSpoolLane(this.spool, key, orderedItemIds));
   }
 
   // ── MCP OAuth ─────────────────────────────────────────────────────────────
@@ -2176,8 +2517,19 @@ export class EngineStore {
     return { ...base, activity: "idle" };
   }
 
-  listSessions(projectId: string): Session[] {
-    this.getProject(projectId);
+  /**
+   * Every readable session on this engine, newest first.
+   *
+   * EXTRACTED SO TWO CALLERS SHARE ONE SCAN rather than one of them growing a
+   * second copy of it. `listSessions` wants a project's; `ensureMasterSession`
+   * wants the one that has NO project, which the project-scoped reader cannot
+   * express — it validates a project id before it looks at anything.
+   *
+   * AN UNREADABLE SESSION IS SKIPPED, NOT THROWN. One corrupt directory must not
+   * blank a sidebar; that is the same tolerance the spool store's reader takes
+   * for the same reason.
+   */
+  private readSessions(): Session[] {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
@@ -2189,14 +2541,18 @@ export class EngineStore {
       .filter((entry) => entry.isDirectory() && ID.test(entry.name))
       .flatMap((entry) => {
         try {
-          const session = this.getSession(entry.name);
-          return session.projectId === projectId ? [session] : [];
+          return [this.getSession(entry.name)];
         } catch (error) {
           if (error instanceof EngineStateError && error.code === "not_found") return [];
           throw error;
         }
       })
       .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+  }
+
+  listSessions(projectId: string): Session[] {
+    this.getProject(projectId);
+    return this.readSessions().filter((session) => session.projectId === projectId);
   }
 
   turns(sessionId: string): Turn[] {
@@ -2404,6 +2760,22 @@ export class EngineStore {
         // Filtered to the enabled ones in the engine, so "disabled" is decided
         // in exactly one place rather than trusted to every worker.
         ...(mcpServers.length > 0 ? { mcpServers } : {}),
+        /**
+         * The project's NAME, for the spool toolkit's scoping — a spool item's
+         * `project` is a free-form LABEL, so a session's slice is found by
+         * comparing names rather than ids.
+         *
+         * READ OFF THE REGISTRY HERE because the worker holds no store handle,
+         * which is the same reason `projectRoot` and `model` are resolved on
+         * this claim. A project that has since been deregistered leaves this
+         * absent, and the toolkit then reports its scope as "all projects" — the
+         * honest answer for a session whose project no longer exists, and
+         * visibly different from an empty slice.
+         */
+        ...(() => {
+          const name = this.listProjects().find((p) => p.id === session.projectId)?.name;
+          return name ? { project: name } : {};
+        })(),
         ...(resumeCursor ? { resumeCursor } : {}),
         turn,
       };
@@ -2583,7 +2955,13 @@ export class EngineStore {
     // measured in hundreds of megabytes on a machine running detached work.
     void this.browser?.release(sessionId, "session archived");
 
-    if (session.workspace.mode === "worktree") {
+    // A WORKTREE IMPLIES A PROJECT, and checking both is how that stays true
+    // rather than assumed: a project-less session (the Spool's master) is always
+    // `local`, because a worktree is cut from a project's repository and it has
+    // none. Reading the pair together means a future project-less session that
+    // somehow carried a worktree degrades to "leave the directory" instead of
+    // throwing on a lookup that cannot succeed.
+    if (session.workspace.mode === "worktree" && session.projectId) {
       const project = this.getProject(session.projectId);
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
@@ -2634,7 +3012,8 @@ export class EngineStore {
 
     void this.browser?.release(sessionId, "session deleted");
 
-    if (session.workspace.mode === "worktree") {
+    // See `archiveSession` for why the project is checked beside the mode.
+    if (session.workspace.mode === "worktree" && session.projectId) {
       const project = this.getProject(session.projectId);
       removeSessionWorktree(this.git, project.root, session.workspace.path);
     }
