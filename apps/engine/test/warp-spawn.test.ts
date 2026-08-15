@@ -139,7 +139,7 @@ test("several messages queued during one turn arrive as one interruption", async
   expect(seen.turns[1]).toBe("check the tests\n\nand the fixtures");
 });
 
-test("a child may not fan out", async () => {
+test("a child may not create work that outlives the run", async () => {
   /**
    * THE CONSTRAINT THE WHOLE DESIGN RESTS ON. Without it a four-agent warp is
    * four agents that may each spawn four more, and the runner's concurrency gate
@@ -149,8 +149,14 @@ test("a child may not fan out", async () => {
   const { sdk, seen } = fakeSdk(() => success("done"));
   await createWarpSpawn({ sdk, cwd: "/repo" })(call());
   expect(seen.options.disallowedTools).toEqual([...WARP_CHILD_DISALLOWED_TOOLS]);
-  expect(WARP_CHILD_DISALLOWED_TOOLS).toContain("Agent");
-  expect(WARP_CHILD_DISALLOWED_TOOLS).toContain("Workflow");
+  // The four groups the rule covers, each named so a future edit that drops one
+  // has to say so out loud. Measured off a real child's `system/init`.
+  for (const tool of ["Agent", "Task", "Workflow"]) expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(tool);
+  for (const tool of ["CronCreate", "ScheduleWakeup"]) expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(tool);
+  for (const tool of ["SendMessage", "ListAgents", "PushNotification"]) expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(tool);
+  // A child cutting its own worktree would scatter a fan-out's writes — the very
+  // diff that removing `isolation` from the authoring surface was meant to stop.
+  for (const tool of ["EnterWorktree", "ExitWorktree"]) expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(tool);
 });
 
 test("the session is inherited and the call overrides it", async () => {

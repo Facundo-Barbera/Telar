@@ -94,13 +94,50 @@ export type WarpSpawnEnvironment = {
 /**
  * Tools a warp child may never call.
  *
- * `Agent` is the current name and `Task` the older one; both are listed because
- * a name that does not exist costs nothing and a fan-out that slips through
- * costs processes. `Workflow` is Claude Code's own harness — a warp child
- * running one would nest a fleet inside a fleet, and neither the gate nor the
- * roster would see it.
+ * ONE RULE, NOT A LIST OF GRIEVANCES: a child may not create work that outlives
+ * the run or escapes the script's structure. The script is the unit the human
+ * started, the roster shows, and `stop` ends; anything a child sets in motion
+ * outside those bounds is work nobody can see or cancel.
+ *
+ * MEASURED, NOT GUESSED. Read off a real child's `system/init` against Claude
+ * Code 2.1.233, which offered 27 tools — the four groups below are what that
+ * list actually contained, and the `EnterWorktree` entry is there because the
+ * evidence contradicted a decision made earlier in this same file's design:
+ * `isolation` was removed from the authoring surface on the grounds that Telar
+ * cannot yet manage a per-agent worktree, while the child could quietly cut one
+ * for itself and produce the very diff that removal was meant to prevent.
+ *
+ *   · FAN-OUT. `Agent` is the current name and `Task` the older one; both are
+ *     listed because a name that does not exist costs nothing and a fan-out that
+ *     slips through costs processes. `Workflow` is Claude Code's own harness —
+ *     a child running one nests a fleet inside a fleet, and neither the gate nor
+ *     the roster would see it.
+ *   · SCHEDULING. A cron entry or a wake-up outlives the run by design. The run
+ *     ends, the roster empties, and the work fires later with nothing left that
+ *     started it.
+ *   · REACHING OTHER SESSIONS. Messaging another agent is parallelism expressed
+ *     outside the script, which is the same rule as fan-out wearing a different
+ *     hat. A notification is the run's to send once, not each child's.
+ *   · MOVING THE CHECKOUT. Where a fan-out's writes land is the session's
+ *     decision. A child that switched worktrees mid-run would scatter them.
+ *
+ * THIS LIST IS VERSION-SHAPED. A future CLI can add a new way out; re-read a
+ * child's `system/init` when upgrading rather than trusting this comment.
  */
-export const WARP_CHILD_DISALLOWED_TOOLS = ["Agent", "Task", "Workflow"] as const;
+export const WARP_CHILD_DISALLOWED_TOOLS = [
+  "Agent",
+  "Task",
+  "Workflow",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "ScheduleWakeup",
+  "SendMessage",
+  "ListAgents",
+  "PushNotification",
+  "EnterWorktree",
+  "ExitWorktree",
+] as const;
 
 /**
  * A turn boundary the prompt generator can wait on.

@@ -429,7 +429,7 @@ Then write statements at the top level. Top-level await and top-level return bot
 
 Date.now(), new Date() and Math.random() THROW — a script that branched on the clock could not be replayed. require, import, process and fs are absent; the script orchestrates agents and does not touch the host itself. A script that cannot parse, is missing its meta, or reaches for a banned name is refused before anything is spent, with the line number.
 
-A Warp child may not itself fan out: the Agent, Task and Workflow tools are withheld from it, so the script is the only place parallelism is expressed. Children run in the same checkout as this session and inherit its permissions.`;
+A Warp child may not create work that outlives the run or escapes the script: fan-out (Agent, Task, Workflow), scheduling (cron, wake-ups), messaging other sessions, and switching worktrees are all withheld from it. So the script is the only place parallelism is expressed. Children run in the same checkout as this session and inherit its permissions.`;
 
 /**
  * `warp`, as an MCP tool.

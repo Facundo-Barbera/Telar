@@ -12,6 +12,7 @@
 import { expect, test } from "bun:test";
 import { TaskSeed, type TurnObservation } from "@telar/engine-client";
 import { createClaudeDriver } from "../src/driver";
+import { WARP_CHILD_DISALLOWED_TOOLS } from "../src/warp/spawn";
 
 type FakeTool = {
   name: string;
@@ -189,7 +190,7 @@ test("a child is launched with the session's own binary and may not fan out", as
 
   expect(fake.childOptions).toHaveLength(1);
   const child = fake.childOptions[0]!;
-  expect(child.disallowedTools).toEqual(["Agent", "Task", "Workflow"]);
+  expect(child.disallowedTools).toEqual([...WARP_CHILD_DISALLOWED_TOOLS]);
   expect(child.model).toBe("claude-sonnet-5");
   // The resolver injected by this suite answers for every path, so what is
   // asserted here is that the child asks it at all rather than defaulting to
