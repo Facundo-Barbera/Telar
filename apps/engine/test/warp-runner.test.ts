@@ -63,6 +63,9 @@ test("the run is a background task and its agents are parented to it", async () 
   const runRow = emitted.find((seed) => seed.id === run.runId)!;
   expect(runRow.kind).toBe("background");
   expect(runRow.title).toBe("demo");
+  // SELF-DESCRIBING: a run that only its children could identify degrades into
+  // an anonymous background job the moment those children age out.
+  expect(runRow.warp).toEqual({ warpRunId: run.runId, warpName: "demo" });
 
   const agentRows = emitted.filter((seed) => seed.kind === "agent");
   expect(new Set(agentRows.map((seed) => seed.parentTaskId))).toEqual(new Set([run.runId]));

@@ -263,10 +263,20 @@ export function createWarpRunner(deps: WarpRunnerDeps) {
       ...(failure ? { failure } : {}),
     });
 
-    /** The run's own row. `background` because it outlives the turn that started
-     *  it, which is the contract's own definition of the kind. */
+    /**
+     * The run's own row. `background` because it outlives the turn that started
+     * it, which is the contract's own definition of the kind.
+     *
+     * IT CARRIES ITS OWN LINKAGE, pointing at itself. Without it a run is
+     * indistinguishable from any other background task — a watch loop, a long
+     * shell — and a client could only recognise one by finding a CHILD that
+     * names it. That inference fails exactly when it matters: once the agent
+     * rows age out of retention the run degrades into an anonymous background
+     * job, which is the same failure the contract already forbids for agents and
+     * for the same reason.
+     */
     const emitRun = (state: TaskState, extra: Partial<TaskSeed> = {}): void => {
-      deps.emit({ id: runId, kind: "background", state, title: name, ...extra });
+      deps.emit({ id: runId, kind: "background", state, title: name, warp: { warpRunId: runId, warpName: name }, ...extra });
     };
 
     const phaseIndexOf = (title: string | undefined): number | undefined => {
