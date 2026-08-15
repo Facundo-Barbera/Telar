@@ -39,6 +39,9 @@ import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
+import { spoolTools, type SpoolCapability } from "./spool/tools";
+
+export type { SpoolCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -74,6 +77,20 @@ export type DriverRun = {
   prompt: string;
   cwd: string;
   signal: AbortSignal;
+  /**
+   * The session's door to the user's item store.
+   *
+   * PER-RUN, NOT PER-DRIVER, unlike `browser`. A browser is a machine resource
+   * the deployment owns and every session borrows; the spool arrives already
+   * SCOPED to the project this turn belongs to, and that scope is a fact about
+   * the turn. Capturing one at construction would give every session the first
+   * session's slice.
+   *
+   * ABSENT MEANS NO SPOOL TOOLS, which is what a test gets and what an older
+   * worker produces — not an empty spool. The difference matters: a model told
+   * "no items" would report that as the truth.
+   */
+  spool?: SpoolCapability;
   /**
    * Which model to run, resolved by the engine from the session.
    *
@@ -556,10 +573,38 @@ function warpTool(
  * run shell commands here" is one decision whether the tool is `Bash` or
  * `exec_command`. `requests.ts` says the same thing from the other side.
  */
+/**
+ * TELAR'S OWN READ-ONLY TOOLS, classified as reads rather than as generic tool
+ * calls.
+ *
+ * FOUND BY DRIVING THE MASTER CHAT. The Spool's front door opened, the assistant
+ * reached for `spool_list_items` to answer "where did I stop?", and the turn
+ * parked — asking the user to approve READING THEIR OWN TASK LIST. That is the
+ * exact friction the module exists to remove, on the one screen it exists to be.
+ *
+ * THE FIX IS A CLASSIFICATION, NOT A BYPASS, and the distinction matters. The
+ * engine already has a ladder: `approval-required` auto-accepts `file_read` and
+ * parks everything else. These tools ARE reads — they return the user's own
+ * stored items and change nothing — so naming them correctly lets the existing
+ * rule do its job. Nothing here can skip a mode's decision; it only stops
+ * mis-declaring a read as an action.
+ *
+ * THE LIST IS EXPLICIT, NEVER A PREFIX MATCH ON "list". `spool_create_item`,
+ * `spool_update_item` and `spool_consult_expert` all stay `tool_call` and keep
+ * parking: two of them write, and the third spends money. A rule shaped like
+ * "anything that sounds like a read" would silently adopt the next tool whose
+ * name starts well.
+ */
+const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes"]);
+
 export function requestKindForTool(name: string): RequestKind {
   if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";
   if (name === "Read" || name === "NotebookRead" || name === "Glob" || name === "Grep") return "file_read";
   if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "NotebookEdit") return "file_change";
+  const parsed = parseToolName(name);
+  // Only OUR server's tools qualify — a user-configured server that happened to
+  // name a tool `spool_list_items` must not inherit the engine's own posture.
+  if (parsed.server === TELAR_MCP_SERVER && TELAR_READ_TOOLS.has(parsed.tool)) return "file_read";
   return "tool_call";
 }
 
@@ -866,6 +911,7 @@ export function createClaudeDriver(
       providerSessionId,
       providerInstanceId,
       browserScopeKey,
+      spool,
     }) {
       let sdk: ClaudeSdk;
       try {
@@ -1166,6 +1212,20 @@ export function createClaudeDriver(
             )
           : []),
       ];
+
+      /**
+       * THE SPOOL, WHEN THE TURN CARRIES ONE — CAP-12's "tasks are a
+       * Telar-wide substrate", which is only true if an ordinary project
+       * session can reach them.
+       *
+       * NO APPROVAL GATE ON ANY OF THESE, and that is the same judgement the
+       * legacy server made about the same four verbs: none of them is a commit.
+       * Filing a task starts nothing, and the two things a human must decide —
+       * a verdict, and a sub-task's promotion — have no tool input that can
+       * spell them. The one gate that matters here is structural, not
+       * interactive.
+       */
+      if (spool && sdk.tool) telarTools.push(...spoolTools(sdk.tool, spool));
 
       const warp = warpTool(sdk, {
         /**

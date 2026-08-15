@@ -13,6 +13,15 @@ type WorkerClient = Pick<
   | "openRequest"
   | "completeTurn"
   | "failTurn"
+  // The spool's five verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
+  // back over the same loopback socket as everything else here, which is what
+  // makes the toolkit identical in the embedded worker and the out-of-process
+  // one. See `SpoolCapability`.
+  | "spool"
+  | "spoolItem"
+  | "createSpoolItem"
+  | "updateSpoolItem"
+  | "consultSpoolExpert"
 >;
 
 /**
@@ -164,6 +173,28 @@ export class EngineWorker {
         // Sessions are the browser's natural boundary: two sessions must not
         // share a tab, and a session's tabs must survive between its turns.
         browserScopeKey: sessionId,
+        /**
+         * THE SPOOL, SCOPED TO THIS TURN'S PROJECT.
+         *
+         * Assembled here, per run, because the scope IS the run's: `claim.project`
+         * is the project's own label, and it is what a spool item's `project`
+         * field is compared against. Absent leaves the capability unscoped, which
+         * is the project-less master's view — and the claim's own comment says
+         * why absence means that rather than "no items".
+         *
+         * EVERY VERB GOES BACK THROUGH THE CLIENT, so the toolkit exercises the
+         * same routes the queue does and there is exactly one implementation of
+         * every rule about an item.
+         */
+        spool: {
+          ...(claim.project ? { project: claim.project } : {}),
+          snapshot: () => this.options.client.spool(),
+          item: (id) =>
+            this.options.client.spoolItem(id).catch(() => null),
+          create: async (input) => (await this.options.client.createSpoolItem(input)).item,
+          update: async (id, patch) => (await this.options.client.updateSpoolItem(id, patch)).item,
+          consult: (id) => this.options.client.consultSpoolExpert(id),
+        },
         onRequest: async ({ kind, detail, toolUseId }) => {
           const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
           const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
