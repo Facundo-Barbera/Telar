@@ -56,7 +56,7 @@ import {
   expertDigestPath,
   getSpoolItem,
   readExpertDigest,
-  writeExpertDigest,
+  mergeExpertDigest,
   type ExpertPassResult,
   type SpoolPaths,
 } from "./store";
@@ -106,10 +106,40 @@ export const ExpertResult = z.object({
     ),
   glossary: z
     .array(z.object({ term: z.string(), means: z.string() }))
-    .describe("The project's shorthand, spelled out. The WHOLE glossary, not just additions — it replaces the stored one."),
-  notes: z
-    .array(z.string())
-    .describe("Durable notes your next cold self should have. The whole list; it replaces the stored one."),
+    .describe(
+      "The project's shorthand, spelled out. Return the whole glossary — a term you restate keeps its place, a term you redefine is updated, and a term you omit is KEPT rather than dropped.",
+    ),
+  /**
+   * NEW FACTS ONLY — and that word is doing the work.
+   *
+   * This was `notes: string[]`, described as "the whole list; it replaces the
+   * stored one", which is exactly how a fact learned three passes ago about a
+   * corner of the project this item does not touch quietly disappeared.
+   */
+  facts: z
+    .array(
+      z.object({
+        text: z.string().describe("One durable fact, in a sentence."),
+        kind: z
+          .enum(["howItWorks", "person", "decision", "environment"])
+          .describe(
+            "howItWorks: how the code or the process works — checkable against the tree, and it goes stale when the tree moves. person: who is involved and how; nobody but the user can confirm it. decision: what was decided and why. environment: what is reachable right now — a login, a checkout, a tracker. Be honest with this one: environment facts EXPIRE, and marking a passing condition as durable is how you tell your future self a lie.",
+          ),
+      }),
+    )
+    .describe(
+      "Facts you learned THIS pass that were not already in what you know. Only new ones — everything already stored is kept whether you restate it or not. [] is the ordinary answer for a pass that learned nothing new.",
+    ),
+  retire: z
+    .array(
+      z.object({
+        id: z.string().describe("The id of a stored fact, exactly as it was given to you."),
+        why: z.string().describe("What makes it no longer true. Recorded beside it permanently."),
+      }),
+    )
+    .describe(
+      "Stored facts that have stopped being true — a file that moved, a login that now works, a guess that was wrong. Nothing is deleted: a retired fact is kept with your reason and left out of future prompts. [] when everything you were given still holds. Do not retire a `person` fact; only the user can correct those.",
+    ),
 });
 export type ExpertResult = z.infer<typeof ExpertResult>;
 
@@ -151,9 +181,32 @@ export function expertPrompt(input: { project: string; digest: SpoolExpertDigest
       lines.push("", "### Its shorthand");
       for (const term of digest.glossary) lines.push(`- ${term.term} — ${term.means}`);
     }
-    if (digest.notes.length > 0) {
-      lines.push("", "### Notes to yourself");
-      for (const note of digest.notes) lines.push(`- ${note}`);
+    /**
+     * FACTS, NOT NOTES — and RETIRED ONES ARE NOT HERE.
+     *
+     * A retired fact stays on disk with its reason and is left out of every
+     * prompt, which is the entire point of retiring one: the aurora digest's
+     * "no locally reachable codebase — searched thoroughly this time" was an
+     * agent telling its future self not to look, and until it could be left out
+     * of the prompt there was no way to stop it doing so.
+     *
+     * UNREVIEWED FACTS ARE MARKED. The provenance law — "every artifact an
+     * agent produced is marked as such until a human has looked at it" — is
+     * worth as much pointed at the model as pointed at the user: a fact no
+     * human ever confirmed should not be reasoned from with the same
+     * confidence as one you did.
+     */
+    const live = digest.facts.filter((fact) => !fact.retired);
+    if (live.length > 0) {
+      lines.push("", "### What you know");
+      for (const fact of live) {
+        const unchecked = fact.reviewed ? "" : " *(you asserted this; nobody has confirmed it)*";
+        // THE ID IS RENDERED because `retire` addresses by it. A model asked to
+        // retire a fact it was shown without an address can only describe one,
+        // and a retraction matched on prose is a retraction that hits the wrong
+        // fact the first time two of them read alike.
+        lines.push(`- (${fact.id}) [${fact.kind}] ${fact.text}${unchecked}`);
+      }
     }
   }
   lines.push("");
@@ -245,6 +298,10 @@ export type ExpertPassRequest = {
   env?: Record<string, string | undefined>;
   binaryPath?: string;
   abort?: AbortController;
+  /** Passed straight through to `structuredAgent` so a pass that runs for
+   *  minutes can say where it is. Nothing here records it — see `spool/work.ts`
+   *  for who listens and why this file stays a pure pass. */
+  onStep?: (step: { n: number; label: string }) => void;
 };
 
 export type ExpertPassOutcome =
@@ -303,6 +360,7 @@ const liveInvoke: ExpertDeps["invoke"] = (prompt, req) =>
     ...(req.env ? { env: req.env } : {}),
     ...(req.binaryPath ? { binaryPath: req.binaryPath } : {}),
     ...(req.abort ? { abort: req.abort } : {}),
+    ...(req.onStep ? { onStep: req.onStep } : {}),
   });
 
 /**
@@ -393,20 +451,24 @@ export async function runExpertPass(
    */
   let written: SpoolExpertDigest;
   try {
-    written = writeExpertDigest(
-      paths,
-      DigestSchema.parse({
-        project: req.project,
-        // The pass's own label, minted by the store's clock the same way every
-        // other display label in this subtree is — never re-derived here, so the
-        // digest and the timeline events of one pass carry the same label.
-        updated: applied.at,
-        summary: result.value.summary,
-        methodology: result.value.methodology,
-        glossary: result.value.glossary,
-        notes: result.value.notes,
-      }),
-    );
+    /**
+     * MERGED, NOT OVERWRITTEN. This handed `writeExpertDigest` a fresh object
+     * built entirely from the model's answer, which meant every pass rebuilt the
+     * project's whole memory through the lens of one item — see
+     * `mergeExpertDigest` for the three failures that produced.
+     */
+    written = mergeExpertDigest(paths, req.project, {
+      // The pass's own label, minted by the store's clock the same way every
+      // other display label in this subtree is — never re-derived here, so the
+      // digest, its facts' provenance and the timeline events of one pass all
+      // carry the same label.
+      at: applied.at,
+      summary: result.value.summary,
+      methodology: result.value.methodology,
+      glossary: result.value.glossary,
+      facts: result.value.facts,
+      retire: result.value.retire,
+    });
   } catch (error) {
     return {
       ok: false,

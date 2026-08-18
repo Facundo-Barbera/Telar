@@ -1016,7 +1016,18 @@ type RightPanelDrag = {
  * rather than through React state: a controlled width would re-render the whole
  * panel, and its surfaces, on every pointer move.
  */
-function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement | null> }) {
+export function RightPanelResizeHandle({
+  panelRef,
+  storageKey = RIGHT_PANEL_WIDTH_STORAGE_KEY,
+}: {
+  panelRef: RefObject<HTMLElement | null>;
+  /**
+   * WHICH PANEL'S WIDTH THIS REMEMBERS. Defaulted so every existing caller is
+   * unchanged, and parameterised because the Spool's panel is a different panel
+   * — sharing one key would make widening a packet resize the cockpit's diff.
+   */
+  storageKey?: string;
+}) {
   const dragRef = useRef<RightPanelDrag | null>(null);
 
   /** The panel may grow until the conversation hits its own floor — the point of
@@ -1042,11 +1053,11 @@ function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement 
       if (drag.raf !== null) window.cancelAnimationFrame(drag.raf);
       paint(drag);
       dragRef.current = null;
-      setSidebarWidth(RIGHT_PANEL_WIDTH_STORAGE_KEY, drag.width);
+      setSidebarWidth(storageKey, drag.width);
       document.body.style.removeProperty("cursor");
       document.body.style.removeProperty("user-select");
     },
-    [paint],
+    [paint, storageKey],
   );
 
   useEffect(
@@ -1095,7 +1106,7 @@ function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement 
         const delta = event.key === "ArrowLeft" ? 16 : -16;
         const width = clampSidebarWidth(panelRef.current.getBoundingClientRect().width + delta, RIGHT_PANEL_MIN_WIDTH, maxWidth());
         panelRef.current.style.setProperty("--right-panel-width", `${width}px`);
-        setSidebarWidth(RIGHT_PANEL_WIDTH_STORAGE_KEY, width);
+        setSidebarWidth(storageKey, width);
       }}
     >
       <span className="h-10 w-px rounded-full bg-border/60 transition-colors group-hover/resize:bg-foreground/40 group-focus-visible/resize:bg-ring" />

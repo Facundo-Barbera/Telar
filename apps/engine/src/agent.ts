@@ -107,7 +107,56 @@ export type StructuredAgentResult<T> =
    * no Claude on this machine" call for three different sentences and three
    * different next moves.
    */
-  | { ok: false; reason: string; kind: "no-result" | "malformed" | "unavailable" | "aborted" };
+  | { ok: false; reason: string; kind: StructuredAgentFailure; retryAfter?: number };
+
+/**
+ * `rate-limited` IS ITS OWN KIND, and separating it from `unavailable` is the
+ * whole reason overnight work can be trusted to run unattended.
+ *
+ * Every other failure is about THIS call: the model did not answer, or answered
+ * wrongly, or there is no Claude installed. Retrying the next item is correct
+ * for all of them. A rate limit is about the ACCOUNT, so the next item would
+ * fail identically, and a runner that treated it as one more per-item failure
+ * would walk the whole queue burning a request per item to learn the same fact
+ * it already knew.
+ *
+ * It is therefore a signal to STOP, not to skip — see `spool/night.ts`.
+ */
+export type StructuredAgentFailure = "no-result" | "malformed" | "unavailable" | "aborted" | "rate-limited";
+
+/**
+ * Whether a provider error means "the account is out of budget for now".
+ *
+ * A HEURISTIC OVER A MESSAGE, and stated as one rather than dressed up: the SDK
+ * surfaces this as prose, not as a typed error, so this reads the shapes it is
+ * known to use. Being wrong in the SAFE direction costs one night's remaining
+ * work and nothing else — the jobs stay pending and the next run picks them up.
+ * Being wrong the other way costs a loop of doomed requests, which is the
+ * failure this exists to prevent.
+ */
+export function isRateLimit(message: string): boolean {
+  return /\b(rate[ _-]?limit|429|too many requests|quota exceeded|usage limit|overloaded_error)\b/i.test(message);
+}
+
+/**
+ * When the provider says it will accept work again, in epoch ms, if it said so.
+ *
+ * READ FROM THE MESSAGE for the same reason as above. Absent is the ordinary
+ * case and is not a failure: a runner with no reset time waits for its next
+ * ordinary trigger instead of guessing one.
+ */
+export function retryAfterFrom(message: string, now: number): number | undefined {
+  const seconds = /retry[- ]after[:\s]+(\d+)/i.exec(message) ?? /try again in (\d+)\s*s/i.exec(message);
+  if (seconds?.[1]) return now + Number(seconds[1]) * 1000;
+  const stamp = /resets? (?:at )?(\d{10,13})/i.exec(message);
+  if (stamp?.[1]) {
+    const value = Number(stamp[1]);
+    // Ten digits is seconds, thirteen is milliseconds. Guessing wrong here
+    // would park the runner for a month or for no time at all.
+    return value < 1e11 ? value * 1000 : value;
+  }
+  return undefined;
+}
 
 export type StructuredAgentOptions<S extends z.ZodObject<z.ZodRawShape>> = {
   /** The forced answer shape. Becomes `emit_result`'s input schema. */
@@ -130,6 +179,55 @@ export type StructuredAgentOptions<S extends z.ZodObject<z.ZodRawShape>> = {
    *  beta build must not be probed as one thing and run as another. */
   binaryPath?: string;
   abort?: AbortController;
+  /**
+   * CALLED AS THE CALL WORKS, so something minutes long can say where it is.
+   *
+   * This module's header says a structured call has "no session, no resume, no
+   * journal" and that remains true: nothing is recorded, nothing is streamed to
+   * a client, and a caller that passes nothing gets exactly the old behaviour.
+   * The loop below was ALREADY iterating every message and discarding all but
+   * the last — this hands them to whoever asked instead of dropping them.
+   *
+   * A THROWING CALLBACK MUST NOT KILL THE PASS. Progress is decoration; the
+   * answer is the point. See the guarded call at the callsite.
+   */
+  onStep?: (step: { n: number; label: string }) => void;
+  /**
+   * TOOLS THAT TAKE EFFECT WHILE THE CALL IS STILL RUNNING.
+   *
+   * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+   * Everything on this path so far has been one-shot: read some things, think,
+   * call `emit_result` once, and the caller sees nothing until it lands. That is
+   * right for a pass whose product is a record.
+   *
+   * It is wrong for a pass whose product is a SURFACE. If the model is composing
+   * something for a person to look at, the composition IS the output and it
+   * should appear as it is made — a minute of "Starting…" followed by a page
+   * arriving all at once is the same information delivered in the least useful
+   * possible order.
+   *
+   * So a caller may register handlers that run the moment the model calls them.
+   * They are mounted on the same `out` server as `emit_result` and are subject to
+   * the same wall: an SDK MCP tool is a function in this process, not a shell,
+   * and it can only do what the handler its caller wrote does.
+   *
+   * `emit_result` IS STILL REQUIRED. A stream of side effects with no final act
+   * has no way to distinguish "finished" from "stopped talking" — the exact
+   * inference `!emitted` below exists to refuse.
+   */
+  sideTools?: readonly SideTool[];
+};
+
+/** One tool a caller mounts alongside `emit_result`. `shape` is a zod raw shape
+ *  for the same reason `schema` is: the SDK builds the model-facing JSON Schema
+ *  from it, so there is one description of the arguments rather than two. */
+export type SideTool = {
+  name: string;
+  description: string;
+  shape: z.ZodRawShape;
+  /** Returns the line handed back to the model. Throwing is reported to the
+   *  model as an error rather than killing the call — see the wrapper below. */
+  handler: (input: unknown) => Promise<string> | string;
 };
 
 /** The narrow slice of the SDK a structured call uses. Its own type rather than
@@ -202,6 +300,48 @@ function defaultExecutable(binaryPath?: string): string {
   return requireCli("claude", { ...(binaryPath ? { binaryPath } : {}) });
 }
 
+/**
+ * ONE SDK MESSAGE → ONE LINE A HUMAN CAN READ, or nothing.
+ *
+ * PURE AND EXPORTED so the whole vocabulary is readable in a test without a
+ * provider — the same reason `assertWall` is pure.
+ *
+ * THE GRAMMAR IS THE COCKPIT'S, deliberately: a transcript there reads
+ * "Thought · ToolSearch · spool_list_items", so a Spool pass reading files
+ * should say "Read" and "Grep" in the same voice rather than inventing a second
+ * dialect for the same act. The `mcp__server__` prefix is stripped for the same
+ * reason the cockpit strips it — it names our plumbing, not what happened.
+ *
+ * A TOOL'S TARGET IS INCLUDED WHEN IT IS SHORT AND OBVIOUS. "Read" alone tells
+ * you the pass is alive; "Read reconciliation.ts" tells you it is on the right
+ * track, which is the only reason to look at a progress line at all.
+ */
+export function stepLabel(message: Record<string, unknown>): string | undefined {
+  if (message.type !== "assistant") return undefined;
+  const body = message.message as Record<string, unknown> | undefined;
+  const content = Array.isArray(body?.content) ? (body.content as Record<string, unknown>[]) : [];
+
+  for (const block of content) {
+    if (block.type !== "tool_use") continue;
+    const name = typeof block.name === "string" ? block.name : "";
+    if (!name) continue;
+    // The forced final act, named for what it means rather than for its plumbing.
+    if (name === EMIT_TOOL) return "Writing the result";
+    const short = name.replace(/^mcp__[^_]+__/, "");
+    const input = (block.input ?? {}) as Record<string, unknown>;
+    const target = input.file_path ?? input.path ?? input.pattern ?? input.query;
+    if (typeof target !== "string" || target.length === 0 || target.length > 60) return short;
+    // A path is read at its tail: the leading directories are the part every
+    // sibling call shares, so they are the part that carries no information.
+    return `${short} ${target.includes("/") ? (target.split("/").pop() ?? target) : target}`;
+  }
+
+  // Prose with no tool call is the model reasoning between acts. Its CONTENT is
+  // not shown — a half-written sentence flickering in a one-line window reads
+  // as a glitch — only that it happened.
+  return content.some((block) => block.type === "text") ? "Thinking" : undefined;
+}
+
 function readUsage(message: Record<string, unknown>): AgentUsage | undefined {
   const usage = message.usage as Record<string, unknown> | undefined;
   if (!usage) return undefined;
@@ -262,6 +402,10 @@ export async function structuredAgent<S extends z.ZodObject<z.ZodRawShape>>(
   }
 
   const wall = assertWall(options.tools);
+  /** Side tools are MCP names on our own server, so they join the approval list
+   *  exactly where `emit_result` does — never the built-in `tools` array, which
+   *  the SDK rejects MCP names in. */
+  const sideNames = (options.sideTools ?? []).map((side) => `mcp__out__${side.name}`);
 
   /**
    * CAPTURED, NOT RETURNED THROUGH THE TOOL. The SDK hands the tool's return
@@ -273,6 +417,7 @@ export async function structuredAgent<S extends z.ZodObject<z.ZodRawShape>>(
   let raw: unknown;
   let emitted = false;
   let usage: AgentUsage | undefined;
+  let steps = 0;
 
   const out = sdk.createSdkMcpServer({
     name: "out",
@@ -283,6 +428,26 @@ export async function structuredAgent<S extends z.ZodObject<z.ZodRawShape>>(
         emitted = true;
         return { content: [{ type: "text", text: "recorded" }] };
       }),
+      /**
+       * A FAILING SIDE TOOL IS REPORTED TO THE MODEL, NOT THROWN AT THE CALLER.
+       *
+       * These run mid-call, and letting one reject would abort the whole query
+       * through the SDK's iterator — losing a pass that may be most of the way
+       * done because one draw was malformed. Handed back as text, the model can
+       * see what it did wrong and try again, which is the behaviour every other
+       * tool in the loop already has.
+       */
+      ...(options.sideTools ?? []).map((side) =>
+        sdk.tool(side.name, side.description, side.shape, async (value) => {
+          try {
+            return { content: [{ type: "text", text: (await side.handler(value)) || "ok" }] };
+          } catch (error) {
+            return {
+              content: [{ type: "text", text: `error: ${error instanceof Error ? error.message : String(error)}` }],
+            };
+          }
+        }),
+      ),
     ],
   });
 
@@ -297,7 +462,7 @@ export async function structuredAgent<S extends z.ZodObject<z.ZodRawShape>>(
         // not this line — is what makes that safe.
         permissionMode: "bypassPermissions",
         tools: wall.tools,
-        allowedTools: wall.allowedTools,
+        allowedTools: [...wall.allowedTools, ...sideNames],
         disallowedTools: wall.disallowedTools,
         mcpServers: { out },
         /**
@@ -315,16 +480,40 @@ export async function structuredAgent<S extends z.ZodObject<z.ZodRawShape>>(
       },
     })) {
       if (message.type === "result") usage = readUsage(message);
+      if (options.onStep) {
+        const label = stepLabel(message);
+        if (label) {
+          steps += 1;
+          /**
+           * GUARDED, because progress is decoration and the answer is not. A
+           * caller whose callback throws — a registry entry evicted mid-pass,
+           * say — must not lose a twenty-turn result to it.
+           */
+          try {
+            options.onStep({ n: steps, label });
+          } catch {
+            // Nothing to report to: the callback WAS the reporting channel.
+          }
+        }
+      }
     }
   } catch (error) {
     if (options.abort?.signal.aborted) {
       return { ok: false, kind: "aborted", reason: `${options.label}: the call was cancelled; nothing was written.` };
     }
-    return {
-      ok: false,
-      kind: "unavailable",
-      reason: `${options.label}: ${error instanceof Error ? error.message : String(error)}`,
-    };
+    const message = error instanceof Error ? error.message : String(error);
+    if (isRateLimit(message)) {
+      // ABOUT THE ACCOUNT, NOT ABOUT THIS ITEM. The caller must stop rather
+      // than move on — see `StructuredAgentFailure`.
+      const retryAfter = retryAfterFrom(message, Date.now());
+      return {
+        ok: false,
+        kind: "rate-limited",
+        reason: `${options.label}: the account is rate limited (${message}). Nothing was written.`,
+        ...(retryAfter ? { retryAfter } : {}),
+      };
+    }
+    return { ok: false, kind: "unavailable", reason: `${options.label}: ${message}` };
   }
 
   if (!emitted) {

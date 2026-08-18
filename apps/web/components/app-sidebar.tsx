@@ -24,10 +24,15 @@
 // chip is gone because `readAt` is unmodelled, and a chip with an unbackable
 // count is a lie with a number on it.
 //
-// THE FOURTH ARRIVED. The donor's Workspace is this app's Spool, and it is a
-// real destination now — in the FOOTER beside Settings rather than as a header
-// glyph, because it is a place rather than a filter over the list. See
-// `SpoolButton` for why it carries no count.
+// THE FOURTH ARRIVED, AND THEN MOVED AGAIN. The donor's Workspace is this
+// app's Spool. It first got a footer button beside Settings, because it read
+// as a place rather than a filter over the list — but a place lived beside
+// the wordmark all along without anyone naming it: "telar" WAS a place, the
+// one this rail already showed. `docs/spool-loops.md` §11 names the two
+// places and turns the wordmark into the switcher between them (see
+// `PlaceSwitcher`), so the footer button retires — the switcher is chrome,
+// not routing, and it occupies the switcher's OWN slot rather than adding a
+// second door beside the one it replaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -44,8 +49,10 @@ import {
   SearchIcon,
   SettingsIcon,
   SpoolIcon,
+  TypeIcon,
   XIcon,
 } from "lucide-react";
+import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -115,15 +122,70 @@ function TelarSidebarHeader() {
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="app-no-drag shrink-0" />
-        <Link
-          href="/"
-          title="New conversation"
-          className="app-no-drag mr-auto flex min-w-0 items-center rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="font-heading text-lg font-semibold tracking-tight">telar</span>
-        </Link>
+        <PlaceSwitcher />
       </div>
     </SidebarHeader>
+  );
+}
+
+/**
+ * THE SWITCHER — `docs/spool-loops.md` §11. Telar and Spool are "different,
+ * but part of the same system — overlap one on top of the other", so the
+ * wordmark that always named the app becomes the control that names WHICH
+ * half of it you are in. This is CHROME, NOT ROUTING: picking a place
+ * navigates (`/` or `/spool`), but a deep link — `/spool`, `/projects/…` —
+ * still lands correctly on its own; the switcher only ever reads the
+ * pathname to decide which entry to show as current, the same
+ * `pathname.startsWith(...)` test `SettingsButton` already used below.
+ *
+ * ONE OF THE FIVE. `--spool`'s five-mark budget already spent one of its
+ * five on the Spool's own header glyph (`header.tsx`'s `SpoolIcon`); this
+ * entry occupies that SAME slot — the place mark, wherever the place's own
+ * chrome puts it — rather than opening a sixth.
+ *
+ * THE TELAR GLYPH IS NEW, AND DELIBERATELY UNCOLOURED. `TypeIcon` is
+ * lucide's own capital-T mark, drawn in the same line-icon family as
+ * `SpoolIcon` — no bespoke SVG, because the family is already the "hand" the
+ * spec asks the new glyph to match. It carries no `--spool` hue: Telar is
+ * the neutral place, and colour on this mark would spend a share of the
+ * budget the definition never allotted it.
+ */
+function PlaceSwitcher() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const inSpool = pathname.startsWith("/spool");
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            title={inSpool ? "Spool" : "Telar"}
+            className="app-no-drag mr-auto flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        }
+      >
+        {inSpool ? <SpoolIcon className="size-4 shrink-0 text-spool" /> : <TypeIcon className="size-4 shrink-0" />}
+        <span className="font-heading text-lg font-semibold tracking-tight">{inSpool ? "spool" : "telar"}</span>
+        <ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/45" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-48">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Place</DropdownMenuLabel>
+          <DropdownMenuItem onClick={() => router.push("/")}>
+            <span className="w-4">{inSpool ? null : <CheckIcon />}</span>
+            <TypeIcon className="size-4 shrink-0" />
+            <span>Telar</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => router.push("/spool")}>
+            <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
+            <SpoolIcon className="size-4 shrink-0 text-spool" />
+            <span>Spool</span>
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -259,6 +321,10 @@ function SessionShelf({
 
 function SidebarBody() {
   const pathname = usePathname();
+  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`,
+  // Telar's own session list everywhere else. The header above it (trigger,
+  // switcher) is common to both; only what is below it changes.
+  const inSpool = pathname.startsWith("/spool");
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -472,6 +538,15 @@ function SidebarBody() {
     <>
       <TelarSidebarHeader />
       <SidebarContent>
+        {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
+            §11's warehouse nav is what the rail shows on `/spool` — search,
+            apertures, the Areas tree, lanes, tags — instead of the sessions
+            list, which is Telar's own inbox and has no meaning inside the
+            Spool's place. The header (trigger, switcher) stays common. */}
+        {inSpool ? (
+          <SpoolWarehouseNav />
+        ) : (
+        <>
         <div className="space-y-1 px-3 pb-2 pt-3">
           <div className="flex items-center gap-1">
             <div className="relative min-w-0 flex-1">
@@ -713,11 +788,12 @@ function SidebarBody() {
             />
           </>
         )}
+        </>
+        )}
       </SidebarContent>
 
       <SidebarFooter>
         <div className="p-1">
-          <SpoolButton onNavigate={onNavigate} />
           <SettingsButton onNavigate={onNavigate} />
         </div>
       </SidebarFooter>
@@ -725,35 +801,12 @@ function SidebarBody() {
   );
 }
 
-/**
- * The Spool — the item store, and the app's second destination.
- *
- * IN THE FOOTER BESIDE SETTINGS, not in the list above it, because the list IS
- * the session inbox: every row there is a conversation, and a destination among
- * them would read as one. The Spool is a place, like Settings.
- *
- * NO COUNT ON IT, deliberately. A badge is a push, and this module's first law
- * is that it never notifies, badges or interrupts — it answers when arrived at.
- * A number here would be the one piece of chrome in the app that violated the
- * surface it points to.
- */
-function SpoolButton({ onNavigate }: { onNavigate: () => void }) {
-  const pathname = usePathname();
-  const active = pathname.startsWith("/spool");
-  return (
-    <Link
-      href="/spool"
-      title="Spool"
-      onClick={onNavigate}
-      className={`flex items-center gap-2 rounded-md text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
-        active ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ""
-      } w-full p-2`}
-    >
-      <SpoolIcon className="size-4 shrink-0" />
-      <span>Spool</span>
-    </Link>
-  );
-}
+// `SpoolButton` RETIRED — §11. It lived here, in the footer beside Settings,
+// because the Spool read as a place rather than a filter over the list. It
+// still is one; the place just moved into `PlaceSwitcher`, at the top of the
+// rail, where "telar" already was. See that component's docblock for why
+// the switcher is where this button's job — and its "no count on it" law —
+// went.
 
 function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
   const pathname = usePathname();

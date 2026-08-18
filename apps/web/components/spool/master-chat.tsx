@@ -1,11 +1,15 @@
 "use client";
 
 /**
- * THE SPOOL'S FRONT DOOR — the project-less conversation you arrive at.
+ * THE SPOOL'S CONVERSATION — the project-less chat, as the stance's other half.
  *
- * CAP-1: "ONE project-less conversation — the module's front door." Not a
- * feature of the queue; the thing the queue is the memory FOR. You ask where you
- * stopped and it answers across everything, because it is scoped to nothing.
+ * CAP-1: "ONE project-less conversation — the module's front door." Since the
+ * §13 redefinition the front door is the STANCE SCREEN, and this is its right
+ * half: always visible, never a destination of its own. The chat is how you
+ * talk to it; the stance beside it is what it holds — so this component no
+ * longer owns a page, a header, a brief or a panel. It renders a transcript
+ * and a composer into whatever column its parent gives it, and reports through
+ * `onChanged` when a turn may have moved the store, so the stance re-reads.
  *
  * ── WHY THIS IS NOT `session-cockpit.tsx` WITH A FLAG ────────────────────────
  * The cockpit is deeply project-coupled and rightly so: the canvas href, the
@@ -34,7 +38,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RotateCwIcon, TriangleAlertIcon } from "lucide-react";
-import type { EngineRequest, RequestDecision, Session, SpoolDeskCard, Turn } from "@telar/engine-client";
+import type { EngineRequest, RequestDecision, Session, Turn } from "@telar/engine-client";
 import { createEngineApi, newRunId } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
 import { hydrateSession, tailSession } from "@/lib/engine/session-sync";
@@ -45,8 +49,6 @@ import { ConversationContent, ConversationScrollButton, ConversationViewport } f
 import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/composer";
 import { SessionTurn } from "@/components/session-cockpit";
-import { SpoolHeader } from "@/components/spool/header";
-import { DeskRail } from "@/components/spool/desk-rail";
 
 const api = createEngineApi();
 
@@ -54,7 +56,65 @@ const api = createEngineApi();
  *  project half, which is exactly what `writeDraft`'s optional project is for. */
 const DRAFT_PROJECT = undefined;
 
-export function MasterChat() {
+/** Where the view-level cutoff lives. See `startFresh` — the SESSION is a
+ *  singleton the engine will not fork, so "fresh" is a fact about the view. */
+const cutoffKey = (sessionId: string) => `telar:spool-master-cutoff:${sessionId}`;
+
+/**
+ * THE MACHINE CONTEXT IS SENT, NEVER SHOWN. Every turn goes out with the
+ * room's one bracketed context line prefixed into `input` (see `context`
+ * below) — the model and the journal keep it, and the engine depends on it
+ * arriving. What the TRANSCRIPT shows is the person's own words: this regex
+ * matches exactly the shape the room composes (`[room: …]` then a newline)
+ * and the renderer strips it from a displayed turn. Display only — nothing
+ * stored changes, and "earlier" history strips the same way.
+ */
+const ROOM_PREFIX = /^\[room: [^\n]*\]\n/;
+const shownPrompt = (prompt: string) => prompt.replace(ROOM_PREFIX, "");
+
+export function MasterChat({
+  onChanged,
+  openers = [],
+  prefill,
+  context,
+}: {
+  /**
+   * A TURN MAY HAVE MOVED THE STORE. Talking is how items get filed, focus
+   * gets set and subjects get made, and the stance next door renders all of
+   * it — so it re-reads when a turn lands rather than polling everything
+   * forever. Fired when a submit completes and when a live turn settles.
+   */
+  onChanged?: () => void;
+  /**
+   * WHAT THIS CHAT CAN DO, AS THINGS TO TAP — derived by the stance from the
+   * same records it draws, never generated. Each names real state ("File the
+   * 5 unfiled items") and tapping one SENDS it: an opener is an invitation
+   * accepted, not a draft. They render large when the visible transcript is
+   * empty and as a quiet row above the composer after, so capability stays
+   * discoverable past the first message.
+   */
+  openers?: readonly string[];
+  /**
+   * A STANCE LINE TEACHING ITS VERB. The text lands in the composer and stops
+   * there — the human presses send, which is the whole point of the wiring:
+   * capability shown, last word kept. The counter lets the same suggestion be
+   * pressed twice.
+   */
+  prefill?: { text: string; n: number };
+  /**
+   * WHAT THE ROOM LOOKS LIKE RIGHT NOW — one bracketed line the room composes
+   * (scope, tray face, band counts) and every turn carries, so "file this"
+   * and "what's this about" resolve against what is on screen.
+   *
+   * PREFIXED INTO THE MESSAGE TEXT. The turn payload
+   * (`{runId, input, model?, attachments?}`) has no context field, and this
+   * pass may not change the engine — so the line rides inside `input`, the
+   * journal keeps it, and anyone reading the raw record sees exactly what the
+   * model was told. The TRANSCRIPT strips the line at render (`shownPrompt`):
+   * plumbing in the payload, the person's own words on screen.
+   */
+  context?: string;
+}) {
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Parameters<typeof projectJournal>[1]>([]);
@@ -62,11 +122,25 @@ export function MasterChat() {
   const [requests, setRequests] = useState<EngineRequest[]>([]);
   const [events, setEvents] = useState<Parameters<typeof projectJournal>[2]>([]);
   const [cursor, setCursor] = useState(0);
-  const [desk, setDesk] = useState<SpoolDeskCard[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  /**
+   * THE TRANSCRIPT OPENS AT THE LATEST EXCHANGE. A working chat accumulates
+   * history — including the debugging the singleton session has been through —
+   * and opening into all of it is telemetry presented as conversation. The
+   * rest is one quiet disclosure away, never gone.
+   */
+  const [showEarlier, setShowEarlier] = useState(false);
+  /**
+   * THE VIEW'S OWN "START FRESH". The engine will not mint a second master —
+   * CAP-1: a create affordance would turn the front door into a list of front
+   * doors — so fresh is a fact about what this column shows, persisted per
+   * session in localStorage. Everything before the cutoff stays reachable
+   * through the same "earlier" disclosure, which is what keeps it honest.
+   */
+  const [cutoff, setCutoff] = useState<string | null>(null);
 
   /**
    * ENSURE, NEVER CREATE. The route is a singleton: it returns the existing
@@ -101,15 +175,11 @@ export function MasterChat() {
      * requests, no error, a permanent loading state.
      *
      * The timeout pairing is ALREADY double-invoke safe without it, which is why
-     * `queue-view.tsx` and `packet-view.tsx` — which never had the ref — always
-     * worked: pass two schedules a fresh task, and only the last one survives.
+     * `packet-view.tsx` — which never had the ref — always worked: pass two
+     * schedules a fresh task, and only the last one survives.
      */
     const first = window.setTimeout(() => {
       void open().catch((err) => setError(err instanceof Error ? err.message : String(err)));
-      void fetch("/api/spool")
-        .then((r) => (r.ok ? r.json() : { desk: [] }))
-        .then((d) => setDesk(d.desk ?? []))
-        .catch(() => setDesk([]));
     }, 0);
     return () => window.clearTimeout(first);
   }, [open]);
@@ -150,44 +220,85 @@ export function MasterChat() {
     return () => window.clearInterval(timer);
   }, [session, live, sending, cursor]);
 
+  /**
+   * THE STANCE LEARNS WHEN A TURN SETTLES. Keyed on whether one is live: the
+   * flag falls exactly once per turn, where watching the transcript would
+   * report on every streamed step. It also fires once on mount, which costs
+   * one read the stance was about to do anyway.
+   */
+  const liveNow = !!live;
+  useEffect(() => {
+    if (liveNow) return;
+    const task = window.setTimeout(() => onChanged?.(), 0);
+    return () => window.clearTimeout(task);
+  }, [liveNow, onChanged]);
+
   // The draft survives a reload, like the cockpit's. Restored on a task rather
   // than in the effect body — a synchronous setState there is a cascading
   // render, and localStorage is exactly the external system effects are for.
+  // The view cutoff rides the same restore: both are per-session view state.
   useEffect(() => {
     if (!session) return;
-    const task = window.setTimeout(() => setDraft(readDraft(session.id, DRAFT_PROJECT) ?? ""), 0);
+    const task = window.setTimeout(() => {
+      setDraft(readDraft(session.id, DRAFT_PROJECT) ?? "");
+      setCutoff(window.localStorage.getItem(cutoffKey(session.id)));
+    }, 0);
     return () => window.clearTimeout(task);
   }, [session]);
+
+  /** A stance line's verb arriving. Replaces the draft rather than appending —
+   *  the suggestion IS the message, and the human edits or sends it. The prop
+   *  is a state object next door, so its identity only changes on a press;
+   *  the counter is what lets the same text be pressed twice. */
+  useEffect(() => {
+    if (!prefill || prefill.n === 0 || !prefill.text) return;
+    const task = window.setTimeout(() => setDraft(prefill.text), 0);
+    return () => window.clearTimeout(task);
+  }, [prefill]);
   useEffect(() => {
     if (!session) return;
     const task = window.setTimeout(() => writeDraft(session.id, DRAFT_PROJECT, draft), 400);
     return () => window.clearTimeout(task);
   }, [draft, session]);
 
-  const submit = useCallback(() => {
-    const text = draft.trim();
-    if (!text || !session) return;
-    setSending(true);
-    void (async () => {
-      try {
-        await api.submitTurn(session.id, { runId: newRunId(), input: text });
-        setDraft("");
-        writeDraft(session.id, DRAFT_PROJECT, "");
-        const tail = await tailSession(api, session.id, cursor);
-        setEvents((previous) => appendJournalEvents(previous, tail.events));
-        setCursor(tail.cursor);
-        if (tail.snapshot) {
-          setTurns(tail.snapshot.turns);
-          setItems(tail.snapshot.items);
-          setRequests(tail.snapshot.requests);
+  /**
+   * ONE SEND PATH FOR BOTH MOUTHS. The composer submits the draft; an opener
+   * submits its own words. Only the draft path clears the box — an opener
+   * pressed mid-thought must not eat what was being typed.
+   */
+  const send = useCallback(
+    (text: string, fromDraft: boolean) => {
+      if (!text || !session) return;
+      setSending(true);
+      void (async () => {
+        try {
+          await api.submitTurn(session.id, { runId: newRunId(), input: context ? `${context}\n${text}` : text });
+          if (fromDraft) {
+            setDraft("");
+            writeDraft(session.id, DRAFT_PROJECT, "");
+          }
+          const tail = await tailSession(api, session.id, cursor);
+          setEvents((previous) => appendJournalEvents(previous, tail.events));
+          setCursor(tail.cursor);
+          if (tail.snapshot) {
+            setTurns(tail.snapshot.turns);
+            setItems(tail.snapshot.items);
+            setRequests(tail.snapshot.requests);
+          }
+          // THE STANCE REACTS TO WHAT YOU SAID — talking is one of the ways
+          // the store moves, and the screen next door renders the store.
+          onChanged?.();
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setSending(false);
         }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setSending(false);
-      }
-    })();
-  }, [cursor, draft, session]);
+      })();
+    },
+    [context, cursor, onChanged, session],
+  );
+
+  const submit = useCallback(() => send(draft.trim(), true), [draft, send]);
 
   const decide = useCallback(
     (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => {
@@ -210,11 +321,61 @@ export function MasterChat() {
     void api.stopTurn(session.id, live.runId).catch(() => undefined);
   }, [live, session]);
 
+  /** See `cutoff` above. Nothing is ended and nothing is discarded — the same
+   *  argument the old "back to the brief" recorded: a fresh view reached by
+   *  destroying history is one nobody would click twice. */
+  const startFresh = useCallback(() => {
+    const last = journal.at(-1);
+    if (!session || !last) return;
+    setCutoff(last.runId);
+    window.localStorage.setItem(cutoffKey(session.id), last.runId);
+    setShowEarlier(false);
+  }, [journal, session]);
+
+  /**
+   * A QUEUED MESSAGE IS WAITING, AND THE COMPOSER SAYS SO. This surface passed
+   * `queued: []` while the send path had the state all along — the engine
+   * queues a turn submitted behind a live one — so a second dump sat in the
+   * box LOOKING sent for minutes. The cockpit's own derivation, borrowed
+   * whole: queued turns come out of the transcript and into the composer's
+   * waiting strip, where they can be withdrawn or recalled.
+   */
+  const queued = journal
+    .filter((turn) => turn.state === "queued")
+    // Stripped for DISPLAY like the transcript — and recalling a queued turn
+    // into the box must recall the words, not the machine line the next send
+    // would prefix again.
+    .map((turn) => ({ runId: turn.runId, text: shownPrompt(turn.prompt) }));
+
+  const withdraw = useCallback(
+    (runId: string) => {
+      if (!session) return;
+      void api
+        .stopTurn(session.id, runId)
+        .then(() => open())
+        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    },
+    [open, session],
+  );
+
+  /**
+   * THE DEFAULT VIEW IS THE LATEST EXCHANGE after the cutoff. "Earlier" shows
+   * the WHOLE journal — including what a Start fresh folded away — because a
+   * disclosure that revealed only part of the history would be a second,
+   * quieter deletion path, and this module has none. Queued turns are not
+   * exchanges yet; they render in the composer's strip instead.
+   */
+  const settledJournal = journal.filter((turn) => turn.state !== "queued");
+  const cutIndex = cutoff ? settledJournal.findIndex((t) => t.runId === cutoff) : -1;
+  const afterCutoff = cutIndex >= 0 ? settledJournal.slice(cutIndex + 1) : settledJournal;
+  const latest = afterCutoff.slice(-1);
+  const shownTurns = showEarlier ? settledJournal : latest;
+  const earlierCount = settledJournal.length - latest.length;
+
   if (!session && !error) {
     return (
-      <div className="flex h-dvh flex-col">
-        <SpoolHeader active="chat" description="Loading…" />
-        <div className="mx-auto w-full max-w-3xl flex-1 space-y-4 px-6 py-8">
+      <div className="flex h-full flex-col">
+        <div className="w-full flex-1 space-y-4 px-4 py-6">
           <Skeleton className="h-5 w-40 rounded-md" />
           <Skeleton className="h-24 w-full rounded-xl" />
         </div>
@@ -223,83 +384,144 @@ export function MasterChat() {
   }
 
   return (
-    <div className="flex h-dvh flex-col">
-      {/* THE SAME BAR THE QUEUE WEARS. Its description says what this
-          surface IS rather than counting anything at you — the chat has
-          nothing to count, and a number here would be the badge the module
-          refuses everywhere else. */}
-      <SpoolHeader active="chat" description="No project — so it can answer across all of them." />
-      <div className="flex min-h-0 flex-1">
-        <div className="flex min-w-0 flex-1 flex-col">
-          {error && (
-            <Alert variant="destructive" className="mx-6 mt-4 w-auto">
-              <TriangleAlertIcon />
-              <AlertTitle>The master chat could not load</AlertTitle>
-              <AlertDescription className="font-mono text-xs break-words">{error}</AlertDescription>
-              <Button variant="outline" size="sm" className="mt-2 w-fit" onClick={() => void open()}>
-                <RotateCwIcon />
-                Retry
-              </Button>
-            </Alert>
+    <div className="flex h-full min-h-0 flex-col">
+      {error && (
+        <Alert variant="destructive" className="mx-4 mt-4 w-auto">
+          <TriangleAlertIcon />
+          <AlertTitle>The master chat could not load</AlertTitle>
+          <AlertDescription className="font-mono text-xs break-words">{error}</AlertDescription>
+          <Button variant="outline" size="sm" className="mt-2 w-fit" onClick={() => void open()}>
+            <RotateCwIcon />
+            Retry
+          </Button>
+        </Alert>
+      )}
+
+      {/* WHAT THIS HALF IS, in one line where a header would go. It counts
+          nothing at the user — the chat has nothing to count, and a number
+          here would be the badge the module refuses everywhere else. */}
+      <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+        <p className="min-w-0 flex-1 truncate text-xs leading-relaxed text-muted-foreground">
+          No project — so it can answer across all of them.
+        </p>
+        {shownTurns.length > 0 && (
+          <button
+            type="button"
+            onClick={startFresh}
+            disabled={!!live || sending}
+            className="shrink-0 text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground disabled:hover:text-muted-foreground/70"
+          >
+            Start fresh
+          </button>
+        )}
+      </div>
+
+      <ConversationViewport className="min-h-0 flex-1">
+        {/* The default gap-8 between turns stands — the transcript's rhythm
+            needs the air; only the horizontal padding is narrowed. */}
+        <ConversationContent className="w-full px-4 py-5">
+          {/* THE WAY BACK. One control, both directions, and it is how the
+              cutoff stays honest: everything "Start fresh" folded away is one
+              press from here, never gone. */}
+          {earlierCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowEarlier((v) => !v)}
+              className="mb-2 self-start text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+            >
+              {showEarlier ? "just the latest" : `earlier (${earlierCount})`}
+            </button>
           )}
 
-          <ConversationViewport className="min-h-0 flex-1">
-            <ConversationContent className="mx-auto w-full max-w-3xl px-6 py-6">
-              {journal.length === 0 && !error && (
-                /* THE FRONT DOOR'S OWN GREETING. It states what this chat is
-                   for and — because the module's whole posture is that nothing
-                   happens to you — what it will not do. */
-                <div className="py-16 text-center">
-                  <p className="text-sm text-muted-foreground">Ask where you stopped.</p>
-                  <p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted-foreground/60">
-                    This chat has no project, so it can answer across all of them. Anything you dump here it will try to
-                    make sense of and file. Nothing it prepares is started until you say so.
-                  </p>
-                </div>
-              )}
-              {journal.map((turn: JournalTurn) => (
-                <SessionTurn
-                  key={turn.runId}
-                  turn={turn}
-                  requests={requests.filter((r) => r.runId === turn.runId && r.state === "open")}
-                  sending={sending}
-                  live={turn.runId === live?.runId}
-                  now={now}
-                  onDecide={decide}
-                  onRetry={() => undefined}
-                  onDiscard={() => undefined}
-                />
-              ))}
-            </ConversationContent>
-            <ConversationScrollButton />
-          </ConversationViewport>
+          {shownTurns.length === 0 && (
+            <div className="flex flex-col gap-2 py-8">
+              {/* ORIENTATION, once and in one sentence: what this chat can
+                  reach. Below it, the openers say the same thing as things to
+                  do — each drawn from the stance's own state, never generated. */}
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                It reads and files your spool, remembers where you left off, and answers across every subject.
+              </p>
+              {/* The app's chip idiom — rounded-full, hairline, quiet fill —
+                  so an opener reads as the same kind of object as every other
+                  tappable chip in Telar. */}
+              <div className="mt-1 flex flex-col items-start gap-1.5">
+                {openers.map((opener) => (
+                  <button
+                    key={opener}
+                    type="button"
+                    disabled={!session || sending}
+                    onClick={() => send(opener, false)}
+                    className="rounded-full border border-border bg-card px-3 py-1.5 text-left text-xs text-foreground shadow-sm transition-colors hover:border-spool/40 hover:bg-muted/40"
+                  >
+                    {opener}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
-          <div className="mx-auto w-full max-w-3xl px-6 pb-6">
-            <Composer
-              draft={draft}
-              ready={!!session}
-              attachments={[]}
-              onAttach={() => undefined}
-              busy={!!live}
+          {shownTurns.map((turn: JournalTurn) => (
+            <SessionTurn
+              key={turn.runId}
+              /* The journal's turn, with the machine-context line stripped
+                 from what the transcript SHOWS — the payload keeps it. */
+              turn={{ ...turn, prompt: turn.prompt.replace(ROOM_PREFIX, "") }}
+              requests={requests.filter((r) => r.runId === turn.runId && r.state === "open")}
               sending={sending}
-              queued={[]}
-              backgroundTasks={0}
-              onDraftChange={setDraft}
-              onSubmit={submit}
-              onStop={stop}
-              onWithdraw={() => undefined}
-              onRecall={() => undefined}
-              onRuntimeMode={() => undefined}
-              onModelChange={() => undefined}
-              {...(session ? { session } : {})}
-              {...(session?.runtimeMode ? { runtimeMode: session.runtimeMode } : {})}
+              live={turn.runId === live?.runId}
+              now={now}
+              quiet
+              onDecide={decide}
+              onRetry={() => undefined}
+              onDiscard={() => undefined}
             />
-          </div>
-        </div>
+          ))}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </ConversationViewport>
 
-        {/* THE DESK SITS BESIDE THE CHAT, not under it: what agents have filed
-            for you is context for the conversation, not a separate errand. */}
-        <DeskRail cards={desk} />
+      {/* CAPABILITY STAYS DISCOVERABLE past the first message: the same
+          openers, one quiet row, still tappable. */}
+      {shownTurns.length > 0 && openers.length > 0 && (
+        <div className="flex shrink-0 flex-wrap gap-1.5 px-4 pb-2">
+          {openers.map((opener) => (
+            <button
+              key={opener}
+              type="button"
+              disabled={!session || sending}
+              onClick={() => send(opener, false)}
+              className="max-w-full truncate rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+            >
+              {opener}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="w-full px-4 pb-4">
+        <Composer
+          draft={draft}
+          ready={!!session}
+          attachments={[]}
+          onAttach={() => undefined}
+          busy={!!live}
+          sending={sending}
+          queued={queued}
+          backgroundTasks={0}
+          onDraftChange={setDraft}
+          placeholder="Say what you're working on, or dump something and it'll get filed…"
+          onSubmit={submit}
+          onStop={stop}
+          onWithdraw={withdraw}
+          onRecall={(item) => {
+            withdraw(item.runId);
+            setDraft(item.text);
+          }}
+          onRuntimeMode={() => undefined}
+          onModelChange={() => undefined}
+          {...(session ? { session } : {})}
+          {...(session?.runtimeMode ? { runtimeMode: session.runtimeMode } : {})}
+        />
       </div>
     </div>
   );

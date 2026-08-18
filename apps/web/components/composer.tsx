@@ -86,11 +86,13 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
   return session?.driver ?? driver ?? "claude";
 }
 
-function placeholderFor(ready: boolean, busy: boolean): string {
+function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
   if (!ready) return "Waiting for the engine-owned session…";
   // The ONLY place the cockpit mentions that queueing exists.
   if (busy) return "Enter queues a message…";
-  return "Ask for changes, explore the project, or continue this conversation…";
+  // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
+  // which the Spool's front door does not have one of.
+  return placeholder ?? "Ask for changes, explore the project, or continue this conversation…";
 }
 
 /** One waiting message. Ported from the donor's QueueChip — the numbered badge
@@ -299,6 +301,7 @@ export function Composer({
   onWithdraw,
   onRecall,
   onRuntimeMode,
+  placeholder,
   onModelChange,
   onOpenChanges,
 }: {
@@ -358,6 +361,9 @@ export function Composer({
   onRuntimeMode: (mode: RuntimeMode) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
+  /** What the input invites. The default offers to "explore the project",
+   *  which is wrong on the Spool's front door — it has no project. */
+  placeholder?: string;
   onModelChange?: (next: ModelChoice) => void;
   /** Opens the right panel on the file-changes surface. */
   onOpenChanges?: () => void;
@@ -763,7 +769,7 @@ export function Composer({
             ref={editor}
             id="turn-prompt"
             value={draft}
-            placeholder={placeholderFor(ready, busy)}
+            placeholder={placeholderFor(ready, busy, placeholder)}
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
             onChange={(text) => {

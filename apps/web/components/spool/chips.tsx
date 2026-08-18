@@ -20,9 +20,148 @@
  * the app's own semantic-neutral primary tint rather than a status hue — and it
  * left with the verdict. Nothing here is tinted today.
  */
-import { CheckIcon, CircleDotIcon, WrenchIcon } from "lucide-react";
-import type { SpoolDeadline } from "@telar/engine-client";
+import { useState } from "react";
+import { CheckIcon, CircleDotIcon, PinIcon, WrenchIcon } from "lucide-react";
+import type { SpoolDeadline, SpoolPin } from "@telar/engine-client";
+import { subjectColorVar } from "@/components/spool/subject-color";
+import { formatDay } from "@/lib/spool-today";
 import { cn } from "@/lib/utils";
+
+/**
+ * A SUBJECT'S IDENTITY DOT — loops §8.2, one definition site like every chip.
+ *
+ * It paints exactly one thing: the hue the USER gave the subject, through the
+ * pure token→var helper — WHOSE, never how urgent. It takes no item, no
+ * state and no date, so it cannot be recruited as a status light; absent or
+ * unknown renders the helper's neutral grey, because an uncoloured subject is
+ * an ordinary subject. Slightly larger than the 1.5 `bg-spool` room mark
+ * (identity must be tellable from the band mark at a glance) and never more:
+ * a dot, not a badge.
+ */
+export function SubjectDot({ color, className }: { color?: string | null; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn("size-2 shrink-0 rounded-full", className)}
+      style={{ backgroundColor: subjectColorVar(color) }}
+    />
+  );
+}
+
+/**
+ * THE CHECKBOX — `docs/spool-loops.md` §9, the hand's own close, one
+ * definition site like every piece of the grammar so it renders identically
+ * on a stance row, a board card, a calendar line and the packet face.
+ *
+ * ROUND, because the app's feel is rounded and the gesture it copies is
+ * Reminders': click, it's done. ONE GESTURE — the click calls `onToggle`
+ * directly; no dialog, no confirmation, because §9.2 says "bureaucracy after
+ * a checkbox is how trackers die" and closing is idempotent and reversible.
+ * The tick paints OPTIMISTICALLY (local state, replaced when the snapshot
+ * reloads and the row leaves the active slice) so the hand sees the mark the
+ * instant it moves.
+ *
+ * QUIET BY LAW: the ring is a hairline, the tick is the neutral foreground —
+ * no state hue, no fill from the tint vocabulary. Done is a fact, not an
+ * alarm, and neither is not-done.
+ */
+export function CloseCheckbox({
+  closed,
+  label,
+  onToggle,
+  className,
+}: {
+  closed: boolean;
+  /** Accessible name — "Close “Call María”" / "Reopen “Call María”". */
+  label: string;
+  onToggle: () => void;
+  className?: string;
+}) {
+  const [ticked, setTicked] = useState(closed);
+  // Derived-state adjustment, render-phase (the React-documented pattern):
+  // when the store's own answer arrives via props, it wins over the optimism.
+  const [wasClosed, setWasClosed] = useState(closed);
+  if (closed !== wasClosed) {
+    setWasClosed(closed);
+    setTicked(closed);
+  }
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={ticked}
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        // The row behind this is usually a click target of its own — the tick
+        // must not also open the packet.
+        event.stopPropagation();
+        setTicked((t) => !t);
+        onToggle();
+      }}
+      className={cn(
+        "flex size-4 shrink-0 items-center justify-center rounded-full border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+        ticked ? "border-foreground/50" : "border-border hover:border-foreground/40",
+        className,
+      )}
+    >
+      {ticked && <CheckIcon className="size-3 text-foreground" aria-hidden />}
+    </button>
+  );
+}
+
+/**
+ * THE SELECTION HOTSPOT — loops §10's selection model, one definition site
+ * like every piece of the grammar so a stance row, a board card and a Done
+ * row cannot drift apart.
+ *
+ * SQUARE WHERE THE CLOSE CHECKBOX IS ROUND — the two gestures must be
+ * tellable apart at a glance, because they mean opposite ends of a verb:
+ * the round tick IS the close (one gesture, §9.2), the square only GATHERS.
+ * It renders exclusively while Select mode is up, so the ordinary room keeps
+ * the checkbox as the row's one tick target and the two never compete for
+ * the same click. Shift rides the click for range — the browser's own list
+ * grammar — and is read here, once, for every surface.
+ *
+ * SELECTING WRITES NOTHING. This control touches no route; the action bar's
+ * verbs are where the store is reached, and clearing a selection undoes
+ * nothing because nothing was done.
+ */
+export function SelectHotspot({
+  selected,
+  label,
+  onToggle,
+  className,
+}: {
+  selected: boolean;
+  /** Accessible name — "Select “Call María”". */
+  label: string;
+  onToggle: (shiftKey: boolean) => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={selected}
+      aria-label={label}
+      title={label}
+      onClick={(event) => {
+        // The row behind is a click target of its own — gathering must not
+        // also open the packet.
+        event.stopPropagation();
+        onToggle(event.shiftKey);
+      }}
+      className={cn(
+        "flex size-4 shrink-0 items-center justify-center rounded-[4px] border outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+        selected ? "border-foreground/60 bg-muted" : "border-border hover:border-foreground/40",
+        className,
+      )}
+    >
+      {selected && <CheckIcon className="size-3 text-foreground" aria-hidden />}
+    </button>
+  );
+}
 
 /** A tool-use pill, the way agent surfaces render calls elsewhere in the app. */
 export function ToolPill({ call }: { call: string }) {
@@ -69,6 +208,22 @@ export function DeadlineChip({ deadline }: { deadline: SpoolDeadline }) {
           · self{deadline.slips ? ` · slid ×${deadline.slips}` : ""}
         </span>
       )}
+    </span>
+  );
+}
+
+/**
+ * A PIN — the user's own day for an item, worn as a chip. §3.2 as amended
+ * (2026-08-16): drawing a date the user stated is QUOTING, not shouting, so
+ * the chip renders `formatDay`'s pure format of the stored `YYYY-MM-DD` and
+ * nothing else — no countdown, no age, no state colour, whichever side of
+ * today the day sits on.
+ */
+export function PinChip({ pinned }: { pinned: SpoolPin }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+      <PinIcon className="size-2.5 text-muted-foreground/60" />
+      {formatDay(pinned.day)}
     </span>
   );
 }

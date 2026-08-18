@@ -11,8 +11,10 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import {
   assertWall,
+  isRateLimit,
   NEVER_TOOLS,
   READ_ONLY_TOOLS,
+  retryAfterFrom,
   structuredAgent,
   type ClaudeAgentSdk,
 } from "../src/agent";
@@ -270,5 +272,59 @@ describe("what comes back", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.usage).toBeUndefined();
+  });
+});
+
+describe("rate limits are their own kind of failure", () => {
+  test("the provider's own vocabulary is recognised", () => {
+    // A HEURISTIC OVER PROSE, because the SDK surfaces this as a message rather
+    // than a typed error. Being wrong in the safe direction costs one night's
+    // remaining work; being wrong the other way costs a loop of doomed requests.
+    for (const message of [
+      "rate limit exceeded",
+      "HTTP 429",
+      "Too Many Requests",
+      "quota exceeded for this organization",
+      "usage limit reached",
+      "overloaded_error",
+    ]) {
+      expect(isRateLimit(message), `"${message}" should read as a rate limit`).toBe(true);
+    }
+  });
+
+  test("an ordinary failure is NOT read as one", () => {
+    // The costly direction: a night that stopped on the first malformed answer
+    // would leave every other item unworked for no reason.
+    for (const message of ["the model finished without emitting a result", "ENOENT", "native CLI binary not found"]) {
+      expect(isRateLimit(message), `"${message}" must not read as a rate limit`).toBe(false);
+    }
+  });
+
+  test("a reset time is read when the provider gives one, in either unit", () => {
+    const now = 1_000_000;
+    expect(retryAfterFrom("retry-after: 30", now)).toBe(now + 30_000);
+    expect(retryAfterFrom("try again in 45s", now)).toBe(now + 45_000);
+    // Ten digits is seconds and thirteen is milliseconds — guessing wrong parks
+    // the runner for a month or for no time at all.
+    expect(retryAfterFrom("resets at 1786800000", now)).toBe(1_786_800_000_000);
+    expect(retryAfterFrom("resets at 1786800000000", now)).toBe(1_786_800_000_000);
+  });
+
+  test("no reset time is absent, never invented", () => {
+    // A runner with no reset waits for its next ordinary trigger. A guessed one
+    // would either hammer the provider or idle for hours nobody chose.
+    expect(retryAfterFrom("rate limit exceeded", 1_000_000)).toBeUndefined();
+  });
+
+  test("a rate-limited call reports its own kind rather than `unavailable`", async () => {
+    const { sdk } = fakeSdk({ throws: new Error("429 Too Many Requests; retry-after: 60") });
+    const result = await structuredAgent("go", { schema: SCHEMA, label: "t" }, deps(sdk));
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.kind).toBe("rate-limited");
+      expect(result.retryAfter).toBeGreaterThan(Date.now());
+      expect(result.reason).toContain("Nothing was written");
+    }
   });
 });

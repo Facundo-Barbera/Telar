@@ -102,6 +102,21 @@ own reasoning. They are not a schedule Telar shows you.
 **The line, stated for the test suite:** a clock may be read by an agent deciding
 what to do. A clock may not be read by a renderer deciding what to draw.
 
+> **AMENDED, 2026-08-16 (the workbench pass — `docs/spool-loops.md` §8):**
+> **the calendar belongs to the human.** The user said it plainly: "sometimes
+> dates exist and that's not a problem — I want to keep my freedom but
+> sometimes I do need to pin down tasks to specific dates." So the law's
+> target narrows to what it was always aiming at: the system *editorializing*
+> time. Dates the user stated are the user's own words, and drawing them
+> spatially — on a week, on a month, on the day they name — is quoting, not
+> shouting. A renderer may now read the clock for exactly one purpose: to know
+> which day is today so it can draw the user's own dates in the right place
+> and say, quietly, "you pinned this to Tuesday — it's still here." What
+> remains banned, forever: countdowns, overdue-red, badges, reordering the
+> user's attention because a clock ticked, and any date the user did not
+> state. The system may **respect** the user's dates (night prepares
+> Tuesday's work before Tuesday); it may never **wield** them.
+
 ### 3.3 It waits at the door rather than knocking
 
 > **Old:** no notifications, alarms, badges, or push of any kind.
@@ -149,7 +164,7 @@ now, because an assistant that acts has more ways to violate them.
 
 | Non-goal | Now |
 | --- | --- |
-| No capture-channel integrations; v1 is hand-fed | **Flips, narrowly.** Reading a GitHub plan is required — that is where ozom-gv's four months live. Read-only, one channel, no watchers or webhooks. Every other channel stays out. |
+| No capture-channel integrations; v1 is hand-fed | **Flips, narrowly.** A tracker may POPULATE a plan — that is how ozom-gv's four months get in — but the plan is Telar's own record and no subject ever requires one. Read-only, one channel, no watchers or webhooks. Every other channel stays out. |
 | No Telar-authored schedule or agenda | **Flips, internally.** Telar may keep a plan's shape to reason with. It still authors no agenda *at you*. |
 | No agent-initiated execution | **Flips, bounded by §3.1.** Only into a container that cannot ship. |
 | No notifications or push | **Holds**, with the arrival-state clarification in §3.3. |
@@ -294,10 +309,21 @@ overnight.
 
 Recorded rather than resolved, and each blocks something specific.
 
-1. **The blocked-agent carve-out (§3.3).** Does a stalled dispatch wait
-   indefinitely for you to sit down? Blocks 7.4's failure design.
-2. **Where a plan lives when the subject has no tracker.** School has no GitHub.
-   Is the plan a Spool item with structure, or a new kind of record? Blocks 7.3.
+1. ~~**The blocked-agent carve-out (§3.3).**~~ **RESOLVED, 2026-08-16.** A
+   blocked dispatch writes its question down and parks. The question is a
+   first-class line in the morning report (§11.4) — "refused" and "asked" are
+   outcomes, not errors — and nothing escalates, buzzes, or retries on its own.
+   The week-later-nothing-ran fear is answered by the report being the first
+   thing arrival shows, not by the system reaching out.
+2. ~~**Where a plan lives when the subject has no tracker.**~~ **RESOLVED,
+   2026-08-15.** A plan is a record of the SUBJECT's, never a Spool item and
+   never a view of a foreign tracker. A tracker may populate it; none is ever
+   required. The polarity matters: a subject with no tracker is the ORDINARY
+   case, not a degraded one — ozom-gv is a subject that happens to have an
+   importer, rather than school being a broken ozom-gv. This also removes the
+   two-way sync these systems usually die of: an import is a one-way pass that
+   PROPOSES entries, marked like every other agent artifact until a human has
+   looked.
 3. **Whether permission level is per subject or per action** (§7.6). Per subject
    is simpler and probably wrong at the edges — "may open PRs" and "may spend
    API budget overnight" are not the same grant.
@@ -362,3 +388,201 @@ an assistant rather than a viewer for a queue, which settles the question that
 was open: it is a chat with a Desk rail and dispatch cards, and the project
 cockpit is where a *dispatched* session is watched. They are different surfaces
 with a link between them, not one surface serving two masters.
+
+> **Superseded in part by §13 (2026-08-16):** the chat remains the way you talk
+> to it, but it is no longer the front door standing alone — the stance surface
+> is, with the conversation beside it. The dispatched-session/cockpit split
+> stands.
+
+## 11 · How a night runs
+
+Added **2026-08-16**, from the conversation that found the trigger paradox:
+manual-only means nighttime never comes; a free-running agent is the runaway
+the user rightly fears. The resolution is not a dial position. It is that night
+work splits into two phases with opposite safety profiles, and discretion is
+concentrated into one auditable seam.
+
+### 11.1 · Two phases, two clearances
+
+**Mapping is convergent.** It projects a finite external reality — the assigned
+issues, their dependency edges, what closed since the last look, what a capture
+implies about a subject — into the plan. It has a fixpoint: when the map matches
+the world, there is nothing left to do. It is read-only toward the world and,
+under compress-never-multiply, anything it adds to the store is a proposal
+marked agent-authored. **Mapping therefore self-initiates freely.** Idle is
+enough; `humanActive()` exists for exactly this. It cannot run away because
+reality is finite.
+
+**Working is divergent.** There are infinitely many things worth drafting, so
+this is where runaway and waste live. Working runs only under a subject's
+standing permit (§7.6), under ceilings (max jobs, max tokens, per-subject
+allocation), into containers (§3.1). A subject with no permit gets mapped and
+never worked.
+
+**This supersedes the 2026-08-15 decision that the night's trigger stays
+manual.** The "Work on this now" button survives as one way in, not the only
+one.
+
+### 11.2 · Three roles, one seam of discretion
+
+The failure mode of one agent doing map → select → draft is that the selector
+grades its own homework — it maps the world in a way that justifies the work it
+wants to do. That is what task-selection overfit is. A swarm each choosing for
+itself is worse: nobody's selection is accountable. So:
+
+- **Mappers** update the graph from reality. No opinion about what is worth
+  doing. Parallelism here is harmless precisely because they have no selection
+  power.
+- **The selector** is one small structured call whose only output is tonight's
+  plan: a ranked handful of atomic jobs, each citing the map ("#412, because
+  #409 and #411 closed and Hito 1 closes in two weeks"), plus what it
+  deliberately skipped and why. This is the frozen queue `night.ts` already
+  expects.
+- **Workers** are one ephemeral agent per job — the spec's "ephemeral experts,
+  not resident ones." A worker executes its job and stops. It cannot add jobs
+  to the night.
+
+Everything upstream of the selector is mechanical; everything downstream is
+bounded. Discretion lives in one place you can read the next morning.
+
+### 11.3 · The plan is recorded, never approved
+
+An earlier draft of this section put an approval in front of the plan. That
+quietly reintroduced the old moat — approving a *promise* instead of a *diff* —
+and it is deleted on the argument §3.1 already made. The plan is frozen when the
+night starts and shown in the morning next to what came of it: an audit trail,
+not a consent screen. What replaces per-night consent is standing state the
+human already authored: permits, ceilings, the container rule.
+
+The cost is named so it stays chosen rather than discovered: **the worst night
+is a wasted night** — wrong priorities, drafts discarded, a morning of "no, not
+that." It can never be a damaging night, because damage requires landing and
+landing still requires a human. Wasted nights are also the training signal: the
+discards are what the next selector reads.
+
+### 11.4 · What a night is measured by
+
+Overuse and overfit stop being vibes once selection is a single recorded
+decision:
+
+- **Overuse is cost-per-accepted-artifact, not cost.** The runner already
+  threads usage out so the report can say what a night came to. A night that
+  spent heavily on drafts that were all discarded is overuse; the same spend on
+  accepted work is not.
+- **Overfit is read off the selection record:** the accept rate on its picks
+  (calibration), the never-picked set (the gnarly work it avoids reveals its
+  blind spot), and repeat concentration on one subject or category. The
+  structural counter: a pick that cannot cite a map edge does not run.
+- **The report is the contract:** what ran, what it cost, what is waiting in
+  which container, every question it wrote down instead of asking, and every
+  refusal. Refused is a first-class outcome.
+
+## 12 · The provenance law
+
+> **Every action a night takes must trace to something the human fed in** — a
+> capture, an assigned issue, a mirror, a standing permit. The assistant's
+> autonomy is *interpretive*, never *volitional*: it has no goals of its own,
+> only the human's, elaborated later and further than the human took them.
+
+"los presupuestos no cuadran" is enough provenance to map the reconciliation
+flow, draft the fix, and prepare the summary for Ana — each a delayed response
+to eleven words. A job with no citation does not run, and the citation is
+visible on every artifact in the morning report. The queue's old footer —
+"every one traces to something you fed in or a mirror" — is promoted from a
+caption to an enforcement rule.
+
+This is also why vagueness is the *primary* input, not a tolerated one. The
+dump is the command. Being sloppy at 11pm is safe because the raw fragment sits
+forever beside what the assistant made of it, so drift is checkable at any
+depth, any time later. Nothing is approved in advance; it is corrected when
+looked at, and the correction becomes memory the next selector reads.
+
+## 13 · The surface, redefined
+
+Recorded **2026-08-16**, after driving both built surfaces against the real
+store and finding both illegible. The diagnosis, verbatim from the person the
+product is for: "I have no idea what I'm looking at… just a bunch of data with
+some fancy surfaces."
+
+### 13.1 · Why both versions failed the same way
+
+Every surface answered "what is in the store?" — subjects, threads,
+known/unanswered counts, facts. Nobody arrives with that question. They arrive
+with three: **what needs me, what is being handled, what happened while I was
+gone.** A screen organized by the memory model's taxonomy is a database
+presenting itself; a screen organized by those three questions is an assistant
+presenting itself.
+
+The shapes experiment failed for the same reason one level down: it bet the
+problem was the *pieces* — make Capture look unlike Thread and Fact and the
+screen will read. But a work surface is not parsed by object type; it is parsed
+by **ownership and state** — whose hands is this in, and is it moving. Six
+visually distinct nouns is still six nouns to memorize.
+
+The one surface that already read well is the packet page, and the reason
+generalizes: it leads with the human's own words plus one interpretation, no
+invented vocabulary. It survives unchanged.
+
+### 13.2 · One screen, four bands
+
+`/spool` is one screen: the assistant's **stance**, beside the conversation.
+
+- **Needs you** — decisions, unanswered questions, night-written questions,
+  anything prepared that lacks a container and is waiting for a human act.
+- **In its hands** — live work, tonight's plan or the last night's record, work
+  sitting in containers awaiting review. The morning report lives here, drawn
+  from `night.json` and the store with **no model call** — "what happened" is
+  rendered, never asked about.
+- **Waiting on others** — threads parked on a named person.
+- **Settled** — the drained and the done, present but quiet.
+
+Every line is titled by the human's own captured words wherever they exist.
+The taxonomy — threads, ripening, facts, provenance chains — is detail *inside*
+an item once opened, never the vocabulary of the front page. The exotic memory
+model is the engine, not the dashboard.
+
+Departure is a glance, not a gate: the stance shows what the coming night would
+work on (per §11.3, recorded, not approved). Arrival is the same screen with
+the report at the top of "In its hands." No clock reaches any of it (§3.2).
+
+### 13.3 · What this retires
+
+The v2 composed canvas (the model choosing the layout produced duplicated
+blocks and stat-laden titles on its first real screen — freshness traded for
+drift), the shapes scratch page (its question is answered: the pieces were
+never the problem), and the queue as a destination (the bands absorb it; the
+inventory view survives only as detail). The chat, the packet page, and the
+store underneath survive whole.
+
+### 13.4 · The room
+
+Built **2026-08-16**, after two passes of driving §13.2 against the real
+store. `/spool` is three columns: the stance, a tray, the conversation.
+
+The tray is **summoned, never resident**. The panel it replaces was a tab
+strip — Desk, Night, Memory, Queue, plus every packet you had opened — and a
+tab strip says "these things are always here," which is the queue's posture
+wearing new chrome. Detail is something you call for: a stance line opens its
+packet in the middle column, the night line opens the record, a subject's
+shield opens the grants, and dismissing it is two columns again. One face at
+a time; a second summon replaces the first. The old packet route survives as
+a deep link that lands in the room with the tray already open — one renderer
+of a packet, not two.
+
+**Scope is the room's aperture,** everything or one subject, and its truth is
+the focus log — "You're on ozom-gv" was already a record, so the aperture
+reads it rather than growing a view-only copy that could disagree with the
+pickup. Entering scope opens a focus entry; widening ends it (`paused`, a
+fact about attention, never a status on the work). Every band renders through
+the scope, and what is folded compresses to one line whose calm is **checked,
+not hoped**: a folded subject with something waiting on you is named, with
+its count, before the line may say nothing blocks you.
+
+The chat is aware of the room — every turn carries one bracketed line naming
+the scope, the tray's face and the bands' counts, visibly, so "file this" and
+"what's this about" resolve against what is on screen and the human can read
+exactly what the model was told. And the chat's **steerable vocabulary is
+closed: scope and tray, never layout.** It can be asked to narrow the room or
+to open a face; it cannot be asked to rearrange the surface, because a layout
+a model can restyle is the v2 canvas again — freshness traded for drift, once
+was enough.

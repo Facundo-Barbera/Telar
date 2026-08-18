@@ -22,6 +22,7 @@ export * from "./requests";
 export * from "./tasks";
 export * from "./tools";
 export * from "./spool";
+export * from "./canvas";
 export * from "./github";
 export * from "./events";
 export * from "./observations";

@@ -1,0 +1,757 @@
+"use client";
+
+/**
+ * A SUBJECT'S ROOM — `docs/spool-loops.md` §13.2/§13.3. Opens on THE BRIEF:
+ * `GET /v2/spool/subjects/:key/brief` (`/api/spool/subjects/[key]/brief`),
+ * composed once, deterministic, no model call — the same discipline
+ * `SpoolBriefing` already holds for one item, widened to a whole subject.
+ * Behind the brief, TABS hold the full grammar: Tasks (the existing focused
+ * band rendering — needs/in-its-hands/waiting-on-others/settled/done — is
+ * unified there already, so this room does not split threads into a
+ * separate tab; see the file-level note in the report this pass shipped
+ * with), Board, Calendar, Notes.
+ *
+ * FILTERS ARE TRANSIENT HERE. `stuck on me` / `unfiled` / lane / tag render
+ * as chips ABOVE the Tasks tab's content, local `useState`, no store write —
+ * "glances aren't work" travels from the retired toolbar into this room
+ * unchanged, only the home moved.
+ */
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import type {
+  SpoolBrief,
+  SpoolBriefing,
+  SpoolLane,
+  SpoolSubject,
+  SpoolSubjectGroup,
+  SpoolSubjectRow,
+  SpoolUnreadable,
+} from "@telar/engine-client";
+import type { SpoolWorkView } from "@/lib/spool-work";
+import { writeDraft } from "@/lib/composer-draft";
+import { todayDay } from "@/lib/spool-today";
+import { closeItemsByHand } from "@/lib/spool-close";
+import { Stance, SelectionBar, type StanceModel, type SettleTarget, type NeedEntry } from "@/components/spool/stance";
+import { SpoolBoard } from "@/components/spool/board";
+import { SpoolCalendar } from "@/components/spool/calendar";
+import { SubjectFace } from "@/components/spool/tray";
+import { ConfirmDialog } from "@/components/spool/dialogs";
+import { AddTaskDialog } from "@/components/spool/add-task";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+
+type Tab = "tasks" | "board" | "calendar" | "notes";
+
+function BriefSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+export function SubjectRoom({
+  subjectKey,
+  model,
+  work,
+  totals,
+  looking,
+  inventory,
+  lanes,
+  subjectRecords,
+  onOpenItem,
+  onNight,
+  onPermits,
+  onSuggest,
+  onAck,
+  onAckAll,
+  onSettle,
+  onSettleAll,
+  onCloseItem,
+  onReopenItem,
+  onPinItem,
+  closeNote,
+  onOpenNote,
+  onNewNote,
+  onChanged,
+  onLeaveRoom,
+}: {
+  subjectKey: string;
+  model: StanceModel;
+  work: SpoolWorkView;
+  totals: { totalItems: number; agentsAdded: number; unreadable: SpoolUnreadable[] } | null;
+  looking: string[];
+  inventory: SpoolSubjectGroup[];
+  lanes: SpoolLane[];
+  subjectRecords: SpoolSubject[];
+  onOpenItem: (id: string) => void;
+  onNight: () => void;
+  onPermits: () => void;
+  onSuggest: (text: string) => void;
+  onAck: (subject: string, observationId: string) => void;
+  onAckAll: (subject: string, observationIds: string[]) => void;
+  onSettle: (entry: SettleTarget) => void;
+  onSettleAll: (entries: NeedEntry[]) => void;
+  onCloseItem: (id: string) => void;
+  onReopenItem: (id: string) => void;
+  onPinItem: (id: string, day: string) => void;
+  closeNote: string | null;
+  onOpenNote: (id: string) => void;
+  onNewNote: (subjectKey?: string) => void;
+  onChanged: () => void | Promise<void>;
+  /** "Show everything" inside the embedded Stance's focused strip — the
+   *  room's own way out, back to the Lobby. */
+  onLeaveRoom: () => void;
+}) {
+  const router = useRouter();
+  const [tab, setTab] = useState<Tab>("tasks");
+  const [brief, setBrief] = useState<SpoolBrief | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const [resumeBlocked, setResumeBlocked] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+
+  /**
+   * THE SELECTION MODEL — §10, "the hand's verbs finally compound," now
+   * owned by the room rather than the whole app: this pass folded the
+   * segmented Stance/Board/Calendar posture into per-room TABS, so the
+   * selection order a shift-click ranges over is naturally a fact of THIS
+   * room's current tab, not a global. Selection stays view state — ids in
+   * memory, nothing written, cleared by a click — and the action bar's
+   * verbs are the only writes, exactly as before.
+   */
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [lastPicked, setLastPicked] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+
+  const loadBrief = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/spool/subjects/${encodeURIComponent(subjectKey)}/brief?today=${encodeURIComponent(todayDay())}`);
+      if (res.ok) setBrief((await res.json()).brief as SpoolBrief);
+    } catch {
+      // Pull-based — a dropped read leaves the last good brief up.
+    }
+  }, [subjectKey]);
+
+  useEffect(() => {
+    setBrief(null);
+    setTab("tasks");
+    const first = window.setTimeout(() => void loadBrief(), 0);
+    return () => window.clearTimeout(first);
+  }, [subjectKey, loadBrief]);
+
+  /**
+   * THE PICKUP LINE'S OWN WORDS — never a bare time label wearing task
+   * clothing. `SpoolFocusEntry.label` is a store-minted TIME ("Tue 12:36"),
+   * not a fact about what you were doing — rendering it as "you were on
+   * Tue 12:36" answers a question nobody asked. So each entry's word is,
+   * in order: its own `note` ("where you left it, in your own words" —
+   * the single most valuable string the focus log carries); else the
+   * question or handle of the open thread it narrowed to, if the brief's
+   * own open lists can resolve `threadId`; else the entry contributes
+   * nothing. An entry with nothing to say drops out rather than falling
+   * back to its label — an empty fact beats a timestamp dressed as one.
+   */
+  const pickupWords = useMemo(() => {
+    if (!brief) return [];
+    const openThreads = [...brief.open.stuckOnYou, ...brief.open.waitingOnOthers];
+    return brief.pickup.current
+      .map((e) => {
+        if (e.note) return e.note;
+        const thread = e.threadId ? openThreads.find((t) => t.threadId === e.threadId) : undefined;
+        return thread?.handle ?? thread?.question;
+      })
+      .filter((w): w is string => !!w);
+  }, [brief]);
+
+  /**
+   * RESUME SESSION — the same briefed-arrival handoff `tray.tsx`'s
+   * "Start a session" already speaks (see `ItsTurnCame`), pointed at the
+   * first candidate the brief names: the item you were on, or the top of
+   * "Next". Nothing runs until the human clicks send in the new session.
+   */
+  const candidateItemId = brief?.next[0]?.itemId;
+  const resumeSession = useCallback(() => {
+    if (!candidateItemId) return;
+    setResuming(true);
+    setResumeBlocked(null);
+    void (async () => {
+      try {
+        const res = await fetch(`/api/spool/items/${encodeURIComponent(candidateItemId)}/briefing`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const { briefing } = (await res.json()) as { briefing: SpoolBriefing };
+        if (!briefing.project) {
+          setResumeBlocked(`No registered project matches “${briefing.subject ?? subjectKey}”.`);
+          return;
+        }
+        writeDraft(undefined, briefing.project.id, briefing.briefing);
+        router.push(`/projects/${encodeURIComponent(briefing.project.id)}/sessions/new`);
+      } catch (err) {
+        setResumeBlocked(err instanceof Error ? err.message : String(err));
+      } finally {
+        setResuming(false);
+      }
+    })();
+  }, [candidateItemId, router, subjectKey]);
+
+  /** Settling a stuck-on-you open question, from the brief — the same PATCH
+   *  `stance.tsx`'s own settle dialog speaks, kept local here rather than
+   *  threaded through as a callback: the brief's open list is its own read,
+   *  not a slice of `model`. */
+  const [settling, setSettling] = useState<{ threadId: string; title: string } | null>(null);
+  const [settleAnswer, setSettleAnswer] = useState("");
+  const [settleBusy, setSettleBusy] = useState(false);
+  const [settleError, setSettleError] = useState<string | null>(null);
+  const confirmSettle = () => {
+    if (!settling || settleBusy) return;
+    setSettleBusy(true);
+    setSettleError(null);
+    void fetch(`/api/spool/threads/${encodeURIComponent(subjectKey)}/${encodeURIComponent(settling.threadId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settle: { answer: settleAnswer } }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error?.message ?? data?.error ?? `HTTP ${res.status}`);
+        setSettling(null);
+        await loadBrief();
+        await onChanged();
+      })
+      .catch((err) => setSettleError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setSettleBusy(false));
+  };
+
+  /** Dead items — §13.3.5's "say the word", the compost close-many. */
+  const [closingDead, setClosingDead] = useState(false);
+  const [deadBusy, setDeadBusy] = useState(false);
+  const [deadNote, setDeadNote] = useState<string | null>(null);
+  const confirmCloseDead = () => {
+    if (!brief || deadBusy) return;
+    setDeadBusy(true);
+    void closeItemsByHand(brief.deadItems.map((d) => d.itemId))
+      .then(async (sentence) => {
+        setDeadNote(sentence);
+        setClosingDead(false);
+        await loadBrief();
+        await onChanged();
+      })
+      .catch((err) => setDeadNote(err instanceof Error ? err.message : String(err)))
+      .finally(() => setDeadBusy(false));
+  };
+
+  /** Every readable inventory row by id — the Tasks tab's transient filters
+   *  resolve items against it, the same join `stance.tsx`'s room used to own. */
+  const rowsById = useMemo(() => {
+    const map = new Map<string, SpoolSubjectRow>();
+    for (const group of inventory) for (const row of group.rows) map.set(row.item.id, row);
+    return map;
+  }, [inventory]);
+
+  /**
+   * TRANSIENT FILTERS — local to this room's Tasks tab, view state only,
+   * never a store write and never persisted. §13's "filters become
+   * transient chips above tab content with visible ✕ and one clear."
+   */
+  const [filter, setFilter] = useState<{ lane?: string; stuckOnMe?: boolean; unfiled?: boolean; tag?: string }>({});
+  const filterOn = !!(filter.lane || filter.stuckOnMe || filter.unfiled || filter.tag);
+  const stuckItemIds = useMemo(
+    () => new Set(model.needs.filter((e) => e.tier === 1 && e.itemId).map((e) => e.itemId as string)),
+    [model.needs],
+  );
+  const itemPasses = useCallback(
+    (id: string): boolean => {
+      if (!filterOn) return true;
+      const row = rowsById.get(id);
+      if (filter.lane && row?.lane !== filter.lane) return false;
+      if (filter.unfiled && !(!row || !row.item.project || !row.lane)) return false;
+      if (filter.tag && !(row?.item.tags ?? []).includes(filter.tag)) return false;
+      if (filter.stuckOnMe && !stuckItemIds.has(id)) return false;
+      return true;
+    },
+    [filterOn, rowsById, filter, stuckItemIds],
+  );
+  const entryPasses = useCallback(
+    (e: StanceModel["needs"][number]): boolean => {
+      if (!filterOn) return true;
+      if (e.itemId) return itemPasses(e.itemId);
+      if (filter.lane || filter.tag || filter.unfiled) return false;
+      return !filter.stuckOnMe || e.tier === 1;
+    },
+    [filterOn, itemPasses, filter],
+  );
+  const viewModel: StanceModel = !filterOn
+    ? model
+    : {
+        ...model,
+        needs: model.needs.filter(entryPasses),
+        housekeeping: model.housekeeping.filter((h) => itemPasses(h.id)),
+        prepared: model.prepared
+          .map((g) => ({ ...g, rows: g.rows.filter((r) => itemPasses(r.id)) }))
+          .filter((g) => g.rows.length > 0),
+        scheduled: {
+          slipped: model.scheduled.slipped.filter((r) => itemPasses(r.id)),
+          days: model.scheduled.days
+            .map((d) => ({ ...d, rows: d.rows.filter((r) => itemPasses(r.id)) }))
+            .filter((d) => d.rows.length > 0),
+        },
+      };
+  const tagsInData = useMemo(
+    () => [...new Set([...rowsById.values()].filter((r) => !r.item.closed).flatMap((r) => r.item.tags ?? []))].sort((a, b) => a.localeCompare(b)),
+    [rowsById],
+  );
+
+  /** The current tab's own render order — what a shift-click ranges over.
+   *  Only Tasks and Board carry a selection; the other two have nothing to
+   *  gather. */
+  const selectionOrder =
+    tab === "board"
+      ? lanes.flatMap((lane) => lane.items).filter((id) => {
+          const row = rowsById.get(id);
+          return !!row && !row.item.closed && itemPasses(id) && row.item.project === subjectKey;
+        })
+      : [
+          ...viewModel.needs.map((e) => e.itemId).filter((id): id is string => !!id),
+          ...viewModel.housekeeping.map((h) => h.id),
+          ...viewModel.scheduled.slipped.map((r) => r.id),
+          ...viewModel.scheduled.days.flatMap((d) => d.rows.map((r) => r.id)),
+          ...viewModel.prepared.flatMap((g) => g.rows.map((r) => r.id)),
+          ...viewModel.done.map((d) => d.id),
+        ].filter((id, i, all) => all.indexOf(id) === i);
+  const toggleSelect = (id: string, shiftKey: boolean) => {
+    setSelected((prev) => {
+      if (shiftKey && lastPicked && lastPicked !== id) {
+        const a = selectionOrder.indexOf(lastPicked);
+        const b = selectionOrder.indexOf(id);
+        if (a !== -1 && b !== -1) {
+          return [...new Set([...prev, ...selectionOrder.slice(Math.min(a, b), Math.max(a, b) + 1)])];
+        }
+      }
+      return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+    });
+    setLastPicked(id);
+  };
+  const selection = selecting ? { selected: (id: string) => selected.includes(id), toggle: toggleSelect } : null;
+  const clearSelection = () => {
+    setSelected([]);
+    setLastPicked(null);
+  };
+  const closeSelected = () => {
+    if (bulkBusy || selected.length === 0) return;
+    setBulkBusy(true);
+    void closeItemsByHand(selected)
+      .then(async (sentence) => {
+        setBulkNote(sentence);
+        clearSelection();
+        await onChanged();
+      })
+      .catch((err) => setBulkNote(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBulkBusy(false));
+  };
+  const patchSelected = (label: string, patchOf: (id: string) => Record<string, unknown>) => {
+    if (bulkBusy || selected.length === 0) return;
+    setBulkBusy(true);
+    void (async () => {
+      const refusals: string[] = [];
+      let landed = 0;
+      for (const id of selected) {
+        try {
+          const res = await fetch(`/api/spool/items/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(patchOf(id)),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data?.error?.message ?? data?.error ?? `HTTP ${res.status}`);
+          landed += 1;
+        } catch (err) {
+          refusals.push(`“${err instanceof Error ? err.message : String(err)}”`);
+        }
+      }
+      setBulkNote([`${label} ${landed} ${landed === 1 ? "item" : "items"}`, ...refusals].join("; "));
+      clearSelection();
+      await onChanged();
+    })().finally(() => setBulkBusy(false));
+  };
+  const laneSelected = (lane: string) => patchSelected("moved", () => ({ lane }));
+  const pinSelected = (day: string) => patchSelected("pinned", () => ({ pinned: { day } }));
+  const tagSelected = (tag: string) =>
+    patchSelected("tagged", (id) => {
+      const existing = rowsById.get(id)?.item.tags ?? [];
+      return { tags: existing.includes(tag) ? existing : [...existing, tag] };
+    });
+
+  return (
+    <div className="mx-auto w-full max-w-3xl px-6 py-6">
+      {/* ── THE BRIEF ──────────────────────────────────────────────────── */}
+      <div className="mb-6 space-y-4 rounded-xl bg-card px-4 py-5 shadow-sm ring-1 ring-foreground/10">
+        {!brief && <p className="px-1 text-xs text-muted-foreground/60">Reading…</p>}
+        {brief && (
+          <>
+            <div className="flex items-start justify-between gap-3 px-1">
+              <div className="min-w-0 space-y-1">
+                {brief.pickup.current.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Nothing open here yet.</p>
+                ) : pickupWords.length > 0 ? (
+                  <p className="text-sm text-foreground">
+                    You were on {pickupWords.map((w) => `“${w}”`).join(", ")}
+                  </p>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                disabled={!candidateItemId || resuming}
+                onClick={resumeSession}
+                title={!candidateItemId ? "Nothing queued to resume yet" : undefined}
+                className="shrink-0 rounded-md border border-border px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-spool/40 disabled:pointer-events-none disabled:opacity-40"
+              >
+                Resume session
+              </button>
+            </div>
+            {resumeBlocked && <p className="px-1 text-xs leading-relaxed text-muted-foreground">{resumeBlocked}</p>}
+
+            <BriefSection title="Since your look">
+              <p className="px-1 text-xs leading-relaxed text-muted-foreground">
+                {brief.sinceYourLook.note
+                  ? brief.sinceYourLook.note
+                  : brief.sinceYourLook.look?.lastLooked
+                    ? `${brief.sinceYourLook.look.lastLooked}${brief.sinceYourLook.fresh ? "" : " — stale"}${
+                        brief.sinceYourLook.error ? ` — “${brief.sinceYourLook.error}”` : ""
+                      }`
+                    : "never looked yet"}
+              </p>
+              {(brief.sinceYourLook.digest ?? []).map((line, i) => (
+                <p key={i} className="px-1 text-xs leading-relaxed text-muted-foreground/80">
+                  {line.text}
+                </p>
+              ))}
+            </BriefSection>
+
+            {(brief.open.stuckOnYou.length > 0 || brief.open.waitingOnOthers.length > 0) && (
+              <BriefSection title="Open questions">
+                <ul className="space-y-0.5">
+                  {brief.open.stuckOnYou.map((t) => (
+                    <li key={t.threadId} className="flex items-center gap-2 px-1 py-0.5">
+                      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{t.handle?.trim() || t.question}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSettleAnswer("");
+                          setSettleError(null);
+                          setSettling({ threadId: t.threadId, title: t.handle?.trim() || t.question });
+                        }}
+                        className="shrink-0 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+                      >
+                        Settle
+                      </button>
+                    </li>
+                  ))}
+                  {brief.open.waitingOnOthers.map((t) => (
+                    <li key={t.threadId} className="px-1 py-0.5 text-xs text-muted-foreground">
+                      {t.handle?.trim() || t.question} — waiting on {t.who ?? "someone"}
+                    </li>
+                  ))}
+                </ul>
+              </BriefSection>
+            )}
+
+            {brief.next.length > 0 && (
+              <BriefSection title="Next">
+                <ul className="space-y-0.5">
+                  {brief.next.map((n) => (
+                    <li key={n.itemId}>
+                      <button
+                        type="button"
+                        onClick={() => onOpenItem(n.itemId)}
+                        className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none hover:bg-muted/40"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-sm text-foreground">{n.title}</span>
+                        <span className="shrink-0 text-[10px] text-muted-foreground/60">{n.source}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </BriefSection>
+            )}
+
+            {brief.notes.count > 0 && (
+              <p className="px-1 text-xs text-muted-foreground/70">
+                {brief.notes.count} {brief.notes.count === 1 ? "note" : "notes"} on the shelf
+                {brief.notes.latestTitle ? ` — latest “${brief.notes.latestTitle}”` : ""}
+              </p>
+            )}
+
+            {brief.deadItems.length > 0 && (
+              <p className="px-1 text-xs leading-relaxed text-muted-foreground">
+                these {brief.deadItems.length} look dead —{" "}
+                <button
+                  type="button"
+                  onClick={() => setClosingDead(true)}
+                  className="underline decoration-dotted transition-colors hover:text-foreground"
+                >
+                  say the word
+                </button>
+              </p>
+            )}
+            {deadNote && <p className="px-1 text-xs leading-relaxed text-muted-foreground">{deadNote}</p>}
+          </>
+        )}
+      </div>
+
+      {/* ── TABS ───────────────────────────────────────────────────────── */}
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
+          {(["tasks", "board", "calendar", "notes"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={tab === option}
+              onClick={() => setTab(option)}
+              className={cn(
+                "rounded-[7px] px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                tab === option
+                  ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+        <span className="flex-1" />
+        {(tab === "tasks" || tab === "board") && (
+          <button
+            type="button"
+            aria-pressed={selecting}
+            onClick={() => {
+              setSelecting((s) => !s);
+              clearSelection();
+            }}
+            className={cn(
+              "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
+              selecting
+                ? "border-border bg-background text-foreground shadow-sm"
+                : "border-border text-muted-foreground hover:border-spool/40 hover:text-foreground",
+            )}
+          >
+            Select
+          </button>
+        )}
+        {tab === "notes" && (
+          <button
+            type="button"
+            onClick={() => onNewNote(subjectKey)}
+            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+          >
+            New note
+          </button>
+        )}
+        {tab !== "notes" && (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+          >
+            Add a task
+          </button>
+        )}
+      </div>
+
+      {/* TRANSIENT FILTER CHIPS — Tasks tab only, view state, one clear. */}
+      {tab === "tasks" && (
+        <div className="mb-3 flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            aria-pressed={!!filter.stuckOnMe}
+            onClick={() => setFilter((f) => ({ ...f, stuckOnMe: f.stuckOnMe ? undefined : true }))}
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+              filter.stuckOnMe ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
+            )}
+          >
+            stuck on me
+          </button>
+          <button
+            type="button"
+            aria-pressed={!!filter.unfiled}
+            onClick={() => setFilter((f) => ({ ...f, unfiled: f.unfiled ? undefined : true }))}
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+              filter.unfiled ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
+            )}
+          >
+            unfiled
+          </button>
+          {lanes.map((lane) => (
+            <button
+              key={lane.key}
+              type="button"
+              aria-pressed={filter.lane === lane.key}
+              onClick={() => setFilter((f) => ({ ...f, lane: f.lane === lane.key ? undefined : lane.key }))}
+              className={cn(
+                "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+                filter.lane === lane.key ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
+              )}
+            >
+              {lane.label}
+            </button>
+          ))}
+          {tagsInData.map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              aria-pressed={filter.tag === tag}
+              onClick={() => setFilter((f) => ({ ...f, tag: f.tag === tag ? undefined : tag }))}
+              className={cn(
+                "rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors",
+                filter.tag === tag ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
+              )}
+            >
+              #{tag}
+            </button>
+          ))}
+          {filterOn && (
+            <button
+              type="button"
+              onClick={() => setFilter({})}
+              className="ml-1 text-[11px] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
+            >
+              clear ✕
+            </button>
+          )}
+        </div>
+      )}
+
+      {tab === "tasks" && (
+        <Stance
+          model={viewModel}
+          work={work}
+          totals={totals}
+          looking={looking}
+          smart={null}
+          onSmart={() => undefined}
+          onOpenItem={onOpenItem}
+          onNight={onNight}
+          onPermits={onPermits}
+          onSubject={() => undefined}
+          onScope={() => undefined}
+          onWiden={onLeaveRoom}
+          onSuggest={onSuggest}
+          onAck={onAck}
+          onAckAll={onAckAll}
+          onSettle={onSettle}
+          onSettleAll={onSettleAll}
+          onCloseItem={onCloseItem}
+          onReopenItem={onReopenItem}
+          onPinItem={onPinItem}
+          closeNote={closeNote}
+          bulkNote={bulkNote}
+          selection={selection}
+          embedded
+        />
+      )}
+      {tab === "board" && (
+        <SpoolBoard
+          lanes={lanes}
+          groups={inventory}
+          subjects={subjectRecords}
+          scope={subjectKey}
+          onOpenItem={onOpenItem}
+          onChanged={onChanged}
+          pass={itemPasses}
+          selection={selection}
+        />
+      )}
+      {tab === "calendar" && (
+        <SpoolCalendar
+          groups={inventory}
+          subjects={subjectRecords}
+          scope={subjectKey}
+          onOpenItem={onOpenItem}
+          onChanged={onChanged}
+          pass={itemPasses}
+        />
+      )}
+      {tab === "notes" && (
+        <SubjectFace
+          subjectKey={subjectKey}
+          record={subjectRecords.find((s) => s.key === subjectKey)}
+          areas={[...new Set(subjectRecords.map((s) => s.area).filter((a): a is string => !!a))]}
+          onOpenItem={onOpenItem}
+          onOpenNote={onOpenNote}
+          onNewNote={onNewNote}
+          onChanged={onChanged}
+        />
+      )}
+
+      <SelectionBar
+        count={selected.length}
+        lanes={lanes}
+        busy={bulkBusy}
+        onCloseMany={closeSelected}
+        onLane={laneSelected}
+        onPin={pinSelected}
+        onTag={tagSelected}
+        onClear={clearSelection}
+      />
+
+      <AddTaskDialog
+        open={adding}
+        onOpenChange={setAdding}
+        subjects={[subjectKey]}
+        lanes={lanes}
+        defaultSubject={subjectKey}
+        onCreated={() => {
+          void onChanged();
+          void loadBrief();
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!settling}
+        onOpenChange={(next) => !next && setSettling(null)}
+        title="Settle this thread?"
+        body={
+          <>
+            “{settling?.title ?? ""}” stays on the record, settled, with this answer — settling records what was
+            found out, not that it is over:
+            <Input
+              value={settleAnswer}
+              onChange={(event) => setSettleAnswer(event.target.value)}
+              aria-label="The answer that will be recorded"
+              className="mt-2 text-xs md:text-xs"
+            />
+          </>
+        }
+        confirmLabel="Settle"
+        busy={settleBusy}
+        error={settleError}
+        onConfirm={confirmSettle}
+      />
+
+      <ConfirmDialog
+        open={closingDead}
+        onOpenChange={setClosingDead}
+        title={`Close ${brief?.deadItems.length ?? 0} that look dead?`}
+        body={
+          <>
+            These look dead — nothing moved, nothing pinned. Closing them is the ordinary tick, through the bulk
+            route; only the hand decides they are over.
+            <span className="mt-2 block space-y-1">
+              {(brief?.deadItems ?? []).map((d) => (
+                <span key={d.itemId} className="block truncate text-xs text-foreground">
+                  “{d.title}”
+                </span>
+              ))}
+            </span>
+          </>
+        }
+        confirmLabel="Close them"
+        busy={deadBusy}
+        onConfirm={confirmCloseDead}
+      />
+    </div>
+  );
+}

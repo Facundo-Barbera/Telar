@@ -40,10 +40,14 @@ import {
   SPOOL_ITEM_SCHEMA_VERSION,
   SpoolExpectation,
   SpoolExpertDigest,
+  SpoolSelfMemory,
+  type SpoolDigestTerm,
+  type SpoolMemoryFact,
   SpoolItem,
   SpoolLane,
   type SpoolAttachmentTally,
-  type SpoolDeadline,
+  SpoolDeadline,
+  type SpoolPin,
   type SpoolDeskCard,
   type SpoolQueueRow,
   type SpoolSubjectGroup,
@@ -647,6 +651,31 @@ export type NewSpoolItem = {
   raw?: string;
   rawSource?: string;
   creationNote?: string;
+  /**
+   * WHOSE HAND FILED IT — the workbench correction. `provenance` stays written
+   * server-side and free-form, but its one stamp ("session") became a LIE the
+   * day the human API grew a form: a hand-made item was counted into the
+   * footer's "agents added N". This field is which of the two known stamps the
+   * server writes, decided by the CALLING SURFACE (the daemon's human route
+   * defaults it to "you"; the tool wall declares "session") — never by a
+   * model's input, whose tool shape cannot name it. Absent means "session",
+   * which keeps every direct store caller and every existing packet exactly
+   * as it was: the 13 items filed before this field existed WERE agent-filed,
+   * and they keep counting.
+   */
+  source?: "session" | "you";
+  /** Legal at creation under §3.2's quoting law: the label is a QUOTE from a
+   *  source — an issue's milestone date, the user's own words — never a value
+   *  a clock resolved. The tool surface restates this where a model reads it. */
+  deadline?: SpoolDeadline;
+  /** The user's own day for it — human-owned under §3.2 as amended (the
+   *  calendar belongs to the human). `assertPin` refuses anything that is not
+   *  a strict, real `YYYY-MM-DD`. */
+  pinned?: SpoolPin;
+  /** Free-text labels in the user's own words — see `SpoolItem.tags`. Gated by
+   *  `assertTags`, shared with update and the shelf so the sentence cannot
+   *  drift. */
+  tags?: string[];
 };
 
 /**
@@ -663,10 +692,78 @@ export type NewSpoolItem = {
 export type SpoolItemPatch = Partial<
   Pick<SpoolItem, "title" | "lane" | "project" | "desk" | "unplaced" | "mirrored"> & {
     deadline: SpoolDeadline;
+    /** `{day}` sets, an EXPLICIT `null` clears. A clear removes the PIN and
+     *  nothing else — the item stays, so "no deletion path" is untouched. */
+    pinned: SpoolPin | null;
+    /** The WHOLE list, replaced — `[]` clears to absence. Tags are identity
+     *  the user states, so a patch carries their current statement whole
+     *  rather than diffing it. */
+    tags: string[];
   }
 >;
 
-const PATCHABLE = ["title", "lane", "project", "desk", "unplaced", "mirrored", "deadline"] as const;
+const PATCHABLE = ["title", "lane", "project", "desk", "unplaced", "mirrored", "deadline", "pinned", "tags"] as const;
+
+/**
+ * THE TAGS' ONE GATE, shared by item create, item update and the shelf, so the
+ * sentence cannot drift between the three writers. Trims, refuses anything that
+ * is not a non-empty string, and drops exact duplicates in the user's own
+ * order. `[]` in, `[]` out — the CALLER decides that an empty list means
+ * absence, because "no tags" is spelled by the missing key, exactly like a pin.
+ */
+export function assertTags(tags: unknown): string[] {
+  if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) {
+    throw new Error(
+      'Tags are a list of short labels in the user\'s own words — `tags: ["facturación", "no tocar"]`. ' +
+        "Pass an array of strings; `[]` clears them.",
+    );
+  }
+  const out: string[] = [];
+  for (const tag of tags as string[]) {
+    const trimmed = tag.trim();
+    if (!trimmed) {
+      throw new Error("A tag is a word or two, not an empty string. Leave it out instead of passing a blank.");
+    }
+    if (!out.includes(trimmed)) out.push(trimmed);
+  }
+  return out;
+}
+
+/**
+ * THE PIN'S ONE GATE, shared by create and update so the sentence cannot drift.
+ *
+ * STRICT `YYYY-MM-DD` AND A REAL CALENDAR DAY, refused loudly otherwise. The
+ * strictness is not pedantry — "Friday", "next week", "tomorrow" and epoch
+ * numbers are exactly what a model writes the moment it starts RESOLVING dates
+ * instead of quoting them, and §3.2 as amended allows the system to hold the
+ * user's own dates precisely because it never manufactures one. The round-trip
+ * check (parse, then re-format) is what catches "2026-02-30": a UTC Date
+ * happily normalises it to March 2nd, and storing the normalised day would be
+ * the store rewriting a date the user never said.
+ *
+ * NOTHING HERE READS A CLOCK. The day is validated as a shape and stored as a
+ * quote; no comparison against "today" exists anywhere in this module.
+ */
+function assertPin(pinned: unknown): SpoolPin {
+  const refuse = (got: string): never => {
+    throw new Error(
+      `A pin is the user's own day, written out: \`pinned: {day: "YYYY-MM-DD"}\` — for example {day: "2026-08-19"}. ` +
+        `Got ${got}. The Spool stores the date the user stated and never resolves one, so "Friday", "tomorrow" or a ` +
+        `timestamp cannot be a pin — write the actual date, or clear the pin with \`pinned: null\`.`,
+    );
+  };
+  if (pinned === null || typeof pinned !== "object" || Array.isArray(pinned)) return refuse(JSON.stringify(pinned));
+  const day = (pinned as { day?: unknown }).day;
+  if (typeof day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return refuse(JSON.stringify(day));
+  const parsed = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) {
+    throw new Error(
+      `"${day}" is not a day on the calendar — there is no such date. A pin is drawn on the day the user named, ` +
+        `so a day that does not exist has nowhere to be drawn. Check the month and day, and write the date out as YYYY-MM-DD.`,
+    );
+  }
+  return { day };
+}
 
 /**
  * THE ADDRESS IS THE DIRECTORY, NEVER THE CONTENT. Shared by every writer that
@@ -816,21 +913,24 @@ function writeLaneRows(paths: SpoolPaths, rows: unknown[]): void {
  * `provenance` IS WRITTEN SERVER-SIDE AND IS NEVER READ FROM CALLER INPUT. It is
  * the free-form label the contract requires and is deliberately NOT narrowed to
  * a union: "provenance is a free-form label, not a channel type" — a union is
- * precisely what that constraint forbids. "session" is the honest label for
- * every write this path can produce, because the store's only writer today is a
- * tool running inside a session. A later caller writing from somewhere else — a
- * brain dump, a mirror sync — widens `NewSpoolItem` here.
+ * precisely what that constraint forbids. "session" was the honest label when
+ * the store's only writer was a tool running inside a session; the workbench
+ * added a second hand, so `source` (see `NewSpoolItem`) now picks between the
+ * two stamps the server knows — "you" for the human API's own form, "session"
+ * for everything through the tool wall. A later caller writing from somewhere
+ * else — a brain dump, a mirror sync — still widens `NewSpoolItem` here.
  */
 export function createItem(paths: SpoolPaths, input: NewSpoolItem): SpoolItem {
   ensureSpool(paths);
   const read = readLanesReport(paths);
   const { lane, unplaced } = resolveLane(read.lanes, input.lane);
   const at = capturedLabel(new Date());
+  const byHand = input.source === "you";
 
   const item: SpoolItem = SpoolItem.parse({
     id: newItemId(),
     title: input.title,
-    provenance: "session",
+    provenance: byHand ? "you" : "session",
     captured: at,
     schemaVersion: SPOOL_ITEM_SCHEMA_VERSION,
     lane,
@@ -839,15 +939,21 @@ export function createItem(paths: SpoolPaths, input: NewSpoolItem): SpoolItem {
     desk: true,
     ...(unplaced ? { unplaced: true } : {}),
     ...(input.project ? { project: input.project } : {}),
+    ...(input.deadline ? { deadline: SpoolDeadline.parse(input.deadline) } : {}),
+    ...(input.pinned !== undefined ? { pinned: assertPin(input.pinned) } : {}),
+    // Through the one gate, and an empty list is spelled by absence — the
+    // schema's only reading of "no tags", same as the pin's.
+    ...(input.tags !== undefined && assertTags(input.tags).length > 0 ? { tags: assertTags(input.tags) } : {}),
     ...(input.raw ? { raw: input.raw } : {}),
     ...(input.rawSource ? { rawSource: input.rawSource } : {}),
     timeline: [
       {
         at,
         // The widened actor. A project session's agent is not `you`, not the
-        // per-project `expert` and not `bed`.
-        actor: "session",
-        text: input.creationNote ?? "captured from a session",
+        // per-project `expert` and not `bed` — and the workbench's own form is
+        // exactly `you`, the actor the enum always had for the human.
+        actor: byHand ? "you" : "session",
+        text: input.creationNote ?? (byHand ? "captured by hand" : "captured from a session"),
       },
     ],
   });
@@ -880,7 +986,8 @@ export function updateItem(paths: SpoolPaths, id: string, patch: SpoolItemPatch)
     throw new Error(
       `updateItem cannot write ${forbidden.map((f) => `\`${f}\``).join(", ")}. ` +
         `\`raw\`/\`rawSource\` are the user's own words kept verbatim so they can check an expert did not drift from what they ` +
-        `meant, \`promotedFrom\` has no agent path at all, and \`subtasks\`/\`timeline\`/\`tracking\` have their own named verbs. ` +
+        `meant, \`promotedFrom\` has no agent path at all, \`closed\` is the user's own checkbox and only the dedicated ` +
+        `close/reopen verbs write it, and \`subtasks\`/\`timeline\`/\`tracking\` have their own named verbs. ` +
         `Silently dropping them would be indistinguishable from honouring them. Patch only: ${PATCHABLE.join(", ")}.`,
     );
   }
@@ -918,10 +1025,22 @@ export function updateItem(paths: SpoolPaths, id: string, patch: SpoolItemPatch)
   const resolved = patch.lane !== undefined && targetIndex >= 0;
   const unresolvable = patch.lane !== undefined && targetIndex < 0;
 
+  // THE PIN'S THREE READINGS, decided before the merge: absent leaves it
+  // alone, `{day}` goes through the one gate create uses, and an EXPLICIT
+  // `null` clears — which must REMOVE the key rather than store `null`,
+  // because the schema (rightly) has no way to spell "a pin that is not
+  // there" other than absence.
+  if (patch.pinned !== undefined && patch.pinned !== null) assertPin(patch.pinned);
+
+  // THE TAGS' TWO READINGS: absent leaves them alone; a list replaces them
+  // whole through the one gate, and a list that gates down to nothing clears —
+  // absence is the schema's only spelling of "no tags", same as the pin's.
+  const tags = patch.tags === undefined ? undefined : assertTags(patch.tags);
+
   // Spread order matters: `current` first, so every field the patch does not
   // name — including every UNKNOWN key the loose schema preserved off disk —
   // survives the rewrite untouched.
-  const next = SpoolItem.parse({
+  const merged: Record<string, unknown> = {
     ...current,
     ...patch,
     ...(unresolvable
@@ -933,8 +1052,12 @@ export function updateItem(paths: SpoolPaths, id: string, patch: SpoolItemPatch)
         }
       : {}),
     ...(resolved ? { lane: patch.lane, unplaced: patch.unplaced ?? false } : {}),
+    ...(tags !== undefined ? { tags } : {}),
     schemaVersion: SPOOL_ITEM_SCHEMA_VERSION,
-  });
+  };
+  if (patch.pinned === null) delete merged.pinned;
+  if (tags !== undefined && tags.length === 0) delete merged.tags;
+  const next = SpoolItem.parse(merged);
 
   // PACKET FIRST, LANES SECOND — and the reason a torn write is safe: the id is
   // still in its old stack, the orphan arm does not fire, and the move simply
@@ -952,8 +1075,151 @@ export function updateItem(paths: SpoolPaths, id: string, patch: SpoolItemPatch)
   return next;
 }
 
+/**
+ * RECORD THE ANSWER TO ONE OF AN ITEM'S OPEN QUESTIONS — the reduction verb.
+ *
+ * ── WHY THIS IS LEGAL UNDER COMPRESS-NEVER-MULTIPLY ─────────────────────────
+ * `openQuestions` is agent-authored ("what the draft could not answer alone",
+ * written only by `applyDraft`), so removing an entry retracts an agent's
+ * question once it has an answer — open state REDUCES, which is the direction
+ * the law wants, and nothing of the user's is touched. The answer is not
+ * discarded with it: it lands on the timeline as a packet event, marked
+ * `proposal` because it arrived through an agent's hands and nobody has looked
+ * — the provenance law applied to an answer instead of a draft.
+ *
+ * ── A QUESTION THAT IS NOT ON THE ITEM IS A LOUD REFUSAL ────────────────────
+ * Matching is whitespace/case-tolerant (the same standard `sameQuestion`
+ * applies to threads), but a miss throws the list of what IS open rather than
+ * appending an answer to a question nobody asked — a silent mismatch would
+ * write an orphan answer and leave the question standing, which is the exact
+ * opposite of what the caller believes happened.
+ */
+export function answerOpenQuestion(
+  paths: SpoolPaths,
+  id: string,
+  question: string,
+  answer: string,
+  at: Date = new Date(),
+): SpoolItem | null {
+  const trimmedAnswer = answer.trim();
+  if (!trimmedAnswer) {
+    throw new Error(
+      "Answering a question records WHAT THE ANSWER IS. An empty answer would just delete the question, and this " +
+        "store has no deletion path — write the answer, or leave the question open.",
+    );
+  }
+  const current = getSpoolItem(paths, id);
+  if (!current) return null;
+  assertPacketAddressMatches(id, current);
+
+  const open = current.openQuestions ?? [];
+  const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ").replace(/[?.!]+$/, "");
+  const index = open.findIndex((q) => norm(q) === norm(question));
+  if (index < 0) {
+    throw new Error(
+      open.length === 0
+        ? `"${current.title}" has no open questions to answer.`
+        : `"${current.title}" has no open question matching that. Still open: ${open.map((q) => `"${q}"`).join(" · ")}`,
+    );
+  }
+
+  const remaining = open.filter((_, i) => i !== index);
+  const next = SpoolItem.parse({
+    ...current,
+    ...(remaining.length > 0 ? { openQuestions: remaining } : { openQuestions: undefined }),
+    timeline: [
+      ...(current.timeline ?? []),
+      {
+        at: capturedLabel(at),
+        actor: "session",
+        text: `Answered "${open[index]}": ${trimmedAnswer}`,
+        proposal: true,
+      },
+    ],
+  });
+  writePacket(paths, next);
+  return next;
+}
+
 function writePacket(paths: SpoolPaths, item: SpoolItem): void {
   atomicWrite(packetFile(paths, item.id), item);
+}
+
+// ── the checkbox — docs/spool-loops.md §9 ───────────────────────────────────
+//
+// THESE TWO FUNCTIONS ARE THE ONLY WRITERS OF `closed`, and neither is reachable
+// from a tool. They are called straight from the daemon's dedicated
+// `/v2/spool/items/:id/close` and `/reopen` handlers — the same construction
+// that makes lane structure human-only. `closed` is not in `PATCHABLE`, so the
+// generic update path (the one the tool wall CAN reach) refuses it by name.
+// That is what makes the attribution in the schema comment true: a value in
+// `closed` can only mean the user's own hand.
+
+/**
+ * TICK THE BOX. Stamps `closed` with the store's label idiom and records the
+ * moment on the ripening timeline as the human's own act (`actor: "you"`, no
+ * proposal mark — nothing here awaits a look; the look already happened, it was
+ * the click).
+ *
+ * IDEMPOTENT, WITH AN HONEST NOTE: closing a closed item changes nothing and
+ * says so, rather than re-stamping the label and quietly rewriting when the
+ * hand actually moved.
+ *
+ * THE CASCADE (settling the item's open threads) is composed one level up, in
+ * `state.ts` — threads live in `threads.ts`, which imports this file, so the
+ * store cannot reach them without a cycle. This function owns only the field.
+ */
+export function closeItem(
+  paths: SpoolPaths,
+  id: string,
+  at: Date = new Date(),
+): { item: SpoolItem; alreadyClosed: boolean } | null {
+  const current = getSpoolItem(paths, id);
+  if (!current) return null;
+  assertPacketAddressMatches(id, current);
+  if (current.closed) return { item: current, alreadyClosed: true };
+
+  const label = capturedLabel(at);
+  const next = SpoolItem.parse({
+    ...current,
+    closed: { label, at: at.getTime() },
+    timeline: [...(current.timeline ?? []), { at: label, actor: "you", text: "closed by hand" }],
+  });
+  writePacket(paths, next);
+  return { item: next, alreadyClosed: false };
+}
+
+/**
+ * UNTICK THE BOX. Removes `closed` — absence is open — and appends the reopen
+ * to the same timeline, so the record reads "closed by hand … reopened by
+ * hand" rather than pretending the close never happened. Drain, never delete:
+ * nothing else on the item is touched.
+ *
+ * REOPENING DOES NOT RESURRECT CASCADE-SETTLED THREADS. A settled thread is
+ * never removed and stays settled — its answer ("the user closed the task") is
+ * a true record of what happened. The user opens a NEW question if one is
+ * still open; un-settling would rewrite history in a store built on not doing
+ * that.
+ */
+export function reopenItem(
+  paths: SpoolPaths,
+  id: string,
+  at: Date = new Date(),
+): { item: SpoolItem; alreadyOpen: boolean } | null {
+  const current = getSpoolItem(paths, id);
+  if (!current) return null;
+  assertPacketAddressMatches(id, current);
+  if (!current.closed) return { item: current, alreadyOpen: true };
+
+  const merged: Record<string, unknown> = {
+    ...current,
+    timeline: [...(current.timeline ?? []), { at: capturedLabel(at), actor: "you", text: "reopened by hand" }],
+  };
+  // Absence is the schema's only spelling of "open" — see `SpoolItem.closed`.
+  delete merged.closed;
+  const next = SpoolItem.parse(merged);
+  writePacket(paths, next);
+  return { item: next, alreadyOpen: false };
 }
 
 // ── lane structure changes ──────────────────────────────────────────────────
@@ -1312,10 +1578,56 @@ export function readExpertDigest(paths: SpoolPaths, project: string): SpoolExper
     return null;
   }
   try {
-    return SpoolExpertDigest.parse(JSON.parse(fs.readFileSync(file, "utf8")));
+    return liftLegacyNotes(SpoolExpertDigest.parse(JSON.parse(fs.readFileSync(file, "utf8"))));
   } catch {
     return null;
   }
+}
+
+/**
+ * `notes: string[]` → `facts`, AT READ TIME — the one-way lift for a digest
+ * written before memory was addressable.
+ *
+ * ── WHY THIS EXISTS, AND WHY DRIVING IT IS WHAT FOUND IT ─────────────────────
+ * `SpoolExpertDigest` is a `looseObject`, so an old digest parses CLEANLY: the
+ * unknown `notes` key survives untouched and `facts` takes its `[]` default.
+ * The result is not an unreadable digest — which this module already degrades to
+ * "no digest" — but a readable one that is silently EMPTY. ozom-gv's ten notes
+ * and aurora's five were still on disk with nothing reading them, and the whole
+ * suite was green: every test seeds its own digest in the new shape, so none of
+ * them could see it.
+ *
+ * ── AT READ TIME, LIKE THE PACKET LADDER'S NORMALISATION ─────────────────────
+ * Not a migration script, for the reason the digest header already gives: a
+ * digest is re-derivable and has no version ladder. Lifting on read means an
+ * old file is understood the first time it is opened, by whatever opens it, and
+ * a store nobody has read is never left half-migrated.
+ *
+ * ── EVERY LIFTED NOTE IS `howItWorks`, AND THAT IS A CHOICE ──────────────────
+ * The old shape had no kinds, so any assignment is a guess. `howItWorks` is the
+ * SAFE guess rather than the common one: it is the kind an agent is allowed to
+ * retire, and `person` is the kind it is not. Guessing "person" would make a
+ * wrong note permanent unless a human found it; guessing "howItWorks" leaves
+ * every lifted note correctable from both doors. They are left unreviewed,
+ * which is honest — nobody has confirmed them.
+ */
+function liftLegacyNotes(digest: SpoolExpertDigest): SpoolExpertDigest {
+  if (digest.facts.length > 0) return digest;
+  const legacy = (digest as { notes?: unknown }).notes;
+  if (!Array.isArray(legacy)) return digest;
+  const facts = legacy
+    .filter((note): note is string => typeof note === "string" && note.trim() !== "")
+    .map((note, index) => ({
+      // DERIVED FROM POSITION, not minted, so the same file lifts to the same
+      // ids on every read — an id that changed per read could not be retired.
+      id: `f-legacy-${index}`,
+      text: note.trim(),
+      kind: "howItWorks" as const,
+      // The pass that last wrote the old digest is the honest provenance: it is
+      // the most recent thing known to have touched any of them.
+      source: { pass: digest.updated },
+    }));
+  return facts.length > 0 ? { ...digest, facts } : digest;
 }
 
 /**
@@ -1330,6 +1642,308 @@ export function writeExpertDigest(paths: SpoolPaths, digest: SpoolExpertDigest):
   const parsed = SpoolExpertDigest.parse({ ...digest, schemaVersion: SPOOL_DIGEST_SCHEMA_VERSION });
   atomicWrite(expertDigestPath(paths, parsed.project), parsed);
   return parsed;
+}
+
+const newFactId = () => `f-${crypto.randomBytes(6).toString("hex")}`;
+
+/** Two facts are the same fact if they say the same thing. Coarse on purpose:
+ *  this exists to stop a pass restating what it was already told, not to detect
+ *  paraphrase. */
+const sameText = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A PASS'S MEMORY, FOLDED INTO WHAT WAS ALREADY THERE — the audited verb that
+ * replaced a wholesale overwrite.
+ *
+ * ── WHAT WAS WRONG WITH THE OLD WRITE ────────────────────────────────────────
+ * `runExpertPass` handed `writeExpertDigest` a completely fresh object built
+ * from the model's answer, so the digest was rebuilt from scratch by whichever
+ * item happened to be read. Anything the current item did not touch evaporated;
+ * nothing carried provenance; and a wrong fact could only be removed by hoping
+ * a later model chose not to restate it. The aurora digest's "no locally
+ * reachable codebase — searched thoroughly this time" is the case that forced
+ * this: a cache entry with no expiry, telling every future pass not to look.
+ *
+ * ── WHAT MERGES AND WHAT REPLACES, AND WHY EACH ──────────────────────────────
+ *   · `summary`/`methodology` REPLACE. An overview is exactly the thing that is
+ *     correct to regenerate, and the model is handed the old one.
+ *   · `glossary` MERGES BY TERM. A definition survives a pass that did not
+ *     restate it. Redefinition is allowed — vocabulary drifts — but removal is
+ *     not, this round: a term nobody says any more is harmless, and a term
+ *     silently dropped is the loss this whole change exists to end.
+ *   · `facts` APPEND, and retire by id. A pass adds what it learned and may
+ *     propose retirements; it can no longer replace the set.
+ */
+// ── memory.json — the front door's own ──────────────────────────────────────
+
+const SELF_MEMORY_FILE = "memory.json";
+
+export function selfMemoryPath(paths: SpoolPaths): string {
+  return path.join(paths.root, SELF_MEMORY_FILE);
+}
+
+/**
+ * WHAT THE PROJECT-LESS CHAT REMEMBERS — and until now, it remembered nothing.
+ *
+ * Every subject had a digest; the master chat had no memory at all. So every
+ * cross-subject fact, every preference and every decision that is not about one
+ * project had nowhere to live, which is why "ask where I stopped" is a
+ * tool-calling expedition each time rather than a read. Same conceptual error
+ * the night had before it got a surface: asking a model instead of holding a
+ * record.
+ *
+ * AT THE STORE ROOT, not `experts/_self/`. Under the store's own naming rule
+ * `_self` is a legal subject key, so a subject could collide with it.
+ *
+ * Tolerant like every other read here — never written is the ordinary
+ * first-run state, not an error.
+ */
+export function readSelfMemory(paths: SpoolPaths): SpoolSelfMemory | null {
+  try {
+    return SpoolSelfMemory.parse(JSON.parse(fs.readFileSync(selfMemoryPath(paths), "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+export function writeSelfMemory(paths: SpoolPaths, memory: SpoolSelfMemory): SpoolSelfMemory {
+  const parsed = SpoolSelfMemory.parse({ ...memory, schemaVersion: SPOOL_DIGEST_SCHEMA_VERSION });
+  atomicWrite(selfMemoryPath(paths), parsed);
+  return parsed;
+}
+
+/** The same fold the subject digests get, over the same shape. There is no
+ *  `summary` here on purpose: an overview of everything is the thing the chat
+ *  itself is for, and a second one written by an agent would be a surface
+ *  competing with the conversation. */
+export function mergeSelfMemory(paths: SpoolPaths, changes: FactChanges): SpoolSelfMemory {
+  return writeSelfMemory(paths, {
+    schemaVersion: SPOOL_DIGEST_SCHEMA_VERSION,
+    updated: changes.at,
+    facts: foldFacts(readSelfMemory(paths)?.facts ?? [], changes),
+  });
+}
+
+/**
+ * WHICH FACTS A SUBJECT HAS NOT CHECKED AGAINST THIS COMMIT — the `verify` job's
+ * predicate, and the reason that job terminates.
+ *
+ * PURE, and separated from the job that acts on it so the SELECTION is provable
+ * without a provider, exactly as `needsRipening` and `needsDrafting` are.
+ *
+ * ── ONLY `howItWorks`, AND ONLY UN-RETIRED ──────────────────────────────────
+ * A `person` fact is not checkable against a tree and is not an agent's to
+ * judge. A `decision` is a record of what was decided, which no file can
+ * contradict. An `environment` fact is a CACHE whose truth is the machine's
+ * right now, not the repository's — it needs an expiry, not a diff. Only "how
+ * this works" is a claim a checkout can settle.
+ */
+export function factsNeedingVerification(digest: SpoolExpertDigest | null, head: string): SpoolMemoryFact[] {
+  if (!digest || !head) return [];
+  return digest.facts.filter((fact) => !fact.retired && fact.kind === "howItWorks" && fact.verifiedAt !== head);
+}
+
+/**
+ * THE `verify` JOB'S WRITE — stamp what still holds, drain what does not.
+ *
+ * ── WHY THIS IS THE VERB THAT MAKES THE JOB TERMINAL ────────────────────────
+ * Every fact named here comes back carrying `verifiedAt: head`, so
+ * `factsNeedingVerification` returns fewer next time and nothing on an unchanged
+ * tree. That is not a convention — it is the property that lets a maintenance
+ * job be a NIGHT job at all, next to `needsRipening` (falsified by writing
+ * `fixed`) and `needsDrafting` (falsified by writing `draft`).
+ *
+ * ── A FACT THAT NO LONGER HOLDS IS DRAINED, NOT CORRECTED ───────────────────
+ * The job may retire; it may not rewrite. A pass that could edit a stored fact
+ * in place would let an agent quietly change what the project believes with no
+ * record of the change — and the record IS the point. Writing the replacement is
+ * the next ordinary pass's business, through `foldFacts`.
+ */
+export function applyVerification(
+  paths: SpoolPaths,
+  project: string,
+  input: { at: string; head: string; checked: Array<{ id: string; holds: boolean; why?: string }> },
+): { verified: number; retired: number } | null {
+  const digest = readExpertDigest(paths, project);
+  if (!digest) return null;
+
+  const verdicts = new Map(input.checked.map((c) => [c.id, c]));
+  /**
+   * EVERYTHING THIS JOB LOOKED AT — recomputed here rather than trusted from the
+   * caller, so the set that gets stamped is exactly the set the predicate
+   * selected.
+   *
+   * ── AND THIS IS WHAT MAKES THE JOB TERMINAL, which it was not ───────────────
+   * The first live run stamped only the facts the model NAMED: 6 of 10, with 1
+   * drained and 3 left unreported. The prompt asks for exactly that — "if you
+   * simply could not find what it refers to, leave that fact out" — so those 3
+   * would have stayed selected forever, and every night would have re-run this
+   * job, re-read the repository and re-spent the money to learn nothing. That is
+   * the "keeps digging" failure the runner's header says is removed at three
+   * levels, reintroduced by a fourth.
+   *
+   * The tests did not catch it because every fixture reported on every fact,
+   * which is the one case that does not happen.
+   *
+   * `verifiedAt` therefore means EXAMINED AT THIS COMMIT AND NOT CONTRADICTED —
+   * not "proven true". A fact nothing could be found against has been examined,
+   * and re-examining it at the SAME commit would reach the same answer. When the
+   * tree moves it is selected again, which is the whole point.
+   */
+  const selected = new Set(factsNeedingVerification(digest, input.head).map((fact) => fact.id));
+  let verified = 0;
+  let retired = 0;
+
+  const facts = digest.facts.map((fact) => {
+    // Only what this job actually selected. A verdict naming a `person` fact —
+    // or one already drained — is ignored rather than honoured, because the job
+    // had no business checking it.
+    if (!selected.has(fact.id)) return fact;
+    const verdict = verdicts.get(fact.id);
+    if (verdict && !verdict.holds) {
+      retired += 1;
+      return {
+        ...fact,
+        retired: { at: input.at, why: verdict.why?.trim() || "no longer true of this checkout" },
+      };
+    }
+    verified += 1;
+    return { ...fact, verifiedAt: input.head };
+  });
+
+  writeExpertDigest(paths, { ...digest, facts, updated: input.at });
+  return { verified, retired };
+}
+
+/**
+ * A HUMAN'S OWN VERDICT ON ONE REMEMBERED FACT — the verb that makes memory
+ * correctable rather than a ratchet.
+ *
+ * ── WHY IT IS A SEPARATE, NAMED VERB ─────────────────────────────────────────
+ * The same reason `applyDraft` and the departed `setItemVerdict` are: the caller
+ * has to MEAN it. A patch type that could reach `retired` would let any tool
+ * drain a fact, and the point of this one is that a person did.
+ *
+ * ── AND WHY A HUMAN MAY RETIRE WHAT AN AGENT MAY NOT ─────────────────────────
+ * `foldFacts` refuses to let a pass retire a `person` fact, because nobody but
+ * the user can confirm who is involved and how. This verb has no such rule —
+ * it IS the user. That asymmetry is the whole design: an agent proposes, a human
+ * decides, and the two go through different doors.
+ *
+ * `subject` ABSENT MEANS THE FRONT DOOR'S OWN MEMORY. Returns null when nothing
+ * goes by that id, so a caller can say so rather than reporting a silent
+ * success.
+ */
+export function judgeFact(
+  paths: SpoolPaths,
+  input: {
+    /** The subject whose memory holds it; absent for `memory.json`. */
+    subject?: string;
+    id: string;
+    at: string;
+    /** Drain it, with the reason recorded beside it forever. */
+    retire?: { why: string };
+    /** Confirm it: an agent asserted this and a human has now looked. */
+    reviewed?: boolean;
+  },
+): SpoolMemoryFact | null {
+  const stored = input.subject ? readExpertDigest(paths, input.subject) : readSelfMemory(paths);
+  if (!stored) return null;
+  const found = stored.facts.find((fact) => fact.id === input.id);
+  if (!found) return null;
+
+  const next: SpoolMemoryFact = {
+    ...found,
+    // A HUMAN RE-RETIRING KEEPS THE FIRST REASON TOO. Not because an agent
+    // wrote it, but because the reason a thing stopped being true is a fact of
+    // its own, and the second telling is never the better one.
+    ...(input.retire && !found.retired ? { retired: { at: input.at, why: input.retire.why } } : {}),
+    ...(input.reviewed !== undefined ? { reviewed: input.reviewed } : {}),
+  };
+  const facts = stored.facts.map((fact) => (fact.id === input.id ? next : fact));
+
+  if (input.subject) writeExpertDigest(paths, { ...stored, facts } as SpoolExpertDigest);
+  else writeSelfMemory(paths, { ...stored, facts } as SpoolSelfMemory);
+  return next;
+}
+
+/** What a pass may change about a set of remembered facts: add, and propose
+ *  retiring. Never replace — see `foldFacts`. */
+export type FactChanges = {
+  /** The pass's own label — the same one its timeline events carry, so a fact
+   *  traces back to the consultation that produced it. */
+  at: string;
+  facts: Array<{ text: string; kind: SpoolMemoryFact["kind"] }>;
+  retire: Array<{ id: string; why: string }>;
+};
+
+/**
+ * ONE FOLD, SHARED BY EVERY MEMORY IN THE MODULE — a subject's digest and the
+ * front door's own. PURE, so the whole contract is readable in a test with no
+ * disk and no provider.
+ *
+ * The rules it enforces, none of which a schema description could:
+ *   · ADD AND RETIRE, NEVER REPLACE. A fact the pass did not mention survives.
+ *   · A `person` FACT IS NOT AN AGENT'S TO RETIRE. Nobody but the user can
+ *     confirm who is involved and how, so an agent draining one is an agent
+ *     settling a human question.
+ *   · AN ALREADY-RETIRED FACT KEEPS ITS FIRST REASON. Re-retiring would
+ *     overwrite the true one with whatever a later pass happened to say.
+ *   · A RESTATED FACT ADDS NOTHING, or a model echoing what it was just told
+ *     grows memory every night — the one failure the old wholesale rewrite did
+ *     not have, so the fix must not introduce it.
+ */
+export function foldFacts(stored: SpoolMemoryFact[], changes: FactChanges): SpoolMemoryFact[] {
+  const retiring = new Map(changes.retire.map((r) => [r.id, r.why]));
+  const facts: SpoolMemoryFact[] = stored.map((fact) => {
+    const why = retiring.get(fact.id);
+    if (why === undefined || fact.retired || fact.kind === "person") return fact;
+    return { ...fact, retired: { at: changes.at, why } };
+  });
+
+  for (const proposed of changes.facts) {
+    if (!proposed.text.trim()) continue;
+    if (facts.some((fact) => sameText(fact.text, proposed.text))) continue;
+    facts.push({
+      id: newFactId(),
+      text: proposed.text.trim(),
+      kind: proposed.kind,
+      source: { pass: changes.at },
+    });
+  }
+  return facts;
+}
+
+export function mergeExpertDigest(
+  paths: SpoolPaths,
+  project: string,
+  pass: FactChanges & {
+    summary: string;
+    methodology: string;
+    glossary: SpoolDigestTerm[];
+  },
+): SpoolExpertDigest {
+  const current = readExpertDigest(paths, project);
+  const facts = foldFacts(current?.facts ?? [], pass);
+
+  // MERGED BY TERM, stored order first so a definition keeps its place.
+  const glossary: SpoolDigestTerm[] = (current?.glossary ?? []).map((term) => {
+    const restated = pass.glossary.find((t) => sameText(t.term, term.term));
+    return restated ? { ...term, means: restated.means } : term;
+  });
+  for (const term of pass.glossary) {
+    if (!glossary.some((t) => sameText(t.term, term.term))) glossary.push(term);
+  }
+
+  return writeExpertDigest(paths, {
+    project,
+    schemaVersion: SPOOL_DIGEST_SCHEMA_VERSION,
+    updated: pass.at,
+    summary: pass.summary,
+    methodology: pass.methodology,
+    glossary,
+    facts,
+  });
 }
 
 /**
@@ -1450,6 +2064,65 @@ export function applyExpertPass(paths: SpoolPaths, itemId: string, pass: ExpertP
     commitments: mined.length,
     at,
   };
+}
+
+/**
+ * WRITE A PROPOSED APPROACH ONTO AN ITEM — the night's only write path.
+ *
+ * A SEPARATE AUDITED VERB RATHER THAN A WIDENING OF `updateItem`, and the
+ * reason is the one already written into `SpoolItemPatch`: the patch type
+ * deliberately cannot express a change to `raw`, `fixed`, `acceptance`,
+ * `commitments` or `timeline`, because those are the ripening record and a
+ * general-purpose patch reaching them would let any caller rewrite what an
+ * agent proposed as though a human had. `draft` belongs to that family.
+ *
+ * WHAT IT WILL NOT DO, each for a stated law:
+ *   - IT NEVER TOUCHES `raw`, `fixed` OR `acceptance`. A draft is one opinion
+ *     about HOW; the brief is what the work IS. Overwriting the brief with an
+ *     approach would make an agent's guess indistinguishable from the thing the
+ *     user agreed to.
+ *   - IT NEVER TOUCHES `lanes.json`. Drafting is a packet-only write.
+ *   - IT NEVER WRITES A STATUS. There is no field, and "prepare, never commit"
+ *     is why.
+ *
+ * ITS TIMELINE EVENT IS ALWAYS `proposal: true` and always `actor: "bed"`, so
+ * the ripening history says plainly that this arrived overnight and nobody has
+ * looked at it.
+ *
+ * REPLACES RATHER THAN APPENDS. Unlike a mined commitment — which is part of
+ * the audit trail and must never be lost — a draft is a current opinion, and
+ * two of them on one packet would be two answers to one question with nothing
+ * to choose between them.
+ */
+export function applyDraft(
+  paths: SpoolPaths,
+  itemId: string,
+  draft: { approach: string; note: string; openQuestions?: string[] },
+): { item: SpoolItem; at: string } | null {
+  const current = getSpoolItem(paths, itemId);
+  if (!current) return null;
+  assertPacketAddressMatches(itemId, current);
+
+  const at = capturedLabel(new Date());
+  const next = SpoolItem.parse({
+    ...current,
+    draft: draft.approach,
+    /**
+     * KEPT AS A LIST, NOT FOLDED INTO THE PROSE. The night used to compose
+     * these into `approach` under a "What it would need to know first" heading,
+     * which made them unreachable to anything but a reader — and the morning
+     * report has to be able to lead with "here is what it could not answer
+     * alone", which is a projection over data, not a search through a paragraph.
+     *
+     * AN EMPTY LIST IS ABSENT rather than `[]`: "asked nothing" and "was never
+     * asked" render the same and neither needs a key on disk.
+     */
+    ...(draft.openQuestions?.length ? { openQuestions: draft.openQuestions } : {}),
+    timeline: [...(current.timeline ?? []), { at, actor: "bed", text: draft.note, proposal: true }],
+    schemaVersion: SPOOL_ITEM_SCHEMA_VERSION,
+  });
+  writePacket(paths, next);
+  return { item: next, at };
 }
 
 /**
@@ -1647,10 +2320,15 @@ export function subjectSlice(lanes: SpoolLane[], items: SpoolItem[]): SpoolSubje
 
 /**
  * The queue footer's "agents added N" count. `createItem` stamps
- * `provenance: "session"` unconditionally — the honest label for every write its
- * only caller can produce — so counting items with that EXACT provenance string
- * is counting items an agent filed, as distinct from a note, a pasted
- * transcript, a chat capture or a mirror sync a human drove by hand.
+ * `provenance: "session"` for every write that came through the tool wall and
+ * `"you"` for the human API's own form (`NewSpoolItem.source`), so counting
+ * items with the EXACT string "session" is counting items an agent filed — as
+ * distinct from a note, a pasted transcript, a chat capture, a mirror sync, or
+ * a workbench form the human drove by hand. A live drive caught the lie this
+ * distinction repairs: a hand-made item was counted into "agents added", and
+ * the conservation line claimed an agent did what the user did. Every packet
+ * from before `source` existed carries "session" and keeps counting, which is
+ * the historical truth: they WERE agent-filed.
  */
 export function agentsAddedCount(items: SpoolItem[]): number {
   return items.filter((i) => i.provenance === "session").length;
@@ -1686,14 +2364,76 @@ export function minedCommitments(items: SpoolItem[]): SpoolExpectation[] {
 export function deskSlice(items: SpoolItem[]): SpoolDeskCard[] {
   return items
     .filter((i) => i.desk === true)
-    .map((i) => ({
-      id: i.id,
-      title: i.title,
-      ...(i.project ? { project: i.project } : {}),
-      ...(i.mirrored ? { mirrored: i.mirrored } : {}),
-      ...(i.deadline ? { deadline: i.deadline } : {}),
-      ...(i.unplaced ? { hint: "unplaced — what is it?", unplaced: true } : {}),
-    }));
+    .map((i) => {
+      const subtasks = i.subtasks ?? [];
+      /**
+       * READ OFF THE PACKET, never stored. `captured` is the user's words
+       * alone; `briefed` means an expert has been over it; `drafted` means an
+       * approach is waiting too. Three readings, no status field, so this can
+       * never become the accept path the module refuses.
+       */
+      const stage = i.draft ? "drafted" : i.fixed ? "briefed" : "captured";
+      /**
+       * THE ONE THING ONLY THE HUMAN CAN DO, and absent when the answer is
+       * "nothing, it is the agents' turn". Ordered by what blocks the most: an
+       * item with no subject cannot be ripened at all, so it is asked for first.
+       *
+       * IT INSTRUCTS RATHER THAN INTERROGATES. This field replaces the string
+       * "unplaced — what is it?", which put the assistant in the position of
+       * questioning the user about their own capture.
+       *
+       * AND IT EXPLAINS NOTHING ABOUT THE PAST. It read "Place it in a lane —
+       * the one it named does not exist", which is TRUE (the flag is set exactly
+       * when a create names a missing lane) and useless: it names no lane, so
+       * the reader cannot tell which one was meant, and it accounts for an
+       * internal event they did not cause and cannot check. Rendered three times
+       * down a desk it was the same defect as an unexplained "Ana is waiting" —
+       * the system reporting something nobody can understand by reading it. An
+       * instruction is the whole job of this field, so it is only that.
+       */
+      // A CLOSED ITEM ASKS FOR NOTHING. The user has closed it; instructing
+      // them to place or file it would be the tracker outliving the task.
+      const needsYou = i.closed
+        ? undefined
+        : !i.project
+          ? "Give it a subject so an expert can read it"
+          : i.unplaced
+            ? "Say which lane this belongs in"
+            : undefined;
+      return {
+        id: i.id,
+        title: i.title,
+        stage: stage as SpoolDeskCard["stage"],
+        ...(i.project ? { project: i.project } : {}),
+        ...(i.mirrored ? { mirrored: i.mirrored } : {}),
+        ...(i.deadline ? { deadline: i.deadline } : {}),
+        // The user's own day rides to the desk like every other chip — drawn,
+        // never compared against a clock here or anywhere downstream.
+        ...(i.pinned ? { pinned: i.pinned } : {}),
+        ...(needsYou ? { needsYou } : {}),
+        /**
+         * WHAT A DRAFT COULD NOT ANSWER ALONE, carried onto the card.
+         *
+         * `docs/spool-definition.md` §8 asks the morning to show "the question
+         * it could not answer alone" IN ONE SCREEN. A count would only tell the
+         * user there is somewhere else to go, so the questions travel whole —
+         * the desk is the handful of items an agent just touched, not the
+         * queue, so this is a few strings and not a payload.
+         */
+        ...(i.openQuestions?.length ? { openQuestions: i.openQuestions } : {}),
+        ...(i.unplaced ? { unplaced: true } : {}),
+        /**
+         * THE DONE SHELF RIDES IN THE SAME PAYLOAD. A closed card is not
+         * dropped — that would be a delete path wearing a filter's name, and
+         * `totalItems` would disagree with what is drawable. The web excludes
+         * closed cards from the active slices and renders them on the shelf.
+         */
+        ...(i.closed ? { closed: i.closed } : {}),
+        ...(subtasks.length > 0
+          ? { subtasks: { done: subtasks.filter((s) => s.done).length, total: subtasks.length } }
+          : {}),
+      };
+    });
 }
 
 /** Extensions that render as a picture. Everything else is a file. Coarse on

@@ -13,7 +13,7 @@ type WorkerClient = Pick<
   | "openRequest"
   | "completeTurn"
   | "failTurn"
-  // The spool's five verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
+  // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
   // back over the same loopback socket as everything else here, which is what
   // makes the toolkit identical in the embedded worker and the out-of-process
   // one. See `SpoolCapability`.
@@ -22,6 +22,23 @@ type WorkerClient = Pick<
   | "createSpoolItem"
   | "updateSpoolItem"
   | "consultSpoolExpert"
+  | "spoolMap"
+  | "openSpoolThread"
+  | "setSpoolThreadWaiting"
+  | "settleSpoolThread"
+  | "answerSpoolQuestion"
+  | "spoolFocus"
+  | "openSpoolFocus"
+  | "closeSpoolFocus"
+  | "reconcileSpoolLook"
+  | "setSpoolSubjectTerrain"
+  | "setSpoolSubjectIdentity"
+  | "setSpoolAperture"
+  | "setSpoolAreaCeiling"
+  | "spoolNotes"
+  | "createSpoolNote"
+  | "updateSpoolNote"
+  | "spoolSearch"
 >;
 
 /**
@@ -194,6 +211,43 @@ export class EngineWorker {
           create: async (input) => (await this.options.client.createSpoolItem(input)).item,
           update: async (id, patch) => (await this.options.client.updateSpoolItem(id, patch)).item,
           consult: (id) => this.options.client.consultSpoolExpert(id),
+          // The work-state verbs, through the same client for the same reason:
+          // one implementation of every rule, already under test.
+          map: () => this.options.client.spoolMap(),
+          openThread: async (subject, input) => (await this.options.client.openSpoolThread(subject, input)).thread,
+          setWaiting: async (subject, threadId, waiting) =>
+            (await this.options.client.setSpoolThreadWaiting(subject, threadId, waiting)).thread,
+          settle: async (subject, threadId, answer) =>
+            (await this.options.client.settleSpoolThread(subject, threadId, answer)).thread,
+          answer: async (itemId, question, answer) =>
+            (await this.options.client.answerSpoolQuestion(itemId, question, answer)).item,
+          focus: () => this.options.client.spoolFocus(),
+          setFocus: async (input) => (await this.options.client.openSpoolFocus(input)).focus,
+          endFocus: async (id, end) => (await this.options.client.closeSpoolFocus(id, end)).focus,
+          // Loop 1's verbs reach every session the same way the rest do. The
+          // reconcile itself is the engine's — deterministic, pull-only — so a
+          // scoped session glancing at its own subject spends nothing and can
+          // start nothing.
+          look: async (subjectKey) => (await this.options.client.reconcileSpoolLook(subjectKey)).look,
+          setTerrain: async (subjectKey, terrain) =>
+            (await this.options.client.setSpoolSubjectTerrain(subjectKey, terrain)).subject,
+          setIdentity: async (subjectKey, patch) =>
+            (await this.options.client.setSpoolSubjectIdentity(subjectKey, patch)).subject,
+          // Chat and hand share one slot / one record: both of these go through
+          // the same routes the room's own controls PUT and PATCH, so there is
+          // exactly one implementation of the view and of the clamp.
+          setAperture: async (view) => (await this.options.client.setSpoolAperture(view)).aperture,
+          setAreaPermits: async (name, ceiling) =>
+            (await this.options.client.setSpoolAreaCeiling(name, ceiling)).area,
+          // The shelf and the search, through the same client for the same
+          // reason as everything above: one implementation of every rule.
+          // The toolkit's own handler declares `author: "session"` on create;
+          // the capability forwards it verbatim, exactly as `create.source`.
+          notes: async () => (await this.options.client.spoolNotes()).notes,
+          createNote: async (input) => (await this.options.client.createSpoolNote(input)).note,
+          updateNote: async (id, patch) => (await this.options.client.updateSpoolNote(id, patch)).note,
+          search: async (query, subject) =>
+            (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
         },
         onRequest: async ({ kind, detail, toolUseId }) => {
           const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;

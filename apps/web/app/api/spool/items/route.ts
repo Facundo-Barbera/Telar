@@ -22,6 +22,33 @@ export async function POST(request: Request) {
       const value = optionalString(body[key], key);
       return value !== undefined ? { [key]: value } : {};
     };
+    /**
+     * THE WORKBENCH'S COMPOSED FIELDS — a deadline is `{label, kind}` and a
+     * pin is `{day}`, both the user's own words. Shape-checked just enough to
+     * satisfy the typed client; the ENGINE stays the authority on content —
+     * a bad `day` comes back as its plain 400 sentence, surfaced verbatim,
+     * never re-judged here.
+     */
+    const deadline = body.deadline;
+    const hasDeadline =
+      typeof deadline === "object" &&
+      deadline !== null &&
+      typeof (deadline as { label?: unknown }).label === "string" &&
+      ((deadline as { kind?: unknown }).kind === "external" || (deadline as { kind?: unknown }).kind === "self");
+    if (deadline !== undefined && !hasDeadline) {
+      return Response.json(
+        { error: { code: "invalid_request", message: "a deadline is {label, kind} — kind is external or self" } },
+        { status: 400 },
+      );
+    }
+    const pinned = body.pinned;
+    const hasPin = typeof pinned === "object" && pinned !== null && typeof (pinned as { day?: unknown }).day === "string";
+    if (pinned !== undefined && !hasPin) {
+      return Response.json(
+        { error: { code: "invalid_request", message: "a pin is {day} — the day you stated, as YYYY-MM-DD" } },
+        { status: 400 },
+      );
+    }
     return Response.json(
       await (await engineClient()).createSpoolItem({
         title: requiredString(body.title, "title"),
@@ -30,6 +57,15 @@ export async function POST(request: Request) {
         ...optional("raw"),
         ...optional("rawSource"),
         ...optional("creationNote"),
+        ...(hasDeadline
+          ? {
+              deadline: {
+                label: (deadline as { label: string }).label,
+                kind: (deadline as { kind: "external" | "self" }).kind,
+              },
+            }
+          : {}),
+        ...(hasPin ? { pinned: { day: (pinned as { day: string }).day } } : {}),
       }),
     );
   } catch (error) {

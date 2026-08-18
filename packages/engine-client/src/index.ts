@@ -24,10 +24,37 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type SpoolAperture,
+  type SpoolApertureView,
+  type SpoolArea,
+  type SpoolBrief,
+  type SpoolBriefing,
+  type SpoolLobby,
+  type SpoolCanvasState,
   type SpoolDeadline,
+  type SpoolPin,
   type SpoolExpertOutcome,
   type SpoolItem,
   type SpoolItemDetail,
+  type SpoolLook,
+  type SpoolLookOutcome,
+  type SpoolMcpInfo,
+  type SpoolNote,
+  type SpoolSearchHit,
+  type SpoolMemoryFact,
+  type SpoolTerrain,
+  type SpoolNight,
+  type SpoolSubject,
+  type SpoolSubjectColor,
+  type SpoolSubjectPermits,
+  type SpoolFocusDay,
+  type SpoolFocusEnd,
+  type SpoolFocusEntry,
+  type SpoolMap,
+  type SpoolPickup,
+  type SpoolSubjectThreads,
+  type SpoolThread,
+  type SpoolWork,
   type SpoolLane,
   type SpoolSnapshot,
   type ModelCatalogue,
@@ -214,8 +241,28 @@ export class EngineClient {
     raw?: string;
     rawSource?: string;
     creationNote?: string;
+    /** A QUOTE, never a computation — §3.2's quoting law, restated where the
+     *  tool surface hands one in. */
+    deadline?: SpoolDeadline;
+    /** The user's own day for it, strict `YYYY-MM-DD` — the engine refuses
+     *  anything else with a sentence. Human-owned; see `SpoolPin`. */
+    pinned?: SpoolPin;
+    /** Whose hand is filing. ABSENT MEANS THE HUMAN'S ("you") — this is the
+     *  human API, and a bare create must not count into "agents added N".
+     *  Only the engine's own tool wall declares "session"; a surface never
+     *  passes this field for a form the user submitted. */
+    source?: "you" | "session";
+    /** Free-text labels in the user's own words — identity across lanes and
+     *  subjects, never a state or an urgency. */
+    tags?: string[];
   }): Promise<{ item: SpoolItem }> {
     return this.request("POST", "/v2/spool/items", input);
+  }
+
+  /** Record the answer to one of an item's open questions. The engine refuses
+   *  an empty answer and a question the item does not hold. */
+  answerSpoolQuestion(id: string, question: string, answer: string): Promise<{ item: SpoolItem }> {
+    return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/answer`, { question, answer });
   }
 
   /**
@@ -234,9 +281,58 @@ export class EngineClient {
       unplaced?: boolean;
       mirrored?: string;
       deadline?: SpoolDeadline;
+      /** Set with `{day}`, clear with an EXPLICIT `null` — clearing removes the
+       *  pin, never the item. Absent leaves the pin exactly as it is. */
+      pinned?: SpoolPin | null;
+      /** The whole tag list, replaced. `[]` clears; absent leaves it alone. */
+      tags?: string[];
     },
   ): Promise<{ item: SpoolItem }> {
     return this.request("PATCH", `/v2/spool/items/${encodeURIComponent(id)}`, patch);
+  }
+
+  /**
+   * Tick the checkbox — the human's own close (`docs/spool-loops.md` §9). A
+   * DEDICATED verb, never the generic patch: `closed` is refused there so no
+   * tool-reachable path can spell it. The engine cascades: every open thread
+   * holding this capture settles with the answer "the user closed the task",
+   * and a thread that refused the settle comes back in `refused` rather than
+   * undoing the close. Idempotent — closing a closed item returns the honest
+   * note and changes nothing.
+   */
+  closeSpoolItem(id: string): Promise<{
+    item: SpoolItem;
+    settledThreads: SpoolThread[];
+    refused: Array<{ threadId: string; reason: string }>;
+    note?: string;
+  }> {
+    return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/close`);
+  }
+
+  /** Untick it — equally the hand's. Removes `closed` and nothing else:
+   *  cascade-settled threads stay settled (open a new question instead), and
+   *  the close/reopen pair stays on the item's timeline as the record. */
+  reopenSpoolItem(id: string): Promise<{ item: SpoolItem; note?: string }> {
+    return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/reopen`);
+  }
+
+  /**
+   * Tick MANY checkboxes — the selection model's close, HUMAN API ONLY like
+   * the single verb it is made of. Each id gets the same cascade and the same
+   * per-item shape as a single close; an id nothing goes by comes back with
+   * `error` beside the ones that landed, never as a thrown-away batch.
+   */
+  closeSpoolItems(ids: string[]): Promise<{
+    results: Array<{
+      id: string;
+      item?: SpoolItem;
+      settledThreads?: SpoolThread[];
+      refused?: Array<{ threadId: string; reason: string }>;
+      note?: string;
+      error?: string;
+    }>;
+  }> {
+    return this.request("POST", "/v2/spool/items/close-many", { ids });
   }
 
   addSpoolSubtask(id: string, title: string): Promise<{ item: SpoolItem }> {
@@ -274,6 +370,475 @@ export class EngineClient {
    */
   consultSpoolExpert(id: string): Promise<SpoolExpertOutcome> {
     return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/expert`);
+  }
+
+  /**
+   * The same pass, started and answered at once with its work record.
+   *
+   * WHAT EVERY SURFACE SHOULD CALL. A consultation is fifteen to twenty-two
+   * turns; an HTTP client gives up long before that, and the first live run
+   * proved it by reporting the engine unreachable while the daemon finished
+   * fine. Poll `spoolWork()` for progress.
+   *
+   * `alreadyRunning` COMES BACK WITH THE EXISTING RECORD rather than a refusal.
+   * Two clicks are one pass, and the second click's answer is "here is the one
+   * you already have" — which is what the caller wanted to see anyway.
+   */
+  startSpoolExpert(id: string): Promise<{ work: SpoolWork | null; refused?: string; alreadyRunning?: boolean }> {
+    return this.request("POST", `/v2/spool/items/${encodeURIComponent(id)}/expert`, { detach: true });
+  }
+
+  /** What the night did, or null when it has never run. */
+  spoolNight(): Promise<{ night: SpoolNight | null }> {
+    return this.request("GET", "/v2/spool/night");
+  }
+
+  /**
+   * Start tonight's queue, or continue the one that stopped, and return at once
+   * with the plan it intends to work.
+   *
+   * IT DOES NOT WAIT. A night is minutes of model calls and an HTTP client will
+   * give up long before it ends — which is exactly what happened the first time
+   * this was run for real. Poll `spoolNight()` for progress; the record is
+   * written after every job, so that read is always current.
+   *
+   * It answers `{night: null, refused}` rather than starting while a person is
+   * working, because a run that immediately stands down burns its plan and
+   * records a stop for nothing.
+   */
+  startSpoolNight(
+    input: { maxJobs?: number; maxCostUsd?: number } = {},
+  ): Promise<{ night: SpoolNight | null; alreadyRunning?: boolean; refused?: string }> {
+    return this.request("POST", "/v2/spool/night", input);
+  }
+
+  /**
+   * Every subject, reconciled against what the items on disk actually name.
+   *
+   * READING IS ALSO HOW THE MIGRATION RUNS — a subject an item names and nothing
+   * has registered is derived here. Idempotent, touches no packet, and
+   * self-healing, which is why there is no boot hook to leave half-done.
+   */
+  spoolSubjects(): Promise<{ subjects: SpoolSubject[] }> {
+    return this.request("GET", "/v2/spool/subjects");
+  }
+
+  /**
+   * MISSION CONTROL — every subject's lobby card, ranked, pure composition
+   * (§13.2). `today`, in `YYYY-MM-DD`, is the caller's own statement of what
+   * day it is; omit it and the today-relative facts (a subject's
+   * pinned-to-today count, its `nextPin`) simply do not appear.
+   */
+  spoolLobby(today?: string): Promise<{ lobby: SpoolLobby }> {
+    return this.request("GET", `/v2/spool/lobby${today ? `?today=${encodeURIComponent(today)}` : ""}`);
+  }
+
+  /**
+   * THE RE-ENTRY BRIEF — one subject's room, opened: where you left off, what
+   * moved, what's open, what's next, cited. Same `today` convention as
+   * `spoolLobby`.
+   */
+  spoolSubjectBrief(key: string, today?: string): Promise<{ brief: SpoolBrief }> {
+    return this.request(
+      "GET",
+      `/v2/spool/subjects/${encodeURIComponent(key)}/brief${today ? `?today=${encodeURIComponent(today)}` : ""}`,
+    );
+  }
+
+  /**
+   * Set what may happen on a subject unattended — §7.6.
+   *
+   * NOT DECORATIVE: `read` gates ripening and `draft` gates drafting, so
+   * lowering a subject stops the night working it tonight.
+   */
+  setSpoolSubjectPermits(key: string, permits: SpoolSubjectPermits): Promise<{ subject: SpoolSubject }> {
+    // Rejects `not_found` for a key nothing goes by, which the web adapter maps
+    // to a 404. It is not a refusal carrying a next move, so it is an error.
+    return this.request("PATCH", `/v2/spool/subjects/${encodeURIComponent(key)}`, { permits });
+  }
+
+  /**
+   * Say where a subject lives — `docs/spool-loops.md` §3's terrain. `null`
+   * clears (a corrected statement, not a deletion; the subject's looks stay).
+   * Rejects with the store's own sentence for an address it cannot hold.
+   */
+  setSpoolSubjectTerrain(key: string, terrain: SpoolTerrain | null): Promise<{ subject: SpoolSubject }> {
+    return this.request("PATCH", `/v2/spool/subjects/${encodeURIComponent(key)}`, { terrain });
+  }
+
+  /**
+   * Say whose a subject is — its `area` (the user's group name) and/or its
+   * `color` (a token from the closed identity set). `null` clears a field, an
+   * absent key leaves it untouched — the same `in` rule as terrain, spelled
+   * with explicit spreads because JSON.stringify would erase `undefined` and
+   * make "leave it" indistinguishable from a bug. Identity, never state.
+   * Rejects with the store's own sentence for a value it must not hold.
+   */
+  setSpoolSubjectIdentity(
+    key: string,
+    patch: { area?: string | null; color?: SpoolSubjectColor | null },
+  ): Promise<{ subject: SpoolSubject }> {
+    return this.request("PATCH", `/v2/spool/subjects/${encodeURIComponent(key)}`, {
+      ...("area" in patch ? { area: patch.area } : {}),
+      ...("color" in patch ? { color: patch.color } : {}),
+    });
+  }
+
+  /**
+   * Every area the store knows — the stored ceiling records merged with the
+   * area names subjects reference. Joined by `name` against
+   * `SpoolSubject.area`, the same join-by-key idiom terrain and permits use.
+   */
+  spoolAreas(): Promise<{ areas: SpoolArea[] }> {
+    return this.request("GET", "/v2/spool/areas");
+  }
+
+  /**
+   * State a ceiling on an area — every member subject's effective permit is
+   * clamped DOWN to it — or withdraw one with `null`. Never raises anything:
+   * a ceiling above a subject's own permit changes nothing for that subject.
+   * Rejects with the store's own sentence for a level it does not know.
+   */
+  setSpoolAreaCeiling(name: string, ceiling: SpoolSubjectPermits | null): Promise<{ area: SpoolArea }> {
+    return this.request("PATCH", `/v2/spool/areas/${encodeURIComponent(name)}`, { ceiling });
+  }
+
+  /**
+   * The room's smart view — which computed scope the wide room is showing.
+   * One current value, no history; subject focus is a deeper aperture and
+   * lives in the focus store, never here.
+   */
+  spoolAperture(): Promise<{ aperture: SpoolAperture }> {
+    return this.request("GET", "/v2/spool/aperture");
+  }
+
+  /**
+   * Point the room at a smart view. PUT because it replaces the one whole
+   * value — idempotent, last writer wins, and the chat's tool and the hand's
+   * click land on the same slot so neither can drift from the other.
+   */
+  setSpoolAperture(view: SpoolApertureView): Promise<{ aperture: SpoolAperture }> {
+    return this.request("PUT", "/v2/spool/aperture", { view });
+  }
+
+  /**
+   * RECONCILE-ON-LOOK — read the subject's terrain NOW, diff against the last
+   * look, and return the fresh one. THE CALLER IS THE TRIGGER: this is the
+   * pull in pull-never-push, called on arrival and on focus, never by a timer.
+   *
+   * NEVER REJECTS FOR THE WORLD BEING UNREACHABLE. `gh` failing comes back as
+   * `{fresh: false, error}` beside the stale look, and a subject with no
+   * terrain answers `{note}` — both are answers a surface renders, not faults.
+   */
+  reconcileSpoolLook(subjectKey: string): Promise<{ look: SpoolLookOutcome }> {
+    return this.request("POST", "/v2/spool/look", { subjectKey });
+  }
+
+  /** Every subject's STORED look — what the Spool last saw, honestly stale
+   *  (`fresh: false` on each), with no network read. The arrival read. */
+  spoolLooks(): Promise<{ looks: SpoolLookOutcome[] }> {
+    return this.request("GET", "/v2/spool/looks");
+  }
+
+  spoolLook(subject: string): Promise<{ look: SpoolLookOutcome }> {
+    return this.request("GET", `/v2/spool/looks/${encodeURIComponent(subject)}`);
+  }
+
+  /** "Noted" — drains one observation. The row stays, marked; nothing here
+   *  deletes. */
+  acknowledgeSpoolObservation(subject: string, observationId: string): Promise<{ look: SpoolLook }> {
+    return this.request("POST", `/v2/spool/looks/${encodeURIComponent(subject)}/ack`, { observationId });
+  }
+
+  /** "Noted", in bulk — drains every named observation, which is how a digest
+   *  line's whole group goes quiet in one gesture. Idempotent: an id already
+   *  drained, or one nothing goes by, changes nothing and fails nothing. */
+  acknowledgeSpoolObservations(
+    subject: string,
+    observationIds: string[],
+  ): Promise<{ look: SpoolLook; acknowledged: number }> {
+    return this.request("POST", `/v2/spool/looks/${encodeURIComponent(subject)}/ack-all`, { observationIds });
+  }
+
+  /**
+   * BRIEFED ARRIVAL — the composed opening context for "work on this".
+   *
+   * A READ: the engine composes the packet, the raw words, the thread state
+   * and the delta from the subject's stored look into one deterministic text —
+   * no model call, no session created, no turn queued. The web writes it into
+   * the composer as a draft and the human sends it. `briefing.project` absent
+   * means no registered project matches the item's subject, which is an
+   * ordinary answer to render, never a reason to invent a project.
+   */
+  spoolBriefing(itemId: string): Promise<{ briefing: SpoolBriefing }> {
+    return this.request("GET", `/v2/spool/items/${encodeURIComponent(itemId)}/briefing`);
+  }
+
+  /**
+   * THE SHELF — documents beside the items (`docs/spool-loops.md` §10.1).
+   * Retired notes ride along, marked: dismissing drains, and a list that hid
+   * them would make retirement indistinguishable from deletion.
+   */
+  spoolNotes(subject?: string): Promise<{ notes: SpoolNote[] }> {
+    return this.request("GET", `/v2/spool/notes${subject ? `?subject=${encodeURIComponent(subject)}` : ""}`);
+  }
+
+  spoolNote(id: string): Promise<{ note: SpoolNote }> {
+    return this.request("GET", `/v2/spool/notes/${encodeURIComponent(id)}`);
+  }
+
+  createSpoolNote(input: {
+    title: string;
+    body: string;
+    tags?: string[];
+    subjectKey?: string;
+    /** Whose hand wrote it. ABSENT MEANS THE HUMAN'S ("you") — only the
+     *  engine's own tool wall declares "session", exactly as items do. */
+    author?: "you" | "session";
+  }): Promise<{ note: SpoolNote }> {
+    return this.request("POST", "/v2/spool/notes", input);
+  }
+
+  /** Edit a note's title, body or tags. The author NEVER changes — the engine
+   *  refuses a patch that names it, so provenance survives every edit. */
+  updateSpoolNote(
+    id: string,
+    patch: { title?: string; body?: string; tags?: string[] },
+  ): Promise<{ note: SpoolNote }> {
+    return this.request("PATCH", `/v2/spool/notes/${encodeURIComponent(id)}`, patch);
+  }
+
+  /** Retire a note — drains it off the working shelf with the reason, deletes
+   *  nothing. The reason is required; withdrawing knowledge silently is how a
+   *  shelf stops being trustworthy. */
+  retireSpoolNote(id: string, reason: string): Promise<{ note: SpoolNote }> {
+    return this.request("POST", `/v2/spool/notes/${encodeURIComponent(id)}/retire`, { reason });
+  }
+
+  /**
+   * THE SEARCH — deterministic, lexical, model-free (§10.2), over items,
+   * threads, notes and observations. Closed things are included and marked,
+   * ranked below open ones.
+   */
+  spoolSearch(query: string, options: { subject?: string; limit?: number } = {}): Promise<{ hits: SpoolSearchHit[] }> {
+    const params = new URLSearchParams({ q: query });
+    if (options.subject) params.set("subject", options.subject);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    return this.request("GET", `/v2/spool/search?${params.toString()}`);
+  }
+
+  /** The outward MCP socket's connect card: where it listens, its dedicated
+   *  secret (NOT the engine token), and the composed `claude mcp add` line. */
+  spoolMcpInfo(): Promise<{ mcp: SpoolMcpInfo }> {
+    return this.request("GET", "/v2/spool/mcp-info");
+  }
+
+  /**
+   * Everything the Spool remembers, in one read — per subject, plus the front
+   * door's own.
+   *
+   * RETIRED FACTS ARE INCLUDED. They leave the model's PROMPT, not the human's
+   * view: "dismissing drains" means the record stays legible, and hiding them
+   * would make retirement indistinguishable from the deletion this store has no
+   * path for.
+   */
+  spoolMemory(): Promise<{ subjects: Array<{ key: string; facts: SpoolMemoryFact[] }>; self: SpoolMemoryFact[] }> {
+    return this.request("GET", "/v2/spool/memory");
+  }
+
+  /**
+   * THE MAP — every subject's open questions, their weave, and what no thread
+   * claims yet.
+   *
+   * ONE CALL, for the reason `spoolSnapshot` states: these are projections of
+   * the same items and the same digests, and fetching them per subject could
+   * draw one subject's weave a tick apart from another's.
+   */
+  spoolMap(): Promise<SpoolMap> {
+    return this.request("GET", "/v2/spool/threads");
+  }
+
+  spoolThreads(subject: string): Promise<SpoolSubjectThreads> {
+    return this.request("GET", `/v2/spool/threads/${encodeURIComponent(subject)}`);
+  }
+
+  /**
+   * WHERE TO PICK UP, and the day reading under it.
+   *
+   * ONE CALL: these are two views of the same focus log and the same map, so
+   * fetching them apart could draw a brief that disagrees with its own history.
+   */
+  spoolFocus(): Promise<{ pickup: SpoolPickup; days: SpoolFocusDay[] }> {
+    return this.request("GET", "/v2/spool/focus");
+  }
+
+  /** Start being on something. YOU set this — the system proposes, never picks. */
+  openSpoolFocus(input: { subject: string; threadId?: string; note?: string }): Promise<{ focus: SpoolFocusEntry }> {
+    return this.request("POST", "/v2/spool/focus", input);
+  }
+
+  /** Stop, and say where you left it. The note is what "pick back up" means. */
+  closeSpoolFocus(id: string, end: { reason: SpoolFocusEnd; note?: string }): Promise<{ focus: SpoolFocusEntry }> {
+    return this.request("PATCH", `/v2/spool/focus/${encodeURIComponent(id)}`, { end });
+  }
+
+  /**
+   * Correct an entry, keeping what it said before.
+   *
+   * `threadId: null` CLEARS it — "I was on the subject, not that one thread" is
+   * a real correction that `undefined` cannot express, since that means "leave
+   * alone" everywhere else in this patch.
+   */
+  amendSpoolFocus(
+    id: string,
+    amend: { subject?: string; threadId?: string | null; note?: string; why?: string },
+  ): Promise<{ focus: SpoolFocusEntry }> {
+    return this.request("PATCH", `/v2/spool/focus/${encodeURIComponent(id)}`, { amend });
+  }
+
+  /**
+   * Map a subject into the questions it is made of, and RETURN AT ONCE.
+   *
+   * IT DOES NOT WAIT, the same shape `startSpoolExpert` takes and for the same
+   * reason: this reads every capture in a subject through a model. Poll
+   * `spoolWork()` for progress — the record is addressed by SUBJECT, not by an
+   * item, so two clicks anywhere are one pass.
+   */
+  startSpoolThreadPass(
+    subject: string,
+  ): Promise<{ work: SpoolWork | null; refused?: string; alreadyRunning?: boolean }> {
+    return this.request("POST", `/v2/spool/threads/${encodeURIComponent(subject)}`, { detach: true });
+  }
+
+  /**
+   * Write down what a question turned out to be — the store's first exit that is
+   * not a deletion.
+   *
+   * AN ANSWER IS REQUIRED, and both the daemon and the store refuse without one.
+   * A settle with no answer would be a status flip, which `SpoolThread`
+   * deliberately cannot express.
+   */
+  settleSpoolThread(subject: string, threadId: string, answer: string): Promise<{ thread: SpoolThread }> {
+    return this.request(
+      "PATCH",
+      `/v2/spool/threads/${encodeURIComponent(subject)}/${encodeURIComponent(threadId)}`,
+      { settle: { answer } },
+    );
+  }
+
+  /**
+   * Settle MANY threads, each with its own required answer — the selection
+   * model's settle. Per-thread failures come back in `refused` beside the ones
+   * that landed rather than failing the batch: a thread already settled, or an
+   * empty answer, refuses that ROW with the store's own sentence.
+   */
+  settleSpoolThreadsMany(
+    subject: string,
+    settles: Array<{ threadId: string; answer: string }>,
+  ): Promise<{ settled: SpoolThread[]; refused: Array<{ threadId: string; reason: string }> }> {
+    return this.request("POST", `/v2/spool/threads/${encodeURIComponent(subject)}/settle-many`, { settles });
+  }
+
+  /**
+   * Open ONE question on a subject's map, deliberately. Every law that binds a
+   * mapping pass binds this — at least one capture, dedupe against restated
+   * questions, the grouping marked `proposed` — enforced in the store.
+   */
+  openSpoolThread(
+    subject: string,
+    input: {
+      question: string;
+      handle?: string;
+      items: string[];
+      waiting?: { kind: "you" | "agent" | "person"; who?: string; note?: string };
+    },
+  ): Promise<{ thread: SpoolThread }> {
+    return this.request("POST", `/v2/spool/threads/${encodeURIComponent(subject)}/open`, input);
+  }
+
+  /** Who a thread is stuck on. Normalised by the store ("person" naming the
+   *  human IS "you"), and refused on a settled thread. */
+  setSpoolThreadWaiting(
+    subject: string,
+    threadId: string,
+    waiting: { kind: "you" | "agent" | "person"; who?: string; note?: string },
+  ): Promise<{ thread: SpoolThread }> {
+    return this.request(
+      "PATCH",
+      `/v2/spool/threads/${encodeURIComponent(subject)}/${encodeURIComponent(threadId)}`,
+      { waiting },
+    );
+  }
+
+  /** A human looked at an agent's grouping — clears `proposed` and nothing else. */
+  reviewSpoolThread(subject: string, threadId: string): Promise<{ thread: SpoolThread }> {
+    return this.request(
+      "PATCH",
+      `/v2/spool/threads/${encodeURIComponent(subject)}/${encodeURIComponent(threadId)}`,
+      { reviewed: true },
+    );
+  }
+
+  /** Move a capture to another thread, or off the map with `to: null`. */
+  refileSpoolCapture(
+    subject: string,
+    itemId: string,
+    to: string | null,
+  ): Promise<{ map: SpoolSubjectThreads }> {
+    return this.request("POST", "/v2/spool/threads-refile", { subject, itemId, to });
+  }
+
+  /**
+   * A human's verdict on one remembered fact: retire it, or confirm it.
+   *
+   * THE OTHER DOOR from the one an agent uses. A pass may propose retiring a
+   * fact and is refused for `person` facts; this caller is the person, so it has
+   * no such rule. `subject` absent means the front door's own memory.
+   */
+  judgeSpoolFact(input: {
+    id: string;
+    subject?: string;
+    retire?: { why: string };
+    reviewed?: boolean;
+  }): Promise<{ fact: SpoolMemoryFact }> {
+    const { id, ...rest } = input;
+    return this.request("PATCH", `/v2/spool/memory/${encodeURIComponent(id)}`, rest);
+  }
+
+  /**
+   * What the Spool is doing right now, and what it just finished.
+   *
+   * POLLED, NOT STREAMED, and only while something is running. The record is
+   * in memory on the daemon — a pass in flight is not durable data and never
+   * pretends to be — so this is the only way to see one, and a caller that
+   * stops asking simply stops seeing it.
+   */
+  spoolWork(): Promise<{ work: SpoolWork[] }> {
+    return this.request("GET", "/v2/spool/work");
+  }
+
+  /** The screen the assistant is composing right now. Poll it — `rev` rises on
+   *  every block, so a client can skip a render it has already seen. */
+  spoolCanvas(): Promise<SpoolCanvasState> {
+    return this.request("GET", "/v2/spool/canvas");
+  }
+
+  /**
+   * ASK FOR A SCREEN, and get an answer immediately.
+   *
+   * The composition does NOT come back here — it lands on the canvas, block by
+   * block, while the model works. That is the whole shape being tested: a
+   * response that waited for the finished screen would take half a minute and
+   * arrive all at once, which is the same information in the least useful order.
+   */
+  askSpoolCanvas(asked: string): Promise<{ asked: string }> {
+    return this.request("POST", "/v2/spool/canvas", { asked });
+  }
+
+  /** Stop one pass. `{stopped: false}` when nothing is running under that id,
+   *  which is an answer rather than an error — see the daemon's own note. */
+  cancelSpoolWork(id: string): Promise<{ stopped: boolean }> {
+    return this.request("DELETE", `/v2/spool/work/${encodeURIComponent(id)}`);
   }
 
   /** The Spool's project-less master chat, ensured. A SINGLETON: calling this

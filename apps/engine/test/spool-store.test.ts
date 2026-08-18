@@ -25,9 +25,11 @@ import { fileURLToPath } from "node:url";
 import { SPOOL_ITEM_SCHEMA_VERSION, SpoolItem, SpoolLane } from "@telar/engine-client";
 import {
   addSubtask,
+  answerOpenQuestion,
   agentsAddedCount,
   applyExpertPass,
   attachmentTally,
+  closeItem,
   createItem,
   createLane,
   deskSlice,
@@ -45,6 +47,7 @@ import {
   readLanes,
   readPacketAttachments,
   renameLane,
+  reopenItem,
   reorderLane,
   retireLane,
   setSubtaskDone,
@@ -912,13 +915,38 @@ describe("creating an item files it, stamps provenance, and places it on the des
     expect(item.timeline![0]!.actor).toBe("session");
   });
 
+  test("source 'you' stamps the HUMAN's provenance and actor — and stays out of the agents-added count", () => {
+    ensureSpool(paths);
+    const byHand = createItem(paths, { title: "made on the workbench", source: "you" });
+    expect(byHand.provenance).toBe("you");
+    expect(byHand.timeline![0]!.actor).toBe("you");
+    expect(byHand.timeline![0]!.text).toBe("captured by hand");
+    // The default is unchanged — every existing caller and every existing
+    // packet keeps the "session" stamp it always had, and keeps counting.
+    const agentFiled = createItem(paths, { title: "filed through the wall" });
+    expect(agentFiled.provenance).toBe("session");
+    expect(agentsAddedCount(listItems(paths).items)).toBe(1);
+  });
+
   test("a create naming an UNKNOWN lane files into the seed lane and asks, rather than creating the lane", () => {
     ensureSpool(paths);
-    const item = createItem(paths, { title: "the pdf thing", lane: "a-lane-nobody-made" });
+    // GIVEN A PROJECT, so this isolates the UNPLACED case. A floating item is
+    // asked for a subject first — without one nothing can ripen at all — and
+    // that ordering is asserted on its own below.
+    const item = createItem(paths, { title: "the pdf thing", project: "aurora", lane: "a-lane-nobody-made" });
     expect(item.lane).toBe("unfiled");
     expect(item.unplaced).toBe(true);
     expect(readLanes(paths).map((l) => l.key)).toEqual(["unfiled"]); // lane structure held
-    expect(deskSlice([item])[0]!.hint).toBe("unplaced — what is it?");
+    // THE CARD NAMES THE MOVE, and ONLY the move. It used to add "— the one it
+    // named does not exist", which is true and useless: it names no lane, so the
+    // reader cannot tell which was meant, and it explains an internal event they
+    // did not cause. This field instructs; it does not account for itself.
+    expect(deskSlice([item])[0]!.needsYou).toBe("Say which lane this belongs in");
+
+    // …and with no subject, THAT is what it asks for, because a lane it cannot
+    // be ripened from is the lesser of the two blocks.
+    const floating = createItem(paths, { title: "another", lane: "a-lane-nobody-made" });
+    expect(deskSlice([floating])[0]!.needsYou).toContain("Give it a subject");
   });
 
   test("with the seed lane RETIRED, a create writes the item and creates NO lane at all", () => {
@@ -1102,6 +1130,84 @@ describe("raw and rawSource are never overwritten", () => {
   });
 });
 
+// ── the pin — the user's own day, held verbatim ─────────────────────────────
+
+describe("the pin is the user's own day — stored verbatim, cleared by an explicit null, never computed on", () => {
+  test("create stores a strict day and it reads back exactly", () => {
+    ensureSpool(paths);
+    const item = createItem(paths, { title: "pinned by hand", pinned: { day: "2026-08-19" } });
+    expect(item.pinned).toEqual({ day: "2026-08-19" });
+    expect(getSpoolItem(paths, item.id)!.pinned).toEqual({ day: "2026-08-19" });
+  });
+
+  test("update sets a pin, and an EXPLICIT null clears it — the key comes OFF the packet, the item stays", () => {
+    ensureSpool(paths);
+    const item = createItem(paths, { title: "movable", raw: "the user's words" });
+    const pinned = updateItem(paths, item.id, { pinned: { day: "2026-08-21" } })!;
+    expect(pinned.pinned).toEqual({ day: "2026-08-21" });
+
+    const cleared = updateItem(paths, item.id, { pinned: null })!;
+    expect(cleared.pinned).toBeUndefined();
+    // Absence on DISK, not `pinned: null` — the schema spells "no pin" as
+    // absence, and a stored null would make the packet unreadable.
+    expect(Object.keys(readJson(packetPath(item.id)))).not.toContain("pinned");
+    // A clear removes the PIN, never the item — "no deletion path" holds.
+    expect(getSpoolItem(paths, item.id)!.raw).toBe("the user's words");
+  });
+
+  test("an absent pin in a patch leaves an existing pin exactly where the user put it", () => {
+    ensureSpool(paths);
+    const item = createItem(paths, { title: "pinned", pinned: { day: "2026-08-19" } });
+    const updated = updateItem(paths, item.id, { title: "renamed" })!;
+    expect(updated.pinned).toEqual({ day: "2026-08-19" });
+  });
+
+  test("everything that is not a written-out date is refused with the sentence, and NOTHING is written", () => {
+    ensureSpool(paths);
+    const item = createItem(paths, { title: "target" });
+    const before = hashOf(packetPath(item.id));
+    // The shapes a model reaches for the moment it starts RESOLVING dates
+    // instead of quoting them — each must die at the gate.
+    const bad = ["Friday", "tomorrow", "2026-8-19", "19-08-2026", "2026/08/19", "2026-08-19T00:00:00Z", "", "1755600000"];
+    for (const day of bad) {
+      expect(() => updateItem(paths, item.id, { pinned: { day } })).toThrow("write the actual date");
+      expect(() => createItem(paths, { title: "never lands", pinned: { day } })).toThrow("pinned: {day: \"YYYY-MM-DD\"}");
+    }
+    // A pin that is not even the `{day}` shape gets the same sentence.
+    expect(() => updateItem(paths, item.id, { pinned: "2026-08-19" as never })).toThrow("user's own day");
+    expect(hashOf(packetPath(item.id))).toBe(before);
+  });
+
+  test("a day that passes the format but is not on the calendar is refused too", () => {
+    ensureSpool(paths);
+    // A UTC Date would quietly normalise these to a NEIGHBOURING day — storing
+    // that would be the store rewriting a date the user never said.
+    for (const day of ["2026-02-30", "2026-13-01", "2026-04-31", "2026-00-10"]) {
+      expect(() => createItem(paths, { title: "no such day", pinned: { day } })).toThrow("not a day on the calendar");
+    }
+    // The gate discriminates: a leap day in a leap year is a real day.
+    const leap = createItem(paths, { title: "leap", pinned: { day: "2028-02-29" } });
+    expect(leap.pinned).toEqual({ day: "2028-02-29" });
+  });
+
+  test("the pin rides every projection the surfaces read — desk card and subject row alike", () => {
+    ensureSpool(paths);
+    const pinned = createItem(paths, { title: "on the desk", project: "aurora", pinned: { day: "2026-08-19" } });
+    const bare = createItem(paths, { title: "no pin", project: "aurora" });
+    const { items } = listItems(paths);
+
+    const cards = deskSlice(items);
+    expect(cards.find((c) => c.id === pinned.id)!.pinned).toEqual({ day: "2026-08-19" });
+    expect(cards.find((c) => c.id === bare.id)!.pinned).toBeUndefined();
+
+    // The subject axis carries the whole item, so the pin is there by
+    // construction — asserted anyway, because this is the row the board reads.
+    const groups = subjectSlice(readLanes(paths), items);
+    const rows = groups.find((g) => g.project === "aurora")!.rows;
+    expect(rows.find((r) => r.item.id === pinned.id)!.item.pinned).toEqual({ day: "2026-08-19" });
+  });
+});
+
 // ── the absence that IS the moat ────────────────────────────────────────────
 
 describe("the item schema exposes no accept path", () => {
@@ -1139,6 +1245,51 @@ describe("the pure projections take already-read data and touch no disk", () => 
     expect(rankOf([], "i-a")).toBeNull();
   });
 
+  test("a card says how far the item has ripened, read off the packet", () => {
+    /**
+     * THE DESK USED TO SHOW A TITLE AND A PROJECT — nothing the user did not
+     * already know — so there was no reason to look at it. `stage` is what makes
+     * the rail distinguish "your words, untouched" from "an expert has been over
+     * this" from "there is an approach waiting".
+     *
+     * IT IS A READING, NOT A STATUS. Nothing sets it and no agent transitions
+     * it; it is derived from which fields the packet carries, which is why it
+     * cannot become the accept path the module refuses.
+     */
+    const [captured] = deskSlice([item({ id: "i-a", title: "a", desk: true, project: "p", raw: "shorthand" })]);
+    const [briefed] = deskSlice([item({ id: "i-b", title: "b", desk: true, project: "p", raw: "x", fixed: "a brief" })]);
+    const [drafted] = deskSlice([
+      item({ id: "i-c", title: "c", desk: true, project: "p", fixed: "a brief", draft: "an approach" }),
+    ]);
+
+    expect(captured!.stage).toBe("captured");
+    expect(briefed!.stage).toBe("briefed");
+    expect(drafted!.stage).toBe("drafted");
+  });
+
+  test("an item that needs nothing from you says nothing — it is the agents' turn", () => {
+    // The field is the ONE thing only this human can do. Present on everything
+    // would make it noise; absent when there is nothing is what makes it read.
+    const [card] = deskSlice([item({ id: "i-a", title: "a", desk: true, project: "aurora" })]);
+    expect(card!.needsYou).toBeUndefined();
+  });
+
+  test("sub-task progress rides on the card, and is absent when there are none", () => {
+    const [broken] = deskSlice([
+      item({
+        id: "i-a",
+        title: "a",
+        desk: true,
+        project: "p",
+        subtasks: [{ id: "s1", title: "one", done: true }, { id: "s2", title: "two" }],
+      }),
+    ]);
+    const [whole] = deskSlice([item({ id: "i-b", title: "b", desk: true, project: "p" })]);
+
+    expect(broken!.subtasks).toEqual({ done: 1, total: 2 });
+    expect(whole!.subtasks).toBeUndefined();
+  });
+
   test("queueSlice's COUNT is unchanged when sub-tasks are added — the conservation law", () => {
     const lanes = [lane("office", ["i-a", "i-b"])];
     const plain = [item({ id: "i-a", title: "a" }), item({ id: "i-b", title: "b" })];
@@ -1170,7 +1321,7 @@ describe("the pure projections take already-read data and touch no disk", () => 
     ]);
   });
 
-  test("deskSlice emits {id,title,project?,mirrored?,deadline?,hint?,unplaced?} from ITEM FIELDS ALONE", () => {
+  test("deskSlice emits its whitelist of keys from ITEM FIELDS ALONE", () => {
     // FIELDS, NOT SENTENCES. The deadline and the mirrored ref used to be
     // flattened into one prose `hint`, which stranded the Desk outside the frozen
     // chip grammar: a self-deadline cannot render dashed with `· self` / `· slid
@@ -1195,18 +1346,47 @@ describe("the pure projections take already-read data and touch no disk", () => 
       id: "i-1",
       title: "Remove CSV export button",
       project: "aurora",
+      stage: "captured",
       deadline: { label: "Fri", kind: "external" },
     });
-    expect(cards[1]).toEqual({ id: "i-2", title: "Call María — invoice" });
-    expect(cards[2]).toEqual({ id: "i-3", title: "the pdf thing", hint: "unplaced — what is it?", unplaced: true });
-    expect(cards[3]).toEqual({ id: "i-5", title: "mirrored one", project: "aurora", mirrored: "#214" });
+    // A FLOATING ITEM SAYS WHAT IT NEEDS FROM YOU, because it is the one thing
+    // no agent can supply: an expert belongs to a project.
+    expect(cards[1]).toEqual({
+      id: "i-2",
+      title: "Call María — invoice",
+      stage: "captured",
+      needsYou: "Give it a subject so an expert can read it",
+    });
+    // Floating AND unplaced: the subject is asked for first, because without it
+    // nothing can ripen at all.
+    expect(cards[2]).toEqual({
+      id: "i-3",
+      title: "the pdf thing",
+      stage: "captured",
+      needsYou: "Give it a subject so an expert can read it",
+      unplaced: true,
+    });
+    expect(cards[3]).toEqual({
+      id: "i-5",
+      title: "mirrored one",
+      project: "aurora",
+      mirrored: "#214",
+      stage: "captured",
+    });
     // The slip count survives the projection — it is the witness CAP-7 renders.
     expect(cards[4]!.deadline).toEqual({ label: "Thu", kind: "self", slips: 2 });
-    // `hint` is prose ONLY where no chip exists to say it: the unplaced question.
-    expect(cards.filter((c) => c.hint !== undefined).map((c) => c.id)).toEqual(["i-3"]);
+    // `needsYou` is prose ONLY where no chip can say it — the two states an
+    // agent cannot resolve on its own.
+    expect(cards.filter((c) => c.needsYou !== undefined).map((c) => c.id)).toEqual(["i-2", "i-3", "i-6"]);
+    /**
+     * THE PROJECTION EMITS THESE KEYS AND NO OTHERS. It is a whitelist rather
+     * than a spot check because the failure it guards is silent: a field added
+     * to `SpoolItem` and forwarded here by a careless spread would put packet
+     * internals on a card the rail renders, and nothing else would notice.
+     */
     for (const c of cards) {
       for (const k of Object.keys(c)) {
-        expect(["id", "title", "project", "mirrored", "deadline", "hint", "unplaced"]).toContain(k);
+        expect(["id", "title", "project", "mirrored", "deadline", "stage", "needsYou", "unplaced", "subtasks"]).toContain(k);
       }
     }
   });
@@ -1938,5 +2118,141 @@ describe("subjectSlice groups by SUBJECT, and inherits its order from the lanes 
     }
     expect(groups).toEqual(subjectSlice(lanes, early));
     expect(idsOf(subjectSlice(lanes, swapped))).toEqual(idsOf(groups));
+  });
+});
+
+/**
+ * ANSWERING AN OPEN QUESTION — the reduction verb, and its two refusals.
+ * `openQuestions` is agent-authored, so removing an answered one retracts an
+ * agent's question; the answer itself survives on the timeline, marked as an
+ * agent-carried proposal until the user looks.
+ */
+describe("answerOpenQuestion", () => {
+  const withQuestions = () => {
+    const item = createItem(paths, { title: "needs answers", project: "aurora" });
+    const file = path.join(ROOT, "spool", "packets", item.id, "packet.json");
+    const stored = JSON.parse(fs.readFileSync(file, "utf8"));
+    stored.openQuestions = ["Which environment?", "Who owns the token?"];
+    fs.writeFileSync(file, JSON.stringify(stored, null, 2));
+    return item.id;
+  };
+
+  test("the question comes off the list, and the answer lands on the timeline as a proposal", () => {
+    const id = withQuestions();
+    const next = answerOpenQuestion(paths, id, "  which ENVIRONMENT? ", "Prod only — the user said staging is dead.");
+    expect(next?.openQuestions).toEqual(["Who owns the token?"]);
+    const last = next?.timeline?.at(-1);
+    expect(last?.text).toContain("Which environment?");
+    expect(last?.text).toContain("Prod only");
+    // Agent-carried until a human looks — the provenance law on an answer.
+    expect(last?.proposal).toBe(true);
+  });
+
+  test("answering the last question clears the list entirely rather than leaving []", () => {
+    const id = withQuestions();
+    answerOpenQuestion(paths, id, "Which environment?", "Prod.");
+    const next = answerOpenQuestion(paths, id, "Who owns the token?", "Ana does.");
+    expect(next?.openQuestions).toBeUndefined();
+  });
+
+  test("an empty answer is refused — this verb reduces, it never deletes", () => {
+    const id = withQuestions();
+    expect(() => answerOpenQuestion(paths, id, "Which environment?", "   ")).toThrow(/no deletion path/);
+  });
+
+  test("a question the item does not hold is a loud refusal naming what IS open", () => {
+    const id = withQuestions();
+    expect(() => answerOpenQuestion(paths, id, "Something else?", "An answer")).toThrow(/Still open/);
+  });
+});
+
+// ── the checkbox — docs/spool-loops.md §9 ───────────────────────────────────
+
+describe("the checkbox: closeItem and reopenItem", () => {
+  test("close stamps the store's label idiom plus the moment, and lands on the timeline as the human's own act", () => {
+    const id = createItem(paths, { title: "ship the tracker", project: "ozom" }).id;
+    const at = new Date("2026-08-18T16:42:00");
+    const result = closeItem(paths, id, at);
+    expect(result?.alreadyClosed).toBe(false);
+    expect(result?.item.closed).toEqual({ label: "Tue 16:42", at: at.getTime() });
+    // The record: actor "you", NO proposal mark — nothing here awaits a look.
+    const last = result?.item.timeline?.at(-1);
+    expect(last?.actor).toBe("you");
+    expect(last?.text).toBe("closed by hand");
+    expect(last?.at).toBe("Tue 16:42");
+    expect(last?.proposal).toBeUndefined();
+    // And it is on disk, not just in the return value.
+    expect(getSpoolItem(paths, id)?.closed?.at).toBe(at.getTime());
+  });
+
+  test("closing a closed item is a no-op with an honest flag — the first close's stamp survives", () => {
+    const id = createItem(paths, { title: "x" }).id;
+    const first = closeItem(paths, id, new Date("2026-08-18T10:00:00"));
+    const again = closeItem(paths, id, new Date("2026-08-19T11:00:00"));
+    expect(again?.alreadyClosed).toBe(true);
+    expect(again?.item.closed).toEqual(first?.item.closed);
+    // No second timeline event either — nothing changed, so nothing is recorded.
+    expect(again?.item.timeline?.length).toBe(first?.item.timeline?.length);
+  });
+
+  test("reopen removes `closed` and appends to the same timeline — drain, never delete", () => {
+    const id = createItem(paths, { title: "x", raw: "the words" }).id;
+    closeItem(paths, id, new Date("2026-08-18T10:00:00"));
+    const result = reopenItem(paths, id, new Date("2026-08-18T12:03:00"));
+    expect(result?.alreadyOpen).toBe(false);
+    expect(result?.item.closed).toBeUndefined();
+    // ABSENCE, not null: the schema's only spelling of "open".
+    expect(Object.keys(readJson(packetPath(id)))).not.toContain("closed");
+    // The close/reopen pair stays as the record, in order, both the hand's.
+    const texts = result?.item.timeline?.map((e) => `${e.actor}:${e.text}`);
+    expect(texts?.slice(-2)).toEqual(["you:closed by hand", "you:reopened by hand"]);
+    // The user's own words survived the round trip untouched.
+    expect(result?.item.raw).toBe("the words");
+  });
+
+  test("reopening an open item is a no-op with an honest flag", () => {
+    const id = createItem(paths, { title: "x" }).id;
+    const result = reopenItem(paths, id);
+    expect(result?.alreadyOpen).toBe(true);
+    expect(result?.item.timeline?.some((e) => e.text === "reopened by hand")).toBe(false);
+  });
+
+  test("both verbs answer null for an id that does not exist", () => {
+    ensureSpool(paths);
+    expect(closeItem(paths, "i-nothere")).toBeNull();
+    expect(reopenItem(paths, "i-nothere")).toBeNull();
+  });
+
+  test("THE WALL: the generic update path refuses `closed` by name — the tool-reachable verb cannot close", () => {
+    const id = createItem(paths, { title: "x" }).id;
+    // A cast is exactly how a deserialization boundary would smuggle it past
+    // the type; the runtime refusal is what this asserts.
+    expect(() => updateItem(paths, id, { closed: { label: "Tue 16:42", at: 1 } } as unknown as SpoolItemPatch)).toThrow(
+      /closed.*checkbox|cannot write.*`closed`/,
+    );
+    // Nothing landed: the item is still open.
+    expect(getSpoolItem(paths, id)?.closed).toBeUndefined();
+  });
+
+  test("conservation: a closed item stays in every enumeration — listItems, its subject group, and the desk", () => {
+    const item = createItem(paths, { title: "x", project: "ozom" });
+    closeItem(paths, item.id);
+    const { items } = listItems(paths);
+    expect(items.some((i) => i.id === item.id)).toBe(true);
+    const groups = subjectSlice(readLanes(paths), items);
+    expect(groups.flatMap((g) => g.rows).some((r) => r.item.id === item.id)).toBe(true);
+    // The desk card RIDES WITH its closed stamp — the web filters, the store
+    // never drops (dropping would be a delete path wearing a filter's name).
+    const card = deskSlice(items).find((c) => c.id === item.id);
+    expect(card?.closed?.label).toBeDefined();
+  });
+
+  test("a closed card asks for nothing — needsYou is absent even where an open card would instruct", () => {
+    // No project and unplaced: the two conditions that make an OPEN card ask.
+    const item = createItem(paths, { title: "x", lane: "no-such-lane" });
+    expect(deskSlice([item])[0]?.needsYou).toBeDefined();
+    closeItem(paths, item.id);
+    const closed = listItems(paths).items.find((i) => i.id === item.id)!;
+    expect(deskSlice([closed])[0]?.needsYou).toBeUndefined();
   });
 });

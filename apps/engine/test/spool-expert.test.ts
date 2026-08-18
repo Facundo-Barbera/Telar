@@ -48,7 +48,8 @@ const GOOD: ExpertResult = {
   summary: "The import pipeline is the active surface this month.",
   methodology: "Trunk-based; every change lands behind a flag.",
   glossary: [{ term: "PD", means: "the portfolio dashboard" }],
-  notes: ["the 500s come from the upstream vendor, not from us"],
+  facts: [{ text: "the 500s come from the upstream vendor, not from us", kind: "howItWorks" as const }],
+  retire: [],
 };
 
 /** An `invoke` that answers with whatever it is given, and records the prompt. */
@@ -75,18 +76,29 @@ function seed(input: { project?: string; title?: string; raw?: string } = {}) {
 
 describe("what the expert is allowed to say", () => {
   test("the result shape has no field that could commit anything", () => {
-    // PREPARE-NEVER-COMMIT IS ENFORCED BY THE SHAPE OF THE ANSWER, so the shape
-    // is what this asserts. A field added later that names a status, a lane, a
-    // start or an acceptance has to fail here first.
+    /**
+     * PREPARE-NEVER-COMMIT IS ENFORCED BY THE SHAPE OF THE ANSWER, so the shape
+     * is what this asserts. A field added later that names a status, a lane, a
+     * start or an acceptance has to fail here first.
+     *
+     * `retire` WAS WEIGHED AGAINST THAT AND ADMITTED. It names no status and
+     * starts nothing; it drains a fact the expert itself wrote, which is the
+     * opposite direction from committing — and "no deletion path. Dismissing
+     * drains" is the law it satisfies rather than bends, since a retired fact
+     * stays on disk with its reason. `facts` replaced `notes` for the same
+     * reason it is plural and addressable: memory that cannot be corrected is
+     * memory that only accumulates error.
+     */
     const keys = Object.keys(ExpertResult.shape).sort();
     expect(keys).toEqual([
       "acceptance",
       "commitments",
+      "facts",
       "fixed",
       "glossary",
       "methodology",
       "note",
-      "notes",
+      "retire",
       "summary",
     ]);
   });
@@ -109,7 +121,7 @@ describe("the rehydration prompt", () => {
       summary: "THE-SUMMARY",
       methodology: "",
       glossary: [],
-      notes: [],
+      facts: [],
     });
     const prompt = expertPrompt({ project: "aurora", digest: readExpertDigest(paths, "aurora"), item });
 
@@ -214,7 +226,7 @@ describe("the rehydration prompt", () => {
       summary: "The import pipeline is the active surface.",
       methodology: "Trunk-based.",
       glossary: [{ term: "PD", means: "the portfolio dashboard" }],
-      notes: ["500s come from upstream"],
+      facts: [{ id: "f-aaaaaaaaaaaa", text: "500s come from upstream", kind: "howItWorks" as const, source: { pass: "Mon" } }],
     });
 
     const here = expertPrompt({ project: "aurora", digest: readExpertDigest(paths, "aurora"), item });

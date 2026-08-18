@@ -19,3 +19,13 @@ export const RIGHT_PANEL_MIN_WIDTH = 384;
  * anything could stop.
  */
 export const RIGHT_PANEL_MAIN_MIN_WIDTH = 384;
+
+/**
+ * THE SPOOL'S PANEL REMEMBERS ITS OWN WIDTH.
+ *
+ * A separate key rather than sharing the cockpit's: the two panels hold
+ * different things — a diff wants one width, a packet's prose wants another —
+ * and one shared number would mean widening to read a brief also widened the
+ * surface you were not looking at.
+ */
+export const SPOOL_PANEL_WIDTH_STORAGE_KEY = "spool-panel";
