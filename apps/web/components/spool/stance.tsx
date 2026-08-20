@@ -3537,7 +3537,16 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
             />
           )}
           {room.kind === "subject" && (
+            // KEYED BY THE SUBJECT, so walking to another one REMOUNTS the
+            // room rather than resetting it field by field. `SubjectRoom` used
+            // to null its brief, tab and expansion in an effect on
+            // `[subjectKey]`, which the React compiler flags — a setState
+            // called synchronously from an effect. React's own answer to
+            // "reset all state when a prop changes" is the key, and it also
+            // catches the state that reset forgot: selection, bulk-mode and
+            // the bulk note stayed live across a subject change.
             <SubjectRoom
+              key={room.key}
               subjectKey={room.key}
               model={model}
               work={work}

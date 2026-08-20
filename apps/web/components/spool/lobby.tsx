@@ -778,6 +778,20 @@ export function Lobby({
   const [adding, setAdding] = useState<{ subject?: string } | null>(null);
   const { isCollapsed, toggle, collapseOthers } = useAreaCollapse();
 
+  /** THE OPTIMISTIC OVERLAYS — ported from `warehouse-nav.tsx`'s
+   *  `pendingAreas`/`pendingRanks`: painted over the published lobby before
+   *  the tree is built, retired inside `load` once the published snapshot
+   *  agrees, `requestSeq` making the LAST drop win. Retirement stays a WRITE
+   *  rather than a render-time filter deliberately: a settled overlay must be
+   *  forgotten, not merely skipped, or a later move of the same subject would
+   *  disagree with it again and resurrect a value the human already saw land.
+   *
+   *  DECLARED ABOVE `load`, not beside the other drag state, because `load`
+   *  retires them and a callback may not close over a binding declared after
+   *  it. */
+  const [pendingAreas, setPendingAreas] = useState<Map<string, string | null>>(new Map());
+  const [pendingRanks, setPendingRanks] = useState<Map<string, number>>(new Map());
+
   const load = useCallback(async () => {
     try {
       const today = todayDay();
@@ -785,7 +799,47 @@ export function Lobby({
         fetch(`/api/spool/lobby?today=${encodeURIComponent(today)}`),
         fetch("/api/spool/lanes"),
       ]);
-      if (lobbyRes.ok) setLobby((await lobbyRes.json()).lobby as SpoolLobby);
+      if (lobbyRes.ok) {
+        const published = (await lobbyRes.json()).lobby as SpoolLobby;
+        setLobby(published);
+        // RETIRED HERE, AGAINST THE SNAPSHOT THAT EARNED IT — see the overlay
+        // comment below. This ran as an effect on `[lobby]` until the React
+        // compiler flagged it: a setState called synchronously from an effect
+        // is a second render pass over data the first pass already had. The
+        // published lobby is in hand right here, so the overlay is retired in
+        // the same update that publishes the snapshot agreeing with it.
+        const byKey = new Map(
+          [...published.areas.flatMap((area) => area.subjects), ...published.unareaed].map(
+            (line) => [line.key, line] as const,
+          ),
+        );
+        setPendingAreas((prev) => {
+          if (prev.size === 0) return prev;
+          let changed = false;
+          const next = new Map(prev);
+          for (const [subject, area] of prev) {
+            const line = byKey.get(subject);
+            if (line && (line.area ?? null) === area) {
+              next.delete(subject);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+        setPendingRanks((prev) => {
+          if (prev.size === 0) return prev;
+          let changed = false;
+          const next = new Map(prev);
+          for (const [subject, rank] of prev) {
+            const line = byKey.get(subject);
+            if (line && line.rank === rank) {
+              next.delete(subject);
+              changed = true;
+            }
+          }
+          return changed ? next : prev;
+        });
+      }
       if (laneRes.ok) setLanes(((await laneRes.json()).lanes ?? []) as SpoolLane[]);
     } catch {
       // Pull-based, like every other Spool surface — a dropped read leaves
@@ -798,12 +852,6 @@ export function Lobby({
     return () => window.clearTimeout(first);
   }, [load]);
 
-  /** THE OPTIMISTIC OVERLAYS — ported verbatim from `warehouse-nav.tsx`'s
-   *  `pendingAreas`/`pendingRanks`: painted over the published lobby before
-   *  the tree is built, retired by an effect once the published snapshot
-   *  agrees, `requestSeq` making the LAST drop win. */
-  const [pendingAreas, setPendingAreas] = useState<Map<string, string | null>>(new Map());
-  const [pendingRanks, setPendingRanks] = useState<Map<string, number>>(new Map());
   const requestSeq = useRef<Map<string, number>>(new Map());
   const containerRefs = useRef<Map<string, HTMLElement>>(new Map());
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
@@ -816,40 +864,6 @@ export function Lobby({
   const dragActive = dragging !== null;
 
   const flatEntries: SpoolLobbySubject[] = lobby ? [...lobby.areas.flatMap((area) => area.subjects), ...lobby.unareaed] : [];
-
-  useEffect(() => {
-    setPendingAreas((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Map(prev);
-      for (const [subject, area] of prev) {
-        const line = flatEntries.find((candidate) => candidate.key === subject);
-        if (line && (line.area ?? null) === area) {
-          next.delete(subject);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lobby]);
-
-  useEffect(() => {
-    setPendingRanks((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Map(prev);
-      for (const [subject, rank] of prev) {
-        const line = flatEntries.find((candidate) => candidate.key === subject);
-        if (line && line.rank === rank) {
-          next.delete(subject);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lobby]);
 
   const effectiveLines: SpoolLobbySubject[] = flatEntries.map((line) => {
     const withArea = pendingAreas.has(line.key) ? { ...line, area: pendingAreas.get(line.key) ?? undefined } : line;
@@ -1135,7 +1149,7 @@ export function Lobby({
           still holds, so it stays. */}
       <div className={cn("mb-4 flex items-center px-1", areaPath ? "justify-between" : "justify-end")}>
         {areaPath && (
-          <p className="text-xs leading-relaxed text-muted-foreground">This area's own subjects and its own containers.</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">This area&apos;s own subjects and its own containers.</p>
         )}
         <button
           type="button"

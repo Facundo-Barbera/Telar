@@ -2603,12 +2603,19 @@ describe("a subject is filed by dropping it — the rail's own drag, §Part 2 of
     // paths) now — same law, `effectiveLines` feeds it before anything
     // renders.
     expect(nav).toContain("buildAreaTree<SpoolLobbySubject>(effectiveLines");
-    // The overlay is retired by an effect that diffs it against the
-    // PUBLISHED lobby read (`lobby`, this file's own state — §13.8 dropped
-    // the rail's `room.areas` indirection along with the rail itself) — not
-    // by the PATCH's own response — so a slow reload never leaves the paint
-    // hanging past its own confirmation.
-    expect(nav).toMatch(/useEffect\(\(\) => \{[\s\S]*?setPendingAreas[\s\S]*?\}, \[lobby\]\);/);
+    // The overlay is retired by diffing it against the PUBLISHED lobby read —
+    // not against the PATCH's own response — so a slow reload never leaves the
+    // paint hanging past its own confirmation.
+    //
+    // RETARGETED (React compiler): this pinned an effect on `[lobby]`, which
+    // is a setState called synchronously from an effect and now a lint error.
+    // The law is unchanged and the pattern still asserts the whole of it —
+    // retirement happens against the snapshot `load` just published, keyed on
+    // that snapshot AGREEING with the overlay — it simply no longer requires
+    // the extra render pass an effect would cost.
+    expect(nav).toMatch(
+      /const published = \(await lobbyRes\.json\(\)\)\.lobby as SpoolLobby;[\s\S]*?setPendingAreas\(\(prev\) => \{[\s\S]*?\(line\.area \?\? null\) === area/,
+    );
   });
 
   test("a refused drop reverts its own overlay entry and renders the engine's sentence in place — no red, the room's own quiet inline idiom", () => {
@@ -2787,12 +2794,17 @@ describe("a subject can be dragged to a position — inside an area, or into ano
     expect(patch).toContain("setRefused(err instanceof Error ? err.message : String(err));");
   });
 
-  test("the rank overlay is retired the same way the area overlay is — an effect that diffs against the published lobby snapshot", () => {
+  test("the rank overlay is retired the same way the area overlay is — a diff against the published lobby snapshot", () => {
     // RETARGETED §13.8 (2026-08-19): the lobby holds no separate `room.areas`
     // join — it diffs straight against its own `lobby` state (the raw
     // `GET /api/spool/lobby` read), the same overlay-vs-published law with
     // one fewer layer of indirection.
-    expect(nav).toMatch(/useEffect\(\(\) => \{[\s\S]*?setPendingRanks[\s\S]*?line\.rank === rank[\s\S]*?\}, \[lobby\]\);/);
+    // RETARGETED (React compiler), the same move the area overlay's own test
+    // documents: retired inside `load` against the snapshot it just published,
+    // rather than by an effect firing on `[lobby]` afterwards.
+    expect(nav).toMatch(
+      /const published = \(await lobbyRes\.json\(\)\)\.lobby as SpoolLobby;[\s\S]*?setPendingRanks\(\(prev\) => \{[\s\S]*?line\.rank === rank/,
+    );
     // Both overlays are folded into the SAME `effectiveLines`, one pass, so
     // the grouping below never has to know two overlays exist.
     expect(nav).toContain("pendingRanks.has(line.key) ? { ...withArea, rank: pendingRanks.get(line.key) } : withArea");
@@ -2973,9 +2985,22 @@ describe("collapse is a UI preference keyed by path, not a fact the store owns �
     expect(collapse).toContain('const KEY_PREFIX = "telar:spool-area-collapsed:"');
   });
 
-  test("read after mount, never seeded synchronously — the same hydration law every other localStorage preference in this app follows", () => {
-    expect(collapse).toContain("useState<Set<string>>(new Set())");
-    expect(collapse).toMatch(/useEffect\(\(\) => \{[\s\S]*?window\.localStorage[\s\S]*?\}, \[\]\);/);
+  test("read outside render, never seeded synchronously — the same hydration law every other localStorage preference in this app follows", () => {
+    /**
+     * RETARGETED (React compiler): the shape was `useState(new Set())` plus a
+     * mount effect that called `setCollapsed` once `localStorage` had been
+     * scanned — a setState called synchronously from an effect, and a second
+     * render pass on every mount. `useSyncExternalStore` is the hook built for
+     * a value that lives outside React, and the LAW this test exists to pin is
+     * strictly better served by it: the third argument IS the server snapshot,
+     * so "never seeded synchronously" is now enforced by the hook's own
+     * signature rather than by our remembering to defer the read.
+     */
+    expect(collapse).toContain("useSyncExternalStore(subscribe, snapshot, () => EMPTY)");
+    expect(collapse).toMatch(/function snapshot\(\)[\s\S]*?window\.localStorage/);
+    // The seeding this test forbids, spelled out: no render-time read of the
+    // store into component state, by any route.
+    expect(collapse).not.toContain("useState");
   });
 
   test("only the lobby imports the hook now — the rail retired its own tree, §13.8", () => {
@@ -3471,7 +3496,11 @@ describe("the Spool's dialogs wear the Reminders idiom, not the generic centered
     const tray = code(read("tray.tsx"));
     expect(tray).toContain('@/components/spool/prompt-card');
     expect(tray).toContain("<AskOneThing");
-    expect(tray).toContain("noteRowRefs.current.get(note.id)");
+    // The anchor is READ AT THE CLICK rather than during the row's render —
+    // a ref read in render is a lint error and, worse, a miss on the first
+    // render after mount, which would open the ask unanchored. Still the row's
+    // own element; only the moment of reading moved.
+    expect(tray).toContain("noteRowRefs.current.get(id)");
     expect(tray).not.toContain("window.prompt");
   });
 });

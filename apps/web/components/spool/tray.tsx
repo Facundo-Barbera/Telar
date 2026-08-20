@@ -1077,7 +1077,15 @@ export function SubjectFace({
   /** The shelf row's own DOM node per note, keyed by id — the anchor the
    *  retire ask positions against, and which note (if any) has it open. */
   const noteRowRefs = useRef<Map<string, HTMLElement>>(new Map());
-  const [retiringNoteId, setRetiringNoteId] = useState<string | null>(null);
+  /** THE ROW THE RETIRE PROMPT HANGS OFF, CAPTURED AT THE CLICK. The prompt
+   *  used to read `noteRowRefs.current.get(note.id)` inline in the row it was
+   *  rendered beside — a ref read during render, which React cannot schedule
+   *  around: the map is filled by ref callbacks that run at commit, so the
+   *  first render after a mount reads a miss and the dialog opens unanchored,
+   *  with nothing to make it try again. Reading the map in the CLICK handler
+   *  instead is both correct and simpler — by then the row is on screen. */
+  const [retiringNote, setRetiringNote] = useState<{ id: string; anchor: HTMLElement | null } | null>(null);
+  const retiringNoteId = retiringNote?.id ?? null;
 
   const load = useCallback(async () => {
     try {
@@ -1111,10 +1119,13 @@ export function SubjectFace({
    * input outside a form, anchored to the row itself rather than reopening a
    * centered dialog for one field.
    */
-  const retireNoteRow = useCallback((id: string) => setRetiringNoteId(id), []);
+  const retireNoteRow = useCallback(
+    (id: string) => setRetiringNote({ id, anchor: noteRowRefs.current.get(id) ?? null }),
+    [],
+  );
   const submitRetireNote = useCallback(
     (id: string, reason: string) => {
-      setRetiringNoteId(null);
+      setRetiringNote(null);
       const trimmed = reason.trim();
       if (!trimmed) return;
       void fetch(`/api/spool/notes/${encodeURIComponent(id)}/retire`, {
@@ -1436,9 +1447,9 @@ export function SubjectFace({
               <AskOneThing
                 open={retiringNoteId === note.id}
                 onOpenChange={(next) => {
-                  if (!next) setRetiringNoteId(null);
+                  if (!next) setRetiringNote(null);
                 }}
-                anchor={noteRowRefs.current.get(note.id) ?? null}
+                anchor={retiringNote?.id === note.id ? retiringNote.anchor : null}
                 label="Retire this note — why?"
                 placeholder="No longer true because…"
                 onSubmit={(reason) => submitRetireNote(note.id, reason)}
