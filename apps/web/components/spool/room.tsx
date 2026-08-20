@@ -158,13 +158,15 @@ export function SubjectRoom({
     }
   }, [subjectKey]);
 
+  // NO RESET HERE. `stance.tsx` renders this component with `key={room.key}`,
+  // so a walk to another subject remounts it and every field starts fresh —
+  // brief, tab, expansion, and the selection state the old hand-written reset
+  // did not cover. What is left is the first load, which is what an effect is
+  // actually for.
   useEffect(() => {
-    setBrief(null);
-    setTab("tasks");
-    setBriefExpanded(false);
     const first = window.setTimeout(() => void loadBrief(), 0);
     return () => window.clearTimeout(first);
-  }, [subjectKey, loadBrief]);
+  }, [loadBrief]);
 
   /**
    * THE PICKUP LINE'S OWN WORDS — never a bare time label wearing task
@@ -178,7 +180,13 @@ export function SubjectRoom({
    * nothing. An entry with nothing to say drops out rather than falling
    * back to its label — an empty fact beats a timestamp dressed as one.
    */
-  const pickupWords = useMemo(() => {
+  // NOT WRAPPED IN useMemo. The compiler could not preserve the manual
+  // memoization here — `.filter((w): w is string => !!w)`'s type predicate
+  // leaves it unable to prove the memo block's output is what the deps say —
+  // so it skipped compiling the whole component, costing every OTHER
+  // memoization in the file to keep this one. It auto-memoizes this on its
+  // own, and does so for the rest of the component too.
+  const pickupWords = ((): string[] => {
     if (!brief) return [];
     const openThreads = [...brief.open.stuckOnYou, ...brief.open.waitingOnOthers];
     return brief.pickup.current
@@ -188,7 +196,7 @@ export function SubjectRoom({
         return thread?.handle ?? thread?.question;
       })
       .filter((w): w is string => !!w);
-  }, [brief]);
+  })();
 
   /**
    * RESUME SESSION — the same briefed-arrival handoff `tray.tsx`'s

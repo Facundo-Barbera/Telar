@@ -35,22 +35,14 @@ A green verify only moves a loom to `ready` — the human always accepts.
 | `apps/engine` | The Telar control plane — a local authenticated daemon owning projects, sessions and a durable turn journal. |
 | `apps/desktop` | The Electron shell. Forks the engine, then the cockpit's standalone server, and owns auto-update and the browser host. |
 | `packages/engine-client` | The dependency-free engine protocol types + HTTP client. |
-| `apps/web_old` | **FROZEN.** The legacy cockpit — looms, orchestration, verification, accept / steer / reject. Read-only design source for the Telar rebuild; see `apps/web_old/AGENTS.md`. |
 | `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
-| `docs/` | Fresh project documentation is being regenerated here; legacy design docs are archived in `.cleanup-archives/docs-legacy-2026-07-17/`. |
 
-### `apps/web_old` is frozen and unverified
+### the legacy cockpit is gone
 
-It was renamed from `apps/web` so it is not worked on by accident, and it was
-retired from verification in the same change: `bun run verify` and CI no longer
-typecheck it, lint it, or run its tests, and the invariants in
-`packages/core/test/invariants.test.ts` that scanned it were retired alongside
-it. Each retirement carries a note naming what stopped being checked.
-
-Desktop packaging now builds `apps/web` and `apps/engine` — the shipped app is
-the rebuild. What still points at the frozen tree is `scripts/telar` (the legacy
-stable-cockpit launcher) and `scripts/backfill-tool-detail.ts`, so the legacy app
-remains independently runnable.
+`apps/web_old` — the pre-rebuild cockpit, frozen since the `apps/web` rename —
+has been deleted. `apps/web` is the app. The old tree is in git history if it is
+ever wanted back as a design reference; the invariants that once scanned it were
+already retired, each with a note naming what stopped being checked.
 
 ## Getting started
 
@@ -59,12 +51,6 @@ Requires [Bun](https://bun.sh).
 ```bash
 bun install
 bun run dev            # the cockpit — see below
-```
-
-The frozen legacy cockpit, if you need to run it for reference:
-
-```bash
-cd apps/web_old && bun run dev
 ```
 
 ### dogfood cockpit
@@ -108,11 +94,9 @@ address there too.
 `apps/web` is an independent Next app with its own root-relative routes,
 styles, API adapters, and engine client. It does not mount or compile the legacy
 sidebar, dock, Loom/Workspace navigation, account registry, desktop/browser host,
-or the legacy app's state/runtime modules. The legacy `apps/web_old` route tree
-and desktop package remain independently runnable during this transition; its
-former in-app cockpit is superseded by this standalone app. `/settings` in the
-standalone app is a read-only local-runtime guide; it does not manage
-accounts, credentials, or provider configuration.
+or the legacy app's state/runtime modules. `/settings` in the standalone app is a
+read-only local-runtime guide; it does not manage accounts, credentials, or
+provider configuration.
 
 To use the same cockpit in the development Electron shell, run:
 

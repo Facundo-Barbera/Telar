@@ -13,18 +13,65 @@
  * preference in this app: the key does not exist during the server render,
  * so seeding `useState` from it would desync hydration.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 const KEY_PREFIX = "telar:spool-area-collapsed:";
 
+/** READ THROUGH `useSyncExternalStore`, NOT A MOUNT EFFECT. This was
+ *  `useState(new Set())` plus an effect that called `setCollapsed` once
+ *  `localStorage` had been scanned — a second render pass on every mount,
+ *  which the React compiler flags as a cascading render. The stored keys ARE
+ *  an external store, so they are read as one, with a separate server snapshot
+ *  for the render that has no `localStorage` at all.
+ *
+ *  THE SNAPSHOT IS CACHED because `getSnapshot` must return a stable value
+ *  until something changes: rebuilding the Set on every call would hand React
+ *  a new identity each time and spin. `writeStored` invalidates it, which is
+ *  also what makes the rail's tree and the lobby's agree — they used to hold
+ *  one independent copy of this state each. */
+const listeners = new Set<() => void>();
+const EMPTY: ReadonlySet<string> = new Set();
+let cached: ReadonlySet<string> | null = null;
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function snapshot(): ReadonlySet<string> {
+  if (cached) return cached;
+  const next = new Set<string>();
+  try {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const stored = window.localStorage.key(i);
+      if (stored?.startsWith(KEY_PREFIX)) next.add(stored.slice(KEY_PREFIX.length));
+    }
+  } catch {
+    // Best effort — an unreadable localStorage leaves every container open.
+  }
+  cached = next;
+  return cached;
+}
+
 function writeStored(path: string, collapsed: boolean) {
   if (typeof window === "undefined") return;
+  const next = new Set(snapshot());
+  if (collapsed) next.add(path);
+  else next.delete(path);
+  cached = next;
   try {
     if (collapsed) window.localStorage.setItem(KEY_PREFIX + path, "1");
     else window.localStorage.removeItem(KEY_PREFIX + path);
   } catch {
-    // A full or disabled localStorage must not break the tree.
+    // A full or disabled localStorage must not break the tree — the fold still
+    // holds for this session, it just will not survive a reload.
   }
+}
+
+function notify() {
+  for (const listener of listeners) listener();
 }
 
 export function useAreaCollapse(): {
@@ -37,52 +84,28 @@ export function useAreaCollapse(): {
    *  `toggle`/`writeStored` shape, looped — no second collapse mechanism. */
   collapseOthers: (keep: string, allPaths: string[]) => void;
 } {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const next = new Set<string>();
-      for (let i = 0; i < window.localStorage.length; i++) {
-        const stored = window.localStorage.key(i);
-        if (stored?.startsWith(KEY_PREFIX)) next.add(stored.slice(KEY_PREFIX.length));
-      }
-      if (next.size > 0) setCollapsed(next);
-    } catch {
-      // Best effort — an unreadable localStorage leaves every container open.
-    }
-  }, []);
+  const collapsed = useSyncExternalStore(subscribe, snapshot, () => EMPTY);
 
   const toggle = useCallback((path: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      const willCollapse = !next.has(path);
-      if (willCollapse) next.add(path);
-      else next.delete(path);
-      writeStored(path, willCollapse);
-      return next;
-    });
+    writeStored(path, !snapshot().has(path));
+    notify();
   }, []);
 
   const isCollapsed = useCallback((path: string) => collapsed.has(path), [collapsed]);
 
   const collapseOthers = useCallback((keep: string, allPaths: string[]) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      for (const path of allPaths) {
-        // `keep` itself, and every ancestor on its own path (the " / "
-        // prefix convention `lib/spool-area-tree.ts` splits on), stay open —
-        // collapsing an ancestor would fold `keep` away with everything else.
-        const isKeptOrAncestor = path === keep || keep.startsWith(path + " / ");
-        if (isKeptOrAncestor) {
-          if (next.delete(path)) writeStored(path, false);
-        } else if (!next.has(path)) {
-          next.add(path);
-          writeStored(path, true);
-        }
+    for (const path of allPaths) {
+      // `keep` itself, and every ancestor on its own path (the " / "
+      // prefix convention `lib/spool-area-tree.ts` splits on), stay open —
+      // collapsing an ancestor would fold `keep` away with everything else.
+      const isKeptOrAncestor = path === keep || keep.startsWith(path + " / ");
+      if (isKeptOrAncestor) {
+        if (snapshot().has(path)) writeStored(path, false);
+      } else if (!snapshot().has(path)) {
+        writeStored(path, true);
       }
-      return next;
-    });
+    }
+    notify();
   }, []);
 
   return { isCollapsed, toggle, collapseOthers };
