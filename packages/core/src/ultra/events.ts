@@ -17,8 +17,7 @@
 // file is a production declaration. It is left alone deliberately: `event-bus.ts`
 // is outside story 4.1's write set (the story's §0 fences it explicitly — "you
 // are its first production caller. You call declareEvents; you do not change
-// it"), so the finding is RECORDED in
-// _bmad-output/implementation-artifacts/deferred-work.md rather than crossed.
+// it"), so the finding is RECORDED in docs/deferred-work.md rather than crossed.
 // Whoever next opens that file owns the one-line correction.
 //
 // THE DELIVERY CLASS IS THE POINT, not a field to fill in. `run-completed` is

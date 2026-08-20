@@ -52,8 +52,7 @@
 // manifest AND a live registry entry, so `getUltraManifest`'s self-heal cannot
 // fire either, and the wake is unreachable until the process restarts. This is a
 // PRE-EXISTING defect in the terminal write path rather than one this module
-// introduces, and it is recorded in
-// _bmad-output/implementation-artifacts/deferred-work.md with a named owner
+// introduces, and it is recorded in docs/deferred-work.md with a named owner
 // (whichever story next opens ultra's terminal write path, most plausibly 4.2)
 // instead of being fixed here — changing saveManifest's error contract is
 // outside story 4.1's write set.

@@ -1834,7 +1834,7 @@ const KNOWN_VIOLATIONS = [
       "its module-level TELAR_DIR is path.join(os.homedir(), \".telar\") with no TELAR_HOME " +
       "anywhere, and it then opens projects.json (manifest.ts's) and chats.json (store.ts's) by " +
       "raw path — the only remaining ~/.telar literal outside a sanctioned resolver.",
-    recorded: "story 1.1 review findings; _bmad-output/implementation-artifacts/deferred-work.md",
+    recorded: "story 1.1 review findings; docs/deferred-work.md",
   },
   {
     file: "scripts/dev.mjs",
