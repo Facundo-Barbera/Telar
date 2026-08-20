@@ -66,7 +66,11 @@ test("a fake driver streams engine-owned text and completes a scheduled turn", a
   await client.submitTurn(sessionId, { runId: "run_one", input: "Hello" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]).toMatchObject({ state: "completed", resultText: "final response" }));
-  expect(calls).toEqual(["Hello:/private/tmp"]);
+  // The cwd is the project root CANONICALIZED, so the expectation has to be
+  // canonicalized too rather than spelled out: registerProject was handed
+  // "/tmp", which realpaths to /private/tmp on macOS and stays /tmp on Linux.
+  // Hardcoding either one turns this into a platform assertion and fails in CI.
+  expect(calls).toEqual([`Hello:${fs.realpathSync.native("/tmp")}`]);
   expect((await client.events(sessionId)).events.map((event) => event.type)).toEqual([
     "session.created",
     "turn.accepted",
