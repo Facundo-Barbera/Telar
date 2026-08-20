@@ -86,11 +86,13 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
   return session?.driver ?? driver ?? "claude";
 }
 
-function placeholderFor(ready: boolean, busy: boolean): string {
+function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
   if (!ready) return "Waiting for the engine-owned session…";
   // The ONLY place the cockpit mentions that queueing exists.
   if (busy) return "Enter queues a message…";
-  return "Ask for changes, explore the project, or continue this conversation…";
+  // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
+  // which the Spool's front door does not have one of.
+  return placeholder ?? "Ask for changes, explore the project, or continue this conversation…";
 }
 
 /** One waiting message. Ported from the donor's QueueChip — the numbered badge
@@ -299,6 +301,7 @@ export function Composer({
   onWithdraw,
   onRecall,
   onRuntimeMode,
+  placeholder,
   onModelChange,
   onOpenChanges,
 }: {
@@ -327,7 +330,20 @@ export function Composer({
   queued: QueuedMessage[];
   runtimeMode?: RuntimeMode;
   session?: Session;
-  projectId: string;
+  /**
+   * ABSENT MEANS THIS CONVERSATION HAS NO PROJECT, and that is a positive
+   * statement rather than a missing value — see `Session.projectId`'s own note.
+   * The Spool's master chat is the one that has none: it answers ACROSS
+   * projects, so a project here would scope it to the single thing it must not
+   * be.
+   *
+   * THREE OF THIS COMPONENT'S FOUR USES OF IT ARE THINGS A PROJECT-LESS CHAT
+   * DOES NOT WANT — the git environment strip, the project greeting, and
+   * `@`-completion reading a repository's files. So "make it optional" is not a
+   * widening of behaviour; it is three renders that stop happening, each guarded
+   * where it stands.
+   */
+  projectId?: string;
   projectName?: string;
   /** Which greeting the canvas opens on, chosen by the page. */
   greeting?: number;
@@ -345,6 +361,9 @@ export function Composer({
   onRuntimeMode: (mode: RuntimeMode) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
+  /** What the input invites. The default offers to "explore the project",
+   *  which is wrong on the Spool's front door — it has no project. */
+  placeholder?: string;
   onModelChange?: (next: ModelChoice) => void;
   /** Opens the right panel on the file-changes surface. */
   onOpenChanges?: () => void;
@@ -392,7 +411,12 @@ export function Composer({
   const [reading, setReading] = useState(false);
 
   const sessionId = session?.id;
-  const checkout = sessionId ?? `project:${projectId}`;
+  /**
+   * The cache key for `@`-completions. `none` is the project-less case: there is
+   * no checkout to list, so the index stays empty and the key is still stable —
+   * a cache keyed on `undefined` would collide with a real one.
+   */
+  const checkout = sessionId ?? (projectId ? `project:${projectId}` : "none");
   const paths = pathCache?.checkout === checkout ? pathCache.entries : undefined;
   const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel));
 
@@ -413,8 +437,13 @@ export function Composer({
       setReading(true);
       void (async () => {
         try {
-          const listed = sessionId ? await api.sessionFiles(sessionId) : await api.projectFiles(projectId);
-          setPathCache({ checkout, entries: buildPathIndex(listed.listing.files) });
+          // A PROJECT-LESS CHAT HAS NO CHECKOUT TO LIST, so `@` completes
+          // nothing rather than reaching for a repository it does not have.
+          // Cached as empty like any other unlistable checkout, so it is asked
+          // once and not on every keystroke.
+          const listed =
+            sessionId ? await api.sessionFiles(sessionId) : projectId ? await api.projectFiles(projectId) : undefined;
+          setPathCache({ checkout, entries: listed ? buildPathIndex(listed.listing.files) : [] });
         } catch {
           // An empty index reads as "no matching files", which is the honest
           // answer when the checkout could not be listed. A different session
@@ -654,7 +683,9 @@ export function Composer({
           the sentence jumping out from under a composer that is still moving.
           It is mounted only while fresh, so an ordinary session never pays for
           the height. */}
-      {fresh && (
+      {/* The greeting offers to start work IN A PROJECT, so a project-less chat
+          has nothing for it to offer. Omitted rather than blanked. */}
+      {fresh && projectId && (
         <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} {...(greeting === undefined ? {} : { index: greeting })} />
       )}
 
@@ -738,7 +769,7 @@ export function Composer({
             ref={editor}
             id="turn-prompt"
             value={draft}
-            placeholder={placeholderFor(ready, busy)}
+            placeholder={placeholderFor(ready, busy, placeholder)}
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
             onChange={(text) => {
@@ -868,7 +899,14 @@ export function Composer({
       </form>
 
       {/* The composer's foot: where this message lands. Outside the form and
-          fused to its bottom edge — see workspace-environment.tsx. */}
+          fused to its bottom edge — see workspace-environment.tsx.
+
+          A PROJECT-LESS CHAT HAS NO FOOT. This strip names a branch, a checkout
+          and a worktree choice, and every one of those is a property of a
+          repository. Rendering it empty would be a row of blanks claiming the
+          conversation lands somewhere; rendering it at all would be the widening
+          this component was careful not to do. */}
+      {projectId && (
       <WorkspaceEnvironment
         projectId={projectId}
         {...(projectName ? { projectName } : {})}
@@ -877,6 +915,7 @@ export function Composer({
         {...(onEnvMode ? { onEnvMode } : {})}
         {...(onOpenChanges ? { onOpenChanges } : {})}
       />
+      )}
     </div>
   );
 }

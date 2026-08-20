@@ -36,11 +36,12 @@ export const TELAR_MCP_SERVER = "telar";
  * Capabilities Telar exposes. Adding one here is the whole registration: the
  * prefix check, the item mapping and the approval routing all read this list.
  *
- * ONLY `browser` TODAY, and the list is deliberately not padded with the ones
- * that are planned. A capability named here that nothing implements is a tool
- * namespace the model can be told about and then cannot use.
+ * THE LIST IS DELIBERATELY NOT PADDED with the ones that are planned. A
+ * capability named here that nothing implements is a tool namespace the model
+ * can be told about and then cannot use — so an entry appears in the same change
+ * that ships its toolkit, never before.
  */
-export const TELAR_CAPABILITIES = ["browser"] as const;
+export const TELAR_CAPABILITIES = ["browser", "spool"] as const;
 export type TelarCapability = (typeof TELAR_CAPABILITIES)[number];
 
 const MCP_PREFIX = "mcp__";

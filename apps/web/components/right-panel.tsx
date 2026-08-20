@@ -11,6 +11,7 @@ import {
   FileIcon,
   GaugeIcon,
   GlobeIcon,
+  LayersIcon,
   Maximize2Icon,
   Minimize2Icon,
   PanelRightCloseIcon,
@@ -581,17 +582,154 @@ function TaskRow({ task, focused }: { task: JournalTask; focused?: boolean }) {
   );
 }
 
+/**
+ * A WARP RUN AND ITS AGENTS, folded out of the one task stream.
+ *
+ * NOT A SECOND RAIL. The frozen cockpit needed a whole separate surface for an
+ * Ultra run plus a third for ordinary sub-agents, because the legacy harness
+ * kept its runs in its own storage. Here a run is a `background` task and its
+ * agents are `agent` tasks carrying `warp` linkage, so this is a GROUPING of
+ * rows the pane already receives — which is what makes it impossible for the
+ * progress tree and the roster to disagree.
+ */
+type WarpPhaseGroup = { key: string; title?: string; index: number; agents: JournalTask[] };
+type WarpGroup = { runId: string; name: string; run?: JournalTask; phases: WarpPhaseGroup[] };
+
+/** Split the roster into warp runs and everything else, preserving order. */
+export function groupWarps(tasks: readonly JournalTask[]): { groups: WarpGroup[]; loose: JournalTask[] } {
+  const groups = new Map<string, WarpGroup>();
+  const loose: JournalTask[] = [];
+
+  for (const task of tasks) {
+    const linkage = task.warp;
+    if (!linkage) {
+      loose.push(task);
+      continue;
+    }
+    const group = groups.get(linkage.warpRunId) ?? { runId: linkage.warpRunId, name: linkage.warpName, phases: [] };
+    groups.set(linkage.warpRunId, group);
+    // The run's own row points its linkage at ITSELF, which is how a run stays
+    // identifiable once its children have aged out of retention.
+    if (task.id === linkage.warpRunId) {
+      group.run = task;
+      continue;
+    }
+    /**
+     * PHASES ARE KEYED BY TITLE, not by index. A script may open a phase the
+     * `meta` never declared — `phase("Improvised")` is legal — and those rows
+     * carry a title with no index at all. Keying on the index would collapse
+     * every improvised phase into one unnamed bucket.
+     */
+    const key = linkage.phaseTitle ?? "";
+    let phase = group.phases.find((candidate) => candidate.key === key);
+    if (!phase) {
+      // Declared phases sort by their declared position; an improvised one has
+      // no position and sorts after, in the order it first appeared.
+      phase = { key, index: linkage.phaseIndex ?? Number.MAX_SAFE_INTEGER, agents: [], ...(linkage.phaseTitle ? { title: linkage.phaseTitle } : {}) };
+      group.phases.push(phase);
+    }
+    phase.agents.push(task);
+  }
+
+  for (const group of groups.values()) {
+    group.phases.sort((a, b) => a.index - b.index);
+    // Within a phase, the order the script asked for them in — which is the
+    // order a reader watched them queue.
+    for (const phase of group.phases) {
+      phase.agents.sort((a, b) => (a.warp?.agentIndex ?? 0) - (b.warp?.agentIndex ?? 0));
+    }
+  }
+  return { groups: [...groups.values()], loose };
+}
+
+const warpAgents = (group: WarpGroup): JournalTask[] => group.phases.flatMap((phase) => phase.agents);
+
+function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocus }) {
+  const agents = warpAgents(group);
+  const live = agents.filter(isLiveTask).length;
+  const done = agents.filter((task) => task.state === "completed").length;
+  const failed = agents.filter((task) => task.state === "failed").length;
+  const state = group.run?.state ?? (live > 0 ? "running" : "completed");
+  /**
+   * OPEN WHILE IT IS WORKING, and open when a chip asked for something inside
+   * it — a gesture that lands on a collapsed group is a gesture that appears to
+   * do nothing. A settled run collapses, because the interesting thing about a
+   * finished fan-out is its result, not its twelve rows.
+   *
+   * DECIDED ONCE AT MOUNT, never synced from a prop, which is the same trick
+   * `TaskRow` uses one level down: `AgentsSurface` puts the focus nonce in this
+   * group's KEY, so a chip pointing inside it mounts a fresh group that opens on
+   * its own. Syncing it in an effect instead would cascade a render — and would
+   * also fight a reader who deliberately collapsed a group that still holds the
+   * focused row.
+   */
+  const [open, setOpen] = useState(live > 0 || (focused !== undefined && agents.some((task) => task.id === focused.id)));
+
+  const tokens = agents.reduce((sum, task) => sum + (task.usage ? task.usage.tokens.input + task.usage.tokens.output : 0), 0);
+
+  return (
+    <div>
+      <PanelRow tone={taskTone(state)} className="p-0 pl-0">
+        <button
+          type="button"
+          className="flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs hover:bg-muted/60"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <LayersIcon className={cn("size-3.5 shrink-0", failed > 0 ? "text-destructive" : "text-muted-foreground")} />
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="truncate">{group.name}</span>
+            <span className="truncate text-[10px] text-muted-foreground">
+              {/* COUNTED, NOT SUMMARISED. "12 agents" while eight are still
+                  queued reads as twelve running; the split is the progress. */}
+              {agents.length} agent{agents.length === 1 ? "" : "s"}
+              {live > 0 ? ` · ${live} running` : ""}
+              {done > 0 ? ` · ${done} done` : ""}
+              {failed > 0 ? ` · ${failed} failed` : ""}
+            </span>
+          </span>
+          {tokens > 0 && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
+          <span className={cn("shrink-0 font-mono text-[10px]", state === "failed" ? "text-destructive" : "text-muted-foreground")}>
+            {TASK_STATE[state]}
+          </span>
+          <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+        </button>
+      </PanelRow>
+      {open && (
+        <div className="border-border/60 border-l pl-1">
+          {group.phases.map((phase) => (
+            <div key={phase.key}>
+              {/* An unnamed group is not labelled: a script that opened no phase
+                  has one bucket, and "—" above it is noise. */}
+              {phase.title && <PanelDivider label={phase.title} />}
+              {phase.agents.map((task) =>
+                focused?.id === task.id ? (
+                  <TaskRow key={`${task.id}:${focused.nonce}`} task={task} focused />
+                ) : (
+                  <TaskRow key={task.id} task={task} />
+                ),
+              )}
+            </div>
+          ))}
+          {group.run?.failure && <p className="px-4 py-2 text-[11px] text-destructive">{group.run.failure}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
-  const live = tasks.filter(isLiveTask);
-  const finished = tasks.filter((task) => !isLiveTask(task));
+  const { groups, loose } = useMemo(() => groupWarps(tasks), [tasks]);
   if (tasks.length === 0) {
     return (
       <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
         A task carries its own title, state and result. Background work — a watch loop, a long shell — is listed the same way and
-        can outlive the turn that started it.
+        can outlive the turn that started it. A Warp run is one row holding its own agents.
       </PanelEmpty>
     );
   }
+  const live = loose.filter(isLiveTask);
+  const finished = loose.filter((task) => !isLiveTask(task));
   /** THE NONCE IS IN THE KEY, which is what makes pressing the same chip twice
    *  do something the second time: a new key is a new row, opened and scrolled
    *  to on its own mount. */
@@ -603,6 +741,23 @@ function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focu
     );
   return (
     <div className="flex flex-col">
+      {/* RUNS FIRST, whatever their state. A fan-out is the largest thing on
+          this surface and burying a finished one under twelve loose rows makes
+          the roster read as though nothing was organised at all. */}
+      {groups.map((group) => {
+        // THE NONCE IS IN THE KEY here for the same reason it is on a task row:
+        // a fresh key is a fresh group, opened on its own mount, so pressing the
+        // same chip after collapsing the group opens it again.
+        const holdsFocus = focused !== undefined && warpAgents(group).some((task) => task.id === focused.id);
+        return (
+          <WarpGroupRow
+            key={holdsFocus ? `${group.runId}:${focused.nonce}` : group.runId}
+            group={group}
+            {...(focused ? { focused } : {})}
+          />
+        );
+      })}
+      {groups.length > 0 && loose.length > 0 && <PanelDivider label="other work" />}
       {live.map(row)}
       {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
       {finished.map(row)}
@@ -861,7 +1016,18 @@ type RightPanelDrag = {
  * rather than through React state: a controlled width would re-render the whole
  * panel, and its surfaces, on every pointer move.
  */
-function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement | null> }) {
+export function RightPanelResizeHandle({
+  panelRef,
+  storageKey = RIGHT_PANEL_WIDTH_STORAGE_KEY,
+}: {
+  panelRef: RefObject<HTMLElement | null>;
+  /**
+   * WHICH PANEL'S WIDTH THIS REMEMBERS. Defaulted so every existing caller is
+   * unchanged, and parameterised because the Spool's panel is a different panel
+   * — sharing one key would make widening a packet resize the cockpit's diff.
+   */
+  storageKey?: string;
+}) {
   const dragRef = useRef<RightPanelDrag | null>(null);
 
   /** The panel may grow until the conversation hits its own floor — the point of
@@ -887,11 +1053,11 @@ function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement 
       if (drag.raf !== null) window.cancelAnimationFrame(drag.raf);
       paint(drag);
       dragRef.current = null;
-      setSidebarWidth(RIGHT_PANEL_WIDTH_STORAGE_KEY, drag.width);
+      setSidebarWidth(storageKey, drag.width);
       document.body.style.removeProperty("cursor");
       document.body.style.removeProperty("user-select");
     },
-    [paint],
+    [paint, storageKey],
   );
 
   useEffect(
@@ -940,7 +1106,7 @@ function RightPanelResizeHandle({ panelRef }: { panelRef: RefObject<HTMLElement 
         const delta = event.key === "ArrowLeft" ? 16 : -16;
         const width = clampSidebarWidth(panelRef.current.getBoundingClientRect().width + delta, RIGHT_PANEL_MIN_WIDTH, maxWidth());
         panelRef.current.style.setProperty("--right-panel-width", `${width}px`);
-        setSidebarWidth(RIGHT_PANEL_WIDTH_STORAGE_KEY, width);
+        setSidebarWidth(storageKey, width);
       }}
     >
       <span className="h-10 w-px rounded-full bg-border/60 transition-colors group-hover/resize:bg-foreground/40 group-focus-visible/resize:bg-ring" />
@@ -1017,7 +1183,18 @@ export function RightPanel({
   const openPaths = useMemo(() => openFilePaths(tabs), [tabs]);
   const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
   const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
-  const running = tasks.filter(isLiveTask).length;
+  /**
+   * A WARP RUN IS A CONTAINER, NOT A WORKER, so it is not counted as one:
+   * a four-agent fan-out would otherwise read as five running.
+   *
+   * IT IS STILL COUNTED AS A FAILURE, and the asymmetry is deliberate. A live
+   * run's work is its live agents, so counting both double-counts — but a run
+   * can fail with every one of its agents completed, when the SCRIPT threw
+   * between stages. That failure has no other row to appear on, and a failure
+   * nothing flags is the worse of the two errors.
+   */
+  const isWarpRun = (task: Task): boolean => task.warp?.warpRunId === task.id;
+  const running = tasks.filter((task) => isLiveTask(task) && !isWarpRun(task)).length;
   const failed = tasks.filter((task) => task.state === "failed").length;
   /**
    * NO COUNT ON DIFF, deliberately. The badge used to carry the journal's file

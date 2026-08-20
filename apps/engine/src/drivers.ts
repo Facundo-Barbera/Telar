@@ -51,6 +51,29 @@ export type DefaultDriverOptions = {
   browser?: BrowserCapability;
 };
 
+/**
+ * WHAT CODEX SESSIONS DO NOT GET, STATED WHERE IT IS DECIDED.
+ *
+ * Telar's own toolkits — the browser, and now `spool` — are registered as an
+ * IN-PROCESS MCP server through the Claude SDK's `createSdkMcpServer`. The Codex
+ * app-server has no equivalent: it accepts MCP servers as CONFIG (a url or a
+ * command it launches itself), so an in-process one cannot be handed to it. See
+ * `codex-driver.ts`'s `codexMcpServers`, which passes the USER's servers through
+ * and has nothing to add ours to.
+ *
+ * THE CONSEQUENCE IS A REAL, NAMED GAP: CAP-12 says items are a Telar-wide
+ * substrate reachable from any session, and today that is TRUE FOR CLAUDE
+ * SESSIONS ONLY. A Codex session cannot read or file the user's tasks. It is not
+ * silently wrong — the model simply has no such tool and says so — but it is not
+ * the contract either.
+ *
+ * CLOSING IT IS ONE PIECE OF WORK FOR BOTH TOOLKITS: expose the engine's own
+ * tools over a transport Codex can be pointed at (`-c mcp_servers.telar.url=…`),
+ * at which point the browser lands with the spool. That is stage I of
+ * `docs/spool-port.md`, and it is deliberately not faked here — a Codex session
+ * with a spool tool that did nothing would be worse than one without.
+ */
+
 export function createDefaultDrivers(options: DefaultDriverOptions = {}): DriverSelector {
   const claude = createClaudeDriver(undefined, options.browser ? { browser: options.browser } : {});
   const codex = createCodexDriver();
