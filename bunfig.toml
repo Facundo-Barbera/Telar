@@ -2,11 +2,4 @@
 # Build outputs (electron-builder `release/`, Next standalone `.next-desktop/`)
 # copy web source — including *.test.ts — into packaged bundles. Never run those
 # stale copies as part of the source test gate.
-#
-# `_bmad-output/` holds planning artifacts, including reference implementations
-# preserved beside a SPEC (e.g. spec-runtime-foundations/reference/admission-impl/).
-# Those carry the relative imports of the location they were written for — a copy
-# of packages/core/test/admission.test.ts still imports "../src/admission" — so
-# discovery here fails on a path, not on a missing file. They are documentation
-# to be read and re-applied deliberately, never part of the source gate.
-pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**", "**/_bmad-output/**"]
+pathIgnorePatterns = ["**/release/**", "**/.next-desktop/**"]

@@ -174,11 +174,7 @@ const ROOTS = [
   "scripts",
 ];
 const EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".js", ".mjs"]);
-// Matched by DIRECTORY NAME anywhere in the path. `_bmad-output` is here for a
-// reason of its own: it holds reference implementations preserved beside a SPEC,
-// carrying the relative imports of the location they were written for. It is
-// excluded from test discovery by bunfig.toml for the same reason, and scanning
-// it would make an invariant fail on documentation.
+// Matched by DIRECTORY NAME anywhere in the path.
 const EXCLUDED_DIRS = new Set([
   "node_modules",
   ".next",
@@ -190,7 +186,6 @@ const EXCLUDED_DIRS = new Set([
   ".git",
   "out",
   "coverage",
-  "_bmad-output",
 ]);
 
 // …AND A PATTERN BESIDE THE LIST, because Next's dist directory is CONFIGURABLE.
@@ -871,11 +866,7 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     expect(broken).toEqual([]);
   });
 
-  test("INDEX-1 the excluded trees are genuinely absent, and _bmad-output is one of them", () => {
-    // _bmad-output holds a preserved reference implementation whose imports
-    // belong to another location; bunfig.toml excludes it from test discovery
-    // for the same reason. Scanning it would report violations in documentation.
-    //
+  test("INDEX-1 the excluded trees are genuinely absent from the index", () => {
     // SPELLED INDEPENDENTLY OF EXCLUDED_DIRS, and that is the whole point of
     // this test. Deriving the check from the same set walk() skipped with makes
     // `leaked` empty BY CONSTRUCTION: typo "node_modules" to "node_module" and
@@ -892,7 +883,6 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
       ".git",
       "out",
       "coverage",
-      "_bmad-output",
     ];
     const leaked = INDEX.filter((f) =>
       f.rel.split("/").some((seg) => MUST_NOT_BE_INDEXED.includes(seg)),
@@ -906,9 +896,8 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     // …and the exclusion is load-bearing: those trees really do exist on disk,
     // WITH REAL SCANNABLE FILES IN THEM, and a named one really is absent from
     // the index. That is the positive control the derived-set version lacked.
-    expect(fs.existsSync(path.join(REPO, "_bmad-output"))).toBe(true);
     expect(fs.existsSync(path.join(REPO, "node_modules"))).toBe(true);
-    const control = firstScannableUnder(path.join(REPO, "_bmad-output"));
+    const control = firstScannableUnder(path.join(REPO, "node_modules"));
     expect(control).not.toBe(null);
     expect(byRel.has(control!)).toBe(false);
   });
