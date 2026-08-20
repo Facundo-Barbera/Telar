@@ -19,10 +19,20 @@
 // them; the pinned rule sits underneath for the same reason.
 //
 // WHAT IS NOT HERE, AND WHY. The donor's header also carried four nav glyphs —
-// Overview, Projects, Looms, Workspace. Those views are deliberately out of
-// scope for this rebuild, and a glyph that navigates nowhere is worse than a
-// header without one. The Unread chip is gone because `readAt` is unmodelled,
-// and a chip with an unbackable count is a lie with a number on it.
+// Overview, Projects, Looms, Workspace. Three are still out of scope, and a
+// glyph that navigates nowhere is worse than a header without one. The Unread
+// chip is gone because `readAt` is unmodelled, and a chip with an unbackable
+// count is a lie with a number on it.
+//
+// THE FOURTH ARRIVED, AND THEN MOVED AGAIN. The donor's Workspace is this
+// app's Spool. It first got a footer button beside Settings, because it read
+// as a place rather than a filter over the list — but a place lived beside
+// the wordmark all along without anyone naming it: "telar" WAS a place, the
+// one this rail already showed. `docs/spool-loops.md` §11 names the two
+// places and turns the wordmark into the switcher between them (see
+// `PlaceSwitcher`), so the footer button retires — the switcher is chrome,
+// not routing, and it occupies the switcher's OWN slot rather than adding a
+// second door beside the one it replaces.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -36,10 +46,13 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
-  SearchIcon,
   SettingsIcon,
+  SpoolIcon,
+  TypeIcon,
   XIcon,
 } from "lucide-react";
+import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
+import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -79,8 +92,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
+import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
@@ -109,15 +122,70 @@ function TelarSidebarHeader() {
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="app-no-drag shrink-0" />
-        <Link
-          href="/"
-          title="New conversation"
-          className="app-no-drag mr-auto flex min-w-0 items-center rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="font-heading text-lg font-semibold tracking-tight">telar</span>
-        </Link>
+        <PlaceSwitcher />
       </div>
     </SidebarHeader>
+  );
+}
+
+/**
+ * THE SWITCHER — `docs/spool-loops.md` §11. Telar and Spool are "different,
+ * but part of the same system — overlap one on top of the other", so the
+ * wordmark that always named the app becomes the control that names WHICH
+ * half of it you are in. This is CHROME, NOT ROUTING: picking a place
+ * navigates (`/` or `/spool`), but a deep link — `/spool`, `/projects/…` —
+ * still lands correctly on its own; the switcher only ever reads the
+ * pathname to decide which entry to show as current, the same
+ * `pathname.startsWith(...)` test `SettingsButton` already used below.
+ *
+ * ONE OF THE FIVE. `--spool`'s five-mark budget already spent one of its
+ * five on the Spool's own header glyph (`header.tsx`'s `SpoolIcon`); this
+ * entry occupies that SAME slot — the place mark, wherever the place's own
+ * chrome puts it — rather than opening a sixth.
+ *
+ * THE TELAR GLYPH IS NEW, AND DELIBERATELY UNCOLOURED. `TypeIcon` is
+ * lucide's own capital-T mark, drawn in the same line-icon family as
+ * `SpoolIcon` — no bespoke SVG, because the family is already the "hand" the
+ * spec asks the new glyph to match. It carries no `--spool` hue: Telar is
+ * the neutral place, and colour on this mark would spend a share of the
+ * budget the definition never allotted it.
+ */
+function PlaceSwitcher() {
+  const pathname = usePathname();
+  const router = useRouter();
+  const inSpool = pathname.startsWith("/spool");
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            title={inSpool ? "Spool" : "Telar"}
+            className="app-no-drag mr-auto flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        }
+      >
+        {inSpool ? <SpoolIcon className="size-4 shrink-0 text-spool" /> : <TypeIcon className="size-4 shrink-0" />}
+        <span className="font-heading text-lg font-semibold tracking-tight">{inSpool ? "spool" : "telar"}</span>
+        <ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/45" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-48">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Place</DropdownMenuLabel>
+          <DropdownMenuItem onClick={() => router.push("/")}>
+            <span className="w-4">{inSpool ? null : <CheckIcon />}</span>
+            <TypeIcon className="size-4 shrink-0" />
+            <span>Telar</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => router.push("/spool")}>
+            <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
+            <SpoolIcon className="size-4 shrink-0 text-spool" />
+            <span>Spool</span>
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -166,19 +234,30 @@ function SidebarEmpty({
  * that was already the top of the rail, so it divided nothing, and the word
  * "Pinned" named a state the rows can wear themselves. Both went; what is left
  * here is a control, so it is unconditionally a <button>.
+ *
+ * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
+ * the two rails' grammar. `warehouse-nav.tsx`'s `CAPTION` (10px, semibold,
+ * uppercase, tracking-wider) is the newer of the two section-caption
+ * treatments this app has; this label used to sit at 11px, regular weight,
+ * sentence case — a difference between two "small grey word beside a rule"
+ * treatments with no reason beyond having been written on different days.
+ * Everything else about the rule (the rule itself, the chevron, the count)
+ * is unchanged — only the label's type scale moved.
  */
+const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45 hover:text-sidebar-foreground"
+      className="flex w-full items-center gap-2 px-2 py-1.5 text-sidebar-foreground/45 hover:text-sidebar-foreground"
       aria-expanded={open}
       onClick={onToggle}
     >
       <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-      <span className="shrink-0">{label}</span>
+      <span className={cn("shrink-0", CAPTION)}>{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-      <span className="shrink-0 tabular-nums">{count}</span>
+      <span className="shrink-0 tabular-nums text-[11px]">{count}</span>
     </button>
   );
 }
@@ -253,6 +332,10 @@ function SessionShelf({
 
 function SidebarBody() {
   const pathname = usePathname();
+  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`,
+  // Telar's own session list everywhere else. The header above it (trigger,
+  // switcher) is common to both; only what is below it changes.
+  const inSpool = pathname.startsWith("/spool");
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -307,7 +390,16 @@ function SidebarBody() {
         pages.flatMap((page) =>
           page.status === "fulfilled"
             ? page.value.sessions.map((session) =>
-                toSidebarSession(session, names.get(session.projectId), branches.get(session.projectId)),
+                // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
+                // project-scoped list and the Spool's master chat is a
+                // destination, not a conversation in it — the engine's reads
+                // already exclude it, and this keeps that true if one ever
+                // arrives by another path.
+                toSidebarSession(
+                  session,
+                  session.projectId ? names.get(session.projectId) : undefined,
+                  session.projectId ? branches.get(session.projectId) : undefined,
+                ),
               )
             : [],
         ),
@@ -457,11 +549,25 @@ function SidebarBody() {
     <>
       <TelarSidebarHeader />
       <SidebarContent>
-        <div className="space-y-1 px-3 pb-2 pt-3">
+        {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
+            §11's warehouse nav is what the rail shows on `/spool` — search,
+            apertures, the Areas tree, lanes, tags — instead of the sessions
+            list, which is Telar's own inbox and has no meaning inside the
+            Spool's place. The header (trigger, switcher) stays common. */}
+        {inSpool ? (
+          <SpoolWarehouseNav />
+        ) : (
+        <>
+        {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see
+            `sidebar-search-field.tsx`. This inset (px-2, matching the p-2
+            every `SidebarGroup` below already carries) used to be px-3, one
+            step wider than everything under it for no reason beyond the two
+            areas having been built separately; the web pass that shared the
+            search chrome brought the inset in line too. */}
+        <div className="space-y-1 px-2 pb-2 pt-3">
           <div className="flex items-center gap-1">
-            <div className="relative min-w-0 flex-1">
-              <SearchIcon className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sidebar-foreground/45" />
-              <Input
+            <div className="min-w-0 flex-1">
+              <SidebarSearchField
                 ref={searchInput}
                 value={query}
                 onChange={(event) => {
@@ -482,23 +588,24 @@ function SidebarBody() {
                 aria-expanded={Boolean(query)}
                 aria-controls="sidebar-session-results"
                 aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
-                className="h-8 border-transparent bg-transparent pl-7 pr-10 text-sm shadow-none hover:bg-sidebar-accent/70 focus-visible:border-sidebar-border focus-visible:bg-sidebar-accent/70"
+                end={
+                  query ? (
+                    <button
+                      type="button"
+                      aria-label="Clear session search"
+                      onClick={() => {
+                        setQuery("");
+                        setSearchIndex(0);
+                      }}
+                      className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                    >
+                      <XIcon className="size-3.5" />
+                    </button>
+                  ) : (
+                    <kbd className="pointer-events-none font-sans text-[10px] text-sidebar-foreground/35">⌘K</kbd>
+                  )
+                }
               />
-              {query ? (
-                <button
-                  type="button"
-                  aria-label="Clear session search"
-                  onClick={() => {
-                    setQuery("");
-                    setSearchIndex(0);
-                  }}
-                  className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:text-foreground"
-                >
-                  <XIcon className="size-3.5" />
-                </button>
-              ) : (
-                <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-sans text-[10px] text-sidebar-foreground/35">⌘K</kbd>
-              )}
             </div>
             <Button
               variant="ghost"
@@ -698,6 +805,8 @@ function SidebarBody() {
             />
           </>
         )}
+        </>
+        )}
       </SidebarContent>
 
       <SidebarFooter>
@@ -708,6 +817,13 @@ function SidebarBody() {
     </>
   );
 }
+
+// `SpoolButton` RETIRED — §11. It lived here, in the footer beside Settings,
+// because the Spool read as a place rather than a filter over the list. It
+// still is one; the place just moved into `PlaceSwitcher`, at the top of the
+// rail, where "telar" already was. See that component's docblock for why
+// the switcher is where this button's job — and its "no count on it" law —
+// went.
 
 function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
   const pathname = usePathname();

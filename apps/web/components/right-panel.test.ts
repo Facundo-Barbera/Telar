@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Item, Task, Turn } from "@telar/engine-client";
 import {
+  groupWarps,
   isLiveTask,
   isPanelTab,
   issuePanelNumber,
@@ -178,5 +179,97 @@ describe("isLiveTask", () => {
     for (const state of ["completed", "failed", "stopped"]) {
       expect(isLiveTask({ state } as Task)).toBe(false);
     }
+  });
+});
+
+describe("groupWarps", () => {
+  /**
+   * THE FOLD THAT REPLACES A SECOND RAIL. The frozen cockpit needed a whole
+   * separate surface for an Ultra run because the legacy harness kept runs in
+   * its own storage; here a run and its agents are rows on the one task stream,
+   * so the progress tree is a grouping and cannot disagree with the roster.
+   */
+  const agent = (id: string, warp: Record<string, unknown>, state = "completed"): unknown => ({
+    id,
+    kind: "agent",
+    state,
+    title: id,
+    warp,
+    items: [],
+  });
+  const runRow = (id: string, name: string, state = "running"): unknown => ({
+    id,
+    kind: "background",
+    state,
+    title: name,
+    warp: { warpRunId: id, warpName: name },
+    items: [],
+  });
+
+  test("a run is identified by its own self-pointing linkage, not by its children", () => {
+    // Which is what keeps a run identifiable once its agents have aged out of
+    // retention — the same failure the contract forbids for agents.
+    const { groups } = groupWarps([runRow("warp_1", "review")] as never);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.name).toBe("review");
+    expect(groups[0]!.run?.id).toBe("warp_1");
+    expect(groups[0]!.phases).toHaveLength(0);
+  });
+
+  test("agents are grouped under their run and ordered as the script asked", () => {
+    const { groups, loose } = groupWarps([
+      runRow("warp_1", "review"),
+      agent("b", { warpRunId: "warp_1", warpName: "review", phaseIndex: 0, phaseTitle: "Find", agentIndex: 1 }),
+      agent("a", { warpRunId: "warp_1", warpName: "review", phaseIndex: 0, phaseTitle: "Find", agentIndex: 0 }),
+    ] as never);
+    expect(loose).toHaveLength(0);
+    expect(groups[0]!.phases[0]!.agents.map((task) => task.id)).toEqual(["a", "b"]);
+  });
+
+  test("declared phases sort by position; an improvised one sorts after", () => {
+    // A script may open a phase its `meta` never declared, and those rows carry
+    // a title with no index at all.
+    const { groups } = groupWarps([
+      agent("late", { warpRunId: "w", warpName: "n", phaseTitle: "Improvised" }),
+      agent("second", { warpRunId: "w", warpName: "n", phaseIndex: 1, phaseTitle: "Verify" }),
+      agent("first", { warpRunId: "w", warpName: "n", phaseIndex: 0, phaseTitle: "Find" }),
+    ] as never);
+    expect(groups[0]!.phases.map((phase) => phase.title)).toEqual(["Find", "Verify", "Improvised"]);
+  });
+
+  test("phases are keyed by title, so two improvised ones do not merge", () => {
+    // Keying on the index would collapse every index-less phase into one bucket.
+    const { groups } = groupWarps([
+      agent("x", { warpRunId: "w", warpName: "n", phaseTitle: "Alpha" }),
+      agent("y", { warpRunId: "w", warpName: "n", phaseTitle: "Beta" }),
+    ] as never);
+    expect(groups[0]!.phases.map((phase) => phase.title)).toEqual(["Alpha", "Beta"]);
+  });
+
+  test("a script that opened no phase has one unlabelled bucket", () => {
+    const { groups } = groupWarps([agent("x", { warpRunId: "w", warpName: "n" })] as never);
+    expect(groups[0]!.phases).toHaveLength(1);
+    expect(groups[0]!.phases[0]!.title).toBeUndefined();
+  });
+
+  test("two concurrent runs of one script do not merge", () => {
+    // Distinct runIds are exactly why the linkage carries one alongside the
+    // name — the name is the script, the id is this run of it.
+    const { groups } = groupWarps([
+      agent("x", { warpRunId: "w1", warpName: "review" }),
+      agent("y", { warpRunId: "w2", warpName: "review" }),
+    ] as never);
+    expect(groups).toHaveLength(2);
+  });
+
+  test("an ordinary sub-agent carries no linkage and stays loose", () => {
+    // The whole point of the linkage being optional as a block: nothing has to
+    // know about warps to render a plain sub-agent.
+    const { groups, loose } = groupWarps([
+      { id: "plain", kind: "agent", state: "running", items: [] },
+      runRow("warp_1", "review"),
+    ] as never);
+    expect(loose.map((task) => task.id)).toEqual(["plain"]);
+    expect(groups).toHaveLength(1);
   });
 });

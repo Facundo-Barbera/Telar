@@ -464,7 +464,13 @@ export type McpServer = z.infer<typeof McpServer>;
  * feature — and everything else is concatenated in a stable order: global
  * first, so a reader sees the machine-wide baseline before the overrides.
  */
-export function resolveMcpServers(servers: readonly McpServer[], projectId: string): McpServer[] {
+/**
+ * `projectId` IS OPTIONAL, and absence is meaningful rather than a missing
+ * argument: a project-less session (the Spool's master) gets the environment's
+ * GLOBAL servers and no project's, which is exactly what the filter below
+ * already produces when nothing matches the scoped arm.
+ */
+export function resolveMcpServers(servers: readonly McpServer[], projectId: string | undefined): McpServer[] {
   const scoped = servers.filter((server) => server.projectId === projectId);
   const shadowed = new Set(scoped.map((server) => server.id));
   const global = servers.filter((server) => server.projectId === undefined && !shadowed.has(server.id));

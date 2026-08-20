@@ -235,7 +235,7 @@ export function SessionRow({
   // stranding people on a management table nobody had asked for. A composer in
   // the project you were just working in is where you were going anyway.
   const leaveIfActive = () => {
-    if (active) router.push(canvasHref(session.projectId));
+    if (active && session.projectId) router.push(canvasHref(session.projectId));
   };
 
   const beginRename = () => {
