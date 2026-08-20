@@ -328,6 +328,15 @@ export const SpoolSubject = z.looseObject({
    *  is the ordinary case — see `SpoolSubjectColor` for the identity-not-state
    *  law. */
   color: SpoolSubjectColor.optional(),
+  /**
+   * The user's own manual position among the other subjects in the SAME
+   * `area` — a drag order, not a computed one, the way a Reminders list-group
+   * remembers the hand that reordered it. Absent is the ordinary case: an
+   * unranked subject sorts after every ranked one, never invented by the
+   * store. Compared only against subjects sharing this one's `area` — see
+   * `sortSubjectsByRank`.
+   */
+  rank: z.number().optional(),
   /** Display label, minted by the store's clock like `captured`. Never sorted
    *  on, never compared — the module forbids a clock that reaches a renderer. */
   created: z.string(),
@@ -848,6 +857,14 @@ export type SpoolCaptureBrief = z.infer<typeof SpoolCaptureBrief>;
 export const SpoolSubjectThreads = z.object({
   subject: z.string(),
   permits: SpoolSubjectPermits,
+  /** The area path PREFIX whose ceiling produced `permits`, when a ceiling
+   *  actually lowered the subject's own stated grant (docs/spool-loops.md
+   *  §13.7: an area name is a path, "Work / Focaltec", and every prefix's
+   *  ceiling clamps down it — most restrictive wins). Absent means `permits`
+   *  is exactly the subject's own statement. NEVER assume this equals the
+   *  subject's own `area` verbatim — an ancestor segment's ceiling can be
+   *  the one that won. */
+  clampedBy: z.string().optional(),
   threads: z.array(SpoolThreadView),
   /** Items in this subject that no thread holds. NAMED RATHER THAN HIDDEN: an
    *  unclaimed capture is a resting state, and a map that silently omitted it
@@ -1976,6 +1993,11 @@ export const SpoolLobbySubject = z.object({
   name: z.string(),
   area: z.string().optional(),
   color: SpoolSubjectColor.optional(),
+  /** The same manual position `SpoolSubject.rank` carries, ridden along so a
+   *  drag surface can compute drop positions without a second fetch of the
+   *  registry. Absent means unranked — sorts after every ranked sibling in
+   *  this same area. */
+  rank: z.number().optional(),
   /** Stuck-on-you threads, plus unacknowledged observations, plus items
    *  pinned to `today` (zero when the caller sent none) — one scalar a
    *  surface sorts and folds on, never a sentence in itself. */
@@ -2090,3 +2112,16 @@ export const SpoolBrief = z.object({
   deadItems: z.array(SpoolBriefDeadItem).max(3),
 });
 export type SpoolBrief = z.infer<typeof SpoolBrief>;
+
+/**
+ * ONE TAG, AS A ROW IN THE WAREHOUSE — the engine's `spoolTags` projection over
+ * `SpoolItem.tags` and `SpoolNote.tags`. There is no tag record on disk (see
+ * `apps/engine/src/spool/tags.ts`): this is a read-time count, so `items` and
+ * `notes` can never drift from what a filtered items/notes read would show.
+ */
+export const SpoolTagUsage = z.object({
+  tag: z.string(),
+  items: z.number(),
+  notes: z.number(),
+});
+export type SpoolTagUsage = z.infer<typeof SpoolTagUsage>;

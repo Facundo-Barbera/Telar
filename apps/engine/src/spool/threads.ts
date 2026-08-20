@@ -42,7 +42,7 @@ import { structuredAgent, type StructuredAgentResult } from "../agent";
 import { atomicWrite } from "../atomic";
 import { capturedLabel, listItems, readExpertDigest, type SpoolPaths } from "./store";
 import { findSubject, isAddressableKey } from "./subjects";
-import { effectivePermits, readAreas } from "./areas";
+import { effectivePermitsDetail, readAreas } from "./areas";
 
 const THREADS_FILE = "threads.json";
 
@@ -639,14 +639,18 @@ export function subjectThreads(paths: SpoolPaths, subject: string): SpoolSubject
   }));
 
   const claimed = new Set(threads.flatMap((t) => t.items));
+  // THE EFFECTIVE LEVEL, not the stated one: the map is what the master chat
+  // and the room read to say what may happen here unattended, and a subject
+  // in a ceilinged area reporting its own higher permit would be the display
+  // promising what the night refuses. The stated level stays readable on the
+  // subject record itself. `clampedBy` names the winning PREFIX of the area
+  // path (§13.7) — never assumed to be `subject.area` verbatim, because a
+  // ceiling on an ancestor segment can be the one that actually won.
+  const effective = effectivePermitsDetail(findSubject(paths, subject), readAreas(paths));
   return {
     subject,
-    // THE EFFECTIVE LEVEL, not the stated one: the map is what the master chat
-    // and the room read to say what may happen here unattended, and a subject
-    // in a ceilinged area reporting its own higher permit would be the display
-    // promising what the night refuses. The stated level stays readable on the
-    // subject record itself.
-    permits: effectivePermits(findSubject(paths, subject), readAreas(paths)),
+    permits: effective.level,
+    ...(effective.clampedBy ? { clampedBy: effective.clampedBy } : {}),
     threads: views,
     loose: all.filter((i) => !claimed.has(i.id)).map(brief),
   };

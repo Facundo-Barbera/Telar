@@ -14,10 +14,12 @@
  * only ever holds the smart view (`docs/spool-loops.md` §8's Today/Scheduled
  * beside the ordinary wide room); it cannot name a subject.
  *
- * TWO WRITERS, ONE SLOT. The chat's `spool_set_aperture` and the hand's click
- * both land here, idempotent and last-writer-wins, so neither can drift from
- * the other — the same "your hand and its hand are the same ink" rule the
- * workbench states.
+ * ONE WRITER NOW: THE HAND'S OWN CLICK. `spool_set_aperture` used to write
+ * here too — removed from every tool wall under docs/spool-loops.md §13.6,
+ * "the room has belonged to the user's own hand since the re-entry rebuild."
+ * This file and its route are UNCHANGED and still live: the hand's click
+ * still lands here, idempotent, exactly as before. Only the second writer is
+ * gone.
  */
 import fs from "node:fs";
 import path from "node:path";

@@ -29,8 +29,10 @@
  */
 import { useMemo, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
-import type { SpoolSubject, SpoolSubjectGroup, SpoolSubjectRow } from "@telar/engine-client";
+import type { SpoolLane, SpoolSubject, SpoolSubjectGroup, SpoolSubjectRow } from "@telar/engine-client";
 import { CloseCheckbox, SubjectDot } from "@/components/spool/chips";
+import { AddTaskDialog } from "@/components/spool/add-task";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { closeItemByHand, reopenItemByHand } from "@/lib/spool-close";
 import { addDays, addMonths, formatDay, monthGridOf, monthLabel, sameMonth, todayDay, weekOf } from "@/lib/spool-today";
 import { cn } from "@/lib/utils";
@@ -101,15 +103,29 @@ function DayLine({
          visibly left beside it. */
       className="group relative flex w-full min-w-0 cursor-grab items-center gap-1.5 rounded-md bg-card px-1.5 py-1 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
     >
-      <CloseCheckbox closed={false} label={`Close “${words}”`} onToggle={() => onClose(item.id)} className="size-3.5" />
-      <SubjectDot color={color} />
-      <button
-        type="button"
-        onClick={() => onOpen(item.id)}
-        className="min-w-0 flex-1 truncate text-left text-xs leading-snug font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        {words}
-      </button>
+      {/* THE PILL'S OWN CONTEXT MENU — drag stays on the `<li>` above
+          (unchanged); only the pill's own content is wrapped in the trigger.
+          "Unpin" fires the SAME `onUnpin` the hover-revealed "unpin" button
+          fires; "Open packet" is the SAME `onOpen` the words button fires. */}
+      <ContextMenu>
+        <ContextMenuTrigger>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <CloseCheckbox closed={false} label={`Close “${words}”`} onToggle={() => onClose(item.id)} className="size-3.5" />
+            <SubjectDot color={color} />
+            <button
+              type="button"
+              onClick={() => onOpen(item.id)}
+              className="min-w-0 flex-1 truncate text-left text-xs leading-snug font-medium text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {words}
+            </button>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => onUnpin(item.id)}>Unpin</ContextMenuItem>
+          <ContextMenuItem onClick={() => onOpen(item.id)}>Open packet</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
       <button
         type="button"
         onClick={() => onUnpin(item.id)}
@@ -125,6 +141,7 @@ function DayLine({
 export function SpoolCalendar({
   groups,
   subjects,
+  lanes,
   scope,
   onOpenItem,
   onChanged,
@@ -133,6 +150,10 @@ export function SpoolCalendar({
   groups: SpoolSubjectGroup[];
   /** The subject records, for the identity join — key → color. */
   subjects: SpoolSubject[];
+  /** The lanes that exist — threaded through only for the day cell's own
+   *  "Add a task for this day…" verb's `AddTaskDialog`, the same dialog the
+   *  room's header already opens. */
+  lanes: SpoolLane[];
   scope: string | undefined;
   onOpenItem: (id: string) => void;
   onChanged: () => Promise<void> | void;
@@ -157,6 +178,10 @@ export function SpoolCalendar({
   /** The done fold's own state — closed by default: the shelf is a record,
    *  not an arrival question. */
   const [doneOpen, setDoneOpen] = useState(false);
+  /** THE DAY CELL'S "Add a task for this day…" — `null` closed, else the
+   *  day the form's own pin field seeds. One dialog, shared with nothing
+   *  else on this surface (the grid has no other creation control). */
+  const [addingDay, setAddingDay] = useState<string | null>(null);
 
   const rows = useMemo(
     () => groups.flatMap((g) => g.rows).filter((row) => !scope || row.item.project === scope),
@@ -322,18 +347,27 @@ export function SpoolCalendar({
               const isToday = day === today;
               const dimmed = view === "month" && !sameMonth(day, anchor);
               return (
-                <div
-                  key={day}
-                  onDragOver={(event) => {
-                    if (event.dataTransfer.types.includes(DRAG_TYPE)) event.preventDefault();
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const id = dragging ?? event.dataTransfer.getData(DRAG_TYPE);
-                    setDragging(null);
-                    if (id) pinTo(id, day);
-                  }}
-                  className={cn(
+                // THE DAY CELL'S OWN CONTEXT MENU — the cell is a drop
+                // TARGET only (onDragOver/onDrop below), never a drag
+                // source, so wrapping the whole cell in the trigger cannot
+                // race any drag. "Add a task for this day…" opens the SAME
+                // `AddTaskDialog` the room's own "Add a task" button opens,
+                // merely pre-picking this day in the form's existing pin
+                // field (`defaultPinDay`) — the same `{pinned:{day}}` POST,
+                // never a second write path.
+                <ContextMenu key={day}>
+                  <ContextMenuTrigger>
+                    <div
+                      onDragOver={(event) => {
+                        if (event.dataTransfer.types.includes(DRAG_TYPE)) event.preventDefault();
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const id = dragging ?? event.dataTransfer.getData(DRAG_TYPE);
+                        setDragging(null);
+                        if (id) pinTo(id, day);
+                      }}
+                      className={cn(
                     "min-h-28 border-r border-b border-border/40 p-1.5 [&:nth-child(7n)]:border-r-0 [&:nth-last-child(-n+7)]:border-b-0",
                     view === "week" && "min-h-56",
                     dimmed && "bg-muted/30",
@@ -363,7 +397,12 @@ export function SpoolCalendar({
                       />
                     ))}
                   </ul>
-                </div>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => setAddingDay(day)}>Add a task for this day…</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               );
             })}
           </div>
@@ -477,6 +516,21 @@ export function SpoolCalendar({
           )}
         </aside>
       </div>
+
+      <AddTaskDialog
+        open={addingDay !== null}
+        onOpenChange={(open) => {
+          if (!open) setAddingDay(null);
+        }}
+        subjects={subjects.map((s) => s.key)}
+        lanes={lanes}
+        {...(scope ? { defaultSubject: scope } : {})}
+        {...(addingDay ? { defaultPinDay: addingDay } : {})}
+        onCreated={() => {
+          setAddingDay(null);
+          void onChanged();
+        }}
+      />
     </div>
   );
 }

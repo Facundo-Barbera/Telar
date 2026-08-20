@@ -612,16 +612,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         /**
          * IDENTITY IS ITS OWN ARM, on the same `in` rule as terrain: `null`
          * clears a field, a value sets it, an absent key leaves it alone —
-         * which is what lets one request set `area` and `color` together, the
-         * way a user states them ("pon casa en Personal, de color mar"). The
-         * closed color set and the area cap live in the store (the wall); a
-         * refusal comes back with the store's own sentence.
+         * which is what lets one request set `area`, `color` and `rank`
+         * together, the way a user states them ("pon casa en Personal, de
+         * color mar"), or the way a drag surface states just `rank` alone.
+         * The closed color set, the area cap and the rank floor live in the
+         * store (the wall); a refusal comes back with the store's own
+         * sentence.
          */
-        if ("area" in input || "color" in input) {
+        if ("area" in input || "color" in input || "rank" in input) {
           writeJson(response, 200, {
             subject: store.setSpoolSubjectIdentity(decodeURIComponent(spoolSubject[1]), {
               ...("area" in input ? { area: input.area as string | null } : {}),
               ...("color" in input ? { color: input.color as Parameters<typeof store.setSpoolSubjectIdentity>[1]["color"] } : {}),
+              ...("rank" in input ? { rank: input.rank as number | null } : {}),
             }),
           });
           return;
@@ -666,6 +669,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           );
         }
         writeJson(response, 200, { area: store.setSpoolAreaCeiling(decodeURIComponent(spoolArea[1]), ceiling) });
+        return;
+      }
+      /**
+       * THE TAGS — the free-text labels items and notes already carry, given
+       * exactly two hand verbs. `GET` is a projection (no tag record on
+       * disk); `PATCH .../tags/:from` with `{to}` renames it everywhere,
+       * merging onto `to` when that name is already in use. There is no
+       * create route (a tag exists the moment something carries it) and no
+       * delete route (retagging to `[]` on the row itself is how one goes
+       * away).
+       */
+      if (request.method === "GET" && url.pathname === "/v2/spool/tags") {
+        writeJson(response, 200, { tags: store.spoolTags() });
+        return;
+      }
+      const spoolTag = /^\/v2\/spool\/tags\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "PATCH" && spoolTag) {
+        const input = await body(request);
+        const to = stringValue(input.to, "to");
+        if (!to) throw new HttpError(400, "invalid_request", "to is required — the name the tag should read after the rename.");
+        writeJson(response, 200, store.renameSpoolTag(decodeURIComponent(spoolTag[1]), to));
         return;
       }
       /**

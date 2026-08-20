@@ -206,14 +206,20 @@ export const SUBJECT_AREA_MAX = 60;
 
 /**
  * SAY WHOSE A SUBJECT IS — its `area` (the user's own group name, Reminders'
- * list-groups) and its `color` (an identity token, Calendar's per-calendar
- * hue).
+ * list-groups), its `color` (an identity token, Calendar's per-calendar hue),
+ * and its `rank` (the user's own manual position among the other subjects in
+ * that SAME area — the drag order a rail lets a person set by hand).
  *
  * IDENTITY, NEVER STATE. Nothing here reads or implies urgency, and the color
- * set is closed so nothing ever can — see `SpoolSubjectColor`. Both fields are
- * configuration the human states, exactly like `terrain` above: `null` clears
- * (a withdrawn statement, not a deletion), absent leaves untouched, and a
- * subject with neither is fully ordinary.
+ * set is closed so nothing ever can — see `SpoolSubjectColor`. All three
+ * fields are configuration the human states, exactly like `terrain` above:
+ * `null` clears (a withdrawn statement, not a deletion), absent leaves
+ * untouched, and a subject with none of them is fully ordinary.
+ *
+ * SETTING `area` NEVER TOUCHES `rank`. Moving a subject into a new area does
+ * not erase where a hand had already put it — a rank is filed as its own
+ * statement (its own key in `patch`), the same way stating `color` here never
+ * clears `area`.
  *
  * Returns `null` (writes nothing) when no subject goes by the key; THROWS a
  * sentence on a value the store must not hold — a write is loud.
@@ -221,10 +227,10 @@ export const SUBJECT_AREA_MAX = 60;
 export function setSubjectIdentity(
   paths: SpoolPaths,
   key: string,
-  patch: { area?: string | null; color?: SpoolSubjectColor | null },
+  patch: { area?: string | null; color?: SpoolSubjectColor | null; rank?: number | null },
 ): SpoolSubject | null {
-  if (!("area" in patch) && !("color" in patch)) {
-    throw new Error("Name what to change — an `area`, a `color`, or both. `null` clears either one.");
+  if (!("area" in patch) && !("color" in patch) && !("rank" in patch)) {
+    throw new Error("Name what to change — an `area`, a `color`, a `rank`, or any combination. `null` clears any of them.");
   }
   let area: string | null | undefined = patch.area;
   if (typeof area === "string") {
@@ -247,6 +253,12 @@ export function setSubjectIdentity(
         .join(", ")} — a named identity token, never a hex value, and never a signal of urgency.`,
     );
   }
+  if (patch.rank !== null && patch.rank !== undefined && (typeof patch.rank !== "number" || !Number.isFinite(patch.rank) || patch.rank < 0)) {
+    throw new Error(
+      `"${String(patch.rank)}" is not a rank the Spool can hold. A subject's rank is a finite number ≥ 0 — its ` +
+        "manual position among the other subjects in its area — or `null` to withdraw it.",
+    );
+  }
   const subjects = readSubjects(paths);
   const found = subjects.find((s) => s.key === key);
   if (!found) return null;
@@ -259,11 +271,41 @@ export function setSubjectIdentity(
     if (patch.color === null) delete next.color;
     else if (patch.color !== undefined) next.color = patch.color;
   }
+  if ("rank" in patch) {
+    if (patch.rank === null) delete next.rank;
+    else if (patch.rank !== undefined) next.rank = patch.rank;
+  }
   writeSubjects(
     paths,
     subjects.map((s) => (s.key === key ? next : s)),
   );
   return next;
+}
+
+/**
+ * A SUBJECT'S ORDER WITHIN ITS OWN AREA — `rank` ascending, unranked subjects
+ * AFTER every ranked one, in whatever order they already carried. STABLE, and
+ * silent when nothing has stated a rank: the comparator returns `0` for any
+ * pair that is not two ranked-or-unranked subjects of the SAME named area, so
+ * a caller that never sets `rank` sees exactly the order it handed in — this
+ * function never invents one.
+ *
+ * WORKS ACROSS BOTH SHAPES `rank` RIDES ON — `SpoolSubject` (the registry) and
+ * `SpoolLobbySubject` (the lobby's per-card projection) — because the fact it
+ * orders by is the same fact on both, `area` and `rank` verbatim, and the two
+ * callers (`EngineStore.spoolSubjects`, `composeLobby`) would otherwise hand-rebuild
+ * the identical four-way branch.
+ */
+export function sortSubjectsByRank<T extends { area?: string; rank?: number }>(subjects: readonly T[]): T[] {
+  return [...subjects].sort((a, b) => {
+    if (!a.area || !b.area || a.area !== b.area) return 0;
+    const ar = typeof a.rank === "number" ? a.rank : undefined;
+    const br = typeof b.rank === "number" ? b.rank : undefined;
+    if (ar === undefined && br === undefined) return 0;
+    if (ar === undefined) return 1;
+    if (br === undefined) return -1;
+    return ar - br;
+  });
 }
 
 /**

@@ -177,6 +177,31 @@ export function updateNote(paths: SpoolPaths, id: string, patch: SpoolNotePatch,
 }
 
 /**
+ * REWRITE A NOTE'S TAGS DIRECTLY — the one deliberate way around `updateNote`
+ * (2026-08-18, `spool/tags.ts`'s tag rename). `updateNote`'s retired-note
+ * refusal protects the note's WORDS: a retired note is a record of what was
+ * known and why it stopped mattering, and rewriting `title`/`body` would be
+ * editing history. A tag is not the note's words — it is index metadata that
+ * happens to live in the same row — so renaming it is not the edit that law
+ * exists to block. Skipping retired carriers instead would leave the tags
+ * listing (which counts retired notes on purpose, same as `listNotes`) still
+ * showing the OLD name forever, and a "rename" that cannot touch its only
+ * carrier is not a rename at all. This writes `tags` and nothing else:
+ * `title`, `body`, `retired`, `updated` all pass through byte-identical.
+ */
+export function rewriteNoteTags(paths: SpoolPaths, id: string, tags: string[]): SpoolNote | null {
+  const notes = readShelf(paths);
+  const found = notes.find((n) => n.id === id);
+  if (!found) return null;
+  const next = SpoolNote.parse({ ...found, tags });
+  writeShelf(
+    paths,
+    notes.map((n) => (n.id === id ? next : n)),
+  );
+  return next;
+}
+
+/**
  * RETIRE — the drain verb. Marks the note with the reason and keeps it;
  * nothing deletes. The reason is REQUIRED: knowledge withdrawn silently is how
  * a shelf stops being trustworthy. Idempotent — re-retiring returns the first

@@ -40,22 +40,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-
-/** One labelled field, matching `projects/register-dialog.tsx`'s own `Field` so
- *  a Spool form reads as the same object as a project form. */
-function Field({ htmlFor, label, hint, children }: { htmlFor: string; label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="text-xs font-medium text-foreground">
-        {label}
-      </label>
-      {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
-}
+import { FieldGroup, FieldRow, RowInput } from "@/components/spool/field-group";
 
 export type LaneFormValues = { label: string; window: string };
 
@@ -105,10 +90,10 @@ export function LaneFormDialog({
    */
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-xs">
+        <DialogHeader className="gap-1">
           <DialogTitle>{title}</DialogTitle>
-          {description && <DialogDescription>{description}</DialogDescription>}
+          {description && <DialogDescription className="text-xs">{description}</DialogDescription>}
         </DialogHeader>
         {open && (
           <LaneForm
@@ -148,51 +133,38 @@ function LaneForm({
 
   return (
     <form
-      className="space-y-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (ready && !busy) onSubmit({ label: label.trim(), window: window.trim() });
-          }}
-        >
-          <Field htmlFor="lane-label" label="Label">
-            <Input
-              id="lane-label"
-              value={label}
-              onChange={(event) => setLabel(event.target.value)}
-              placeholder="Weekend"
-              autoFocus
-            />
-          </Field>
-          {withWindow && (
-            <Field
-              htmlFor="lane-window"
-              label="When its work tends to happen"
-              // COARSE AND SHIFTING, never a schedule — the module has no clock,
-              // and the hint has to teach that rather than invite a time.
-              hint="Coarse and in your own words — “evenings”, “work hours”, “whenever”. Never a schedule."
-            >
-              <Input
-                id="lane-window"
-                value={window}
-                onChange={(event) => setWindow(event.target.value)}
-                placeholder="evenings"
-              />
-            </Field>
-          )}
+      className="space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (ready && !busy) onSubmit({ label: label.trim(), window: window.trim() });
+      }}
+    >
+      <FieldGroup>
+        <FieldRow label="Label" htmlFor="lane-label">
+          <RowInput id="lane-label" value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Weekend" autoFocus />
+        </FieldRow>
+        {withWindow && (
+          // COARSE AND SHIFTING, never a schedule — the module has no clock,
+          // and the hint has to teach that rather than invite a time.
+          <FieldRow
+            label="When it happens"
+            htmlFor="lane-window"
+            hint="Coarse and in your own words — “evenings”, “work hours”, “whenever”. Never a schedule."
+          >
+            <RowInput id="lane-window" value={window} onChange={(event) => setWindow(event.target.value)} placeholder="evenings" />
+          </FieldRow>
+        )}
+      </FieldGroup>
 
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription className="text-xs break-words">{error}</AlertDescription>
-            </Alert>
-          )}
+      {error && <p className="px-1 text-xs break-words text-muted-foreground">{error}</p>}
 
-          <DialogFooter>
-            <DialogClose render={<Button type="button" variant="outline" size="sm" />}>Cancel</DialogClose>
-            <Button type="submit" size="sm" disabled={!ready || busy}>
-              {busy && <Loader2Icon className="animate-spin" />}
-              {confirmLabel}
-            </Button>
-          </DialogFooter>
+      <DialogFooter className="-mx-4 -mb-4 border-t-0 bg-transparent p-0 pt-1">
+        <DialogClose render={<Button type="button" variant="ghost" size="sm" />}>Cancel</DialogClose>
+        <Button type="submit" size="sm" disabled={!ready || busy}>
+          {busy && <Loader2Icon className="animate-spin" />}
+          {confirmLabel}
+        </Button>
+      </DialogFooter>
     </form>
   );
 }
@@ -228,18 +200,18 @@ export function ConfirmDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      {/* Compact card, not ceremony — shrinks to content, title small and
+          quiet. The body copy is unchanged (it is §-law: what the action
+          DOES, which `confirm()` never had room to say) but sits quietly
+          under the title rather than as a full paragraph. */}
+      <DialogContent className="sm:max-w-xs">
+        <DialogHeader className="gap-1">
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{body}</DialogDescription>
+          <DialogDescription className="text-xs">{body}</DialogDescription>
         </DialogHeader>
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription className="text-xs break-words">{error}</AlertDescription>
-          </Alert>
-        )}
-        <DialogFooter>
-          <DialogClose render={<Button type="button" variant="outline" size="sm" />}>Cancel</DialogClose>
+        {error && <p className="px-1 text-xs break-words text-muted-foreground">{error}</p>}
+        <DialogFooter className="-mx-4 -mb-4 border-t-0 bg-transparent p-0 pt-1">
+          <DialogClose render={<Button type="button" variant="ghost" size="sm" />}>Cancel</DialogClose>
           <Button type="button" size="sm" disabled={busy} onClick={onConfirm}>
             {busy && <Loader2Icon className="animate-spin" />}
             {confirmLabel}

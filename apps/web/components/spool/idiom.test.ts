@@ -181,6 +181,34 @@ describe("the store's laws are stated with live numbers, not captions", () => {
     }
   });
 
+  test("window.prompt is gone from the whole app, not only this surface — the idiom pass's own gate", () => {
+    /**
+     * THE CONTEXT-MENU PASS REINTRODUCED IT: `warehouse-nav.tsx`'s area
+     * rename and `tray.tsx`'s note retirement reason both reached for
+     * `window.prompt` — a light OS box with no room for the Reminders idiom
+     * this suite otherwise pins. Both replaced with `AskOneThing`
+     * (`prompt-card.tsx`), an anchored popover-card at the row that was
+     * acted on. Scanned across the whole app, not just this directory's own
+     * surfaces, because a native prompt anywhere is the same regression.
+     */
+    const root = path.join(dir, "..", "..");
+    const offenders: string[] = [];
+    const walk = (from: string) => {
+      for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+        if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+        const full = path.join(from, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+        } else if (/\.(tsx?|jsx?)$/.test(entry.name)) {
+          const body = code(fs.readFileSync(full, "utf8"));
+          if (/[^.\w]window\.prompt\(/.test(body)) offenders.push(path.relative(root, full));
+        }
+      }
+    };
+    walk(root);
+    expect(offenders).toEqual([]);
+  });
+
   test("no surface reaches a retired route", () => {
     /**
      * §13.3 RETIRED THREE DESTINATIONS — the composed canvas, the shapes
@@ -371,13 +399,25 @@ describe("the shell says what is built and what is not", () => {
     const nav = code(read("warehouse-nav.tsx"));
     expect(nav).toContain("SpoolSearchControl");
     // §13.2: the aperture buttons retired with the wide stance. The rail's
-    // three fixed rooms are Lobby, Today and Scheduled — floor plan, not a
+    // fixed rooms are Lobby, Today and Scheduled — floor plan, not a
     // squint over one inventory.
     expect(nav).toContain('"Lobby"');
     expect(nav).toContain('"Today"');
     expect(nav).toContain('"Scheduled"');
-    expect(nav).toContain("Areas");
-    expect(nav).toContain("groupLinesByArea");
+    // §13.6, added 2026-08-18: the Assistant is a fourth fixed room, the same
+    // conversation the summoned layer holds, reached full-width — the rail's
+    // other door beside the layer's expand control.
+    expect(nav).toContain('"Assistant"');
+    /**
+     * RETARGETED `docs/spool-loops.md` §13.8 (2026-08-19): the tree itself
+     * (and the `buildAreaTree`/"Areas" `aria-label` it used to render under)
+     * left the rail entirely — "the map is content, not chrome" moved the
+     * whole structure into `lobby.tsx`'s own content pane. The rail is floor
+     * plan only now: four fixed rooms, no tree, no `aria-label="Areas"` for
+     * assistive tech to land on because there is no list here to label.
+     */
+    expect(nav).not.toContain('aria-label="Areas"');
+    expect(nav).not.toContain("buildAreaTree(");
     // The nav drives the room's OWN state through the published store — never
     // a second `useState` forking the aperture or the filter it already owns.
     expect(nav).toContain("useSpoolRoom");
@@ -768,22 +808,31 @@ describe("the tray is summoned, never resident", () => {
   });
 
   test("it can always be dismissed, back to two columns", () => {
+    /**
+     * RETARGETED 2026-08-18 (§13.6, "the assistant's two doors"): the tray's
+     * own close button is unchanged, but what it dismisses is no longer a
+     * `tray` slot the stance owns beside a resident chat — it is the summoned
+     * LAYER'S face slot, the same slot the layer's chat occupies when a face
+     * is not up. Dismissing either shape closes the whole layer and the room
+     * is back to rail + main, never a third column standing on its own.
+     */
     const tray = code(read("tray.tsx"));
     expect(tray).toContain('aria-label="Close the tray"');
     // And closing is state, not navigation — the stance owns it.
-    expect(code(read("stance.tsx"))).toContain("onClose={() => setTray(null)}");
+    expect(code(read("stance.tsx"))).toContain("onClose={() => setLayer(null)}");
   });
 
   test("it paints its own background, so the room's ground does not bleed through", () => {
     /**
-     * RETARGETED 2026-08-17 (the visual pass): the column's ground moved from
-     * `bg-background` to the RAIL token. The law is unchanged — the tray
-     * paints an opaque ground of its own — and the new value is what makes it
-     * furniture: `bg-sidebar` is a real step off the canvas in BOTH schemes,
-     * where background-on-background was invisible in dark mode.
+     * RETARGETED 2026-08-18 (§13.6): the tray's ground still steps to the
+     * RAIL token, but the div that paints it is now the summoned layer's OWN
+     * wrapper — one overlay shared by the face slot and the chat slot — not a
+     * column rendered only when a face is up. The law is unchanged: an opaque
+     * ground of its own, `bg-sidebar`, a real step off the canvas in BOTH
+     * schemes.
      */
     const stance = code(read("stance.tsx"));
-    const column = stance.slice(stance.indexOf("<SpoolTray") - 600, stance.indexOf("<SpoolTray"));
+    const column = stance.slice(stance.indexOf("<SpoolTray") - 900, stance.indexOf("<SpoolTray"));
     expect(column).toContain("bg-sidebar");
   });
 
@@ -1045,8 +1094,18 @@ describe("the permit control is a grant, not a badge", () => {
     const body = code(tray);
     expect(body).toContain('fetch("/api/spool/subjects")');
     expect(body).toContain('fetch("/api/spool/threads")');
-    // The sentence's shape: `draft — clamped to read by “Personal”’s ceiling`.
-    expect(flat("tray.tsx")).toContain("clamped to {acts} by &ldquo;{subject.area}&rdquo;&rsquo;s ceiling");
+    /**
+     * RETARGETED `docs/spool-loops.md` §13.7 (path ceilings, 2026-08-18): an
+     * area name is a PATH, and every prefix's ceiling clamps down it, most
+     * restrictive wins — so the segment that actually clamped a subject is
+     * not always that subject's own `area`; an ancestor's ceiling can be the
+     * one that won. The sentence now quotes the threads read's own
+     * `clampedBy` (the winning prefix, exact), falling back to `subject.area`
+     * only for data that predates the field. The sentence's shape is
+     * unchanged: `draft — clamped to read by "Personal"'s ceiling`.
+     */
+    expect(flat("tray.tsx")).toContain("clamped to {acts} by &ldquo;{clampSource}&rdquo;&rsquo;s ceiling");
+    expect(body).toContain("const clampSource = clampedBy[subject.key] ?? subject.area;");
     // And it renders in the quiet voice — no status colour reaches it.
     expect(body).not.toMatch(/clamped[^<]*text-(destructive|warning|success)/);
   });
@@ -1264,15 +1323,29 @@ describe("the pickup line quotes what you were doing, never a bare time label", 
     expect(body).not.toMatch(/\bentry\.label\b/);
   });
 
-  test("an unresolvable entry drops the whole pickup line rather than inventing one", () => {
+  test("an unresolvable entry falls back to a true fact, never a fabricated pickup", () => {
     // Three states, told apart: no current focus entries at all ("Nothing
     // open here yet"), entries with resolvable words ("You were on …"), and
-    // entries that resolve to nothing — which renders NEITHER of the other
-    // two sentences, an empty fact rather than a fabricated one.
+    // entries that resolve to nothing.
+    //
+    // RETARGETED 2026-08-19, §13.8 — driven live: the third state used to
+    // render `null`, which is not "an empty fact" on screen, it is an empty
+    // BOX — the strip still shows its Resume/X chrome with no sentence
+    // between them, indistinguishable from a rendering bug. The law this
+    // test pins is narrower than "render nothing": never FABRICATE a pickup
+    // sentence for an entry that didn't resolve. Falling back to
+    // `sinceYourLook.digest` (a real, already-fetched fact about the same
+    // subject) or, failing that, a plain admission that there's nothing more
+    // to say, both honour that — neither invents what the human was doing.
     const flatRoom = flat("room.tsx");
     expect(flatRoom).toContain("Nothing open here yet.");
     expect(flatRoom).toContain("You were on {pickupWords.map");
-    expect(code(room)).toMatch(/pickupWords\.length > 0 \? \([\s\S]*?\) : null/);
+    expect(code(room)).toMatch(
+      /pickupWords\.length > 0 \? \([\s\S]*?\) : brief\.sinceYourLook\.digest\?\.\[0\] \? \([\s\S]*?\) : \(/,
+    );
+    // The fallback text is honest about having nothing more to say — it does
+    // not compose a "You were on …" sentence for an entry that never resolved.
+    expect(flatRoom).toContain("Picked up here — nothing more to say about it yet.");
   });
 });
 
@@ -1508,10 +1581,15 @@ describe("identity is whose, never how urgent", () => {
     for (const { name, source } of surfaces()) {
       expect(code(source), `${name} reaches an identity token directly`).not.toContain("--subject-");
     }
-    // And the helper's callers are pinned: the shared dot and the tray's
-    // swatch control. A third caller is a review question, not a convenience.
+    // And the helper's callers are pinned: the shared dot, the tray's swatch
+    // control, and `subject-identity.tsx`'s own swatch row, the ONE shared
+    // identity component the subject room's About tab mounts. RETARGETED
+    // §13.8 (2026-08-19): the "Color ▸" context-menu submenu moved with the
+    // rest of the tree from `warehouse-nav.tsx` into `lobby.tsx`'s own
+    // `LobbyCard` — same swatches, same helper, a fourth caller rather than
+    // a fifth.
     const callers = surfaces().filter((f) => code(f.source).includes("subjectColorVar("));
-    expect(callers.map((f) => f.name).sort()).toEqual(["chips.tsx", "tray.tsx"]);
+    expect(callers.map((f) => f.name).sort()).toEqual(["chips.tsx", "lobby.tsx", "subject-identity.tsx", "tray.tsx"]);
   });
 
   test("the dot is identity only — it takes no state and cannot be recruited as one", () => {
@@ -1569,50 +1647,43 @@ describe("identity is whose, never how urgent", () => {
     expect(flat("stance.tsx")).toContain("deliberately never written to the engine's focus store");
   });
 
-  test("the aperture slot is now READ-ONLY from the UI's side — a one-way wire, not a shared read/write slot", () => {
+  test("the aperture slot is gone from the UI's side — no read, no follow, no PUT", () => {
     /**
-     * RETARGETED FOR §13. Loops §8.1 had the chat's `spool_set_aperture` and
-     * the hand's own clicks writing the SAME slot — a two-way wire. §13
-     * ends the UI's half of that: every click now navigates `room` directly
-     * (see the previous test), and the slot is written ONLY by the engine
-     * side (the chat's tool, or a future agent surface) — this room merely
-     * FOLLOWS it. `lastAppliedAperture` is the ref that tells an external
-     * write (the slot changed since this component last acted on it) apart
-     * from this component's own prior read, so the UI's navigation never
-     * echoes back into the slot it only listens to.
+     * RETARGETED FOR §13.6. Loops §8.1 had the chat's `spool_set_aperture`
+     * and the hand's own clicks writing the SAME slot — a two-way wire. §13
+     * cut the UI's write half, leaving the room FOLLOWING an external write
+     * (`lastAppliedAperture`, the one-way wire). §13.6 amended the assistant
+     * to have no screen-moving hand at all — the tool that ever wrote the
+     * slot is off the wall — so this pass cuts the follow too: the room
+     * belongs to the user's hand alone, and the agent answers in words.
+     * There is nothing left in `stance.tsx` naming the aperture slot: no
+     * GET, no PUT, no ref telling an external write apart from this
+     * component's own, no effect reacting to one.
      */
     const stance = read("stance.tsx");
     const body = code(stance);
-    // The slot still rides the room's one snapshot read…
-    expect(body).toContain('fetch("/api/spool/aperture")');
-    // …but no click in this file PUTs it any more — the write half of the
-    // wire is gone from the UI entirely.
-    expect(body).not.toMatch(/fetch\("\/api\/spool\/aperture",\s*\{\s*method: "PUT"/);
-    expect(body).toContain("lastAppliedAperture");
-    expect(body).not.toMatch(/localStorage/);
-    // The engine's own PUT route is untouched — the chat's tool still has
-    // a door in, the UI simply no longer walks through it.
-    const route = fs.readFileSync(
-      path.join(dir, "..", "..", "app", "api", "spool", "aperture", "route.ts"),
-      "utf8",
-    );
-    expect(route).toContain("SpoolApertureView.options.includes");
-    expect(route).toContain("export async function PUT");
+    expect(body).not.toContain("/api/spool/aperture");
+    expect(body).not.toContain("lastAppliedAperture");
+    expect(body).not.toContain("apertureView");
+    expect(body).not.toContain("SpoolApertureView");
+    expect(body).not.toContain("spool_set_aperture");
+    // And the web-side proxy route this UI was the only caller of is gone
+    // too — dead plumbing to a tool that no longer exists, not a door left
+    // open for one.
+    expect(
+      fs.existsSync(path.join(dir, "..", "..", "app", "api", "spool", "aperture", "route.ts")),
+    ).toBe(false);
   });
 
-  test("subject focus covers the room without touching the aperture slot", () => {
+  test("subject focus covers the room untouched by any aperture machinery", () => {
     /**
-     * The precedence §8.1 fixed, still true under §13: subject focus is the
-     * DEEPER aperture — entering a subject's room does not write the
-     * aperture slot at all (nothing to clear; the UI's writes retired
-     * above), and leaving the subject room again shows whatever `room` was
-     * before, not a re-derived read of the slot.
+     * The precedence §8.1 fixed, still true under §13.6: subject focus is
+     * the DEEPER aperture — entering a subject's room writes nothing but the
+     * focus log (`goSubject`'s POST), and leaving it again shows whatever
+     * `room` was before. There is no slot left to touch either way.
      */
     const stance = read("stance.tsx");
     const body = code(stance);
-    // The one aperture write site left anywhere is the external, one-way
-    // effect above — `goSubject` (entering a subject's room) never touches
-    // the slot at all.
     const goSubjectBody = body.slice(body.indexOf("const goSubject"), body.indexOf("const today ="));
     expect(goSubjectBody).not.toContain("/api/spool/aperture");
     expect(goSubjectBody).not.toContain("setLastAppliedAperture");
@@ -2207,18 +2278,1515 @@ describe("the search is lexical, honest, and marks what is over", () => {
 });
 
 describe("the socket's connect card — the secret is treated like a key", () => {
-  const tray = read("tray.tsx");
+  // REHOMED AGAIN (§13.8, 2026-08-19: the Warehouse dissolves): the card
+  // moved from `tray.tsx`'s `PermitsFace`, through `warehouse.tsx`'s
+  // `ConnectionsTab`, to the Assistant room's own foot in `master-chat.tsx`
+  // — see that file's own file-level note on `McpConnectionsCard`. Moved,
+  // not duplicated: the assertions below now pin the card's ONE remaining
+  // home rather than weakening what they check.
+  const chat = read("master-chat.tsx");
 
   test("the secret is masked by default, revealed only by the hand, and the caution is said", () => {
-    const body = code(tray);
+    const body = code(chat);
     // Masked by default — the reveal toggle starts false…
     expect(body).toContain("const [revealed, setRevealed] = useState(false)");
     // …and the mask covers the secret's spelling INSIDE the composed add
     // command too, or the mask would be theatre.
     expect(body).toContain('mcp.addCommand.replaceAll(mcp.secret, "••••••••")');
     // The caution, in the user's own words.
-    expect(flat("tray.tsx")).toContain("treat it like a key");
+    expect(flat("master-chat.tsx")).toContain("treat it like a key");
     // The command is the ENGINE's composition — nothing here builds one.
     expect(body).not.toContain("claude mcp add");
+  });
+
+  test("the card no longer lives on the tray's permits face", () => {
+    expect(code(read("tray.tsx"))).not.toContain('mcp.addCommand.replaceAll(mcp.secret, "••••••••")');
+  });
+
+  test("warehouse.tsx no longer exists — the room it belonged to is gone", () => {
+    expect(fs.existsSync(path.join(dir, "warehouse.tsx"))).toBe(false);
+  });
+});
+
+/**
+ * THE ASSISTANT'S TWO DOORS — `docs/spool-loops.md` §13.6, added 2026-08-18.
+ * Before this pass the stance rendered a RESIDENT `<aside>` carrying
+ * `MasterChat` beside whatever the summoned tray happened to be showing —
+ * three real columns (rail, main, chat) the moment a face was up, four once
+ * the rail is counted. §13.6 retires the resident chat outright: there is now
+ * ONE summoned overlay, holding ONE slot (conversation XOR a face), plus a
+ * second, permanent door into the same conversation — the Assistant room,
+ * reached from the rail, full-width. §13.2's "chat rides beside every room"
+ * is superseded by this file; the tests below assert the shape that replaced
+ * it, not the shape it names.
+ */
+describe("the assistant's two doors — §13.6", () => {
+  test("there is no resident sidebar — the chat is summoned, or it is the whole room", () => {
+    /**
+     * The old shape had an UNCONDITIONAL `<aside>` wrapping `MasterChat`,
+     * painted on every render regardless of what else was open. That element
+     * is gone outright: `MasterChat` now appears only inside the summoned
+     * layer's `layer.kind === "chat"` branch and inside the Assistant room's
+     * own branch, both conditional on state, never a fixed column.
+     */
+    const stance = code(read("stance.tsx"));
+    expect(stance).not.toContain("<aside");
+    expect(stance).not.toContain("w-[26rem]");
+  });
+
+  test("the summoned layer holds ONE slot — conversation XOR a face, never both", () => {
+    const stance = code(read("stance.tsx"));
+    // The type itself states the exclusion.
+    expect(stance).toContain('type SpoolLayer = { kind: "chat" } | { kind: "face"; face: TrayFace };');
+    expect(stance).toContain("const [layer, setLayer] = useState<SpoolLayer | null>(");
+    // One overlay renders the whole slot — a single conditional choosing
+    // between the two shapes, not two elements that could both be present.
+    expect(stance).toContain('layer.kind === "chat" ? (');
+    // Only one `{layer && (` gate exists — a second summoned block would be
+    // the four-column bug's other half.
+    expect(stance.match(/\{layer && \(/g)?.length).toBe(1);
+  });
+
+  test("summoning a face and summoning the chat both go through the one slot", () => {
+    const stance = code(read("stance.tsx"));
+    // Every call site that used to open the tray now opens the layer's face
+    // slot through the same helper — never a second, parallel `setTray`.
+    expect(stance).toContain("const openFace = useCallback((face: TrayFace) => setLayer({ kind: \"face\", face }), []);");
+    expect(stance).not.toContain("setTray(");
+    expect(stance).not.toContain("useState<TrayFace | null>");
+    // "Answer in chat" (a stance line's suggest verb) summons the chat slot.
+    expect(stance).toContain('setLayer({ kind: "chat" });');
+  });
+
+  test("Assistant is the rail's fourth room, reached the same way every other one is", () => {
+    const nav = code(read("warehouse-nav.tsx"));
+    expect(nav).toContain('{ kind: "assistant" as const, label: "Assistant", icon: MessageCircleIcon, go: controls.goAssistant }');
+    // Reuses the SAME active-state render loop and classes as Lobby/Today/
+    // Scheduled — no new `--spool` mark spent on this entry.
+    expect(nav).not.toMatch(/kind === "assistant"[^}]*text-spool/);
+    const room = read("../../lib/spool-room.ts");
+    expect(code(room)).toContain('goAssistant: () => void;');
+  });
+
+  test("⌘J means \"give me the assistant\" — three states, not a bare toggle", () => {
+    /**
+     * RETARGETED 2026-08-18 (driven, live): ⌘J while a FACE was up used to
+     * close the layer outright — the two-state toggle didn't distinguish "a
+     * face is open" from "the assistant is open". The fix is a named verb,
+     * `toggleAssistant`, with three cases: closed → chat (open it), face →
+     * chat (a face up is not the assistant answering — swap to the slot that
+     * is), chat → closed (the assistant is already what you have; dismiss
+     * it). ⌘J and the header button both drive this one function — the same
+     * key never means two different things depending on which control fired
+     * it.
+     */
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain(
+      'const toggleAssistant = useCallback(() => {\n    setLayer((current) => (current && current.kind === "chat" ? null : { kind: "chat" }));\n  }, []);',
+    );
+    // closed → chat: `current` is null, falls to the `: { kind: "chat" }` arm.
+    // face → chat: `current.kind === "chat"` is false for a face, same arm.
+    // chat → closed: `current.kind === "chat"` is true, the `null` arm fires.
+    expect(stance).toContain('event.key.toLowerCase() === "j"');
+    expect(stance).toContain("toggleAssistant();");
+    expect(stance).toContain('if (event.key === "Escape" && layer) setLayer(null);');
+    // The header button drives the exact same verb, not a second copy of it.
+    expect(stance).toContain("onClick={toggleAssistant}");
+  });
+
+  test("the layer's expand control trades the overlay for the Assistant room", () => {
+    // Both the chat slot and the face slot get an `onExpand` that navigates
+    // via `goAssistant` (which sets `room`, never a route) and then closes
+    // the layer — the room, not a second copy of the conversation, is what
+    // is left open.
+    const stance = code(read("stance.tsx"));
+    const expands = stance.match(/onExpand=\{\(\) => \{\s*goAssistant\(\);\s*setLayer\(null\);\s*\}\}/g) ?? [];
+    expect(expands.length).toBe(2);
+    // `MasterChat` and `SpoolTray` both declare the prop they are handed.
+    expect(code(read("master-chat.tsx"))).toContain("onExpand?: () => void;");
+    expect(code(read("tray.tsx"))).toContain("onExpand?: () => void;");
+  });
+
+  test("the Assistant room renders the same MasterChat, full-width, with nothing to expand or close", () => {
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain('room.kind === "assistant" && (');
+    // The room's own MasterChat is the one call site with neither prop set —
+    // there is nowhere further to expand to and nothing hosting it to close.
+    // It IS the one call site that asks for the reading-width layout — see
+    // the next test for what `variant="room"` gets it.
+    expect(stance).toContain(
+      '<MasterChat onChanged={load} openers={openers} prefill={suggestion} context={viewContext} variant="room" />',
+    );
+  });
+
+  test("the Assistant room's MasterChat gets the reading-width, bottom-anchored layout — the layer's slide-over does not", () => {
+    /**
+     * The user's own screenshot of the built room: messages pinned to the
+     * top, a huge empty void, chips and composer floating at the bottom. A
+     * full-width room is not the layer's narrow strip — setting prose in a
+     * line as wide as the screen and leaving a short exchange stranded at
+     * the top was the bug. `variant="room"` parameterizes the ONE `MasterChat`
+     * rather than forking a second chat component: the reading column reuses
+     * the app's own `max-w-3xl` token (`Stance`, `Lobby` and `SubjectRoom`
+     * already center on it), and the transcript's content wrapper floors to
+     * the viewport's height and packs its children to the bottom, so a short
+     * conversation ends just above the composer instead of at the top of a
+     * void. The layer's slide-over keeps its original top-anchored,
+     * full-bleed shape — `variant` defaults to `"layer"`, and nothing at
+     * either of the layer's two call sites passes it.
+     */
+    const chat = code(read("master-chat.tsx"));
+    expect(chat).toContain('variant = "layer"');
+    expect(chat).toContain('variant === "room" && "mx-auto w-full max-w-3xl"');
+    expect(chat).toContain('variant === "room" && "min-h-full justify-end"');
+    const stance = code(read("stance.tsx"));
+    // The layer's two MasterChat mounts (the chat slot, and nowhere else)
+    // never pass `variant` — they keep the narrow, top-anchored shape.
+    const layerChat = stance.slice(stance.indexOf("layer.kind === \"chat\""), stance.indexOf("SpoolTray"));
+    expect(layerChat).not.toContain("variant=");
+  });
+
+  test("the room-stamp mechanism survives — every turn still carries `[room: …]`, read from the CURRENT room", () => {
+    /**
+     * The layer's chat slot and the Assistant room render the exact same
+     * `MasterChat` with the exact same `context={viewContext}` — one
+     * derivation, so a message sent from either place is stamped with
+     * whatever room is open at the moment of sending, never a room frozen at
+     * summon time.
+     */
+    const stance = code(read("stance.tsx"));
+    // RETARGETED §13.8 (2026-08-19): an area page's own label folds in —
+    // `roomLabel` still resolves to one string per open room, just a
+    // three-way ternary now instead of two.
+    expect(stance).toContain(
+      'const roomLabel = room.kind === "subject" ? room.key : room.kind === "area" ? `area:${room.path}` : room.kind;',
+    );
+    expect(stance).toContain("const viewContext = `[room: room=${roomLabel}");
+    const chat = code(read("master-chat.tsx"));
+    expect(chat).toContain("const ROOM_PREFIX = /^\\[room: [^\\n]*\\]\\n/;");
+  });
+});
+
+/**
+ * ONE SEARCH FIELD, TWO RAILS, AND A HAND VERB IN THE TREE — the web pass
+ * (2026-08-18) that put Telar's own sidebar and the Spool's rail through the
+ * same chrome, and gave the rail's Areas tree a drag: a subject dropped on
+ * an area header files it there, dropped on the unfiled strip clears it,
+ * both through the identity route `tray.tsx`'s swatch already writes.
+ */
+describe("the sidebar's search field is one component, shared, not two copies of the same chrome", () => {
+  test("Telar's sidebar and the Spool's rail both import the shared field, not their own Input+icon", () => {
+    const app = code(read("../app-sidebar.tsx"));
+    const search = code(read("search.tsx"));
+    expect(app).toContain('import { SidebarSearchField } from "@/components/sidebar-search-field";');
+    expect(search).toContain('import { SidebarSearchField } from "@/components/sidebar-search-field";');
+    // Neither rail hand-rolls the icon+Input pair the shared field now owns.
+    expect(app).not.toMatch(/<SearchIcon[^>]*\/>\s*<Input/);
+    expect(search).not.toContain("<Input");
+  });
+
+  test("the field's own file carries no bound key — each caller's binding stays its own", () => {
+    // The primitive itself must not wire ⌘K (or any key) — Telar's ⌘K stays
+    // Telar's own `useCommandKeys` call, and the Spool's field keeps opening
+    // on focus/typing, never a shared keybinding smuggled into the shared
+    // chrome.
+    const field = code(read("../sidebar-search-field.tsx"));
+    expect(field).not.toMatch(/onKeyDown|useCommandKeys|metaKey|ctrlKey/);
+  });
+
+  test("only Telar's sidebar still carries the ⌘K binding; the Spool's field opens on focus, not a key", () => {
+    const app = read("../app-sidebar.tsx");
+    expect(app).toContain("useCommandKeys");
+    const search = code(read("search.tsx"));
+    expect(search).not.toMatch(/useCommandKeys|metaKey.*key.*k|key === "k"/i);
+    expect(search).toContain("onFocus={() => setOpen(true)}");
+  });
+
+  test("the Spool's section caption and Telar's now share one scale — CAPTION, not two type ramps", () => {
+    // `warehouse-nav.tsx`'s CAPTION was the newer standard named in the
+    // brief; `app-sidebar.tsx`'s BandRule now renders its label at the same
+    // scale, rather than the sentence-case 11px it used before this pass.
+    const nav = read("warehouse-nav.tsx");
+    const app = read("../app-sidebar.tsx");
+    const captionScale = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+    expect(nav).toContain(`const CAPTION = "${captionScale}"`);
+    expect(app).toContain(`const CAPTION = "${captionScale}"`);
+  });
+});
+
+describe("a subject is filed by dropping it — the rail's own drag, §Part 2 of the shared-chrome pass", () => {
+  // RETARGETED §13.8 (2026-08-19): every symbol this block pins moved from
+  // the rail into `lobby.tsx` — "the map is content, not chrome."
+  test("a subject in the tree is draggable, wearing the app's one native HTML5 idiom — no library, no second grammar", () => {
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain("draggable");
+    // `onSubjectDragStart` is now a curried factory (`onSubjectDragStart(subject)`
+    // handed to `LobbyCard`), so the payload is set against its own `subject`
+    // parameter, not a rail-scoped `line.subject`.
+    expect(nav).toContain('event.dataTransfer.setData(DRAG_TYPE, subject)');
+    expect(nav).toContain('event.dataTransfer.effectAllowed = "move"');
+    // The payload's own type key is named distinctly from the board's, so a
+    // stray drop from one surface can never be misread as the other's.
+    expect(nav).toContain('const DRAG_TYPE = "application/x-spool-subject"');
+    const board = code(read("board.tsx"));
+    expect(board).toContain('const DRAG_TYPE = "application/x-spool-item"');
+  });
+
+  test("every node in the tree is a drop target that assigns its own path, and the ghost node clears it — both call the one PATCH", () => {
+    /**
+     * RETARGETED §13.7 (2026-08-18), then §13.8 (2026-08-19): "an area's own
+     * header" (one flat level) became "any node in the tree" — a drop on
+     * "Work" files `area: "Work"`, a drop on the nested "Focaltec" beneath
+     * it files `area: "Work / Focaltec"`. The old always-present "unfiled
+     * strip" is now the SAME ghost node every un-areaed subject already
+     * renders under — it clears to `null` the same way, and it is still
+     * reachable by hand even when it currently holds nothing (see the next
+     * test). §13.8 moved the whole tree from the rail into `lobby.tsx`.
+     */
+    const nav = code(read("lobby.tsx"));
+    // Every node carries the same drop handlers, keyed to its own path.
+    expect(nav).toContain("{...nodeDropProps(node)}");
+    expect(nav).toContain("assignArea(subject, node.ghost ? null : node.key);");
+  });
+
+  test("the drop PATCHes the exact route the swatch control already writes — no second identity-write path", () => {
+    // Same URL pattern, same body shape (`{ area }`) as `tray.tsx`'s
+    // `patchIdentity` — a second CALLER of the route that exists, never a
+    // second route or a shared fetch helper that would erase `tray.tsx`'s
+    // own pinned literals (see "the swatch control PATCHes the subject
+    // record" above).
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toMatch(/fetch\(`\/api\/spool\/subjects\/\$\{encodeURIComponent\(subject\)\}`,\s*\{\s*method: "PATCH"/);
+    expect(nav).toContain("body: JSON.stringify({ area })");
+    const tray = code(read("tray.tsx"));
+    expect(tray).toContain("/api/spool/subjects/");
+    // The lobby holds no copy of `SpoolSubjectIdentity`'s own write function —
+    // it calls `fetch` directly against the same route, same as it always
+    // has for every other write this file makes.
+    expect(nav).not.toContain("import { patchIdentity");
+  });
+
+  test("a landed drop still asks the room to reload — the reconciliation path, now trailing the paint rather than gating it", () => {
+    /**
+     * RETARGETED §13.8 (2026-08-19): the rail was a SIBLING of `SpoolStance`
+     * reading/writing through the published `lib/spool-room.ts` store, so a
+     * landed drop called `controls.refresh()`. `lobby.tsx` is now a mounted
+     * CHILD of `SpoolStance` instead (`stance.tsx` renders `<Lobby
+     * onChanged={load} .../>`), so the same reconciliation is its own local
+     * `load()` (this file's own `GET /api/spool/lobby` read) plus the
+     * `onChanged` callback prop that tells `SpoolStance` to reload too — two
+     * calls, not `controls.refresh()`, because this surface is no longer
+     * reached from outside `SpoolStance`'s own tree.
+     */
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain("void load();");
+    expect(nav).toContain("onChanged?.();");
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain("<Lobby");
+    expect(stance).toContain("onChanged={load}");
+  });
+
+  test("the drop paints instantly through a local overlay, retired once the published snapshot agrees with it", () => {
+    // The overlay is `pendingAreas`, keyed by subject, applied over the
+    // lobby's own read BEFORE the tree is built — so `effectiveLines`/`tree`
+    // reflect the drop on the very next render, not after any fetch
+    // resolves.
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain("const [pendingAreas, setPendingAreas] = useState<Map<string, string | null>>(new Map());");
+    expect(nav).toContain("setPendingAreas((prev) => new Map(prev).set(subject, area));");
+    // RETARGETED §13.8: keyed by `SpoolLobbySubject.key`, the lobby's own
+    // identity field, not the rail's `SpoolRoomAreaLine.subject`.
+    expect(nav).toContain(
+      "pendingAreas.has(line.key) ? { ...line, area: pendingAreas.get(line.key) ?? undefined } : line",
+    );
+    // RETARGETED §13.7: `groupLinesByArea` (flat) is `buildAreaTree` (nested
+    // paths) now — same law, `effectiveLines` feeds it before anything
+    // renders.
+    expect(nav).toContain("buildAreaTree<SpoolLobbySubject>(effectiveLines");
+    // The overlay is retired by an effect that diffs it against the
+    // PUBLISHED lobby read (`lobby`, this file's own state — §13.8 dropped
+    // the rail's `room.areas` indirection along with the rail itself) — not
+    // by the PATCH's own response — so a slow reload never leaves the paint
+    // hanging past its own confirmation.
+    expect(nav).toMatch(/useEffect\(\(\) => \{[\s\S]*?setPendingAreas[\s\S]*?\}, \[lobby\]\);/);
+  });
+
+  test("a refused drop reverts its own overlay entry and renders the engine's sentence in place — no red, the room's own quiet inline idiom", () => {
+    const nav = code(read("lobby.tsx"));
+    // Revert: the overlay entry this request itself set is deleted on
+    // failure, so the tree falls back to whatever the store still says.
+    expect(nav).toMatch(/\.catch\(\(err\) => \{[\s\S]*?next\.delete\(subject\)[\s\S]*?setRefused\(err instanceof Error \? err\.message : String\(err\)\)/);
+    expect(nav).toMatch(/\{refused &&/);
+    // The quiet-colour law, restated for this new surface: no status colour
+    // spent on the refusal or the drag highlight either.
+    expect(nav).not.toMatch(/text-(destructive|warning|success)|bg-(destructive|warning|success)/);
+  });
+
+  test("rapid successive drags of the same subject don't fight — a per-subject sequence lets only the last request touch that subject's overlay or error", () => {
+    // `requestSeq` is a ref, not state (a counter racing its own render is
+    // not a value the tree paints), and every touch of `pendingAreas` or
+    // `refused` inside the request's callbacks is gated on `isLatest()` —
+    // a stale request superseded by a newer drop of the SAME subject can
+    // neither revert the newer drop's optimistic entry nor show its own,
+    // now-irrelevant error over it.
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain("const requestSeq = useRef<Map<string, number>>(new Map());");
+    expect(nav).toContain("const seq = (requestSeq.current.get(subject) ?? 0) + 1;");
+    expect(nav).toContain("requestSeq.current.set(subject, seq);");
+    expect(nav).toContain("const isLatest = () => requestSeq.current.get(subject) === seq;");
+    expect(nav).toContain("if (!isLatest()) return;");
+    expect(nav).toContain("if (isLatest()) setRefused(null);");
+  });
+
+  test("the drag highlight spends only existing hover/accent tokens — no new colour for this pass", () => {
+    // RETARGETED §13.7, then §13.8 (2026-08-19): the highlight keys on the
+    // node's own joined path (`node.key`) the same way, but `lobby.tsx`
+    // spends the content pane's own `bg-muted/60` token, not the rail's
+    // `sidebar-accent` pair — there is no sidebar surface to match any more.
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain('dragOver === node.key && "bg-muted/60"');
+    expect(nav).not.toMatch(/--spool/);
+  });
+});
+
+/**
+ * RECEIVING MODE, A NEW-AREA ZONE, AND REORDER — §Part 2's own live-use
+ * follow-up, 2026-08-18. Three asks: the drop zones must not exist at rest,
+ * a new area can be created by dropping onto a naming zone rather than
+ * needing one to already exist, and a subject can be dragged to a specific
+ * place inside (or across) an area rather than only into it.
+ */
+describe("the rail's drop zones exist only while a drag is live", () => {
+  // RETARGETED §13.8 (2026-08-19): the drop zones moved with the rest of
+  // the tree into `lobby.tsx`; the describe block's own title is kept as
+  // the historical name of the law, not the surface it now lives on.
+  const nav = code(read("lobby.tsx"));
+
+  test("`dragActive` is nothing but `dragging !== null`, and the new-area zone is gated on it — the ghost node's own ephemeral appearance carries the old clear-strip's law", () => {
+    /**
+     * RETARGETED §13.7 (2026-08-18): the old always-during-a-drag "unfiled
+     * strip" is now the SAME ghost node every un-areaed subject renders
+     * under. `LobbyNode` folds the old gate INTO that one node: it renders
+     * unconditionally once it holds real subjects (never floating), and
+     * ALSO — with no lines of its own — for as long as `dragActive`, so
+     * clearing stays reachable by hand even when nothing is unfiled yet.
+     */
+    expect(nav).toContain("const dragActive = dragging !== null;");
+    expect(nav).toContain("if (node.ghost && !showGhostAtRest && !dragActive) return null;");
+    expect(nav).toContain("(dragActive || newAreaDraft) &&");
+  });
+
+  test("a node wears the same quiet dashed affordance for as long as a drag is live, not only once hovered", () => {
+    // The hover highlight (`dragOver === node.key`) already existed; what
+    // is new is a SECOND, mode-wide affordance that does not wait for the
+    // pointer to arrive. RETARGETED §13.8: `lobby.tsx` spends `border-border/60`
+    // (the content pane's own token, not the rail's `sidebar-border`). The
+    // border itself is UNCONDITIONAL — only its colour toggles with
+    // `dragActive`, so a node's box never changes size.
+    expect(nav).toContain("dragActive ? \"border-border/60\" : \"border-transparent\"");
+    expect(nav).toContain("border border-dashed px-2 py-1");
+  });
+
+  test("no new colour rides in on receiving mode — the quiet-colour law holds for it too", () => {
+    expect(nav).not.toMatch(/text-(destructive|warning|success)|bg-(destructive|warning|success)/);
+    expect(nav).not.toMatch(/--spool/);
+  });
+});
+
+describe("dropping on the new-area zone names an area by hand, rather than requiring one to already exist", () => {
+  // RETARGETED §13.8 (2026-08-19): moved into `lobby.tsx` with the rest of
+  // the tree.
+  const nav = code(read("lobby.tsx"));
+
+  test("the zone's own drop opens an inline draft — it does not PATCH by itself", () => {
+    const dropSite = nav.slice(nav.indexOf("const newAreaDropProps"), nav.indexOf("const onSubjectDragStart"));
+    expect(dropSite).not.toContain("fetch(");
+    expect(dropSite).toContain("setNewAreaDraft({ subject, name: \"\" })");
+  });
+
+  test("the draft is an autofocused input, and Enter files the subject through the SAME assignArea every other target calls", () => {
+    const nav2 = read("lobby.tsx");
+    const input = nav2.slice(nav2.indexOf("newAreaDraft ? (") , nav2.indexOf("Drop to start a new area"));
+    expect(input).toContain("autoFocus");
+    expect(input).toContain('if (event.key === "Enter")');
+    expect(input).toContain("assignArea(newAreaDraft.subject, name)");
+    // No second identity-write path opened for naming an area — it is still
+    // just a subject's own stored `area` word, same PATCH, same route.
+    expect(code(input)).not.toMatch(/fetch\(/);
+  });
+
+  test("Escape and losing focus both discard the draft, reverting to nothing having happened", () => {
+    // RETARGETED §13.8: `lobby.tsx`'s own indentation (two levels deeper
+    // than the rail's flat render was) shifts this pin's whitespace.
+    const nav2 = read("lobby.tsx");
+    const input = nav2.slice(nav2.indexOf("newAreaDraft ? ("), nav2.indexOf("Drop to start a new area"));
+    expect(input).toContain('if (event.key === "Escape") {\n                  setNewAreaDraft(null);');
+    expect(input).toContain("onBlur={() => setNewAreaDraft(null)}");
+  });
+
+  test("the zone's resting label says what dropping there does, in the same quiet dashed idiom as the clear strip", () => {
+    // RETARGETED §13.8: `lobby.tsx` spends the content pane's own
+    // `--spool` accent (the same accent `LobbyCard`'s insertion indicator
+    // uses) rather than the rail's `sidebar-accent` triple.
+    expect(nav).toContain("Drop to start a new area");
+    expect(nav).toMatch(/dragOver === "__new-area" && "border-spool\/60 bg-muted\/60 text-foreground"/);
+  });
+});
+
+describe("a subject can be dragged to a position — inside an area, or into another one", () => {
+  // RETARGETED §13.8 (2026-08-19): the tree and its drag machinery moved
+  // from the rail into the lobby's own content pane — "the map is content,
+  // not chrome." `lobby.tsx` now owns every symbol this block pins.
+  const nav = code(read("lobby.tsx"));
+
+  test("a subject row is itself a drop target, and the half the pointer sits over decides above vs below", () => {
+    /**
+     * RETARGETED §13.8 (2026-08-19): the row now lives in `lobby.tsx`'s own
+     * `LobbyCard`/`onRowDragOver`, keyed by `SpoolLobbySubject.key` rather
+     * than the rail's `SpoolRoomAreaLine.subject` — same guarantee, the
+     * field the join carries it on changed with the surface.
+     */
+    expect(nav).toContain("if (dragging === line.key) return;");
+    expect(nav).toContain('event.clientY < rect.top + rect.height / 2 ? "above" : "below"');
+    expect(nav).toContain("reorderSubject(subject, line, position)");
+  });
+
+  test("the insertion indicator spends existing border tokens only, above XOR below, never both", () => {
+    // RETARGETED §13.8 (2026-08-19): the indicator lives on `LobbyCard`'s
+    // own `insertPosition` prop, not a rail-scoped `rowInsert.position`, and
+    // spends the Spool's own `--spool` accent rather than the rail's
+    // `sidebar-accent` token — still one border, above XOR below, never both.
+    expect(nav).toContain('insertPosition === "above" && "border-t-2 border-spool/60"');
+    expect(nav).toContain('insertPosition === "below" && "border-b-2 border-spool/60"');
+    expect(nav).not.toMatch(/text-(destructive|warning|success)|bg-(destructive|warning|success)/);
+  });
+
+  test("the reorder scheme reassigns 0..n-1 across the target area's subjects, PATCHing only the ones that moved", () => {
+    const fn = nav.slice(nav.indexOf("const reorderSubject ="), nav.indexOf("const renameAreaPrefix ="));
+    expect(fn).toContain("sortByRank(effectiveLines.filter((l) => (l.area ?? null) === targetArea && l.key !== subject))");
+    expect(fn).toContain("ordered.forEach((line, rank) => {");
+    // A subject whose computed rank did not change, and did not just cross
+    // areas, is skipped — bounded writes, not a rewrite of the whole list.
+    expect(fn).toContain("if (line.rank === rank && !(line.key === subject && crossedArea)) return;");
+  });
+
+  test("a cross-area drop onto a row PATCHes area and rank together for the moved subject, and rank alone for everyone else it displaced", () => {
+    const patch = nav.slice(nav.indexOf("const patchRank ="), nav.indexOf("const reorderSubject ="));
+    expect(patch).toContain("body: JSON.stringify(area !== undefined ? { area, rank } : { rank })");
+    // `assignArea`'s own pinned body is untouched by this — a second call
+    // site, never a rewrite of the first.
+    expect(nav).toContain("body: JSON.stringify({ area })");
+  });
+
+  test("the reorder overlay is the SAME seq-guarded, last-drop-wins shape as the area overlay, with its own map", () => {
+    expect(nav).toContain("const [pendingRanks, setPendingRanks] = useState<Map<string, number>>(new Map());");
+    const patch = nav.slice(nav.indexOf("const patchRank ="), nav.indexOf("const reorderSubject ="));
+    expect(patch).toContain("const seq = (requestSeq.current.get(subject) ?? 0) + 1;");
+    expect(patch).toContain("if (!isLatest()) return;");
+    expect(patch).toMatch(/setPendingRanks\(\(prev\) => \{\s*const next = new Map\(prev\);\s*next\.delete\(subject\);/);
+    expect(patch).toContain("setRefused(err instanceof Error ? err.message : String(err));");
+  });
+
+  test("the rank overlay is retired the same way the area overlay is — an effect that diffs against the published lobby snapshot", () => {
+    // RETARGETED §13.8 (2026-08-19): the lobby holds no separate `room.areas`
+    // join — it diffs straight against its own `lobby` state (the raw
+    // `GET /api/spool/lobby` read), the same overlay-vs-published law with
+    // one fewer layer of indirection.
+    expect(nav).toMatch(/useEffect\(\(\) => \{[\s\S]*?setPendingRanks[\s\S]*?line\.rank === rank[\s\S]*?\}, \[lobby\]\);/);
+    // Both overlays are folded into the SAME `effectiveLines`, one pass, so
+    // the grouping below never has to know two overlays exist.
+    expect(nav).toContain("pendingRanks.has(line.key) ? { ...withArea, rank: pendingRanks.get(line.key) } : withArea");
+  });
+
+  test("within a node, rank-ascending and unranked trailing — one shared sort, not a render-site filter", () => {
+    // RETARGETED §13.8 (2026-08-19): `sortByRank` now sorts
+    // `SpoolLobbySubject[]` (the lobby's own join, which already carries
+    // rank) rather than the rail's `SpoolRoomAreaLine[]` — `LobbyNode`
+    // applies it once, per node, the same way `renderNode` used to.
+    // RETARGETED AGAIN §13.8 (2026-08-19, folded-is-unreachable fix): the
+    // `!entry.folded` filter this test used to pin dropped folded subjects
+    // off the map entirely — the very bug this pass fixes. `sortByRank` now
+    // runs over the WHOLE node, never pre-filtered.
+    expect(nav).toContain("function sortByRank(lines: SpoolLobbySubject[]): SpoolLobbySubject[] {");
+    expect(nav).toContain("const entries = sortByRank(node.lines);");
+  });
+});
+
+describe("rank rides the wire beside area and colour — joined once, published once", () => {
+  test("`SpoolRoomAreaLine` carries an optional `rank`, the rail's own shape for the room's identity join", () => {
+    const room = code(read("../../lib/spool-room.ts"));
+    expect(room).toContain("rank?: number;");
+  });
+
+  test("`stance.tsx` joins rank from the subject record and republishes it on the same snapshot as area and colour", () => {
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain("...(subjectRank(record) !== undefined ? { rank: subjectRank(record) } : {})");
+    expect(stance).toContain("...(line.rank !== undefined ? { rank: line.rank } : {})");
+  });
+});
+
+/**
+ * A ROW'S DROP ALWAYS WINS OVER THE REGION BENEATH IT — the live-drive
+ * follow-up, 2026-08-18. Driven evidence: dropping on a subject row's own
+ * top edge produced the AREA-only PATCH (`{"area":"Trabajo"}`, no rank) —
+ * the header's write, not the row's. Root cause: the header's receiving-mode
+ * outline used to be conditionally rendered, so turning a drag ON grew the
+ * header's box by a border's width and shoved every row beneath it down —
+ * a drop aimed at a row's own top edge, computed a beat earlier, could land
+ * on the header that just grew underneath it. These pins hold the fix: the
+ * header's border is now unconditional (colour-only toggle, no box-size
+ * change), and a row's own drag handlers additionally call
+ * `stopPropagation()` as a second, independent guarantee.
+ */
+describe("a row's drop always wins over the region beneath it — the live-drive fix", () => {
+  // RETARGETED §13.8 (2026-08-19): this machinery moved from the rail into
+  // `lobby.tsx` wholesale — same fix, same pinned mechanism, new home.
+  const nav = code(read("lobby.tsx"));
+
+  test("the header's receiving-mode border is unconditional — only its colour changes, never its width", () => {
+    // A conditionally-added border changes box height the instant a drag
+    // starts, shoving every row below it — the actual mechanism behind the
+    // driven bug. The border must always be present; only the colour toggles.
+    // RETARGETED §13.8: the lobby's own container row spends `border-border/60`
+    // (not the rail's `sidebar-border` token), unconditional the same way.
+    expect(nav).not.toMatch(/dragActive && "border border-dashed border-border\/60"/);
+    expect(nav).toContain('dragActive ? "border-border/60" : "border-transparent"');
+  });
+
+  test("a subject row's own drag-over and drop both stop propagation, so a row's drop can never be reread as a drop on whatever encloses it", () => {
+    /**
+     * RETARGETED §13.8 (2026-08-19): `LobbyCard`'s own drag handlers are
+     * bare prop references (`onDragOver={onRowDragOver}`); the propagation
+     * guard lives in the curried `onRowDragOver`/`onRowDrop` factories
+     * `Lobby` builds once and hands down — bounded by those functions' own
+     * names rather than a line's inline drag-start payload.
+     */
+    const dragOverSite = nav.slice(nav.indexOf("const onRowDragOver ="), nav.indexOf("const onRowDragLeave ="));
+    const dropSite = nav.slice(nav.indexOf("const onRowDrop ="), nav.indexOf("const containerDragStart ="));
+    expect(dragOverSite).toContain("event.stopPropagation();");
+    expect(dropSite).toContain("event.stopPropagation();");
+    // Every node's own drop target — not only a subject row's — stops
+    // propagation, so the DEEPEST target under the pointer always wins.
+    const nodeDrop = nav.slice(nav.indexOf("const nodeDropProps ="), nav.indexOf("const newAreaDropProps ="));
+    expect(nodeDrop).toContain("event.stopPropagation();");
+  });
+
+  test("no new colour rides in on the fix — the quiet-colour law holds", () => {
+    expect(nav).not.toMatch(/text-(destructive|warning|success)|bg-(destructive|warning|success)/);
+    expect(nav).not.toMatch(/--spool/);
+  });
+});
+
+/**
+ * THE PROXY'S IDENTITY ARM LEARNS `rank` — the SECOND live-drive follow-up,
+ * 2026-08-18. The row-drop fix above made the rail send correct rank-only
+ * PATCHes (`{"rank":0}`), but `app/api/spool/subjects/[key]/route.ts`
+ * predates rank: its identity arm only triggered on `"area" in body ||
+ * "color" in body`, so a rank-only body fell through to the `permits` arm
+ * and was refused with THAT arm's error. `rank` now joins the identity arm
+ * on equal footing with `area`/`color` — same guarded-then-forwarded shape,
+ * same `null`-clears convention, forwarded through the identity verb the
+ * engine-client method already accepts `rank` on.
+ */
+describe("the identity route's PATCH learns rank, the same way it already knows area and color", () => {
+  const route = fs.readFileSync(
+    path.join(dir, "..", "..", "app", "api", "spool", "subjects", "[key]", "route.ts"),
+    "utf8",
+  );
+
+  test("a rank-only body takes the identity arm, not the permits arm", () => {
+    expect(route).toContain('if ("area" in body || "color" in body || "rank" in body) {');
+  });
+
+  test("rank is guarded in the route's own style — a finite number >= 0, or null to clear — before it reaches the engine", () => {
+    expect(route).toContain(
+      "if (rank !== undefined && rank !== null && !(typeof rank === \"number\" && Number.isFinite(rank) && rank >= 0)) {",
+    );
+    expect(route).toMatch(/rank must be a finite number >= 0, or null — got \$\{JSON\.stringify\(rank\)\}\./);
+  });
+
+  test("rank forwards through the same identity verb area and color already use, never a second route or a second call", () => {
+    expect(route).toContain('...("rank" in body ? { rank: rank as number | null } : {})');
+    expect((route.match(/setSpoolSubjectIdentity/g) ?? []).length).toBe(1);
+  });
+
+  test("the route's doc comment names rank as a THIRD identity field, dated to the reorder pass", () => {
+    expect(route).toMatch(/`area`, `color`, and[\s\S]*?`rank`/);
+    expect(route).toContain("2026-08-18");
+  });
+});
+
+/**
+ * DEPTH IS FOR NAMES, NEVER FOR WORK — `docs/spool-loops.md` §13.7,
+ * 2026-08-18. Two problems fixed as one pass: the tree's containers used to
+ * render LIGHTER than the rows they held (a 10px muted caption above
+ * full-weight subject rows), and an area was one flat word, so "Work /
+ * Focaltec" filed two subjects under two unrelated top-level captions rather
+ * than one nested inside the other. §13.7 makes an area's name a PATH
+ * (still ONE stored string per subject — `lib/spool-area-tree.ts` is pure
+ * rendering over it, unit-tested directly in `lib/spool-area-tree.test.ts`)
+ * and makes every path segment a real container: a chevron, a collapse
+ * state, a weight that never drops below its own contents', and a rollup
+ * computed from what sits beneath it. `lobby.tsx` builds this tree now —
+ * §13.8 (2026-08-19) moved it wholesale out of `warehouse-nav.tsx`.
+ */
+describe("the tree is containers all the way down, never a caption above a list — §13.7", () => {
+  // RETARGETED §13.8 (2026-08-19): the tree moved into `lobby.tsx`.
+  const nav = code(read("lobby.tsx"));
+
+  test("the Areas caption is gone — no SidebarGroupLabel wears it any more", () => {
+    expect(nav).not.toContain("SidebarGroupLabel");
+    expect(nav).not.toContain(">Areas<");
+  });
+
+  test("a container's weight/size descends with depth but never drops below a subject row's own", () => {
+    // Subject rows render at `text-sm`, `font-normal` at rest (`font-medium`
+    // only once active). Every container depth stays at `font-medium` or
+    // heavier, so a container can never read as lighter than its contents,
+    // however deep the path runs.
+    expect(nav).toContain("function containerTextClass(depth: number, ghost: boolean): string {");
+    expect(nav).toMatch(/depth === 0 && "font-semibold/);
+    expect(nav).toMatch(/depth >= 2 && "font-medium/);
+    expect(nav).not.toMatch(/font-normal.*depth|depth.*font-normal/);
+  });
+
+  test("every node carries a disclosure chevron that rotates with its own collapse state", () => {
+    expect(nav).toContain("<ChevronRightIcon");
+    expect(nav).toContain("!collapsed && \"rotate-90\"");
+    expect(nav).toContain("const collapsed = !node.ghost && isCollapsed(node.key);");
+  });
+
+  test("a container's rollup is computed, never stored — subject count and the needs-you total, from what sits beneath it", () => {
+    // RETARGETED §13.8: `lobby.tsx` rolls up `SpoolLobbySubject.needsYou`,
+    // not the rail's `SpoolRoomAreaLine.needs` — same computed-never-stored
+    // law, the field the lobby's own join carries it on.
+    expect(nav).toContain("const rollup = rollupCount(node, (entry) => entry.needsYou);");
+    expect(nav).toMatch(/\{rollup\.subjects\}/);
+    expect(nav).toMatch(/rollup\.needs > 0/);
+  });
+});
+
+describe("collapse is a UI preference keyed by path, not a fact the store owns — §13.7", () => {
+  const collapse = code(read("../../lib/spool-area-collapse.ts"));
+
+  test("keyed in localStorage by the node's own joined path, so nested nodes fold independently", () => {
+    expect(collapse).toContain('const KEY_PREFIX = "telar:spool-area-collapsed:"');
+  });
+
+  test("read after mount, never seeded synchronously — the same hydration law every other localStorage preference in this app follows", () => {
+    expect(collapse).toContain("useState<Set<string>>(new Set())");
+    expect(collapse).toMatch(/useEffect\(\(\) => \{[\s\S]*?window\.localStorage[\s\S]*?\}, \[\]\);/);
+  });
+
+  test("only the lobby imports the hook now — the rail retired its own tree, §13.8", () => {
+    /**
+     * RETARGETED §13.8 (2026-08-19): this used to pin BOTH the rail and the
+     * lobby importing the same hook — "one collapse grammar, not two." The
+     * rail no longer has a tree to collapse, so it dropped the import
+     * outright rather than keep a dead one; the lobby is now the ONLY
+     * caller, which is still one collapse grammar, just one fewer surface.
+     */
+    const nav = read("warehouse-nav.tsx");
+    const lobby = read("lobby.tsx");
+    expect(nav).not.toContain('import { useAreaCollapse } from "@/lib/spool-area-collapse";');
+    expect(lobby).toContain('import { useAreaCollapse } from "@/lib/spool-area-collapse";');
+  });
+});
+
+describe("an area's name is a path, split the engine's own way — §13.7", () => {
+  test("the lobby builds its tree from `buildAreaTree`, the one tree-builder — §13.8 retired the rail's own copy of this import", () => {
+    // RETARGETED §13.8 (2026-08-19): the rail no longer imports
+    // `lib/spool-area-tree.ts` at all — its tree, and every gesture built on
+    // it, moved into `lobby.tsx` wholesale. `lobby.tsx` now imports the
+    // FULL set the rail used to (plus `findAreaNode`, newly put to use for
+    // the area page's own subtree scoping — §13.8).
+    const nav = code(read("warehouse-nav.tsx"));
+    const lobby = code(read("lobby.tsx"));
+    expect(nav).not.toContain('from "@/lib/spool-area-tree"');
+    expect(lobby).toContain(
+      'import {\n  type AreaTreeNode,\n  buildAreaTree,\n  findAreaNode,\n  pathIsPrefixOf,\n  renameAreaPrefixAcrossSubjects,\n  renamePathPrefix,\n  rollupCount,\n  splitAreaPath,\n} from "@/lib/spool-area-tree";',
+    );
+  });
+
+  // The splitting rule itself, and the segment-boundary law ("Work" must
+  // never match "Workshop"), are asserted directly as unit tests against the
+  // real functions in `lib/spool-area-tree.test.ts` — a source-text pin
+  // would only restate what that file already proves by calling the code.
+});
+
+describe("a drop on any node in the tree files at that node's own full path — §13.7", () => {
+  // RETARGETED §13.8 (2026-08-19): moved into `lobby.tsx`.
+  const nav = code(read("lobby.tsx"));
+
+  test("dropping on a nested node's own key files the subject at the whole path, not just its last segment", () => {
+    // `node.key` IS the joined path (`lib/spool-area-tree.ts`'s own
+    // `AreaTreeNode.key`) — a drop on the "Focaltec" node nested under
+    // "Work" hands `assignArea` the string "Work / Focaltec", never "Focaltec"
+    // alone.
+    expect(nav).toContain("assignArea(subject, node.ghost ? null : node.key);");
+  });
+
+  test("the new-area zone accepts a typed path verbatim — \"Work / Focaltec\" typed there names a nested area", () => {
+    expect(nav).toContain("assignArea(newAreaDraft.subject, name)");
+    // No splitting or validation happens before the write — the typed
+    // string rides straight through, same as any other stored area word.
+    const draftSite = nav.slice(nav.indexOf("newAreaDraft ? ("), nav.indexOf("Drop to start a new area"));
+    expect(draftSite).not.toMatch(/splitAreaPath|pathIsPrefixOf/);
+  });
+});
+
+describe("a container is also draggable, and dropping one onto another renames a prefix — §13.7", () => {
+  // RETARGETED §13.8 (2026-08-19): moved into `lobby.tsx`. `lobby.tsx` has
+  // no standalone `renderNode` function the way the rail did — the
+  // recursive render IS the `LobbyNode` component — so slice boundaries
+  // below anchor on the functions actually declared next to `renameAreaPrefix`
+  // in this file (`submitRenameContainer`, `setSubjectColor`, `nodeDropProps`)
+  // rather than a `renderNode` that does not exist here.
+  const nav = code(read("lobby.tsx"));
+
+  test("a container's own drag payload is named distinctly from a subject's, so a stray drop is never misread", () => {
+    expect(nav).toContain('const DRAG_TYPE_AREA = "application/x-spool-area"');
+    expect(nav).toContain("event.dataTransfer.setData(DRAG_TYPE_AREA, node.key);");
+    expect(nav).toContain("draggable={!node.ghost}");
+  });
+
+  test("the rename walks every subject under the FROM prefix — segment-boundary, not a string prefix", () => {
+    const fn = nav.slice(nav.indexOf("const renameAreaPrefix ="), nav.indexOf("const submitRenameContainer ="));
+    expect(fn).toContain("const from = splitAreaPath(fromKey);");
+    expect(fn).toContain("pathIsPrefixOf(from, splitAreaPath(line.area))");
+    expect(fn).toContain("renamePathPrefix(line.area as string, from, to)");
+  });
+
+  test("one PATCH per affected subject, optimistic through the SAME `pendingAreas` overlay every other drop uses", () => {
+    // The PATCH itself is `setSubjectColor`'s own — the nearest fetch to the
+    // SAME `/api/spool/subjects/:key` route after `renameAreaPrefix` in this
+    // file's declaration order, proving it is still the one identity route
+    // every write in this module shares, not a second one minted for rename.
+    const fn = nav.slice(nav.indexOf("const renameAreaPrefix ="), nav.indexOf("const nodeDropProps ="));
+    expect(fn).toContain("fetch(`/api/spool/subjects/${encodeURIComponent(subject)}`, {");
+    expect(fn).toContain('method: "PATCH"');
+    expect(fn).toContain("setPendingAreas((prev) => {");
+  });
+
+  test("the rename's own failure law is revert-ALL, not the per-subject seq guard the ordinary drop uses", () => {
+    /**
+     * A rename is ONE gesture that happens to touch many subjects — a
+     * partial landing (some renamed, some refused) is not a smaller version
+     * of what was asked for, it is a different, unrequested shape. Revert-ALL
+     * still holds after the 2026-08-18 extraction of the wire work itself
+     * into `renameAreaPrefixAcrossSubjects` (`lib/spool-area-tree.ts`,
+     * shared with the retired `warehouse.tsx`'s own Areas tab): THIS file's
+     * own `renameAreaPrefix` delegates the `Promise.allSettled` loop to that
+     * shared function and keeps only the overlay-paint-then-revert-all law as
+     * its own job, asserted here against the shared function directly rather
+     * than against a copy inlined in this file.
+     */
+    const fn = nav.slice(nav.indexOf("const renameAreaPrefix ="), nav.indexOf("const setSubjectColor ="));
+    expect(fn).toContain("void renameAreaPrefixAcrossSubjects(");
+    expect(fn).toMatch(/for \(const subject of renamed\.keys\(\)\) next\.delete\(subject\);/);
+    expect(fn).toContain("setRefused(error);");
+    // No new colour rides in on the rename either.
+    expect(fn).not.toMatch(/text-(destructive|warning|success)|bg-(destructive|warning|success)/);
+
+    const shared = code(read("../../lib/spool-area-tree.ts"));
+    const sharedFn = shared.slice(shared.indexOf("export async function renameAreaPrefixAcrossSubjects"));
+    expect(sharedFn).toContain("Promise.allSettled(");
+  });
+
+  test("a subject not under the FROM prefix is skipped — the rename is bounded, never a rewrite of the whole tree", () => {
+    const fn = nav.slice(nav.indexOf("const renameAreaPrefix ="), nav.indexOf("const submitRenameContainer ="));
+    expect(fn).toContain("const affected = effectiveLines.filter((line) => line.area && pathIsPrefixOf(from, splitAreaPath(line.area)));");
+    expect(fn).toContain("if (affected.length === 0) return;");
+  });
+});
+
+describe("un-areaed subjects sit under a ghost container, never floating — §13.7", () => {
+  // RETARGETED §13.8 (2026-08-19): moved into `lobby.tsx`.
+  const nav = code(read("lobby.tsx"));
+
+  test("the ghost node's own label is quiet and names an absence, never invents a group", () => {
+    expect(nav).toContain('label: "No area yet"');
+    expect(nav).not.toMatch(/["'`>]Other["'`<]/);
+  });
+
+  test("the ghost node renders whenever it holds real subjects — never only during a drag", () => {
+    expect(nav).toContain("const showGhostAtRest = node.ghost && (node.lines.length > 0 || node.children.length > 0);");
+    expect(nav).toContain("if (node.ghost && !showGhostAtRest && !dragActive) return null;");
+  });
+
+  test("the ghost node is ALSO the clearing target — reachable by hand even while empty, for as long as a subject is mid-drag", () => {
+    // This is the old "unfiled strip"'s own law, carried by the ghost node
+    // now instead of a second, separate element. RETARGETED §13.8: the
+    // fallback lives on `treeWithGhost` (the home screen's own render list),
+    // computed once beside `tree` rather than inline at the JSX call site.
+    expect(nav).toContain("const ghostFromTree = tree.find((node) => node.ghost);");
+    expect(nav).toContain(
+      'dragActive && !ghostFromTree\n      ? [...tree, { key: "__ghost", path: [], label: "No area yet", depth: 0, ghost: true, lines: [], children: [] }]\n      : tree;',
+    );
+  });
+});
+
+describe("the lobby renders the same container grammar the rail does — §13.7", () => {
+  const lobby = code(read("lobby.tsx"));
+
+  test("the lobby builds its own tree from `buildAreaTree`, over its own subject/area shape", () => {
+    /**
+     * RETARGETED §13.8 (2026-08-19): the lobby dropped the `LobbyEntry`
+     * wrapper type this test used to pin — `SpoolLobbySubject` (the
+     * protocol's own shape for `GET /api/spool/lobby`) already carries
+     * `area`, `rank`, and `color`, so `buildAreaTree` runs directly over it,
+     * one fewer type in the middle.
+     */
+    expect(lobby).toContain("const tree = buildAreaTree<SpoolLobbySubject>(effectiveLines, (entry) => entry.area);");
+    // `lobby.unareaed` feeds the same ghost node the rail's tree makes —
+    // never its own bare, unheaded list any more.
+    expect(lobby).toContain(
+      "const flatEntries: SpoolLobbySubject[] = lobby ? [...lobby.areas.flatMap((area) => area.subjects), ...lobby.unareaed] : [];",
+    );
+  });
+
+  test("a container's weight never drops below a card's own — same law, same numbers, as the rail", () => {
+    expect(lobby).toContain("function containerTextClass(depth: number, ghost: boolean): string {");
+    expect(lobby).toMatch(/depth === 0 && "font-semibold/);
+  });
+
+  test("collapsing a subtree still says whether something in it needs you — folding a card away must never fold away the claim on the hand", () => {
+    /**
+     * RETARGETED §13.8 (2026-08-19, folded-is-unreachable fix): the engine's
+     * own per-subject `folded` used to compress a subject away entirely
+     * (`AreaFold`, since deleted) — that made it unreachable, the bug this
+     * pass fixes. `folded` now only chooses `LobbyRow` over `LobbyCard`; the
+     * subject still renders. A user's manual COLLAPSE is a different act —
+     * hiding a whole subtree by hand — and it must not silently drop an
+     * honest "something in here needs you" either.
+     */
+    expect(lobby).toContain("function collapsedRollupLine(subjects: number, needs: number): string {");
+    expect(lobby).toContain('if (needs === 0) return `${subjects} ${subjects === 1 ? "subject" : "subjects"}, nothing needs you`;');
+    expect(lobby).toMatch(/needs === 1 \? "needs" : "need"/);
+  });
+
+  test("a ceiling rides on the node whose own joined path matches the area's stated name exactly — never assumed from an ancestor", () => {
+    // The same "never assume, quote the exact winner" law `tray.tsx`'s
+    // `clampedBy` fix restates elsewhere in this pass.
+    expect(lobby).toContain("const ceilingByPath = new Map<string, string>(");
+    expect(lobby).toContain("const ceiling = ceilingByPath.get(node.key);");
+  });
+
+  test("no invented \"Other\" group anywhere in the lobby's own tree", () => {
+    expect(lobby).not.toMatch(/["'`>]Other["'`<]/);
+  });
+});
+
+/**
+ * ADAPTIVE RIGHT-CLICK MENUS — issue #94, the Spool as reference. ONE shared
+ * primitive (`components/ui/context-menu.tsx`, base-ui's own `ContextMenu`
+ * module); every surface composes its OWN items from it, and every item's
+ * handler is a function the same surface already wires to a VISIBLE control
+ * — never a second write path. Quiet idiom: no red, retire/close/reopen
+ * render as ordinary rows, nothing deletes.
+ */
+describe("the shared context-menu primitive, and each surface's own composed menu", () => {
+  test("components/ui/context-menu.tsx exists, wraps base-ui's dedicated ContextMenu module (not Menu), and is the ONE definition every surface imports from", () => {
+    const primitive = fs.readFileSync(path.join(dir, "..", "ui", "context-menu.tsx"), "utf8");
+    expect(primitive).toContain('import { ContextMenu as ContextMenuPrimitive } from "@base-ui/react/context-menu"');
+    expect(primitive).toContain("export {");
+    expect(primitive).toContain("ContextMenu,");
+    expect(primitive).toContain("ContextMenuTrigger,");
+    expect(primitive).toContain("ContextMenuContent,");
+    expect(primitive).toContain("ContextMenuItem,");
+    // Every surface wired below imports from this one file, never a copy.
+    // RETARGETED §13.8 (2026-08-19): `warehouse-nav.tsx` dropped out of this
+    // list — the rail is floor-plan-only now and carries no context menu of
+    // its own; its gestures (and this import) moved into `lobby.tsx`.
+    for (const name of ["lobby.tsx", "stance.tsx", "board.tsx", "calendar.tsx", "tray.tsx"]) {
+      const source = code(read(name));
+      expect(source, `${name} imports the shared primitive`).toContain('from "@/components/ui/context-menu"');
+      expect(source, `${name} does not define its own ContextMenu`).not.toMatch(/function ContextMenu\b/);
+    }
+    expect(code(read("warehouse-nav.tsx")), "warehouse-nav.tsx carries no context menu at all").not.toContain(
+      'from "@/components/ui/context-menu"',
+    );
+  });
+
+  test("the lobby's own container row composes its own menu — Rename…, Set ceiling ▸, Collapse others — none of which any other surface's menu carries", () => {
+    // RETARGETED §13.8 (2026-08-19): this verb set moved from the rail's
+    // container row into `lobby.tsx`'s own `LobbyNode` when the tree did.
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain("Rename…");
+    expect(nav).toContain("Set ceiling");
+    expect(nav).toContain("Collapse others");
+    // Distinguishing item, pinned: only the container row offers it.
+    for (const name of ["warehouse-nav.tsx", "stance.tsx", "board.tsx", "calendar.tsx", "tray.tsx"]) {
+      expect(code(read(name)), `${name} does not also carry the container's own verb`).not.toContain("Collapse others");
+    }
+  });
+
+  test("the lobby card composes a DIFFERENT menu from its own container's — Move to ▸, Color ▸, Move up/down — reusing assignArea, setSubjectColor's own PATCH, and reorderSubject", () => {
+    // RETARGETED §13.8 (2026-08-19): this verb set moved from the rail's
+    // subject row into `lobby.tsx`'s own `LobbyCard`.
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain('<ContextMenuSubTrigger>Move to</ContextMenuSubTrigger>');
+    expect(nav).toContain('<ContextMenuSubTrigger>Color</ContextMenuSubTrigger>');
+    expect(nav).toContain("Move up");
+    expect(nav).toContain("Move down");
+    // Reuse, not reinvention: the SAME assignArea/reorderSubject the drag
+    // machinery and the rank arrows already call — one level of indirection
+    // through `LobbyCard`'s own `onMoveTo`/`onMoveUp`/`onMoveDown` props,
+    // wired by `LobbyNode` to the exact functions its own drag handlers use.
+    // RETARGETED §13.8 (2026-08-19, folded-is-unreachable fix): the render
+    // loop that builds these props no longer walks a `cards`-only array
+    // (that name, and the filter that built it, is what hid folded
+    // subjects) — it walks `entries`, every subject in the node, folded and
+    // not alike, and hands `LobbyCard`/`LobbyRow` the identical props.
+    expect(nav).toContain("onClick={() => onMoveTo(null)}");
+    expect(nav).toContain("onMoveTo={(path) => assignArea(entry.key, path)}");
+    expect(nav).toMatch(/onMoveUp=\{\(\) => idx > 0 && reorderSubject\(entry\.key, entries\[idx - 1\], "above"\)\}/);
+    expect(nav).toMatch(/onMoveDown=\{\(\) => idx < entries\.length - 1 && reorderSubject\(entry\.key, entries\[idx \+ 1\], "below"\)\}/);
+  });
+
+  test("the lobby card composes its own menu — Enter room, Add a task… — distinct from the rail's, sharing only the primitive", () => {
+    const lobby = code(read("lobby.tsx"));
+    expect(lobby).toContain("Enter room");
+    expect(lobby).toMatch(/onClick=\{\(\) => onEnter\(subject\.key\)\}/);
+    expect(lobby).toMatch(/onClick=\{\(\) => onAddTask\(subject\.key\)\}/);
+    // Omitted verbs are named, not silently dropped — the doc comment above
+    // `LobbyCard`, so `read()` rather than `code()` here.
+    expect(read("lobby.tsx")).toContain('Omitted, and named here rather than faked: "Resume session"');
+  });
+
+  test("the Tasks tab's active row composes Close / Pin to… / Open packet — reusing the SAME close/pin/onOpen props Row already threads, no new plumbing", () => {
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain("function RowContextMenu({");
+    expect(stance).toContain("{close && <ContextMenuItem onClick={close}>Close</ContextMenuItem>}");
+    expect(stance).toContain('<ContextMenuSubTrigger>Pin to…</ContextMenuSubTrigger>');
+    expect(stance).toContain("<ContextMenuItem onClick={() => onOpen(itemId)}>Open packet</ContextMenuItem>");
+    // Distinguishing item, pinned: only the task row's menu offers "Pin to…"
+    // as a submenu with a bare date input reusing the row's own `pin` prop.
+    expect(stance).toMatch(/onChange=\{\(event\) => \{\s*const day = event\.currentTarget\.value;\s*if \(day\) pin\(day\);/);
+    // Named omissions — no per-row lane/tag callback reaches Row.
+    const stanceFlat = flat("stance.tsx");
+    expect(stanceFlat).toContain("OMITTED, and named here rather than faked");
+    expect(stanceFlat).toContain('"Move to lane…"');
+    expect(stanceFlat).toContain('"Tag…"');
+  });
+
+  test("the closed shelf (DoneShelf) composes the CLOSED twin — Reopen / Open packet — never Close, and never a second reopen route", () => {
+    const stance = code(read("stance.tsx"));
+    const shelf = stance.slice(stance.indexOf("function DoneShelf"), stance.indexOf("function NightCard"));
+    expect(shelf).toContain("<ContextMenuItem onClick={() => onReopen(row.id)}>Reopen</ContextMenuItem>");
+    expect(shelf).not.toContain(">Close<");
+  });
+
+  test("the board card composes Close / Open packet, right-click never racing the card's own native drag", () => {
+    const board = code(read("board.tsx"));
+    // Drag stays on the outer <li>; the trigger wraps only the card's own
+    // content, so a right-click cannot start (or be confused with) a drag.
+    const cardFn = board.slice(board.indexOf("function Card("), board.indexOf("function LaneDoneFold"));
+    expect(cardFn).toContain("draggable");
+    expect(cardFn.indexOf("draggable")).toBeLessThan(cardFn.indexOf("<ContextMenu>"));
+    expect(cardFn).toContain("<ContextMenuItem onClick={() => onClose(item.id)}>Close</ContextMenuItem>");
+    expect(cardFn).toContain("<ContextMenuItem onClick={() => onOpen(item.id)}>Open packet</ContextMenuItem>");
+    // Named omissions — no per-card pin/lane/tag control on the board.
+    const boardFlat = flat("board.tsx");
+    expect(boardFlat).toContain("OMITTED, and named rather than faked");
+    expect(boardFlat).toContain('"Pin to…"');
+    expect(boardFlat).toContain('"Tag…"');
+  });
+
+  test("the calendar's day cell offers a menu the pill does NOT, and the pill offers one the cell does NOT — genuinely different surfaces, not one list reused twice", () => {
+    const cal = code(read("calendar.tsx"));
+    expect(cal).toContain("Add a task for this day…");
+    expect(cal).toContain("<ContextMenuItem onClick={() => setAddingDay(day)}>Add a task for this day…</ContextMenuItem>");
+    expect(cal).toContain("<ContextMenuItem onClick={() => onUnpin(item.id)}>Unpin</ContextMenuItem>");
+    // The day cell is a drop TARGET only (never a drag source), so wrapping
+    // the whole cell in the trigger cannot race the pill's own drag.
+    const cellSite = cal.slice(cal.indexOf("weeks.flat().map"), cal.indexOf("THE UNPINNED RAIL"));
+    expect(cellSite).not.toMatch(/<div\s+draggable/);
+  });
+
+  test("the calendar's day-cell verb reuses the SAME AddTaskDialog and POST route as the room's own \"Add a task\" button, merely pre-picking the day", () => {
+    const addTask = code(read("add-task.tsx"));
+    expect(addTask).toContain("defaultPinDay?: string;");
+    expect(addTask).toContain('const [pinDay, setPinDay] = useState(defaultPinDay ?? "");');
+    // One POST route, still — no second endpoint added for the calendar's verb.
+    expect(addTask.match(/fetch\("\/api\/spool\/items"/g)?.length).toBe(1);
+    const cal = code(read("calendar.tsx"));
+    expect(cal).toContain("<AddTaskDialog");
+    expect(cal).toContain("defaultPinDay: addingDay");
+  });
+
+  test("the notes-tab row composes Open / Retire…, reaching the SAME retire route NoteFace's own retire() already POSTs to — never a second endpoint", () => {
+    const tray = code(read("tray.tsx"));
+    expect(tray).toContain("const retireNoteRow = useCallback(");
+    expect(tray).toMatch(/fetch\(`\/api\/spool\/notes\/\$\{encodeURIComponent\(id\)\}\/retire`,\s*\{\s*method: "POST"/);
+    // Same route NoteFace's retire() posts to, not a rename of it.
+    const noteFace = tray.slice(tray.indexOf("function NoteFace"), tray.indexOf("function SubjectFace"));
+    expect(noteFace).toMatch(/`\/api\/spool\/notes\/\$\{encodeURIComponent\(id\)\}\/retire`/);
+    expect(tray).toContain("<ContextMenuItem onClick={() => retireNoteRow(note.id)}>Retire…</ContextMenuItem>");
+  });
+
+  test("close/reopen stay hand-only everywhere a menu offers them — every menu's Close/Reopen item fires the SAME callback the row's own CloseCheckbox fires, never a fresh fetch inline", () => {
+    for (const name of ["stance.tsx", "board.tsx"]) {
+      const source = code(read(name));
+      // No ContextMenuItem in these files POSTs/PATCHes inline for close or
+      // reopen — every Close/Reopen item's onClick is a bare callback
+      // reference (close, onClose, onReopen), matching CloseCheckbox's own
+      // onToggle in the same file.
+      const closeItems = source.match(/<ContextMenuItem onClick=\{[^}]*\}>(Close|Reopen)<\/ContextMenuItem>/g) ?? [];
+      expect(closeItems.length).toBeGreaterThan(0);
+      for (const item of closeItems) {
+        expect(item, `${name}'s ${item} avoids a second write path`).not.toMatch(/fetch\(|patch\(|POST|PATCH/);
+      }
+    }
+  });
+
+  test("no menu item anywhere spells a second PATCH for area, rank, pin, or lane — every area/rank/pin write still lives in exactly the functions the drag and swatch controls already call", () => {
+    // area/rank/color: assignArea, reorderSubject, and the menu's own
+    // setSubjectColor all PATCH the SAME `/api/spool/subjects/:key` route —
+    // the one identity write path — never a distinct URL of their own. The
+    // drag machinery already established this route; the menu's new
+    // callers (setSubjectColor for "Color ▸", the ceiling PATCH for "Set
+    // ceiling ▸") are additional CALLERS of an existing route, not a second
+    // route — mirrored by the earlier "no second identity-write path" test.
+    // RETARGETED §13.8 (2026-08-19): this machinery lives in `lobby.tsx` now.
+    const nav = code(read("lobby.tsx"));
+    const subjectRoutes = nav.match(/fetch\(`\/api\/spool\/subjects\/\$\{encodeURIComponent\([a-zA-Z]+\)\}`/g) ?? [];
+    expect(subjectRoutes.length).toBeGreaterThan(0);
+    expect(new Set(subjectRoutes.map((s) => s.replace(/\(\w+\)/, "(x)"))).size).toBe(1);
+    expect(nav).toContain("const setSubjectColor = (subject: string, color: string | null)");
+    expect(nav).toContain("const setAreaCeiling = (name: string, ceiling: SpoolSubjectPermits | null)");
+    // pin: RowContextMenu's submenu calls the SAME `pin` prop the row's own
+    // hover verb calls — no fetch of its own anywhere in stance.tsx's Row
+    // machinery beyond the ones the pre-existing pin/close callbacks make
+    // upstream in `SpoolStance`.
+    const stance = code(read("stance.tsx"));
+    const rowContextMenuFn = stance.slice(stance.indexOf("function RowContextMenu("), stance.indexOf("function RowVerbs("));
+    expect(rowContextMenuFn).not.toMatch(/fetch\(/);
+    // lane: no menu anywhere in this pass introduces a lane PATCH — named
+    // as an omission everywhere a lane verb would have gone.
+    for (const name of ["stance.tsx", "board.tsx"]) {
+      expect(flat(name)).toContain('"Move to lane…"');
+    }
+  });
+
+  test("no red anywhere in the new menu code — the quiet idiom holds for close, reopen, and retire alike", () => {
+    for (const name of ["warehouse-nav.tsx", "lobby.tsx", "stance.tsx", "board.tsx", "calendar.tsx", "tray.tsx"]) {
+      const source = code(read(name));
+      expect(source, `${name} spends no destructive-variant colour in its menu items`).not.toMatch(/ContextMenuItem[^>]*variant="destructive"/);
+    }
+    const primitive = fs.readFileSync(path.join(dir, "..", "ui", "context-menu.tsx"), "utf8");
+    // The primitive itself carries the destructive variant machinery (as
+    // dropdown-menu.tsx does) for future callers — no surface in the Spool
+    // opts into it.
+    expect(primitive).toContain('variant?: "default" | "destructive"');
+  });
+});
+
+/**
+ * THE REMINDERS IDIOM — the verdict on the Spool's own dialogs: "too
+ * generic, doesn't even fit our UI… I like Apple Reminders." Inset-grouped
+ * field ROWS (a rounded container one step off the sheet, hairline-
+ * separated, quiet label left / control right) replace stacked labelled
+ * inputs; dialogs shrink to content width with a small quiet title and no
+ * description ceremony; and a tiny single-field ask (rename, retire reason)
+ * is a small anchored popover-card at the row it names, never a centered
+ * modal reopened for one word.
+ */
+describe("the Spool's dialogs wear the Reminders idiom, not the generic centered form", () => {
+  test("the inset-group and row primitives exist, one definition site", () => {
+    const fields = read("field-group.tsx");
+    expect(fields).toContain("export function FieldGroup");
+    expect(fields).toContain("export function FieldRow");
+    expect(fields).toContain("export function RowInput");
+    // Rows are hairline-separated inside a rounded container one step off
+    // the sheet — the shape itself, not merely the name.
+    expect(fields).toContain("divide-y divide-border/50");
+    expect(fields).toContain("rounded-xl");
+    // No second definition site anywhere else in the module.
+    for (const { name, source } of surfaces()) {
+      if (name === "field-group.tsx") continue;
+      expect(code(source), `${name} spells its own FieldGroup/FieldRow`).not.toMatch(
+        /function (FieldGroup|FieldRow)\(/,
+      );
+    }
+  });
+
+  test("the add-task and confirm/lane dialogs are built from the shared rows, not stacked labelled inputs", () => {
+    for (const name of ["add-task.tsx", "dialogs.tsx"]) {
+      const source = code(read(name));
+      expect(source, `${name} does not import the row primitives`).toContain(
+        '@/components/spool/field-group',
+      );
+      expect(source, `${name} still spells its own stacked Field()`).not.toMatch(/function Field\(/);
+    }
+    expect(code(read("add-task.tsx"))).toContain("<FieldGroup>");
+    expect(code(read("dialogs.tsx"))).toContain("<FieldGroup>");
+  });
+
+  test("dialogs shrink to content width and carry no description paragraph beyond the §-law copy", () => {
+    const dialogs = code(read("dialogs.tsx"));
+    // Compact, not the generic sm:max-w-md every dialog wore before.
+    expect(dialogs).not.toContain("sm:max-w-md");
+    expect(dialogs).toMatch(/sm:max-w-(xs|sm)/);
+    const addTask = code(read("add-task.tsx"));
+    expect(addTask).not.toContain("sm:max-w-md");
+    // The add-task dialog's own title is carried by the title INPUT, not a
+    // visible dialog heading — the accessible title stays for assistive
+    // tech, marked sr-only, exactly the row this idiom drops from view.
+    expect(addTask).toContain('DialogHeader className="sr-only"');
+  });
+
+  test("commit is light — Enter submits, Escape cancels, and no button ceremony beyond it", () => {
+    // The lane and confirm dialogs' footers still carry their one Cancel /
+    // confirm pair (a real multi-field form and a destructive-adjacent
+    // confirm both earn a button), but the quiet variant, not `outline`,
+    // now that the card itself is quiet rather than boxed.
+    const dialogs = code(read("dialogs.tsx"));
+    expect(dialogs).toContain('variant="ghost"');
+    expect(dialogs).not.toContain('variant="outline"');
+  });
+
+  test("window.prompt's replacement is a small anchored popover-card, never a centered dialog", () => {
+    const card = read("prompt-card.tsx");
+    expect(card).toContain("export function AskOneThing");
+    // Anchored at the invocation point — a caller's own ref/element, not the
+    // page center a Dialog would use.
+    expect(card).toContain("anchor:");
+    expect(card).toContain("PopoverPrimitive.Positioner");
+    // No button ceremony: Enter (the form's own submit) and Escape are the
+    // whole interaction; a refusal is the one line that earns space.
+    expect(card).not.toMatch(/<button[^>]*type="submit"/);
+    expect(card).not.toContain("Cancel</");
+  });
+
+  test("the rename-area and retire-note asks are both anchored to the row, not the browser", () => {
+    // RETARGETED §13.8 (2026-08-19): the container rename ask moved from the
+    // rail's own tree into the lobby's, along with the rest of the map.
+    const nav = code(read("lobby.tsx"));
+    expect(nav).toContain('@/components/spool/prompt-card');
+    expect(nav).toContain("<AskOneThing");
+    expect(nav).toContain("containerRefs.current.get(node.key)");
+    expect(nav).not.toContain("window.prompt");
+
+    const tray = code(read("tray.tsx"));
+    expect(tray).toContain('@/components/spool/prompt-card');
+    expect(tray).toContain("<AskOneThing");
+    expect(tray).toContain("noteRowRefs.current.get(note.id)");
+    expect(tray).not.toContain("window.prompt");
+  });
+});
+
+/**
+ * §13.8, 2026-08-19, added as its own law suite — "the map is content, not
+ * chrome." Four claims the wave-1 nav restructure makes as a whole, each
+ * decidable by reading source: the rail carries no tree, the Lobby opens on
+ * two live smart tiles, an area page's breadcrumb is walkable by the hand,
+ * and the dissolved Warehouse room leaves no trace anywhere in the module.
+ */
+describe("§13.8 — the map is content, not chrome", () => {
+  test("the rail renders no area tree of its own — no buildAreaTree, no recursive node component, no drag handlers", () => {
+    const nav = code(read("warehouse-nav.tsx"));
+    expect(nav).not.toContain("buildAreaTree(");
+    expect(nav).not.toMatch(/function \w*Node\(/);
+    expect(nav).not.toMatch(/draggable=/);
+    expect(nav).not.toContain("useAreaCollapse");
+    // Four fixed rooms and nothing structural beyond them.
+    expect(nav).toContain('"Lobby"');
+    expect(nav).toContain('"Today"');
+    expect(nav).toContain('"Scheduled"');
+    expect(nav).toContain('"Assistant"');
+  });
+
+  test("the Lobby opens on two live smart tiles — Today and Scheduled, each a real click into that room, not a static caption", () => {
+    const lobby = code(read("lobby.tsx"));
+    expect(lobby).toContain("function SmartTile(");
+    expect(lobby).toContain('<SmartTile label="Today" count={todayCount ?? 0} hint="pinned for today" onClick={() => onEnterToday?.()} />');
+    expect(lobby).toContain('<SmartTile label="Scheduled" count={scheduledCount ?? 0} hint="pinned ahead" onClick={() => onEnterScheduled?.()} />');
+    // The counts are handed down, never re-derived — `stance.tsx` computes
+    // them once from `wideModel`, the same model Today/Scheduled themselves
+    // render from.
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain("todayCount={wideModel.needs.length}");
+    expect(stance).toMatch(/scheduledCount=\{wideModel\.scheduled\.slipped\.length/);
+  });
+
+  test("an area page's breadcrumb segments are each their own button — clicking a middle segment jumps straight there, not one step at a time", () => {
+    const lobby = code(read("lobby.tsx"));
+    const breadcrumbFn = lobby.slice(lobby.indexOf("function Breadcrumb("), lobby.indexOf("export function Lobby("));
+    // "Lobby" walks all the way out…
+    expect(breadcrumbFn).toContain('<button type="button" onClick={onEnterLobby}');
+    // …and every named segment is its own <button>, targeting the FULL path
+    // up to and including itself, not the ancestors one hop at a time.
+    expect(breadcrumbFn).toContain("const target = path.slice(0, idx + 1).join(\" / \");");
+    expect(breadcrumbFn).toContain('<button type="button" onClick={() => onEnterArea(target)}');
+    expect(breadcrumbFn).not.toContain("<a ");
+  });
+
+  test("every subject on the map renders — folded or not — as a row you can stand on, never as nothing", () => {
+    /**
+     * DRIVEN 2026-08-19: a quiet subject (Personal's casa, Trabajo's
+     * telar-vnext) had NO row anywhere — the lobby's own "N subjects,
+     * nothing needs you" sentence spoke for it instead. That made the
+     * subject unreachable from the map, the exact failure §13.8 exists to
+     * rule out: "everything else sits folded as plain structure you can
+     * stand on" means a row, never an absence. Fixed by rendering EVERY
+     * entry in a node's own `lines`, `LobbyRow` for `folded`, `LobbyCard`
+     * otherwise — never a `!entry.folded` filter dropping the rest.
+     */
+    const lobby = code(read("lobby.tsx"));
+    expect(lobby).toContain("function LobbyRow(");
+    // The old per-subject fold sentence is gone outright — deleted, not
+    // merely unreachable code left behind.
+    expect(lobby).not.toContain("function AreaFold(");
+    // `LobbyNode`'s own render loop walks every entry, never a folded-only
+    // filter — the fix lives here, once, for both the home screen's tree
+    // and the area page's own top-level subjects.
+    expect(lobby).toContain("const entries = sortByRank(node.lines);");
+    expect(lobby).toMatch(/entries\.map\(\(entry, idx\) =>\s*\n\s*entry\.folded \? \(/);
+    expect(lobby).toMatch(/sortByRank\(scopedNodes\[0\]\?\.lines \?\? \[\]\)\.map\(\(entry, idx, arr\) =>\s*\n\s*entry\.folded \? \(/);
+    // A folded row is still a real drag source and a real click into its
+    // own room — not a lesser, inert copy of the card beside it.
+    const rowFn = lobby.slice(lobby.indexOf("function LobbyRow("), lobby.indexOf("const DRAG_TYPE ="));
+    expect(rowFn).toContain("draggable");
+    expect(rowFn).toContain("onClick={() => onEnter(subject.key)}");
+  });
+
+  test("the Warehouse room is gone — no file named warehouse.tsx, and nothing in the module imports it", () => {
+    expect(fs.existsSync(path.join(dir, "warehouse.tsx"))).toBe(false);
+    for (const { name, source } of surfaces()) {
+      expect(code(source), `${name} imports the retired warehouse room`).not.toMatch(
+        /from ["']@\/components\/spool\/warehouse["']/,
+      );
+    }
+    // Its room kind retired too — `stance.tsx` no longer branches on it.
+    expect(code(read("stance.tsx"))).not.toMatch(/room\.kind === ["']warehouse["']/);
+    const roomLib = read("../../lib/spool-room.ts");
+    expect(code(roomLib)).not.toMatch(/kind: ["']warehouse["']/);
+  });
+});
+
+/**
+ * §13.8 WAVE 2, 2026-08-19 — "rows edit in place": the subject room becomes
+ * the task list, edited in place. Four claims decidable by reading source:
+ * a row's title commits through the existing item PATCH and reverts on a
+ * verbatim engine refusal; the ghost row creates through the existing create
+ * route, preset to the room's own subject; closed items stay behind
+ * `DoneShelf`'s existing fold rather than a second "show completed"
+ * mechanism; and the brief strip is dismissible while Resume session stays
+ * reachable in both its states.
+ */
+describe("§13.8 wave 2 — rows edit in place", () => {
+  test("EditableTitle commits through the caller's route and reverts to the prior text on a verbatim refusal", () => {
+    const taskRow = code(read("task-row.tsx"));
+    expect(taskRow).toContain("export function EditableTitle(");
+    // Commits only a real, changed value — not a mere blur with nothing typed.
+    expect(taskRow).toContain('if (!trimmed || trimmed === text) {');
+    // A rejection reverts the field to the ORIGINAL text and shows the
+    // rejection's own message — never invents wording of its own.
+    expect(taskRow).toMatch(/\.catch\(\(err\) => \{\s*setValue\(text\);\s*setError\(err instanceof Error \? err\.message : String\(err\)\);/);
+    // Escape reverts without ever calling `onCommit`.
+    expect(taskRow).toMatch(/if \(e\.key === "Escape"\) \{[\s\S]*?setValue\(text\);\s*setEditing\(false\);/);
+  });
+
+  test("the shared row grammar's title edit reaches the SAME generic item PATCH the bulk action bar already speaks — no new route", () => {
+    const stance = code(read("stance.tsx"));
+    // The subject room's "Waiting its turn" rows and the Scheduled scope's
+    // rows both route their title/lane/pin/tag edits through one prop,
+    // `onEditItem`, and its one implementation PATCHes the existing route.
+    expect(stance).toMatch(/onEditTitle:\s*\(next: string\) => onEditItem\(row\.id, \{ title: next \}\)/);
+    expect(stance).toMatch(/fetch\(`\/api\/spool\/items\/\$\{encodeURIComponent\(id\)\}`, \{\s*method: "PATCH"/);
+    // The verbatim-error convention every write in this module already keeps.
+    expect(stance).toContain('throw new Error(data?.error?.message ?? data?.error ?? `HTTP ${res.status}`);');
+  });
+
+  test("lane/pin/tags edit through RowDisclosure, never a note/body field — SpoolItem has none, so there is nothing to disclose", () => {
+    const taskRow = code(read("task-row.tsx"));
+    expect(taskRow).toContain("export function RowDisclosure(");
+    expect(taskRow).toContain("onLane: (lane: string) => void;");
+    expect(taskRow).toContain("onPin: (day: string | null) => void;");
+    expect(taskRow).toContain("onTags: (tags: string[]) => void;");
+    // Named here rather than silently absent — `SpoolItem` carries no
+    // note/body field (`packages/engine-client/src/protocol/spool.ts`);
+    // notes are a separate shelf/note store with its own route. This is a
+    // comment, not code, so it is checked in the RAW source (`flat`, which
+    // only collapses whitespace) rather than `code` (which strips comments).
+    expect(flat("task-row.tsx")).toContain("OMITTED: a note/body field");
+  });
+
+  test("the ghost row creates through the SAME create route add-task.tsx speaks, preset to the room's own subject, and clears rather than remounting", () => {
+    const taskRow = code(read("task-row.tsx"));
+    expect(taskRow).toContain("export function GhostTaskRow(");
+    expect(taskRow).toMatch(/fetch\("\/api\/spool\/items", \{\s*method: "POST"/);
+    expect(taskRow).toContain('body: JSON.stringify({ title, project: subject })');
+    // On success the field clears in place — no dialog close, no remount —
+    // so a hand naming several tasks keeps typing without reclicking in.
+    expect(taskRow).toMatch(/setValue\(""\);\s*onCreated\(\);/);
+
+    const room = code(read("room.tsx"));
+    expect(room).toContain("<GhostTaskRow");
+    expect(room).toContain("subject={subjectKey}");
+    // The room's own "Add a task" button is gone from the Tasks tab —
+    // Board and Calendar keep it, since neither has a row list to type into.
+    expect(room).toMatch(/\{\(tab === "board" \|\| tab === "calendar"\) && \(/);
+  });
+
+  test("closed items stay behind DoneShelf's existing fold — wave 2 reuses it rather than building a second show-completed mechanism", () => {
+    // `DoneShelf` (hidden-by-default, "Done — {rows.length}" toggle,
+    // `reopenItemByHand` on its own rows) already satisfies §13.8's "show
+    // completed foot" — the very thing the deleted Warehouse room's Done tab
+    // used. This law only pins that wave 2 did not grow a second one.
+    const stance = code(read("stance.tsx"));
+    expect(stance).toContain("function DoneShelf(");
+    expect(stance).not.toMatch(/function ShowCompleted\(/);
+    expect(stance).not.toMatch(/function CompletedFold\(/);
+    // Still mounted at exactly its existing two call sites (the smart
+    // Today/Scheduled branch and the subject-scoped branch, both pre-dating
+    // wave 2) — no third one added for the ghost row's neighbourhood.
+    expect(stance.match(/<DoneShelf\b/g)?.length).toBe(2);
+  });
+
+  test("the brief strip is dismissible per subject, and Resume session stays reachable whether collapsed or expanded", () => {
+    const room = code(read("room.tsx"));
+    // Dismiss reads/writes through the sanctioned hook, not a direct
+    // `localStorage` call — room.tsx keeps the file-wide ban this suite
+    // already pins elsewhere.
+    expect(room).toContain('import { useBriefDismiss } from "@/lib/spool-brief-dismiss";');
+    expect(room).toContain("const { dismissed: briefDismissed, dismiss: dismissBrief } = useBriefDismiss(subjectKey);");
+    expect(room).not.toMatch(/window\.localStorage/);
+    // Dismissed renders nothing — "the room is just the list."
+    expect(room).toMatch(/\{!briefDismissed && \(/);
+    // Resume session sits OUTSIDE the `briefExpanded` gate, so it is on the
+    // strip in both its compact and expanded states.
+    const briefBlock = room.slice(room.indexOf('{!briefDismissed && ('), room.indexOf("{/* ── TABS"));
+    const expandedGateIdx = briefBlock.indexOf("{briefExpanded && (");
+    const resumeIdx = briefBlock.indexOf("Resume session");
+    expect(expandedGateIdx).toBeGreaterThan(-1);
+    expect(resumeIdx).toBeGreaterThan(-1);
+    expect(resumeIdx).toBeLessThan(expandedGateIdx);
+  });
+});
+
+/**
+ * §13.8 HOTFIX, 2026-08-19 — driven live: entering a subject's room showed
+ * FOUR "Nothing…" thread bands and a footer quoting the WHOLE STORE'S count,
+ * while the store held two real open items filed to that very subject — one
+ * of them typed into the ghost row moments earlier, which POSTed clean (200)
+ * and then never appeared. Root cause: `claimedByBands` (deriveStance,
+ * stance.tsx) claimed every housekeeping id — including an UNPLACED item's,
+ * which still names a real `project` (`unplaced` describes the LANE the seed
+ * lane resolved to, not an absent subject) — unconditionally, while the
+ * housekeeping FOLD that would have shown them is itself suppressed under
+ * `scope`. Claimed by a fold that had gone quiet, an unplaced item rendered
+ * in neither place: it vanished. These laws pin the fix, not just its symptom.
+ */
+describe("§13.8 hotfix, 2026-08-19 — a subject's own open items never vanish from its room", () => {
+  const stance = code(read("stance.tsx"));
+
+  test("housekeeping's ids are only claimed against `prepared` in the WIDE view, where the fold that owns them actually renders", () => {
+    // The claim set must be conditioned on `scope` — an unconditional
+    // `...housekeeping.map(...)` here is exactly the regression: it silently
+    // excludes a scoped subject's own unplaced items from `prepared` even
+    // though `housekeeping` itself renders as `[]` under scope two lines
+    // below (that line is unchanged and still pinned by the assertion after
+    // this one).
+    expect(stance).toMatch(/\.\.\.\(scope \? \[\] : housekeeping\.map\(\(h\) => h\.id\)\)/);
+  });
+
+  test("the housekeeping fold itself still goes quiet under scope — unchanged law, so the two arms cannot silently agree by accident", () => {
+    expect(stance).toContain("housekeeping: scope ? [] : housekeeping");
+  });
+
+  test("`prepared` is built from this subject's own inventory group and is never filtered by `unplaced`", () => {
+    // The fix is entirely in what CLAIMS a row before this loop runs — the
+    // loop itself never tested `row.item.unplaced`, and must go on not
+    // testing it: an unplaced item is not a different CLASS of item, it is
+    // an ordinary item whose lane could not be resolved.
+    const preparedBlock = stance.slice(stance.indexOf("const prepared: PreparedGroup[] = []"), stance.indexOf("const pinnedAll: ScheduledRow[]"));
+    expect(preparedBlock).toContain('(inventory ?? []).find((g) => g.project === scope)?.rows ?? []');
+    expect(preparedBlock).not.toMatch(/row\.item\.unplaced/);
+  });
+
+  test("the footer's conservation line counts THIS subject's own items under scope, not the whole store's", () => {
+    expect(stance).toMatch(
+      /scopeTotals:\s*scope\s*\?\s*\{\s*totalItems:\s*scopeRows\.length,\s*agentsAdded:\s*scopeRows\.filter\(\(r\) => r\.item\.provenance === "session"\)\.length\s*\}/,
+    );
+    // The render site actually branches on it — a scoped room states its own
+    // count, never falling silently back to the global read.
+    expect(stance).toMatch(/\{scope && scopeTotals \? \(/);
+    expect(stance).toContain("{scopeTotals.totalItems} {scopeTotals.totalItems === 1");
+    // The wide view's exact wording — pinned above by an earlier suite — is
+    // untouched: this only adds a scoped branch beside it.
+    expect(stance).toContain("the count never grows from breakdown.");
+  });
+
+  test("a ghost-row create lands visibly — the room refetches the same snapshot the create just changed, no separate `onCreated` truth", () => {
+    const room = code(read("room.tsx"));
+    // `onChanged` IS `load` at the root (stance.tsx) — the ghost row's
+    // success calls the very function whose result was the vanishing bug's
+    // OTHER half. Refetch-on-success, the sanctioned alternative to a hand
+    // rolled optimistic append (see lobby.tsx for that pattern elsewhere).
+    expect(room).toMatch(/onCreated={\(\) => \{\s*void onChanged\(\);\s*void loadBrief\(\);\s*\}\}/);
+  });
+});
+
+/**
+ * §13.8, 2026-08-19 — driven live, again: the vanish fix above surfaced a
+ * SECOND violation of "the subject room IS the task list". A quiet room
+ * led with FOUR near-empty bands — "Nothing needs you." / "Nothing in
+ * flight, and no night has run yet." / "Nothing is parked on anyone." /
+ * "Nothing settled yet. Answers land here, and stay." — filling the whole
+ * first screen above the actual list, exactly the "four nearly-empty
+ * bands" defect `focus shows the subject's actual items` already named
+ * once, resurfaced one level up. Reminders never shows four paragraphs of
+ * nothing before your tasks.
+ *
+ * SCOPED TO THE SUBJECT ROOM ONLY — the wide (choosing) view and the Today
+ * aperture keep their quiet "Nothing…" sentences exactly as before; this
+ * fix touches only the third, focused branch of `Stance`'s render.
+ */
+describe("§13.8, 2026-08-19 — a quiet subject room does not lead with empty bands", () => {
+  const stanceFlat = flat("stance.tsx");
+  const stanceCode = code(read("stance.tsx"));
+  const focusedStart = stanceFlat.indexOf("FOCUS IS THE RESIDENCE");
+  const focusedEnd = stanceFlat.indexOf("WHAT THE APERTURE IS NOT SHOWING");
+  const focused = stanceFlat.slice(focusedStart, focusedEnd);
+
+  test("each of the four exceptional bands is gated on its own emptiness — no header, no quiet sentence, when it has nothing to say", () => {
+    expect(focusedStart).toBeGreaterThan(-1);
+    expect(focusedEnd).toBeGreaterThan(focusedStart);
+    expect(focused).toContain("{!needsNothing && (");
+    expect(focused).toContain("{!handsNothing && (");
+    expect(focused).toContain("{onPerson.length > 0 && (");
+    expect(focused).toContain("{settled.length > 0 && (");
+    // No quiet "Nothing…" sentence survives in the focused branch at all —
+    // an empty band renders NOTHING, not a header with a sentence under it.
+    expect(focused).not.toContain("<Empty>");
+  });
+
+  test("the wide (choosing) view and the Today aperture are untouched — they still speak their quiet 'Nothing…' sentences", () => {
+    // This fix is scoped to the subject room only; the wide/Today text
+    // before `focusedStart` is exactly where those two apertures render.
+    const wideAndToday = stanceFlat.slice(0, focusedStart);
+    expect(wideAndToday).toContain("<Empty>Nothing needs you.</Empty>");
+    expect(wideAndToday).toContain("<Empty>Nothing in flight, and no night has run yet.</Empty>");
+  });
+
+  test("the task list leads: 'Waiting its turn' renders before the Done fold, which moved to the foot of the list", () => {
+    // §13.8's own words: "a 'show completed' foot on each list" — Done used
+    // to sit ABOVE the prepared list (right after Settled); now it is
+    // strictly below it, the room's own foot fold rather than a second
+    // thing to read before reaching the tasks.
+    const turnIdx = focused.indexOf('title="Waiting its turn"');
+    const doneIdx = focused.indexOf("<DoneShelf");
+    expect(turnIdx).toBeGreaterThan(-1);
+    expect(doneIdx).toBeGreaterThan(turnIdx);
+  });
+
+  test("'Waiting its turn' keeps its header — a pre-existing law pins the literal title, so this pass could not drop it without weakening that test", () => {
+    // `focus shows the subject's actual items` (above) asserts
+    // `title="Waiting its turn"` literally. §13.8's own instructions: drop
+    // the header only if it is cheap AND no law pins it; one does, so it
+    // stays, and this test says so rather than leaving the decision silent.
+    expect(stanceCode).toContain('title="Waiting its turn"');
   });
 });

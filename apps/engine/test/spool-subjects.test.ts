@@ -25,6 +25,7 @@ import {
   setSubjectIdentity,
   setSubjectPermits,
   setSubjectTerrain,
+  sortSubjectsByRank,
   SUBJECT_AREA_MAX,
   subjectPermits,
   subjectsPath,
@@ -282,6 +283,69 @@ describe("identity — area and color", () => {
     expect(setSubjectIdentity(paths, "nope", { area: "Trabajo" })).toBeNull();
     expect(findSubject(paths, "school")).not.toHaveProperty("area");
     expect(findSubject(paths, "school")).not.toHaveProperty("color");
+  });
+});
+
+/**
+ * RANK — the user's own manual position among a subject's area-mates, a drag
+ * order and never a computed one. Round-trips through the same identity PATCH
+ * as area and color, and setting area must never clear it.
+ */
+describe("identity — rank", () => {
+  test("set, read back, and clear — clearing withdraws, it deletes nothing", () => {
+    ensureSubject(paths, "casa");
+    const set = setSubjectIdentity(paths, "casa", { rank: 2 })!;
+    expect(set.rank).toBe(2);
+    expect(findSubject(paths, "casa")!.rank).toBe(2);
+
+    const recleared = setSubjectIdentity(paths, "casa", { rank: null })!;
+    expect(recleared.rank).toBeUndefined();
+    expect(findSubject(paths, "casa")!.rank).toBeUndefined();
+  });
+
+  test("setting area does not clear a stated rank, and setting rank does not clear area", () => {
+    ensureSubject(paths, "casa");
+    setSubjectIdentity(paths, "casa", { rank: 1, area: "Personal" });
+    const moved = setSubjectIdentity(paths, "casa", { area: "Trabajo" })!;
+    expect(moved.area).toBe("Trabajo");
+    expect(moved.rank).toBe(1);
+
+    const reranked = setSubjectIdentity(paths, "casa", { rank: 5 })!;
+    expect(reranked.rank).toBe(5);
+    expect(reranked.area).toBe("Trabajo");
+  });
+
+  test("rank is a finite number >= 0 — anything else is refused with nothing written", () => {
+    ensureSubject(paths, "casa");
+    expect(() => setSubjectIdentity(paths, "casa", { rank: -1 })).toThrow(/finite number/);
+    expect(() => setSubjectIdentity(paths, "casa", { rank: Number.NaN })).toThrow(/finite number/);
+    expect(() => setSubjectIdentity(paths, "casa", { rank: Number.POSITIVE_INFINITY })).toThrow(/finite number/);
+    expect(() => setSubjectIdentity(paths, "casa", { rank: "3" as never })).toThrow(/finite number/);
+    expect(findSubject(paths, "casa")!.rank).toBeUndefined();
+  });
+
+  test("rank alone is a complete patch — it does not need area or color named beside it", () => {
+    ensureSubject(paths, "casa");
+    expect(setSubjectIdentity(paths, "casa", { rank: 0 })!.rank).toBe(0);
+  });
+});
+
+describe("sortSubjectsByRank", () => {
+  const s = (key: string, area?: string, rank?: number) => ({ key, area, rank });
+
+  test("ranked subjects sort ascending within their area; unranked ones follow, in their existing order", () => {
+    const input = [s("c", "Personal", 3), s("a", "Personal"), s("b", "Personal", 1), s("z", "Personal")];
+    expect(sortSubjectsByRank(input).map((x) => x.key)).toEqual(["b", "c", "a", "z"]);
+  });
+
+  test("a caller that never sets rank sees exactly the order it handed in", () => {
+    const input = [s("c", "Personal"), s("a", "Personal"), s("b", "Trabajo")];
+    expect(sortSubjectsByRank(input)).toEqual(input);
+  });
+
+  test("rank is compared only within the SAME area — subjects in different areas, or with no area at all, are left alone relative to each other", () => {
+    const input = [s("x", "Trabajo", 5), s("y", "Personal", 1), s("z")];
+    expect(sortSubjectsByRank(input).map((x) => x.key)).toEqual(["x", "y", "z"]);
   });
 });
 

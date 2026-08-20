@@ -558,7 +558,6 @@ test("the spool registers under the SAME one server, and only when the turn carr
     "spool_end_focus",
     "spool_look",
     "spool_pin",
-    "spool_set_aperture",
     "spool_set_area_permits",
     "spool_set_terrain",
     "spool_set_subject_identity",

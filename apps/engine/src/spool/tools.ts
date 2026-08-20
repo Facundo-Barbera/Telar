@@ -170,10 +170,12 @@ export type SpoolCapability = {
    */
   setIdentity(subjectKey: string, patch: { area?: string | null; color?: SpoolSubjectColor | null }): Promise<SpoolSubject>;
   /**
-   * Point the room at a smart view, when the USER asks to see it. One whole
-   * value replaced — idempotent, last writer wins, and the hand's click lands
-   * on the same slot, so chat and hand cannot drift. Never a subject: subject
-   * focus is the deeper aperture and has its own verbs above.
+   * Point the room at a smart view. STILL HERE FOR THE HAND'S OWN ROUTE — no
+   * tool on any wall calls this any more (§13.6: the room is the user's own to
+   * navigate), so this member exists only because the daemon and worker's
+   * capability objects are one shape for both the tool wall and the aperture
+   * HTTP route. Never a subject: subject focus is the deeper aperture and has
+   * its own verbs above.
    */
   setAperture(view: SpoolApertureView): Promise<SpoolAperture>;
   /**
@@ -266,7 +268,7 @@ const ANSWER_QUESTION = `Record the user's answer to one of a task's open questi
 
 const SETTLE_THREAD = `Close a thread's question with WHAT WAS FOUND OUT — the user's answer, in their words. Only use this to relay an answer the user actually gave in this conversation; never settle on your own conclusion. The answer is required: a settle without one would be a status flip, and this store cannot express one. The thread stays on the map as the record of what was worked out — nothing is deleted, and no work is started or accepted by this.`;
 
-const SET_FOCUS = `Set what the user is on — one subject, with an optional note in their words about where they are. This drives the room the user is looking at: the stance narrows to the subject the moment you set it. Set it when the user says they are working on something ("let's focus on ozom-gv"); never set it on your own initiative.`;
+const SET_FOCUS = `Record what the user is on — one subject, with an optional note in their words about where they are. This is a work record, not a view: it feeds the pickup ("where you left off") the next time the user opens that subject's brief. It does not and cannot move the user's screen — they navigate their own rooms. Set it when the user says they are working on something ("let's focus on ozom-gv"); never set it on your own initiative.`;
 
 const LOOK = `Glance at a subject's terrain — the repository the user said it lives in — and get back what MOVED since the Spool's last look, as plain sentences with issue/PR numbers ("PR #420 merged since your last look."). Deterministic and read-only: it never writes to the tracker, never invents urgency, and a subject with no terrain answers with a note, not an error. Use it when the user arrives at a subject or asks what changed; do not loop it — the world does not move that fast.`;
 
@@ -276,7 +278,17 @@ const SET_SUBJECT_IDENTITY = `Record a subject's identity — the area it belong
 
 const PIN_ITEM = `Pin a task to a day the USER stated, or clear a pin when they ask. The calendar belongs to the user: a pin is THEIR placement of work on THEIR day, so you pin ONLY when the user names the date, and you write exactly the date they named as YYYY-MM-DD. NEVER resolve "tomorrow", "Friday" or "next week" against a clock, never invent a date, and never move a pin on your own initiative — if the user said "Friday" without a date, ask which day they mean rather than computing one. Pass clear: true when they ask to unpin; that removes the pin and nothing else — the task stays exactly where it is.`;
 
-const SET_APERTURE = `When the user asks to SEE something the room can show, CHANGE THE ROOM — call this FIRST, then answer briefly if there is something worth saying. "Muéstrame lo de hoy" / "qué hay para hoy" as a view request → today (what's pinned to today plus what needs them); "enséñame lo agendado" → scheduled (everything pinned, in day order); "muéstrame todo" → everything (the whole wide room). The room is part of your reply: a prose list of today's items while the room still shows everything leaves the user reading a letter about a window they are standing next to. The trigger is the user asking to SEE or SHOW — not any mention of a day: a genuine question ("¿qué se movió hoy?") is answered in words, no view change. This changes what the room SHOWS and nothing else — no work starts, stops or moves, and the same views sit under their hand as buttons, so setting one is answering a request, never steering. It is not focus: narrowing to a subject is spool_set_focus.`;
+/**
+ * `spool_set_aperture` USED TO LIVE HERE. Removed under docs/spool-loops.md
+ * §13.6: the room has belonged to the user's own hand since the re-entry
+ * rebuild — "the user navigates rooms themselves; the agent no longer
+ * controls what the screen shows." The aperture SLOT and its route
+ * (`spool/aperture.ts`, `readAperture`/`setAperture`) stay on disk — cheap,
+ * dormant, still written by the hand's own click — but no tool on any wall
+ * reaches it any more. A request to "show me today" is now answered the way
+ * every other question is: in words, from the store (see `spool_list_items`,
+ * `spool_pin`).
+ */
 
 const SET_AREA_PERMITS = `Set a permit ceiling on one of the user's areas — ONLY when the user states it in this conversation ("Personal nunca se trabaja sin preguntar" → ceiling "read" on Personal). A ceiling CLAMPS every subject in the area DOWN to it: effective permits are the lower of what the subject states and what the area allows, and a ceiling can never raise anything. Never set one uninvited, never assume any area — Personal included — wants one, and pass clear: true only when the user withdraws the statement. The levels: "read" (glance and brief only), "draft" (may propose an approach), "propose" (may open a pull request).`;
 
@@ -859,8 +871,9 @@ export function spoolTools(tool: ToolFactory, capability: SpoolCapability): unkn
       async (args) => {
         const subject = scope ?? (typeof args.subjectKey === "string" ? args.subjectKey : "");
         if (!subject) return err("Name the subject the user is focusing on.");
-        // A typo'd subject would narrow the user's room to nothing, so the
-        // name is checked against what exists before anything is written.
+        // A typo'd subject would record a fact about attention that is not
+        // true, so the name is checked against what exists before anything is
+        // written.
         const map = await capability.map();
         if (!map.subjects.some((s) => s.subject === subject)) {
           const known = map.subjects.map((s) => s.subject);
@@ -878,7 +891,7 @@ export function spoolTools(tool: ToolFactory, capability: SpoolCapability): unkn
           return json({
             subject: entry.subject,
             ...(entry.note ? { note: entry.note } : {}),
-            note2: "The user's room narrows to this subject now. Focus is their attention, not a status on any work.",
+            note2: "Recorded as what the user is on now. Focus is their attention, not a status on any work, and it does not move their screen — they navigate their own rooms.",
           });
         } catch (e) {
           return err(e instanceof Error ? e.message : String(e));
@@ -914,7 +927,7 @@ export function spoolTools(tool: ToolFactory, capability: SpoolCapability): unkn
           return json({
             subject: ended.subject,
             reason: args.reason,
-            note: "Their room widens back out. This said nothing about the work itself.",
+            note: "Recorded. This is a fact about their attention, not a status on any work, and it does not move their screen.",
           });
         } catch (e) {
           return err(e instanceof Error ? e.message : String(e));
@@ -999,45 +1012,6 @@ export function spoolTools(tool: ToolFactory, capability: SpoolCapability): unkn
             ? "Unpinned. The task keeps its lane, its rank and everything else — only the day mark is gone."
             : `Pinned to ${day} — the user's own date, recorded verbatim. Nothing was scheduled, started or reordered by this.`,
         });
-      },
-    ),
-    tool(
-      "spool_set_aperture",
-      SET_APERTURE,
-      /**
-       * ONE ARGUMENT FOR EVERY SESSION, and no subject anywhere on it. The
-       * scope rule ("the master names a subject; a scoped session's subject is
-       * a fact") has nothing to bind here because the view names no subject —
-       * it is the user's one room, and `spool_set_focus` is likewise on every
-       * session's wall, so the aperture mirrors it: any session may relay the
-       * user's own ask to see their own room differently.
-       */
-      {
-        view: SpoolApertureView.describe(
-          'The view the USER asked for: "today" (lo de hoy), "scheduled" (lo agendado), "everything" (todo — the ordinary wide room).',
-        ),
-      },
-      async (args) => {
-        // The SDK's schema refuses a stray view before this runs; the check is
-        // for the bare harness and any transport that skips validation, so a
-        // misspelt view refuses loudly instead of writing nothing silently.
-        const view = SpoolApertureView.safeParse(args.view);
-        if (!view.success) {
-          return err(
-            `"${String(args.view)}" is not a view the room has. Pick one of ${SpoolApertureView.options
-              .map((v) => `"${v}"`)
-              .join(", ")}.`,
-          );
-        }
-        try {
-          const aperture = await capability.setAperture(view.data);
-          return json({
-            view: aperture.view,
-            note: "The room shows that view now. Nothing about the work changed — this is what the user sees, not what anything does.",
-          });
-        } catch (e) {
-          return err(`Could not set the aperture: ${e instanceof Error ? e.message : String(e)}`);
-        }
       },
     ),
     tool(

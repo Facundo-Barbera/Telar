@@ -606,6 +606,32 @@ test("identity sets, clears field by field, and refuses bad values with the stor
   await expect(client.setSpoolSubjectIdentity("nope", { area: "Trabajo" })).rejects.toBeInstanceOf(EngineClientError);
 });
 
+test("rank round-trips through the same identity PATCH, and setting area never clears it", async () => {
+  const client = await spool();
+  await client.createSpoolItem({ title: "arreglar la caldera", project: "casa" });
+
+  const { subject } = await client.setSpoolSubjectIdentity("casa", { rank: 2 });
+  expect(subject.rank).toBe(2);
+  const listed = await client.spoolSubjects();
+  expect(listed.subjects.find((s) => s.key === "casa")).toMatchObject({ rank: 2 });
+
+  // Moving areas is a different statement — it must not touch a rank the
+  // human already set.
+  const moved = await client.setSpoolSubjectIdentity("casa", { area: "Personal" });
+  expect(moved.subject.area).toBe("Personal");
+  expect(moved.subject.rank).toBe(2);
+
+  const cleared = await client.setSpoolSubjectIdentity("casa", { rank: null });
+  expect(cleared.subject.rank).toBeUndefined();
+
+  // Refused verbatim, in the store's own sentence, and nothing is written.
+  // (`NaN`/`Infinity` are not JSON-representable, so the over-the-wire
+  // refusal is exercised with a negative number; the non-finite arms are
+  // covered directly against the store in `spool-subjects.test.ts`.)
+  await expect(client.setSpoolSubjectIdentity("casa", { rank: -1 })).rejects.toThrow(/finite number/);
+  expect((await client.spoolSubjects()).subjects.find((s) => s.key === "casa")!.rank).toBeUndefined();
+});
+
 test("look: baseline, delta, acknowledge — pull-only, over the real routes", async () => {
   const { state, gh } = movableWorld();
   const client = await spool({ gh });
@@ -894,19 +920,11 @@ test("area ceilings over HTTP — stated lazily, joinable by name, clamping the 
   expect((await client.spoolThreads("casa")).permits).toBe("draft");
 });
 
-test("the aperture and area ceilings reach the chat through the tool wall — the user's own words land on the shared slot and record", async () => {
+test("area ceilings reach the chat through the tool wall — the user's own words land on the real record", async () => {
   const client = await spool();
   const call = await masterTools(client);
   await call("spool_create_item", { title: "arreglar la caldera", subjectKey: "casa" });
   await call("spool_set_subject_identity", { subjectKey: "casa", area: "Personal" });
-
-  // "muéstrame lo de hoy" → the same slot the hand's click PUTs.
-  const shown = JSON.parse((await call("spool_set_aperture", { view: "today" })).text);
-  expect(shown.view).toBe("today");
-  expect((await client.spoolAperture()).aperture.view).toBe("today");
-  const badView = await call("spool_set_aperture", { view: "urgent" });
-  expect(badView.isError).toBe(true);
-  expect(badView.text).toContain("not a view the room has");
 
   // "Personal nunca se trabaja sin preguntar" → a ceiling on the real record,
   // read back through every surface's own routes.

@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { SpoolItem } from "@telar/engine-client";
-import { areasPath, effectivePermits, readAreas, setAreaCeiling } from "../src/spool/areas";
+import { areaPathSegments, areasPath, effectivePermits, effectivePermitsDetail, readAreas, setAreaCeiling } from "../src/spool/areas";
 import { ensureSubject, readSubjects, setSubjectIdentity, setSubjectPermits, subjectPermits } from "../src/spool/subjects";
 import { subjectThreads } from "../src/spool/threads";
 import { planNight } from "../src/spool/night";
@@ -107,6 +107,84 @@ describe("the clamp — effective = min(stated, ceiling), and NEVER a raise", ()
 
   test("the ceiling only reaches subjects that name the area", () => {
     expect(effectivePermits({ ...subject("draft"), key: "ozom-gv", name: "ozom-gv" }, personal("read"))).toBe("draft");
+  });
+});
+
+describe("areaPathSegments — a canonical path, never a structure", () => {
+  test("splits on the canonical separator and trims each segment", () => {
+    expect(areaPathSegments("Work / Focaltec")).toEqual(["Work", "Focaltec"]);
+    expect(areaPathSegments("Work /  Focaltec  ")).toEqual(["Work", "Focaltec"]);
+  });
+
+  test("a name with no separator is one segment", () => {
+    expect(areaPathSegments("Personal")).toEqual(["Personal"]);
+  });
+
+  test("empty segments drop out rather than throwing", () => {
+    expect(areaPathSegments("Work /  / Focaltec")).toEqual(["Work", "Focaltec"]);
+    expect(areaPathSegments(" / Work / Focaltec")).toEqual(["Work", "Focaltec"]);
+    expect(areaPathSegments("")).toEqual([]);
+    expect(areaPathSegments("   ")).toEqual([]);
+  });
+});
+
+describe("ceilings clamp down the WHOLE path — §13.7, most restrictive wins", () => {
+  const subject = (permits: "read" | "draft" | "propose", area?: string) => ({
+    key: "casa",
+    name: "casa",
+    permits,
+    ...(area ? { area } : {}),
+    created: "Sat",
+    schemaVersion: 1,
+  });
+  const areaRow = (name: string, ceiling?: "read" | "draft" | "propose") => ({
+    name,
+    ...(ceiling ? { ceiling } : {}),
+    created: "Sat",
+    schemaVersion: 1,
+  });
+
+  test("a ceiling on an ANCESTOR prefix clamps a deeper subject", () => {
+    const s = subject("propose", "Work / Focaltec");
+    expect(effectivePermits(s, [areaRow("Work", "read")])).toBe("read");
+  });
+
+  test("most-restrictive-wins when both the prefix and the exact path carry a ceiling", () => {
+    const s = subject("propose", "Work / Focaltec");
+    expect(effectivePermits(s, [areaRow("Work", "draft"), areaRow("Work / Focaltec", "read")])).toBe("read");
+    // The other order — the exact path is the looser one — still yields the
+    // stricter ancestor ceiling.
+    expect(effectivePermits(s, [areaRow("Work", "read"), areaRow("Work / Focaltec", "draft")])).toBe("read");
+  });
+
+  test("an unrelated prefix that merely SHARES CHARACTERS does not clamp — segment boundary, not string prefix", () => {
+    const s = subject("propose", "Work / Focaltec");
+    expect(effectivePermits(s, [areaRow("Workshop", "read")])).toBe("propose");
+    // Symmetric case: a ceiling on the deeper path must not reach a subject
+    // filed at the shallower one.
+    const shallow = subject("propose", "Work");
+    expect(effectivePermits(shallow, [areaRow("Work / Focaltec", "read")])).toBe("propose");
+  });
+
+  test("effectivePermitsDetail names the ACTUAL winning prefix", () => {
+    const s = subject("propose", "Work / Focaltec / Q3");
+    expect(effectivePermitsDetail(s, [areaRow("Work / Focaltec", "draft")])).toEqual({
+      level: "draft",
+      clampedBy: "Work / Focaltec",
+    });
+    // No clamp at all: no `clampedBy` in the result.
+    expect(effectivePermitsDetail(s, [])).toEqual({ level: "propose" });
+    // A ceiling that cannot beat the subject's own statement (equal or
+    // above) never appears as the clamp source either.
+    expect(effectivePermitsDetail(s, [areaRow("Work", "propose")])).toEqual({ level: "propose" });
+  });
+
+  test("a ceiling above the subject's own permit is never reported as the clamp, even on a losing prefix", () => {
+    const s = subject("draft", "Work / Focaltec");
+    // "Work" would raise (propose > draft) so it cannot win; "Work / Focaltec"
+    // actually restricts, and its name is what the report must carry.
+    const result = effectivePermitsDetail(s, [areaRow("Work", "propose"), areaRow("Work / Focaltec", "read")]);
+    expect(result).toEqual({ level: "read", clampedBy: "Work / Focaltec" });
   });
 });
 

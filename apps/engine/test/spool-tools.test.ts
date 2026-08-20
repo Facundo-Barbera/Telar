@@ -146,7 +146,7 @@ const emptySnapshot = (): SpoolSnapshot => ({
 const snapshotOf = (over: Partial<SpoolSnapshot>): SpoolSnapshot => ({ ...emptySnapshot(), ...over });
 
 describe("the registered surface", () => {
-  test("twenty-one tools, each declaring its capability in its name", () => {
+  test("twenty tools, each declaring its capability in its name", () => {
     const { registered } = build();
     expect(registered.map((r) => r.name)).toEqual([
       "spool_list_items",
@@ -163,7 +163,6 @@ describe("the registered surface", () => {
       "spool_end_focus",
       "spool_look",
       "spool_pin",
-      "spool_set_aperture",
       "spool_set_area_permits",
       "spool_set_terrain",
       "spool_set_subject_identity",
@@ -171,6 +170,10 @@ describe("the registered surface", () => {
       "spool_write_note",
       "spool_search",
     ]);
+    // `spool_set_aperture` is gone: docs/spool-loops.md §13.6 put the room
+    // back in the user's own hand, so no tool on this wall changes what the
+    // screen shows. The aperture slot and its route stay (dormant) —
+    // `spool-routes.test.ts` covers the hand's own path to it.
     // The naming standard the whole protocol assumes: a Telar tool is
     // `mcp__telar__<capability>_<verb>`, so a client can tell one of ours from a
     // user-configured server's.
@@ -892,58 +895,10 @@ describe("identity through the wall — the user's area and color, relayed and n
   });
 });
 
-describe("the aperture through the wall — the user's own room, shown as they asked", () => {
-  test("its description routes a SEE-request to the room, not to prose — and pins the see-vs-ask line", () => {
-    const description = build().registered.find((r) => r.name === "spool_set_aperture")!.description;
-    // A live drive showed the agent narrating "lo de hoy" as a summary while
-    // the room stayed wide — good answer, wrong organ. The description now
-    // says the room IS part of the reply, and to change it FIRST.
-    expect(description).toContain("CHANGE THE ROOM");
-    expect(description).toContain("call this FIRST");
-    expect(description).toContain("Muéstrame lo de hoy");
-    expect(description).toContain("a window they are standing next to");
-    // …and keeps it honest: the trigger is asking to SEE, not any mention of a
-    // day — a genuine question is still answered in words.
-    expect(description).toContain("not any mention of a day");
-    expect(description).toContain("¿qué se movió hoy?");
-    expect(description).toContain("no view change");
-    expect(description).toContain("no work starts");
-    expect(description).toContain("spool_set_focus");
-  });
-
-  /**
-   * EVERY session carries it, with the SAME one-argument shape — mirroring
-   * `spool_set_focus`, which is likewise on every session's wall. The scope
-   * rule ("the master names a subject; a scoped session's subject is a fact")
-   * has nothing to bind here: the view names no subject, and the deeper,
-   * subject-shaped aperture stays the focus verbs' job.
-   */
-  test("master and scoped sessions get the identical shape — a view names no subject, so there is nothing to scope", () => {
-    for (const tools of [build(), build({ project: "aurora" })]) {
-      expect(Object.keys(tools.registered.find((r) => r.name === "spool_set_aperture")!.shape)).toEqual(["view"]);
-    }
-  });
-
-  test("a stated view lands on the one slot; a stray one refuses with the sentence and writes nothing", async () => {
-    const written: string[] = [];
-    const tools = build({
-      setAperture: async (view) => {
-        written.push(view);
-        return { view, schemaVersion: 1 };
-      },
-    });
-    const shown = JSON.parse(await tools.text("spool_set_aperture", { view: "today" }));
-    expect(shown.view).toBe("today");
-    // The note tells the model what this DID: changed what the user sees,
-    // touched no work.
-    expect(shown.note).toContain("Nothing about the work changed");
-
-    const bad = await tools.call("spool_set_aperture", { view: "urgent" });
-    expect(bad.isError).toBe(true);
-    expect(String((bad.content[0] as { text: string }).text)).toContain("not a view the room has");
-    expect(written).toEqual(["today"]);
-  });
-});
+// `spool_set_aperture` and its "the aperture through the wall" tests are
+// gone — docs/spool-loops.md §13.6 took the tool off every wall. The slot and
+// route it used to write are unchanged and still tested in
+// `spool-routes.test.ts` (the hand's own path).
 
 describe("area ceilings through the wall — stated by the user, clamping down, never assumed", () => {
   test("its description carries the provenance law and the clamp's direction", () => {

@@ -25,32 +25,10 @@
 import { useState } from "react";
 import { Loader2Icon } from "lucide-react";
 import type { SpoolLane } from "@telar/engine-client";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
+import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-
-/** The same labelled field the Spool's other forms wear (cf `dialogs.tsx`). */
-function Field({ htmlFor, label, hint, children }: { htmlFor: string; label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="text-xs font-medium text-foreground">
-        {label}
-      </label>
-      {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
-}
+import { FieldGroup, FieldRow, RowInput } from "@/components/spool/field-group";
 
 export function AddTaskDialog({
   open,
@@ -58,6 +36,7 @@ export function AddTaskDialog({
   subjects,
   lanes,
   defaultSubject,
+  defaultPinDay,
   onCreated,
 }: {
   open: boolean;
@@ -68,18 +47,22 @@ export function AddTaskDialog({
   lanes: SpoolLane[];
   /** Focused rooms seed their subject — the aperture is already a statement. */
   defaultSubject?: string;
+  /** The calendar day cell's own "Add a task for this day…" verb seeds this —
+   *  the SAME `pinned` field the form's own date input already writes,
+   *  merely pre-picked rather than left blank; no new field, no new route. */
+  defaultPinDay?: string;
   /** The room's reload — the new card arrives by snapshot, not by echo. */
   onCreated: () => void;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      {/* Compact card, not ceremony — no description paragraph; the title
+          alone is enough, and the sr-only text below carries the "your
+          hand" disclosure for anyone reading with assistive tech without
+          spending a visible line of screen ceremony on it. */}
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader className="sr-only">
           <DialogTitle>Add a task</DialogTitle>
-          <DialogDescription>
-            Written straight to the store, by your hand — no model reads it until you next talk. Agents notice it the
-            same way they notice everything else: it is simply there.
-          </DialogDescription>
         </DialogHeader>
         {/* Mounted fresh per open (the `key` in spirit): state lives below so
             reopening starts blank rather than carrying the last attempt. */}
@@ -88,6 +71,7 @@ export function AddTaskDialog({
             subjects={subjects}
             lanes={lanes}
             {...(defaultSubject === undefined ? {} : { defaultSubject })}
+            {...(defaultPinDay === undefined ? {} : { defaultPinDay })}
             onDone={() => {
               onOpenChange(false);
               onCreated();
@@ -103,11 +87,13 @@ function AddTaskForm({
   subjects,
   lanes,
   defaultSubject,
+  defaultPinDay,
   onDone,
 }: {
   subjects: string[];
   lanes: SpoolLane[];
   defaultSubject?: string;
+  defaultPinDay?: string;
   onDone: () => void;
 }) {
   const [title, setTitle] = useState("");
@@ -115,7 +101,7 @@ function AddTaskForm({
   const [lane, setLane] = useState("");
   const [deadlineLabel, setDeadlineLabel] = useState("");
   const [deadlineKind, setDeadlineKind] = useState<"external" | "self">("self");
-  const [pinDay, setPinDay] = useState("");
+  const [pinDay, setPinDay] = useState(defaultPinDay ?? "");
   const [busy, setBusy] = useState(false);
   /** The store's sentence, rendered in place. Never invented here. */
   const [refused, setRefused] = useState<string | null>(null);
@@ -150,96 +136,99 @@ function AddTaskForm({
 
   return (
     <form
-      className="space-y-4"
+      className="space-y-3"
       onSubmit={(event) => {
         event.preventDefault();
         submit();
       }}
     >
-      <Field htmlFor="task-title" label="Title">
-        <Input
-          id="task-title"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="What is it?"
-          autoFocus
-        />
-      </Field>
+      {/* THE TITLE INPUT IS THE CARD'S OWN HEADER — Reminders' own grammar:
+          no "Title" label, no border, larger than the rows beneath it. The
+          dialog's a11y title stays (sr-only, above) for assistive tech. */}
+      <input
+        id="task-title"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+        placeholder="What is it?"
+        autoFocus
+        className="w-full border-none bg-transparent px-1 text-base font-medium text-foreground outline-none placeholder:text-muted-foreground/60"
+      />
 
-      <Field htmlFor="task-subject" label="Subject" hint="An existing subject, or a new word — both are yours to say.">
-        <Input
-          id="task-subject"
-          list="task-subject-options"
-          value={subject}
-          onChange={(event) => setSubject(event.target.value)}
-          placeholder="Leave blank to file it later"
-        />
-        <datalist id="task-subject-options">
-          {subjects.map((s) => (
-            <option key={s} value={s} />
-          ))}
-        </datalist>
-      </Field>
+      <FieldGroup>
+        <FieldRow label="Subject" htmlFor="task-subject" hint="An existing subject, or a new word — both are yours to say.">
+          <RowInput
+            id="task-subject"
+            list="task-subject-options"
+            value={subject}
+            onChange={(event) => setSubject(event.target.value)}
+            placeholder="Leave blank to file it later"
+          />
+          <datalist id="task-subject-options">
+            {subjects.map((s) => (
+              <option key={s} value={s} />
+            ))}
+          </datalist>
+        </FieldRow>
 
-      {lanes.length > 0 && (
-        <Field htmlFor="task-lane" label="Lane">
-          <Select value={lane} onValueChange={(next) => setLane(next ?? "")}>
-            <SelectTrigger size="sm" id="task-lane" className="w-full">
-              <SelectValue placeholder="Where its work tends to happen" />
-            </SelectTrigger>
-            <SelectContent>
-              {lanes.map((l) => (
-                <SelectItem key={l.key} value={l.key}>
-                  {l.label}
-                  {l.window ? ` — ${l.window}` : ""}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
-      )}
+        {lanes.length > 0 && (
+          <FieldRow label="Lane" htmlFor="task-lane">
+            <Select value={lane} onValueChange={(next) => setLane(next ?? "")}>
+              <SelectTrigger size="sm" id="task-lane" className="w-full border-none bg-transparent shadow-none">
+                <SelectValue placeholder="Where its work tends to happen" />
+              </SelectTrigger>
+              <SelectContent>
+                {lanes.map((l) => (
+                  <SelectItem key={l.key} value={l.key}>
+                    {l.label}
+                    {l.window ? ` — ${l.window}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        )}
 
-      <div className="grid grid-cols-[1fr_auto] gap-2">
-        <Field
-          htmlFor="task-deadline"
+        <FieldRow
           label="Deadline"
+          htmlFor="task-deadline"
           hint="Your own words — “Friday”, “end of month”. A chip you chose to look at, never an alarm."
         >
-          <Input
-            id="task-deadline"
-            value={deadlineLabel}
-            onChange={(event) => setDeadlineLabel(event.target.value)}
-            placeholder="Optional"
-          />
-        </Field>
-        <Field htmlFor="task-deadline-kind" label="Whose">
-          <Select
-            value={deadlineKind}
-            onValueChange={(next) => setDeadlineKind(next === "external" ? "external" : "self")}
-          >
-            <SelectTrigger size="sm" id="task-deadline-kind">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="self">mine</SelectItem>
-              <SelectItem value="external">external</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-      </div>
+          <div className="flex items-center justify-end gap-2">
+            <RowInput
+              id="task-deadline"
+              value={deadlineLabel}
+              onChange={(event) => setDeadlineLabel(event.target.value)}
+              placeholder="Optional"
+              className="text-left"
+            />
+            <Select
+              value={deadlineKind}
+              onValueChange={(next) => setDeadlineKind(next === "external" ? "external" : "self")}
+            >
+              <SelectTrigger size="sm" id="task-deadline-kind" className="w-auto shrink-0 border-none bg-transparent shadow-none">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="self">mine</SelectItem>
+                <SelectItem value="external">external</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </FieldRow>
 
-      <Field htmlFor="task-pin" label="Pin to a day" hint="Optional. Picking a day is you stating it — it shows on the calendar and joins Needs you when the day comes.">
-        <Input id="task-pin" type="date" value={pinDay} onChange={(event) => setPinDay(event.target.value)} />
-      </Field>
+        <FieldRow
+          label="Pin to a day"
+          htmlFor="task-pin"
+          hint="Optional. Picking a day is you stating it — it shows on the calendar and joins Needs you when the day comes."
+        >
+          <RowInput id="task-pin" type="date" value={pinDay} onChange={(event) => setPinDay(event.target.value)} />
+        </FieldRow>
+      </FieldGroup>
 
-      {refused && (
-        <Alert variant="destructive">
-          <AlertDescription className="text-xs break-words">{refused}</AlertDescription>
-        </Alert>
-      )}
+      {refused && <p className="px-1 text-xs break-words text-muted-foreground">{refused}</p>}
 
-      <DialogFooter>
-        <DialogClose render={<Button type="button" variant="outline" size="sm" />}>Cancel</DialogClose>
+      <DialogFooter className="-mx-4 -mb-4 border-t-0 bg-transparent p-0 pt-1">
+        <DialogClose render={<Button type="button" variant="ghost" size="sm" />}>Cancel</DialogClose>
         <Button type="submit" size="sm" disabled={busy || !title.trim()}>
           {busy && <Loader2Icon className="animate-spin" />}
           Add it

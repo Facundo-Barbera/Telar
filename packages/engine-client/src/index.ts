@@ -53,6 +53,7 @@ import {
   type SpoolMap,
   type SpoolPickup,
   type SpoolSubjectThreads,
+  type SpoolTagUsage,
   type SpoolThread,
   type SpoolWork,
   type SpoolLane,
@@ -467,20 +468,23 @@ export class EngineClient {
   }
 
   /**
-   * Say whose a subject is — its `area` (the user's group name) and/or its
-   * `color` (a token from the closed identity set). `null` clears a field, an
-   * absent key leaves it untouched — the same `in` rule as terrain, spelled
-   * with explicit spreads because JSON.stringify would erase `undefined` and
-   * make "leave it" indistinguishable from a bug. Identity, never state.
-   * Rejects with the store's own sentence for a value it must not hold.
+   * Say whose a subject is — its `area` (the user's group name), its `color`
+   * (a token from the closed identity set) and/or its `rank` (the user's own
+   * manual position among the other subjects in that SAME area). `null`
+   * clears a field, an absent key leaves it untouched — the same `in` rule as
+   * terrain, spelled with explicit spreads because JSON.stringify would erase
+   * `undefined` and make "leave it" indistinguishable from a bug. Identity,
+   * never state. Rejects with the store's own sentence for a value it must
+   * not hold.
    */
   setSpoolSubjectIdentity(
     key: string,
-    patch: { area?: string | null; color?: SpoolSubjectColor | null },
+    patch: { area?: string | null; color?: SpoolSubjectColor | null; rank?: number | null },
   ): Promise<{ subject: SpoolSubject }> {
     return this.request("PATCH", `/v2/spool/subjects/${encodeURIComponent(key)}`, {
       ...("area" in patch ? { area: patch.area } : {}),
       ...("color" in patch ? { color: patch.color } : {}),
+      ...("rank" in patch ? { rank: patch.rank } : {}),
     });
   }
 
@@ -501,6 +505,22 @@ export class EngineClient {
    */
   setSpoolAreaCeiling(name: string, ceiling: SpoolSubjectPermits | null): Promise<{ area: SpoolArea }> {
     return this.request("PATCH", `/v2/spool/areas/${encodeURIComponent(name)}`, { ceiling });
+  }
+
+  /** Every tag in use across items and notes, alphabetised, with its two
+   *  counts — a read-time projection, no tag record on disk. */
+  spoolTags(): Promise<{ tags: SpoolTagUsage[] }> {
+    return this.request("GET", "/v2/spool/tags");
+  }
+
+  /**
+   * Rename a tag everywhere it appears — every item and every note that
+   * carries it. Renaming onto a name already in use MERGES the two (see
+   * `apps/engine/src/spool/tags.ts`). Rejects with the store's own sentence
+   * for a blank name or a `to` identical to `from`.
+   */
+  renameSpoolTag(from: string, to: string): Promise<{ tag: string; items: number; notes: number }> {
+    return this.request("PATCH", `/v2/spool/tags/${encodeURIComponent(from)}`, { to });
   }
 
   /**

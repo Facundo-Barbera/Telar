@@ -37,8 +37,8 @@
  * created: every arrival returns the same session.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { RotateCwIcon, TriangleAlertIcon } from "lucide-react";
-import type { EngineRequest, RequestDecision, Session, Turn } from "@telar/engine-client";
+import { Maximize2Icon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-react";
+import type { EngineRequest, RequestDecision, Session, SpoolMcpInfo, Turn } from "@telar/engine-client";
 import { createEngineApi, newRunId } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
 import { hydrateSession, tailSession } from "@/lib/engine/session-sync";
@@ -49,12 +49,72 @@ import { ConversationContent, ConversationScrollButton, ConversationViewport } f
 import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/composer";
 import { SessionTurn } from "@/components/session-cockpit";
+import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
 /** The master's draft is keyed on the session, like any other. It has no
  *  project half, which is exactly what `writeDraft`'s optional project is for. */
 const DRAFT_PROJECT = undefined;
+
+/**
+ * THE MCP CONNECTIONS CARD — rehomed here from `warehouse.tsx`'s
+ * `ConnectionsTab` (§13.8, 2026-08-19: the Warehouse dissolves). Same data
+ * (`SpoolMcpInfo`, `/api/spool/mcp-info`), same masked-by-default
+ * reveal/copy behaviour, moved rather than duplicated — its only home now is
+ * the Assistant room's own foot, self-fetching the same "pull its own read"
+ * discipline every other Spool face keeps. Quiet: no red, a plain card
+ * beneath the composer, not a tab of its own.
+ */
+function McpConnectionsCard() {
+  const [mcp, setMcp] = useState<SpoolMcpInfo | null>(null);
+  const [revealed, setRevealed] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const first = window.setTimeout(() => {
+      void fetch("/api/spool/mcp-info")
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => setMcp((data?.mcp ?? null) as SpoolMcpInfo | null))
+        .catch(() => undefined);
+    }, 0);
+    return () => window.clearTimeout(first);
+  }, []);
+
+  if (!mcp) return null;
+
+  return (
+    <div className="w-full px-4 pb-4">
+      <div className="rounded-lg bg-muted/40 p-2 ring-1 ring-border/60">
+        <code className="block font-mono text-[10px] leading-relaxed break-all text-muted-foreground">
+          {revealed ? mcp.addCommand : mcp.addCommand.replaceAll(mcp.secret, "••••••••")}
+        </code>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(mcp.addCommand).then(() => setCopied(true));
+            }}
+            className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+          >
+            {copied ? "copied" : "copy"}
+          </button>
+          <button
+            type="button"
+            aria-pressed={revealed}
+            onClick={() => setRevealed((r) => !r)}
+            className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+          >
+            {revealed ? "hide the secret" : "reveal the secret"}
+          </button>
+        </div>
+      </div>
+      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
+        The secret lets any agent read and file into the whole Spool — treat it like a key.
+      </p>
+    </div>
+  );
+}
 
 /** Where the view-level cutoff lives. See `startFresh` — the SESSION is a
  *  singleton the engine will not fork, so "fresh" is a fact about the view. */
@@ -77,6 +137,9 @@ export function MasterChat({
   openers = [],
   prefill,
   context,
+  onExpand,
+  onClose,
+  variant = "layer",
 }: {
   /**
    * A TURN MAY HAVE MOVED THE STORE. Talking is how items get filed, focus
@@ -114,6 +177,26 @@ export function MasterChat({
    * plumbing in the payload, the person's own words on screen.
    */
   context?: string;
+  /** §13.6 — set only by the summoned layer's chat slot, never by the
+   *  Assistant room (which has nowhere to expand to and nothing to close).
+   *  Rendered beside "Start fresh" rather than replacing it: this header's
+   *  own job — naming what this half is — is unchanged by who is hosting
+   *  it. */
+  onExpand?: () => void;
+  onClose?: () => void;
+  /**
+   * WHICH DOOR THIS IS — §13.6's two surfaces of the one transcript.
+   * `"layer"` (the default) is the narrow, edge-docked slide-over: full
+   * bleed, top-anchored, the shape it has always had. `"room"` is the
+   * Assistant room itself — full-width real estate the transcript must not
+   * simply fill edge to edge with prose. It gets the app's own
+   * reading-width column (`max-w-3xl`, the same token `Stance`, `Lobby` and
+   * `SubjectRoom` already center on) and BOTTOM-ANCHORED short-conversation
+   * layout: a fresh or short exchange sits just above the composer instead
+   * of pinned to the top with a void underneath — the layout parameterizes
+   * the one component rather than forking a second chat surface.
+   */
+  variant?: "layer" | "room";
 }) {
   const [session, setSession] = useState<Session>();
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -397,131 +480,177 @@ export function MasterChat({
         </Alert>
       )}
 
-      {/* WHAT THIS HALF IS, in one line where a header would go. It counts
-          nothing at the user — the chat has nothing to count, and a number
-          here would be the badge the module refuses everywhere else. */}
-      <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border px-4">
-        <p className="min-w-0 flex-1 truncate text-xs leading-relaxed text-muted-foreground">
-          No project — so it can answer across all of them.
-        </p>
-        {shownTurns.length > 0 && (
-          <button
-            type="button"
-            onClick={startFresh}
-            disabled={!!live || sending}
-            className="shrink-0 text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground disabled:hover:text-muted-foreground/70"
-          >
-            Start fresh
-          </button>
-        )}
-      </div>
-
-      <ConversationViewport className="min-h-0 flex-1">
-        {/* The default gap-8 between turns stands — the transcript's rhythm
-            needs the air; only the horizontal padding is narrowed. */}
-        <ConversationContent className="w-full px-4 py-5">
-          {/* THE WAY BACK. One control, both directions, and it is how the
-              cutoff stays honest: everything "Start fresh" folded away is one
-              press from here, never gone. */}
-          {earlierCount > 0 && (
+      {/* THE READING COLUMN — §13.6's second door needs one. `"layer"` fills
+          its narrow edge-docked strip as it always has (no wrapper needed:
+          the column IS the strip); `"room"` gets the app's own max-w-3xl
+          token, centered, so a full-width room does not set the transcript
+          in a line as wide as the screen. Everything below — the header
+          strip, the scrolling transcript, the openers row, the composer —
+          rides inside it as one column, composer pinned to its bottom. */}
+      <div className={cn("flex min-h-0 flex-1 flex-col", variant === "room" && "mx-auto w-full max-w-3xl")}>
+        {/* WHAT THIS HALF IS, in one line where a header would go. It counts
+            nothing at the user — the chat has nothing to count, and a number
+            here would be the badge the module refuses everywhere else. */}
+        <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border px-4">
+          <p className="min-w-0 flex-1 truncate text-xs leading-relaxed text-muted-foreground">
+            No project — so it can answer across all of them.
+          </p>
+          {shownTurns.length > 0 && (
             <button
               type="button"
-              onClick={() => setShowEarlier((v) => !v)}
-              className="mb-2 self-start text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+              onClick={startFresh}
+              disabled={!!live || sending}
+              className="shrink-0 text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground disabled:hover:text-muted-foreground/70"
             >
-              {showEarlier ? "just the latest" : `earlier (${earlierCount})`}
+              Start fresh
             </button>
           )}
-
-          {shownTurns.length === 0 && (
-            <div className="flex flex-col gap-2 py-8">
-              {/* ORIENTATION, once and in one sentence: what this chat can
-                  reach. Below it, the openers say the same thing as things to
-                  do — each drawn from the stance's own state, never generated. */}
-              <p className="text-xs leading-relaxed text-muted-foreground">
-                It reads and files your spool, remembers where you left off, and answers across every subject.
-              </p>
-              {/* The app's chip idiom — rounded-full, hairline, quiet fill —
-                  so an opener reads as the same kind of object as every other
-                  tappable chip in Telar. */}
-              <div className="mt-1 flex flex-col items-start gap-1.5">
-                {openers.map((opener) => (
-                  <button
-                    key={opener}
-                    type="button"
-                    disabled={!session || sending}
-                    onClick={() => send(opener, false)}
-                    className="rounded-full border border-border bg-card px-3 py-1.5 text-left text-xs text-foreground shadow-sm transition-colors hover:border-spool/40 hover:bg-muted/40"
-                  >
-                    {opener}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {shownTurns.map((turn: JournalTurn) => (
-            <SessionTurn
-              key={turn.runId}
-              /* The journal's turn, with the machine-context line stripped
-                 from what the transcript SHOWS — the payload keeps it. */
-              turn={{ ...turn, prompt: turn.prompt.replace(ROOM_PREFIX, "") }}
-              requests={requests.filter((r) => r.runId === turn.runId && r.state === "open")}
-              sending={sending}
-              live={turn.runId === live?.runId}
-              now={now}
-              quiet
-              onDecide={decide}
-              onRetry={() => undefined}
-              onDiscard={() => undefined}
-            />
-          ))}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </ConversationViewport>
-
-      {/* CAPABILITY STAYS DISCOVERABLE past the first message: the same
-          openers, one quiet row, still tappable. */}
-      {shownTurns.length > 0 && openers.length > 0 && (
-        <div className="flex shrink-0 flex-wrap gap-1.5 px-4 pb-2">
-          {openers.map((opener) => (
-            <button
-              key={opener}
-              type="button"
-              disabled={!session || sending}
-              onClick={() => send(opener, false)}
-              className="max-w-full truncate rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+          {onExpand && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Expand to the Assistant room"
+              title="Expand to the Assistant room"
+              onClick={onExpand}
+              className="shrink-0 text-muted-foreground hover:text-foreground"
             >
-              {opener}
-            </button>
-          ))}
+              <Maximize2Icon className="size-4" />
+            </Button>
+          )}
+          {onClose && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close the assistant"
+              title="Close the assistant"
+              onClick={onClose}
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+            >
+              <XIcon className="size-4" />
+            </Button>
+          )}
         </div>
-      )}
 
-      <div className="w-full px-4 pb-4">
-        <Composer
-          draft={draft}
-          ready={!!session}
-          attachments={[]}
-          onAttach={() => undefined}
-          busy={!!live}
-          sending={sending}
-          queued={queued}
-          backgroundTasks={0}
-          onDraftChange={setDraft}
-          placeholder="Say what you're working on, or dump something and it'll get filed…"
-          onSubmit={submit}
-          onStop={stop}
-          onWithdraw={withdraw}
-          onRecall={(item) => {
-            withdraw(item.runId);
-            setDraft(item.text);
-          }}
-          onRuntimeMode={() => undefined}
-          onModelChange={() => undefined}
-          {...(session ? { session } : {})}
-          {...(session?.runtimeMode ? { runtimeMode: session.runtimeMode } : {})}
-        />
+        <ConversationViewport className="min-h-0 flex-1">
+          {/* The default gap-8 between turns stands — the transcript's rhythm
+              needs the air; only the horizontal padding is narrowed. ROOM
+              ADDS `min-h-full justify-end`: the content div sits inside the
+              scroll area at its natural (shrink-wrapped) height, so without
+              this a short exchange paints at the TOP of a tall viewport with
+              a void below it. `min-h-full` floors it to the viewport's
+              height and `justify-end` packs its children — the turns — to
+              the bottom of that floor, so the newest message ends just above
+              the composer; once the transcript outgrows the floor the min
+              stops mattering and it scrolls exactly as the layer does. */}
+          <ConversationContent className={cn("w-full px-4 py-5", variant === "room" && "min-h-full justify-end")}>
+            {/* THE WAY BACK. One control, both directions, and it is how the
+                cutoff stays honest: everything "Start fresh" folded away is one
+                press from here, never gone. */}
+            {earlierCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowEarlier((v) => !v)}
+                className="mb-2 self-start text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+              >
+                {showEarlier ? "just the latest" : `earlier (${earlierCount})`}
+              </button>
+            )}
+
+            {shownTurns.length === 0 && (
+              <div className="flex flex-col gap-2 py-8">
+                {/* ORIENTATION, once and in one sentence: what this chat can
+                    reach. Below it, the openers say the same thing as things to
+                    do — each drawn from the stance's own state, never generated. */}
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  It reads and files your spool, remembers where you left off, and answers across every subject.
+                </p>
+                {/* The app's chip idiom — rounded-full, hairline, quiet fill —
+                    so an opener reads as the same kind of object as every other
+                    tappable chip in Telar. */}
+                <div className="mt-1 flex flex-col items-start gap-1.5">
+                  {openers.map((opener) => (
+                    <button
+                      key={opener}
+                      type="button"
+                      disabled={!session || sending}
+                      onClick={() => send(opener, false)}
+                      className="rounded-full border border-border bg-card px-3 py-1.5 text-left text-xs text-foreground shadow-sm transition-colors hover:border-spool/40 hover:bg-muted/40"
+                    >
+                      {opener}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {shownTurns.map((turn: JournalTurn) => (
+              <SessionTurn
+                key={turn.runId}
+                /* The journal's turn, with the machine-context line stripped
+                   from what the transcript SHOWS — the payload keeps it. */
+                turn={{ ...turn, prompt: turn.prompt.replace(ROOM_PREFIX, "") }}
+                requests={requests.filter((r) => r.runId === turn.runId && r.state === "open")}
+                sending={sending}
+                live={turn.runId === live?.runId}
+                now={now}
+                quiet
+                onDecide={decide}
+                onRetry={() => undefined}
+                onDiscard={() => undefined}
+              />
+            ))}
+          </ConversationContent>
+          <ConversationScrollButton />
+        </ConversationViewport>
+
+        {/* CAPABILITY STAYS DISCOVERABLE past the first message: the same
+            openers, one quiet row, still tappable. */}
+        {shownTurns.length > 0 && openers.length > 0 && (
+          <div className="flex shrink-0 flex-wrap gap-1.5 px-4 pb-2">
+            {openers.map((opener) => (
+              <button
+                key={opener}
+                type="button"
+                disabled={!session || sending}
+                onClick={() => send(opener, false)}
+                className="max-w-full truncate rounded-full border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+              >
+                {opener}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="w-full px-4 pb-4">
+          <Composer
+            draft={draft}
+            ready={!!session}
+            attachments={[]}
+            onAttach={() => undefined}
+            busy={!!live}
+            sending={sending}
+            queued={queued}
+            backgroundTasks={0}
+            onDraftChange={setDraft}
+            placeholder="Say what you're working on, or dump something and it'll get filed…"
+            onSubmit={submit}
+            onStop={stop}
+            onWithdraw={withdraw}
+            onRecall={(item) => {
+              withdraw(item.runId);
+              setDraft(item.text);
+            }}
+            onRuntimeMode={() => undefined}
+            onModelChange={() => undefined}
+            {...(session ? { session } : {})}
+            {...(session?.runtimeMode ? { runtimeMode: session.runtimeMode } : {})}
+          />
+        </div>
+
+        {/* THE MCP CARD — the room's own foot, "room" variant only; the
+            summoned layer's narrow strip has no room for it and never
+            carried it before this pass either. */}
+        {variant === "room" && <McpConnectionsCard />}
       </div>
     </div>
   );

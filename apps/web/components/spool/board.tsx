@@ -36,6 +36,7 @@ import { ChevronRightIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import type { SpoolLane, SpoolSubject, SpoolSubjectGroup, SpoolSubjectRow } from "@telar/engine-client";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { CloseCheckbox, DeadlineChip, PinChip, SelectHotspot, SubjectDot } from "@/components/spool/chips";
 import { ConfirmDialog, LaneFormDialog, type LaneFormValues } from "@/components/spool/dialogs";
 import { closeItemByHand, reopenItemByHand } from "@/lib/spool-close";
@@ -98,47 +99,63 @@ function Card({
       }}
       className="cursor-grab rounded-lg bg-card px-3 py-2 shadow-sm ring-1 ring-foreground/10 transition-colors hover:bg-muted/40 active:cursor-grabbing"
     >
-      {/* Said-first, like every line in the room. The click summons the tray.
-          TITLES level: text-sm, foreground, medium. The checkbox rides the
-          words' row, always visible — Reminders' own arrangement. */}
-      <div className="flex items-start gap-2">
-        {select && (
-          <SelectHotspot
-            selected={select.selected}
-            label={`Select “${said || item.title}”`}
-            onToggle={select.toggle}
-            className="mt-0.5"
-          />
-        )}
-        <CloseCheckbox
-          closed={false}
-          label={`Close “${said || item.title}”`}
-          onToggle={() => onClose(item.id)}
-          className="mt-0.5"
-        />
-        <button type="button" onClick={() => onOpen(item.id)} className="block min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <span className="block text-sm leading-snug font-medium text-foreground">{said || item.title}</span>
-        </button>
-      </div>
-      {(wide || item.mirrored || item.deadline || item.pinned) && (
-        /* ONE metadata row: the identity dot with the subject's name said
-           ONCE (wide only — focused already named whose board this is), then
-           the mirror mark only when a mirror exists, the deadline and pin
-           chips only when they exist. The old ProjectChip repeated the name
-           the dot already claimed and chipped "floating" onto every loose
-           card — the noise this row replaces. */
-        <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
-          {wide && <SubjectDot color={color} />}
-          {wide && (
-            <span className="min-w-0 truncate text-xs text-muted-foreground">{item.project ?? "floating"}</span>
+      {/* THE CARD'S OWN CONTEXT MENU — drag stays on THIS `<li>` (draggable,
+          onDragStart/onDragOver/onDrop above are untouched); only the card's
+          own content, below, is wrapped in the trigger, so a right-click can
+          never race the drag machinery. "Close" fires the SAME `onClose` the
+          checkbox fires; "Open packet" is the SAME `onOpen` the title button
+          fires. OMITTED, and named rather than faked: "Pin to…", "Move to
+          lane…", "Tag…" — the board moves a card between lanes only by drag
+          (`onDropBefore`/the column's own drop target), pins nowhere on this
+          surface, and no tag control reaches an individual card here at all;
+          the Tasks tab's row menu names the identical gap for the same
+          reason (`stance.tsx`'s `RowContextMenu`). */}
+      <ContextMenu>
+        <ContextMenuTrigger>
+          <div className="flex items-start gap-2">
+            {select && (
+              <SelectHotspot
+                selected={select.selected}
+                label={`Select “${said || item.title}”`}
+                onToggle={select.toggle}
+                className="mt-0.5"
+              />
+            )}
+            <CloseCheckbox
+              closed={false}
+              label={`Close “${said || item.title}”`}
+              onToggle={() => onClose(item.id)}
+              className="mt-0.5"
+            />
+            <button type="button" onClick={() => onOpen(item.id)} className="block min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <span className="block text-sm leading-snug font-medium text-foreground">{said || item.title}</span>
+            </button>
+          </div>
+          {(wide || item.mirrored || item.deadline || item.pinned) && (
+            /* ONE metadata row: the identity dot with the subject's name said
+               ONCE (wide only — focused already named whose board this is), then
+               the mirror mark only when a mirror exists, the deadline and pin
+               chips only when they exist. The old ProjectChip repeated the name
+               the dot already claimed and chipped "floating" onto every loose
+               card — the noise this row replaces. */
+            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">
+              {wide && <SubjectDot color={color} />}
+              {wide && (
+                <span className="min-w-0 truncate text-xs text-muted-foreground">{item.project ?? "floating"}</span>
+              )}
+              {item.mirrored && (
+                <span className="font-mono text-[10px] text-muted-foreground/70">{item.mirrored}</span>
+              )}
+              {item.deadline && <DeadlineChip deadline={item.deadline} />}
+              {item.pinned && <PinChip pinned={item.pinned} />}
+            </div>
           )}
-          {item.mirrored && (
-            <span className="font-mono text-[10px] text-muted-foreground/70">{item.mirrored}</span>
-          )}
-          {item.deadline && <DeadlineChip deadline={item.deadline} />}
-          {item.pinned && <PinChip pinned={item.pinned} />}
-        </div>
-      )}
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem onClick={() => onClose(item.id)}>Close</ContextMenuItem>
+          <ContextMenuItem onClick={() => onOpen(item.id)}>Open packet</ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </li>
   );
 }
@@ -179,19 +196,29 @@ function LaneDoneFold({
             const words = said || row.item.title;
             return (
               <li key={row.item.id} className="flex items-start gap-2 rounded-lg px-1.5 py-1">
-                <CloseCheckbox closed label={`Reopen “${words}”`} onToggle={() => onReopen(row.item.id)} className="mt-0.5" />
-                <button
-                  type="button"
-                  onClick={() => onOpen(row.item.id)}
-                  className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <span className="block truncate text-sm leading-snug font-medium text-muted-foreground/60">{words}</span>
-                  {row.item.closed && (
-                    <span className="block truncate text-[10px] text-muted-foreground/60">
-                      “closed {row.item.closed.label}”
-                    </span>
-                  )}
-                </button>
+                <ContextMenu>
+                  <ContextMenuTrigger>
+                    <div className="flex min-w-0 flex-1 items-start gap-2">
+                      <CloseCheckbox closed label={`Reopen “${words}”`} onToggle={() => onReopen(row.item.id)} className="mt-0.5" />
+                      <button
+                        type="button"
+                        onClick={() => onOpen(row.item.id)}
+                        className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <span className="block truncate text-sm leading-snug font-medium text-muted-foreground/60">{words}</span>
+                        {row.item.closed && (
+                          <span className="block truncate text-[10px] text-muted-foreground/60">
+                            “closed {row.item.closed.label}”
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => onReopen(row.item.id)}>Reopen</ContextMenuItem>
+                    <ContextMenuItem onClick={() => onOpen(row.item.id)}>Open packet</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               </li>
             );
           })}

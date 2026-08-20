@@ -456,3 +456,110 @@ permits, the moat, the tools and the socket, the shelf, the search, the
 place switcher of §11 — and the VISUAL LANGUAGE the user likes (quiet
 rounded cards, identity colors, the chips, three text levels, bg-sidebar
 rails); this is an interaction-model rebuild wearing the same clothes.
+
+### 13.6 The assistant's two doors (amended 2026-08-18, supersedes the
+"chat rides beside every room" line of §13.2)
+
+Living in the built §13 room surfaced a column problem: rail + room + tray +
+docked chat could stack FOUR columns, and the resident right sidebar paid a
+permanent column for an assistant used in bursts. The amendment: **the
+assistant has a room of its own and can be summoned over any other; it is
+never resident.**
+
+- **One assistant, one transcript, two doors.** There is still exactly one
+  master conversation. Its two surfaces render the same braid.
+- **The assistant's room** is an entry in the rail floor plan — Lobby /
+  Today / Scheduled / **Assistant** / areas. Full-width conversation,
+  scoped to everything; where filing sprees and long exchanges live.
+- **The summoned layer**: from any room, one key (⌘J) or the header button
+  slides the assistant over the right edge — same transcript, stamped with
+  the room it was summoned from. The TRAY DISSOLVES INTO THIS LAYER: a
+  packet face, a note editor, or the conversation are ONE slot; two of them
+  can never stack columns again. "Answer in chat" summons it with the
+  question loaded. An expand control on the layer navigates to the
+  assistant's room — the doors join.
+- **Every room defaults to two columns** (rail + main). Three only while
+  summoned, only for as long as you keep it. The resident right sidebar
+  dies in the Spool place; Telar's place keeps its own right-panel behavior
+  untouched.
+- The docked chat's suggestion chips move: at most one quiet hint line
+  where they still earn their place (the lobby), the rest live in the
+  assistant's surfaces.
+
+### 13.7 Depth is for names, never for work (amended 2026-08-18)
+
+Amends §13.1's "never nested" with precision about which half was
+load-bearing. The floors that do not move: **subjects never nest** (the
+resume test lives at that level) and **items never multiply through
+breakdown**. Above the subjects, the hierarchy is only LABELS — nothing can
+live inside "Work" except other labels — so nesting there creates no place
+for work to hide.
+
+- **An area's name is a path.** "Work / Focaltec", "Life / Personal". The
+  store keeps ONE string per subject (no parent pointers, no tree tables);
+  segments split on " / ", trimmed. Depth is a naming convention the user
+  adopts, not a structure the system maintains.
+- **Rendering: containers all the way down.** Every path node is a real
+  container row — disclosure chevron, collapsible, visual weight DESCENDING
+  with depth (the container is never lighter than its contents; the old
+  inversion — tiny muted area names above full-weight subject rows — is the
+  bug this fixes). Each container row carries its rollup facts: subject
+  count, what needs you beneath it, its ceiling when set. The "AREAS"
+  meta-caption dies; containers introduce themselves. Un-areaed subjects
+  sit under a ghost container, never floating. The lobby uses the same
+  container grammar, so both surfaces teach the same shape.
+- **Drag files at any node.** Dropping a subject on a node makes that path
+  its area ("Work" itself is a legal area). Dragging a container onto a
+  container renames the prefix — recategorizing a world is one gesture
+  (bounded writes: one PATCH per subject in the moved subtree).
+- **Ceilings clamp down the path.** A ceiling stated on "Work" clamps every
+  area and subject whose path sits beneath it; where several apply, the
+  MOST restrictive wins. Down-only, as ever.
+- **The warning, written here on purpose:** every level is a decision paid
+  at filing time. Two or three segments is where real lives sit; deeper
+  paths are gardening the cabinet instead of working. The tool permits,
+  this doc discourages.
+
+### 13.8 The map is content, not chrome (agreed 2026-08-19; amends §13.2,
+### dissolves the Warehouse)
+
+The Warehouse (built 2026-08-19, dissolved the same day) was a symptom: a
+separate room to MANAGE things existed only because the rooms where things
+LIVE didn't let you touch them, and the structure lived in a sidebar too
+cramped to hold it. The diagnosis, in the user's words: a sidebar is quick
+access, not the form of the product. The correction, in Reminders' grammar:
+the home screen IS the map, every screen is a list, and every row is
+editable exactly where it sits.
+
+- **The Lobby is the home screen.** The whole structure, in the content
+  pane: Today and Scheduled as smart tiles with live counts up top, then
+  the areas as §13.7 container sections holding subject rows with their
+  counts. Re-entry survives as the map's ARRANGEMENT, not as a feed: a
+  subject that needs you carries its badge and floats its card open
+  (§13.2's fold law, relocated); everything else sits folded as plain
+  structure you can stand on. All structure gestures — drag to file,
+  reorder, rename, new area, ceilings — happen HERE, in the room that has
+  space for them.
+- **Navigation is walking the map.** Lobby → area page (that subtree's
+  subjects and rollups, same container grammar) → subject room. A
+  breadcrumb walks back up. There is always an obvious answer to "where am
+  I and how do I reach X" — that answer is never a dialog.
+- **The rail shrinks to quick access.** Lobby, Today, Scheduled, Assistant,
+  then pins. It never renders the area tree again; every tree gesture it
+  grew (drag, inline inputs, reorder) moves to the Lobby map and is DELETED
+  from the rail.
+- **Rows edit in place.** The subject room is the task list: click a title
+  and it is a text field; the circle closes by hand (§9 unchanged); a new
+  task is typing into the empty row at the bottom, not a dialog; each row
+  discloses its details (lane, pin, tags, note) on the row itself. The
+  brief shrinks to a dismissible strip above the list — re-entry when you
+  arrive, gone when you're working.
+- **What this deletes.** The Warehouse room: Areas tab → the map; Subjects
+  tab → each room's About; Lanes and Tags → edited where they appear as
+  chips; Done → a "show completed" foot on each list; Connections → a quiet
+  card at the Assistant room's foot (connecting agents is the assistant's
+  business). Dialogs survive only where a second
+  thought is the point (confirmations, the settle-all).
+- **The floors under all of it do not move:** subjects never nest, items
+  never multiply through breakdown, closes are by hand, ceilings clamp
+  down, quiet by default.

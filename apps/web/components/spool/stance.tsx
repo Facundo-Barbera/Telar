@@ -76,13 +76,13 @@ import {
   ChevronRightIcon,
   HandIcon,
   Loader2Icon,
+  MessageCircleIcon,
   MoonIcon,
   ShieldIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
 import type {
-  SpoolApertureView,
   SpoolDeskCard,
   SpoolFocusDay,
   SpoolLane,
@@ -101,6 +101,16 @@ import type {
 } from "@telar/engine-client";
 import { CloseCheckbox, SelectHotspot, SubjectDot } from "@/components/spool/chips";
 import { ConfirmDialog } from "@/components/spool/dialogs";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
 import { Lobby } from "@/components/spool/lobby";
 import { SubjectRoom } from "@/components/spool/room";
@@ -108,6 +118,7 @@ import { MasterChat } from "@/components/spool/master-chat";
 import { SpoolHeader } from "@/components/spool/header";
 import { SpoolTray, type TrayFace } from "@/components/spool/tray";
 import { closeItemByHand, reopenItemByHand } from "@/lib/spool-close";
+import { EditableTitle, RowDisclosure } from "@/components/spool/task-row";
 import { clearSpoolRoom, publishSpoolRoom, type SpoolRoomState } from "@/lib/spool-room";
 import { formatDay, todayDay } from "@/lib/spool-today";
 import { describeWork, useSpoolWork, type SpoolWorkView } from "@/lib/spool-work";
@@ -226,7 +237,14 @@ type SubjectLook = {
  *  the focused residence's inventory, gated by the bands' precedence sets so
  *  a claimed item never repeats. `header` QUOTES the lane's stored label and
  *  window; absent means the row sits in no stack, a resting state. */
-type PreparedGroup = { key: string; header?: string; rows: { id: string; said?: string; title: string }[] };
+type PreparedGroup = {
+  key: string;
+  header?: string;
+  /** `tags` and `pinnedDay` ride along so §13.8's per-row disclosure has
+   *  something to show without a second read — the same fields `ScheduledRow`
+   *  below carries for the same reason. */
+  rows: { id: string; said?: string; title: string; tags: string[]; pinnedDay?: string }[];
+};
 
 /** One line of the wide, CHOOSING view — a subject, whose turn it is there in
  *  counts, and its freshness. Never its items: that is what focus is for.
@@ -240,7 +258,22 @@ type SubjectLineModel = {
   look: SubjectLook;
   area?: string;
   color?: string;
+  /** The user's own hand-order within an area (the rail's reorder-by-drag
+   *  pass) — joined from the subject record exactly like `area`/`color`. Cast
+   *  at the join, not typed on `SpoolSubject` itself: the field is landing on
+   *  the engine's side of the wire in the same pass, and this file's job is
+   *  only to carry it through, not to own it. */
+  rank?: number;
 };
+
+/** Reads `rank` off a subject record without widening `SpoolSubject` itself
+ *  — the field is landing on the engine's side of the wire in the same pass
+ *  that gave the rail its reorder drag, so this is the one bridge point
+ *  until `SpoolSubject` carries it natively. */
+function subjectRank(record?: SpoolSubject): number | undefined {
+  const rank = (record as (SpoolSubject & { rank?: unknown }) | undefined)?.rank;
+  return typeof rank === "number" ? rank : undefined;
+}
 
 /** One pinned item in the Scheduled scope's flat list — the user's own day,
  *  the words, and the subject's identity so eight lives on one list stay
@@ -253,6 +286,10 @@ type ScheduledRow = {
   subject: string;
   color?: string;
   day: string;
+  /** §13.8's per-row disclosure fields — the same reasoning as `PreparedGroup`
+   *  above: carried once here rather than re-read per row. */
+  lane?: string;
+  tags: string[];
 };
 
 /**
@@ -583,12 +620,26 @@ export function deriveStance(
   const claimedByBands = new Set([
     ...claimedItems,
     ...needsAll.map((e) => e.itemId).filter((id): id is string => !!id),
-    ...housekeeping.map((h) => h.id),
+    /**
+     * FIXED 2026-08-19, §13.8: housekeeping's chores are claimed here ONLY in
+     * the wide view, where the fold below actually renders and owns them.
+     * `unplaced` does NOT mean "no subject" — the seed lane resolves an
+     * unfiled item's `lane` to "unfiled", not its `project` to nothing, so a
+     * hand-captured item that could not be placed in a lane still names its
+     * real subject. A focused room suppresses the housekeeping fold entirely
+     * (`housekeeping: scope ? [] : housekeeping`, below) — claiming these ids
+     * unconditionally meant an unplaced item belonging to THIS subject was
+     * excluded from `prepared` by a fold that had just gone quiet, so it
+     * rendered nowhere at all. A drive caught this: a hand-typed item POSTed
+     * clean and then never appeared in its own room.
+     */
+    ...(scope ? [] : housekeeping.map((h) => h.id)),
   ]);
   const laneRecords = new Map((lanes ?? []).map((l) => [l.key, l]));
   const prepared: PreparedGroup[] = [];
+  const scopeRows = scope ? ((inventory ?? []).find((g) => g.project === scope)?.rows ?? []) : [];
   if (scope) {
-    for (const row of (inventory ?? []).find((g) => g.project === scope)?.rows ?? []) {
+    for (const row of scopeRows) {
       if (row.item.closed) continue;
       if (claimedByBands.has(row.item.id)) continue;
       const lane = row.lane ? laneRecords.get(row.lane) : undefined;
@@ -600,7 +651,13 @@ export function deriveStance(
         prepared.push(group);
       }
       const said = (row.item.raw ?? "").trim().replace(/\s+/g, " ");
-      group.rows.push({ id: row.item.id, ...(said ? { said } : {}), title: row.item.title });
+      group.rows.push({
+        id: row.item.id,
+        ...(said ? { said } : {}),
+        title: row.item.title,
+        tags: row.item.tags ?? [],
+        ...(row.item.pinned ? { pinnedDay: row.item.pinned.day } : {}),
+      });
     }
   }
 
@@ -617,6 +674,7 @@ export function deriveStance(
       look: lookFor(subject),
       ...(record?.area ? { area: record.area } : {}),
       ...(record?.color ? { color: record.color } : {}),
+      ...(subjectRank(record) !== undefined ? { rank: subjectRank(record) } : {}),
     };
   });
 
@@ -643,6 +701,8 @@ export function deriveStance(
             subject: group.project ?? "elsewhere",
             ...(color ? { color } : {}),
             day: row.item.pinned!.day,
+            ...(row.lane ? { lane: row.lane } : {}),
+            tags: row.item.tags ?? [],
           };
         }),
     )
@@ -686,12 +746,17 @@ export function deriveStance(
   const nightView = night && (!scope || scopedNightJobs.length > 0) ? { ...night, jobs: scopedNightJobs } : null;
 
   /**
-   * FILING IS UNFILED — no subject at all, by construction (a chore card is
-   * unplaced or has no `project`; a floating capture has none either). A
-   * focused room shows one subject's full grammar, and an unfiled item never
-   * belongs to it, so the fold and its "N things need filing" opener go
-   * quiet under scope rather than surfacing every OTHER subject's stray
-   * captures beside this one's threads. Wide still sees the whole pile.
+   * FILING IS UNFILED ONLY WHEN IT TRULY HAS NO SUBJECT — a floating capture
+   * (no `project` at all). CORRECTED 2026-08-19, §13.8: this comment used to
+   * also claim an unplaced item has "no subject at all, by construction",
+   * which is false — `unplaced` describes the LANE (the seed lane could not
+   * resolve a stack for it), not the `project`, and a hand-captured item
+   * inside a subject room carries that subject's `project` same as any
+   * other. Housekeeping's own fold still goes quiet under scope (a focused
+   * room shows one subject's full grammar, not every OTHER subject's stray
+   * captures beside it) — but an unplaced item that names THIS subject now
+   * surfaces in `prepared` instead of vanishing (see `claimedByBands`,
+   * above). Wide still sees the whole housekeeping pile.
    */
   return {
     needs: inScope(needsAll),
@@ -719,6 +784,17 @@ export function deriveStance(
     prepared,
     scheduled: { slipped: scheduledSlipped, days: scheduledDays },
     done: inScope(doneAll),
+    /**
+     * ADDED 2026-08-19, §13.8: the footer's conservation line was reading the
+     * WHOLE STORE'S totals inside a focused room — "16 items" when the room
+     * held two. `scopeRows` is the same read `prepared`/`pinnedAll`/`doneAll`
+     * already draw from (this subject's own group in `inventory`, open and
+     * closed alike, which is what "conservation" means here), so a focused
+     * room's footer can state ITS OWN count instead of the store's.
+     */
+    scopeTotals: scope
+      ? { totalItems: scopeRows.length, agentsAdded: scopeRows.filter((r) => r.item.provenance === "session").length }
+      : undefined,
   };
 }
 
@@ -733,7 +809,16 @@ export type StanceModel = ReturnType<typeof deriveStance>;
 function deriveOpeners(model: StanceModel): string[] {
   const openers: string[] = [];
   if (model.scope) openers.push(`Where did we leave ${model.scope}?`);
-  if (!model.scope && model.subjects.length > 0) openers.push(`Focus on ${model.subjects[0]}`);
+  /**
+   * HONEST ABOUT WHAT THE VERB DOES. This used to read "Focus on X" — a
+   * promise the chat could not keep even before §13.6: `spool_set_focus`
+   * writes the focus log's "you're on X" fact and says plainly that it
+   * "does not move their screen" (the user navigates their own rooms).
+   * "Focus on" reads as a command to change what is on screen; this reads
+   * as what pressing it actually does — records where the user's attention
+   * is, nothing more.
+   */
+  if (!model.scope && model.subjects.length > 0) openers.push(`I'm working on ${model.subjects[0]} — note it`);
   /** MOVEMENT-AWARE, and still drawn — the opener quotes the first observation
    *  the reconcile wrote, in its own words, so the chat's invitation and the
    *  room's freshness line cannot disagree about what moved. */
@@ -773,6 +858,8 @@ export function Row({
   close,
   pin,
   select,
+  onEditTitle,
+  disclose,
 }: {
   itemId?: string;
   onOpen?: (id: string) => void;
@@ -797,6 +884,17 @@ export function Row({
    *  is up, and a SEPARATE control from the close checkbox so the one-gesture
    *  close (§9.2) never gains a second meaning. Gathers; writes nothing. */
   select?: { selected: boolean; toggle: (shiftKey: boolean) => void };
+  /**
+   * §13.8 (2026-08-19), "rows edit in place" — ONLY passed by call sites
+   * where `title` is verifiably `SpoolItem.title` and not a thread-derived
+   * or synthesized string (the "Waiting its turn" rows). Absent everywhere
+   * else in this file: `needs`/`settled`/proposal rows render thread text as
+   * `title`, and wiring inline edit there would silently rewrite the wrong
+   * field.
+   */
+  onEditTitle?: (next: string) => Promise<void>;
+  /** §13.8's inset lane/pin/tag panel — same title-safety gate as `onEditTitle`. */
+  disclose?: { lane?: string; lanes: SpoolLane[]; tags: string[]; pinnedDay?: string; onLane: (lane: string) => void; onPin: (day: string | null) => void; onTags: (tags: string[]) => void };
 }) {
   /* THE THREE TEXT LEVELS, applied here and everywhere in the room:
      TITLES — the user's words — text-sm, foreground, font-medium;
@@ -804,7 +902,11 @@ export function Row({
      SECTION HEADERS carry the small-caps register one tone up from meta. */
   const body = (
     <span className="min-w-0 flex-1">
-      <span className="block min-w-0 truncate text-sm leading-relaxed font-medium text-foreground">{said ?? title}</span>
+      {onEditTitle ? (
+        <EditableTitle text={said ?? title} onCommit={onEditTitle} />
+      ) : (
+        <span className="block min-w-0 truncate text-sm leading-relaxed font-medium text-foreground">{said ?? title}</span>
+      )}
       {meta && <span className="block min-w-0 truncate text-xs leading-relaxed text-muted-foreground">{meta}</span>}
     </span>
   );
@@ -815,26 +917,47 @@ export function Row({
        are their own controls, and controls do not nest. */
     <li className="border-b border-border/40 last:border-b-0">
       {itemId && onOpen ? (
-        <div className="group flex w-full items-center gap-2 rounded-md px-3 py-2 transition-colors hover:bg-muted/60 focus-within:bg-muted/60">
-          {select && (
-            <SelectHotspot
-              selected={select.selected}
-              label={`Select “${clip(said ?? title, 40)}”`}
-              onToggle={select.toggle}
-            />
-          )}
-          {close && <CloseCheckbox closed={false} label={`Close “${clip(said ?? title, 40)}”`} onToggle={close} />}
-          <button
-            type="button"
-            onClick={() => onOpen(itemId)}
-            title="Open the packet"
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            {body}
-          </button>
-          <RowVerbs {...(pin ? { pin } : {})} {...(onSettle && !confront ? { onSettle } : {})} />
-          <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/30 transition-colors group-hover:text-muted-foreground" aria-hidden />
-        </div>
+        <RowContextMenu itemId={itemId} onOpen={onOpen} said={said} title={title} {...(close ? { close } : {})} {...(pin ? { pin } : {})}>
+          <div className="group flex w-full items-center gap-2 rounded-md px-3 py-2 transition-colors hover:bg-muted/60 focus-within:bg-muted/60">
+            {select && (
+              <SelectHotspot
+                selected={select.selected}
+                label={`Select “${clip(said ?? title, 40)}”`}
+                onToggle={select.toggle}
+              />
+            )}
+            {close && <CloseCheckbox closed={false} label={`Close “${clip(said ?? title, 40)}”`} onToggle={close} />}
+            {/* onEditTitle's `EditableTitle` is its own click target (title
+                click opens a text field), so this wraps in a DIV rather than
+                `Row`'s ordinary <button>: a real <button> cannot contain
+                another interactive control. */}
+            {onEditTitle ? (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpen(itemId)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onOpen(itemId);
+                }}
+                title="Open the packet"
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {body}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onOpen(itemId)}
+                title="Open the packet"
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {body}
+              </button>
+            )}
+            <RowVerbs {...(pin ? { pin } : {})} {...(onSettle && !confront ? { onSettle } : {})} />
+            <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/30 transition-colors group-hover:text-muted-foreground" aria-hidden />
+          </div>
+        </RowContextMenu>
       ) : (
         <div className="group flex w-full items-center gap-2 px-3 py-2">
           {body}
@@ -842,7 +965,79 @@ export function Row({
         </div>
       )}
       {confront && <ConfrontLine confront={confront} {...(onSettle ? { onSettle } : {})} />}
+      {disclose && <RowDisclosure {...disclose} />}
     </li>
+  );
+}
+
+/**
+ * THE TASK ROW'S OWN CONTEXT MENU — §9.4's parity rule read the other way:
+ * every verb the row's hover controls already carry gets a right-click twin,
+ * never a new one. "Close" fires the SAME `close` callback the checkbox's
+ * `onToggle` fires (`onCloseItem` → `closeItemByHand`, `lib/spool-close.ts` —
+ * the one dedicated route, never the generic items PATCH); "Pin to a day"
+ * reuses the SAME `pin` callback `RowVerbs`' native date input already
+ * fires; "Open packet" is the SAME `onOpen(itemId)` the row's own button
+ * fires. OMITTED, and named here rather than faked: "Move to lane…" and
+ * "Tag…" — no per-row callback reaches THIS MENU for either (only the Tasks
+ * tab's bulk selection bar, `laneSelected`/`tagSelected` in `room.tsx`, can
+ * move a lane or set a tag through a right-click, and both operate on a
+ * multi-id selection, not a single row). "Reopen" is not offered here
+ * because `Row` only ever renders ACTIVE items (its `CloseCheckbox` is
+ * hardcoded `closed={false}`); the closed twin lives on `DoneShelf`'s own
+ * rows below, with its own menu.
+ *
+ * UPDATED 2026-08-19, §13.8: `Row`'s own `disclose` prop now DOES reach a
+ * per-row lane/pin/tag editor — on the row itself, behind the quiet chevron
+ * (`RowDisclosure`, `task-row.tsx`), not through this menu. The omission
+ * above is scoped to the CONTEXT MENU specifically; a right-click still only
+ * offers Close, Pin to…, and Open packet, on purpose — this menu stays the
+ * hover-verb twins, and the disclosure is where the fuller editor lives.
+ */
+function RowContextMenu({
+  itemId,
+  onOpen,
+  said,
+  title,
+  close,
+  pin,
+  children,
+}: {
+  itemId: string;
+  onOpen: (id: string) => void;
+  said?: string;
+  title: string;
+  close?: () => void;
+  pin?: (day: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger>{children}</ContextMenuTrigger>
+      <ContextMenuContent>
+        {close && <ContextMenuItem onClick={close}>Close</ContextMenuItem>}
+        {pin && (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>Pin to…</ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              <label className="flex items-center gap-1.5 px-1.5 py-1 text-sm">
+                <input
+                  type="date"
+                  aria-label={`Pin “${clip(said ?? title, 40)}” to a day`}
+                  onChange={(event) => {
+                    const day = event.currentTarget.value;
+                    if (day) pin(day);
+                  }}
+                  className="h-6 w-[8rem] rounded-md border border-border bg-transparent px-1.5 text-xs text-muted-foreground outline-none"
+                />
+              </label>
+            </ContextMenuSubContent>
+          </ContextMenuSub>
+        )}
+        {(close || pin) && <ContextMenuSeparator />}
+        <ContextMenuItem onClick={() => onOpen(itemId)}>Open packet</ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -1433,33 +1628,45 @@ function DoneShelf({
           <ul>
             {rows.map((row) => (
               <li key={row.id} className="border-b border-border/40 last:border-b-0">
-                <div className="group flex w-full items-center gap-2 rounded-md px-3 py-2 transition-colors hover:bg-muted/40">
-                  {select && (
-                    <SelectHotspot
-                      selected={select.selected(row.id)}
-                      label={`Select “${clip(row.said ?? row.title, 40)}”`}
-                      onToggle={(shiftKey) => select.toggle(row.id, shiftKey)}
-                    />
-                  )}
-                  <CloseCheckbox
-                    closed
-                    label={`Reopen “${clip(row.said ?? row.title, 40)}”`}
-                    onToggle={() => onReopen(row.id)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => onOpen(row.id)}
-                    title="Open the packet"
-                    className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <span className="block min-w-0 truncate text-sm leading-relaxed font-medium text-muted-foreground/60">
-                      {row.said ?? row.title}
-                    </span>
-                    <span className="block min-w-0 truncate text-xs leading-relaxed text-muted-foreground/60">
-                      {row.subject} — “closed {row.closedLabel}”
-                    </span>
-                  </button>
-                </div>
+                {/* THE CLOSED TWIN of `RowContextMenu` above — "Reopen" fires the SAME
+                    `onReopen` the unticked checkbox already fires (`reopenByHand` →
+                    `reopenItemByHand`, the one dedicated route); "Open packet" is the
+                    SAME `onOpen(row.id)` the row's own button fires. */}
+                <ContextMenu>
+                  <ContextMenuTrigger>
+                    <div className="group flex w-full items-center gap-2 rounded-md px-3 py-2 transition-colors hover:bg-muted/40">
+                      {select && (
+                        <SelectHotspot
+                          selected={select.selected(row.id)}
+                          label={`Select “${clip(row.said ?? row.title, 40)}”`}
+                          onToggle={(shiftKey) => select.toggle(row.id, shiftKey)}
+                        />
+                      )}
+                      <CloseCheckbox
+                        closed
+                        label={`Reopen “${clip(row.said ?? row.title, 40)}”`}
+                        onToggle={() => onReopen(row.id)}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onOpen(row.id)}
+                        title="Open the packet"
+                        className="min-w-0 flex-1 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <span className="block min-w-0 truncate text-sm leading-relaxed font-medium text-muted-foreground/60">
+                          {row.said ?? row.title}
+                        </span>
+                        <span className="block min-w-0 truncate text-xs leading-relaxed text-muted-foreground/60">
+                          {row.subject} — “closed {row.closedLabel}”
+                        </span>
+                      </button>
+                    </div>
+                  </ContextMenuTrigger>
+                  <ContextMenuContent>
+                    <ContextMenuItem onClick={() => onReopen(row.id)}>Reopen</ContextMenuItem>
+                    <ContextMenuItem onClick={() => onOpen(row.id)}>Open packet</ContextMenuItem>
+                  </ContextMenuContent>
+                </ContextMenu>
               </li>
             ))}
           </ul>
@@ -1699,6 +1906,8 @@ function ScheduledLine({
   onOpen,
   onClose,
   select,
+  onEditTitle,
+  disclose,
 }: {
   row: ScheduledRow;
   meta?: string;
@@ -1706,7 +1915,22 @@ function ScheduledLine({
   onClose: (id: string) => void;
   /** Select mode's hotspot — same law as `Row`'s: gathers, writes nothing. */
   select?: { selected: boolean; toggle: (shiftKey: boolean) => void };
+  /** §13.8 (2026-08-19) — safe here because `row.title` is always
+   *  `SpoolItem.title` (see `deriveStance`'s `pinnedAll`), unlike some of
+   *  `Row`'s other call sites. */
+  onEditTitle?: (next: string) => Promise<void>;
+  disclose?: { lane?: string; lanes: SpoolLane[]; tags: string[]; pinnedDay?: string; onLane: (lane: string) => void; onPin: (day: string | null) => void; onTags: (tags: string[]) => void };
 }) {
+  const body = (
+    <span className="min-w-0 flex-1">
+      {onEditTitle ? (
+        <EditableTitle text={row.said ?? row.title} onCommit={onEditTitle} />
+      ) : (
+        <span className="block truncate text-sm leading-relaxed font-medium text-foreground">{row.said ?? row.title}</span>
+      )}
+      <span className="block truncate text-xs leading-relaxed text-muted-foreground">{meta ?? row.subject}</span>
+    </span>
+  );
   return (
     <li className="border-b border-border/40 last:border-b-0">
       <div className="group flex w-full min-w-0 items-center gap-2 rounded-md px-3 py-2 transition-colors hover:bg-muted/60 focus-within:bg-muted/60">
@@ -1723,21 +1947,33 @@ function ScheduledLine({
           onToggle={() => onClose(row.id)}
         />
         <SubjectDot color={row.color} />
-        <button
-          type="button"
-          onClick={() => onOpen(row.id)}
-          title="Open the packet"
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm leading-relaxed font-medium text-foreground">{row.said ?? row.title}</span>
-            <span className="block truncate text-xs leading-relaxed text-muted-foreground">
-              {meta ?? row.subject}
-            </span>
-          </span>
-        </button>
+        {/* Same button-cannot-nest-a-control reason as `Row`'s onEditTitle branch. */}
+        {onEditTitle ? (
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => onOpen(row.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") onOpen(row.id);
+            }}
+            title="Open the packet"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {body}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onOpen(row.id)}
+            title="Open the packet"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {body}
+          </button>
+        )}
         <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground/30 transition-colors group-hover:text-muted-foreground" aria-hidden />
       </div>
+      {disclose && <RowDisclosure {...disclose} />}
     </li>
   );
 }
@@ -1747,12 +1983,35 @@ export function ScheduledScope({
   onOpenItem,
   onCloseItem,
   selectProps,
+  lanes,
+  onEditItem,
 }: {
   scheduled: StanceModel["scheduled"];
   onOpenItem: (id: string) => void;
   onCloseItem: (id: string) => void;
   selectProps: (id?: string) => { select?: { selected: boolean; toggle: (shiftKey: boolean) => void } };
+  /** §13.8 (2026-08-19) — the shared row grammar's lane list and edit sink,
+   *  optional so existing callers (none yet outside `Stance` itself) are not
+   *  forced to wire them; absent means every row falls back to its old,
+   *  read-only rendering. */
+  lanes?: SpoolLane[];
+  onEditItem?: (id: string, patch: Record<string, unknown>) => Promise<void>;
 }) {
+  const rowEdit = (row: ScheduledRow) =>
+    onEditItem
+      ? {
+          onEditTitle: (next: string) => onEditItem(row.id, { title: next }),
+          disclose: {
+            ...(row.lane ? { lane: row.lane } : {}),
+            lanes: lanes ?? [],
+            tags: row.tags,
+            pinnedDay: row.day,
+            onLane: (lane: string) => void onEditItem(row.id, { lane }),
+            onPin: (day: string | null) => void onEditItem(row.id, { pinned: day ? { day } : null }),
+            onTags: (tags: string[]) => void onEditItem(row.id, { tags }),
+          },
+        }
+      : {};
   return (
     <Band title="Scheduled">
       {scheduled.slipped.length === 0 && scheduled.days.length === 0 && (
@@ -1775,6 +2034,7 @@ export function ScheduledScope({
                 onOpen={onOpenItem}
                 onClose={onCloseItem}
                 {...selectProps(row.id)}
+                {...rowEdit(row)}
               />
             ))}
           </ul>
@@ -1789,7 +2049,14 @@ export function ScheduledScope({
           </p>
           <ul>
             {group.rows.map((row) => (
-              <ScheduledLine key={row.id} row={row} onOpen={onOpenItem} onClose={onCloseItem} {...selectProps(row.id)} />
+              <ScheduledLine
+                key={row.id}
+                row={row}
+                onOpen={onOpenItem}
+                onClose={onCloseItem}
+                {...selectProps(row.id)}
+                {...rowEdit(row)}
+              />
             ))}
           </ul>
         </div>
@@ -1823,6 +2090,8 @@ export function Stance({
   bulkNote,
   selection,
   embedded,
+  lanes,
+  onEditItem,
 }: {
   model: StanceModel;
   work: SpoolWorkView;
@@ -1886,6 +2155,16 @@ export function Stance({
    * undefined, where neither strip has ever applied.
    */
   embedded?: boolean;
+  /**
+   * §13.8 (2026-08-19), "rows edit in place" — the lanes list and the one
+   * generic-PATCH sink every editable row's title/lane/pin/tags gesture
+   * calls through (`/api/spool/items/:id`, the SAME route the bulk action
+   * bar already speaks). Both optional: callers that omit `onEditItem` get
+   * every row's old, read-only rendering — nothing here is a silent
+   * behaviour change for an unmigrated caller.
+   */
+  lanes?: SpoolLane[];
+  onEditItem?: (id: string, patch: Record<string, unknown>) => Promise<void>;
 }) {
   const [settledOpen, setSettledOpen] = useState(false);
   const [needsAll, setNeedsAll] = useState(false);
@@ -1898,13 +2177,18 @@ export function Stance({
       : {};
   const shelfSelect = selection ? { select: selection } : {};
 
-  const { needs, housekeeping, onPerson, withAgent, settled, moved, proposal, night, folded, scope, lines, scopeLook, prepared } = model;
+  const { needs, housekeeping, onPerson, withAgent, settled, moved, proposal, night, folded, scope, lines, scopeLook, prepared, scopeTotals } = model;
   const [focal, ...rest] = needs;
   const shown = needsAll ? rest : rest.slice(0, NEEDS_VISIBLE);
   const hidden = rest.length - shown.length;
 
   const needsNothing = needs.length === 0 && housekeeping.length === 0;
   const handsEmpty = !night && work.running.length === 0 && withAgent.length === 0;
+  /** FOCUSED-ONLY, 2026-08-19 §13.8: "In its hands" also renders `moved`
+   *  lines (below RunningPasses, focused branch only) — `handsEmpty` alone
+   *  would call the band non-empty when it is really just movement prose,
+   *  and suppressing the wrong thing is worse than not suppressing at all. */
+  const handsNothing = handsEmpty && moved.length === 0;
 
   return (
     /* The main column BREATHES (max-w-3xl in a 1600px viewport), and the
@@ -2014,6 +2298,8 @@ export function Stance({
             onOpenItem={onOpenItem}
             onCloseItem={onCloseItem}
             selectProps={selectProps}
+            {...(lanes ? { lanes } : {})}
+            {...(onEditItem ? { onEditItem } : {})}
           />
         ) : (
         /* ── WIDE IS FOR CHOOSING — loops §6, committed. One line per subject,
@@ -2118,11 +2404,21 @@ export function Stance({
         </>
         )
       ) : (
-        /* ── FOCUS IS THE RESIDENCE — one subject, the full grammar. */
+        /* ── FOCUS IS THE RESIDENCE — one subject, the full grammar. §13.8
+               (2026-08-19), driven live: a quiet room used to lead with FOUR
+               near-empty bands ("Nothing needs you." / "Nothing in flight…" /
+               "Nothing is parked…" / "Nothing settled yet…") occupying the
+               whole first screen above the actual task list — the exact
+               "four nearly-empty bands" defect `focus shows the subject's
+               actual items` (idiom.test.ts) already named, resurfaced one
+               level up. "The subject room IS the task list": each band below
+               now renders NOTHING — no header, no quiet sentence — when it
+               has nothing to say, so "Waiting its turn" leads the screen by
+               default and a band only claims the top when it actually has
+               something exceptional to say. */
         <>
+          {!needsNothing && (
           <Band mark title="Needs you">
-            {needsNothing && <Empty>Nothing needs you.</Empty>}
-
             {focal && (
               <FocalCard
                 entry={focal}
@@ -2175,6 +2471,7 @@ export function Stance({
               onPin={onPinItem}
             />
           </Band>
+          )}
 
           {/* ── SINCE YOUR LAST LOOK — focused only, a strip and never a
                  band, and it sits BELOW "Needs you" now (loops §10's volume
@@ -2203,9 +2500,8 @@ export function Stance({
           )}
 
           {/* ── IN ITS HANDS ────────────────────────────────────────────── */}
+          {!handsNothing && (
           <Band title="In its hands">
-            {handsEmpty && <Empty>Nothing in flight, and no night has run yet.</Empty>}
-
             {night && <NightCard night={night} onNight={onNight} onOpenItem={onOpenItem} />}
 
             <RunningPasses work={work} />
@@ -2244,10 +2540,11 @@ export function Stance({
               </ul>
             )}
           </Band>
+          )}
 
           {/* ── WAITING ON OTHERS ───────────────────────────────────────── */}
+          {onPerson.length > 0 && (
           <Band title="Waiting on others">
-        {onPerson.length === 0 && <Empty>Nothing is parked on anyone.</Empty>}
         <ul>
           {onPerson.map((t) => (
             <Row
@@ -2270,53 +2567,53 @@ export function Stance({
           ))}
         </ul>
       </Band>
+          )}
 
-      {/* ── SETTLED — present, and quiet ──────────────────────────────────── */}
+      {/* ── SETTLED — present, and quiet. §13.8 (2026-08-19): this band is
+             "present" only when it has content now — the room stopped
+             asserting "and stay" about an empty shelf. */}
+      {settled.length > 0 && (
       <Band
         title="Settled"
         aside={<span className="font-mono tabular-nums opacity-60">{settled.length}</span>}
       >
-        {settled.length === 0 ? (
-          <Empty>Nothing settled yet. Answers land here, and stay.</Empty>
-        ) : (
-          <>
-            <button
-              type="button"
-              aria-expanded={settledOpen}
-              onClick={() => setSettledOpen((o) => !o)}
-              className="flex items-center gap-1 rounded-md px-3 py-1 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", settledOpen && "rotate-90")} />
-              {settledOpen ? "Enough" : "What you worked out"}
-            </button>
-            {settledOpen && (
-              <ul>
-                {settled.map((t) => (
-                  <Row
-                    key={t.view.thread.id}
-                    {...(t.view.items.find((i) => i.said)?.said ? { said: t.view.items.find((i) => i.said)!.said! } : {})}
-                    title={t.view.thread.handle?.trim() || t.view.thread.question}
-                    meta={clip(`${t.subject} — ${t.view.thread.settled?.answer ?? ""}`)}
-                    {...(t.view.items[0] ? { itemId: t.view.items[0].id } : {})}
-                    onOpen={onOpenItem}
-                  />
-                ))}
-              </ul>
-            )}
-          </>
+        <button
+          type="button"
+          aria-expanded={settledOpen}
+          onClick={() => setSettledOpen((o) => !o)}
+          className="flex items-center gap-1 rounded-md px-3 py-1 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", settledOpen && "rotate-90")} />
+          {settledOpen ? "Enough" : "What you worked out"}
+        </button>
+        {settledOpen && (
+          <ul>
+            {settled.map((t) => (
+              <Row
+                key={t.view.thread.id}
+                {...(t.view.items.find((i) => i.said)?.said ? { said: t.view.items.find((i) => i.said)!.said! } : {})}
+                title={t.view.thread.handle?.trim() || t.view.thread.question}
+                meta={clip(`${t.subject} — ${t.view.thread.settled?.answer ?? ""}`)}
+                {...(t.view.items[0] ? { itemId: t.view.items[0].id } : {})}
+                onOpen={onOpenItem}
+              />
+            ))}
+          </ul>
         )}
       </Band>
+      )}
 
-          {/* ── DONE — §9.3's shelf, below the Settled region: answers and
-                 closed tasks are both "over" grammar, so they neighbour — but
-                 the shelf stays a FOLD; the band register keeps its four. */}
-          <DoneShelf rows={model.done} onOpen={onOpenItem} onReopen={onReopenItem} {...shelfSelect} />
-
-          {/* ── WAITING ITS TURN — the residence's inventory, loops §6.
-                 Prepared items no band claims, grouped by the lane's own
-                 stored words. Quiet on purpose: nothing here is a claim on
-                 you, it is what focusing came to see. Rows summon the packet
-                 into the tray, like every line in the room. */}
+          {/* ── WAITING ITS TURN — the residence's inventory, loops §6, and
+                 §13.8 (2026-08-19): "the subject room IS the task list" —
+                 this is IT, so it leads whenever the exceptional bands above
+                 have nothing to say. Prepared items no band claims, grouped
+                 by the lane's own stored words. The header stays: it is
+                 pinned by `focus shows the subject's actual items` above,
+                 which checks for `title="Waiting its turn"` literally — this
+                 pass found no cheap way to drop it without weakening that
+                 law, so it keeps speaking rather than going silently mute.
+                 Rows summon the packet into the tray, like every line in the
+                 room. */}
           {prepared.length > 0 && (
             <Band
               title="Waiting its turn"
@@ -2342,6 +2639,20 @@ export function Stance({
                         close={() => onCloseItem(row.id)}
                         pin={(day) => onPinItem(row.id, day)}
                         {...selectProps(row.id)}
+                        {...(onEditItem
+                          ? {
+                              onEditTitle: (next: string) => onEditItem(row.id, { title: next }),
+                              disclose: {
+                                ...(group.key ? { lane: group.key } : {}),
+                                lanes: lanes ?? [],
+                                tags: row.tags,
+                                ...(row.pinnedDay ? { pinnedDay: row.pinnedDay } : {}),
+                                onLane: (lane: string) => void onEditItem(row.id, { lane }),
+                                onPin: (day: string | null) => void onEditItem(row.id, { pinned: day ? { day } : null }),
+                                onTags: (tags: string[]) => void onEditItem(row.id, { tags }),
+                              },
+                            }
+                          : {})}
                       />
                     ))}
                   </ul>
@@ -2349,6 +2660,14 @@ export function Stance({
               ))}
             </Band>
           )}
+
+          {/* ── DONE — §9.3's shelf, moved to the FOOT of the list
+                 (2026-08-19, §13.8: "a 'show completed' foot on each list"),
+                 below "Waiting its turn" rather than above the Settled
+                 region — closed items are the room's own foot fold, not a
+                 second thing to read before reaching the tasks. Collapsed by
+                 default, unchanged. */}
+          <DoneShelf rows={model.done} onOpen={onOpenItem} onReopen={onReopenItem} {...shelfSelect} />
         </>
       )}
 
@@ -2362,18 +2681,29 @@ export function Stance({
       {/* ── THE STORE'S HONESTY LINES, inherited from the retired queue: the
              conservation law with live numbers, and the diagnostic channel —
              a skipped row no surface admits to would make tolerance
-             indistinguishable from loss. */}
+             indistinguishable from loss. UNDER SCOPE (2026-08-19, §13.8) the
+             conservation pair reads `scopeTotals` — this subject's own count
+             — instead of the store's, and the diagnostic channel (a WHOLE-
+             STORE read with no subject of its own) stays quiet rather than
+             attributing another subject's unreadable row to this room. */}
       {totals && (
         <div className="mt-8 space-y-1 border-t border-border/40 px-3 pt-3">
-          {totals.unreadable.length > 0 && (
+          {!scope && totals.unreadable.length > 0 && (
             <p className="text-xs leading-relaxed text-muted-foreground">
               {totals.unreadable.length} {totals.unreadable.length === 1 ? "row" : "rows"} could not be read — skipped
               and reported, never dropped silently.
             </p>
           )}
-          <p className="text-xs leading-relaxed text-muted-foreground/60">
-            {totals.totalItems} items · agents added {totals.agentsAdded} · the count never grows from breakdown.
-          </p>
+          {scope && scopeTotals ? (
+            <p className="text-xs leading-relaxed text-muted-foreground/60">
+              {scopeTotals.totalItems} {scopeTotals.totalItems === 1 ? "item" : "items"} in {scope} · agents added{" "}
+              {scopeTotals.agentsAdded}
+            </p>
+          ) : (
+            <p className="text-xs leading-relaxed text-muted-foreground/60">
+              {totals.totalItems} items · agents added {totals.agentsAdded} · the count never grows from breakdown.
+            </p>
+          )}
         </div>
       )}
       </div>
@@ -2495,9 +2825,14 @@ export function SelectionBar({
 }
 
 /**
- * THE ROOM — stance | tray | chat. This component owns every read the columns
- * share, for the reason the master chat recorded when it owned them: a hook
- * per surface is three polls of one endpoint disagreeing by up to a tick.
+ * THE ROOM — rail, main, and the summoned layer. §13.6, "the assistant's two
+ * doors", retired the old three-column shape (a resident chat riding beside a
+ * separately-summoned tray — the "4-column bug" once the rail is counted):
+ * there is now ONE overlay, holding ONE slot, conversation XOR a face, and a
+ * second door — the Assistant room — that holds the same conversation
+ * full-width. This component owns every read the columns share, for the
+ * reason the master chat recorded when it owned them: a hook per surface is
+ * three polls of one endpoint disagreeing by up to a tick.
  */
 export function SpoolStance({ initialItem }: { initialItem?: string }) {
   const work = useSpoolWork();
@@ -2516,11 +2851,15 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
    *  their own. */
   const [subjectRecords, setSubjectRecords] = useState<SpoolSubject[]>([]);
   const [totals, setTotals] = useState<{ totalItems: number; agentsAdded: number; unreadable: SpoolUnreadable[] } | null>(null);
-  /** THE APERTURE SLOT — loops §8.1's shared state, read with the snapshot
-   *  and written by the strip's clicks AND the chat's `spool_set_aperture`.
-   *  Never-written reads as "everything". See the smart-scope note below for
-   *  the slot-not-log reasoning and the focus precedence. */
-  const [apertureView, setApertureView] = useState<SpoolApertureView>("everything");
+  /** THE APERTURE SLOT IS GONE FROM THIS SURFACE — §13.6 + the tool removal
+   *  that came with it. The room used to follow the chat's `spool_set_aperture`
+   *  write (loops §8.1's shared slot); that tool no longer exists on the
+   *  wall, and since §13.6 the assistant has no screen-moving hand at all —
+   *  the room belongs to the user's, moved only by a click, and the agent
+   *  answers in words. Nothing here reads the slot or navigates from it any
+   *  more; see the removed `lastAppliedAperture` follow this comment
+   *  replaces, and the smart-scope note below for what still lives (Today
+   *  and Scheduled as plain room state, written only by the hand's clicks). */
   /** The STORED looks — cheap, no network on the engine side, part of the
    *  arrival snapshot so the room paints instantly and honestly stale. */
   const [looks, setLooks] = useState<SpoolLookOutcome[]>([]);
@@ -2532,16 +2871,31 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
   /** Whether the arrival reconcile has been fired — once per mount, and only
    *  after the stored snapshot said which subjects have terrain. */
   const [lookedOnArrival, setLookedOnArrival] = useState(false);
-  /** The tray's one face, or closed. Seeded by the deep link — `/spool/[id]`
-   *  redirects here with `?item=` — so an old packet URL lands in the room
-   *  with the tray already open on it. */
-  const [tray, setTray] = useState<TrayFace | null>(initialItem ? { kind: "packet", id: initialItem } : null);
+  /**
+   * THE SUMMONED LAYER'S ONE SLOT — §13.6. Conversation XOR a face, never
+   * both: the old shape held a resident `MasterChat` aside AND a separately
+   * summoned `tray`, which is how a subject's packet and the chat both got a
+   * column at once. `layer` replaces both — `null` is two columns (rail,
+   * main), `{ kind: "chat" }` and `{ kind: "face", face }` are the layer's
+   * only two shapes. Seeded by the deep link — `/spool/[id]` redirects here
+   * with `?item=` — so an old packet URL lands in the room with the layer
+   * already open on its face.
+   */
+  type SpoolLayer = { kind: "chat" } | { kind: "face"; face: TrayFace };
+  const [layer, setLayer] = useState<SpoolLayer | null>(
+    initialItem ? { kind: "face", face: { kind: "packet", id: initialItem } } : null,
+  );
+  const openFace = useCallback((face: TrayFace) => setLayer({ kind: "face", face }), []);
   /** A line's chat verb, on its way to the composer. The counter is what lets
-   *  the same suggestion be pressed twice. */
+   *  the same suggestion be pressed twice. Summons the layer's chat slot —
+   *  §13.6: the suggestion IS an invitation into the conversation. */
   const [suggestion, setSuggestion] = useState<{ text: string; n: number }>({ text: "", n: 0 });
-  const suggest = useCallback((text: string) => setSuggestion((prev) => ({ text, n: prev.n + 1 })), []);
+  const suggest = useCallback((text: string) => {
+    setSuggestion((prev) => ({ text, n: prev.n + 1 }));
+    setLayer({ kind: "chat" });
+  }, []);
 
-  const openItem = useCallback((id: string) => setTray({ kind: "packet", id }), []);
+  const openItem = useCallback((id: string) => openFace({ kind: "packet", id }), [openFace]);
 
   /**
    * ONE READ FOR THE WHOLE ROOM. The bands are one projection of four
@@ -2552,7 +2906,7 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
    */
   const load = useCallback(async () => {
     try {
-      const [mapRes, focusRes, nightRes, spoolRes, looksRes, subjectsRes, apertureRes] = await Promise.all([
+      const [mapRes, focusRes, nightRes, spoolRes, looksRes, subjectsRes] = await Promise.all([
         fetch("/api/spool/threads"),
         fetch("/api/spool/focus"),
         fetch("/api/spool/night"),
@@ -2562,14 +2916,8 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
         fetch("/api/spool/looks"),
         // The subject records ride it too — the identity join's one read.
         fetch("/api/spool/subjects"),
-        // And the aperture slot: the chat can move it mid-turn, and the
-        // room's reload is how that write reaches the strip.
-        fetch("/api/spool/aperture"),
       ]);
       if (mapRes.ok) setMap((await mapRes.json()) as SpoolMap);
-      if (apertureRes.ok) {
-        setApertureView(((await apertureRes.json()).aperture?.view ?? "everything") as SpoolApertureView);
-      }
       if (looksRes.ok) setLooks(((await looksRes.json()).looks ?? []) as SpoolLookOutcome[]);
       if (subjectsRes.ok) setSubjectRecords(((await subjectsRes.json()).subjects ?? []) as SpoolSubject[]);
       if (focusRes.ok) setFocus((await focusRes.json()) as { pickup: SpoolPickup; days: SpoolFocusDay[] });
@@ -2664,7 +3012,8 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
    * dialogs' subject-scoped state elsewhere in this file — it simply no
    * longer seeds the ROOM. `room` is plain state now, `{ kind: "lobby" }`
    * on mount and moved only by a click (`goSubject`/`goToday`/
-   * `goScheduled`/`goLobby`) or the aperture slot's one-way wire below.
+   * `goScheduled`/`goLobby`) — §13.6 retired the one other mover, the
+   * aperture slot's one-way wire, along with the tool that wrote it.
    */
   const [room, setRoom] = useState<SpoolRoomState>({ kind: "lobby" });
   const scope = room.kind === "subject" ? room.key : undefined;
@@ -2895,6 +3244,24 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
     [load],
   );
 
+  /** §13.8 (2026-08-19)'s shared row grammar's one write sink for Today and
+   *  Scheduled — the SAME generic item PATCH `room.tsx`'s own `onEditItem`
+   *  speaks, kept a Promise here (rather than folding into `closeNote`) so
+   *  the row itself can revert its optimistic edit on a rejection. */
+  const editByHand = useCallback(
+    (id: string, patch: Record<string, unknown>) =>
+      fetch(`/api/spool/items/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }).then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error?.message ?? data?.error ?? `HTTP ${res.status}`);
+        await load();
+      }),
+    [load],
+  );
+
   /**
    * ENTERING FOCUS IS A REASON TO LOOK — the second of the two pulls. Keyed
    * on the SCOPE rather than on the button, because the chat can focus the
@@ -2912,44 +3279,29 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
   }, [scope, lastScopeLooked, looks, reconcile]);
 
   /**
-   * THE SMART SCOPES — loops §8.1, read from the engine's APERTURE SLOT and
-   * deliberately never written to the engine's focus store. The focus log
-   * records subject focus only: it is the record the chat's pickup quotes
-   * ("you're on ozom-gv"), and a computed glance at Today is not a fact of
-   * that kind — logging it would make the pickup narrate your looking around
-   * as if it were work. So the slot is A SLOT AND NOT A LOG — one current
-   * value, no history, shared with the chat: `spool_set_aperture` writes it
-   * ("muéstrame lo de hoy") and the room's next load shows the change; the
-   * hand's clicks below write the same slot, so the chat reads them back via
-   * the context line's `scope=today|scheduled`.
+   * THE SMART SCOPES — Today and Scheduled are plain `room` state now, moved
+   * only by a click, like every other room. Loops §8.1 had these read from
+   * an engine-side APERTURE SLOT the chat's `spool_set_aperture` tool could
+   * also write ("muéstrame lo de hoy" moving the room out from under the
+   * hand); §13.6 retired the assistant's screen-moving hand entirely — the
+   * tool is gone from the wall — and with it the slot this UI ever needed to
+   * read. There is nothing left to follow: no fetch, no ref telling an
+   * external write apart from this component's own, no effect racing a
+   * click. The room is the user's alone; the agent answers in words.
    *
-   * PRECEDENCE: SUBJECT FOCUS WINS WHILE ACTIVE — it is the DEEPER aperture.
-   * Entering subject focus does NOT clear the slot (a glance is not undone by
-   * going to work); the render simply branches on `scope` first, and leaving
-   * focus reveals whatever the slot still holds. `scope > slot > everything`
-   * — the same order the context line's `scope=` spells.
+   * PRECEDENCE STILL HOLDS: SUBJECT FOCUS IS THE DEEPER APERTURE, and it was
+   * never the slot's to clear — the render simply branches on `scope` first,
+   * so entering a subject's room covers Today/Scheduled without erasing
+   * which of them was open, and leaving reveals it again.
+   *
+   * Today and Scheduled are still deliberately never written to the engine's focus store —
+   * a computed glance is not the kind of fact the focus log records (that
+   * is `goSubject`'s alone, below), so this stays view state.
    */
-  /**
-   * §13's ONE-WAY BINDING: the aperture slot is now written ONLY by the
-   * chat's `spool_set_aperture` tool (or a future agent surface) — every
-   * click in this UI navigates `room` directly and never PUTs the slot.
-   * `lastAppliedAperture` is the ref that tells an EXTERNAL write (the slot
-   * changed since this component last acted on it) apart from this
-   * component's own prior read, so the room follows the chat's "muéstrame
-   * lo de hoy" without the UI's clicks ever echoing back into the slot it
-   * only listens to.
-   */
-  const lastAppliedAperture = useRef<SpoolApertureView>("everything");
-  useEffect(() => {
-    if (apertureView === lastAppliedAperture.current) return;
-    lastAppliedAperture.current = apertureView;
-    if (apertureView === "today") setRoom({ kind: "today" });
-    else if (apertureView === "scheduled") setRoom({ kind: "scheduled" });
-  }, [apertureView]);
 
   /** THE FLOOR PLAN'S OWN VERBS — §13.2. Every one lands on a room; none of
-   *  them write the aperture slot (that one-way wire runs the other way,
-   *  above). `goSubject` still POSTs the focus log — the chat's pickup still
+   *  them touch any engine-side slot — that machinery is gone (see above).
+   *  `goSubject` still POSTs the focus log — the chat's pickup still
    *  needs "you're on X" recorded — but the room itself moves NOW, the same
    *  immediacy `focusOn` used to give, because re-opening an already-current
    *  focus entry is a no-op on the log and would otherwise leave the room
@@ -2957,6 +3309,13 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
   const goLobby = useCallback(() => setRoom({ kind: "lobby" }), []);
   const goToday = useCallback(() => setRoom({ kind: "today" }), []);
   const goScheduled = useCallback(() => setRoom({ kind: "scheduled" }), []);
+  /** §13.6's second door — the same conversation, full-width, reached
+   *  directly from the rail or by expanding out of the summoned layer. */
+  const goAssistant = useCallback(() => setRoom({ kind: "assistant" }), []);
+  /** WALK INTO A CONTAINER — §13.8, 2026-08-19. The Lobby's own container
+   *  rows (and an area page's own children) call this on a name click; the
+   *  chevron beside it still only toggles collapse in place. */
+  const goArea = useCallback((path: string) => setRoom({ kind: "area", path }), []);
   const goSubject = useCallback(
     (subject: string) => {
       setRoom({ kind: "subject", key: subject });
@@ -2984,14 +3343,15 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
   const model = room.kind === "subject" ? deriveStance(map, focus, night, desk, scope, looks, inventory, lanes, today, subjectRecords) : wideModel;
   const openers = deriveOpeners(wideModel);
 
-  /** A search hit does what its kind means: a packet or a note opens in the
-   *  tray beside whatever room is open; a subject hit GOES TO that subject's
-   *  room — the overlay itself never navigates further than that. */
+  /** A search hit does what its kind means: a packet or a note opens the
+   *  layer's face slot beside whatever room is open; a subject hit GOES TO
+   *  that subject's room — the overlay itself never navigates further than
+   *  that. */
   const openHit = (hit: SpoolSearchHit) => {
-    if (hit.kind === "item") setTray({ kind: "packet", id: hit.id });
-    else if (hit.kind === "note") setTray({ kind: "note", id: hit.id });
+    if (hit.kind === "item") openFace({ kind: "packet", id: hit.id });
+    else if (hit.kind === "note") openFace({ kind: "note", id: hit.id });
     else if (hit.subject) goSubject(hit.subject);
-    else setTray({ kind: "subject", key: null });
+    else openFace({ kind: "subject", key: null });
   };
 
   /**
@@ -3018,9 +3378,9 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
   // reports its own key, the two day rooms report their own kind, and the
   // lobby is the quiet default. No aperture, no posture, no filter: §13
   // retired all three as facts the chat needed to know.
-  const roomLabel = room.kind === "subject" ? room.key : room.kind;
-  const viewContext = `[room: room=${roomLabel} · tray=${
-    tray ? (tray.kind === "packet" ? `packet:${tray.id}` : tray.kind) : "closed"
+  const roomLabel = room.kind === "subject" ? room.key : room.kind === "area" ? `area:${room.path}` : room.kind;
+  const viewContext = `[room: room=${roomLabel} · layer=${
+    layer ? (layer.kind === "chat" ? "chat" : layer.face.kind === "packet" ? `packet:${layer.face.id}` : layer.face.kind) : "closed"
   } · needs-you=${model.needs.length + model.housekeeping.length} in-its-hands=${handsCount} waiting-on-others=${model.onPerson.length} settled=${model.settled.length}${
     lookNotes.length > 0 ? ` · looks=${lookNotes.join(",")}` : ""
   }]`;
@@ -3046,17 +3406,51 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
           needs: line.needs,
           ...(line.area ? { area: line.area } : {}),
           ...(line.color ? { color: line.color } : {}),
+          ...(line.rank !== undefined ? { rank: line.rank } : {}),
         })),
       },
-      { goLobby, goToday, goScheduled, goSubject, openSearchHit: openHit },
+      { goLobby, goToday, goScheduled, goSubject, goAssistant, goArea, openSearchHit: openHit, refresh: load },
     );
-  }, [room, wideModel.lines, goLobby, goToday, goScheduled, goSubject]);
+  }, [room, wideModel.lines, goLobby, goToday, goScheduled, goSubject, goAssistant, goArea, load]);
   // The room's own unmount is the one honest moment to blank the slot: a
   // stale aperture or filter from a PREVIOUS visit must never haunt the
-  // sidebar for whatever renders next (Telar's own place has no warehouse
-  // nav to read it, but the same `/spool` visited again should not open on
+  // sidebar for whatever renders next (Telar's own place has no rail to
+  // read it, but the same `/spool` visited again should not open on
   // yesterday's squint either).
   useEffect(() => clearSpoolRoom, []);
+
+  /**
+   * ⌘J MEANS "GIVE ME THE ASSISTANT" — not a bare toggle of the layer's
+   * presence. THREE STATES, not two: closed → chat (open it), face → chat
+   * (a face up is not the assistant answering — swap to the slot that is),
+   * chat → closed (the assistant is already what you have; dismiss it). A
+   * face is never reached from here — the header's own back-to-chat button
+   * and the tray's face-summoning verbs are the only doors into it.
+   */
+  const toggleAssistant = useCallback(() => {
+    setLayer((current) => (current && current.kind === "chat" ? null : { kind: "chat" }));
+  }, []);
+
+  /**
+   * ⌘J DRIVES THE SAME VERB — §13.6's own keybinding, the same
+   * `window.addEventListener("keydown", …)` idiom every other Spool shortcut
+   * uses (see `lib/use-command-keys.ts`). Escape closes it when it is open;
+   * neither key is claimed when the layer is already closed, so Escape never
+   * swallows some OTHER surface's own handling (a dialog's, say) for a key
+   * this room has nothing open to close.
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
+        event.preventDefault();
+        toggleAssistant();
+        return;
+      }
+      if (event.key === "Escape" && layer) setLayer(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [layer, toggleAssistant]);
 
   return (
     /* THE ROOM'S GROUND IS THE CANVAS. The old `bg-muted/25` wash was one
@@ -3065,20 +3459,54 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
        rail token (`bg-sidebar`, a legible step in BOTH schemes) behind their
        hairlines, and the stance's content stands on its own card sheet. Hue
        still stays on icons; the room still says so with a mark. */
-    <div className="flex h-dvh flex-col bg-background">
+    <div className="relative flex h-dvh flex-col bg-background">
       <SpoolHeader description="Where you left off, what moved, and what needs you." />
-      <div className="flex min-h-0 flex-1">
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-          {/* THE FLOOR PLAN'S FOUR ROOMS — §13.2. Navigation IS state (the
-              room never has its own route; `/spool` is the only URL), so
-              this switch is the whole front door: Lobby ranks and folds
-              (no toolbar of its own to speak of), Today and Scheduled reuse
-              `Stance`'s own smart-scope rendering wholesale rather than a
+      {/* THE LAYER'S SUMMONING DOOR — §13.6. Rendered outside `SpoolHeader`'s
+          own props on purpose: that component has no `actions` slot by
+          design (see its own doc comment), so this button overlaps the
+          header row from the relatively-positioned wrapper above instead.
+          `app-no-drag` is required here — this row sits inside the titlebar's
+          drag region, and without the class a click would drag the window
+          rather than land on the button. */}
+      <button
+        type="button"
+        aria-pressed={layer?.kind === "chat"}
+        aria-label={!layer ? "Open the assistant" : layer.kind === "face" ? "Switch to the assistant" : "Close the assistant"}
+        title="Assistant (⌘J)"
+        onClick={toggleAssistant}
+        className="app-no-drag absolute right-4 top-3 z-10 flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+      >
+        <MessageCircleIcon className="size-4" aria-hidden />
+      </button>
+      <div className="relative flex min-h-0 flex-1">
+        <main
+          className={cn(
+            "min-h-0 min-w-0 flex-1",
+            room.kind === "assistant" ? "flex flex-col overflow-hidden" : "overflow-y-auto",
+          )}
+        >
+          {/* THE FLOOR PLAN'S FIVE ROOMS — §13.2, extended by §13.6. Navigation
+              IS state (the room never has its own route; `/spool` is the only
+              URL), so this switch is the whole front door: Lobby ranks and
+              folds (no toolbar of its own to speak of), Today and Scheduled
+              reuse `Stance`'s own smart-scope rendering wholesale rather than a
               second copy of `TodayScope`/`ScheduledScope` wrapped a second
-              way, and a subject's room opens on its brief before its tabs.
-              The header stays untouched (navigation must not move), and the
-              tray and chat hold their places through every switch. */}
-          {room.kind === "lobby" && <Lobby onEnterSubject={goSubject} onChanged={load} />}
+              way, a subject's room opens on its brief before its tabs, and the
+              Assistant room is the same `MasterChat` full-width, the second of
+              the assistant's two doors. The header stays untouched (navigation
+              must not move), and the summoned layer holds its place through
+              every switch. */}
+          {room.kind === "lobby" && (
+            <Lobby
+              onEnterSubject={goSubject}
+              onChanged={load}
+              onEnterArea={goArea}
+              onEnterToday={goToday}
+              onEnterScheduled={goScheduled}
+              todayCount={wideModel.needs.length}
+              scheduledCount={wideModel.scheduled.slipped.length + wideModel.scheduled.days.reduce((sum, day) => sum + day.rows.length, 0)}
+            />
+          )}
           {(room.kind === "today" || room.kind === "scheduled") && (
             <Stance
               model={wideModel}
@@ -3088,9 +3516,9 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
               smart={room.kind}
               onSmart={(next) => (next ? undefined : goLobby())}
               onOpenItem={openItem}
-              onNight={() => setTray({ kind: "night" })}
-              onPermits={() => setTray({ kind: "permits" })}
-              onSubject={(key) => (key ? goSubject(key) : setTray({ kind: "subject", key: null }))}
+              onNight={() => openFace({ kind: "night" })}
+              onPermits={() => openFace({ kind: "permits" })}
+              onSubject={(key) => (key ? goSubject(key) : openFace({ kind: "subject", key: null }))}
               onScope={goSubject}
               onWiden={goLobby}
               onSuggest={suggest}
@@ -3104,6 +3532,8 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
               closeNote={closeNote}
               bulkNote={null}
               selection={null}
+              lanes={lanes}
+              onEditItem={editByHand}
             />
           )}
           {room.kind === "subject" && (
@@ -3117,8 +3547,8 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
               lanes={lanes}
               subjectRecords={subjectRecords}
               onOpenItem={openItem}
-              onNight={() => setTray({ kind: "night" })}
-              onPermits={() => setTray({ kind: "permits" })}
+              onNight={() => openFace({ kind: "night" })}
+              onPermits={() => openFace({ kind: "permits" })}
               onSuggest={suggest}
               onAck={acknowledge}
               onAckAll={acknowledgeAll}
@@ -3128,10 +3558,34 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
               onReopenItem={reopenByHand}
               onPinItem={pinByHand}
               closeNote={closeNote}
-              onOpenNote={(id) => setTray({ kind: "note", id })}
-              onNewNote={(subjectKey) => setTray({ kind: "note-new", ...(subjectKey ? { subjectKey } : {}) })}
+              onOpenNote={(id) => openFace({ kind: "note", id })}
+              onNewNote={(subjectKey) => openFace({ kind: "note-new", ...(subjectKey ? { subjectKey } : {}) })}
               onChanged={load}
               onLeaveRoom={goLobby}
+              onEditItem={editByHand}
+            />
+          )}
+
+          {/* THE ASSISTANT'S OTHER DOOR — §13.6. The same conversation the
+              layer's chat slot holds, full-width: no `onExpand` (nowhere
+              further to expand to) and no `onClose` (nothing hosting it to
+              close from inside). */}
+          {room.kind === "assistant" && (
+            <MasterChat onChanged={load} openers={openers} prefill={suggestion} context={viewContext} variant="room" />
+          )}
+
+          {/* AN AREA PAGE — §13.8. The SAME `Lobby` component, scoped: its
+              own `areaPath` prop swaps the two tiles and the whole tree for
+              a breadcrumb and one subtree, so the container grammar (and
+              every drag/rename/reorder/ceiling gesture riding on it) never
+              has a second implementation to drift from the home screen's. */}
+          {room.kind === "area" && (
+            <Lobby
+              areaPath={room.path}
+              onEnterSubject={goSubject}
+              onChanged={load}
+              onEnterArea={goArea}
+              onEnterLobby={goLobby}
             />
           )}
 
@@ -3193,34 +3647,52 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
           />
         </main>
 
-        {/* THE TRAY — zero width until summoned, one face, a visible close.
-            It paints its own background — the RAIL token, a real ground step
-            off the canvas in both schemes — so it reads as furniture with an
-            edge, and the room's ground does not bleed through a packet. */}
-        {tray && (
-          <div className="flex w-96 min-w-80 shrink-0 flex-col border-l border-border bg-sidebar">
-            <SpoolTray
-              face={tray}
-              work={work}
-              subjects={subjectRecords}
-              lanes={lanes}
-              map={map}
-              onOpenItem={openItem}
-              onOpenNote={(id) => setTray({ kind: "note", id })}
-              onNewNote={(subjectKey) => setTray({ kind: "note-new", ...(subjectKey ? { subjectKey } : {}) })}
-              onClose={() => setTray(null)}
-              onChanged={load}
-            />
+        {/* THE SUMMONED LAYER — §13.6. ONE overlay, ONE slot, conversation XOR
+            a face, docked to the right edge and SLID OVER the room's content
+            rather than pushing it narrower — `absolute`, not a flex sibling,
+            inside the `relative` row above. It paints its own background —
+            the RAIL token, a real ground step off the canvas in both schemes
+            — so it reads as furniture with an edge, and the room's ground
+            does not bleed through underneath it. Above the room's content,
+            below any dialog (`ConfirmDialog` portals higher). No path renders
+            this AND a resident chat aside at the same time — there is no
+            resident chat aside any more; the Assistant room is where the
+            same conversation goes full-width instead. */}
+        {layer && (
+          <div className="absolute inset-y-0 right-0 z-20 flex w-96 min-w-80 shrink-0 flex-col border-l border-border bg-sidebar shadow-lg">
+            {layer.kind === "chat" ? (
+              <MasterChat
+                onChanged={load}
+                openers={openers}
+                prefill={suggestion}
+                context={viewContext}
+                onExpand={() => {
+                  goAssistant();
+                  setLayer(null);
+                }}
+                onClose={() => setLayer(null)}
+              />
+            ) : (
+              <SpoolTray
+                face={layer.face}
+                work={work}
+                subjects={subjectRecords}
+                lanes={lanes}
+                map={map}
+                onOpenItem={openItem}
+                onOpenNote={(id) => openFace({ kind: "note", id })}
+                onNewNote={(subjectKey) => openFace({ kind: "note-new", ...(subjectKey ? { subjectKey } : {}) })}
+                onClose={() => setLayer(null)}
+                onChanged={load}
+                onBackToChat={() => setLayer({ kind: "chat" })}
+                onExpand={() => {
+                  goAssistant();
+                  setLayer(null);
+                }}
+              />
+            )}
           </div>
         )}
-
-        {/* `load` ITSELF, never an inline closure: the chat re-reads the room
-            through an effect keyed on this prop, and a fresh function every
-            render turns that effect into a fetch loop — render, load, setState,
-            render. `useCallback` above is what makes this identity stable. */}
-        <aside className="flex w-[26rem] min-w-80 shrink-0 flex-col border-l border-border bg-sidebar">
-          <MasterChat onChanged={load} openers={openers} prefill={suggestion} context={viewContext} />
-        </aside>
       </div>
     </div>
   );

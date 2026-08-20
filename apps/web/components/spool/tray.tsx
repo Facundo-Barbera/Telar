@@ -24,9 +24,9 @@
  * control, the desk drain, and the handoff. The one-column layout is the only
  * change.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRightIcon, FileTextIcon, InboxIcon, LayoutTemplateIcon, MessageSquareIcon, PlusIcon, XIcon } from "lucide-react";
+import { ChevronRightIcon, FileTextIcon, InboxIcon, LayoutTemplateIcon, Maximize2Icon, MessageSquareIcon, PlusIcon, XIcon } from "lucide-react";
 import type {
   Project,
   SpoolArea,
@@ -36,7 +36,6 @@ import type {
   SpoolLane,
   SpoolLookOutcome,
   SpoolMap,
-  SpoolMcpInfo,
   SpoolNote,
   SpoolSnapshot,
   SpoolSubject,
@@ -48,8 +47,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CloseCheckbox, DeadlineChip, ProjectChip, SubjectDot } from "@/components/spool/chips";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { SUBJECT_COLORS, subjectColorVar } from "@/components/spool/subject-color";
 import { ConfirmDialog } from "@/components/spool/dialogs";
+import { AskOneThing } from "@/components/spool/prompt-card";
 import { MemorySurface } from "@/components/spool/memory-surface";
 import { NightSurface } from "@/components/spool/night-surface";
 import { PermitsChip } from "@/components/spool/permits";
@@ -81,7 +82,7 @@ export type TrayFace =
   | { kind: "note"; id: string }
   | { kind: "note-new"; subjectKey?: string };
 
-function faceTitle(face: TrayFace): string {
+export function faceTitle(face: TrayFace): string {
   if (face.kind === "subject") return face.key ?? "Unfiled";
   if (face.kind === "note") return "Note";
   if (face.kind === "note-new") return "New note";
@@ -1073,6 +1074,10 @@ export function SubjectFace({
    *  question. Unticking a row there is the reopen, instant, no dialog. */
   const [doneOpen, setDoneOpen] = useState(false);
   const [reopenRefused, setReopenRefused] = useState<string | null>(null);
+  /** The shelf row's own DOM node per note, keyed by id — the anchor the
+   *  retire ask positions against, and which note (if any) has it open. */
+  const noteRowRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const [retiringNoteId, setRetiringNoteId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -1093,6 +1098,36 @@ export function SubjectFace({
       // A dropped read leaves the last good list. The face is pull-based.
     }
   }, [subjectKey]);
+
+  /**
+   * THE ROW'S OWN "Retire…" — the SAME `POST /api/spool/notes/:id/retire`
+   * route `NoteFace`'s own `retire()` (below, ~line 915) hits; that function
+   * itself is private to a face already open on this one note, so the list
+   * row (which has not opened a face) reaches the identical route directly
+   * rather than duplicating it as a second endpoint. §7's "the reason is a
+   * fact the store keeps" still holds — an anchored `AskOneThing` gathers it
+   * by hand now (§ the idiom pass: no more `window.prompt`), the same
+   * pattern `warehouse-nav.tsx`'s `renameContainer` uses for a one-line hand
+   * input outside a form, anchored to the row itself rather than reopening a
+   * centered dialog for one field.
+   */
+  const retireNoteRow = useCallback((id: string) => setRetiringNoteId(id), []);
+  const submitRetireNote = useCallback(
+    (id: string, reason: string) => {
+      setRetiringNoteId(null);
+      const trimmed = reason.trim();
+      if (!trimmed) return;
+      void fetch(`/api/spool/notes/${encodeURIComponent(id)}/retire`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: trimmed }),
+      }).then(() => {
+        onChanged();
+        void load();
+      });
+    },
+    [onChanged, load],
+  );
 
   useEffect(() => {
     const first = window.setTimeout(() => void load(), 0);
@@ -1357,35 +1392,57 @@ export function SubjectFace({
         <ul className="space-y-0.5">
           {notes.map((note) => (
             <li key={note.id}>
-              <button
-                type="button"
-                onClick={() => onOpenNote(note.id)}
-                className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate text-sm font-medium",
-                      note.retired ? "text-muted-foreground/50" : "text-foreground",
-                    )}
+              <ContextMenu>
+                <ContextMenuTrigger>
+                  <button
+                    ref={(el) => {
+                      if (el) noteRowRefs.current.set(note.id, el);
+                      else noteRowRefs.current.delete(note.id);
+                    }}
+                    type="button"
+                    onClick={() => onOpenNote(note.id)}
+                    className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    {note.title}
-                  </span>
-                  {note.author === "session" && (
-                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">agent&rsquo;s note</span>
-                  )}
-                  {note.tags.map((tag) => (
-                    <span key={tag} className="shrink-0 font-mono text-[10px] text-muted-foreground/60">
-                      #{tag}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-sm font-medium",
+                          note.retired ? "text-muted-foreground/50" : "text-foreground",
+                        )}
+                      >
+                        {note.title}
+                      </span>
+                      {note.author === "session" && (
+                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">agent&rsquo;s note</span>
+                      )}
+                      {note.tags.map((tag) => (
+                        <span key={tag} className="shrink-0 font-mono text-[10px] text-muted-foreground/60">
+                          #{tag}
+                        </span>
+                      ))}
                     </span>
-                  ))}
-                </span>
-                {note.retired && (
-                  <span className="block truncate text-[10px] text-muted-foreground/50">
-                    retired {note.retired.label} — “{note.retired.reason}”
-                  </span>
-                )}
-              </button>
+                    {note.retired && (
+                      <span className="block truncate text-[10px] text-muted-foreground/50">
+                        retired {note.retired.label} — “{note.retired.reason}”
+                      </span>
+                    )}
+                  </button>
+                </ContextMenuTrigger>
+                <ContextMenuContent>
+                  <ContextMenuItem onClick={() => onOpenNote(note.id)}>Open</ContextMenuItem>
+                  {!note.retired && <ContextMenuItem onClick={() => retireNoteRow(note.id)}>Retire…</ContextMenuItem>}
+                </ContextMenuContent>
+              </ContextMenu>
+              <AskOneThing
+                open={retiringNoteId === note.id}
+                onOpenChange={(next) => {
+                  if (!next) setRetiringNoteId(null);
+                }}
+                anchor={noteRowRefs.current.get(note.id) ?? null}
+                label="Retire this note — why?"
+                placeholder="No longer true because…"
+                onSubmit={(reason) => submitRetireNote(note.id, reason)}
+              />
             </li>
           ))}
         </ul>
@@ -1416,6 +1473,15 @@ function PermitsFace() {
    *  the engine's `effectivePermits` is the one function in front of every
    *  enforcement point, and this face quotes its answer. */
   const [effective, setEffective] = useState<Record<string, SpoolSubjectPermits>>({});
+  /**
+   * THE WINNING PREFIX — `docs/spool-loops.md` §13.7: an area name is a path,
+   * and every prefix's ceiling clamps down it, most restrictive wins. The
+   * subject's own `area` is NOT always the segment that clamped it — an
+   * ancestor's ceiling can be the one that won — so the threads read's own
+   * `clampedBy` (the exact prefix responsible) rides beside `effective`
+   * rather than the sentence below re-deriving or assuming it.
+   */
+  const [clampedBy, setClampedBy] = useState<Record<string, string | undefined>>({});
   /** The stated ceiling records — only areas someone stated a ceiling for.
    *  An area missing from this list has NO ceiling, and renders as exactly
    *  that; nothing here writes a record to make the list complete. */
@@ -1423,34 +1489,23 @@ function PermitsFace() {
   /** A refused ceiling, per area — the engine's sentence, inline and quiet,
    *  while the stored value stands. */
   const [refused, setRefused] = useState<Record<string, string>>({});
-  /** THE SOCKET's connect card (loops §10.3) — where the outward MCP server
-   *  listens and its DEDICATED secret, fetched behind the cockpit like every
-   *  read here. Grants and connections are both standing policy the human
-   *  owns, which is why the card lives on this face. */
-  const [mcp, setMcp] = useState<SpoolMcpInfo | null>(null);
-  /** MASKED BY DEFAULT — the secret (and its spelling inside the composed
-   *  add command) shows only behind the reveal toggle; copy always copies
-   *  the real thing, because a clipboard is the hand's own pocket. */
-  const [revealed, setRevealed] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [subjectsRes, mapRes, areasRes, mcpRes] = await Promise.all([
+      const [subjectsRes, mapRes, areasRes] = await Promise.all([
         fetch("/api/spool/subjects"),
         // The threads map is where the clamp is visible: its `permits` is the
         // effective level, while `subject.permits` above stays the stated one.
         fetch("/api/spool/threads"),
         fetch("/api/spool/areas"),
-        fetch("/api/spool/mcp-info"),
       ]);
       if (subjectsRes.ok) setSubjects(((await subjectsRes.json()).subjects ?? []) as SpoolSubject[]);
       if (mapRes.ok) {
         const map = (await mapRes.json()) as SpoolMap;
         setEffective(Object.fromEntries((map.subjects ?? []).map((s) => [s.subject, s.permits])));
+        setClampedBy(Object.fromEntries((map.subjects ?? []).map((s) => [s.subject, s.clampedBy])));
       }
       if (areasRes.ok) setAreaRecords(((await areasRes.json()).areas ?? []) as SpoolArea[]);
-      if (mcpRes.ok) setMcp(((await mcpRes.json()).mcp ?? null) as SpoolMcpInfo | null);
     } catch {
       // A dropped read leaves the last good list. Grants are standing state;
       // nothing here has changed because a request failed.
@@ -1512,6 +1567,13 @@ function PermitsFace() {
           const stated = subject.permits;
           const acts = effective[subject.key];
           const clamped = acts !== undefined && acts !== stated;
+          // The prefix that actually won — §13.7: a ceiling on an ANCESTOR
+          // segment ("Work") clamps every subject nested under it ("Work /
+          // Focaltec"), so `subject.area` (the subject's own, full path) is
+          // not always the segment responsible. `clampedBy` names the exact
+          // winner; older data that predates the field falls back to the
+          // subject's own area rather than showing nothing.
+          const clampSource = clampedBy[subject.key] ?? subject.area;
           return (
             <li key={subject.key} className="rounded-md px-2 py-1.5">
               <span className="flex min-w-0 items-center gap-2">
@@ -1520,7 +1582,7 @@ function PermitsFace() {
               </span>
               {clamped && (
                 <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
-                  {stated} — clamped to {acts} by &ldquo;{subject.area}&rdquo;&rsquo;s ceiling
+                  {stated} — clamped to {acts} by &ldquo;{clampSource}&rdquo;&rsquo;s ceiling
                 </p>
               )}
             </li>
@@ -1566,45 +1628,10 @@ function PermitsFace() {
           </ul>
         </div>
       )}
-
-      {/* ── CONNECT YOUR AGENTS — the socket's card, loops §10.3. The engine
-             composes the add command so the card and the socket cannot
-             disagree; this face only masks, reveals and copies it. */}
-      {mcp && (
-        <div className="mt-4">
-          <p className="mb-2 text-xs leading-relaxed text-muted-foreground/70">
-            Connect your agents. Any MCP client — Claude Desktop, a fleet agent in another repo — reaches the same
-            tool wall a Telar session gets, with the same laws riding along.
-          </p>
-          <div className="rounded-lg bg-muted/40 p-2 ring-1 ring-border/60">
-            <code className="block font-mono text-[10px] leading-relaxed break-all text-muted-foreground">
-              {revealed ? mcp.addCommand : mcp.addCommand.replaceAll(mcp.secret, "••••••••")}
-            </code>
-            <div className="mt-1.5 flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  void navigator.clipboard.writeText(mcp.addCommand).then(() => setCopied(true));
-                }}
-                className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
-              >
-                {copied ? "copied" : "copy"}
-              </button>
-              <button
-                type="button"
-                aria-pressed={revealed}
-                onClick={() => setRevealed((r) => !r)}
-                className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
-              >
-                {revealed ? "hide the secret" : "reveal the secret"}
-              </button>
-            </div>
-          </div>
-          <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
-            The secret lets any agent read and file into the whole Spool — treat it like a key.
-          </p>
-        </div>
-      )}
+      {/* THE CONNECT CARD USED TO LIVE HERE (loops §10.3) — REHOMED
+          (2026-08-18) to the Warehouse's own Connections tab
+          (`warehouse.tsx`'s `ConnectionsTab`), not duplicated: this face
+          keeps only the per-area ceiling control above. */}
     </div>
   );
 }
@@ -1620,6 +1647,8 @@ export function SpoolTray({
   onNewNote,
   onClose,
   onChanged,
+  onBackToChat,
+  onExpand,
 }: {
   face: TrayFace;
   work: SpoolWorkView;
@@ -1639,12 +1668,45 @@ export function SpoolTray({
   onNewNote: (subjectKey?: string) => void;
   onClose: () => void;
   onChanged: () => void;
+  /** §13.6 — THE SUMMONED LAYER'S OTHER DOOR. The layer holds ONE slot,
+   *  conversation XOR a face; while a face is up this returns to the
+   *  conversation without closing the layer. Omitted entirely (no button)
+   *  when the caller has no layer to go back into. */
+  onBackToChat?: () => void;
+  /** §13.6's "expand door-join" — the layer's header control that trades
+   *  the whole overlay for the Assistant room. Omitted when the tray is not
+   *  hosted inside the layer (there is no room to expand into). */
+  onExpand?: () => void;
 }) {
   return (
     <section aria-label="Spool tray" className="flex h-full min-h-0 flex-col">
       <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <span className="min-w-0 truncate text-xs font-medium text-foreground">{faceTitle(face)}</span>
         <span className="flex-1" />
+        {onBackToChat && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Back to chat"
+            title="Back to chat"
+            onClick={onBackToChat}
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <MessageSquareIcon className="size-4" />
+          </Button>
+        )}
+        {onExpand && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Expand to the Assistant room"
+            title="Expand to the Assistant room"
+            onClick={onExpand}
+            className="shrink-0 text-muted-foreground hover:text-foreground"
+          >
+            <Maximize2Icon className="size-4" />
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon-sm"

@@ -1145,6 +1145,29 @@ function writePacket(paths: SpoolPaths, item: SpoolItem): void {
   atomicWrite(packetFile(paths, item.id), item);
 }
 
+/**
+ * REWRITE AN ITEM'S TAGS DIRECTLY — the one deliberate way around `updateItem`
+ * (2026-08-18, `spool/tags.ts`'s tag rename). `updateItem`'s guards protect the
+ * item's WORDS and STATE: `raw`/`rawSource` are what the user actually said,
+ * `closed` is the user's own checkbox, `verdict` is a durable human override.
+ * A tag is none of those — it is index metadata that happens to be stored ON
+ * the record, not content of the record. Renaming "urgente" to "cliente" does
+ * not rewrite what the item says or what the user decided about it; it
+ * relabels how the item is FOUND. So this bypasses every one of `updateItem`'s
+ * content/state guards on purpose, including the one that would otherwise be
+ * irrelevant but still in the way: a CLOSED item is eligible too, because
+ * closing drains an item from view (§9.3) without freezing what indexes it —
+ * an index entry does not become immutable just because the row it points at
+ * is done.
+ */
+export function rewriteItemTags(paths: SpoolPaths, id: string, tags: string[]): void {
+  const current = getSpoolItem(paths, id);
+  if (!current) return;
+  const merged: Record<string, unknown> = { ...current, tags, schemaVersion: SPOOL_ITEM_SCHEMA_VERSION };
+  if (tags.length === 0) delete merged.tags;
+  writePacket(paths, SpoolItem.parse(merged));
+}
+
 // ── the checkbox — docs/spool-loops.md §9 ───────────────────────────────────
 //
 // THESE TWO FUNCTIONS ARE THE ONLY WRITERS OF `closed`, and neither is reachable

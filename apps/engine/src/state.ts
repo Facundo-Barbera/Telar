@@ -147,7 +147,15 @@ import { nightDeps, readNight, runNight, type NightBudget } from "./spool/night"
 import { classifySettle, createWorkRegistry } from "./spool/work";
 import { SpoolCanvas, runCanvasTurn } from "./spool/canvas";
 import { structuredAgent } from "./agent";
-import { deriveSubjects, readSubjects, setSubjectIdentity, setSubjectPermits, setSubjectTerrain, subjectPermits } from "./spool/subjects";
+import {
+  deriveSubjects,
+  readSubjects,
+  setSubjectIdentity,
+  setSubjectPermits,
+  setSubjectTerrain,
+  sortSubjectsByRank,
+  subjectPermits,
+} from "./spool/subjects";
 import { effectivePermits, readAreas, setAreaCeiling } from "./spool/areas";
 import { readAperture, setAperture } from "./spool/aperture";
 import { acknowledgeObservation, digestObservations, readLook, reconcileLook, storedLookOutcome } from "./spool/looks";
@@ -169,6 +177,7 @@ import {
   type ThreadPassOutcome,
 } from "./spool/threads";
 import { createNote, listNotes, retireNote, updateNote, type NewSpoolNote, type SpoolNotePatch } from "./spool/shelf";
+import { renameSpoolTag as renameSpoolTagInStore, spoolTags as spoolTagsList, type SpoolTagUsage } from "./spool/tags";
 import { searchSpool } from "./spool/search";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
 import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
@@ -1283,7 +1292,11 @@ export class EngineStore {
   spoolSubjects(): SpoolSubject[] {
     const projects = this.listProjects().map((p) => ({ id: p.id, name: p.name }));
     deriveSubjects(this.spool, projects);
-    return readSubjects(this.spool);
+    // RANKED-THEN-UNRANKED, WITHIN AN AREA ONLY — see `sortSubjectsByRank`.
+    // Every other caller of this method (the lobby, the map, the front door)
+    // reads through it, so the one sort here is the one every surface agrees
+    // with, rather than each re-deriving it from the raw registry.
+    return sortSubjectsByRank(readSubjects(this.spool));
   }
 
   /**
@@ -1316,14 +1329,18 @@ export class EngineStore {
   }
 
   /**
-   * A subject's IDENTITY — its `area` and its `color`, both the user's to
-   * state and to withdraw. `null` clears a field; absent leaves it untouched.
-   * Validation (the closed color set, the area cap) is the store's, through
-   * `spoolWrite`, so a value the store must not hold refuses with its own
-   * sentence. Identity, never state: nothing downstream may read either field
-   * as urgency.
+   * A subject's IDENTITY — its `area`, its `color`, and its `rank`, all the
+   * user's to state and to withdraw. `null` clears a field; absent leaves it
+   * untouched.
+   * Validation (the closed color set, the area cap, the rank floor) is the
+   * store's, through `spoolWrite`, so a value the store must not hold refuses
+   * with its own sentence. Identity, never state: nothing downstream may read
+   * any field here as urgency.
    */
-  setSpoolSubjectIdentity(key: string, patch: { area?: string | null; color?: SpoolSubjectColor | null }): SpoolSubject {
+  setSpoolSubjectIdentity(
+    key: string,
+    patch: { area?: string | null; color?: SpoolSubjectColor | null; rank?: number | null },
+  ): SpoolSubject {
     this.spoolSubjects();
     return this.spoolFound(
       this.spoolWrite(() => setSubjectIdentity(this.spool, key, patch)),
@@ -1475,6 +1492,20 @@ export class EngineStore {
   /** Retire a note — drains with the reason, deletes nothing. */
   retireSpoolNote(id: string, reason: string): SpoolNote {
     return this.spoolFound(this.spoolWrite(() => retireNote(this.spool, id, reason)), "shelf note not found");
+  }
+
+  /** Every tag in use, across items and notes, with its two counts. A pure
+   *  read — see `spoolTags` for why there is no tag record to keep. */
+  spoolTags(): SpoolTagUsage[] {
+    return spoolTagsList(this.spool);
+  }
+
+  /** Rename a tag everywhere it appears — items and notes both. A rename onto
+   *  a name already in use merges the two. Validation (blank names, an
+   *  identical from/to) is the store's, through `spoolWrite`, so a refusal
+   *  keeps its sentence. */
+  renameSpoolTag(from: string, to: string): { tag: string; items: number; notes: number } {
+    return this.spoolWrite(() => renameSpoolTagInStore(this.spool, from, to));
   }
 
   /**

@@ -448,6 +448,12 @@ describe("SpoolSubject identity — area and color", () => {
     expect(parsed.area).toBe("Personal");
     expect(parsed.color).toBe("sea");
   });
+
+  test("rank is optional — a subject with none is fully ordinary, and a stated one round-trips", () => {
+    const parsed = packageRoot.SpoolSubject.parse(base);
+    expect(parsed.rank).toBeUndefined();
+    expect(packageRoot.SpoolSubject.parse({ ...base, rank: 2 }).rank).toBe(2);
+  });
 });
 
 describe("SpoolAperture and SpoolArea — the smart view and the permit ceiling", () => {
@@ -468,6 +474,14 @@ describe("SpoolAperture and SpoolArea — the smart view and the permit ceiling"
     const capped = packageRoot.SpoolArea.parse({ name: "Personal", ceiling: "read", created: "Sat" });
     expect(capped.ceiling).toBe("read");
     expect(packageRoot.SpoolArea.safeParse({ name: "Personal", ceiling: "urgent", created: "Sat" }).success).toBe(false);
+  });
+});
+
+describe("SpoolTagUsage — one tag's read-time row in the warehouse", () => {
+  test("a tag row is just the name and its two counts, both required numbers", () => {
+    const row = packageRoot.SpoolTagUsage.parse({ tag: "urgente", items: 2, notes: 1 });
+    expect(row).toEqual({ tag: "urgente", items: 2, notes: 1 });
+    expect(packageRoot.SpoolTagUsage.safeParse({ tag: "urgente", items: 2 }).success).toBe(false);
   });
 });
 
@@ -573,6 +587,10 @@ describe("SpoolLobby — mission control, ranked, never enumerated", () => {
     // sessionLive is a real boolean or an honest null — never omitted, never guessed.
     expect(packageRoot.SpoolLobbySubject.parse({ ...subjectRow, sessionLive: null, nextPin: undefined }).sessionLive).toBeNull();
     expect(packageRoot.SpoolLobbySubject.safeParse({ ...subjectRow, sessionLive: undefined }).success).toBe(false);
+    // `rank` rides along the same card, absent by default — what lets a drag
+    // surface compute drop positions without a second fetch of the registry.
+    expect(packageRoot.SpoolLobbySubject.parse(subjectRow).rank).toBeUndefined();
+    expect(packageRoot.SpoolLobbySubject.parse({ ...subjectRow, rank: 1 }).rank).toBe(1);
   });
 
   test("moved carries a line only when the look composed one — a moved count with no digest is still honest", () => {

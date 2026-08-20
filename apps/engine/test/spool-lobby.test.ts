@@ -247,6 +247,24 @@ describe("composeLobby — the mission-control ranking", () => {
     expect(lobby.unareaed[0]!.nextPin).toBeUndefined();
   });
 
+  test("subjects within an area sort by rank ascending, unranked ones after — in their existing order", () => {
+    const lobby = composeLobby({
+      subjects: [
+        subject({ key: "c-subject", area: "Ozom", rank: 3 }),
+        subject({ key: "a-subject", area: "Ozom" }),
+        subject({ key: "b-subject", area: "Ozom", rank: 1 }),
+      ],
+      areas: [{ name: "Ozom", created: "Sat 12:00", schemaVersion: 1 }],
+      map: [],
+      looks: [],
+      items: [],
+      sessionLive: {},
+    });
+    const ordered = lobby.areas[0]!.subjects.map((s) => s.key);
+    expect(ordered).toEqual(["b-subject", "c-subject", "a-subject"]);
+    expect(lobby.areas[0]!.subjects[0]!.rank).toBe(1);
+  });
+
   test("a closed item's pin never counts toward needsYou or nextPin", () => {
     const items = [item({ id: "i-1", project: "ozom-gv", pinned: { day: "2026-08-18" }, closed: { label: "Sat", at: 0 } })];
     const lobby = composeLobby({

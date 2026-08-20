@@ -11,10 +11,13 @@
  *
  * ── A CEILING CLAMPS DOWN AND NEVER RAISES ───────────────────────────────────
  * `effectivePermits` below is the ONE function every enforcement path reads:
- * effective = min(subject.permits, area.ceiling) in `SpoolSubjectPermits`'
- * ordering (the `RANK` table in `subjects.ts`, the one place the enum is
- * ordered). No ceiling means no clamp, and a ceiling above a subject's own
- * permit changes nothing — a group statement may only ever restrict.
+ * effective = min(subject.permits, every ceiling stated on a prefix of the
+ * subject's area PATH) in `SpoolSubjectPermits`' ordering (the `RANK` table
+ * in `subjects.ts`, the one place the enum is ordered). An area name is a
+ * path (docs/spool-loops.md §13.7): "Work / Focaltec" is clamped by a
+ * ceiling on "Work" AND by one on "Work / Focaltec", most-restrictive wins.
+ * No ceiling on any prefix means no clamp, and a ceiling above a subject's
+ * own permit changes nothing — a group statement may only ever restrict.
  *
  * ── CEILINGS ARE STATED, NEVER ASSUMED ───────────────────────────────────────
  * No area — "Personal" included — is ever given a ceiling this code invented.
@@ -105,18 +108,81 @@ export function setAreaCeiling(paths: SpoolPaths, name: string, ceiling: SpoolSu
 }
 
 /**
- * WHAT A SUBJECT ACTUALLY PERMITS, UNATTENDED — its own statement, clamped by
- * its area's ceiling. THE ONE IMPLEMENTATION of the clamp: every path that
- * enforces or reports a permit level goes through here, so "the ceiling held
- * on the map but not in the night" is a sentence that cannot come true.
- *
- * DOWN ONLY. A ceiling above the subject's own permit returns the subject's
- * own permit — a group statement may restrict its members, never promote them.
- * An unregistered subject keeps its floor (`read`), same as `subjectPermits`.
+ * AN AREA NAME IS A PATH — docs/spool-loops.md §13.7. "Work / Focaltec" is two
+ * LABELS, never a structure the store maintains: one string on the subject,
+ * split here on the canonical separator (" / "), each segment trimmed, empty
+ * segments dropped (so "Work /  / Focaltec" and stray leading/trailing
+ * separators degrade to the segments that actually say something rather than
+ * throwing). Every other reader of a path — the ceiling clamp below, and any
+ * future renderer of the same string — goes through this one function, so the
+ * separator is stated in exactly one place.
  */
-export function effectivePermits(subject: SpoolSubject | undefined, areas: readonly SpoolArea[]): SpoolSubjectPermits {
+export function areaPathSegments(name: string): string[] {
+  return name
+    .split(" / ")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+}
+
+/** Every prefix of a path, shallowest first — "Work / Focaltec / Q3" yields
+ *  `["Work", "Work / Focaltec", "Work / Focaltec / Q3"]`. Built from the
+ *  SEGMENTS, never a string `startsWith`, so "Workshop" can never match as a
+ *  prefix of "Work / X": the boundary is the separator, not the character. */
+function areaPathPrefixes(name: string): string[] {
+  const segments = areaPathSegments(name);
+  const prefixes: string[] = [];
+  for (let i = 1; i <= segments.length; i++) {
+    prefixes.push(segments.slice(0, i).join(" / "));
+  }
+  return prefixes;
+}
+
+export interface EffectivePermitsResult {
+  /** What the subject may actually do, unattended — its own statement, or a
+   *  ceiling below it. */
+  level: SpoolSubjectPermits;
+  /** The area path prefix whose ceiling produced `level`, present only when
+   *  a ceiling actually lowered the subject's own statement. Absent means
+   *  `level` is exactly the subject's own `permits` — nothing clamped it. */
+  clampedBy?: string;
+}
+
+/**
+ * WHAT A SUBJECT ACTUALLY PERMITS, UNATTENDED, AND WHY — its own statement,
+ * clamped down its whole area PATH rather than by the exact area string.
+ * "Work / Focaltec" is checked against every ceiling stated on "Work" AND on
+ * "Work / Focaltec"; where more than one prefix carries a ceiling, the MOST
+ * restrictive (lowest `PERMIT_RANK`) wins, same down-only law as ever. THE
+ * ONE IMPLEMENTATION of the clamp: every path that enforces or reports a
+ * permit level goes through here (via `effectivePermits` below), so "the
+ * ceiling held on the map but not in the night" is a sentence that cannot
+ * come true.
+ *
+ * DOWN ONLY. A ceiling above the subject's own permit never wins — a group
+ * statement may restrict its members, never promote them. An unregistered
+ * subject keeps its floor (`read`), same as `subjectPermits`.
+ */
+export function effectivePermitsDetail(
+  subject: SpoolSubject | undefined,
+  areas: readonly SpoolArea[],
+): EffectivePermitsResult {
   const stated = subject?.permits ?? "read";
-  const ceiling = subject?.area ? areas.find((a) => a.name === subject.area)?.ceiling : undefined;
-  if (!ceiling) return stated;
-  return PERMIT_RANK[ceiling] < PERMIT_RANK[stated] ? ceiling : stated;
+  if (!subject?.area) return { level: stated };
+
+  let winner: { name: string; ceiling: SpoolSubjectPermits } | undefined;
+  for (const prefix of areaPathPrefixes(subject.area)) {
+    const ceiling = areas.find((a) => a.name === prefix)?.ceiling;
+    if (!ceiling) continue;
+    if (!winner || PERMIT_RANK[ceiling] < PERMIT_RANK[winner.ceiling]) winner = { name: prefix, ceiling };
+  }
+  if (!winner || PERMIT_RANK[winner.ceiling] >= PERMIT_RANK[stated]) return { level: stated };
+  return { level: winner.ceiling, clampedBy: winner.name };
+}
+
+/** The level alone, for the many callers that only gate on it — the night's
+ *  plan, the level check in `subjectPermits`. Callers that report the clamp
+ *  to a human (the map, the permits face) want `effectivePermitsDetail`
+ *  instead, so the sentence can name the prefix that actually won. */
+export function effectivePermits(subject: SpoolSubject | undefined, areas: readonly SpoolArea[]): SpoolSubjectPermits {
+  return effectivePermitsDetail(subject, areas).level;
 }

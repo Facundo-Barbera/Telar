@@ -23,9 +23,8 @@
  * delete path wearing a filter's name.
  */
 import { useEffect, useState } from "react";
-import { SearchIcon } from "lucide-react";
 import type { SpoolSearchHit } from "@telar/engine-client";
-import { Input } from "@/components/ui/input";
+import { SidebarSearchField } from "@/components/sidebar-search-field";
 import { cn } from "@/lib/utils";
 
 /** Render order and headers — the kinds in the store's own vocabulary. */
@@ -74,23 +73,23 @@ export function SpoolSearchControl({ onHit }: { onHit: (hit: SpoolSearchHit) => 
         if (event.key === "Escape") setOpen(false);
       }}
     >
-      <div className="relative">
-        <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-3 -translate-y-1/2 text-muted-foreground/60" aria-hidden />
-        <Input
-          value={query}
-          onChange={(event) => {
-            const next = event.target.value;
-            setQuery(next);
-            setOpen(true);
-            // An empty query IS nothing — the stale hits go with the words.
-            if (!next.trim()) setHits([]);
-          }}
-          onFocus={() => setOpen(true)}
-          placeholder="Search the Spool…"
-          aria-label="Search the Spool"
-          className="h-7 w-44 pl-7 text-xs md:text-xs"
-        />
-      </div>
+      {/* THE FIELD'S CHROME IS SHARED WITH TELAR'S OWN — see
+          `sidebar-search-field.tsx`. Only the behaviour stays Spool's own:
+          it opens on focus/typing rather than on ⌘K, which stays unbound
+          here (Telar's binding is Telar's alone). */}
+      <SidebarSearchField
+        value={query}
+        onChange={(event) => {
+          const next = event.target.value;
+          setQuery(next);
+          setOpen(true);
+          // An empty query IS nothing — the stale hits go with the words.
+          if (!next.trim()) setHits([]);
+        }}
+        onFocus={() => setOpen(true)}
+        placeholder="Search the Spool…"
+        aria-label="Search the Spool"
+      />
       {showing && (
         <div
           /* Anchored to the INPUT'S LEFT EDGE, not its right — that edge is

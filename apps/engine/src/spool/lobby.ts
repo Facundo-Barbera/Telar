@@ -21,6 +21,7 @@ import type {
   SpoolSubjectThreads,
 } from "@telar/engine-client";
 import { dayLabel } from "./focus";
+import { sortSubjectsByRank } from "./subjects";
 
 /** Same two-stage, locale-free compare `store.ts`'s `compareSubjects` uses for
  *  subject names — copied rather than imported, because that one is a project
@@ -105,6 +106,7 @@ export function composeLobby(input: {
       name: subject.name,
       ...(subject.area ? { area: subject.area } : {}),
       ...(subject.color ? { color: subject.color } : {}),
+      ...(typeof subject.rank === "number" ? { rank: subject.rank } : {}),
       needsYou,
       moved,
       sessionLive,
@@ -130,7 +132,10 @@ export function composeLobby(input: {
     .map(([name, subjects]) => ({
       name,
       ...(ceilingByArea.get(name) ? { ceiling: ceilingByArea.get(name)! } : {}),
-      subjects,
+      // RANKED-THEN-UNRANKED, WITHIN THIS ONE AREA — see `sortSubjectsByRank`.
+      // Every subject in `subjects` already shares `name` as its `area`, so
+      // this is exactly the drag order a rail would show, never invented.
+      subjects: sortSubjectsByRank(subjects),
     }));
 
   return { areas, unareaed };

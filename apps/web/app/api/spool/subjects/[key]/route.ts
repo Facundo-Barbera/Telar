@@ -27,23 +27,29 @@ function validTerrain(terrain: unknown): boolean {
  * (`read` gates ripening and `draft` gates drafting, so lowering a subject
  * stops the night working it tonight), loops-§3's `terrain` (where the
  * subject lives in the world, which is what gives the Spool a place to look),
- * and loops-§8's IDENTITY (`area` and `color` — whose the subject is, stated
- * by the user, never invented). Everything else about a subject is derived.
- * One arm per request — the arms are different statements, and a body
- * carrying two would leave a failure ambiguous about which landed — except
- * that `area` and `color` ride together, because the engine's identity verb
- * takes both and either alone is the ordinary call.
+ * and loops-§8's IDENTITY (`area`, `color`, and — since the rail's own
+ * drag-to-reorder pass, 2026-08-18 — `rank`: whose the subject is and where
+ * the human put it by hand, never invented). Everything else about a subject
+ * is derived. One arm per request — the arms are different statements, and a
+ * body carrying two would leave a failure ambiguous about which landed —
+ * except that `area`, `color`, and `rank` ride together, because the
+ * engine's identity verb takes all three and any subset is the ordinary
+ * call (the rail's reorder writes `rank` alone; a cross-area drop writes
+ * `area` and `rank` together).
  */
 export async function PATCH(request: Request, context: Context) {
   try {
     const { key } = await context.params;
     const body = await requestObject(request);
-    if ("area" in body || "color" in body) {
+    if ("area" in body || "color" in body || "rank" in body) {
       // The identity arm — mirrors how terrain passes through: guarded here
       // in the same words the engine would refuse with, `null` clears (a
       // corrected statement, not a deletion), and the color set stays CLOSED:
-      // a token from the engine's own enum, never free hex.
-      const { area, color } = body as { area?: unknown; color?: unknown };
+      // a token from the engine's own enum, never free hex. `rank` clears the
+      // same way — `null` says "no order stated", never a deletion of the
+      // subject itself — and otherwise must be a finite number ≥ 0, the
+      // rail's own 0..n-1 scheme, never a negative or fractional position.
+      const { area, color, rank } = body as { area?: unknown; color?: unknown; rank?: unknown };
       if (area !== undefined && area !== null && typeof area !== "string") {
         return Response.json(
           { error: `area must be a string or null — got ${JSON.stringify(area)}.` },
@@ -56,10 +62,17 @@ export async function PATCH(request: Request, context: Context) {
           { status: 400 },
         );
       }
+      if (rank !== undefined && rank !== null && !(typeof rank === "number" && Number.isFinite(rank) && rank >= 0)) {
+        return Response.json(
+          { error: `rank must be a finite number >= 0, or null — got ${JSON.stringify(rank)}.` },
+          { status: 400 },
+        );
+      }
       return Response.json(
         await (await engineClient()).setSpoolSubjectIdentity(key, {
           ...("area" in body ? { area: area as string | null } : {}),
           ...("color" in body ? { color: color as SpoolSubjectColor | null } : {}),
+          ...("rank" in body ? { rank: rank as number | null } : {}),
         }),
       );
     }

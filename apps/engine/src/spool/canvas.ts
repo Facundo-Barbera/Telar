@@ -1,6 +1,18 @@
 /**
  * THE COMPOSED SURFACE — the agent draws, the browser watches.
  *
+ * ── ORPHANED BY docs/spool-loops.md §13.6 ───────────────────────────────────
+ * §13.6 redefined the Spool's front door: "the user navigates rooms
+ * themselves; the agent no longer controls what the screen shows." This whole
+ * file is the opposite premise — the agent composes the screen block by
+ * block — and it predates that section. Nothing in `apps/web` calls
+ * `/v2/spool/canvas` any more (checked at the time of the §13.6 tool-wall
+ * pass), so this is dead code left dormant rather than deleted: the route in
+ * `daemon.ts` and the state in `state.ts` still work, and reviving them was
+ * out of scope for that pass. A caller reappearing here should be read as a
+ * regression toward the pre-§13.6 model, not as this file being alive on
+ * purpose.
+ *
  * ── THE INVERSION ───────────────────────────────────────────────────────────
  * Everywhere else in this module a person wrote the layout and the agent filled
  * it. Here the agent composes, from a closed set of objects whose form is

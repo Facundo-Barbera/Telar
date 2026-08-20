@@ -46,13 +46,13 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
-  SearchIcon,
   SettingsIcon,
   SpoolIcon,
   TypeIcon,
   XIcon,
 } from "lucide-react";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
+import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
@@ -92,8 +92,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { APP_SIDEBAR_MAIN_MIN_WIDTH, APP_SIDEBAR_STORAGE_KEY, keepsRoomForMain, SIDEBAR_RESIZE_MIN_WIDTH } from "@/lib/sidebar-width";
+import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
@@ -234,19 +234,30 @@ function SidebarEmpty({
  * that was already the top of the rail, so it divided nothing, and the word
  * "Pinned" named a state the rows can wear themselves. Both went; what is left
  * here is a control, so it is unconditionally a <button>.
+ *
+ * THE LABEL'S SCALE MATCHES THE SPOOL'S CAPTION — the web pass that shared
+ * the two rails' grammar. `warehouse-nav.tsx`'s `CAPTION` (10px, semibold,
+ * uppercase, tracking-wider) is the newer of the two section-caption
+ * treatments this app has; this label used to sit at 11px, regular weight,
+ * sentence case — a difference between two "small grey word beside a rule"
+ * treatments with no reason beyond having been written on different days.
+ * Everything else about the rule (the rule itself, the chevron, the count)
+ * is unchanged — only the label's type scale moved.
  */
+const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (
     <button
       type="button"
-      className="flex w-full items-center gap-2 px-2 py-1.5 text-[11px] text-sidebar-foreground/45 hover:text-sidebar-foreground"
+      className="flex w-full items-center gap-2 px-2 py-1.5 text-sidebar-foreground/45 hover:text-sidebar-foreground"
       aria-expanded={open}
       onClick={onToggle}
     >
       <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-      <span className="shrink-0">{label}</span>
+      <span className={cn("shrink-0", CAPTION)}>{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-      <span className="shrink-0 tabular-nums">{count}</span>
+      <span className="shrink-0 tabular-nums text-[11px]">{count}</span>
     </button>
   );
 }
@@ -547,11 +558,16 @@ function SidebarBody() {
           <SpoolWarehouseNav />
         ) : (
         <>
-        <div className="space-y-1 px-3 pb-2 pt-3">
+        {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see
+            `sidebar-search-field.tsx`. This inset (px-2, matching the p-2
+            every `SidebarGroup` below already carries) used to be px-3, one
+            step wider than everything under it for no reason beyond the two
+            areas having been built separately; the web pass that shared the
+            search chrome brought the inset in line too. */}
+        <div className="space-y-1 px-2 pb-2 pt-3">
           <div className="flex items-center gap-1">
-            <div className="relative min-w-0 flex-1">
-              <SearchIcon className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-sidebar-foreground/45" />
-              <Input
+            <div className="min-w-0 flex-1">
+              <SidebarSearchField
                 ref={searchInput}
                 value={query}
                 onChange={(event) => {
@@ -572,23 +588,24 @@ function SidebarBody() {
                 aria-expanded={Boolean(query)}
                 aria-controls="sidebar-session-results"
                 aria-activedescendant={query && selectedSearchIndex >= 0 ? `sidebar-session-${list.sessions[selectedSearchIndex]?.id}` : undefined}
-                className="h-8 border-transparent bg-transparent pl-7 pr-10 text-sm shadow-none hover:bg-sidebar-accent/70 focus-visible:border-sidebar-border focus-visible:bg-sidebar-accent/70"
+                end={
+                  query ? (
+                    <button
+                      type="button"
+                      aria-label="Clear session search"
+                      onClick={() => {
+                        setQuery("");
+                        setSearchIndex(0);
+                      }}
+                      className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                    >
+                      <XIcon className="size-3.5" />
+                    </button>
+                  ) : (
+                    <kbd className="pointer-events-none font-sans text-[10px] text-sidebar-foreground/35">⌘K</kbd>
+                  )
+                }
               />
-              {query ? (
-                <button
-                  type="button"
-                  aria-label="Clear session search"
-                  onClick={() => {
-                    setQuery("");
-                    setSearchIndex(0);
-                  }}
-                  className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:text-foreground"
-                >
-                  <XIcon className="size-3.5" />
-                </button>
-              ) : (
-                <kbd className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-sans text-[10px] text-sidebar-foreground/35">⌘K</kbd>
-              )}
             </div>
             <Button
               variant="ghost"
