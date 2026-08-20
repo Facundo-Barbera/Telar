@@ -37,7 +37,6 @@ A green verify only moves a loom to `ready` — the human always accepts.
 | `packages/engine-client` | The dependency-free engine protocol types + HTTP client. |
 | `apps/web_old` | **FROZEN.** The legacy cockpit — looms, orchestration, verification, accept / steer / reject. Read-only design source for the Telar rebuild; see `apps/web_old/AGENTS.md`. |
 | `packages/core` | The loom engine — executor, weaver/tick loop, verifier, environment lanes, MCP OAuth, project manifest + store. |
-| `docs/` | Fresh project documentation is being regenerated here; legacy design docs are archived in `.cleanup-archives/docs-legacy-2026-07-17/`. |
 
 ### `apps/web_old` is frozen and unverified
 
