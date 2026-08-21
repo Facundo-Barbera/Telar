@@ -515,3 +515,57 @@ LoomProjectSummary = { projectId, name, root, hasProgram, programPath,
 `LoomOverview` is the **one-call snapshot** for the deck. Two surfaces fetched on
 separate cadences would disagree with no way to tell which is stale; the spool
 learned that the hard way and the rule is written into `state.ts:1101-1103`.
+
+---
+
+## 16. Two agent surfaces, only one with a transcript
+
+A distinction the earlier sections implied but never stated, and it caused a real
+gap: `LoomProjectSummary.orchestratorSessionId` had no source because nothing in
+the system created the thing it names.
+
+| | The orchestrator session | The tick |
+| --- | --- | --- |
+| What | a normal Telar session pinned to the project | a headless `structuredAgent` call |
+| Where | the project's own root, not a worktree | no cwd of consequence |
+| When | on demand, when a human opens the cockpit | every time the sentinel says something changed |
+| Transcript | yes — this is the conversation | **none, deliberately** |
+| Job | setup, dry runs, correcting the Program | decide, dispatch, exit |
+
+The tick having no transcript is the whole answer to why cost does not ramp with
+uptime (§3.2 of the design). So there is nothing to "open" for a tick and the UI
+must not offer it. What a tick leaves behind is the **ledger** and the **run** —
+and those are what answers "what did it do at 3am".
+
+That is worth making legible rather than hiding: the ledger is the record of an
+agent that deliberately does not remember.
+
+### Added to the seam
+
+```ts
+// LoomRuntime
+ensureLoomSession(projectId): Promise<{ sessionId: string; created: boolean }>
+```
+
+Create-or-return. A recorded session that has died is replaced, never handed out.
+The id persists in the project's watch record, which `loomOverview` already
+reads. On first creation the session is seeded with `setupPrompt()`, whose
+governing rule is §4.1: **look first, ask only what cannot be determined.**
+
+| POST | `/v2/looms/session` | `{projectId}` | `{sessionId, created}` |
+
+Placed with the other literal paths, **before** the `/:loomId` regex.
+
+### Naming, settled during the build
+
+- `LoomWatch` is the **runtime record** — schedule, last probe, last error. The
+  Program's schedule block is `LoomWatchPolicy`.
+- `TriageCache` is a keyed record; `loomTriage()` produces the `{entries}` wire
+  shape with `Object.values`.
+- `EngineStore.loomStore` is the paths getter; `looms()` is the list method. A
+  class cannot carry both under one name and the list kept it, because the
+  routes, the client and the web all speak that word.
+- The runtime attaches via `EngineStore.attachLoomRuntime()`, matching the
+  existing `attachBrowser` seam — **not** by widening the constructor options.
+  Until it is attached, persistence works and the runtime methods refuse with a
+  sentence.
