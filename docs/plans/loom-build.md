@@ -569,3 +569,64 @@ Placed with the other literal paths, **before** the `/:loomId` regex.
   existing `attachBrowser` seam — **not** by widening the constructor options.
   Until it is attached, persistence works and the runtime methods refuse with a
   sentence.
+
+---
+
+## 17. What the build found
+
+Bugs and properties discovered by implementing this, none of which the design
+predicted. Recorded because each one failed in a way that *looked like success*.
+
+**Watches did not survive a daemon restart.** `running: true` persisted, the deck
+drew "watching", and no probe ever fired again until a human toggled the watch off
+and on. Measured with two daemons over one engine root, not inferred. An overnight
+orchestrator that dies at the first restart while still claiming to run is the
+worst available version of this failure — the human wakes to a deck that says it
+watched all night and a repo where nothing happened. Fixed by exposing
+`resume()` on the runtime handle and calling it in `startEngine` after
+`store.recover()` and `writeDiscovery`.
+
+**The obvious fix for that was wrong.** Looping over persisted watches calling
+`setWatch(id, true)` looks equivalent and is not: it resets `quietChecks` and
+`nextProbeAt`, so a restart reads as a human pressing the button and re-probes an
+idle project every 300s. The backoff a quiet night earned, spent by a reboot.
+`resume()` restores from the watch record instead.
+
+**Preserving `nextProbeAt` is load-bearing, not tidiness.** A resumed daemon arms
+its interval and waits out the remaining cadence rather than probing immediately.
+Without that, a daemon crash-looping every ten seconds would run the Program's
+`probe` every ten seconds — someone's `gh` quota drained by a crash loop, with
+"idle is free" defeated by something that never touches the sentinel's logic. The
+same one rule covers both cases: down six hours means `nextProbeAt` is long past
+and the sweep fires at once.
+
+**`attempts` counts rungs consumed, not sessions started.** An early version
+bumped it on the initial dispatch, and the effect was that a two-rung ladder hit
+`1 >= 2` on its second stuck and went straight to `asking` — so **the last enabled
+rung of every ladder silently never ran**, and §5's "each rung tried once" was
+false on every project. `nextRung` is the sole writer. The deck labels the field
+"rungs tried", not "attempt N".
+
+**No gate declared is `pass`, not `unknown`.** `unknown` means a gate existed and
+could not be trusted. Reporting it for a project that deliberately has no suite
+would hold every loom forever. The ledger records that nothing was verified and
+the dry run warns about it.
+
+**`stuck` ends an advance pass.** A rung enacted in the same breath as the failure
+it answers is a retry nobody saw, and rung 2 ("run the gate again — it may be
+flaky") would re-run a suite against a tree that has not had a second to change.
+
+**Path guards were present but unreachable.** Five store readers composed the path
+*inside* the `try` that tolerates a missing file, so a traversal throw landed in
+the same `catch` as ENOENT. `GET /v2/looms/ledger?project=../../etc` answered 200
+with an empty ledger, and the watch reader was worse — it fabricated a record
+naming a project that cannot exist, which a surface would render as a real,
+stopped watch. A malformed id now throws; an absent file still degrades. Both
+directions are pinned by tests, because collapsing the distinction the *other*
+way is the tempting next repair.
+
+**Navigation must not spend money.** Auto-creating the orchestrator session when
+the cockpit opened meant clicking a sidebar link started an agent. The person most
+likely to open the deck at 2am to see what happened overnight is exactly the
+person who should not be billed for looking. Setup is a button, and the button
+says what it will do.
