@@ -13,6 +13,12 @@ import type {
   GitignoreResult,
   GitOverview,
   InboxPolicy,
+  LedgerEntry,
+  Loom,
+  LoomOverview,
+  LoomProgramDoc,
+  LoomRun,
+  LoomWatch,
   ModelCatalogue,
   SessionDiff,
   EngineErrorCode,
@@ -35,6 +41,7 @@ import type {
   RuntimeMode,
   Session,
   SessionSnapshot,
+  TriageEntry,
   Turn,
   TurnSubmissionResult,
   WorkspaceFile,
@@ -435,6 +442,56 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
+
+    // ── Looms ───────────────────────────────────────────────────────────────
+    //
+    // Project-scoped, because a Program is a document about one repository and
+    // a tick runs commands inside one working tree. Every refusal below arrives
+    // as the engine's own sentence — nothing here restates a rule it would then
+    // have to keep in step.
+
+    /** THE WHOLE DECK IN ONE READ. Bare, not wrapped — the counts, the looms,
+     *  the triage queue and the in-flight runs are one consistent snapshot, and
+     *  fetching them apart is how two halves of a screen start disagreeing. */
+    looms: () => request<LoomOverview>(fetcher, "GET", "/api/looms"),
+    loom: (loomId: string) => request<{ loom: Loom }>(fetcher, "GET", `/api/looms/${encodeURIComponent(loomId)}`),
+    /** A project with no Program answers `exists: false` and the path it would
+     *  live at — never a 404, because that is the state setup starts from. */
+    loomProgram: (projectId: string) =>
+      request<LoomProgramDoc>(fetcher, "GET", `/api/looms/program?${new URLSearchParams({ project: projectId }).toString()}`),
+    saveLoomProgram: (projectId: string, markdown: string) =>
+      request<LoomProgramDoc>(fetcher, "PUT", "/api/looms/program", { projectId, markdown }),
+    /** A DRAFT, never a save — the user still has to accept it. */
+    suggestLoomProgram: (projectId: string) =>
+      request<{ markdown: string; findings: string[] }>(fetcher, "POST", "/api/looms/program/suggest", { projectId }),
+    loomLedger: (projectId: string, limit?: number) => {
+      const params = new URLSearchParams({ project: projectId });
+      if (limit !== undefined) params.set("limit", String(limit));
+      return request<{ entries: LedgerEntry[] }>(fetcher, "GET", `/api/looms/ledger?${params.toString()}`);
+    },
+    loomTriage: (projectId: string) =>
+      request<{ entries: TriageEntry[] }>(fetcher, "GET", `/api/looms/triage?${new URLSearchParams({ project: projectId }).toString()}`),
+    /** The ticks running right now — where a 202'd tick is watched. */
+    loomWork: () => request<{ runs: LoomRun[] }>(fetcher, "GET", "/api/looms/work"),
+    setLoomWatch: (projectId: string, running: boolean) =>
+      request<{ watch: LoomWatch }>(fetcher, "POST", "/api/looms/watch", { projectId, running }),
+    /** RESOLVES WHEN THE RUN EXISTS, not when the tick finishes. Poll
+     *  `loomWork()` for progress; a tick outlives any request the browser is
+     *  willing to hold open. */
+    tickLoom: (projectId: string) => request<{ run: LoomRun }>(fetcher, "POST", "/api/looms/tick", { projectId }),
+    dryRunLoom: (projectId: string) => request<{ run: LoomRun }>(fetcher, "POST", "/api/looms/dry-run", { projectId }),
+    dispatchLoom: (projectId: string, input: { item: string; title?: string; brief?: string }) =>
+      request<{ loom: Loom }>(fetcher, "POST", "/api/looms/dispatch", { projectId, ...input }),
+    cancelLoom: (loomId: string) =>
+      request<{ loom: Loom }>(fetcher, "POST", `/api/looms/${encodeURIComponent(loomId)}/cancel`, {}),
+    answerLoom: (loomId: string, answer: string) =>
+      request<{ loom: Loom }>(fetcher, "POST", `/api/looms/${encodeURIComponent(loomId)}/answer`, { answer }),
+    /** The project's orchestrator conversation, create-or-return. Called lazily
+     *  when the cockpit opens a project; `created` distinguishes "started" from
+     *  "resumed", and a recorded session that is gone is re-minted rather than
+     *  handed back dead. */
+    ensureLoomSession: (projectId: string) =>
+      request<{ sessionId: string; created: boolean }>(fetcher, "POST", "/api/looms/session", { projectId }),
   };
 }
 

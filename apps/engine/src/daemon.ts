@@ -15,6 +15,7 @@ import {
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
+  type LoomProgram,
   type McpOAuthStatus,
   type McpServer,
   type ModelSelection,
@@ -30,6 +31,12 @@ import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRo
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard, type SocketTool } from "./spool/socket";
 import type { SpoolCapability } from "./spool/tools";
 import type { GhRunner } from "./github";
+import { createLoomRuntime, type LoomAgent, type LoomSessionPort } from "./loom/dispatch";
+import { createLoomAgent } from "./loom/agent";
+import { createLoomSessionPort } from "./loom/session";
+import { defaultLoomExec, type LoomExec } from "./loom/exec";
+import { loomPaths, type LoomRuntime } from "./loom/store";
+import { defaultGitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
 type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
@@ -53,6 +60,41 @@ export type EngineDaemonOptions = {
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
+  /**
+   * ── THE LOOM'S FOUR INJECTION POINTS ──────────────────────────────────────
+   *
+   * Same promise as `gh` and `probeProviderVersion`, and the loom is where it
+   * costs the most: a tick spawns the Program's own shell commands, cuts git
+   * worktrees, starts sessions and spends a model call. A route test that drives
+   * `POST /v2/looms/tick` must do none of those, so all four defaults are
+   * replaceable and every test in this repo replaces them.
+   *
+   * The whole runtime, pre-composed. Short-circuits the other three and the
+   * worktree machinery behind them — what a ROUTE test wants, where the seam
+   * under test is the arms rather than the orchestrator.
+   */
+  loomRuntime?: LoomRuntime;
+  /** The one place a Program's shell command runs. The default spawns for real
+   *  (`loom/exec.ts`); a test hands back canned stdout instead. */
+  loomExec?: LoomExec;
+  /**
+   * How a tick reaches a model — prompt in, `TickDecision` out.
+   *
+   * NO REAL DEFAULT EXISTS YET, and the placeholder REFUSES rather than
+   * pretending: a run that failed saying "no orchestrator agent is wired into
+   * this daemon" sends a person to the wiring, while one that quietly decided
+   * nothing sends them to re-read their Program.
+   */
+  loomAgent?: LoomAgent;
+  /**
+   * How the runtime reaches Telar sessions — `start` for a worker in its own
+   * worktree, `create` for the conversational orchestrator pinned to the
+   * project's own root. Same placeholder rule as `loomAgent`.
+   */
+  loomSession?: LoomSessionPort;
+  /** The sentinel's recurring timer, in `daemon.ts:343`'s shape, so a test can
+   *  fire the supervisor's passes by hand instead of waiting on a clock. */
+  loomInterval?: (fn: () => void, ms: number) => { clear(): void };
   /**
    * Run a worker inside the daemon process.
    *
@@ -194,6 +236,35 @@ function todayParam(url: URL): string | undefined {
   return raw;
 }
 
+/**
+ * `?project=` — required on every project-scoped loom read.
+ *
+ * ONE OF THE TWO THINGS THE LOOM ROUTES REJECT THEMSELVES. Validation otherwise
+ * lives in the store, so an in-process caller meets the same wall; but a param
+ * that never arrived is invisible from there — the store would simply be handed
+ * `undefined` and refuse in the vocabulary of ids rather than of query strings.
+ */
+function loomProject(url: URL): string {
+  const raw = url.searchParams.get("project");
+  if (raw === null || raw.trim() === "") {
+    throw new HttpError(400, "invalid_request", "project is required — name the project whose loom you mean, as ?project=<id>.");
+  }
+  return raw;
+}
+
+/** `?limit=` — the newest N ledger entries. Absent is "as many as the store
+ *  keeps". The other thing the store cannot see: a non-number would reach it as
+ *  `NaN` and quietly return nothing, which reads as an empty ledger. */
+function loomLimit(url: URL): number | undefined {
+  const raw = url.searchParams.get("limit");
+  if (raw === null) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new HttpError(400, "invalid_request", `limit must be a positive whole number — got ${JSON.stringify(raw)}.`);
+  }
+  return parsed;
+}
+
 function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
   const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
   if (!match) return undefined;
@@ -292,6 +363,23 @@ function removeOwnDiscovery(store: EngineStore, daemonId: string): void {
   }
 }
 
+/**
+ * The Program document, or `undefined` for a project this engine does not know.
+ *
+ * The runtime asks per tick and must not be handed a throw for the ordinary
+ * case: `loomProgram` refuses an unregistered project (correctly — that is the
+ * id guard), but "this project is not registered" is a state the sentinel walks
+ * past rather than an error it reports.
+ */
+function readLoomProgramFor(store: EngineStore, projectId: string): { program: LoomProgram | null; markdown: string } | undefined {
+  try {
+    const doc = store.loomProgram(projectId);
+    return { program: doc.program, markdown: doc.markdown };
+  } catch {
+    return undefined;
+  }
+}
+
 function closeServer(server: http.Server): Promise<void> {
   return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }
@@ -315,6 +403,63 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const workers = new Map<string, RegisteredWorker>();
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
+  /**
+   * THE LOOM'S RUNTIME, COMPOSED AND ATTACHED — the one call that turns the
+   * `/v2/looms/**` arms from "wired but refusing" into a working orchestrator.
+   *
+   * ATTACHED RATHER THAN CONSTRUCTED BY THE STORE, matching `attachBrowser`:
+   * the store keeps no dependency on worktrees, shells or model calls, so every
+   * test that builds an `EngineStore` directly still builds one that cannot
+   * spawn anything.
+   *
+   * CONSTRUCTION ARMS NO TIMER. The supervisor starts its interval on the first
+   * `startLoomWatch` and stops it when the last watch does, so a first-run
+   * daemon with no project and no Program on disk starts clean and probes
+   * nothing — which is the property that lets this run unconditionally.
+   *
+   * `loomRuntime` short-circuits the whole composition, which is what a route
+   * test wants: the seam under test is the arms, not the worktree machinery.
+   */
+  const loomRuntime: LoomRuntime & { resume?: () => void } =
+    options.loomRuntime ??
+      createLoomRuntime({
+        paths: loomPaths(root),
+        engineRoot: root,
+        now: () => new Date((options.now ?? Date.now)()),
+        exec: options.loomExec ?? defaultLoomExec,
+        /**
+         * THE TWO EXPENSIVE PORTS, REAL — and both INERT AT CONSTRUCTION, which
+         * is what lets them be wired unconditionally here.
+         *
+         * `createLoomAgent` allocates a closure: no Claude SDK is imported and
+         * no CLI is resolved until a tick actually asks, so a daemon that never
+         * ticks never touches a provider. `createLoomSessionPort` closes over
+         * the store it was handed and creates nothing until a loom is
+         * dispatched. Every existing test starts a daemon that reaches neither.
+         *
+         * Still overridable, and every loom test in this repo overrides them:
+         * the seam under test is usually the arms or the machinery, not the
+         * model call.
+         */
+        agent:
+          options.loomAgent ??
+          createLoomAgent({
+            // The SAME registry-anchored resolver the runtime uses, so the
+            // orchestrator's `Read`/`Grep` can only ever see a checkout the
+            // user registered.
+            projectRoot: (projectId) => store.listProjects().find((project) => project.id === projectId)?.root ?? null,
+          }),
+        session: options.loomSession ?? createLoomSessionPort({ store }),
+        git: defaultGitRunner,
+        // The project's root comes from the REGISTRY, never from a caller: it is
+        // the same rule `loomProgram` states, and it is what keeps every path
+        // the runtime composes anchored to something the user registered.
+        projectRoot: (projectId) => store.listProjects().find((project) => project.id === projectId)?.root ?? null,
+        readProgram: (projectId) => readLoomProgramFor(store, projectId)?.program ?? null,
+        readProgramMarkdown: (projectId) => readLoomProgramFor(store, projectId)?.markdown ?? null,
+        ...(options.loomInterval ? { interval: options.loomInterval } : {}),
+      });
+  store.attachLoomRuntime(loomRuntime);
   /**
    * INJECTED so a test never shells out to a real CLI. The default probes for
    * real; every engine test in this repo passes its own, which is also what
@@ -449,6 +594,224 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       if (!bearerIsValid(request.headers.authorization, token)) {
         throw new HttpError(401, "engine_unauthorized", "engine authentication failed");
+      }
+      /**
+       * ── THE LOOM ───────────────────────────────────────────────────────────
+       *
+       * Fourteen arms, grouped, with the LITERAL PATHS FIRST. `/v2/looms/program`
+       * matches `^/v2/looms/([^/]+)$` exactly as well as a loom id does, so the
+       * regex arms sit at the BOTTOM of this block and nowhere else. Hoisting one
+       * of them turns the Program editor into "no loom by that id", which is a
+       * confusing enough failure to be worth stating here rather than rediscovering.
+       *
+       * NO SCHEMA PARSE AT THIS EDGE. Validation lives in the store (build spec
+       * §14), so an in-process caller hits the same wall an HTTP one does. What
+       * these arms reject is only what the store CANNOT see: a query param that
+       * never arrived, and a `limit` that is not a number. Everything else comes
+       * back as the store's own sentence, carried by `errorFor`.
+       *
+       * Every store call here is awaited. Several of them read the filesystem and
+       * one of them starts a run; awaiting a synchronous answer costs a microtask,
+       * while forgetting to await an asynchronous one serialises `{}` to the wire.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/looms") {
+        // BARE, like `GET /v2/spool`: the deck's one-call snapshot IS the body
+        // rather than a key inside one. Two surfaces fetched on separate cadences
+        // disagree with no way to tell which is stale — the reason §15.6 makes
+        // this one read in the first place.
+        writeJson(response, 200, await store.loomOverview());
+        return;
+      }
+      if (url.pathname === "/v2/looms/program") {
+        /**
+         * THE PROGRAM ARTIFACT — the file the user writes and the orchestrator
+         * obeys. A project that has never written one answers `exists: false`
+         * carrying the path it WOULD live at, never a 404: "there is no Program
+         * yet" is the ordinary first-run state, and the editor has to render it
+         * to be the thing that fixes it.
+         */
+        if (request.method === "GET") {
+          writeJson(response, 200, await store.loomProgram(loomProject(url)));
+          return;
+        }
+        /**
+         * PUT because a save replaces the one whole document — idempotent, last
+         * writer wins. The parse warnings ride back on the same answer, so a save
+         * and a lint are never two round trips that can disagree.
+         */
+        if (request.method === "PUT") {
+          const input = await body(request);
+          const projectId = stringValue(input.projectId, "projectId", true);
+          if (projectId === undefined) {
+            throw new HttpError(400, "invalid_request", "projectId is required — name the project this Program belongs to.");
+          }
+          const markdown = stringValue(input.markdown, "markdown", true);
+          if (markdown === undefined) {
+            throw new HttpError(400, "invalid_request", "markdown is required — a save replaces the whole document, so send all of it.");
+          }
+          writeJson(response, 200, await store.saveLoomProgram(projectId, markdown));
+          return;
+        }
+      }
+      if (request.method === "POST" && url.pathname === "/v2/looms/program/suggest") {
+        /**
+         * READS THE REPOSITORY AND PROPOSES A DRAFT — it never saves one. The
+         * answer is markdown the user still has to accept through the `PUT`
+         * above, plus the findings that produced it, so nothing a model guessed
+         * becomes the standing instruction without a hand on it.
+         */
+        const input = await body(request);
+        const projectId = stringValue(input.projectId, "projectId", true);
+        if (projectId === undefined) {
+          throw new HttpError(400, "invalid_request", "projectId is required — name the project to read before drafting a Program.");
+        }
+        writeJson(response, 200, await store.suggestLoomProgram(projectId));
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/v2/looms/ledger") {
+        // WHAT THE LOOM DID, in its own words. `?limit=` is the newest N; absent
+        // is as many as the store keeps.
+        writeJson(response, 200, await store.loomLedger(loomProject(url), loomLimit(url)));
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/v2/looms/triage") {
+        writeJson(response, 200, await store.loomTriage(loomProject(url)));
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/v2/looms/work") {
+        /**
+         * WHAT IS RUNNING RIGHT NOW — in memory, across every project, which is
+         * why it takes no `?project=`. This is the other half of the 202 below:
+         * a tick answers immediately with its run and progress is read HERE. No
+         * stream, no poll on the POST.
+         */
+        writeJson(response, 200, await store.loomWork());
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/looms/watch") {
+        /**
+         * ONE ARM FOR BOTH DIRECTIONS. "Watch this project" and "stop watching
+         * it" are one slot with two values, and a `running` flag says which —
+         * two routes would let a surface believe it last called the other one.
+         */
+        const input = await body(request);
+        const projectId = stringValue(input.projectId, "projectId", true);
+        if (projectId === undefined) throw new HttpError(400, "invalid_request", "projectId is required — name the project to watch.");
+        if (typeof input.running !== "boolean") {
+          throw new HttpError(
+            400,
+            "invalid_request",
+            `running must be true to start the watch or false to stop it — got ${JSON.stringify(input.running)}.`,
+          );
+        }
+        writeJson(response, 200, input.running ? await store.startLoomWatch(projectId) : await store.stopLoomWatch(projectId));
+        return;
+      }
+      if (request.method === "POST" && (url.pathname === "/v2/looms/tick" || url.pathname === "/v2/looms/dry-run")) {
+        /**
+         * 202, AND THE RUN COMES BACK AT ONCE.
+         *
+         * A tick spends a model call and can run for minutes. Awaiting it here is
+         * the mistake `/v2/spool/night` made and paid for inside one live run:
+         * the caller's HTTP client gave up and reported the engine unreachable
+         * while the daemon happily finished every job. The run record is the
+         * receipt; `GET /v2/looms/work` is where the progress is.
+         *
+         * `dry-run` SHARES THIS ARM because it is the same request with the
+         * publishing hands tied — two bodies differing by one word drift.
+         */
+        const input = await body(request);
+        const projectId = stringValue(input.projectId, "projectId", true);
+        if (projectId === undefined) throw new HttpError(400, "invalid_request", "projectId is required — name the project to tick.");
+        writeJson(
+          response,
+          202,
+          url.pathname === "/v2/looms/dry-run" ? await store.dryRunLoom(projectId) : await store.tickLoom(projectId),
+        );
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/looms/dispatch") {
+        /**
+         * THE HAND'S OWN DISPATCH — the same verb a tick's decision reaches,
+         * taken deliberately instead of derived. `title` and `brief` are optional
+         * and absent means "the store reads them off the item", so they ride as
+         * spreads: `JSON.stringify` erases an explicit `undefined`, which would
+         * make "leave it to you" and a bug indistinguishable on the wire.
+         */
+        const input = await body(request);
+        const projectId = stringValue(input.projectId, "projectId", true);
+        if (projectId === undefined) throw new HttpError(400, "invalid_request", "projectId is required — name the project to dispatch into.");
+        const item = stringValue(input.item, "item", true);
+        if (item === undefined) {
+          throw new HttpError(400, "invalid_request", "item is required — the work item to dispatch, in the vocabulary the Program's list command emits.");
+        }
+        const title = stringValue(input.title, "title", true);
+        const brief = stringValue(input.brief, "brief", true);
+        writeJson(
+          response,
+          200,
+          await store.dispatchLoom(projectId, {
+            item,
+            ...(title === undefined ? {} : { title }),
+            ...(brief === undefined ? {} : { brief }),
+          }),
+        );
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/looms/session") {
+        /**
+         * THE CONVERSATION, ENSURED — create-or-return, the same singleton front
+         * door `/v2/spool/master` is and for the same reason: "open this
+         * project's orchestrator" and "make one if there has never been one" are
+         * one request from the caller's side, and splitting them makes every
+         * surface do the two-step. `created` says which happened, so the cockpit
+         * can tell "resumed" from "started" without a second read.
+         *
+         * NOT THE TICK. A tick is headless, has no session and keeps no
+         * transcript — that is the design's whole answer to context growth. This
+         * is the room a HUMAN talks to, against the project's own root rather
+         * than a worktree.
+         */
+        const input = await body(request);
+        const projectId = stringValue(input.projectId, "projectId", true);
+        if (projectId === undefined) {
+          throw new HttpError(400, "invalid_request", "projectId is required — name the project whose orchestrator you want to talk to.");
+        }
+        writeJson(response, 200, await store.ensureLoomSession(projectId));
+        return;
+      }
+      /**
+       * ONE LOOM, BY ID. LAST IN THE BLOCK on purpose — see the header: this
+       * regex matches `/v2/looms/program` too, so every literal path above has
+       * already had its turn by the time control arrives here. An id nothing
+       * goes by is the store's `not_found`, which `errorFor` turns into a 404
+       * WITH the sentence rather than a bare status.
+       */
+      const loomById = /^\/v2\/looms\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && loomById) {
+        writeJson(response, 200, { loom: await store.loom(decodeURIComponent(loomById[1])) });
+        return;
+      }
+      const loomCancel = /^\/v2\/looms\/([^/]+)\/cancel$/.exec(url.pathname);
+      if (request.method === "POST" && loomCancel) {
+        // NO BODY. Cancelling is not a decision with options — a reason field
+        // here would be a second way to say what the ledger already records.
+        writeJson(response, 200, await store.cancelLoom(decodeURIComponent(loomCancel[1])));
+        return;
+      }
+      const loomAnswer = /^\/v2\/looms\/([^/]+)\/answer$/.exec(url.pathname);
+      if (request.method === "POST" && loomAnswer) {
+        const input = await body(request);
+        const answer = stringValue(input.answer, "answer", true);
+        if (answer === undefined) {
+          throw new HttpError(
+            400,
+            "invalid_request",
+            "answer is required — the loom is parked on a question, and it stays parked until somebody says something.",
+          );
+        }
+        writeJson(response, 200, await store.answerLoom(decodeURIComponent(loomAnswer[1]), answer));
+        return;
       }
       if (request.method === "GET" && url.pathname === "/v2/health") {
         writeJson(response, 200, health());
@@ -2097,6 +2460,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     store.recover();
     writeDiscovery(store, discovery);
 
+    /**
+     * THE WATCHES A HUMAN ALREADY TURNED ON, PICKED BACK UP — after recovery
+     * and after discovery, the same rule the embedded worker below follows, so
+     * nothing probes against a pre-recovery store.
+     *
+     * WITHOUT THIS THE SEAM TELLS A LIE rather than merely going quiet:
+     * `running` is persisted, so `loomOverview` keeps reporting
+     * `watch.running: true` and the deck keeps drawing "watching" while no
+     * probe ever fires again until someone toggles the switch off and on.
+     * Measured, not assumed — a second daemon over the same engine root probed
+     * zero times. A first-run engine has no watch record saying `running`, so
+     * the guard inside `resume` makes this a no-op there.
+     *
+     * OPTIONAL BECAUSE AN INJECTED `loomRuntime` IS A BARE `LoomRuntime`: a
+     * route test that swaps the orchestrator out has no supervisor to resume,
+     * and must not be made to grow one.
+     */
+    loomRuntime.resume?.();
+
     // The embedded worker starts AFTER discovery is published, because it
     // connects through the same discovery document every other client uses
     // rather than through a private in-process shortcut. That keeps one code
@@ -2145,6 +2527,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await browser?.close("engine shutting down");
         await closeServer(server);
         clearInterval(workerPruner);
+        // The supervisor's interval, beside the other one and for the same
+        // reason: a timer that outlives `close()` hangs a suite instead of
+        // failing it. A no-op when nothing was ever attached.
+        store.closeLoomRuntime();
         removeOwnDiscovery(store, daemonId);
         lock.release();
       },

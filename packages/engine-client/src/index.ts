@@ -70,6 +70,13 @@ import {
   type EngineEvent,
   type EngineHealth,
   type Item,
+  type LedgerEntry,
+  type Loom,
+  type LoomOverview,
+  type LoomProgramDoc,
+  type LoomRun,
+  type LoomWatch,
+  type TriageEntry,
   type GitOverview,
   type ModelSelection,
   type Project,
@@ -897,6 +904,119 @@ export class EngineClient {
     items: string[],
   ): Promise<{ source: SpoolLane; created: SpoolLane }> {
     return this.request("POST", "/v2/spool/lanes/split", { sourceKey, ...input, items });
+  }
+
+  // ── Looms ─────────────────────────────────────────────────────────────────
+  //
+  // The orchestrator. PROJECT-SCOPED, unlike the Spool above and for the
+  // opposite reason: a Program is a document about one repository, and a tick
+  // runs commands inside one working tree. The `?project=` on the reads is that
+  // fact, not a filter.
+  //
+  // Validation is the ENGINE's — every refusal below arrives as the store's own
+  // sentence through `EngineClientError`, so this class never restates a rule it
+  // would then have to keep in step.
+
+  /** THE WHOLE DECK IN ONE READ — every project's summary, every loom, the
+   *  triage queue, the in-flight runs, and the files the store could not read.
+   *  Bare, not wrapped: there is no second thing this route could return. */
+  looms(): Promise<LoomOverview> {
+    return this.request("GET", "/v2/looms");
+  }
+
+  /** One loom. `not_found` for an id nothing goes by. */
+  loom(loomId: string): Promise<{ loom: Loom }> {
+    return this.request("GET", `/v2/looms/${encodeURIComponent(loomId)}`);
+  }
+
+  /** The Program on disk. A project that has never written one answers
+   *  `exists: false` with the path it would live at — never a rejection. */
+  loomProgram(projectId: string): Promise<LoomProgramDoc> {
+    return this.request("GET", `/v2/looms/program?${new URLSearchParams({ project: projectId }).toString()}`);
+  }
+
+  /** Replace the whole document. The parse warnings come back on the same
+   *  answer, so a save and a lint can never be two round trips out of step. */
+  saveLoomProgram(projectId: string, markdown: string): Promise<LoomProgramDoc> {
+    return this.request("PUT", "/v2/looms/program", { projectId, markdown });
+  }
+
+  /** A DRAFT, never a save — the setup conversation's opening move. The
+   *  findings are what the reading actually found, so a user can judge the
+   *  proposal instead of trusting it. */
+  suggestLoomProgram(projectId: string): Promise<{ markdown: string; findings: string[] }> {
+    return this.request("POST", "/v2/looms/program/suggest", { projectId });
+  }
+
+  /** What the loom did, newest first. `limit` is how far back to read. */
+  loomLedger(projectId: string, limit?: number): Promise<{ entries: LedgerEntry[] }> {
+    const params = new URLSearchParams({ project: projectId });
+    if (limit !== undefined) params.set("limit", String(limit));
+    return this.request("GET", `/v2/looms/ledger?${params.toString()}`);
+  }
+
+  /** The classified backlog — one entry per item the loom has looked at. An
+   *  array on the wire even though the store keys it by item, because the
+   *  surface renders a list and a map would only be re-sorted on arrival. */
+  loomTriage(projectId: string): Promise<{ entries: TriageEntry[] }> {
+    return this.request("GET", `/v2/looms/triage?${new URLSearchParams({ project: projectId }).toString()}`);
+  }
+
+  /** THE TICKS RUNNING RIGHT NOW, across every project — in memory, so a
+   *  restart empties it honestly. This is where a 202'd tick is watched. */
+  loomWork(): Promise<{ runs: LoomRun[] }> {
+    return this.request("GET", "/v2/looms/work");
+  }
+
+  /** Start or stop the sentinel. One call with a flag rather than two verbs:
+   *  the watch is one slot, and two routes would let a surface believe it last
+   *  called the other one. */
+  setLoomWatch(projectId: string, running: boolean): Promise<{ watch: LoomWatch }> {
+    return this.request("POST", "/v2/looms/watch", { projectId, running });
+  }
+
+  /**
+   * Run one tick. RESOLVES AS SOON AS THE RUN EXISTS (202), not when the work
+   * finishes — a tick spends a model call and can take minutes, which is longer
+   * than any HTTP client will wait. Watch it with `loomWork()`.
+   */
+  tickLoom(projectId: string): Promise<{ run: LoomRun }> {
+    return this.request("POST", "/v2/looms/tick", { projectId });
+  }
+
+  /** The same tick with the dispatching hands tied — the trust surface at
+   *  setup. Same 202, same run record, same `loomWork()` to watch it. */
+  dryRunLoom(projectId: string): Promise<{ run: LoomRun }> {
+    return this.request("POST", "/v2/looms/dry-run", { projectId });
+  }
+
+  /** Dispatch one item by hand — the same verb a tick's decision reaches.
+   *  `title` and `brief` absent means the store reads them off the item. */
+  dispatchLoom(projectId: string, input: { item: string; title?: string; brief?: string }): Promise<{ loom: Loom }> {
+    return this.request("POST", "/v2/looms/dispatch", { projectId, ...input });
+  }
+
+  /** Stop a loom. No reason field: the ledger already records who and when. */
+  cancelLoom(loomId: string): Promise<{ loom: Loom }> {
+    return this.request("POST", `/v2/looms/${encodeURIComponent(loomId)}/cancel`);
+  }
+
+  /**
+   * The project's orchestrator conversation, ENSURED — created if there has
+   * never been one, resumed if there has, and re-minted if the recorded one is
+   * gone. `created` says which, so a cockpit can tell "resumed" from "started".
+   *
+   * NOT THE TICK: a tick is headless and keeps no transcript. This is the room
+   * a human talks in, against the project's own root.
+   */
+  ensureLoomSession(projectId: string): Promise<{ sessionId: string; created: boolean }> {
+    return this.request("POST", "/v2/looms/session", { projectId });
+  }
+
+  /** Answer a loom parked on a question — the bottom of the escalation ladder,
+   *  where the only thing that unblocks it is a human sentence. */
+  answerLoom(loomId: string, answer: string): Promise<{ loom: Loom }> {
+    return this.request("POST", `/v2/looms/${encodeURIComponent(loomId)}/answer`, { answer });
   }
 
   /** A project's git state — branch, dirty count, divergence, worktrees.
