@@ -44,7 +44,23 @@ export type OrchestratorContext = {
    *  a render, which round-trips by `program.ts`'s contract. */
   markdown?: string;
   probe: { output: string; changed: boolean } | null;
-  list: { output: string; code: number } | null;
+  /**
+   * WHAT `list` PRINTED, AND IT IS ONLY EVER WHAT A `list` THAT RAN PRINTED.
+   *
+   * There is no exit code here on purpose. `runLoomTick` refuses the tick when
+   * `list` exits non-zero — an unreadable backlog leaves nothing to decide, so
+   * no prompt is built and no model is paid to read a failure back to us. This
+   * file used to carry a second half of that rule ("treat a non-zero exit as
+   * UNKNOWN, not as no work"), which became unreachable the moment the refusal
+   * landed. Two mechanisms for one rule, one of them dead, is the second source
+   * of truth this codebase argues against everywhere else — and the dead one is
+   * the one that would drift. The type is now the statement: a prompt cannot be
+   * built from a `list` that did not run.
+   *
+   * `null` still means the Program declares no `list` at all, which is a real
+   * configuration and an entirely different thing from one that failed.
+   */
+  list: { output: string } | null;
   looms: Loom[];
   /** Only the items whose triage is stale, and only up to the caller's cap. */
   details: Array<{ item: string; detail: string }>;
@@ -151,9 +167,7 @@ export function orchestratorPrompt(ctx: OrchestratorContext): string {
     section(
       "The work items — `list` output",
       ctx.list
-        ? ctx.list.code === 0
-          ? `\`\`\`\n${ctx.list.output.trim()}\n\`\`\``
-          : `The \`list\` command exited ${ctx.list.code}. Treat this as UNKNOWN, not as "there is no work". Do not dispatch on the strength of an empty list you could not read.\n\n\`\`\`\n${ctx.list.output.trim()}\n\`\`\``
+        ? `\`\`\`\n${ctx.list.output.trim()}\n\`\`\``
         : "The Program declares no `list` command, so there is no backlog to read. You can still park, ask, or note.",
     ),
   );
@@ -401,9 +415,6 @@ export function dryRunReport(decision: TickDecision, ctx: DryRunContext): string
     notable.push(
       `${ctx.skipped} stale item(s) were NOT read this tick (the per-tick detail cap is ${ctx.details.length + ctx.skipped > 0 ? ctx.details.length : 0} and ${ctx.staleCount} were stale). They are unclassified, not clean.`,
     );
-  }
-  if (ctx.list && ctx.list.code !== 0) {
-    notable.push(`the \`list\` command exited ${ctx.list.code}, so this whole report was built on output that may be incomplete.`);
   }
   const unmentioned = countUnmentioned(ctx, seen);
   if (unmentioned > 0) {

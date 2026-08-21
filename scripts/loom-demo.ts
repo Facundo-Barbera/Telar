@@ -366,10 +366,15 @@ const branches = git(remote, "for-each-ref", "--format=%(refname:short) %(object
 for (const branch of branches) out(`  ${branch}`);
 out();
 out(`  main is ${git(remote, "rev-parse", "main").trim() === mainAtStart ? "UNCHANGED" : "CHANGED"} since the demo started — nothing was merged, base was never pushed to.`);
-const published = overview.looms.find((loom) => loom.state === "published");
-if (published?.branch && gitOk(remote, "rev-parse", "--verify", published.branch)) {
-  const files = git(remote, "diff", "--name-only", `main..${published.branch}`).trim().split("\n").filter((line) => line !== "");
-  out(`  ${published.branch} changes ${files.join(", ")} and nothing else.`);
+const publishedLooms = overview.looms.filter((loom) => loom.state === "published");
+const published = publishedLooms[0];
+for (const loom of publishedLooms) {
+  if (!loom.branch || !gitOk(remote, "rev-parse", "--verify", loom.branch)) continue;
+  const files = git(remote, "diff", "--name-only", `main..${loom.branch}`).trim().split("\n").filter((line) => line !== "");
+  // An EMPTY diff is worth printing rather than hiding: the harness's only
+  // done-check is that the worktree gained a commit, and an empty commit passes
+  // it. A branch published with nothing on it is a real outcome of that rule.
+  out(`  ${loom.branch} changes ${files.length === 0 ? "NOTHING — the commit is empty against main" : `${files.join(", ")} and nothing else`}.`);
 }
 
 // ── the ledger ──────────────────────────────────────────────────────────────

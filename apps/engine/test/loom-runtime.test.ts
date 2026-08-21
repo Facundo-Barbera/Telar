@@ -20,14 +20,14 @@ import os from "node:os";
 import path from "node:path";
 import type { Loom, LoomProgram, TickDecision } from "@telar/engine-client";
 import type { GitResult, GitRunner } from "../src/worktree";
-import { advanceLooms, cancelLoom, dispatchLoom, parseListed, runLoomTick, type LoomAgent, type LoomSessionPort, type LoomTickDeps } from "../src/loom/dispatch";
+import { advanceLooms, cancelLoom, createLoomRuntime, dispatchLoom, parseListed, runLoomTick, type LoomAgent, type LoomSessionPort, type LoomTickDeps } from "../src/loom/dispatch";
 import { validateDecision } from "../src/loom/decide";
 import { substitute, slotEnv, truncate, type LoomExec, type LoomExecInput } from "../src/loom/exec";
 import { globMatch } from "../src/loom/gate";
 import { createLoomRuns } from "../src/loom/run";
 import { fingerprintFrom } from "../src/loom/sentinel";
 import { createLoomSupervisor, type LoomSupervisor } from "../src/loom/supervisor";
-import { getLoom, listLooms, loomPaths, readLedger, writeSentinel, type LoomPaths } from "../src/loom/store";
+import { getLoom, listLooms, loomPaths, readLedger, readWatch, writeSentinel, type LoomPaths } from "../src/loom/store";
 
 const roots: string[] = [];
 const supervisors: LoomSupervisor[] = [];
@@ -106,6 +106,9 @@ function world(options: { program?: LoomProgram } = {}) {
     commits: 1,
     diffFiles: [] as string[],
     hasOrigin: false,
+    /** `git rev-list --count` itself failing — a deleted checkout, a base that
+     *  stopped resolving. Distinct from `commits: 0`, which is the whole point. */
+    countFails: false,
     rebase: { status: 0, stdout: "", stderr: "" } as GitResult,
   };
   const git: GitRunner = (_cwd, args) => {
@@ -119,15 +122,20 @@ function world(options: { program?: LoomProgram } = {}) {
     if (joined === "rebase --abort") return ok();
     if (args[0] === "rebase") return repo.rebase;
     if (joined.startsWith("diff --name-only")) return ok(repo.diffFiles.join("\n"));
-    if (joined.startsWith("rev-list --count")) return ok(String(repo.commits));
+    if (joined.startsWith("rev-list --count")) {
+      return repo.countFails ? { status: 128, stdout: "", stderr: "fatal: bad revision" } : ok(String(repo.commits));
+    }
     return ok();
   };
 
   // ── sessions ────────────────────────────────────────────────────────────
-  const sessions = new Map<string, "running" | "done" | "gone">();
+  const sessions = new Map<string, "running" | "unclaimed" | "done" | "gone">();
+  const stopped: string[] = [];
   let sessionSeq = 0;
+  const briefs: string[] = [];
   const session: LoomSessionPort = {
-    async start() {
+    async start(input) {
+      briefs.push(input.prompt);
       const sessionId = `session-${(sessionSeq += 1)}`;
       sessions.set(sessionId, "running");
       return { sessionId };
@@ -141,6 +149,7 @@ function world(options: { program?: LoomProgram } = {}) {
       return sessions.get(sessionId) ?? "gone";
     },
     async stop(sessionId) {
+      stopped.push(sessionId);
       sessions.set(sessionId, "gone");
     },
   };
@@ -175,6 +184,8 @@ function world(options: { program?: LoomProgram } = {}) {
     repo,
     agent,
     sessions,
+    stopped,
+    briefs,
     execCalls,
     gitCalls,
     script(key: string, value: Scripted) {
@@ -823,4 +834,369 @@ test("a re-provisioned loom adopts its existing checkout rather than cutting a s
   expect(starts).toEqual(["t3code/fix-the-prefix", "t3code/fix-the-prefix"]);
   // One checkout, cut once. A second `worktree add` would strand the first.
   expect(w.gitCalls.filter((args) => args[0] === "worktree" && args[1] === "add")).toHaveLength(1);
+});
+
+// ── an unreadable world is not an empty one ─────────────────────────────────
+
+test("a failed `list` refuses the tick, and the refusal costs zero model calls", async () => {
+  /**
+   * THE RULE, NOT THE MECHANISM — build-routes' framing, and it is the reason
+   * this assertion survived the behaviour swapping underneath it twice. What is
+   * pinned is that an unreadable backlog is never reported as an empty one; a
+   * test written against `throws` or against `the prompt contains the exit code`
+   * would go green through either implementation while the rule went unchecked.
+   */
+  const w = world();
+  w.script("list", { code: 1, stderr: "gh: To get started with GitHub CLI, please run: gh auth login" });
+  w.agent.decision = oneDispatch();
+
+  await expect(runLoomTick(w.deps, PROJECT)).rejects.toThrow(/Refusing rather than reporting an empty backlog/);
+
+  // A cost assertion, not a style one: an eight-hour outage costs zero model
+  // calls rather than one per tick. It is also the only available evidence that
+  // the refusal happened BEFORE the expensive half.
+  expect(w.agent.calls).toBe(0);
+  expect(w.execCalls.some((call) => call.command.startsWith("detail"))).toBe(false);
+  // Nothing was dispatched off a backlog nobody read.
+  expect(w.looms()).toHaveLength(0);
+
+  // The run record is transient; the ledger is what answers "what happened at
+  // 3am" the next morning.
+  const errors = readLedger(w.paths, PROJECT).filter((entry) => entry.kind === "error");
+  expect(errors).toHaveLength(1);
+  expect(errors[0]?.summary).toContain("the backlog could not be read");
+  // The command AND the code AND what it said — a sentence someone can act on
+  // at 8am, not a number they have to go and look up.
+  expect(errors[0]?.detail).toContain("`list` exited 1");
+  expect(errors[0]?.detail).toContain("gh auth login");
+});
+
+test("looms in flight are still reconciled by machinery when the backlog cannot be read", async () => {
+  // Only the DECIDING half is refused. Reconciliation never needed a work list,
+  // and a worker that finished during an outage must not wait for it to end.
+  const w = world();
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "https://example.test/pr/9" });
+  await dispatchOne(w);
+
+  w.finishWorker();
+  w.script("list", { code: 1, stderr: "gh: not authenticated" });
+  await expect(runLoomTick(w.deps, PROJECT)).rejects.toThrow(/exited 1/);
+
+  expect(w.only().state).toBe("published");
+});
+
+test("a `list` that legitimately prints nothing is still an empty backlog, not a failure", async () => {
+  const w = world();
+  w.script("list", { code: 0, stdout: "[]" });
+  w.agent.decision = emptyDecision;
+
+  const result = await runLoomTick(w.deps, PROJECT);
+
+  // Exit 0 and no items is the ordinary quiet night. It must still tick.
+  expect(result.decision.dispatch).toHaveLength(0);
+  expect(w.agent.calls).toBe(1);
+  expect(readLedger(w.paths, PROJECT).filter((entry) => entry.kind === "error")).toHaveLength(0);
+});
+
+// ── an unreadable world is not an empty one ─────────────────────────────────
+
+/**
+ * A runtime wired to a REAL supervisor, so `observe` lands on the same watch
+ * record the deck reads. A stubbed supervisor would answer every question the
+ * way the test hoped, which is the one thing these tests must not let it do.
+ */
+function runtimeWithSupervisor(w: World) {
+  const { supervisor } = supervisorFor(w);
+  const runtime = createLoomRuntime({ ...w.deps, supervisor, interval: () => ({ clear: () => undefined }) });
+  return { runtime, supervisor };
+}
+
+async function settled(runtime: ReturnType<typeof runtimeWithSupervisor>["runtime"], id: string) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const run = runtime.loomWork().runs.find((candidate) => candidate.id === id);
+    if (run && run.state !== "running") return run;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error("the run never settled");
+}
+
+test("a cancelled tick is not reported as a broken project", async () => {
+  // `defaultLoomExec` reports an aborted command as a non-zero exit like any
+  // other, so without a guard a human's own click would pin "your `list` is
+  // broken" to the deck. The two are opposite diagnoses of the same exit code.
+  const w = world();
+  const runs = createLoomRuns(() => w.clock.at);
+  const handle = runs.begin({ projectId: PROJECT, kind: "tick" });
+  const aborted = { ...w.deps, signal: handle.signal };
+  w.script("list", (_call, input) => {
+    void input;
+    runs.cancel(handle.id);
+    return { code: 143, stderr: "Terminated" };
+  });
+
+  await expect(runLoomTick(aborted, PROJECT)).rejects.toThrow(/cancelled/);
+  expect(readLedger(w.paths, PROJECT).filter((entry) => entry.kind === "error")).toHaveLength(0);
+});
+
+test("a failed `list` settles the run `failed` and puts the reason on the watch record", async () => {
+  const w = world();
+  w.script("list", { code: 1, stderr: "gh: API rate limit exceeded" });
+  const { runtime, supervisor } = runtimeWithSupervisor(w);
+  supervisor.setWatch(PROJECT, true);
+
+  const started = runtime.tickLoom(PROJECT);
+  const run = await settled(runtime, started.run.id);
+
+  // The measured symptom was `RUN STATE: done · RUN ERROR: ""` — a broken
+  // orchestrator that every surface rendered as healthy.
+  expect(run.state).toBe("failed");
+  expect(run.error ?? "").toContain("rate limit");
+  expect(run.error ?? "").toContain("could not be read");
+
+  // AND ON THE WATCH RECORD, which is the part that matters overnight. A run is
+  // in memory and trimmed to the last twenty; the watch is what the deck draws
+  // this project as at 8am.
+  expect(readWatch(w.paths, PROJECT).lastError ?? "").toContain("rate limit");
+  runtime.close();
+});
+
+test("a project that cannot read its backlog is distinguishable from one with nothing to do", async () => {
+  /**
+   * THE BUG, NAMED. Both projects tick, neither dispatches anything, and both
+   * settle without drama — and until this test they were the same record. One
+   * of them has an expired credential and one of them had a quiet night, and an
+   * unattended system that cannot tell a human which is which has lost the
+   * property every other decision here is in service of.
+   *
+   * ASSERTED ON THE WATCH RECORD RATHER THAN ON AN ERROR STRING, because the
+   * watch record is what the deck reads. `deck.tsx` prints `lastError` in place
+   * of "every 300s · N quiet checks" — so these two assertions are literally
+   * two different rows on the screen.
+   */
+  const broken = world();
+  broken.script("list", { code: 1, stderr: "gh: not authenticated" });
+  const b = runtimeWithSupervisor(broken);
+  b.supervisor.setWatch(PROJECT, true);
+
+  const quiet = world();
+  quiet.script("list", { code: 0, stdout: "[]" });
+  quiet.agent.decision = emptyDecision;
+  const q = runtimeWithSupervisor(quiet);
+  q.supervisor.setWatch(PROJECT, true);
+
+  await settled(b.runtime, b.runtime.tickLoom(PROJECT).run.id);
+  await settled(q.runtime, q.runtime.tickLoom(PROJECT).run.id);
+
+  // ONE PROBE EACH, both succeeding and both unchanged from here on, so every
+  // difference below comes from the world-read and nothing else.
+  broken.script("probe", { code: 0, stdout: "same" });
+  quiet.script("probe", { code: 0, stdout: "same" });
+  await b.supervisor.pass(PROJECT);
+  await b.supervisor.pass(PROJECT);
+  await q.supervisor.pass(PROJECT);
+  await q.supervisor.pass(PROJECT);
+
+  const brokenWatch = readWatch(broken.paths, PROJECT);
+  const quietWatch = readWatch(quiet.paths, PROJECT);
+
+  // The deck draws one of these as a sentence and the other as a cadence.
+  expect(brokenWatch.lastError).toContain("not authenticated");
+  expect(quietWatch.lastError).toBeUndefined();
+
+  /**
+   * AND THE BACKOFF DID NOT ADVANCE ON THE BROKEN ONE. This is the half that
+   * makes the failure self-deepening if you get it wrong: an expired credential
+   * whose failures score as quiet decays to an hourly cadence, so the moment
+   * someone fixes the credential the project is asleep for an hour. The quiet
+   * project earning its backoff in the same breath is what proves the mechanism
+   * is still doing its job rather than having been switched off.
+   */
+  expect(brokenWatch.intervalSec).toBe(300);
+  expect(brokenWatch.quietChecks).toBe(0);
+  expect(quietWatch.intervalSec).toBeGreaterThan(300);
+  expect(quietWatch.quietChecks).toBeGreaterThan(0);
+
+  b.runtime.close();
+  q.runtime.close();
+});
+
+test("a world-read that recovers clears the record it earned", async () => {
+  // The other direction, and the reason `observe` takes a `pass` as well as an
+  // `unknown`: a project stuck showing an error it has already recovered from
+  // is the same lie in the opposite direction, and it would train a human to
+  // ignore the field.
+  const broken = world();
+  let failing = true;
+  broken.script("list", () => (failing ? { code: 1, stderr: "gh: not authenticated" } : { code: 0, stdout: "[]" }));
+  broken.agent.decision = emptyDecision;
+  const { runtime, supervisor } = runtimeWithSupervisor(broken);
+  supervisor.setWatch(PROJECT, true);
+
+  await settled(runtime, runtime.tickLoom(PROJECT).run.id);
+  expect(readWatch(broken.paths, PROJECT).lastError).toContain("not authenticated");
+
+  failing = false;
+  await settled(runtime, runtime.tickLoom(PROJECT).run.id);
+  expect(readWatch(broken.paths, PROJECT).lastError).toBeUndefined();
+
+  // And the backoff is available again now that a pass is real evidence.
+  broken.script("probe", { code: 0, stdout: "same" });
+  await supervisor.pass(PROJECT);
+  await supervisor.pass(PROJECT);
+  expect(readWatch(broken.paths, PROJECT).quietChecks).toBeGreaterThan(0);
+  runtime.close();
+});
+
+test("a tick that worked does not erase a probe that did not", async () => {
+  // One working read is no evidence about a different broken one. `observe`
+  // clears only what it marked, because the alternative lets a successful tick
+  // hide a failing probe — the same collapse, one field down.
+  const w = world();
+  w.script("list", { code: 0, stdout: "[]" });
+  w.script("probe", { code: 1, stderr: "gh: not authenticated" });
+  w.agent.decision = emptyDecision;
+  const { runtime, supervisor } = runtimeWithSupervisor(w);
+  supervisor.setWatch(PROJECT, true);
+
+  await supervisor.pass(PROJECT);
+  expect(readWatch(w.paths, PROJECT).lastError).toContain("probe exited 1");
+
+  await settled(runtime, runtime.tickLoom(PROJECT).run.id);
+  expect(readWatch(w.paths, PROJECT).lastError).toContain("probe exited 1");
+  runtime.close();
+});
+
+// ── nothing to do, or nothing that can be done ──────────────────────────────
+
+test("a brief nobody claims sticks the loom instead of sitting `working` forever", async () => {
+  /**
+   * THE SAME BUG IN DIFFERENT CLOTHES. The session port queues past
+   * `worker_unavailable` on purpose, so with no worker process alive the turn
+   * sits `queued` — `status` said `running`, the ledger said nothing, and the
+   * loom sat `working` until somebody noticed by hand. Unbounded, silent, and
+   * indistinguishable from a worker doing its job.
+   */
+  const w = world();
+  w.agent.decision = oneDispatch();
+  await runLoomTick(w.deps, PROJECT);
+  const dispatched = w.only();
+  expect(dispatched.state).toBe("working");
+
+  // Nothing claimed it. Not "the worker failed" — the worker does not exist.
+  w.sessions.set(dispatched.sessionId as string, "unclaimed");
+
+  // WITHIN THE GRACE PERIOD IT WAITS. A worker restarting, or a daemon that
+  // started a beat before its embedded worker registered, must not stick a loom.
+  w.clock.at = new Date(w.clock.at.getTime() + 60_000);
+  await advanceLooms(w.deps, PROJECT);
+  expect(w.only().state).toBe("working");
+
+  // PAST IT, IT SAYS SO — and names the thing a human has to go and start.
+  w.clock.at = new Date(w.clock.at.getTime() + 30 * 60_000);
+  await advanceLooms(w.deps, PROJECT);
+  const stuck = w.only();
+  expect(stuck.state).toBe("stuck");
+  expect(stuck.parkedReason ?? "").toContain("unclaimed");
+  expect(stuck.parkedReason ?? "").toContain("no worker has picked it up");
+  expect(readLedger(w.paths, PROJECT).some((entry) => entry.kind === "error" && entry.summary.includes("unclaimed"))).toBe(true);
+});
+
+test("a worker that claimed its turn is never mistaken for a missing one, however long it takes", async () => {
+  // The bound above is on being PICKED UP, not on getting done. If a slow
+  // worker could trip it, it would be the work timeout the ladder deliberately
+  // does not have — and it would kill exactly the long jobs worth running
+  // overnight.
+  const w = world();
+  w.agent.decision = oneDispatch();
+  await runLoomTick(w.deps, PROJECT);
+
+  w.clock.at = new Date(w.clock.at.getTime() + 8 * 60 * 60_000);
+  await advanceLooms(w.deps, PROJECT);
+  expect(w.only().state).toBe("working");
+});
+
+test("a re-provisioned loom stops the worker it already had", async () => {
+  /**
+   * Each ladder rung opens a NEW session against the SAME checkout. Nothing
+   * used to stop the old one, so rung 2 put a second live agent into a worktree
+   * rung 1's agent was still editing — a diff attributable to neither, measured
+   * by a gate that arrived at some arbitrary moment in the middle of it.
+   */
+  const w = world();
+  w.agent.decision = oneDispatch();
+  await runLoomTick(w.deps, PROJECT);
+  const first = w.only();
+  const firstSession = first.sessionId as string;
+
+  // The worker ends having committed nothing, which sticks the loom; the next
+  // pass walks rung 1 and re-provisions.
+  w.repo.commits = 0;
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+  expect(w.only().state).toBe("stuck");
+  await advanceLooms(w.deps, PROJECT);
+
+  const second = w.only();
+  expect(second.state).toBe("working");
+  expect(second.sessionId).not.toBe(firstSession);
+  // THE ONE ASSERTION: the previous session was stopped, and before the new one
+  // was started rather than at some point afterwards.
+  expect(w.stopped).toContain(firstSession);
+  expect(w.sessions.get(firstSession)).toBe("gone");
+});
+
+// ── the audit: the same shape, found elsewhere ──────────────────────────────
+
+test("a worker is told its item detail could not be read, never handed the error as the item", async () => {
+  /**
+   * FOUND BY AUDITING FOR THE `list` BUG'S SHAPE. `provisionLoom` composed the
+   * worker's brief with `detail?.code === 0 ? detail.stdout : (detail?.stderr ?? "")`
+   * — the failure's stderr, printed under "the item, in full", with nothing
+   * saying the command had failed. One rate-limited line of stderr reads
+   * exactly like a terse issue, and an empty one reads like an issue with no
+   * body. The worker is the expensive half of this system and it gets one turn.
+   */
+  const w = world();
+  w.agent.decision = oneDispatch();
+  w.script("detail", { code: 7, stderr: "gh: API rate limit exceeded" });
+
+  await runLoomTick(w.deps, PROJECT);
+
+  const brief = w.briefs.at(-1) ?? "";
+  expect(brief).toContain("the detail command exited 7");
+  expect(brief).toContain("may be missing or wrong");
+  // The output is still shown — it is the only evidence there is — but never
+  // unlabelled.
+  expect(brief).toContain("rate limit");
+});
+
+test("a commit count that could not be taken is not reported as a worker that did nothing", async () => {
+  /**
+   * The same shape again, one line long: `if (counted.status !== 0) return 0`.
+   * Zero means the worker did nothing and sends a human to read a transcript
+   * showing a worker doing exactly what it was asked; unknown means a deleted
+   * checkout or a base that stopped resolving, and nothing said so.
+   */
+  const w = world();
+  w.agent.decision = oneDispatch();
+  await runLoomTick(w.deps, PROJECT);
+
+  w.repo.commits = 0;
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+  // The honest zero still says the honest thing.
+  expect(w.only().parkedReason ?? "").toContain("without committing anything");
+
+  const other = world();
+  other.agent.decision = oneDispatch();
+  await runLoomTick(other.deps, PROJECT);
+  other.repo.countFails = true;
+  other.finishWorker();
+  await advanceLooms(other.deps, PROJECT);
+
+  const stuck = other.only();
+  expect(stuck.state).toBe("stuck");
+  expect(stuck.parkedReason ?? "").toContain("could not be counted");
+  expect(stuck.parkedReason ?? "").not.toContain("without committing anything");
 });

@@ -58,7 +58,7 @@ import { baseRefFor, gateLoom, publishLoom, type LoomGateDeps } from "./gate";
 import { dryRunReport, LEDGER_WINDOW, orchestratorPrompt, setupPrompt, workerPrompt } from "./prompt";
 import { withSlots, type LoomExec } from "./exec";
 import { createLoomRuns, type LoomRunHandle, type LoomRunRegistry } from "./run";
-import { createLoomSupervisor, type LoomSupervisor } from "./supervisor";
+import { createLoomSupervisor, type LoomSupervisor, type WorldRead } from "./supervisor";
 import type { TickDecision } from "@telar/engine-client";
 
 /**
@@ -79,6 +79,15 @@ export const DETAIL_CAP = 8;
 
 /** See the header. A bound on a loop that should converge in three. */
 const MAX_ADVANCE_STEPS = 6;
+
+/**
+ * How long a brief may sit with NOBODY HAVING CLAIMED IT before the loom says
+ * so. See `advanceOne`'s `unclaimed` branch: this bounds being picked up, never
+ * getting finished, so a slow worker cannot trip it and a missing one always
+ * does. Ten minutes is longer than any worker restart and far shorter than a
+ * night.
+ */
+export const UNCLAIMED_GRACE_MS = 10 * 60_000;
 
 export type LoomAgent = (
   prompt: string,
@@ -148,7 +157,22 @@ export type LoomSessionPort = {
    * worktree would have it reading a stale copy of the project it is describing.
    */
   create(input: { projectId: string; cwd: string; title: string; prompt?: string }): Promise<{ sessionId: string }>;
-  status(sessionId: string): Promise<"running" | "done" | "gone">;
+  /**
+   * IS THAT WORKER STILL ALIVE — §4's whole of done-detection.
+   *
+   * `unclaimed` IS NOT A FOURTH KIND OF PROGRESS, it is the absence of any. The
+   * brief was queued and NOTHING HAS PICKED IT UP: no worker claimed the turn,
+   * so no process is running, no token is being spent, and no commit will ever
+   * appear in the worktree. It is reported separately from `running` because
+   * collapsing the two is a silent stall — a loom that sits `working` on a
+   * `queued` turn forever while the deck renders the project healthy, which is
+   * the same "broken is indistinguishable from ordinary progress" failure the
+   * `list` refusal in `runLoomTick` exists to end, wearing different clothes.
+   *
+   * A port with no way to tell them apart may keep returning `running`; this is
+   * a widening, and `advanceOne` waits out the grace period either way.
+   */
+  status(sessionId: string): Promise<"running" | "unclaimed" | "done" | "gone">;
   stop(sessionId: string): Promise<void>;
 };
 
@@ -173,6 +197,20 @@ export type TickOptions = {
 };
 
 export type TickResult = { decision: TickDecision; dispatched: Loom[]; report?: string };
+
+/**
+ * THE TICK COULD NOT SEE THE WORLD — distinct from "the tick went wrong".
+ *
+ * Carried as a type rather than a string match because two different consumers
+ * have to act on it: the run settles `failed` like any other error, but the
+ * SENTINEL additionally has to stop counting this project as quiet. A tick that
+ * failed for some other reason (the agent errored, a dispatch threw) did read
+ * the world and is already visible as a failed run; only this one means the
+ * watch record is describing a project nobody has managed to look at.
+ */
+export class LoomWorldUnreadable extends Error {
+  readonly name = "LoomWorldUnreadable";
+}
 
 // ── the tick ────────────────────────────────────────────────────────────────
 
@@ -214,7 +252,75 @@ export async function runLoomTick(
         ...(deps.signal ? { signal: deps.signal } : {}),
       })
     : null;
-  const listed = parseListed(list?.code === 0 ? list.stdout : "");
+  /**
+   * THE WORLD-READ IS TRI-STATE, EXACTLY LIKE A GATE (§3). A `list` that did not
+   * run is `unknown`, and unknown is never a green light.
+   *
+   * `parseListed(list?.code === 0 ? list.stdout : "")` — what stood here — read
+   * a FAILURE AS AN EMPTY BACKLOG. The two are the same shape and mean opposite
+   * things, and only one of them means there is nothing to do. So `gh`
+   * unauthenticated, a rate limit, an expired credential or a typo in the
+   * Program all produced an orchestrator that ticked cleanly forever, decided
+   * nothing, settled `done` with no error, and rendered healthy on every
+   * surface. "Idle is free" became "broken is indistinguishable from idle" —
+   * the one reading this design cannot afford, because everything else rests on
+   * a quiet system being trustworthy evidence that the world is quiet.
+   *
+   * WHY THIS REFUSES RATHER THAN HANDING THE FAILURE TO THE AGENT, which is
+   * what `detail` does twenty lines below and what an earlier version did here.
+   * The argument for handing it over is real and was measured, not assumed: the
+   * prompt did already say "the `list` command exited N — treat this as UNKNOWN"
+   * and the model did already see it. It still loses, on two counts.
+   *
+   *   A FAILED `detail` LEAVES A DECISION; A FAILED `list` LEAVES NONE. `detail`
+   *   costs one item's context and the other N-1 are still worth choosing
+   *   among. `list` is the enumeration itself: with it unreadable there is no
+   *   candidate set, and the triage cache that remains is exactly as stale as
+   *   the world nobody managed to look at. Every dispatch off it is a guess.
+   *
+   *   THE ANSWER NEEDS NO JUDGEMENT. What the model can add is a restatement of
+   *   an exit code and a line of stderr that the machinery is already holding —
+   *   the most expensive available `printf`. Refusing produces the same sentence
+   *   deterministically, in the ledger and on the watch record, where a human
+   *   reading the deck at 8am will actually find it.
+   *
+   * AND REFUSING IS THE CHEAP HALF, which is the point at 3am: an outage that
+   * lasts eight hours costs ZERO model calls instead of one per tick. That is
+   * the same property the sentinel protects one layer up.
+   *
+   * ONLY THE DECIDING HALF IS REFUSED. `advanceLooms` ran above, so looms in
+   * flight are still walked forward by machinery — that half never needed a work
+   * list. And the refusal is loud in four places, which is the actual fix: the
+   * ledger keeps the reason, the run settles `failed` with it, the watch record
+   * carries it as `lastError` so the deck draws the project as broken rather
+   * than quiet, and the sentinel's backoff does not advance — a credential that
+   * expired at midnight must still be retried at its normal cadence at 6am, not
+   * hourly because its failures looked like a quiet night.
+   */
+  if (list && list.code !== 0) {
+    // A CANCELLED TICK IS NOT A BROKEN PROJECT. `defaultLoomExec` reports an
+    // aborted command as a non-zero exit like any other, so without this a
+    // human pressing "cancel" would mark the project unreadable and pin an
+    // error to the deck that describes their own click.
+    if (deps.signal?.aborted) throw new Error("the tick was cancelled while reading the work list.");
+    const why = (list.stderr.trim() || list.stdout.trim() || "no output").split("\n").slice(0, 6).join(" ");
+    appendLedger(deps.paths, projectId, {
+      at,
+      kind: "error",
+      summary: `the \`list\` command exited ${list.code}; the backlog could not be read`,
+      // A SENTENCE A HUMAN CAN ACT ON: the command, the code, and what it said.
+      detail: `\`${program.commands.list}\` exited ${list.code}: ${why}`,
+    });
+    throw new LoomWorldUnreadable(
+      `\`${program.commands.list}\` exited ${list.code}, so ${projectId}'s backlog could not be read and this tick has nothing to decide from: ${why}. Refusing rather than reporting an empty backlog — an unreadable work list and an empty one look identical, and a tick that cannot tell them apart reports "nothing to do" for as long as the outage lasts.`,
+    );
+  }
+
+  // `list` EXITED 0. Whatever it printed is the backlog, including nothing at
+  // all — a real work list with no work in it is an ordinary quiet night and
+  // must still tick. That distinction is the whole of the bug above, in the
+  // other direction, and collapsing it is the tempting next repair.
+  const listed = parseListed(list ? list.stdout : "");
 
   const cache = readTriage(deps.paths, projectId);
   const stale = program.commands.detail ? staleItems(cache, listed) : [];
@@ -249,7 +355,9 @@ export async function runLoomTick(
     program,
     ...(deps.readProgramMarkdown?.(projectId) ? { markdown: deps.readProgramMarkdown(projectId) as string } : {}),
     probe: fingerprint ? { output: fingerprint.probe, changed: opts.probeChanged ?? true } : null,
-    list: list ? { output: `${list.stdout}${list.stderr.trim() ? `\n${list.stderr}` : ""}`, code: list.code } : null,
+    // No exit code travels with it: by the time this is built, `list` ran and
+    // exited 0 — the refusal above is the only mechanism for the other case.
+    list: list ? { output: `${list.stdout}${list.stderr.trim() ? `\n${list.stderr}` : ""}` } : null,
     looms,
     details,
     staleCount: stale.length,
@@ -442,8 +550,46 @@ async function advanceOne(deps: LoomTickDeps, loom: Loom, program: LoomProgram, 
       const status = await deps.session.status(loom.sessionId);
       if (status === "running") return loom;
 
+      /**
+       * NOTHING CLAIMED THE BRIEF — and this is the one waiting state that is
+       * not progress. The session port queues past `worker_unavailable` on
+       * purpose (a loom dispatched at 3am must not be refused because a worker
+       * was mid-restart), so with NO worker process alive the turn sits
+       * `queued` indefinitely: `status` says the session is fine, the ledger
+       * says nothing, and the deck renders a project that can never move as one
+       * that is working. Silent, unbounded, and exactly the shape of the `list`
+       * bug — a broken condition indistinguishable from ordinary progress.
+       *
+       * THE BOUND IS ON BEING PICKED UP, NOT ON GETTING DONE. A worker that
+       * claimed the turn reports `running` and may take all night; this only
+       * ever fires when nothing claimed it at all, which no amount of slow work
+       * can cause. So it is a liveness bound rather than the work timeout §5
+       * deliberately does not have.
+       *
+       * THE GRACE PERIOD IS REAL AND SHORT. A worker restarting, or a daemon
+       * that started a beat before its embedded worker registered, is the
+       * ordinary case and must not stick a loom; hours of nobody there is not.
+       */
+      if (status === "unclaimed") {
+        const since = loom.dispatchedAt ?? loom.updatedAt;
+        if (at - since < UNCLAIMED_GRACE_MS) return loom;
+        return stick(
+          deps,
+          loom,
+          `the brief has sat unclaimed for ${Math.round((at - since) / 60_000)} minutes: it was queued to session ${loom.sessionId}, but no worker has picked it up, so nothing is running and nothing will. Start a worker (\`bun run worker\`, or the daemon's embedded one) and this loom's next rung will re-dispatch it.`,
+        );
+      }
+
       // §4's done-detection, and the whole reason `sessionId` is recorded.
       const commits = countCommits(deps, loom, program);
+      if (commits === null) {
+        // See `countCommits`: unknown, and it must not be spoken as zero.
+        return stick(
+          deps,
+          loom,
+          `the worker's session ${status === "gone" ? "disappeared" : "ended"} and the commits in ${loom.worktreePath ?? "its worktree"} could not be counted, so there is no way to tell whether it did anything. Check that the checkout still exists and that \`${program.work.base}\` still resolves in it.`,
+        );
+      }
       if (commits === 0) {
         return stick(
           deps,
@@ -559,12 +705,24 @@ function stick(deps: LoomTickDeps, loom: Loom, reason: string): Loom {
   return writeLoom(deps.paths, transitionLoom(loom, "stuck", { parkedReason: reason, updatedAt: at }));
 }
 
-function countCommits(deps: LoomTickDeps, loom: Loom, program: LoomProgram): number {
-  if (!loom.worktreePath) return 0;
+/**
+ * How many commits the worker left behind — or `null` for "the count could not
+ * be taken", which is NOT the same as zero and used to be reported as it.
+ *
+ * Zero commits means the worker did nothing, and the loom is stuck with that
+ * sentence in the ledger. A `git` that failed means nobody knows, and saying
+ * "the worker committed nothing" then sends a human to read a transcript that
+ * will show a worker doing exactly what it was asked — while the real fault (a
+ * deleted worktree, a base ref that no longer resolves) goes unnamed. Same
+ * tri-state as everything else here: unknown is not a value, it is the absence
+ * of one.
+ */
+function countCommits(deps: LoomTickDeps, loom: Loom, program: LoomProgram): number | null {
+  if (!loom.worktreePath) return null;
   const counted = deps.git(loom.worktreePath, ["rev-list", "--count", `${program.work.base}..HEAD`]);
-  if (counted.status !== 0) return 0;
+  if (counted.status !== 0) return null;
   const value = Number.parseInt(counted.stdout.trim(), 10);
-  return Number.isFinite(value) ? value : 0;
+  return Number.isFinite(value) ? value : null;
 }
 
 // ── dispatch ────────────────────────────────────────────────────────────────
@@ -646,6 +804,21 @@ async function provisionLoom(
   opts: ProvisionOptions,
 ): Promise<Loom> {
   const at = deps.now().getTime();
+  /**
+   * THE PREVIOUS WORKER IS STOPPED FIRST, and this is a correctness fix rather
+   * than tidiness. Every ladder rung, and every human answer, opens a NEW
+   * session against the SAME checkout — so without this, rung 2 puts a second
+   * live agent into a worktree rung 1's agent is still editing. Two sessions
+   * writing one tree produce a diff attributable to neither, and the gate then
+   * measures whichever moment it happened to arrive in.
+   *
+   * BEST EFFORT AND BEFORE ANYTHING ELSE: a session already gone is precisely
+   * the state wanted, and failing to stop a ghost must not be the thing that
+   * stops the rung. `stop` settles the turns and deliberately does NOT archive
+   * the session — the branch and worktree are the loom's output, not this
+   * call's to destroy.
+   */
+  if (loom.sessionId) await deps.session.stop(loom.sessionId).catch(() => undefined);
   try {
     let worktree = loom.worktreePath;
     let branch = loom.branch;
@@ -717,7 +890,27 @@ async function provisionLoom(
       base: program.work.base,
       branch,
       worktree,
-      detail: detail?.code === 0 ? detail.stdout : (detail?.stderr ?? ""),
+      /**
+       * A FAILED `detail` IS LABELLED AS ONE, the same as in the tick.
+       *
+       * `detail?.code === 0 ? detail.stdout : (detail?.stderr ?? "")` — what
+       * stood here — handed the worker whatever the failure printed, under the
+       * heading "the item, in full", with nothing saying the command had not
+       * worked. A `gh` that is rate-limited prints one line to stderr, and the
+       * worker read that line as the entire specification of the item it was
+       * about to implement; a `detail` that printed nothing on failure gave it
+       * an empty one. Both look exactly like a terse issue.
+       *
+       * The worker is the expensive half of this system and it gets ONE turn.
+       * Sending it to edit a repository against a brief that is actually an
+       * error message is the most costly version of this whole bug class.
+       */
+      detail:
+        detail === null
+          ? ""
+          : detail.code === 0
+            ? detail.stdout
+            : `the detail command exited ${detail.code}, so the item's description below could not be read and may be missing or wrong:\n${detail.stderr || detail.stdout || "no output"}`,
       ...(opts.brief ? { brief: opts.brief } : {}),
       ...(opts.rung ? { rung: opts.rung } : {}),
       ...(opts.reason ? { reason: opts.reason } : {}),
@@ -998,6 +1191,17 @@ export function createLoomRuntime(deps: LoomRuntimeDeps): LoomRuntime & { close(
       ...(deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {}),
     });
 
+  /** Never throws and never blocks a settle. A store that cannot be written is
+   *  not a reason to lose the outcome the tick just produced. */
+  function observe(projectId: string, read: WorldRead): void {
+    try {
+      supervisor.observe(projectId, read);
+    } catch {
+      // An unreadable store or a malformed id. The run's own state still says
+      // what happened; only the deck's summary line is lost.
+    }
+  }
+
   function detach(projectId: string, kind: "tick" | "dry-run"): { run: LoomRun } {
     const already = runs.runningFor(projectId);
     // One tick per project. A human hammering "tick now" gets one tick, and the
@@ -1013,9 +1217,26 @@ export function createLoomRuntime(deps: LoomRuntimeDeps): LoomRuntime & { close(
           note: result.report ?? result.decision.note,
           dispatched: result.dispatched.map((loom) => loom.id),
         });
+        // THE READ SUCCEEDED, so an outage that was outstanding is over. The
+        // deck stops showing the project as broken on the evidence of the tick
+        // that fixed it, rather than on the next probe, which may be an hour
+        // away and is not evidence about `list` anyway.
+        observe(projectId, { outcome: "pass" });
       })
       .catch((error: unknown) => {
-        handle.settle({ state: "failed", error: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        handle.settle({ state: "failed", error: message });
+        /**
+         * A FAILED RUN IS ALREADY VISIBLE; AN UNREADABLE WORLD IS NOT. Runs are
+         * in memory and trimmed to the last twenty, so "the tick failed" is a
+         * thing you catch if you look within the hour. The watch record is what
+         * the deck draws every project as, all night, and it is the only place
+         * that can distinguish a project with nothing to do from one nobody has
+         * managed to look at. Narrow on purpose: a tick that failed for some
+         * other reason DID read the world, and marking it unreadable would
+         * blame the wrong thing on the deck.
+         */
+        if (error instanceof LoomWorldUnreadable) observe(projectId, { outcome: "unknown", error: message });
       })
       .catch(() => undefined);
 
