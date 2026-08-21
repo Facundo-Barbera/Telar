@@ -342,8 +342,14 @@ test("start() adopts the worktree the loom prepared instead of cutting a second 
    * with a 503 `worker_unavailable` in that state — but that check is on the
    * HTTP path, and this port is in-process. A loom dispatched at 3am must not be
    * refused because a worker happened to be mid-restart.
+   *
+   * IT IS REPORTED AS `unclaimed`, NOT AS `running`, and the difference is the
+   * whole point of queueing into a void being allowed at all. Nothing is
+   * executing this brief; saying `running` would have been true of the session
+   * and false about the world, and it is what let a loom sit `working` forever
+   * on a deck that drew the project as healthy.
    */
-  expect(await port.status(sessionId)).toBe("running");
+  expect(await port.status(sessionId)).toBe("unclaimed");
 });
 
 test("status() tells a queued or running worker from a finished one, and both from a session that is gone", async () => {
@@ -360,12 +366,18 @@ test("status() tells a queued or running worker from a finished one, and both fr
     title: "issue-7",
   });
 
-  // QUEUED IS ALIVE. Reporting it as done would gate an empty worktree and
-  // stick the loom seconds after dispatching it.
-  expect(await port.status(sessionId)).toBe("running");
+  // QUEUED IS ALIVE — reporting it `done` would gate an empty worktree and
+  // stick the loom seconds after dispatching it — but it is alive in a way that
+  // NOTHING IS DOING ANYTHING ABOUT, which `running` cannot say.
+  expect(await port.status(sessionId)).toBe("unclaimed");
 
   const claimed = store.claimTurn(sessionId, "worker_one");
   if (!claimed?.claim) throw new Error("the store did not hand out a claim");
+  // THE CLAIM IS THE LINE. One worker took the turn, so from here the answer is
+  // `running` for as long as the work takes — a slow worker can never be
+  // mistaken for a missing one, which is what keeps the bound in `advanceOne` a
+  // liveness check rather than a work timeout.
+  expect(await port.status(sessionId)).toBe("running");
   store.markRunning(sessionId, claimed.runId, claimed.claim.token);
   expect(await port.status(sessionId)).toBe("running");
 
@@ -397,6 +409,60 @@ test("status() tells a queued or running worker from a finished one, and both fr
   expect(fs.existsSync(prepared.path)).toBe(true);
   expect(worktreeList(world)).toContain(fs.realpathSync.native(prepared.path));
   expect(branchList(world)).toContain("loom/issue-7");
+});
+
+test("start() refuses a second live worker in a checkout that already has one", async () => {
+  /**
+   * Every ladder rung and every human answer re-provisions the loom against the
+   * SAME checkout. `provisionLoom` stops the previous session first, so the
+   * ordinary path never reaches this — which is exactly why the invariant is
+   * held here too rather than left to the caller's cooperation. Two live agents
+   * in one worktree produce a diff attributable to neither and a gate that
+   * measures whichever instant it happened to arrive in, and neither symptom
+   * names its cause.
+   */
+  const world = storeWithProject();
+  const { store, projectId } = world;
+  const port = createLoomSessionPort({ store });
+  const prepared = loomWorktree(world, "loom/issue-7");
+  const first = await port.start({
+    projectId,
+    worktree: prepared.path,
+    branch: prepared.branch,
+    baseRef: prepared.baseRef,
+    prompt: "the brief",
+    title: "issue-7",
+  });
+
+  await expect(
+    port.start({
+      projectId,
+      worktree: prepared.path,
+      branch: prepared.branch,
+      baseRef: prepared.baseRef,
+      prompt: "the same brief again",
+      title: "issue-7 rung 2",
+    }),
+  ).rejects.toThrow(/still working in/);
+
+  /**
+   * AND STOPPING THE FIRST ONE IS WHAT MAKES ROOM — which is the property that
+   * keeps this a guard rather than a wall. `stop` settles the turns and
+   * deliberately LEAVES the session active, so a check written against
+   * `session.state` would have refused the rung forever and broken the ladder.
+   * Liveness is a question about turns.
+   */
+  await port.stop(first.sessionId);
+  expect(store.getSession(first.sessionId).state).toBe("active");
+  const second = await port.start({
+    projectId,
+    worktree: prepared.path,
+    branch: prepared.branch,
+    baseRef: prepared.baseRef,
+    prompt: "the same brief again",
+    title: "issue-7 rung 2",
+  });
+  expect(second.sessionId).not.toBe(first.sessionId);
 });
 
 test("stop() settles every runnable turn and leaves the session in place", async () => {
@@ -762,6 +828,81 @@ test("a resumed watch probes again with nobody touching the switch, and reads it
   // a re-baselined watch would have backed off from the Program's 300.
   expect(after.intervalSec).toBe(2400);
   expect(after.lastError).toBeUndefined();
+});
+
+test("a `list` that fails refuses the tick instead of reporting an empty backlog", async () => {
+  /**
+   * MEASURED TWICE, BECAUSE THE ANSWER CHANGED UNDERNEATH THE FIRST
+   * MEASUREMENT — and the claim this pins is the one that survived the change.
+   *
+   * A failed `list` and an empty one are the same shape and mean opposite
+   * things. The failure mode is not a crash, it is a system that ticks cleanly
+   * forever while `gh` is unauthenticated, decides nothing, reports `done`, and
+   * renders healthy on every surface. "Idle is free" becomes "broken is
+   * indistinguishable from idle", which is the one reading §3.6 cannot afford.
+   *
+   * WHAT IS ASSERTED IS THAT OUTCOME, NOT THE MECHANISM. The tick refuses today;
+   * it previously handed the exit code to the orchestrator with an explicit
+   * prohibition against reading it as emptiness. Both satisfy the rule, and a
+   * test written against either mechanism would have gone green through a
+   * behaviour swap while the rule itself went unchecked.
+   *
+   * THE AGENT IS NOT ASKED, and that is a cost assertion rather than a style
+   * one: an outage lasting eight hours must cost zero model calls, not one per
+   * tick. It is also the only evidence available that the refusal happened
+   * BEFORE the expensive half.
+   */
+  const directory = scratch("telar-loom-wiring-list-");
+  fs.mkdirSync(path.join(directory, "repo"), { recursive: true });
+  const projectRoot = fs.realpathSync.native(path.join(directory, "repo"));
+
+  const loomExec: LoomExec = async (input) =>
+    input.command.includes("list-items")
+      ? { code: 4, stdout: "", stderr: "gh: not authenticated", timedOut: false }
+      : { code: 0, stdout: "fingerprint\n", stderr: "", timedOut: false };
+
+  // RECORDING, not quiet: "the orchestrator was never asked" is half the claim,
+  // and an agent that answers without counting cannot make it.
+  const prompts: string[] = [];
+  const loomAgent: LoomAgent = async (prompt) => {
+    prompts.push(prompt);
+    return { ok: true, value: DECISION };
+  };
+
+  const daemon = await startEngine({ engineRoot: path.join(directory, "engine"), loomExec, loomAgent });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  await client.saveLoomProgram(
+    "project_one",
+    ["# Loom program", "", "## Work source", "", "```list", "list-items", "```", ""].join("\n"),
+  );
+
+  const { run } = await client.tickLoom("project_one");
+  let settled = run;
+  for (let attempt = 0; attempt < 400 && settled.state === "running"; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    settled = (await client.loomWork()).runs.find((candidate) => candidate.id === run.id) ?? settled;
+  }
+
+  // LOUD, NOT QUIET. `done` here would be the bug: the tick would be claiming it
+  // looked at the backlog and found nothing worth doing.
+  expect(settled.state).toBe("failed");
+  expect(settled.error ?? "").toContain("exited 4");
+  expect(settled.error ?? "").toContain("gh: not authenticated");
+  expect(settled.error ?? "").toContain("Refusing rather than reporting an empty backlog");
+
+  // Zero model calls for as long as the outage lasts.
+  expect(prompts).toEqual([]);
+
+  // AND THE HUMAN'S OWN RECORD KEEPS IT. A run record is transient; the ledger
+  // is what answers "what happened at 3am" the next morning.
+  const { entries } = await client.loomLedger("project_one");
+  expect(entries.some((entry) => entry.kind === "error" && entry.summary.includes("`list` command exited 4"))).toBe(true);
+
+  // Nothing was dispatched off a triage cache the world was never checked
+  // against — the risk that makes "refuse" better than "decide from stale".
+  expect((await client.looms()).looms).toEqual([]);
 });
 
 /** Poll rather than sleep: a detached pass settles on its own schedule, and a

@@ -37,9 +37,18 @@
  * port is in-process and calls `store.submitTurn` directly, so it walks past it,
  * and that is deliberate: a loom dispatched at 3am must queue its brief whether
  * or not a worker happens to be registered in that instant. The turn sits
- * `queued` — which `status` correctly reports as `running` — and the first
- * worker to appear claims it. Surprising enough to be worth stating; the
- * alternative is a night's work refused because a worker was mid-restart.
+ * `queued` and the first worker to appear claims it. Surprising enough to be
+ * worth stating; the alternative is a night's work refused because a worker was
+ * mid-restart.
+ *
+ * WHAT THAT COST, AND WHERE IT IS PAID. Queueing into a void is only defensible
+ * if the void is REPORTABLE, and for a while it was not: `status` answered
+ * `running` for a turn nothing had claimed, so with no worker process alive a
+ * dispatched loom sat `working` indefinitely and every surface drew the project
+ * as healthy. The queueing stays; the misreport does not. `status` now answers
+ * `unclaimed` for that exact state and `dispatch.ts` bounds how long it may
+ * last. A human must always be able to tell "nothing to do" from "nothing can
+ * be done".
  *
  * ── ONE CHECKOUT PER LOOM, AND THE SESSION ADOPTS IT ────────────────────────
  * This used to be the file's one open seam, and the failure it produced was
@@ -123,8 +132,61 @@ export function createLoomSessionPort(deps: LoomSessionPortDeps): LoomSessionPor
     }
   };
 
+  /**
+   * IS SOMETHING STILL WORKING IN THIS CHECKOUT — the guard `start` needs.
+   *
+   * `active`/`archived` is not the question: `stop` settles a session's turns
+   * and deliberately leaves the session alive, because the branch is the loom's
+   * output and archiving is a separate human decision. So liveness is asked of
+   * the TURNS, which is the same signal `status` reads.
+   */
+  const liveSessionOn = (projectId: string, worktree: string): Session | undefined => {
+    let sessions: Session[];
+    try {
+      sessions = store.listSessions(projectId);
+    } catch {
+      // A project with no sessions yet, or a store that cannot list them. There
+      // is nothing to collide with that we can prove, and refusing on a read we
+      // could not make would strand every dispatch behind an unrelated fault.
+      return undefined;
+    }
+    const target = path.resolve(worktree);
+    for (const session of sessions) {
+      if (session.state === "archived") continue;
+      if (path.resolve(session.workspace.path) !== target) continue;
+      try {
+        if (store.turns(session.id).some((turn) => IN_FLIGHT.has(turn.state))) return session;
+      } catch {
+        // Gone between the listing and the read; it cannot be live.
+      }
+    }
+    return undefined;
+  };
+
   return {
     async start(input) {
+      /**
+       * ONE LIVE SESSION PER CHECKOUT, REFUSED HERE.
+       *
+       * Every ladder rung and every human answer re-provisions the loom against
+       * the SAME worktree. `provisionLoom` now stops the previous session first,
+       * so the ordinary path never reaches this — which is exactly why the check
+       * belongs here too: it is the invariant, and the caller's cooperation is
+       * not a way to hold one. Two live agents editing one tree produce a diff
+       * attributable to neither and a gate that measures whichever instant it
+       * arrived in, and neither symptom names its cause.
+       *
+       * REFUSING, NOT STOPPING. Killing somebody else's running worker from
+       * inside a constructor-shaped call is a bigger decision than this function
+       * is allowed to make; `stick` turns this sentence into a loom a human can
+       * read and act on.
+       */
+      const live = liveSessionOn(input.projectId, input.worktree);
+      if (live) {
+        throw new Error(
+          `session ${live.id} is still working in ${input.worktree} and a second worker in one checkout would produce a diff attributable to neither. Stop or cancel that session first — the loom that owns it can be cancelled from the deck.`,
+        );
+      }
       /**
        * `envMode: "worktree"` IS THE WHOLE REASON A LOOM CAN RUN MORE THAN ONE
        * ITEM AT ONCE. Two workers in one checkout produce a diff nobody can
@@ -211,6 +273,29 @@ export function createLoomSessionPort(deps: LoomSessionPortDeps): LoomSessionPor
       // Includes the case of no turns at all — an orchestrator session nobody
       // has typed into is idle and reusable, which is what `done` means here.
       if (unsettled.length === 0) return "done";
+
+      /**
+       * QUEUED AND NOBODY HAS TOUCHED IT — reported as `unclaimed`, not as
+       * `running`, and this is the fix for the largest silent stall in the
+       * system.
+       *
+       * See this file's header: queueing past `worker_unavailable` is
+       * deliberate and stays. But its consequence was that with NO worker
+       * process alive, a dispatched loom sat `working` on a `queued` turn
+       * FOREVER — `status` said `running`, which was true of the session and
+       * false about the world, so the ledger stayed silent and the deck drew a
+       * project that could never move as one that was busy. "Nothing to do" and
+       * "nothing can be done" rendered identically, which is the one
+       * distinction an unattended system has to keep.
+       *
+       * NOT A TIMEOUT, AND NOT A SECOND SOURCE OF TRUTH. It reads the same
+       * queue `status` already reads and reports what is written there: a turn
+       * in `claimed` or `running` means a worker took it, and this never fires
+       * again for that session no matter how long the work takes. Only the
+       * absence of any claim produces `unclaimed`, and `dispatch.ts` — not this
+       * port — decides how long that is allowed to last.
+       */
+      if (unsettled.every((turn) => turn.state === "queued")) return "unclaimed";
 
       /**
        * THE JOURNAL AS CORROBORATION, not as a second opinion.
