@@ -529,6 +529,30 @@ export const LoomWatch = z.object({
   lastChangeAt: Timestamp.optional(),
   nextProbeAt: Timestamp.optional(),
   lastError: z.string().optional(),
+  /**
+   * THE PROJECT'S WORLD COULD NOT BE READ, AND THIS IS WHY — set when the
+   * tick's `list` did not run, cleared when a later one does.
+   *
+   * NOT THE SAME FIELD AS `lastError`, and the difference is the reason this
+   * one exists. `lastError` is one string several writers share: a failing
+   * probe overwrites it, and a probe that starts working again clears it. That
+   * is correct for the probe, which answers only for itself — but it means
+   * `lastError` cannot answer "is this project's backlog still unreadable?",
+   * and that question has a consequence the message does not: A PROJECT NOBODY
+   * CAN READ IS NOT A QUIET ONE. A pass that finds nothing while this is set is
+   * not evidence of quiet, so it must not be spent on the backoff. Without
+   * that, a credential that expired at midnight decays the project to an hourly
+   * cadence on evidence that was never gathered, and it stops being retried at
+   * the rate its human configured precisely while it is broken.
+   *
+   * PERSISTED, AND THAT IS THE POINT. Held in memory it was re-earned on the
+   * next tick — so a daemon that restarted mid-outage backed the broken project
+   * off once per restart, and a crash loop could walk it all the way to the
+   * ceiling while it was still broken. A STRING rather than a flag, for the
+   * same reason `lastError` is one: the deck can only be acted on if it says
+   * which command failed and what it said.
+   */
+  worldUnreadable: z.string().optional(),
 });
 export type LoomWatch = z.infer<typeof LoomWatch>;
 

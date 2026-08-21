@@ -115,6 +115,25 @@ describe("the Program", () => {
     expect(LoomWatch.parse({ projectId: "p", running: false, intervalSec: 300 }).quietChecks).toBe(0);
   });
 
+  test("`worldUnreadable` is a sentence and a separate field from `lastError`", () => {
+    // A FLAG WOULD NOT BE ACTIONABLE and a shared field would not be true. The
+    // deck's line is `lastError`, which every writer overwrites; this one says
+    // that the project's own `list` is still broken, which is what stops a pass
+    // finding nothing from being spent as evidence of a quiet night.
+    const watch = LoomWatch.parse({
+      projectId: "p",
+      running: true,
+      intervalSec: 300,
+      lastError: "probe exited 1: gh not found",
+      worldUnreadable: "`gh issue list` exited 1: not authenticated",
+    });
+    expect(watch.worldUnreadable).toContain("not authenticated");
+    expect(watch.lastError).toContain("probe exited 1");
+    // Absent is the ordinary state — a project whose world reads fine.
+    expect(LoomWatch.parse({ projectId: "p", running: true, intervalSec: 300 }).worldUnreadable).toBeUndefined();
+    expect(LoomWatch.safeParse({ projectId: "p", running: true, intervalSec: 300, worldUnreadable: true }).success).toBe(false);
+  });
+
   test("a rung is numbered from 1, so that 0 can mean 'nothing tried yet'", () => {
     expect(Rung.parse({ n: 1, label: "re-read it" })).toEqual({
       n: 1,

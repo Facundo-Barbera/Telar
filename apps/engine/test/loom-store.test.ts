@@ -580,6 +580,41 @@ describe("the watch record", () => {
   });
 
   /**
+   * AND THE REASON THE WORLD COULD NOT BE READ SURVIVES WITH THE REST.
+   *
+   * Separate from `lastError`, which several writers share: a probe that starts
+   * working again clears that line, and a project whose `list` is still broken
+   * would go quiet on the deck while staying broken. This field is the one that
+   * says a pass finding nothing is NOT evidence of quiet — so if it does not
+   * survive a restart, a daemon that comes back up mid-outage spends a back-off
+   * the outage never earned, once per restart.
+   */
+  test("carries why the world could not be read, so a restart does not re-score the outage as quiet", () => {
+    writeWatchRecord(paths, PROJECT, {
+      watch: {
+        ...defaultWatch(PROJECT),
+        running: true,
+        quietChecks: 5,
+        worldUnreadable: "`gh issue list` exited 1: not authenticated",
+        lastError: "`gh issue list` exited 1: not authenticated",
+      },
+    });
+    // A probe lands afterwards, as it does every interval through an outage.
+    writeSentinel(paths, PROJECT, { hash: "steady", at: 1_700_000_000_000, probe: "no change" });
+
+    const afterRestart = readWatchRecord(loomPaths(ROOT), PROJECT);
+    expect(afterRestart.watch.worldUnreadable).toContain("not authenticated");
+    expect(afterRestart.watch.quietChecks).toBe(5);
+
+    // Cleared by name rather than by omission: a writer that means "the read
+    // worked" says so, and the sibling fingerprint is untouched either way.
+    writeWatch(paths, PROJECT, { ...afterRestart.watch, worldUnreadable: undefined, lastError: undefined });
+    const recovered = readWatchRecord(loomPaths(ROOT), PROJECT);
+    expect(recovered.watch.worldUnreadable).toBeUndefined();
+    expect(recovered.fingerprint?.hash).toBe("steady");
+  });
+
+  /**
    * "RESUMED BUT NOT YET DUE" MUST STAY DISTINGUISHABLE FROM "NEVER ARMED".
    *
    * A route test reading this record once nearly filed a regression against the

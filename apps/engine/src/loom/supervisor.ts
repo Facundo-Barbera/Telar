@@ -96,6 +96,13 @@ export type LoomSupervisor = {
    * running; without this the supervisor would sit inert until a human clicked
    * something. Left as a separate verb because construction must be inert (a
    * first-run engine has no project, no Program, and no business probing).
+   *
+   * IT ARMS THE TIMER AND RESTORES NOTHING, because there is nothing left to
+   * restore: every field a resumed supervisor needs — `quietChecks`,
+   * `nextProbeAt`, `worldUnreadable` — is read off the watch record on the pass
+   * that uses it. That is the invariant, not an implementation detail: this
+   * must never become `setWatch(id, true)`, which rebases the cadence and
+   * spends the backoff a quiet night earned.
    */
   resume(): void;
   setWatch(projectId: string, running: boolean): LoomWatch;
@@ -142,23 +149,6 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
    *  would otherwise stack passes on top of each other, each fingerprinting a
    *  world the previous one is still measuring. */
   const inPass = new Set<string>();
-  /**
-   * PROJECTS WHOSE LAST WORLD-READ DID NOT HAPPEN, and the reason.
-   *
-   * Held here rather than derived from `lastError`, which cannot answer the
-   * question: `lastError` is one string used by several writers, so a probe
-   * that succeeds would clear a `list` failure that is still true and the deck
-   * would go quiet again while the project stayed broken. This says WHICH kind
-   * of failure is outstanding, which is what the quiet accounting below needs.
-   *
-   * IN MEMORY, AND THAT IS AN ACCEPTED LIMIT rather than an oversight. It is
-   * the same posture `run.ts` takes: a marker on disk claiming a project is
-   * unreadable would outlive the outage and could only be cleared by a tick
-   * that a backed-off supervisor was no longer scheduling. After a restart the
-   * project simply re-earns the mark on its next tick, and the `lastError`
-   * written below — which IS persisted — is what a human reads in the meantime.
-   */
-  const unreadable = new Map<string, string>();
   let closed = false;
   /**
    * NOTHING IS ARMED AT CONSTRUCTION.
@@ -176,6 +166,19 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
 
   const save = (projectId: string, watch: LoomWatch): LoomWatch => writeWatch(deps.paths, projectId, watch);
 
+  /**
+   * WHY THIS PROJECT'S WORLD IS UNREADABLE, IF IT IS — read from the watch
+   * record rather than from a map in this closure, because the record is the
+   * only copy that survives a restart. See `LoomWatch.worldUnreadable`.
+   *
+   * READ FRESH AT SAVE TIME, NEVER CAPTURED AT THE TOP OF A PASS. A pass awaits
+   * a probe that may take thirty seconds, and a tick can call `observe` inside
+   * that window; a value read before the await would be written straight back
+   * over the finding, which is the same "one writer silently undoes another"
+   * shape this whole field exists to prevent.
+   */
+  const unreadable = (projectId: string): string | undefined => readWatch(deps.paths, projectId).worldUnreadable;
+
   const pass = async (projectId: string): Promise<LoomWatch> => {
     const watch = readWatch(deps.paths, projectId);
     if (!watch.running || closed) return watch;
@@ -192,6 +195,10 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
         ...watch,
         lastProbeAt: at,
         nextProbeAt: at + watch.intervalSec * 1000,
+        // A missing Program is a fact about the Program, not about the last
+        // `list` — so the mark rides through untouched, exactly as it does past
+        // a failing probe below.
+        worldUnreadable: unreadable(projectId),
         lastError: !root
           ? `project ${projectId} has no root on this machine, so nothing can be probed`
           : `project ${projectId} has no .telar/loom.md, so there is no probe to run`,
@@ -207,12 +214,17 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
     const probe = program.commands.probe;
     if (!probe) {
       wakeFor(projectId, active, "heartbeat (the Program declares no probe)");
+      const marked = unreadable(projectId);
       return save(projectId, {
         ...watch,
         lastProbeAt: at,
         quietChecks: 0,
         nextProbeAt: at + watch.intervalSec * 1000,
-        lastError: undefined,
+        // A HEARTBEAT IS EVIDENCE ABOUT NOTHING — there was no probe to run, so
+        // it cannot be the thing that says a broken backlog is fine again. The
+        // tick this wake just fired is what settles that, either way.
+        worldUnreadable: marked,
+        lastError: marked,
       });
     }
 
@@ -226,6 +238,10 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
         ...watch,
         lastProbeAt: at,
         nextProbeAt: at + watch.intervalSec * 1000,
+        // The probe answers for the probe. A `list` that was already broken
+        // stays broken, and its mark stays on the record — `lastError` is the
+        // shared line and the newest failure gets to hold it.
+        worldUnreadable: unreadable(projectId),
         lastError: result.timedOut
           ? `probe timed out after ${Math.round(PROBE_TIMEOUT_MS / 1000)}s; a probe is contractually cheap, so this one is probably doing too much`
           : `probe exited ${result.code}: ${detail}`,
@@ -242,6 +258,7 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
 
     if (changed) {
       wakeFor(projectId, active, "the probe fingerprint changed");
+      const marked = unreadable(projectId);
       return save(projectId, {
         ...watch,
         intervalSec: nextInterval(watch.intervalSec, true, program),
@@ -253,7 +270,8 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
         // is evidence about — itself — and an outstanding world-read failure
         // stays on the record until the read that failed succeeds. The tick
         // this wake is about to fire is what will settle that either way.
-        lastError: unreadable.get(projectId),
+        worldUnreadable: marked,
+        lastError: marked,
       });
     }
 
@@ -264,12 +282,14 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
       // in a way `probe` can see. Backing off here would make a finished worker
       // wait an hour to be noticed.
       (deps.onAdvance ?? ((id: string) => deps.onWake(id, "a loom is in flight")))(projectId);
+      const marked = unreadable(projectId);
       return save(projectId, {
         ...watch,
         lastProbeAt: at,
         nextProbeAt: at + watch.intervalSec * 1000,
         // See the `changed` branch: the probe answers for the probe only.
-        lastError: unreadable.get(projectId),
+        worldUnreadable: marked,
+        lastError: marked,
       });
     }
 
@@ -286,13 +306,19 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
      * the rate its human configured. Same rule as the failing-probe branch
      * above, same reason: the interval stays where the last REAL observation
      * left it.
+     *
+     * AND THE MARK IS ON DISK, so this survives the daemon that set it. It used
+     * to live in this closure, which meant a restart mid-outage suppressed
+     * nothing until the next tick re-earned the mark — one free back-off per
+     * restart, and a crash loop walked a broken project to the hourly ceiling.
      */
-    const outstanding = unreadable.get(projectId);
+    const outstanding = unreadable(projectId);
     if (outstanding !== undefined) {
       return save(projectId, {
         ...watch,
         lastProbeAt: at,
         nextProbeAt: at + watch.intervalSec * 1000,
+        worldUnreadable: outstanding,
         lastError: outstanding,
       });
     }
@@ -304,6 +330,7 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
       quietChecks: watch.quietChecks + 1,
       lastProbeAt: at,
       nextProbeAt: at + backedOff * 1000,
+      worldUnreadable: undefined,
       lastError: undefined,
     });
   };
@@ -355,19 +382,21 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
       // backoff describes how long nothing has been happening, and a human
       // reaching for the switch is itself evidence that something has.
       const intervalSec = running ? (program?.watch.intervalSec ?? current.intervalSec) : current.intervalSec;
+      // A HUMAN REACHING FOR THE SWITCH is evidence that something changed —
+      // usually that they just fixed the credential. The mark is dropped for
+      // the same reason the backoff is reset, and the next tick re-earns it if
+      // the world is still unreadable. It is also the ONE way out that does not
+      // need a tick, which matters now the mark is persisted: a project whose
+      // probe never changes again would otherwise carry it forever.
       const saved = save(projectId, {
         ...current,
         running,
         intervalSec,
         quietChecks: running ? 0 : current.quietChecks,
         nextProbeAt: running ? at : undefined,
+        worldUnreadable: running ? undefined : current.worldUnreadable,
         lastError: running ? undefined : current.lastError,
       });
-      // A HUMAN REACHING FOR THE SWITCH is evidence that something changed —
-      // usually that they just fixed the credential. The mark is dropped for
-      // the same reason the backoff is reset, and the next tick re-earns it if
-      // the world is still unreadable.
-      if (running) unreadable.delete(projectId);
       if (running) arm();
       else if (!listWatches(deps).some((watch) => watch.running)) disarm();
       return saved;
@@ -395,15 +424,18 @@ export function createLoomSupervisor(deps: LoomSupervisorDeps): LoomSupervisor {
         // else — a failing probe, a missing Program — is a different fact about
         // a different command, and a tick succeeding is no evidence about it.
         // Erasing it here would let one working read hide another broken one,
-        // which is the same collapse this whole change exists to undo.
-        if (!unreadable.delete(projectId)) return current;
-        return save(projectId, { ...current, lastError: undefined });
+        // which is the same collapse this whole change exists to undo. The
+        // presence of the mark is what says the sentence belongs to this
+        // writer, so an unmarked project is left exactly as it was.
+        if (current.worldUnreadable === undefined) return current;
+        return save(projectId, { ...current, worldUnreadable: undefined, lastError: undefined });
       }
-      unreadable.set(projectId, read.error);
       // NO WAKE, NO BACKOFF CHANGE. Recording, and nothing else: the interval
       // stays where the last real observation left it, which is what keeps the
-      // project being retried at its normal cadence through the outage.
-      return save(projectId, { ...current, lastError: read.error });
+      // project being retried at its normal cadence through the outage — and
+      // the mark goes to DISK, so a daemon restart does not hand the outage a
+      // free back-off on its way past.
+      return save(projectId, { ...current, worldUnreadable: read.error, lastError: read.error });
     },
     pass: (projectId) => pass(projectId).catch(() => readWatch(deps.paths, projectId)),
     close() {
