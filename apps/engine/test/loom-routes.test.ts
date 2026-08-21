@@ -131,9 +131,22 @@ const QUIET_AGENT: LoomAgent = async () => ({ ok: true, value: { triage: [], dis
  * its own words, instead of on somebody's `gh` quota.
  */
 const UNEXPECTED_EXEC: LoomExec = async () => ({
-  code: 0,
+  // NON-ZERO DELIBERATELY, because a command that never ran did not succeed.
+  //
+  // WHAT THIS DOES NOT DO, MEASURED RATHER THAN ASSUMED: it does not make a
+  // future test that depends on a real command fail. `runLoomTick` reads a
+  // failed `list` as an EMPTY work list (`dispatch.ts`: `list?.code === 0 ?
+  // list.stdout : ""`), so a tick run against this stub settles `done` with no
+  // error either way. I checked, expecting the opposite. The guard here is the
+  // SENTENCE in the output, which names itself when someone reads a prompt or a
+  // ledger line and wonders where the work went — not the exit code.
+  //
+  // It is still the right code. At zero, this stub's explanatory text would be
+  // fed to `parseListed` as though it were the project's backlog, and it is
+  // only the tab-separated format that stops a sentence becoming a work item.
+  code: 1,
   stdout: "the loom route tests never run a real command — inject `loomExec` if this test needs one\n",
-  stderr: "",
+  stderr: "no command ran: this is the loom route suite's refusing stub, not a failure of the command\n",
   timedOut: false,
 });
 
