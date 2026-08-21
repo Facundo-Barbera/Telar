@@ -28,7 +28,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { bearerIsValid } from "../http-auth";
-import { handleSocketMessage, type SocketTool } from "../mcp/socket";
+import { handleSocketMessage, type SocketTool } from "../mcp-socket";
 
 /** The engine's browser, narrowed to what the socket may do with it. The same
  *  shape `driver.ts` used to consume in-process — see `browserCapability` in
@@ -200,9 +200,7 @@ export class BrowserToolSocket {
         writeJson(400, { error: { code: "invalid_request", message: "request body must be a JSON object under 1MB" } });
         return;
       }
-      const answer = await handleSocketMessage(bound.tools, message, {
-        serverInfo: { name: "telar-browser", version: "1.0.0" },
-      });
+      const answer = await handleSocketMessage(bound.tools, message, { name: "telar-browser", version: "1.0.0" });
       if (answer === undefined) {
         response.writeHead(202).end();
         return;
