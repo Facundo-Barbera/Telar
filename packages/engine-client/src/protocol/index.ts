@@ -13,6 +13,7 @@
  *   tools     Telar's own MCP namespace: one server, capability-prefixed names
  *   spool     the item store: lanes, packets, and the ripening work packet
  *   github    issues and pull requests, as the `gh` CLI reports them
+ *   loom      the orchestrator: the Program artifact, looms, gates, triage
  *   events    the journal: one discriminated union, plus transport shapes
  */
 export * from "./common";
@@ -24,5 +25,6 @@ export * from "./tools";
 export * from "./spool";
 export * from "./canvas";
 export * from "./github";
+export * from "./loom";
 export * from "./events";
 export * from "./observations";

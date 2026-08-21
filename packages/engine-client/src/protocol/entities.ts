@@ -118,6 +118,23 @@ export const SessionWorkspace = z.discriminatedUnion("mode", [
     branch: z.string().min(1),
     /** The commit the worktree was cut from, so a stale one is detectable. */
     baseRef: z.string().min(1).optional(),
+    /**
+     * THIS CHECKOUT EXISTED BEFORE THE SESSION, AND OUTLIVES IT.
+     *
+     * A worktree session normally cuts its own checkout, so archiving it frees
+     * the disk again. A loom cuts the worktree FIRST — on the branch its Program
+     * names, with the Program's `setup` already run in it — and then opens a
+     * session inside it. That checkout belongs to the loom: the gate counts
+     * commits in it after the worker has ended, and `publish` pushes its branch.
+     * A session reaping it on archive would delete the loom's entire output
+     * between the worker finishing and the gate running, and the symptom would
+     * be a loom that says its worker committed nothing.
+     *
+     * So ownership is RECORDED rather than inferred. Absent means the session
+     * cut it and may remove it, which is every session that existed before this
+     * field and is what a plain `envMode: "worktree"` still does.
+     */
+    adopted: z.boolean().optional(),
   }),
 ]);
 export type SessionWorkspace = z.infer<typeof SessionWorkspace>;
