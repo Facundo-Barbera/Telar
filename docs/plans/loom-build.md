@@ -370,3 +370,51 @@ v1 (`packages/core/src/looms.ts`, `weave.ts`, `tick.ts`, the loom paths of
 own modules with its own names and shares no types. Ripping v1 out is a separate
 change with its own blast radius; doing both at once means neither can be
 reviewed. **[decided]**
+
+---
+
+## 14. Where the code goes **[decided]**
+
+Recon finding that reshaped this: **`packages/core` is not reachable from the
+live product.** `apps/engine` does not depend on `@telar/core`, and
+`apps/web/lib/engine/source-boundary.test.ts:27` bans the import outright. Core
+is the frozen looms-v1 world. Building there would produce code the product
+cannot call.
+
+The live stack is `apps/engine` (HTTP daemon) → `packages/engine-client` (zod
+protocol + typed client) → `apps/web` (thin Next adapters + client components).
+So:
+
+| Layer | Path | Modelled on |
+| --- | --- | --- |
+| Wire types | `packages/engine-client/src/protocol/loom.ts` | `protocol/entities.ts:125` |
+| Events | `packages/engine-client/src/protocol/events.ts` | its `event()` helper `:46` |
+| Pure logic | `apps/engine/src/loom/{program,gates,machine,ladder,sentinel,triage,decide,ledger-format}.ts` | — |
+| Store | `apps/engine/src/loom/store.ts` | `apps/engine/src/spool/store.ts` |
+| Runtime | `apps/engine/src/loom/{supervisor,dispatch,gate,run}.ts` | `spool/night.ts` + `spool/work.ts` |
+| EngineStore wiring | `apps/engine/src/state.ts` lazy getter + detach idiom `:2112-2126` | spool's |
+| Routes | `apps/engine/src/daemon.ts`, if-arms after the bearer gate `:450` | `daemon.ts:656` |
+| Client | `packages/engine-client/src/index.ts` class `EngineClient` | `:496` |
+| Web adapters | `apps/web/app/api/looms/**/route.ts` | `app/api/spool/areas/route.ts` |
+| Web browser API | `apps/web/lib/engine/client.ts` `createEngineApi` `:86` | — |
+| Web UI | `apps/web/app/looms/**`, `apps/web/components/loom/**` | `components/session-cockpit.tsx` |
+
+Constraints inherited from the codebase, not negotiable:
+
+- **All persisted writes go through `atomicWrite`** (`apps/engine/src/atomic.ts`).
+  Invariant INV-11d scans for this. Journals are the O_APPEND exception.
+- **Validation lives in the store, not the route**, so in-process callers hit the
+  same wall as HTTP ones.
+- **Readers are tolerant per row.** One unreadable loom must not take out the
+  list — `spool/store.ts:290-300` explains why `.array().safeParse` is wrong.
+- **Id traversal guard** on every path-composing id: regex *plus* a containment
+  re-check.
+- **Background promises must be detached with `.catch(() => undefined)`** — an
+  unhandled rejection on a background promise takes the daemon down in Bun.
+- **The one recurring-timer precedent** is `daemon.ts:343`: injected via
+  `EngineDaemonOptions`, `.unref()`ed, cleared in `close()`. The supervisor's
+  interval must follow it exactly, or tests hang.
+- **Tests never shell out to a real CLI** and never spend rate limit. Everything
+  expensive is injected through `EngineDaemonOptions` (see `daemon.ts:51-85`).
+- The gate for *this* repo is `bun run verify` = `typecheck && lint && test`.
+  `lint` covers `apps/web` only.
