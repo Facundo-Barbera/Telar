@@ -45,6 +45,15 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type LedgerEntry,
+  type Loom,
+  type LoomOverview,
+  type LoomProgramDoc,
+  type LoomProjectSummary,
+  type LoomRun,
+  type LoomUnreadable,
+  type LoomWatch,
+  type TriageEntry,
   type ModelCatalogue,
   type SessionDiff,
   type EngineEvent,
@@ -142,6 +151,20 @@ import {
   type SpoolItemPatch,
   type SpoolPaths,
 } from "./spool/store";
+import {
+  countByState as countLoomsByState,
+  getLoom as getLoomFromStore,
+  listLooms as listLoomsInStore,
+  loomPaths,
+  projectDir as loomProjectDir,
+  readLedger as readLoomLedger,
+  readProgramDoc as readLoomProgramDoc,
+  readTriage as readLoomTriage,
+  readWatchRecord as readLoomWatchRecord,
+  writeProgramDoc as writeLoomProgramDoc,
+  type LoomPaths,
+  type LoomRuntime,
+} from "./loom/store";
 import { floatingExpertRefusal, runExpertPass, type ExpertPassOutcome } from "./spool/expert";
 import { nightDeps, readNight, runNight, type NightBudget } from "./spool/night";
 import { classifySettle, createWorkRegistry } from "./spool/work";
@@ -195,7 +218,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
+import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, worktreesRoot, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
 function requestTitle(detail: RequestDetail): string {
@@ -429,6 +452,16 @@ function canonicalPath(input: string): string {
   let canonical = fs.realpathSync.native(existing);
   for (const segment of missing) canonical = path.join(canonical, segment);
   return canonical;
+}
+
+/** A path with its symlinks resolved when that is possible, and unchanged when
+ *  it is not — a path that does not exist yet is still worth comparing. */
+function realOrSelf(input: string): string {
+  try {
+    return fs.realpathSync.native(input);
+  } catch {
+    return path.resolve(input);
+  }
 }
 
 export function statePaths(root: string): EngineStatePaths {
@@ -2475,6 +2508,310 @@ export class EngineStore {
     return this.spoolWrite(() => reorderSpoolLane(this.spool, key, orderedItemIds));
   }
 
+  // ── Loom ──────────────────────────────────────────────────────────────────
+  //
+  // THIN DELEGATION, modelled beat-for-beat on the Spool block above and for
+  // the same reasons. `loom/store.ts` owns `<engineRoot>/looms` and every rule
+  // about it — the traversal guard, the tolerant read, the loud write, the
+  // O_APPEND ledger. Nothing here re-decides any of that; this block does the
+  // two things a store module should not: compose the one-call snapshot a
+  // surface asks for, and translate the store's failure vocabulary into the
+  // engine's.
+  //
+  // THE SPLIT THAT MATTERS IS PERSISTENCE vs RUNTIME. Seven of §15.1's methods
+  // are a disk read or an atomic write and are implemented here outright. The
+  // other nine need a worktree, a shell, a process or a model, and they
+  // delegate to `LoomRuntime` — ONE attached field rather than nine injected
+  // dependencies, exactly like `attachBrowser`, so every test that builds an
+  // `EngineStore` directly does not drag the dispatch/exec tree in with it.
+
+  /**
+   * Resolved once from the state root; the store composes nothing itself.
+   *
+   * NAMED `loomStore` AND NOT `looms`, which is the one place this block cannot
+   * mirror the spool's `get spool()`. §15.1 spends the name `looms` on the
+   * public LIST method, and a class cannot carry both a getter and a method
+   * under one name. The list is the name the routes, the client and the web
+   * adapters all speak, so the paths accessor is the one that moves.
+   */
+  get loomStore(): LoomPaths {
+    return loomPaths(this.paths.root);
+  }
+
+  /**
+   * Turn a store write's throw into a typed engine error, keeping its sentence.
+   *
+   * NOT A CATCH-ALL — the spool's translator, verbatim. Only the store's own
+   * `Error`s are translated; anything else — an EACCES, a bug — rethrows
+   * untouched, because reporting a disk failure as `invalid_request` would tell
+   * the user their input was wrong when it was not. The SENTENCE is preserved
+   * because the store's messages name the file, the rule and the next step, and
+   * replacing them with a generic "bad request" would throw away the only
+   * useful part.
+   */
+  private loomWrite<T>(run: () => T): T {
+    try {
+      return run();
+    } catch (error) {
+      if (error instanceof EngineStateError) throw error;
+      if (error instanceof Error && !(error as NodeJS.ErrnoException).code) {
+        throw new EngineStateError("invalid_request", error.message);
+      }
+      throw error;
+    }
+  }
+
+  private loomFound<T>(value: T | null, what: string): T {
+    if (value === null) throw new EngineStateError("not_found", what);
+    return value;
+  }
+
+  /**
+   * THE DETACHED RUNTIME — what the nine runtime methods do before anything is
+   * attached, and it is a REFUSAL rather than an empty answer.
+   *
+   * `invalid_request` and not `not_found`, because the request named a real
+   * project and a real verb; what is missing is a capability of this process.
+   * An empty answer would be worse than either: `tickLoom` returning no run
+   * looks exactly like a tick that decided to do nothing, and the operator
+   * would go looking at their Program instead of at their daemon.
+   *
+   * STATIC, so it is one object for the process rather than one per store.
+   */
+  private static readonly detachedLoomRuntime: LoomRuntime = (() => {
+    const refuse = (): never => {
+      throw new EngineStateError("invalid_request", "the loom runtime is not attached");
+    };
+    return {
+      loomWork: refuse,
+      startLoomWatch: refuse,
+      stopLoomWatch: refuse,
+      tickLoom: refuse,
+      dryRunLoom: refuse,
+      dispatchLoom: refuse,
+      cancelLoom: refuse,
+      answerLoom: refuse,
+      suggestLoomProgram: refuse,
+      ensureLoomSession: refuse,
+      // NOT `refuse`. `close()` runs on the shutdown path, and a detached
+      // runtime has no timer to stop — so there is nothing to refuse and
+      // nothing to report. Throwing here would abort `daemon.close()` partway
+      // through on every engine that never wired a supervisor in.
+      close: () => undefined,
+    };
+  })();
+
+  /**
+   * Set by whoever owns the supervisor. ATTACHED RATHER THAN CONSTRUCTED, the
+   * same idiom and the same justification as `attachBrowser`: the store keeps
+   * no dependency on the loom runtime, so a test can build an `EngineStore`,
+   * write looms into it and read them back without a worktree or a shell
+   * anywhere in the process.
+   */
+  private attachedLoomRuntime?: LoomRuntime;
+
+  attachLoomRuntime(runtime: LoomRuntime): void {
+    this.attachedLoomRuntime = runtime;
+  }
+
+  private get loomRuntime(): LoomRuntime {
+    return this.attachedLoomRuntime ?? EngineStore.detachedLoomRuntime;
+  }
+
+  /**
+   * EVERYTHING THE DECK RENDERS, IN ONE READ — the rule `state.ts:1101-1103`
+   * already writes down for the spool, applied here because the loom surface is
+   * where it bites hardest. Project summaries, looms, triage and runs fetched
+   * on four cadences would disagree about how many looms are working, and
+   * nothing in the four payloads would say which of them is stale. A snapshot
+   * is internally consistent by construction.
+   *
+   * THE RUNS ARM IS THE ONE PLACE THIS TOLERATES A DETACHED RUNTIME. Everything
+   * else here is disk, so the deck must render — with an accurate, empty run
+   * list — on an engine whose supervisor has not been wired in. Letting the
+   * refusal out would take the whole page down over the one pane that needs a
+   * process.
+   *
+   * A PROJECT WITH NO LOOMS STILL GETS A SUMMARY, because "registered, no
+   * Program yet" is the state every project starts in and the deck's invitation
+   * to run setup is drawn from exactly that row.
+   */
+  loomOverview(): LoomOverview {
+    const { looms, unreadable } = listLoomsInStore(this.loomStore);
+    const triage: TriageEntry[] = [];
+    const projects: LoomProjectSummary[] = [];
+
+    for (const project of this.listProjects()) {
+      // The Program is READ, never required. A project with no `.telar/loom.md`
+      // reports `hasProgram: false` and still names the path, so the surface can
+      // say where the file would go rather than only that it is missing.
+      const doc = readLoomProgramDoc(project.id, project.root);
+      // ONE READ OF THE WATCH RECORD, not two: the schedule and the
+      // orchestrator session id live in the same file precisely so a summary
+      // cannot report a running watch beside a session from before it started.
+      const record = readLoomWatchRecord(this.loomStore, project.id);
+      triage.push(...Object.values(readLoomTriage(this.loomStore, project.id)));
+      projects.push({
+        projectId: project.id,
+        name: project.name,
+        root: project.root,
+        hasProgram: doc.exists,
+        programPath: doc.path,
+        watch: record.watch,
+        counts: countLoomsByState(looms.filter((loom) => loom.projectId === project.id)),
+        assumed: doc.program?.assumed ?? [],
+        warnings: doc.warnings,
+        // ABSENT IS A STATE, NOT A GAP — nobody has run setup here yet, and the
+        // surface renders the invitation rather than an empty cockpit.
+        ...(record.orchestratorSessionId ? { orchestratorSessionId: record.orchestratorSessionId } : {}),
+      });
+    }
+
+    return { projects, looms, triage, runs: this.attachedLoomRuntime?.loomWork().runs ?? [], unreadable };
+  }
+
+  /**
+   * The Program, from the PROJECT'S OWN REPO at `.telar/loom.md`.
+   *
+   * `getProject` FIRST, and that is the guard rather than a decoration: it is
+   * what turns an unknown project id into `not_found` before any path is
+   * composed, and it is the only source of the root this file is read from. A
+   * caller cannot hand in a root.
+   */
+  loomProgram(projectId: string): LoomProgramDoc {
+    const project = this.getProject(projectId);
+    return readLoomProgramDoc(project.id, project.root);
+  }
+
+  /**
+   * Write the Program back. The containment re-check lives in the store, which
+   * refuses a target outside the resolved project root; this end refuses a
+   * project that does not exist and a body that is not text.
+   */
+  saveLoomProgram(projectId: string, markdown: string): LoomProgramDoc {
+    const project = this.getProject(projectId);
+    if (typeof markdown !== "string") {
+      throw new EngineStateError("invalid_request", "a Loom program is the markdown file's contents, as a string");
+    }
+    return this.loomWrite(() => writeLoomProgramDoc(project.id, project.root, markdown));
+  }
+
+  /**
+   * Every loom, or one project's.
+   *
+   * THE UNREADABLE CHANNEL IS RETURNED, NOT SWALLOWED. A caller that only got
+   * `looms` could not tell "nothing is running" from "two loom files will not
+   * parse and whatever they were holding is still holding it".
+   *
+   * THE PROJECT ID GOES THROUGH THE STORE'S GUARD even though the list itself
+   * is tolerant, so `../../etc` comes back as a refusal with a sentence rather
+   * than as an empty list that looks like an answer.
+   */
+  looms(projectId?: string): { looms: Loom[]; unreadable: LoomUnreadable[] } {
+    if (projectId !== undefined) this.loomWrite(() => loomProjectDir(this.loomStore, projectId));
+    return listLoomsInStore(this.loomStore, projectId);
+  }
+
+  /** One loom by id alone — the store scans project directories; see its own
+   *  note for why the id is opaque rather than a compound key. */
+  loom(loomId: string): Loom {
+    return this.loomFound(getLoomFromStore(this.loomStore, loomId), "loom not found");
+  }
+
+  loomLedger(projectId: string, limit?: number): { entries: LedgerEntry[] } {
+    return this.loomWrite(() => ({ entries: readLoomLedger(this.loomStore, projectId, limit) }));
+  }
+
+  /**
+   * The triage cache as a LIST, though it is stored keyed by item ref.
+   *
+   * The disk shape exists for §7's invalidation check, which is a lookup; the
+   * surface groups by classification and renders rows, which is a list. Turning
+   * one into the other here — rather than storing a list, or making the surface
+   * key it — keeps each side in the shape its own job wants.
+   */
+  loomTriage(projectId: string): { entries: TriageEntry[] } {
+    return this.loomWrite(() => ({ entries: Object.values(readLoomTriage(this.loomStore, projectId)) }));
+  }
+
+  // ── the runtime half ──────────────────────────────────────────────────────
+  //
+  // NINE PASS-THROUGHS, and they are deliberately nothing more. Validation that
+  // belongs to the store stays in the store, and validation that belongs to the
+  // runtime stays there; what this layer adds is a single, uniform refusal when
+  // no runtime is attached. An `if (!runtime)` repeated nine times would be nine
+  // places for the sentence to drift.
+  //
+  // `getProject` IS THE ONE THING THIS LAYER STILL DOES, on the project-scoped
+  // arms: an unknown project must be `not_found` before a supervisor is asked to
+  // start watching something that is not registered on this machine.
+
+  loomWork(): { runs: LoomRun[] } {
+    return this.loomRuntime.loomWork();
+  }
+
+  startLoomWatch(projectId: string): { watch: LoomWatch } {
+    return this.loomRuntime.startLoomWatch(this.getProject(projectId).id);
+  }
+
+  stopLoomWatch(projectId: string): { watch: LoomWatch } {
+    return this.loomRuntime.stopLoomWatch(this.getProject(projectId).id);
+  }
+
+  tickLoom(projectId: string, input?: { note?: string }): { run: LoomRun } {
+    return this.loomRuntime.tickLoom(this.getProject(projectId).id, input);
+  }
+
+  dryRunLoom(projectId: string): { run: LoomRun } {
+    return this.loomRuntime.dryRunLoom(this.getProject(projectId).id);
+  }
+
+  /**
+   * THE THREE ASYNC ARMS. `async` here rather than a bare pass-through, so the
+   * detached runtime's SYNCHRONOUS throw becomes a rejected promise: a route
+   * that writes `await store.dispatchLoom(...)` inside its try must not receive
+   * an exception thrown before the first await, because that is the one shape
+   * its error handler does not catch.
+   */
+  async dispatchLoom(projectId: string, input: { item: string; title?: string; brief?: string }): Promise<{ loom: Loom }> {
+    if (typeof input?.item !== "string" || input.item.trim() === "") {
+      throw new EngineStateError("invalid_request", "a dispatch needs the work item's ref");
+    }
+    return this.loomRuntime.dispatchLoom(this.getProject(projectId).id, input);
+  }
+
+  async cancelLoom(loomId: string): Promise<{ loom: Loom }> {
+    return this.loomRuntime.cancelLoom(loomId);
+  }
+
+  async answerLoom(loomId: string, answer: string): Promise<{ loom: Loom }> {
+    if (typeof answer !== "string" || answer.trim() === "") {
+      throw new EngineStateError("invalid_request", "an answer needs words — an empty one would just close the question");
+    }
+    return this.loomRuntime.answerLoom(loomId, answer);
+  }
+
+  suggestLoomProgram(projectId: string): { markdown: string; findings: string[] } {
+    return this.loomRuntime.suggestLoomProgram(this.getProject(projectId).id);
+  }
+
+  /** The project's conversational orchestrator session, made once and reused —
+   *  `created` is what keeps opening the page twice from reading as two. */
+  async ensureLoomSession(projectId: string): Promise<{ sessionId: string; created: boolean }> {
+    return this.loomRuntime.ensureLoomSession(this.getProject(projectId).id);
+  }
+
+  /**
+   * Stop the supervisor's timer, for `daemon.close()`.
+   *
+   * A NO-OP WHEN NOTHING IS ATTACHED, deliberately: shutdown must not depend on
+   * whether a runtime was ever wired in, or every test that builds a bare
+   * `EngineStore` would have to know about the loom layer to close cleanly.
+   */
+  closeLoomRuntime(): void {
+    this.attachedLoomRuntime?.close();
+  }
+
   // ── MCP OAuth ─────────────────────────────────────────────────────────────
   //
   // TELAR OWNS THIS FLOW, unlike every provider login. The rule elsewhere is
@@ -3401,6 +3738,99 @@ export class EngineStore {
     return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected });
   }
 
+  /**
+   * TAKE A CHECKOUT SOMEBODY ELSE CUT, or refuse and say which check failed.
+   *
+   * FOUR QUESTIONS, and each one is a real failure that has a quiet version:
+   *
+   *   1. IS IT INSIDE THE ENGINE'S OWN WORKTREES ROOT? A path from a caller
+   *      reaches `git`, and `git -C <anywhere>` is an execution surface. The
+   *      fence is the same shape as `readFenced`'s and is here for the same
+   *      reason: the route is not the only door.
+   *   2. IS IT A WORKTREE OF *THIS* PROJECT? Compared by common git directory
+   *      rather than by string, because a worktree's path and its repository's
+   *      path have no textual relationship. Without it, a session could be
+   *      opened on another project's checkout inside the same engine root.
+   *   3. IS IT ON THE BRANCH THE CALLER NAMED? This is the one that maps
+   *      exactly onto the bug being closed: `publish` pushes the branch RECORDED
+   *      on the session, so a recorded branch that is not the checked-out one
+   *      sends the work nowhere and says nothing.
+   *   4. DOES THE BASE STILL RESOLVE? Only if one was offered; an unresolvable
+   *      base is dropped rather than refused, matching the local branch above.
+   *
+   * REFUSALS ARE SENTENCES. This runs inside `provisionLoom`'s try, so whatever
+   * it says becomes the loom's `stuck` reason and the line a human reads at 8am.
+   */
+  private adoptWorkspace(
+    project: Project,
+    workspace: { path: string; branch: string; baseRef?: string },
+  ): Extract<Session["workspace"], { mode: "worktree" }> {
+    const branch = workspace.branch?.trim() ?? "";
+    if (!branch) throw new EngineStateError("invalid_request", "a prepared workspace must name the branch its work lands on");
+    assertAbsolutePath(workspace.path, "workspace path");
+
+    const fence = worktreesRoot(this.paths.root);
+    const resolved = path.resolve(workspace.path);
+    // Both spellings, because macOS hands out `/var` for `/private/var` and a
+    // temp-dir engine root is spelled one way by the store and the other by git.
+    const candidates = new Set([resolved, realOrSelf(resolved)]);
+    const fences = new Set([fence, realOrSelf(fence)].map((value) => (value.endsWith(path.sep) ? value : `${value}${path.sep}`)));
+    const inside = [...candidates].some((candidate) => [...fences].some((prefix) => candidate.startsWith(prefix)));
+    if (!inside) {
+      throw new EngineStateError("invalid_request", `a prepared workspace must live inside the engine's worktrees directory (${fence})`);
+    }
+
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(resolved);
+    } catch {
+      throw new EngineStateError("invalid_request", `there is no directory at ${resolved}, so there is nothing to adopt`);
+    }
+    if (!stats.isDirectory()) throw new EngineStateError("invalid_request", `${resolved} is not a directory`);
+
+    const insideTree = this.git(resolved, ["rev-parse", "--is-inside-work-tree"]);
+    if (insideTree.status !== 0 || insideTree.stdout.trim() !== "true") {
+      throw new EngineStateError("invalid_request", `${resolved} is not a git worktree`);
+    }
+    const mine = this.commonGitDir(resolved);
+    const theirs = this.commonGitDir(project.root);
+    if (!mine || !theirs || mine !== theirs) {
+      throw new EngineStateError("invalid_request", `${resolved} is not a worktree of project ${project.id}`);
+    }
+
+    const head = this.git(resolved, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    const checkedOut = head.status === 0 ? head.stdout.trim() : "";
+    if (checkedOut !== branch) {
+      throw new EngineStateError(
+        "invalid_request",
+        `${resolved} is on ${checkedOut || "no branch"}, not ${branch} — the work would land somewhere other than the branch this session records`,
+      );
+    }
+
+    const offered = workspace.baseRef?.trim() ?? "";
+    const base = offered ? this.git(resolved, ["rev-parse", "--verify", "--quiet", `${offered}^{commit}`]) : null;
+    const baseRef = base?.status === 0 ? base.stdout.trim() : "";
+
+    return {
+      mode: "worktree",
+      path: resolved,
+      branch,
+      ...(baseRef ? { baseRef } : {}),
+      // See `SessionWorkspace.adopted`: whoever cut it owns it.
+      adopted: true,
+    };
+  }
+
+  /** The repository a worktree belongs to, absolute and symlink-resolved, so
+   *  two checkouts of one repo compare equal and two repos never do. */
+  private commonGitDir(cwd: string): string | null {
+    const result = this.git(cwd, ["rev-parse", "--git-common-dir"]);
+    if (result.status !== 0) return null;
+    const raw = result.stdout.trim();
+    if (!raw) return null;
+    return realOrSelf(path.isAbsolute(raw) ? raw : path.resolve(cwd, raw));
+  }
+
   createSession(input: {
     id?: string;
     projectId: string;
@@ -3417,6 +3847,33 @@ export class EngineStore {
      * cross-checked and refused.
      */
     providerInstanceId?: string;
+    /**
+     * A CHECKOUT THAT ALREADY EXISTS — ADOPT IT, DO NOT CUT ANOTHER.
+     *
+     * ADDITIVE AND OPTIONAL, because every caller but one wants the old
+     * behaviour: `envMode: "worktree"` with no workspace cuts `telar/<id>` off
+     * the project's HEAD exactly as it always has.
+     *
+     * THE ONE CALLER IS THE LOOM, and the bug this closes was silent in four
+     * directions at once. `provisionLoom` cuts a worktree on the branch the
+     * Program names, off the base the Program declares, and runs the Program's
+     * `setup` in it — and then the session cut a SECOND worktree on
+     * `telar/<sessionId>` off HEAD and gave the worker that one instead. So
+     * `setup` ran where nobody worked, the branch `publish` pushes never
+     * received a commit, the gate counted commits in the loom's worktree and
+     * found none — a finished worker read as a worker that did nothing — and
+     * every loom cost two checkouts against a concurrency ceiling derived from
+     * one. Nothing threw.
+     *
+     * VALIDATED HERE, IN THE STORE, not at the caller. A path handed in from
+     * outside reaches `git`, and the house rule is that an in-process caller
+     * hits the same wall an HTTP one would.
+     *
+     * `baseRef` is optional for the same reason it is optional on the wire: a
+     * re-provisioned loom adopts a worktree cut hours ago, and a base it can no
+     * longer resolve is worth leaving absent rather than inventing.
+     */
+    workspace?: { path: string; branch: string; baseRef?: string };
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
@@ -3434,7 +3891,20 @@ export class EngineStore {
     // what happens when a request opens with nobody home, and the two defaults
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
-    const envMode = input.envMode ?? "local";
+    /**
+     * A PREPARED WORKSPACE IS A WORKTREE SESSION AND NOTHING ELSE.
+     *
+     * Not "defaults to worktree": a caller that says `local` while handing over
+     * a checkout has contradicted itself, and picking one of the two answers
+     * would decide for them. `envMode` must read as `"worktree"` downstream
+     * because it IS one — the review surface, the branch chip and the archive
+     * path all key off it.
+     */
+    if (input.workspace && input.envMode !== undefined && input.envMode !== "worktree") {
+      throw new EngineStateError("invalid_request", `a prepared workspace is a worktree session; envMode "${input.envMode}" contradicts it`);
+    }
+    const adopted = input.workspace === undefined ? undefined : this.adoptWorkspace(project, input.workspace);
+    const envMode: EnvMode = adopted ? "worktree" : (input.envMode ?? "local");
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
@@ -3443,7 +3913,8 @@ export class EngineStore {
     // whose workspace does not exist is unusable and would have to be repaired
     // on read; failing here leaves nothing behind to repair.
     const workspace: Session["workspace"] =
-      envMode === "worktree"
+      adopted ??
+      (envMode === "worktree"
         ? (() => {
             const cut = createSessionWorktree(this.git, {
               engineRoot: this.paths.root,
@@ -3470,7 +3941,7 @@ export class EngineStore {
             const head = this.git(project.root, ["rev-parse", "HEAD"]);
             const baseRef = head.status === 0 ? head.stdout.trim() : "";
             return { mode: "local" as const, path: project.root, ...(baseRef ? { baseRef } : {}) };
-          })();
+          })());
     const session: Session = {
       id,
       projectId: input.projectId,
@@ -4152,7 +4623,13 @@ export class EngineStore {
     // none. Reading the pair together means a future project-less session that
     // somehow carried a worktree degrades to "leave the directory" instead of
     // throwing on a lookup that cannot succeed.
-    if (session.workspace.mode === "worktree" && session.projectId) {
+    // AND NOT A CHECKOUT THIS SESSION DID NOT CUT. `adopted` marks a worktree
+    // prepared by something with a longer life than the session — a loom, whose
+    // gate reads commits out of it AFTER the worker has ended and whose
+    // `publish` pushes its branch. Reaping it here would delete the loom's whole
+    // output between those two steps, and the loom would report that its worker
+    // committed nothing. See `SessionWorkspace.adopted`.
+    if (session.workspace.mode === "worktree" && !session.workspace.adopted && session.projectId) {
       const project = this.getProject(session.projectId);
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
@@ -4203,8 +4680,11 @@ export class EngineStore {
 
     void this.browser?.release(sessionId, "session deleted");
 
-    // See `archiveSession` for why the project is checked beside the mode.
-    if (session.workspace.mode === "worktree" && session.projectId) {
+    // See `archiveSession` for why the project is checked beside the mode, and
+    // for why an ADOPTED worktree is left where it is even here. Deleting a
+    // session is a decision about the session; the checkout belongs to whoever
+    // cut it, and this one was cut by something still using it.
+    if (session.workspace.mode === "worktree" && !session.workspace.adopted && session.projectId) {
       const project = this.getProject(session.projectId);
       removeSessionWorktree(this.git, project.root, session.workspace.path);
     }
