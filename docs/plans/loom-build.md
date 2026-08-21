@@ -418,3 +418,100 @@ Constraints inherited from the codebase, not negotiable:
   expensive is injected through `EngineDaemonOptions` (see `daemon.ts:51-85`).
 - The gate for *this* repo is `bun run verify` = `typecheck && lint && test`.
   `lint` covers `apps/web` only.
+
+---
+
+## 15. The seam contract
+
+Four layers get built in parallel, so the interfaces between them are fixed here
+rather than negotiated. Anything not in this section is the implementing layer's
+own business.
+
+### 15.1 `EngineStore` methods (`apps/engine/src/state.ts`)
+
+Delegating to `apps/engine/src/loom/*`. Validation lives here, not in the route,
+so an in-process caller hits the same wall as an HTTP one.
+
+```ts
+loomOverview(): LoomOverview                       // ONE read for the whole deck
+loomProgram(projectId): LoomProgramDoc             // { path, exists, markdown, program|null, warnings }
+saveLoomProgram(projectId, markdown): LoomProgramDoc
+looms(projectId?): { looms: Loom[]; unreadable: LoomUnreadable[] }
+loom(loomId): Loom
+loomLedger(projectId, limit?): { entries: LedgerEntry[] }
+loomTriage(projectId): { entries: TriageEntry[] }
+loomWork(): { runs: LoomRun[] }                    // in-memory, in-flight ticks
+startLoomWatch(projectId): { watch: LoomWatch }
+stopLoomWatch(projectId): { watch: LoomWatch }
+tickLoom(projectId, input?): { run: LoomRun }      // 202, detached
+dryRunLoom(projectId): { run: LoomRun }            // 202, detached; result on the run
+dispatchLoom(projectId, input): { loom: Loom }     // { item, title?, brief? }
+cancelLoom(loomId): { loom: Loom }
+answerLoom(loomId, answer): { loom: Loom }
+suggestLoomProgram(projectId): { markdown, findings: string[] }
+```
+
+Error vocabulary follows the spool's translators exactly: a store `Error` becomes
+`EngineStateError("invalid_request", message)` **with the sentence preserved**; a
+`null` lookup becomes `EngineStateError("not_found", …)`; `EACCES` rethrows.
+
+### 15.2 Routes (`/v2/looms/**`, inline arms in `daemon.ts` after the bearer gate)
+
+Literal paths must be matched **before** the `/:loomId` regex.
+
+| Method | Path | Body / query | Returns |
+| --- | --- | --- | --- |
+| GET | `/v2/looms` | — | `LoomOverview` (bare, like `GET /v2/spool`) |
+| GET | `/v2/looms/program` | `?project=` | `LoomProgramDoc` |
+| PUT | `/v2/looms/program` | `{projectId, markdown}` | `LoomProgramDoc` |
+| POST | `/v2/looms/program/suggest` | `{projectId}` | `{markdown, findings}` |
+| GET | `/v2/looms/ledger` | `?project=&limit=` | `{entries}` |
+| GET | `/v2/looms/triage` | `?project=` | `{entries}` |
+| GET | `/v2/looms/work` | — | `{runs}` |
+| POST | `/v2/looms/watch` | `{projectId, running}` | `{watch}` |
+| POST | `/v2/looms/tick` | `{projectId}` | **202** `{run}` |
+| POST | `/v2/looms/dry-run` | `{projectId}` | **202** `{run}` |
+| POST | `/v2/looms/dispatch` | `{projectId, item, title?, brief?}` | `{loom}` |
+| GET | `/v2/looms/:loomId` | — | `{loom}` |
+| POST | `/v2/looms/:loomId/cancel` | — | `{loom}` |
+| POST | `/v2/looms/:loomId/answer` | `{answer}` | `{loom}` |
+
+### 15.3 `EngineClient` methods — one-liners, same names as §15.1
+
+`looms()`, `loom(id)`, `loomProgram(projectId)`, `saveLoomProgram(projectId, markdown)`,
+`suggestLoomProgram(projectId)`, `loomLedger(projectId, limit?)`, `loomTriage(projectId)`,
+`loomWork()`, `setLoomWatch(projectId, running)`, `tickLoom(projectId)`,
+`dryRunLoom(projectId)`, `dispatchLoom(projectId, input)`, `cancelLoom(id)`,
+`answerLoom(id, answer)`.
+
+### 15.4 Web adapters — `apps/web/app/api/looms/**`
+
+One file per route, the 15-line `engineClient()` / `engineErrorResponse` shape.
+Paths mirror §15.2 with `/api` for `/v2`.
+
+### 15.5 Web components live in `apps/web/components/loom/` — **singular**
+
+`@/components/looms` (plural) is on the banned-import list in
+`apps/web/lib/engine/source-boundary.test.ts:35`, because it names the frozen
+app's directory. Singular `loom/` is clear. Do not amend the ban list.
+
+### 15.6 Additional wire types
+
+```ts
+LoomProgramDoc  = { projectId, path, exists, markdown, program: LoomProgram | null, warnings: string[] }
+LoomWatch       = { projectId, running, intervalSec, quietChecks, lastProbeAt?, lastChangeAt?, nextProbeAt?, lastError? }
+LoomRunKind     = 'tick' | 'dry-run'
+LoomRun         = { id, projectId, kind, state: 'running'|'done'|'failed'|'cancelled',
+                    startedAt, settledAt?, step?, note?, decision?: TickDecision,
+                    dispatched: string[], error? }
+LoomUnreadable  = { file, reason }
+LoomOverview    = { projects: LoomProjectSummary[], looms: Loom[], triage: TriageEntry[],
+                    runs: LoomRun[], unreadable: LoomUnreadable[] }
+LoomProjectSummary = { projectId, name, root, hasProgram, programPath,
+                       watch: LoomWatch, counts: Record<LoomState, number>,
+                       assumed: string[], warnings: string[] }
+```
+
+`LoomOverview` is the **one-call snapshot** for the deck. Two surfaces fetched on
+separate cadences would disagree with no way to tell which is stale; the spool
+learned that the hard way and the rule is written into `state.ts:1101-1103`.
