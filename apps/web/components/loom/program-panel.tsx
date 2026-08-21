@@ -30,7 +30,7 @@
  * means "could not verify", not "failed", and a switch cannot say that.
  */
 
-import { useState } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import {
   BookOpenIcon,
   ChevronRightIcon,
@@ -39,6 +39,8 @@ import {
   FlaskConicalIcon,
   HandIcon,
   ListTreeIcon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
   PauseIcon,
   PlayIcon,
   ScrollTextIcon,
@@ -47,11 +49,14 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import type { LedgerEntry, LoomProgram, LoomProgramDoc, LoomProjectSummary, LoomRun } from "@telar/engine-client";
+import { RightPanelResizeHandle } from "@/components/right-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtAgo } from "@/lib/format";
+import { PROGRAM_PANEL_DEFAULT_WIDTH, PROGRAM_PANEL_WIDTH_STORAGE_KEY } from "@/lib/right-panel-layout";
+import { useSidebarPrefs } from "@/lib/sidebar-width";
 import { gateExitRows, UNDECLARED_EXIT_SENTENCE } from "@/lib/loom-gate";
 import { dryRunLoom, ensureLoomSession, setLoomWatch } from "@/lib/loom-actions";
 import { useLoomProgram } from "@/lib/loom-program";
@@ -112,23 +117,84 @@ const SLOTS: { id: CommandSlot; label: string; vars: string[]; contract: string 
   },
 ];
 
-export function ProgramPanel({ project, now = 0 }: { project?: LoomProjectSummary; now?: number }) {
+/**
+ * THE PANEL IS A COLUMN OF THE ROOM, AND THE ROOM BELONGS TO THE CONVERSATION.
+ *
+ * This used to be `w-[360px] shrink-0` and nothing else, which reads as modest
+ * and is not: a fixed, unshrinkable column takes its 360px off the top and the
+ * CENTRE absorbs every pixel the window does not have. Inside the app shell's
+ * own 16rem rail plus this page's 210px loom rail, a 900px window left the
+ * conversation 74px wide — the setup invitation rendered as one word per line.
+ *
+ * So it borrows the cockpit panel's three-part guard wholesale rather than
+ * inventing a fourth spelling of it (`lib/right-panel-layout.ts`):
+ *
+ *   w-(--right-panel-width)      a REMEMBERED width, dragged by the shared handle
+ *   min-w-80                     a floor, below which a panel is a column of truncation
+ *   max-w-[calc(100%-24rem)]     the conversation's floor, in CSS, for when the
+ *                                WINDOW shrinks rather than the handle moving
+ *
+ * The last of those is the one that was missing, and it is the whole bug: 24rem
+ * is `RIGHT_PANEL_MAIN_MIN_WIDTH`, the same number that clamps the drag, so the
+ * two cannot disagree about how little conversation is too little.
+ *
+ * AND IT CLOSES. Below `LOOM_NARROW_WINDOW` there is no arrangement of three
+ * columns that leaves all three usable, so the orchestrator starts it shut and
+ * leaves a rail behind that says so — an auxiliary surface that cannot get out
+ * of the way is not auxiliary.
+ *
+ * `alone` IS THE OTHER HALF OF THAT, and it is why the floors above are not the
+ * end of it. `min-width` beats `max-width` in CSS, so on a narrow window a
+ * person who opens the panel anyway gets `min-w-80` against a room that cannot
+ * pay for it, and the conversation is back to a ribbon — the exact bug, just
+ * one click further away. Below the threshold the panel therefore takes the
+ * WHOLE room and the conversation steps behind the toggle: two usable
+ * arrangements you choose between, rather than one unusable one.
+ */
+export function ProgramPanel({
+  project,
+  now = 0,
+  open,
+  alone = false,
+  onOpenChange,
+}: {
+  project?: LoomProjectSummary;
+  now?: number;
+  open: boolean;
+  /** When open, take the whole room rather than a column of it. */
+  alone?: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const projectId = project?.projectId;
+  const panelRef = useRef<HTMLElement | null>(null);
+  const prefs = useSidebarPrefs(PROGRAM_PANEL_WIDTH_STORAGE_KEY);
+  const width = prefs.width ?? PROGRAM_PANEL_DEFAULT_WIDTH;
   const { doc, loading, saving, error, save } = useLoomProgram(projectId);
   const [tab, setTab] = useState<PanelTab>("program");
   const [showSource, setShowSource] = useState(false);
   const assumed = doc?.program?.assumed ?? [];
 
+  if (!open) return <ProgramPanelRail assumed={assumed.length} onOpen={() => onOpenChange(true)} />;
+
   return (
-    <aside className="flex w-[360px] shrink-0 flex-col border-l border-border/70 bg-muted/20">
-      <div className="flex shrink-0 items-center gap-3 border-b border-border/70 px-3 pt-2 text-[11px]">
+    <aside
+      ref={panelRef}
+      aria-label="Program and ledger"
+      style={alone ? undefined : ({ "--right-panel-width": `${width}px` } as CSSProperties)}
+      className={`relative flex flex-col border-l border-border/70 bg-muted/20 ${
+        alone ? "min-w-0 flex-1" : "w-(--right-panel-width) min-w-80 max-w-[calc(100%-24rem)] shrink-0"
+      }`}
+    >
+      {!alone && <RightPanelResizeHandle panelRef={panelRef} storageKey={PROGRAM_PANEL_WIDTH_STORAGE_KEY} />}
+
+      <div className="flex min-w-0 shrink-0 items-center gap-3 border-b border-border/70 px-3 pt-2 text-[11px]">
         {SURFACES.map((surface) => (
           <button
             key={surface.id}
             type="button"
             title={surface.blurb}
             onClick={() => setTab(surface.id)}
-            className={`-mb-px flex items-center gap-1.5 pb-1.5 ${
+            className={`-mb-px flex shrink-0 items-center gap-1.5 pb-1.5 ${
               tab === surface.id ? "border-b-2 border-primary font-medium text-foreground" : "text-muted-foreground/60"
             }`}
           >
@@ -136,24 +202,35 @@ export function ProgramPanel({ project, now = 0 }: { project?: LoomProjectSummar
             {surface.label}
           </button>
         ))}
-        {/* §4.4 — an assumption you can see is survivable. The badge is how it
-            stays visible from a panel that is not open. */}
-        {assumed.length > 0 && (
-          <Badge variant="outline" className="mb-1 ml-auto h-4 px-1.5 text-[10px]">
-            {assumed.length} assumed
-          </Badge>
-        )}
-        {tab === "program" && (
+        <div className="mb-1 ml-auto flex shrink-0 items-center gap-1.5">
+          {/* §4.4 — an assumption you can see is survivable. The badge is how it
+              stays visible from a panel that is not open. */}
+          {assumed.length > 0 && (
+            <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+              {assumed.length} assumed
+            </Badge>
+          )}
+          {tab === "program" && (
+            <button
+              type="button"
+              onClick={() => setShowSource(!showSource)}
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                showSource ? "bg-accent text-foreground" : "text-muted-foreground/70 hover:text-foreground"
+              }`}
+            >
+              Source
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => setShowSource(!showSource)}
-            className={`mb-1 ${assumed.length > 0 ? "" : "ml-auto"} rounded px-1.5 py-0.5 text-[10px] ${
-              showSource ? "bg-accent text-foreground" : "text-muted-foreground/70 hover:text-foreground"
-            }`}
+            onClick={() => onOpenChange(false)}
+            aria-label="Hide the Program"
+            title="Hide the Program"
+            className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-foreground"
           >
-            Source
+            <PanelRightCloseIcon className="size-3.5" />
           </button>
-        )}
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2.5">
@@ -192,6 +269,41 @@ export function ProgramPanel({ project, now = 0 }: { project?: LoomProjectSummar
           doc && <Blocks doc={doc} program={doc.program} saving={saving} onSave={save} project={project} now={now} />
         )}
       </div>
+    </aside>
+  );
+}
+
+/**
+ * THE PANEL, SHUT — a rail, not a vanishing.
+ *
+ * A control that disappears when the thing it controls is hidden is how a
+ * surface becomes unreachable at exactly the width where it was already hard to
+ * find. The assumption count rides along, because §4.4's promise is that an
+ * assumption stays visible from a panel that is not open.
+ */
+function ProgramPanelRail({ assumed, onOpen }: { assumed: number; onOpen: () => void }) {
+  return (
+    <aside
+      aria-label="Program and ledger"
+      className="flex w-9 shrink-0 flex-col items-center gap-1.5 border-l border-border/70 bg-muted/20 py-2"
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label="Show the Program"
+        title="Show the Program"
+        className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      >
+        <PanelRightOpenIcon className="size-3.5" />
+      </button>
+      {assumed > 0 && (
+        <span
+          title={`${assumed} assumed`}
+          className="rounded-full bg-warning/15 px-1 font-mono text-[9px] leading-4 text-warning"
+        >
+          {assumed}
+        </span>
+      )}
     </aside>
   );
 }
@@ -940,17 +1052,30 @@ function SetupInvitation({
   const [failed, setFailed] = useState<string>();
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2.5 px-8 text-center">
-      <SparklesIcon className="size-5 text-muted-foreground/40" />
-      <h2 className="text-[14px] font-semibold tracking-tight">Nothing is orchestrating {project.name} yet</h2>
-      <p className="max-w-sm text-[12px] leading-relaxed text-muted-foreground">
+    /**
+     * THE FIRST THING A NEW PERSON READS, so it is measured in LINE LENGTH
+     * rather than in columns: `max-w-md` is the prose measure, `min-w-0` is what
+     * lets this column shrink out of the panel's way instead of fighting it, and
+     * the padding steps down on a narrow window because 4rem of gutter either
+     * side of a 300px column is most of the column.
+     *
+     * `overflow-y-auto` because a centred block that cannot scroll loses its
+     * bottom — the button and the sentence saying what pressing it costs — on a
+     * short window, and that sentence is not optional.
+     */
+    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2.5 overflow-y-auto px-5 py-8 text-center sm:px-8">
+      <SparklesIcon className="size-5 shrink-0 text-muted-foreground/40" />
+      <h2 className="text-[14px] font-semibold tracking-tight text-balance">
+        Nothing is orchestrating {project.name} yet
+      </h2>
+      <p className="max-w-md text-[12px] leading-relaxed text-pretty text-muted-foreground">
         Setting it up is a conversation, not a form. You say what you want watched; it looks at the project first —
         the base branch, the check it already runs, how this project declares work — and asks only about what it
         genuinely cannot determine.
       </p>
-      <p className="max-w-sm text-[11px] leading-relaxed text-muted-foreground/70">
-        Its output is one file, <span className="font-mono">{project.programPath}</span>, and a dry run showing what
-        it would do right now. It does not change anything else in the repo.
+      <p className="max-w-md text-[11px] leading-relaxed text-pretty text-muted-foreground/70">
+        Its output is one file, <span className="font-mono break-all">{project.programPath}</span>, and a dry run
+        showing what it would do right now. It does not change anything else in the repo.
       </p>
       <Button
         size="sm"
@@ -970,7 +1095,7 @@ function SetupInvitation({
       {/* THE HONEST LABEL UNDER THE BUTTON. Nothing in this UI spends money
           without a human pressing something, and the thing they press has to
           say so. */}
-      <p className="max-w-xs text-[10px] leading-relaxed text-muted-foreground/60">
+      <p className="max-w-md text-[10px] leading-relaxed text-pretty text-muted-foreground/60">
         This starts a session that goes and reads the project, so it costs tokens. Nothing runs until you press it,
         and nothing is dispatched until you have seen a dry run.
       </p>

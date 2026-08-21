@@ -32,7 +32,9 @@ import Link from "next/link";
 import { ArrowLeftIcon, HandIcon, RadioIcon } from "lucide-react";
 import type { Loom } from "@telar/engine-client";
 import { SessionCockpit } from "@/components/session-cockpit";
+import { useNarrowWindow } from "@/hooks/use-narrow-window";
 import { IN_FLIGHT_STATES } from "@/lib/loom-deck";
+import { LOOM_NARROW_WINDOW } from "@/lib/right-panel-layout";
 import { useLoomOverview } from "@/lib/loom-overview";
 import { LoomRailRow, loomTitle } from "./rows";
 import { ProgramPanel, SetupInvitation } from "./program-panel";
@@ -74,6 +76,21 @@ export function LoomOrchestrator({ projectId }: { projectId: string }) {
 
   /** Which loom the rail has selected. `undefined` is the orchestrator itself. */
   const [selected, setSelected] = useState<string>();
+
+  /**
+   * IS THE PROGRAM PANEL OPEN? DERIVED, NOT MIRRORED — the same rule the
+   * session id above follows, and for the same reason: copying the window's
+   * width into state through an effect is a cascading render, and this app
+   * lints that. `undefined` means nobody has said, and the window answers.
+   *
+   * Three columns want the app shell's own rail (16rem), this page's rail, a
+   * conversation and a panel. Under `LOOM_NARROW_WINDOW` they do not all fit,
+   * and the one that has to give way is the panel: the centre is where the
+   * conversation lives and it is the reason the page exists.
+   */
+  const narrow = useNarrowWindow(LOOM_NARROW_WINDOW);
+  const [programChoice, setProgramChoice] = useState<boolean>();
+  const programOpen = programChoice ?? !narrow;
   const selectedLoom = looms.find((loom) => loom.id === selected);
   const waiting = looms.filter((loom) => loom.state === "asking").length;
 
@@ -147,33 +164,65 @@ export function LoomOrchestrator({ projectId }: { projectId: string }) {
         )}
       </aside>
 
-      {/* CENTRE — the stock cockpit, keyed so selecting another session
-          remounts it rather than handing a live cockpit a different id. */}
-      {selectedLoom ? (
-        selectedLoom.sessionId ? (
-          <SessionCockpit key={selectedLoom.sessionId} projectId={projectId} sessionId={selectedLoom.sessionId} />
-        ) : (
-          <NoSessionYet loom={selectedLoom} />
-        )
-      ) : sessionId ? (
-        <SessionCockpit
-          key={sessionId}
-          projectId={projectId}
-          sessionId={sessionId}
-          {...(project?.name ? { projectName: project.name } : {})}
-        />
-      ) : project ? (
-        <SetupInvitation
-          project={project}
-          onStarted={(startedSessionId) => setCreated({ projectId, sessionId: startedSessionId })}
-        />
-      ) : (
-        <div className="flex min-w-0 flex-1 items-center justify-center">
-          <p className="text-[12px] text-muted-foreground">Loading…</p>
+      {/**
+        * THE ROOM — the conversation and the Program, nested one level inside
+        * the rail rather than sitting beside it.
+        *
+        * The nesting is load-bearing, not tidying. The panel's
+        * `max-w-[calc(100%-24rem)]` guard is a PERCENTAGE, and a percentage
+        * resolves against its containing block: as a direct child of the outer
+        * row it would measure itself against a width the 210px rail has already
+        * spent, and leave the conversation 24rem minus a rail. Here `100%` is
+        * the room the two of them actually share, so "leave the conversation
+        * 24rem" means what it says.
+        *
+        * `min-w-0`, because a flex child without it will not shrink below its
+        * own content — the other half of how the centre lost the width fight.
+        */}
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {/**
+          * CENTRE — the stock cockpit, keyed so selecting another session
+          * remounts it rather than handing a live cockpit a different id.
+          *
+          * HIDDEN, NOT UNMOUNTED, when the Program takes the whole room on a
+          * narrow window: unmounting a cockpit throws away a live session's
+          * hydration and its scroll position and pays to fetch them again on
+          * the way back, for a toggle someone may flick twice a minute.
+          */}
+        <div className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${narrow && programOpen ? "hidden" : ""}`}>
+          {selectedLoom ? (
+            selectedLoom.sessionId ? (
+              <SessionCockpit key={selectedLoom.sessionId} projectId={projectId} sessionId={selectedLoom.sessionId} />
+            ) : (
+              <NoSessionYet loom={selectedLoom} />
+            )
+          ) : sessionId ? (
+            <SessionCockpit
+              key={sessionId}
+              projectId={projectId}
+              sessionId={sessionId}
+              {...(project?.name ? { projectName: project.name } : {})}
+            />
+          ) : project ? (
+            <SetupInvitation
+              project={project}
+              onStarted={(startedSessionId) => setCreated({ projectId, sessionId: startedSessionId })}
+            />
+          ) : (
+            <div className="flex min-w-0 flex-1 items-center justify-center">
+              <p className="text-[12px] text-muted-foreground">Loading…</p>
+            </div>
+          )}
         </div>
-      )}
 
-      <ProgramPanel {...(project ? { project } : {})} now={receivedAt} />
+        <ProgramPanel
+          {...(project ? { project } : {})}
+          now={receivedAt}
+          open={programOpen}
+          alone={narrow}
+          onOpenChange={setProgramChoice}
+        />
+      </div>
     </div>
   );
 }
@@ -206,14 +255,14 @@ function RailGroup({
 /** A loom with no session: queued, or one that never got that far. */
 function NoSessionYet({ loom }: { loom: Loom }) {
   return (
-    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1.5 px-8 text-center">
-      <p className="text-[13px] font-medium">{loomTitle(loom)}</p>
-      <p className="max-w-sm text-[12px] leading-relaxed text-muted-foreground">
+    <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-1.5 overflow-y-auto px-5 py-8 text-center sm:px-8">
+      <p className="text-[13px] font-medium text-balance">{loomTitle(loom)}</p>
+      <p className="max-w-md text-[12px] leading-relaxed text-pretty text-muted-foreground">
         This one has no session yet, so there is nothing to read. It gets a worktree and a session when it is
         dispatched.
       </p>
       {loom.parkedReason && (
-        <p className="max-w-sm text-[11px] leading-relaxed text-muted-foreground/70">{loom.parkedReason}</p>
+        <p className="max-w-md text-[11px] leading-relaxed text-pretty text-muted-foreground/70">{loom.parkedReason}</p>
       )}
     </div>
   );
