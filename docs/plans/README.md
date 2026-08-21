@@ -22,6 +22,7 @@ worse than no plan, because it reads as current and is not.
 
 | Plan | What | Status |
 | --- | --- | --- |
-| [`orchestrator.md`](./orchestrator.md) | Perpetual dispatch-only agent: discovers a project's own conventions and gates, dispatches looms into worktrees, wakes on a cheap sentinel. Replaces looms v1. | Draft — not approved |
-| [`loom-build.md`](./loom-build.md) | The buildable spec: four command slots, tri-state gates, the escalation ladder, persistence split. Answers every open question in `orchestrator.md`. | Building |
+| [`orchestrator.md`](./orchestrator.md) | Perpetual dispatch-only agent: discovers a project's own conventions and gates, dispatches looms into worktrees, wakes on a cheap sentinel. Replaces looms v1. | Built |
+| [`loom-build.md`](./loom-build.md) | The buildable spec: four command slots, tri-state gates, the escalation ladder, persistence split. Answers every open question in `orchestrator.md`, and §17 records what building it found. | Built |
+| [`loom-demo.md`](./loom-demo.md) | The end-to-end proof: a real git repo whose Program is nothing but local shell, driven through the real daemon. `bun scripts/loom-demo.ts`. | Built |
 | [`ozom-gv-setup.md`](./ozom-gv-setup.md) | The design tested against a real repo: what setup finds, asks, writes, and dry-runs. Facts verified 2026-08-19; dialogue constructed. | Companion |
