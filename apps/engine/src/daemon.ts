@@ -2508,25 +2508,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     store.recover();
     writeDiscovery(store, discovery);
 
-    /**
-     * THE WATCHES A HUMAN ALREADY TURNED ON, PICKED BACK UP — after recovery
-     * and after discovery, the same rule the embedded worker below follows, so
-     * nothing probes against a pre-recovery store.
-     *
-     * WITHOUT THIS THE SEAM TELLS A LIE rather than merely going quiet:
-     * `running` is persisted, so `loomOverview` keeps reporting
-     * `watch.running: true` and the deck keeps drawing "watching" while no
-     * probe ever fires again until someone toggles the switch off and on.
-     * Measured, not assumed — a second daemon over the same engine root probed
-     * zero times. A first-run engine has no watch record saying `running`, so
-     * the guard inside `resume` makes this a no-op there.
-     *
-     * OPTIONAL BECAUSE AN INJECTED `loomRuntime` IS A BARE `LoomRuntime`: a
-     * route test that swaps the orchestrator out has no supervisor to resume,
-     * and must not be made to grow one.
-     */
-    loomRuntime.resume?.();
-
     // The embedded worker starts AFTER discovery is published, because it
     // connects through the same discovery document every other client uses
     // rather than through a private in-process shortcut. That keeps one code
@@ -2558,6 +2539,44 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       await worker.start();
       embedded = { workerId, stop: () => worker.stop() };
     }
+
+    /**
+     * THE WATCHES A HUMAN ALREADY TURNED ON, PICKED BACK UP — after recovery,
+     * after discovery, and LAST of the three, so nothing probes against a
+     * pre-recovery store and nothing dispatches into a process that has no
+     * worker yet.
+     *
+     * WITHOUT THIS THE SEAM TELLS A LIE rather than merely going quiet:
+     * `running` is persisted, so `loomOverview` keeps reporting
+     * `watch.running: true` and the deck keeps drawing "watching" while no
+     * probe ever fires again until someone toggles the switch off and on.
+     * Measured, not assumed — a second daemon over the same engine root probed
+     * zero times. A first-run engine has no watch record saying `running`, so
+     * the guard inside `resume` makes this a no-op there.
+     *
+     * ── WHY IT IS BELOW THE EMBEDDED WORKER AND NOT ABOVE IT ─────────────────
+     * A watch whose `nextProbeAt` is long past — the ordinary state of a
+     * machine that was off overnight — sweeps on the first tick of the timer
+     * this call arms. Armed before the worker registers, that sweep can reach a
+     * dispatch and be refused by `workersAvailable` for having nobody to claim
+     * the brief. The refusal is correct and lands in the ledger, and the item
+     * comes back on the next probe — but at the default 300s cadence that is
+     * five minutes lost to every restart, for a reason that existed only in the
+     * order of these two statements.
+     *
+     * IT IS STILL AFTER `store.recover()` AND `writeDiscovery`, which is the
+     * constraint that put it here in the first place: a daemon that is about to
+     * fail its own startup must not already have begun spending a project's
+     * `gh` quota. Moving it LATER only strengthens that — an embedded worker
+     * that throws while being built (`createDriver`, the provider SDK import)
+     * now leaves through the `catch` below with no supervisor armed at all,
+     * where before it left one probing behind a daemon that never returned.
+     *
+     * OPTIONAL BECAUSE AN INJECTED `loomRuntime` IS A BARE `LoomRuntime`: a
+     * route test that swaps the orchestrator out has no supervisor to resume,
+     * and must not be made to grow one.
+     */
+    loomRuntime.resume?.();
 
     let closed = false;
     return {

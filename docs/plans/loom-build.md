@@ -605,6 +605,18 @@ Without that, a daemon crash-looping every ten seconds would run the Program's
 same one rule covers both cases: down six hours means `nextProbeAt` is long past
 and the sweep fires at once.
 
+**A restart's first sweep must not beat its own worker.** `resume()` armed the
+supervisor immediately after `writeDiscovery`, and the in-process worker started
+after that — so a watch whose `nextProbeAt` was hours past swept while the worker
+was still being built, decided to dispatch, and was refused for having nobody to
+claim the brief. Correct, logged, retried on the next probe: five minutes of an
+overnight run lost to the order of two statements. `resume()` is now the last of
+the three, which also means an embedded worker that throws on the way up leaves
+no supervisor armed behind a daemon that never returned. The constraint that put
+it after recovery and discovery in the first place — a daemon about to fail
+startup must not already be spending a project's `gh` quota — is only
+strengthened by moving it later.
+
 **`attempts` counts rungs consumed, not sessions started.** An early version
 bumped it on the initial dispatch, and the effect was that a two-rung ladder hit
 `1 >= 2` on its second stuck and went straight to `asking` — so **the last enabled
@@ -648,15 +660,6 @@ loop. Pre-existing and engine-wide, but the loom path amplifies it: `provisionLo
 runs a worktree cut, a `checkout -B` and a `branch -D` synchronously, with the
 Program's `setup` sandwiched between them. At `concurrency: 2` or more, several
 looms provision in the same advance pass and serialise.
-
-**`resume()` runs before the embedded worker registers.** `startEngine` arms the
-supervisor immediately after publishing discovery, and starts the in-process
-worker after that. A watch whose `nextProbeAt` is long past therefore has a
-window — from `resume()` to `worker.start()` — in which a tick can decide to
-dispatch and be refused for having nobody to claim the brief. The refusal is
-correct and says so in the ledger, and the item is picked up on the next probe,
-but on a 300s cadence that is five minutes lost to a restart. Reordering the two
-is the obvious fix and is not done here.
 
 **Nothing has run overnight yet.** Every claim in this document is backed by tests
 and by `scripts/loom-demo.ts`, in which the model's decision and the worker's edit

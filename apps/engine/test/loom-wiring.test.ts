@@ -42,9 +42,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient } from "@telar/engine-client";
+import { EngineClient, type LoomRun } from "@telar/engine-client";
 import { assertWall, NEVER_TOOLS, READ_ONLY_TOOLS, type ClaudeAgentSdk } from "../src/agent";
 import { startEngine, type EngineDaemon } from "../src/daemon";
+import type { TurnDriver } from "../src/driver";
 import { createLoomAgent } from "../src/loom/agent";
 import { createLoomSessionPort } from "../src/loom/session";
 import type { LoomAgent } from "../src/loom/dispatch";
@@ -677,6 +678,31 @@ function trackedInterval() {
   return { state, interval };
 }
 
+/**
+ * The same timer, fired the INSTANT IT IS ARMED instead of by hand.
+ *
+ * WHY A SECOND SHAPE. A sweep fired from the test body always runs after
+ * `startEngine` has returned, and by then every possible order of statements
+ * inside it looks identical from outside. The state this exists to describe is
+ * the ordinary one after a machine was off overnight: `nextProbeAt` is hours
+ * past, so the watch is due before the daemon has finished coming up and sweeps
+ * on the timer's very first tick. Arming IS the first tick here, which states
+ * that without depending on how many milliseconds a driver takes to construct.
+ */
+function eagerInterval() {
+  const state = { created: 0, cleared: 0 };
+  const interval = (fn: () => void, _ms: number): { clear(): void } => {
+    state.created += 1;
+    fn();
+    return {
+      clear() {
+        state.cleared += 1;
+      },
+    };
+  };
+  return { state, interval };
+}
+
 function recordingExec(commands: string[]): LoomExec {
   return async (input) => {
     commands.push(input.command);
@@ -829,6 +855,155 @@ test("a resumed watch probes again with nobody touching the switch, and reads it
   expect(after.intervalSec).toBe(2400);
   expect(after.lastError).toBeUndefined();
 });
+
+test("a watch that comes back past due hands its brief over instead of being refused for want of a worker", async () => {
+  /**
+   * THE FIVE MINUTES A RESTART USED TO COST.
+   *
+   * A machine that was off overnight comes back with `nextProbeAt` hours past,
+   * so the resumed sentinel sweeps immediately, the tick decides, and the
+   * dispatch asks the daemon whether anything can claim the brief. If the
+   * answer is taken while the in-process worker is still being built, it is
+   * "no" — a correct, well-worded refusal in the ledger, and the item waits for
+   * the next probe, which at the default 300s cadence is five minutes of an
+   * overnight run spent on nothing but the order of two statements.
+   *
+   * THE RULE, NOT THE ORDER. Nothing below reads `startEngine`, counts
+   * statements or asserts that one call precedes another — a later rewrite may
+   * satisfy this by making registration synchronous, by holding the sweep, or
+   * by some third thing nobody has thought of. What is asserted is what a
+   * person would notice the morning after: the brief was handed over, and the
+   * ledger carries no refusal saying nobody could claim it.
+   *
+   * THE WORKER IS REAL. `embeddedWorker` registers through the discovery
+   * document like any other client, and `workersAvailable` is deliberately NOT
+   * injected — the daemon's own answer, off the same pruned `workers` map
+   * `POST /v2/turns` refuses against, is the thing under test. Injecting
+   * `() => true` here would assert nothing at all.
+   */
+  const { engineRoot, projectRoot } = await seedEngineRoot();
+  /**
+   * A REAL REPOSITORY, because a dispatch that gets past the worker check cuts
+   * a worktree — and a project git could not have cut one in would fail this
+   * test for a reason that has nothing to do with the claim.
+   */
+  fs.writeFileSync(path.join(projectRoot, "README.md"), "# one\n");
+  must(git(projectRoot, ["init"]), "git init");
+  must(git(projectRoot, ["config", "user.email", "loom@example.invalid"]), "git config email");
+  must(git(projectRoot, ["config", "user.name", "Loom Wiring"]), "git config name");
+  must(git(projectRoot, ["config", "commit.gpgsign", "false"]), "git config gpgsign");
+  must(git(projectRoot, ["add", "-A"]), "git add");
+  must(git(projectRoot, ["commit", "-m", "chore: the project as it stands"]), "git commit");
+  must(git(projectRoot, ["branch", "-M", "main"]), "git branch -M main");
+
+  // SIX HOURS PAST DUE, written directly: the state a laptop that was shut at
+  // midnight is in, not an edge case constructed for this test.
+  writeWatch(loomPaths(engineRoot), "project_one", {
+    projectId: "project_one",
+    running: true,
+    intervalSec: 300,
+    quietChecks: 0,
+    lastProbeAt: AT - 6 * 3_600_000,
+    nextProbeAt: AT - 6 * 3_600_000 + 300_000,
+  });
+
+  const loomExec: LoomExec = async (input) =>
+    input.command.includes("list-items")
+      ? { code: 0, stdout: "issue-7\trev-1\n", stderr: "", timedOut: false }
+      : { code: 0, stdout: "the world moved while the daemon was down\n", stderr: "", timedOut: false };
+
+  // ONE ITEM, HANDED OVER. The orchestrator is injected because a model call is
+  // not what this test is about; what it decides is the ordinary decision.
+  const loomAgent: LoomAgent = async () => ({
+    ok: true,
+    value: {
+      triage: [],
+      dispatch: [{ item: "issue-7", title: "The seventh issue", branchSlug: "", brief: "make the seventh issue go away" }],
+      park: [],
+      ask: [],
+      note: "one to hand over",
+    },
+  });
+
+  const started: Array<{ branch: string; title: string }> = [];
+  const timer = eagerInterval();
+  const second = await startEngine({
+    engineRoot,
+    now: () => AT,
+    loomInterval: timer.interval,
+    loomExec,
+    loomAgent,
+    loomSession: {
+      async start(input) {
+        started.push({ branch: input.branch, title: input.title });
+        return { sessionId: `worker-${started.length}` };
+      },
+      async create() {
+        return { sessionId: "orchestrator" };
+      },
+      async status() {
+        return "running" as const;
+      },
+      async stop() {
+        return undefined;
+      },
+    },
+    /**
+     * A DRIVER THAT REFUSES. No turn is ever submitted here — the session port
+     * above is injected — so the worker's driver must never run, and one that
+     * cheerfully answered anything could not say so. It is also never
+     * constructed for real: the provider SDK stays unimported, which is the
+     * promise `embeddedWorker` makes to every other test in this repo.
+     */
+    embeddedWorker: {
+      pollMs: 25,
+      createDriver: (): TurnDriver => ({
+        run: async () => {
+          throw new Error("no turn is submitted in this test; a driver that ran means the test is measuring something else");
+        },
+      }),
+    },
+  });
+  daemons.push(second);
+  const client = new EngineClient(second.discovery);
+
+  // The worker is genuinely up and genuinely registered — the daemon's own
+  // health answer, not a claim this test makes on its behalf.
+  expect((await client.health()).worker).toMatchObject({ registered: true });
+  expect(timer.state.created).toBe(1);
+
+  let run: LoomRun | undefined;
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    run = (await client.loomWork()).runs.find((candidate) => candidate.projectId === "project_one");
+    if (run && run.state !== "running") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(run?.state).toBe("done");
+
+  /**
+   * THE ASSERTION THAT NAMES THE BUG. A refused dispatch does not fail the run
+   * — `runLoomTick` catches it per item so one bad dispatch cannot cost the
+   * other three — it lands in the ledger and the item silently waits. So the
+   * ledger is where this is answerable, and the sentence is printed on failure
+   * rather than reduced to a boolean.
+   */
+  const { entries } = await client.loomLedger("project_one");
+  expect(entries.filter((entry) => (entry.detail ?? "").includes("no worker process is registered"))).toEqual([]);
+
+  // AND THE BRIEF REALLY WAS HANDED OVER. "No refusal was logged" is satisfied
+  // by a tick that decided nothing at all, which is why it is only half.
+  const { looms } = await client.looms();
+  expect(looms).toHaveLength(1);
+  expect(looms[0]).toMatchObject({ item: "issue-7", state: "working" });
+  expect(started).toHaveLength(1);
+  expect(started[0]?.branch).toContain("t3code/");
+
+  // The resumed timer is the handle `close()` clears — asserted on this path
+  // too, because a leaked one hangs the suite rather than failing it.
+  await second.close();
+  daemons.splice(daemons.indexOf(second), 1);
+  expect(timer.state.cleared).toBe(1);
+}, 30_000);
 
 test("a `list` that fails refuses the tick instead of reporting an empty backlog", async () => {
   /**
