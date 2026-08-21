@@ -630,3 +630,36 @@ the cockpit opened meant clicking a sidebar link started an agent. The person mo
 likely to open the deck at 2am to see what happened overnight is exactly the
 person who should not be billed for looking. Setup is a button, and the button
 says what it will do.
+
+---
+
+## 18. Known gaps
+
+Shipped with these open, deliberately and in writing, because an invisible
+limitation is the thing this whole design argues against.
+
+**The backoff suppression is in-memory.** When a project's world cannot be read,
+`lastError` is persisted so the deck stays honest across a restart — but the
+*suppression of the backoff* is not. A daemon that restarts mid-outage can back a
+broken project off once before the next tick re-earns the mark. Fixing it properly
+wants a field on `LoomWatch`. This is the weakest remaining seam.
+
+**`UNCLAIMED_GRACE_MS` is a constant, not policy.** Ten minutes is longer than any
+worker restart and far shorter than a night, but a project whose worker
+legitimately takes longer than that to *register* would stick a loom. The better
+answer is refusing at dispatch time, which needs `daemon.ts` to expose worker
+registration to the loom runtime — worker liveness lives in an in-memory map on
+the daemon, not in `EngineStore`.
+
+**`defaultGitRunner` is `execFileSync`.** A large rebase blocks the daemon's event
+loop. Pre-existing and engine-wide, but the loom path amplifies it: `provisionLoom`
+runs a worktree cut, a `checkout -B` and a `branch -D` synchronously, with the
+Program's `setup` sandwiched between them. At `concurrency: 2` or more, several
+looms provision in the same advance pass and serialise.
+
+**Nothing has run overnight yet.** Every claim in this document is backed by tests
+and by `scripts/loom-demo.ts`, in which the model's decision and the worker's edit
+are the only faked parts. That is a real proof that the loop closes; it is not the
+same as a night against a live tracker with real credentials, real rate limits and
+a real backlog. The first such run is the next thing that will falsify something
+here, and §4.2's dry run is the cheap way to find out what before it costs a night.
