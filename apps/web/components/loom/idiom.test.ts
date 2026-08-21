@@ -383,6 +383,25 @@ describe("what the deck promises", () => {
     }
   });
 
+  test("a published row always names where the work went, and only ever links to a real URL", () => {
+    /**
+     * MEASURED ON A LIVE RUN. A project whose `publish` echoed
+     * `published local://loom/strip-openai-prefix` published successfully, the
+     * branch really reached the remote, and `publishedUrl` came back `null` —
+     * so this section, the one the whole design ends at, drew a row that said
+     * "ready to review" with nothing at all to act on.
+     *
+     * The engine deliberately still records no URL for that (`firstUrl` stays
+     * http(s): this value goes into an `href`, and a scheme the browser cannot
+     * open is a control that lies about being a hand-off). So the fallback is
+     * here, and it is the BRANCH — as text, never as a link, because
+     * `href="loom/x"` is a relative URL that would navigate off the deck.
+     */
+    const body = code(deck);
+    expect(body).toContain("published; the publish command printed no link");
+    expect(/href=\{loom\.branch/.test(body), "the deck links to a branch name as though it were a URL").toBe(false);
+  });
+
   test("the classification pane frames itself as an asset, not an error list", () => {
     expect(deck).toContain("Seen and not taken");
     expect(deck.replace(/\s+/g, " ")).toContain("the classification is the work");

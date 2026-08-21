@@ -98,6 +98,150 @@ test("submitting a stable run id is idempotent and a session has only one active
   expect(queued.turn.state).toBe("queued");
 });
 
+/**
+ * THE IN-PROCESS JOURNAL EMITTER.
+ *
+ * The journal had two readers and both polled, which is right across a socket
+ * and wrong inside one process. The loom is what proved it: a dispatched worker
+ * finishing is the cheapest event the system has, and with nothing able to hear
+ * it, finished work sat unpublished until a timer fired — or, with the loom's
+ * watch paused, forever.
+ *
+ * WHAT IS PINNED HERE IS THAT A SUBSCRIBER CANNOT COST THE WRITER ANYTHING. The
+ * journal is the durable record of every turn transition in the engine; a
+ * spectator's bug must not be able to unwind one, and it must not be able to
+ * take the daemon down on its way past.
+ */
+test("a journal subscriber hears every append, in write order, until it unsubscribes", () => {
+  const { store } = readyStore();
+
+  const heard: string[] = [];
+  const unsubscribe = store.onEvent((event) => heard.push(event.type));
+
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  store.stopTurn("session_one", "run_one");
+
+  // The same events the file already carries, and only those — no replay of the
+  // `session.created` that predates the subscription.
+  expect(heard).toEqual(["turn.accepted", "turn.stopped"]);
+  expect(store.readEvents("session_one").map((event) => event.type)).toEqual([
+    "session.created",
+    "turn.accepted",
+    "turn.stopped",
+  ]);
+
+  unsubscribe();
+  store.submitTurn("session_one", { runId: "run_two", input: "Again" });
+  expect(heard).toEqual(["turn.accepted", "turn.stopped"]);
+  // Idempotent: teardown paths call this twice.
+  unsubscribe();
+});
+
+test("the event is on disk before a subscriber is told, so what it reads back agrees with what it was told", () => {
+  const { store } = readyStore();
+  const seen: Array<{ type: string; onDisk: string[]; turnState: string | undefined }> = [];
+  store.onEvent((event) => {
+    seen.push({
+      type: event.type,
+      onDisk: store.readEvents("session_one").map((row) => row.type),
+      turnState: store.turns("session_one")[0]?.state,
+    });
+  });
+
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  store.stopTurn("session_one", "run_one");
+
+  // A subscriber that turns around and reads the store sees the transition it
+  // was just told about — never a half-applied one. This is what lets the loom
+  // ask "is that worker still alive" the instant it is told the worker stopped.
+  expect(seen.at(-1)).toEqual({
+    type: "turn.stopped",
+    onDisk: ["session.created", "turn.accepted", "turn.stopped"],
+    turnState: "stopped",
+  });
+});
+
+test("a subscriber that throws costs itself and nothing else", () => {
+  const { store } = readyStore();
+  const after: string[] = [];
+  store.onEvent(() => {
+    throw new Error("a spectator's bug");
+  });
+  store.onEvent((event) => after.push(event.type));
+
+  // THE WRITE COMPLETES. Unwinding `submitTurn` because a listener objected
+  // would lose a real transition to a bystander.
+  expect(() => store.submitTurn("session_one", { runId: "run_one", input: "Hello" })).not.toThrow();
+  expect(store.turns("session_one")[0]?.state).toBe("queued");
+  expect(store.readEvents("session_one").map((event) => event.type)).toContain("turn.accepted");
+  // AND THE LISTENERS BEHIND IT STILL HEAR IT.
+  expect(after).toEqual(["turn.accepted"]);
+});
+
+test("a subscriber that rejects is drained rather than left to kill the daemon", async () => {
+  /**
+   * The listener type is `=> void`, which TypeScript lets an `async` function
+   * satisfy without a word of complaint — and an unhandled rejection on a
+   * background promise takes the whole process down in Bun
+   * (`state.ts:2112-2126` learned this the hard way, and the loom runtime ends
+   * every detached promise in a `.catch` for the same reason).
+   *
+   * SO THE ASSERTION IS ON THE PROCESS, not on the store. Catching the
+   * rejection here is what makes this test observable at all: without the
+   * handler installed, a regression would not fail this test, it would abort
+   * the runner.
+   */
+  const { store } = readyStore();
+  let rejected = false;
+  store.onEvent(async () => {
+    rejected = true;
+    throw new Error("an async spectator's bug");
+  });
+
+  // CALLED BARE, NOT WRAPPED IN `expect(...).not.toThrow()`. The wrapper looks
+  // like the more careful spelling and is the weaker one: bun's `toThrow`
+  // absorbs a rejection raised inside it, so wrapping this call would hide the
+  // very failure the test exists to detect. A throw here fails the test anyway.
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  // Let the microtask queue turn over. DELIBERATELY WITH NO
+  // `process.on("unhandledRejection")` INSTALLED: the runner treats an undrained
+  // rejection exactly as the daemon does — as a process-level failure — so
+  // removing the drain turns this test red for the same reason it would take
+  // the engine down. Installing a handler here would catch the symptom and hide
+  // it.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(rejected).toBe(true);
+  expect(store.turns("session_one")[0]?.state).toBe("queued");
+});
+
+test("who hears one event is decided before the first of them is called", () => {
+  // Delivery runs over a snapshot, so a listener cannot change the audience for
+  // the event already in flight — neither by silencing its neighbour halfway
+  // through nor by adding a listener that then hears an event it was not
+  // subscribed for. The alternative is a delivery whose outcome depends on
+  // registration order, which is nobody's intent and impossible to reason about
+  // from a call site.
+  const { store } = readyStore();
+  const heard: string[] = [];
+  let dropSecond = (): void => undefined;
+  store.onEvent(() => {
+    dropSecond();
+    store.onEvent((event) => heard.push(`late:${event.type}`));
+  });
+  dropSecond = store.onEvent((event) => heard.push(`second:${event.type}`));
+
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(heard).toEqual(["second:turn.accepted"]);
+
+  // From the NEXT event the changes take effect: the second is gone, and the
+  // one added mid-delivery is listening. (Three, because the first listener
+  // subscribes another every time it runs.)
+  heard.length = 0;
+  store.stopTurn("session_one", "run_one");
+  expect(heard).toEqual(["late:turn.stopped"]);
+});
+
 test("stop is durable and idempotent", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });

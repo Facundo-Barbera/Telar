@@ -431,6 +431,35 @@ async function settle(runtime: { loomWork(): { runs: Array<{ id: string; state: 
   throw new Error(`run ${runId} never settled`);
 }
 
+/**
+ * Wait for the world to say something, WITHOUT ASKING IT TO.
+ *
+ * `settle` above waits on a run this test started. This waits on a change
+ * nothing in the test set in motion — which is the only way to observe an event
+ * source that is supposed to work while nobody is looking. Real git, a real
+ * gate and a real push run inside the window, so the budget is seconds rather
+ * than a tick count.
+ */
+async function until<T>(what: string, read: () => T | undefined): Promise<T> {
+  const deadline = Date.now() + UNTIL_BUDGET_MS;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value !== undefined) return value;
+    await delay(10);
+  }
+  throw new Error(`waited for ${what} and it never happened`);
+}
+
+/**
+ * How long `until` waits, and it is deliberately well INSIDE the timeout of the
+ * test that uses it. The happy path here takes under a second; the number only
+ * matters when the property is broken, and a wait that outlives its own test
+ * gets killed mid-loop and reports whatever the teardown left behind instead of
+ * "the thing you were waiting for never happened".
+ */
+const UNTIL_BUDGET_MS = 6_000;
+const UNTIL_TEST_TIMEOUT_MS = 20_000;
+
 /** One dispatched loom, working, its worker already finished. */
 async function dispatchOne(w: World, decision = triaged()): Promise<Loom> {
   w.agent.script = [decision];
@@ -964,6 +993,93 @@ test("the real session port, two looms at once: two workers, two worktrees, two 
     expect(w.remoteShow(loom.branch as string, "fix.txt")).toContain(loom.title);
   }
 });
+
+// ── 11b · nobody fires the second tick ──────────────────────────────────────
+
+/**
+ * THE TEST THAT WOULD HAVE CAUGHT THE STALL, AND THE ONLY KIND THAT COULD.
+ *
+ * Standing the engine up for real against a throwaway repo found this in one
+ * run: a tick triaged, dispatched `a1` into a worktree, a real worker session
+ * committed `fix: drop openai/ prefix from model id`, its turn went
+ * `completed` in `queue.json` — and the loom stayed `working`. Indefinitely.
+ * A second tick fired BY HAND went straight through: rebase, gate `pass`,
+ * published, the branch really on the remote. Every stage of the machinery
+ * worked. Nothing noticed the worker had finished.
+ *
+ * Every suite in this repo missed it because every suite fires the next tick
+ * itself — `await advanceLooms(...)` on the line after the worker commits, which
+ * is the human hand the bug was hiding behind. So the shape of this test is a
+ * negative: after the worker settles, NOTHING in it touches the loom machinery
+ * again. No `advanceLooms`, no `runLoomTick`, no `fireSweep`, no
+ * `supervisor.pass`. The supervisor's interval is injected as one that captures
+ * its callback and never calls it, so there is no timer to reach the result by
+ * either.
+ *
+ * AND THE WATCH IS PAUSED, on purpose, because that is the version with no
+ * fallback at all. With the watch running the old code was merely late — up to
+ * a full `intervalSec`, longer once the backoff had stretched. With it paused
+ * there was no second look coming, ever: a finished worker, a clean commit and
+ * a worktree held open by a loom nothing would ever gate. Pausing means "stop
+ * taking on new work"; it cannot mean "abandon the work already running".
+ */
+test("a worker settling publishes on its own: the watch is paused, and nothing in this test fires a second tick", async () => {
+  const w = world();
+  // The real port over a real store FIRST, so the runtime composed below
+  // subscribes to the store the worker actually settles its turn in.
+  const { store, pumpWorker } = realSessions(w);
+  const runtime = w.runtime();
+  const mainBefore = w.remoteSha("main");
+
+  // A human turned the watch on and then paused it — started, then stopped, so
+  // the record carries a watch that was deliberately switched off rather than
+  // one that was never switched on.
+  runtime.startLoomWatch(PROJECT);
+  const loom = await dispatchOne(w);
+  expect(loom.state).toBe("working");
+  runtime.stopLoomWatch(PROJECT);
+  expect(w.watch().running).toBe(false);
+
+  const spentOnDispatch = w.agent.calls;
+  expect(spentOnDispatch).toBe(1);
+
+  /**
+   * THE WORKER, THROUGH THE STORE'S OWN WORKER API — `claimTurn` →
+   * `markRunning` → a real commit in the workspace the session hands it →
+   * `completeTurn`. The same four calls a worker process makes over HTTP, and
+   * `completeTurn` is where the journal records `turn.completed`. That record
+   * is the entire input to what follows.
+   */
+  expect(pumpWorker()).toBe(1);
+  expect(store.turns(loom.sessionId as string).every((turn) => turn.state === "completed")).toBe(true);
+
+  // ── from here to the end of the test, nothing fires anything ─────────────
+  const published = await until("the loom to publish on its own", () => {
+    const found = w.only();
+    return found.state === "published" ? found : undefined;
+  });
+
+  expect(published.parkedReason).toBeUndefined();
+  expect(published.gate?.outcome).toBe("pass");
+  // OBSERVABLE STATE IN THE REMOTE. The branch really arrived, carrying the
+  // worker's commit, and `main` never moved.
+  expect(w.remoteHas("loom/strip-the-prefix")).toBe(true);
+  expect(w.remoteShow("loom/strip-the-prefix", "fix.txt")).toContain("the worker's change");
+  expect(w.remoteSha("main")).toBe(mainBefore);
+
+  // NO AGENT WAS SPENT GETTING HERE. Reconcile, rebase, gate and publish are
+  // machinery; there is no decision in that sequence to buy.
+  expect(w.agent.calls).toBe(spentOnDispatch);
+
+  // AND THE WATCH IS STILL OFF. Advancing in-flight work did not quietly
+  // restart the thing the human switched off.
+  expect(w.watch().running).toBe(false);
+
+  // The ledger tells the story without anybody having asked for it.
+  const summaries = w.ledger().map((entry) => entry.summary);
+  expect(summaries.some((line) => line.includes("the worker finished with 1 commit(s); gating"))).toBe(true);
+  expect(summaries.some((line) => line.startsWith("published"))).toBe(true);
+}, UNTIL_TEST_TIMEOUT_MS);
 
 // ── 12 · the loom's own git, through a real shell ───────────────────────────
 

@@ -412,6 +412,73 @@ test("status() tells a queued or running worker from a finished one, and both fr
   expect(branchList(world)).toContain("loom/issue-7");
 });
 
+/**
+ * `status` ANSWERS WHEN SOMEONE ASKS; THIS ANSWERS WHEN NOBODY DOES.
+ *
+ * `orchestrator.md` §3.6 calls a dispatched worker finishing the system's
+ * cheapest event and the design's cost argument leans on it being free. It was
+ * not wired: `advanceLooms` only ran inside a tick, a tick only happened when
+ * the sentinel woke, and a worker finishing woke nothing. What the port owes
+ * the runtime is the news itself — WHEN a turn ends, not whether one has.
+ */
+test("onSettled() reports a turn ENDING, not every journal write, and stops when it is unsubscribed", async () => {
+  const world = storeWithProject();
+  const { store, projectId } = world;
+  const port = createLoomSessionPort({ store });
+  const prepared = loomWorktree(world, "loom/issue-7");
+
+  const heard: Array<{ sessionId: string; queueSaid: string | undefined }> = [];
+  const unsubscribe = port.onSettled?.(({ sessionId }) => {
+    // READ FROM INSIDE THE DELIVERY. The store writes the queue before it
+    // appends the event, so by the time the news arrives the transition it
+    // describes is already the answer `status` would give — which is the whole
+    // reason the runtime can act on it immediately instead of re-polling.
+    heard.push({ sessionId, queueSaid: store.turns(sessionId)[0]?.state });
+  });
+  if (!unsubscribe) throw new Error("the real session port must be able to report a settle");
+
+  const { sessionId } = await port.start({
+    projectId,
+    worktree: prepared.path,
+    branch: prepared.branch,
+    baseRef: prepared.baseRef,
+    prompt: "the brief",
+    title: "issue-7",
+  });
+
+  // Creating the session and queueing the brief are journal writes too. A
+  // settle is not "something happened" — it is a turn reaching a terminal
+  // state, and a runtime woken on every append would run a project's gates once
+  // per streamed token.
+  expect(store.readEvents(sessionId).length).toBeGreaterThanOrEqual(2);
+  expect(heard).toEqual([]);
+
+  const claimed = store.claimTurn(sessionId, "worker_one");
+  if (!claimed?.claim) throw new Error("the store did not hand out a claim");
+  store.markRunning(sessionId, claimed.runId, claimed.claim.token);
+  // Claimed and running are the worker STARTING. Still nothing to hear.
+  expect(heard).toEqual([]);
+
+  store.completeTurn(sessionId, claimed.runId, claimed.claim.token, { text: "done" });
+  expect(heard).toEqual([{ sessionId, queueSaid: "completed" }]);
+  expect(await port.status(sessionId)).toBe("done");
+
+  // NO FILTERING BEYOND "A TURN ENDED". Every cockpit session in the engine
+  // settles through this store and the port cannot tell them apart — deciding
+  // which ones matter is the runtime's job, because only the runtime can read
+  // the loom store. A port that filtered here would be the second place that
+  // has to know what a loom is.
+  const other = store.createSession({ projectId, title: "an ordinary conversation" });
+  store.submitTurn(other.id, { runId: "run_other", input: "hello" });
+  store.stopTurn(other.id);
+  expect(heard.map((row) => row.sessionId)).toEqual([sessionId, other.id]);
+
+  unsubscribe();
+  store.submitTurn(other.id, { runId: "run_after", input: "again" });
+  store.stopTurn(other.id);
+  expect(heard).toHaveLength(2);
+});
+
 test("start() refuses a second live worker in a checkout that already has one", async () => {
   /**
    * Every ladder rung and every human answer re-provisions the loom against the

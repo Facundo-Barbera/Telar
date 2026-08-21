@@ -215,8 +215,22 @@ Backoff: `interval` doubles after each quiet probe up to `backoffMax`, resets to
 Wake sources, all additive:
 - **Heartbeat** — always available, works with no credentials, no git.
 - **Probe diff** — one command per interval.
-- **Process exit** — a worker finishing wakes the loop immediately, for free.
+- **A worker's turn settling** — the dispatched session reaches a terminal turn
+  state and the loom is advanced immediately, for free. Shipped, and it is an
+  ADVANCE rather than a wake: no agent, no backoff reset, and it does not check
+  whether the watch is running. See §17.
 - **Human action in the UI** — dispatch/cancel/reply wakes the loop immediately.
+
+**"Process exit" was the wrong name for that third one**, and the wrong name is
+what left it unbuilt for a while. `orchestrator.md` §3.6 says "you wait on a
+PID", but the engine has never held a worker's PID: a worker process is
+long-lived, serves whatever turns it claims, and outlives any one of them. The
+event the engine actually owns is the TURN settling in the session store —
+`turn.completed | failed | stopped | ambiguous | discarded`, the same set
+`apps/web/lib/engine/session-sync.ts` treats as the end of a turn. That is
+strictly better than a PID: it is the same fact the store already writes, it
+distinguishes a worker that finished from one that crashed, and it survives the
+worker being replaced mid-brief.
 
 No system crontabs. No webhooks. One supervisor process inside the engine, one
 file describing what it watches, one thing to kill.
@@ -641,6 +655,83 @@ naming a project that cannot exist, which a surface would render as a real,
 stopped watch. A malformed id now throws; an absent file still degrades. Both
 directions are pinned by tests, because collapsing the distinction the *other*
 way is the tempting next repair.
+
+**Nothing was listening for a worker finishing.** §6's wake-source table listed
+"process exit — a worker finishing wakes the loop immediately, for free", and it
+was not wired. `advanceLooms` only ever ran inside a tick, and a tick only
+happened when the sentinel woke, so a worker finishing woke nothing. Found by
+standing the engine up against a throwaway repo with a shell-only Program and
+firing ONE tick: it triaged, dispatched into a worktree with a real worker
+session, the worker committed and its turn went `completed` in `queue.json` —
+and the loom sat `working` indefinitely. A second tick fired by hand went
+straight through: rebase, gate `pass`, published, branch on the remote. Every
+stage of the machinery worked. Nothing noticed.
+
+With the watch RUNNING this was merely late — up to a full `intervalSec`, longer
+once the backoff had stretched, so "wake up to PRs open and waiting" quietly
+became "wake up to PRs opening whenever the timer next happens to fire". With
+the watch PAUSED there was no second look coming at all: a finished worker, a
+clean commit, and a worktree held open by a loom nothing would ever gate.
+
+**Every suite missed it because every suite fired the next tick itself.** The
+line after "the worker commits" was always `await advanceLooms(...)` — the human
+hand the bug was hiding behind. The test that catches it is shaped as a
+negative: after the worker settles, nothing in the test touches the loom
+machinery again, and the supervisor's interval is injected as one that never
+fires. `loom-e2e.test.ts` §11b.
+
+**The fix is an in-process emitter on the journal, not a poll.** `EngineStore`
+grew `onEvent(listener)`: `appendEvent` notifies subscribers AFTER the durable
+write, so a subscriber that reads the store back sees the transition it was told
+about. A listener that throws is swallowed (the append already happened;
+unwinding `completeTurn` because a spectator objected would lose a real
+transition), and one that returns a rejected promise — which the `void` return
+type permits without a warning — is drained, because an unhandled rejection on a
+background promise takes the daemon down in Bun. The loom's session port turns
+that into `onSettled`, which reports a settle and interprets nothing; the
+runtime filters to sessions a non-terminal loom names, so an ordinary cockpit
+conversation ending does not run a project's gates.
+
+**Three decisions came with it, all argued in the code.**
+
+*A paused watch still advances in-flight looms.* Pausing means "stop taking on
+new work"; it cannot mean "abandon the work already running and the worktree it
+is holding". A human who pauses at midnight and returns to a loom stuck at
+`working` — finished worker, clean commit, nothing that will ever gate it — has
+been failed by the system, and their only recovery would be to resume the watch,
+the one thing they had decided not to do. So the subscription is on the runtime
+and never consults `watch.running`.
+
+*Advancing costs no model call.* `supervisor.wake()` exists and is the wrong
+verb: it calls `onWake`, which spends an agent. Reconcile, rebase, gate and
+publish are machinery — there is no decision anywhere in that sequence — so a
+worker finishing at 3am buys a gate run and a push, not a tick. §6 already drew
+that line; the settle is a second caller of the same branch, not a new one. It
+also does not reset the backoff: a worker finishing is not evidence the BACKLOG
+changed, and pulling the cadence back to base would have every completed loom
+buy a fresh sequence of probes for a world nobody has a new reason to look at.
+
+*Two advance requests for one project do not run concurrently.* The sweep that
+notices "something is in flight" and the settle that ends it arrive in the same
+second, which is the ordinary case rather than a race to shrug at — two passes
+would each find the loom done and each gate and push the same worktree. A
+request arriving mid-pass marks the pass as owing another lap rather than
+starting a second one, and is never dropped: the later request carries the newer
+fact.
+
+**`publishedUrl` is empty for a `git push`, and that stays true.** The same live
+run published through `echo "published local://loom/..."` and recorded no URL,
+so the deck's "Ready to review" row — the surface the whole design ends at — had
+nothing to hand over. The tempting repairs are both worse than the symptom.
+Widening `firstUrl` to any `scheme://` puts an author-controlled arbitrary
+scheme into an `href` and draws a link that opens nothing; falling back to the
+branch name is a relative URL, so the row's one control navigates off the deck
+to a 404. `publishedUrl` means "somewhere a human can click to" and only http(s)
+qualifies. The gap is answered where the hand-off happens instead: the ledger
+line names the branch, and the deck row falls back to the branch as TEXT. §1's
+own no-tracker example is `git push -u origin $BRANCH`, which prints no URL at
+all, so this is the ordinary case for the projects the four slots exist for —
+not an edge.
 
 **Navigation must not spend money.** Auto-creating the orchestrator session when
 the cockpit opened meant clicking a sidebar link started an agent. The person most

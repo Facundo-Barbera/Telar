@@ -217,6 +217,32 @@ export type LoomSessionPort = {
    */
   create(input: { projectId: string; cwd: string; title: string; prompt?: string }): Promise<{ sessionId: string }>;
   /**
+   * TELL ME THE MOMENT A SESSION'S TURN REACHES A TERMINAL STATE — the free
+   * event `orchestrator.md` §3.6 promised and nothing was calling.
+   *
+   * `status` answers "is that worker still alive" when someone asks. This
+   * answers it when nobody does, which is the whole difference between a loom
+   * that publishes at 3:04am and one that publishes whenever a timer next
+   * happens to fire — or, with the watch paused, never.
+   *
+   * IT REPORTS A SETTLE, IT DOES NOT INTERPRET ONE. Which session ids belong to
+   * a loom, what state that loom is in and what to do about it are all
+   * questions this port has no business answering; it says "this session
+   * stopped" and the runtime decides whether that is any of its concern. That
+   * keeps the filter — "only sessions that belong to a loom" — in the one place
+   * that can read the loom store.
+   *
+   * OPTIONAL, AND EVERY EVENT SOURCE IS ADDITIVE (§3.8). A port with no push —
+   * the fake in a test, an implementation over a seam that cannot observe —
+   * degrades to the sentinel's in-flight branch, which is slower and still
+   * correct. It must never be REQUIRED for a loom to finish.
+   *
+   * Returns the unsubscribe, and the runtime's `close()` calls it: a supervisor
+   * that has been torn down must not still be advancing looms on somebody
+   * else's events.
+   */
+  onSettled?(listener: (settled: { sessionId: string }) => void): () => void;
+  /**
    * IS THAT WORKER STILL ALIVE — §4's whole of done-detection.
    *
    * `unclaimed` IS NOT A FOURTH KIND OF PROGRESS, it is the absence of any. The
@@ -1294,11 +1320,124 @@ export function createLoomRuntime(deps: LoomRuntimeDeps): LoomRuntime & { close(
         // NO AGENT. §6's first branch: a loom in flight is walked forward by
         // machinery — a session status check and a few git commands — and
         // waking a model to discover that is the cost trap in a new costume.
-        void advanceLooms(tickDeps, projectId).catch(() => undefined);
+        advanceSoon(projectId);
       },
       ...(deps.interval ? { interval: deps.interval } : {}),
       ...(deps.pollMs !== undefined ? { pollMs: deps.pollMs } : {}),
     });
+
+  /**
+   * ONE ADVANCE PASS PER PROJECT AT A TIME, AND NEVER A LOST ONE.
+   *
+   * There are now two things that ask for a project's looms to be walked
+   * forward — the sentinel's in-flight branch and a worker settling — and they
+   * can arrive in the same second, which is in fact the ordinary case: the
+   * sweep that notices "something is in flight" and the settle that ends it.
+   * Two concurrent passes over one project would each read the same loom, each
+   * decide it is done, and each run the gate and the push against the same
+   * worktree. So a request that arrives while a pass is running does not start
+   * a second one — it marks the pass as owing another lap, and the running pass
+   * takes it.
+   *
+   * MARKED RATHER THAN DROPPED, because the second request usually carries the
+   * newer fact. A settle landing while a pass is mid-`fetch` describes a world
+   * that pass has already read past; dropping it would leave the loom `working`
+   * until something else asked, which is the bug this whole hook exists to end,
+   * reintroduced one layer down.
+   *
+   * IN MEMORY AND NOT DURABLE, like `run.ts`: what a pass PRODUCED is on disk
+   * the moment it produces it, and a daemon that died mid-pass re-derives
+   * everything from the loom records on the way back up.
+   */
+  const advancing = new Map<string, "running" | "again">();
+
+  function advanceSoon(projectId: string): void {
+    if (advancing.has(projectId)) {
+      advancing.set(projectId, "again");
+      return;
+    }
+    advancing.set(projectId, "running");
+    void (async () => {
+      try {
+        for (;;) {
+          await advanceLooms(tickDeps, projectId);
+          if (advancing.get(projectId) !== "again") return;
+          advancing.set(projectId, "running");
+        }
+      } finally {
+        advancing.delete(projectId);
+      }
+    })().catch(() => undefined);
+  }
+
+  /**
+   * THE FREE EVENT, FINALLY WIRED — `orchestrator.md` §3.6's "process exit",
+   * which in this engine is a turn reaching a terminal state in the session
+   * store rather than a PID going away.
+   *
+   * ── WHAT WAS BROKEN ─────────────────────────────────────────────────────
+   * `advanceLooms` only ever ran inside a tick, and a tick only happened when
+   * the sentinel woke. A worker finishing woke nothing. Measured against a real
+   * engine and a real git repo: the worker's turn was `completed`, the commit
+   * was in the worktree, and the loom sat `working` indefinitely — the rebase,
+   * the gate and the push all worked perfectly the moment a human fired a
+   * second tick by hand. Every stage of the machinery worked; nothing noticed.
+   *
+   * ── IT ADVANCES, IT DOES NOT TICK ───────────────────────────────────────
+   * `supervisor.wake()` exists and is the wrong verb here: it calls `onWake`,
+   * which spends an agent. Reconcile, rebase, gate, publish are machinery —
+   * there is no decision anywhere in that sequence, and a worker finishing at
+   * 3am must cost a gate run and a push, not a model call. §6 already draws
+   * this line ("advance it (no agent needed)"); this is the second caller of
+   * the same branch, not a new one.
+   *
+   * It also does NOT reset the sentinel's backoff. A worker finishing is not
+   * evidence that the BACKLOG changed, and pulling the cadence back to base
+   * would have every completed loom buy a fresh sequence of probes for a world
+   * nobody has any new reason to look at. What the finish changed is this
+   * loom's state, and this walks exactly that forward.
+   *
+   * ── IT DOES NOT CARE WHETHER THE WATCH IS RUNNING ────────────────────────
+   * Deliberate, and the one judgement call in here. Pausing a watch means "stop
+   * taking on new work"; it cannot mean "abandon the work already running and
+   * the worktree it is holding". A human who pauses at midnight and comes back
+   * to a loom stuck at `working`, with a finished worker and a clean commit
+   * sitting in a checkout nothing will ever gate, has been failed by the system
+   * in the exact way §6 exists to prevent — and the recovery would be to resume
+   * the watch, which is the one thing they had decided not to do. So a paused
+   * project takes on nothing new and still finishes what it started.
+   *
+   * ── ONLY SESSIONS THAT BELONG TO A LOOM ─────────────────────────────────
+   * Every cockpit session in the engine settles turns through the same store.
+   * The filter is the loom record itself: a non-terminal loom that names this
+   * session. An ordinary conversation, an orchestrator session, or a loom that
+   * has already published is not a reason to run a project's gates.
+   *
+   * ── OFF THE WRITE PATH ──────────────────────────────────────────────────
+   * `onSettled` fires inside `appendEvent`, inside `completeTurn`, inside a
+   * worker's HTTP request. The loom lookup is a `readdir` plus a read per loom
+   * — the same read the deck makes — and it does not belong on the tail of
+   * somebody else's request, so it is deferred to a microtask. Nothing in that
+   * callback may throw: an exception from a microtask is an uncaught one.
+   */
+  const unsubscribe =
+    deps.session.onSettled?.(({ sessionId }) => {
+      queueMicrotask(() => {
+        let projectId: string | undefined;
+        try {
+          projectId = listLooms(deps.paths).looms.find(
+            (loom) => loom.sessionId === sessionId && !isTerminal(loom),
+          )?.projectId;
+        } catch {
+          // An unreadable loom store. The sentinel's in-flight branch is the
+          // slower path to the same place; losing the push costs latency, and
+          // throwing here would cost the daemon.
+          return;
+        }
+        if (projectId === undefined) return;
+        advanceSoon(projectId);
+      });
+    }) ?? (() => undefined);
 
   /** Never throws and never blocks a settle. A store that cannot be written is
    *  not a reason to lose the outcome the tick just produced. */
@@ -1409,6 +1548,13 @@ export function createLoomRuntime(deps: LoomRuntimeDeps): LoomRuntime & { close(
      * queued behind it.
      */
     close: () => {
+      try {
+        // FIRST, so a settle arriving during teardown cannot start an advance
+        // pass against a supervisor that is on its way out.
+        unsubscribe();
+      } catch {
+        // A port whose unsubscribe objects to being called twice.
+      }
       try {
         supervisor.close();
       } catch {

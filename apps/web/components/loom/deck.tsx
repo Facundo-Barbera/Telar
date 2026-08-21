@@ -141,8 +141,15 @@ export function LoomDeck() {
             <div className="space-y-2">
               {sections.review.map((loom) => (
                 <LoomRow key={loom.id} loom={loom} now={now} trailing={<GateChip gate={loom.gate} />}>
-                  {loom.publishedUrl && (
-                    <div className="mt-2 ml-[1.4rem]">
+                  {/* THE HAND-OFF ALWAYS NAMES SOMETHING. A `publish` of
+                      `git push -u origin $BRANCH` — the no-tracker case the
+                      Program's four slots are designed for — prints no URL, and
+                      a "Ready to review" row with nothing on it is not a
+                      hand-off. The branch is not made into a link: it is not a
+                      URL, and an `href` of `loom/x` would navigate off the deck
+                      to a 404. */}
+                  <div className="mt-2 ml-[1.4rem]">
+                    {loom.publishedUrl ? (
                       <a
                         href={loom.publishedUrl}
                         target="_blank"
@@ -152,8 +159,13 @@ export function LoomDeck() {
                         {loom.publishedUrl}
                         <ArrowUpRightIcon className="size-3 shrink-0" />
                       </a>
-                    </div>
-                  )}
+                    ) : (
+                      <span className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span className="truncate font-mono text-foreground/70">{loom.branch ?? "no branch recorded"}</span>
+                        <span className="truncate">published; the publish command printed no link</span>
+                      </span>
+                    )}
+                  </div>
                 </LoomRow>
               ))}
             </div>

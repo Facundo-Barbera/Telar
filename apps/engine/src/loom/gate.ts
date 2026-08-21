@@ -355,7 +355,30 @@ export async function gateLoom(
   };
 }
 
-/** The first http(s) URL in the publish command's stdout, per §1's contract. */
+/**
+ * The first http(s) URL in the publish command's stdout, per §1's contract.
+ *
+ * ── AND IT STAYS http(s), WHICH IS A DECISION RATHER THAN AN OVERSIGHT ──────
+ * A live run against a project whose `publish` echoed
+ * `published local://loom/strip-openai-prefix` recorded no URL at all, and the
+ * obvious repair is to widen this to any `scheme://`. It is the wrong one.
+ * `publishedUrl` is not a note, it is what the deck's "Ready to review" row
+ * puts in an `href` — so the field's meaning is "somewhere a human can click
+ * to", and the value comes out of a shell command the user authored. Widening
+ * it buys a row whose link opens nothing (`local://`), hands the browser an
+ * arbitrary scheme, and trades "nothing to click" for something worse: a
+ * control that claims to be a hand-off and is not.
+ *
+ * Falling back to the BRANCH NAME here is the same mistake wearing a different
+ * hat — `href="loom/strip-openai-prefix"` is a relative URL, so the one click
+ * the row offers navigates off the deck to a 404.
+ *
+ * The gap is real and it is answered where the hand-off actually happens: a
+ * publish that printed no URL says so and NAMES THE BRANCH, in the ledger line
+ * below and in the deck row (`apps/web/components/loom/deck.tsx`). A row that
+ * says published with nothing to go on is the thing to fix; a row with a link
+ * that lies is not the fix.
+ */
 export function firstUrl(text: string): string | undefined {
   return text.match(/https?:\/\/\S+/)?.[0]?.replace(/[.,)\]]+$/, "");
 }
@@ -426,7 +449,11 @@ export async function publishLoom(deps: LoomGateDeps, loom: Loom, program: LoomP
     kind: "publish",
     loomId: loom.id,
     item: loom.item,
-    summary: url ? `published ${url}` : "published (the publish command printed no URL)",
+    // NAMES THE BRANCH WHEN THERE IS NO URL. `git push -u origin $BRANCH` — the
+    // no-tracker example §1 promises is first-class — prints no URL at all, and
+    // "published (no URL)" tells a human at 2am that something happened and
+    // nothing about where to go and look.
+    summary: url ? `published ${url}` : `published \`${branch}\` (the publish command printed no URL)`,
   });
   return writeLoom(deps.paths, published);
 }

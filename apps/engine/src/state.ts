@@ -4848,6 +4848,76 @@ export class EngineStore {
     return readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
   }
 
+  /**
+   * WATCH THE JOURNAL FROM INSIDE THIS PROCESS — every event `appendEvent`
+   * writes, in write order, delivered to anything in the daemon that has a
+   * reason to act the moment something settles rather than the next time it
+   * happens to look.
+   *
+   * ── WHY THIS EXISTS AT ALL ──────────────────────────────────────────────
+   * The journal was a write-only file with two readers, and both of them poll:
+   * the web app tails it over HTTP, and a worker asks for its own resolutions.
+   * Polling is the right answer across a socket. It is the WRONG answer for
+   * code sharing this process with the writer, and the loom is what proved it —
+   * `docs/plans/orchestrator.md` §3.6 names a worker finishing as the system's
+   * cheapest event ("zero latency and zero cost"), and with no way to hear it,
+   * a finished worker's branch sat gated-but-unpublished until a timer fired.
+   * With the watch paused there was no timer, and it sat there forever.
+   *
+   * ── NOT AN EVENT BUS ────────────────────────────────────────────────────
+   * No topics, no filtering, no replay, no buffering. A subscriber gets the
+   * events appended while it is subscribed and nothing else — if it needs
+   * history it reads `readEvents`, which is the durable copy and the only one.
+   * Anything richer would be a second source of truth about the journal, which
+   * is the failure this codebase keeps re-learning.
+   *
+   * ── SYNCHRONOUS, AFTER THE APPEND ───────────────────────────────────────
+   * Delivered after the line is on disk and therefore after the queue write
+   * that preceded it, so a subscriber that turns around and reads the store
+   * sees the transition it was told about — never a half-applied one.
+   *
+   * ── A SUBSCRIBER CANNOT BREAK THE WRITER, AND THAT IS ENFORCED HERE ─────
+   * A listener that throws is swallowed: the journal append has already
+   * happened and unwinding `completeTurn` because a spectator objected would
+   * lose a real transition to a bystander's bug. A listener that returns a
+   * promise (which the `void` return type permits and does not warn about) has
+   * it drained here too — an unhandled rejection on a background promise takes
+   * the whole daemon down in Bun, and a subscriber cannot be trusted to know
+   * that. The set is snapshotted so a listener unsubscribing itself mid-notify
+   * does not skip the next one.
+   *
+   * Returns the unsubscribe. Idempotent, and safe to call from inside a
+   * delivery.
+   */
+  onEvent(listener: (event: EngineEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
+  /** See `onEvent`. In memory and never persisted: it is a set of live
+   *  callbacks in this process, and there is nothing about it to restore. */
+  private readonly eventListeners = new Set<(event: EngineEvent) => void>();
+
+  private notifyEventListeners(record: EngineEvent): void {
+    if (this.eventListeners.size === 0) return;
+    for (const listener of [...this.eventListeners]) {
+      try {
+        // Typed `=> void`, so TypeScript accepts an `async` listener without a
+        // word of complaint. See `onEvent`: the rejection is drained here
+        // because the alternative is a dead daemon.
+        const returned = listener(record) as unknown;
+        if (typeof (returned as { then?: unknown } | undefined)?.then === "function") {
+          void (returned as Promise<unknown>).then(undefined, () => undefined);
+        }
+      } catch {
+        // See `onEvent`. The append already happened; a spectator's throw is
+        // not allowed to unwind the transition that caused it.
+      }
+    }
+  }
+
   recover(): { requeued: string[]; ambiguous: string[] } {
     const requeued: string[] = [];
     const ambiguous: string[] = [];
@@ -5272,6 +5342,10 @@ export class EngineStore {
     // tmp+rename. The daemon lock gives this one writer and each record is one append.
     fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
     fs.chmodSync(file, 0o600);
+    // AFTER THE DURABLE WRITE, NEVER BEFORE IT. See `onEvent`: a subscriber is
+    // told about a transition that is already on disk, so anything it reads
+    // back agrees with what it was told, and nothing it does can lose the line.
+    this.notifyEventListeners(record);
     return record;
   }
 }

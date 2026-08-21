@@ -316,6 +316,29 @@ export function createLoomSessionPort(deps: LoomSessionPortDeps): LoomSessionPor
       return unsettled.every((turn) => ended.has(turn.runId)) ? "done" : "running";
     },
 
+    onSettled(listener) {
+      /**
+       * THE SAME `TURN_ENDED` SET `status` CORROBORATES AGAINST, deliberately
+       * — this is the push half of one question, not a second opinion about it.
+       * A terminal state that gets added to that list is heard here for free,
+       * and one that does not belong there cannot leak in here either.
+       *
+       * NO FILTERING BEYOND THAT. Every session in the engine settles turns
+       * through this store, including the cockpit ones a human is typing into,
+       * and this port cannot tell them apart — `dispatch.ts` can, by asking the
+       * loom store which session ids it dispatched. Deciding here would mean
+       * this file learning what a loom is.
+       *
+       * THE STORE'S EMITTER OWNS THE SAFETY (`state.ts`, `onEvent`): a throw in
+       * `listener` cannot unwind the turn transition that produced the event,
+       * and this adds nothing that could.
+       */
+      return store.onEvent((event) => {
+        if (!TURN_ENDED.has(event.type)) return;
+        listener({ sessionId: event.sessionId });
+      });
+    },
+
     async stop(sessionId) {
       /**
        * EVERY RUNNABLE TURN, not just the first. `stopTurn` settles one, and a

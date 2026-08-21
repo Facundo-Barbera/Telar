@@ -195,6 +195,16 @@ function world(options: { program?: LoomProgram } = {}) {
   const stopped: string[] = [];
   let sessionSeq = 0;
   const briefs: string[] = [];
+  /**
+   * WHO IS LISTENING FOR A SETTLE — the fake's half of the free event.
+   *
+   * It carries no opinion about which sessions matter: it repeats every id it
+   * is given, exactly as the real port repeats every terminal turn event the
+   * store appends for ANY session in the engine. A fake that only ever emitted
+   * for loom sessions would agree with the runtime's filter by construction and
+   * could never catch the runtime failing to have one.
+   */
+  const settleListeners = new Set<(settled: { sessionId: string }) => void>();
   const session: LoomSessionPort = {
     async start(input) {
       briefs.push(input.prompt);
@@ -209,6 +219,12 @@ function world(options: { program?: LoomProgram } = {}) {
     },
     async status(sessionId) {
       return sessions.get(sessionId) ?? "gone";
+    },
+    onSettled(listener) {
+      settleListeners.add(listener);
+      return () => {
+        settleListeners.delete(listener);
+      };
     },
     async stop(sessionId) {
       stopped.push(sessionId);
@@ -232,6 +248,13 @@ function world(options: { program?: LoomProgram } = {}) {
    * the ordinary case — one is registered.
    */
   const machine = { workersAvailable: true };
+
+  /** A settle for one named session, whether or not this world has ever heard
+   *  of it — the engine's other sessions are exactly what the runtime has to
+   *  ignore. */
+  const settleEvent = (sessionId: string): void => {
+    for (const listener of [...settleListeners]) listener({ sessionId });
+  };
 
   const deps: LoomTickDeps = {
     paths,
@@ -280,9 +303,27 @@ function world(options: { program?: LoomProgram } = {}) {
       expect(looms).toHaveLength(1);
       return looms[0] as Loom;
     },
-    /** Retire whatever session is currently running, as an exiting worker would. */
+    /**
+     * Retire whatever session is currently running, as an exiting worker would
+     * — AND SAY SO, because a real worker's turn settling is an event the store
+     * emits, not a fact that has to be discovered. Every caller below that then
+     * reaches for `advanceLooms` by hand is driving the machinery directly with
+     * no runtime subscribed, so the announcement lands on nobody.
+     */
     finishWorker() {
-      for (const [id, state] of sessions) if (state === "running") sessions.set(id, "done");
+      const finished: string[] = [];
+      for (const [id, state] of sessions) {
+        if (state !== "running") continue;
+        sessions.set(id, "done");
+        finished.push(id);
+      }
+      for (const id of finished) settleEvent(id);
+    },
+    settleEvent,
+    /** Whether anything is still subscribed. A closed runtime that is still
+     *  listening would keep advancing looms after teardown. */
+    settleListenerCount(): number {
+      return settleListeners.size;
     },
   };
 }
@@ -476,6 +517,117 @@ test("no interval is armed until a watch is started, and close is idempotent", (
   supervisor.close();
 });
 
+// ── a worker finishing is an event, not something to be discovered ──────────
+
+/**
+ * `orchestrator.md` §3.6 calls a dispatched worker finishing the system's
+ * cheapest event — "zero latency and zero cost" — and for a while nothing was
+ * listening to it. `advanceLooms` ran only inside a tick and a tick happened
+ * only when the sentinel woke, so a worker that finished at 3am woke nothing:
+ * with the watch paused the loom sat `working` forever, and with it running the
+ * finished work waited out an interval that the backoff had already stretched.
+ *
+ * THE PROPERTY THESE PIN IS "IT REACHED A TERMINAL STATE WITHOUT ANYBODY
+ * FIRING A TICK", not "an emitter was called". So no test below calls
+ * `advanceLooms`, `runLoomTick`, `tickLoom` or `supervisor.pass`, and the
+ * supervisor's interval is injected as one that never fires — there is no path
+ * to the result except the settle itself.
+ */
+async function eventually<T>(what: string, read: () => T | undefined): Promise<T> {
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    const value = read();
+    if (value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(`${what} never happened`);
+}
+
+/** A runtime composed as `daemon.ts` composes it, with a timer that cannot
+ *  fire, so nothing in these tests can be reached by polling. */
+function runtimeThatNeverPolls(w: World) {
+  return createLoomRuntime({ ...w.deps, interval: () => ({ clear: () => undefined }) });
+}
+
+test("a worker settling carries the loom to published, with no tick fired and the watch never started", async () => {
+  const w = world();
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "https://github.com/acme/repo/pull/12\n" });
+
+  const runtime = runtimeThatNeverPolls(w);
+  const dispatched = await dispatchOne(w);
+  expect(dispatched.state).toBe("working");
+  const spentOnDispatch = w.agent.calls;
+
+  // THE WATCH IS OFF. Nothing is armed, nothing is due, and nothing in this
+  // process is going to look at this project again on a schedule.
+  expect(readWatch(w.paths, PROJECT).running).toBe(false);
+
+  w.finishWorker();
+
+  const published = await eventually("the loom to publish", () => {
+    const loom = w.only();
+    return loom.state === "published" ? loom : undefined;
+  });
+
+  expect(published.publishedUrl).toBe("https://github.com/acme/repo/pull/12");
+  // AND IT COST NO MODEL CALL. Reconcile, gate and publish are machinery; a
+  // worker finishing at 3am must not buy a tick.
+  expect(w.agent.calls).toBe(spentOnDispatch);
+  expect(readWatch(w.paths, PROJECT).running).toBe(false);
+  runtime.close();
+});
+
+test("a settle for a session no loom owns advances nothing", async () => {
+  // Every cockpit session in the engine settles turns through the same store.
+  // Waking the loom machinery for a human's ordinary conversation would run a
+  // project's gates because somebody finished typing.
+  const w = world();
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "https://github.com/acme/repo/pull/12\n" });
+
+  const runtime = runtimeThatNeverPolls(w);
+  const dispatched = await dispatchOne(w);
+  expect(dispatched.state).toBe("working");
+
+  // The worker really has finished — the only thing missing is the news.
+  w.sessions.set(dispatched.sessionId as string, "done");
+  w.settleEvent("some-cockpit-session-nobody-dispatched");
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(w.only().state).toBe("working");
+  expect(w.gitCalls.some((args) => args[0] === "rebase")).toBe(false);
+
+  // And the loom's own session settling does move it, so the silence above was
+  // the filter rather than a runtime that never listened at all.
+  w.settleEvent(dispatched.sessionId as string);
+  const published = await eventually("the loom to publish", () => {
+    const loom = w.only();
+    return loom.state === "published" ? loom : undefined;
+  });
+  expect(published.state).toBe("published");
+  runtime.close();
+});
+
+test("a closed runtime stops listening", async () => {
+  const w = world();
+  w.script("gate", { code: 0 });
+
+  const runtime = runtimeThatNeverPolls(w);
+  const dispatched = await dispatchOne(w);
+  expect(w.settleListenerCount()).toBe(1);
+
+  runtime.close();
+  expect(w.settleListenerCount()).toBe(0);
+
+  w.finishWorker();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // A torn-down supervisor advancing looms on somebody else's events is a
+  // daemon that will not shut down cleanly.
+  expect(w.only().state).toBe("working");
+  void dispatched;
+});
+
 // ── the lifecycle ───────────────────────────────────────────────────────────
 
 test("a tick dispatches, the worker finishes, the gate passes, and the loom publishes", async () => {
@@ -502,6 +654,36 @@ test("a tick dispatches, the worker finishes, the gate passes, and the loom publ
   expect(verbs.some((verb) => verb.startsWith("merge"))).toBe(false);
   expect(verbs.some((verb) => verb.startsWith("push"))).toBe(false);
   expect(verbs.some((verb) => verb.includes("--force"))).toBe(false);
+});
+
+test("a publish that prints no URL records none, and the ledger names the branch instead", async () => {
+  /**
+   * `git push -u origin $BRANCH` is §1's own example for a project with no
+   * tracker, and it prints no URL at all. Measured on a live run whose publish
+   * echoed `published local://loom/strip-openai-prefix`: `publishedUrl` came
+   * back `null` and the deck's "Ready to review" row had nothing to hand over.
+   *
+   * `publishedUrl` STAYS EMPTY, and that is the decision. It is what the deck
+   * puts in an `href`; a scheme nothing can open, or a branch name that
+   * resolves as a relative path, is a control that claims to be a hand-off and
+   * is not. What is fixed is the sentence: it names the branch, so the record
+   * says where the work went even when the command said nothing.
+   */
+  const w = world();
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "published local://loom/fix-the-prefix\nEverything up-to-date\n" });
+
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+
+  const published = w.only();
+  expect(published.state).toBe("published");
+  expect(published.publishedUrl).toBeUndefined();
+
+  const line = readLedger(w.paths, PROJECT).find((entry) => entry.kind === "publish");
+  expect(line?.summary).toContain("t3code/fix-the-prefix");
+  expect(line?.summary).toContain("printed no URL");
 });
 
 test("gate exit 2 holds under `hold` and publishes under `publish` — the policy is the Program's, not the code's", async () => {
