@@ -88,6 +88,7 @@ import {
   type ProviderUpdate,
   type ProviderUpdateRun,
   type Session,
+  type SessionOrigin,
   type Task,
   type EngineRequest,
   type RequestDecision,
@@ -1188,6 +1189,15 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
 
+  /**
+   * Every LIVE session on the engine, across projects, with the project
+   * registry beside it — one read rather than one per project, so the two
+   * halves cannot be composed from different instants.
+   */
+  liveSessions(): Promise<{ sessions: Session[]; projects: Array<{ id: string; name: string }> }> {
+    return this.request("GET", "/v2/sessions/live");
+  }
+
   createSession(input: {
     id?: string;
     projectId: string;
@@ -1196,8 +1206,24 @@ export class EngineClient {
     envMode?: "local" | "worktree";
     /** Which provider runs this session's turns. Defaults to Claude. */
     driver?: ProviderDriverKind;
+    /**
+     * WHO ASKED — provenance, never a link to anything. `"session"` marks a
+     * session that the `sessions` toolkit created and is the ONLY value the
+     * engine's live-session budget counts; absent is a human's own click and is
+     * never capped. Declared by the calling CODE, never by a model argument.
+     */
+    origin?: SessionOrigin;
   }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
+  }
+
+  /**
+   * Where the outward `sessions` MCP socket listens, and its dedicated secret —
+   * the `sessions` half of `spoolMcpInfo`. Behind the normal bearer, because
+   * reading it mints and reveals a credential.
+   */
+  sessionsMcpInfo(): Promise<{ mcp: { url: string; secret: string; addCommand: string } }> {
+    return this.request("GET", "/v2/sessions/mcp-info");
   }
 
   /**
