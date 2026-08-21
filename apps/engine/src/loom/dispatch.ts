@@ -36,6 +36,11 @@
  */
 import type { Loom, LoomProgram, LoomRun, TriageEntry } from "@telar/engine-client";
 import { createSessionWorktree, type GitRunner } from "../worktree";
+// The store's refusal vocabulary, so a sentence written here survives the HTTP
+// seam as a 400 with its words rather than a generic 500. `loom/session.ts`
+// already reaches for the same import; nothing in `state.ts`'s graph reaches
+// back into this file, so there is no cycle to introduce.
+import { EngineStateError } from "../state";
 import { slugify, validateDecision } from "./decide";
 import { nextRung } from "./ladder";
 import { isActive, isTerminal, transitionLoom } from "./machine";
@@ -84,10 +89,64 @@ const MAX_ADVANCE_STEPS = 6;
  * How long a brief may sit with NOBODY HAVING CLAIMED IT before the loom says
  * so. See `advanceOne`'s `unclaimed` branch: this bounds being picked up, never
  * getting finished, so a slow worker cannot trip it and a missing one always
- * does. Ten minutes is longer than any worker restart and far shorter than a
- * night.
+ * does.
+ *
+ * ── IT IS A BACKSTOP NOW, NOT THE MECHANISM ─────────────────────────────────
+ * `workersAvailable` refuses at dispatch time, so the ordinary case — nobody
+ * started a worker — never reaches this at all: nothing is provisioned, and the
+ * refusal names the missing process while the human is still looking. What is
+ * left for this to catch is the narrow window refusal cannot: a worker that
+ * dies AFTER claiming and before finishing, or between the check and the
+ * submit. Removing it would reintroduce the silent stall through that window.
+ *
+ * AND THE TEN MINUTES IS NOW ARGUABLE RATHER THAN GUESSED, which is the whole
+ * reason the refusal is worth having. The number no longer has to cover "how
+ * long might a human take to notice they never started a worker" — an unbounded
+ * question a constant cannot answer, and the reason a project whose worker took
+ * eleven minutes to REGISTER used to get a stuck loom for no reason. It only
+ * has to cover "how long may a worker be absent between claiming and being
+ * replaced", which is bounded by the daemon's own worker lease
+ * (`EngineDaemonOptions.workerLeaseMs`, 15s) plus a restart. Ten minutes is
+ * forty lease periods, so a false positive means something is genuinely wrong.
  */
 export const UNCLAIMED_GRACE_MS = 10 * 60_000;
+
+/**
+ * CAN ANYTHING CLAIM A BRIEF RIGHT NOW — the sentence to refuse with, or `null`.
+ *
+ * §16's session port queues past `worker_unavailable` on purpose: a loom
+ * dispatched at 3am must not be refused because a worker is mid-restart. But
+ * whether a worker is registered at all is knowable BEFORE a worktree is cut,
+ * and queueing into a void to discover it ten minutes later is strictly worse
+ * than declining up front — it spends a worktree, the Program's `setup`, a
+ * session and a `detail` call to produce a loom that renders as working while
+ * nothing runs.
+ *
+ * SO THIS IS THE PRIMARY MECHANISM AND `UNCLAIMED_GRACE_MS` IS THE BACKSTOP.
+ * The two are not redundant: this answers "will anything pick it up", asked
+ * once, before anything is spent; that one answers "did the thing that picked
+ * it up disappear", which no up-front check can see.
+ *
+ * THE SENTENCE IS THE WHOLE POINT, so `refuseUnclaimable` throws it as an
+ * `EngineStateError("invalid_request")` rather than a bare `Error`. `errorFor`
+ * in `daemon.ts` maps anything else to a 500 whose body reads "engine
+ * encountered an internal error" — which would take a refusal whose only value
+ * is telling a human to start a worker and deliver it as the one message that
+ * says nothing at all. The check still lives HERE and not in the route, so an
+ * in-process caller hits the same wall; only the error's type is chosen for the
+ * seam's benefit.
+ */
+function unclaimable(deps: Pick<LoomTickDeps, "workersAvailable">): string | null {
+  if (deps.workersAvailable()) return null;
+  return "no worker process is registered with this engine, so a brief handed over now would sit in a queue nobody can claim: no session would run, nothing would be committed, and the loom would render as working while nothing at all happened. Start one — `bun run worker`, or start the daemon with its embedded worker — and this goes through.";
+}
+
+/** `unclaimable`, raised. `lead` names what is being refused, so the sentence
+ *  arrives attached to the request a person actually made. */
+function refuseUnclaimable(deps: Pick<LoomTickDeps, "workersAvailable">, lead: string): void {
+  const why = unclaimable(deps);
+  if (why) throw new EngineStateError("invalid_request", `${lead}: ${why}`);
+}
 
 export type LoomAgent = (
   prompt: string,
@@ -183,6 +242,20 @@ export type LoomTickDeps = LoomGateDeps & {
   git: GitRunner;
   exec: LoomExec;
   engineRoot: string;
+  /**
+   * IS THERE ANYTHING ALIVE THAT COULD CLAIM A BRIEF — injected, because the
+   * answer lives in a `Map` on the daemon (`daemon.ts`'s `workers`, kept by
+   * `/v2/workers/register` and pruned against the heartbeat lease) and NOT in
+   * `EngineStore`. The runtime must not reach into the daemon for it, and the
+   * store has no business knowing what a worker is, so it arrives the same way
+   * `exec`, `agent`, `session` and `git` do.
+   *
+   * A FUNCTION, NOT A BOOLEAN, because the answer changes under the caller: a
+   * worker registers a second after boot and its lease expires while a tick is
+   * mid-flight. A value captured at construction would be a fact about a moment
+   * nobody asked about.
+   */
+  workersAvailable: () => boolean;
   readProgram: (projectId: string) => LoomProgram | null;
   /** The Program's own markdown, when the caller has it, so the prompt quotes
    *  the human's file rather than a re-render of it. */
@@ -541,6 +614,13 @@ async function advanceOne(deps: LoomTickDeps, loom: Loom, program: LoomProgram, 
 
   switch (loom.state) {
     case "queued":
+      // HELD, NOT STUCK, AND NOT PROVISIONED. `queued` means the worktree was
+      // never cut, so there is nothing to walk forward and nothing spent by
+      // waiting; the loom stays exactly what it is — a decision nobody can act
+      // on yet — and goes through the moment a worker registers. Sticking it
+      // would spend the ladder on the absence of a process, and provisioning it
+      // is the void this whole refusal exists to stop queueing into.
+      if (!deps.workersAvailable()) return loom;
       return provisionLoom(deps, loom, program, root, {});
 
     case "working": {
@@ -658,6 +738,15 @@ async function advanceOne(deps: LoomTickDeps, loom: Loom, program: LoomProgram, 
       // the human's own words to an agent working in the loom's own worktree and
       // lets it enact them. Which is why rung 2 ("run the gate again — it may be
       // flaky") and rung 3 ("narrow the scope") need no special case here.
+      //
+      // BEFORE `nextRung`, WHICH IS THE WHOLE REASON THIS CHECK IS HERE RATHER
+      // THAN INSIDE `provisionLoom`. Every rung is a session, so with no worker
+      // a rung cannot be enacted — and `nextRung` is the sole writer of
+      // `attempts`, so letting it run and failing afterwards would spend the
+      // ladder on the absence of a process. A three-rung ladder would arrive at
+      // `asking` having tried nothing at all, and §5's "each rung once" would be
+      // false for exactly the projects that most need it.
+      if (!deps.workersAvailable()) return loom;
       const step = nextRung(loom, program);
       if ("exhausted" in step) {
         const question = `${loom.parkedReason ?? "this loom is stuck"}\n\nEvery enabled rung of the ladder has been tried. What should happen to ${loom.item}?`;
@@ -735,6 +824,15 @@ export async function dispatchLoom(deps: LoomTickDeps, projectId: string, input:
   const root = deps.projectRoot(projectId);
   if (!root) throw new Error(`project ${projectId} has no checkout on this machine, so there is nowhere to cut a worktree.`);
   if (input.item.trim() === "") throw new Error("a dispatch needs an item; the Program's `list` command is what names them.");
+  /**
+   * REFUSED BEFORE ANYTHING IS SPENT, and the order of these lines is the fix.
+   * Below this point a worktree is cut, the Program's `setup` runs, `detail` is
+   * read and a session is created — all of it to hand a brief to a queue with
+   * nobody on the other end. Nothing here is written first either: a `queued`
+   * loom recorded and then abandoned is a record of a promise the machinery did
+   * not make.
+   */
+  refuseUnclaimable(deps, `${input.item} cannot be dispatched`);
 
   const { looms } = listLooms(deps.paths, projectId);
 
@@ -1008,6 +1106,10 @@ export async function answerLoom(deps: LoomTickDeps, loomId: string, answer: str
     );
   }
   if (answer.trim() === "") throw new Error("an answer needs some words; an empty one would restart the worker knowing exactly what it knew before.");
+  // BEFORE THE ANSWER IS RECORDED. An answer is only worth taking if something
+  // can act on it, and a ledger line saying the human replied — beside a loom
+  // that never moved — is the misleading half of the record, not the useful one.
+  refuseUnclaimable(deps, `loom ${loomId} cannot be restarted with your answer`);
 
   const program = deps.readProgram(loom.projectId);
   const root = deps.projectRoot(loom.projectId);

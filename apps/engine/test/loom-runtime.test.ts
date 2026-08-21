@@ -20,14 +20,14 @@ import os from "node:os";
 import path from "node:path";
 import type { Loom, LoomProgram, TickDecision } from "@telar/engine-client";
 import type { GitResult, GitRunner } from "../src/worktree";
-import { advanceLooms, cancelLoom, createLoomRuntime, dispatchLoom, parseListed, runLoomTick, type LoomAgent, type LoomSessionPort, type LoomTickDeps } from "../src/loom/dispatch";
+import { advanceLooms, answerLoom, cancelLoom, createLoomRuntime, dispatchLoom, parseListed, runLoomTick, type LoomAgent, type LoomSessionPort, type LoomTickDeps } from "../src/loom/dispatch";
 import { validateDecision } from "../src/loom/decide";
 import { substitute, slotEnv, truncate, type LoomExec, type LoomExecInput } from "../src/loom/exec";
 import { globMatch } from "../src/loom/gate";
 import { createLoomRuns } from "../src/loom/run";
 import { fingerprintFrom } from "../src/loom/sentinel";
 import { createLoomSupervisor, type LoomSupervisor } from "../src/loom/supervisor";
-import { getLoom, listLooms, loomPaths, readLedger, readWatch, writeSentinel, type LoomPaths } from "../src/loom/store";
+import { getLoom, listLooms, loomPaths, readLedger, readWatch, writeLoom, writeSentinel, type LoomPaths } from "../src/loom/store";
 
 const roots: string[] = [];
 const supervisors: LoomSupervisor[] = [];
@@ -162,6 +162,15 @@ function world(options: { program?: LoomProgram } = {}) {
     return agent.fail ? { ok: false, reason: agent.fail } : { ok: true, value: agent.decision };
   };
 
+  /**
+   * WHETHER ANYTHING COULD CLAIM A BRIEF — a flag rather than a constant, so
+   * the absence of a worker is a world a test can state instead of one it can
+   * only reach by accident. The daemon's real answer is its `workers` Map; here
+   * that Map is a boolean, and every test that does not care about workers gets
+   * the ordinary case — one is registered.
+   */
+  const machine = { workersAvailable: true };
+
   const deps: LoomTickDeps = {
     paths,
     exec,
@@ -173,10 +182,12 @@ function world(options: { program?: LoomProgram } = {}) {
     agent: loomAgent,
     session,
     engineRoot: directory,
+    workersAvailable: () => machine.workersAvailable,
   };
 
   return {
     deps,
+    machine,
     paths,
     directory,
     projectDir,
@@ -1048,6 +1059,47 @@ test("a world-read that recovers clears the record it earned", async () => {
   runtime.close();
 });
 
+test("a daemon that restarts mid-outage does not hand the outage a free back-off", async () => {
+  /**
+   * THE SUPPRESSION IS ON DISK, AND THIS IS THE ONLY TEST THAT CAN TELL.
+   *
+   * Every other assertion about the unreadable mark holds a single supervisor,
+   * where a field and a `Map` in a closure behave identically. The difference
+   * only appears across a process boundary: held in memory, the mark died with
+   * the daemon, so the FIRST quiet pass after a restart scored as evidence of
+   * quiet and doubled the interval — one free back-off per restart, and a crash
+   * loop walked a project that has been broken since midnight all the way to
+   * the hourly ceiling. Nothing on any surface would have said so; the deck
+   * would have shown a slower cadence, which is what a quiet night looks like.
+   */
+  const w = world();
+  w.script("list", { code: 1, stderr: "gh: not authenticated" });
+  w.script("probe", { code: 0, stdout: "same" });
+
+  const first = runtimeWithSupervisor(w);
+  first.supervisor.setWatch(PROJECT, true);
+  await settled(first.runtime, first.runtime.tickLoom(PROJECT).run.id);
+  expect(readWatch(w.paths, PROJECT).worldUnreadable ?? "").toContain("not authenticated");
+  // The daemon dies mid-outage. Nothing about the world has changed.
+  first.runtime.close();
+
+  // A SECOND SUPERVISOR OVER THE SAME STORE — a restart, modelled as one. It
+  // inherits the files and nothing else, which is the whole point.
+  const second = supervisorFor(w);
+  second.supervisor.resume();
+  // The first pass is a change (this supervisor has no fingerprint to compare
+  // against yet); the second is the quiet one that used to be spent.
+  await second.supervisor.pass(PROJECT);
+  await second.supervisor.pass(PROJECT);
+
+  const watch = readWatch(w.paths, PROJECT);
+  expect(watch.intervalSec).toBe(300);
+  expect(watch.quietChecks).toBe(0);
+  // And the deck still says why, in the same sentence it said before the crash.
+  expect(watch.lastError ?? "").toContain("not authenticated");
+  expect(watch.worldUnreadable ?? "").toContain("not authenticated");
+});
+
 test("a tick that worked does not erase a probe that did not", async () => {
   // One working read is no evidence about a different broken one. `observe`
   // clears only what it marked, because the alternative lets a successful tick
@@ -1114,6 +1166,147 @@ test("a worker that claimed its turn is never mistaken for a missing one, howeve
   w.clock.at = new Date(w.clock.at.getTime() + 8 * 60 * 60_000);
   await advanceLooms(w.deps, PROJECT);
   expect(w.only().state).toBe("working");
+});
+
+test("a dispatch nobody could claim is refused with a sentence, and nothing is written first", async () => {
+  /**
+   * THE PRIMARY MECHANISM, WHERE THE GRACE PERIOD IS ONLY THE BACKSTOP.
+   *
+   * The test above bounds a brief that WAS handed over and never picked up.
+   * That bound is real but it is expensive: by the time it fires, a worktree
+   * has been cut, the Program's `setup` has run, `detail` has been read and a
+   * session exists — all spent to discover, ten minutes later, something that
+   * was knowable before any of it. So the ordinary case is refused up front.
+   *
+   * AND REFUSING MEANS NOTHING IS WRITTEN. A `queued` loom recorded and then
+   * abandoned would pass "the dispatch did not go through" while leaving on the
+   * deck exactly the phantom this exists to prevent.
+   */
+  const w = world();
+  w.machine.workersAvailable = false;
+
+  const failed = await dispatchLoom(w.deps, PROJECT, { item: "47", title: "Fix the prefix" }).catch((error: unknown) => error);
+  expect(failed).toBeInstanceOf(Error);
+  expect((failed as Error).message).toContain("47 cannot be dispatched");
+  expect((failed as Error).message).toContain("no worker process is registered");
+  expect(listLooms(w.paths, PROJECT).looms).toEqual([]);
+  expect(readLedger(w.paths, PROJECT)).toEqual([]);
+  expect(w.gitCalls).toEqual([]);
+
+  // AND THE SAME REQUEST GOES THROUGH once something can claim it. Without this
+  // half, a check that refused unconditionally would pass everything above.
+  w.machine.workersAvailable = true;
+  const loom = await dispatchLoom(w.deps, PROJECT, { item: "47", title: "Fix the prefix" });
+  expect(loom.state).toBe("working");
+  expect(loom.worktreePath).toBeTruthy();
+});
+
+test("a queued loom with nobody to claim it is held rather than provisioned or stuck", async () => {
+  /**
+   * `queued` IS THE ONE STATE WHERE WAITING COSTS NOTHING. The worktree was
+   * never cut, so there is nothing to walk forward and nothing spent by
+   * leaving it — and both alternatives are worse than waiting. Sticking it
+   * would spend a ladder rung on the absence of a process; provisioning it
+   * would queue a brief into the void the refusal exists to keep it out of.
+   */
+  const w = world();
+  w.machine.workersAvailable = false;
+  const at = w.clock.at.getTime();
+  writeLoom(w.paths, {
+    id: "loom-queued",
+    projectId: PROJECT,
+    item: "47",
+    title: "Fix the prefix",
+    state: "queued",
+    attempts: 0,
+    ladderRung: 0,
+    createdAt: at,
+    updatedAt: at,
+  });
+
+  await advanceLooms(w.deps, PROJECT);
+  const held = w.only();
+  expect(held.state).toBe("queued");
+  expect(held.worktreePath).toBeUndefined();
+  expect(held.sessionId).toBeUndefined();
+  expect(w.gitCalls).toEqual([]);
+
+  // THE MOMENT A WORKER APPEARS it goes through on its own — no human touch, no
+  // re-dispatch. A hold that needed rescuing would be a stall with better words.
+  w.machine.workersAvailable = true;
+  await advanceLooms(w.deps, PROJECT);
+  const moved = w.only();
+  expect(moved.state).toBe("working");
+  expect(moved.sessionId).toBeTruthy();
+});
+
+test("with nothing to enact it, the ladder is not spent: a stuck loom keeps its rungs", async () => {
+  /**
+   * EVERY RUNG IS A SESSION, so a rung walked with no worker is a rung thrown
+   * away — and `nextRung` is the sole writer of `attempts`, so the loss is
+   * permanent. A three-rung ladder walked through an outage arrives at `asking`
+   * having tried nothing at all, and §5's "each rung once" becomes false for
+   * exactly the projects that most need it: the ones nobody is watching.
+   */
+  const w = world();
+  w.script("gate", { code: 1 });
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+  const stuck = w.only();
+  expect(stuck.state).toBe("stuck");
+  expect(stuck.ladderRung).toBe(0);
+
+  // The worker process goes away while the loom sits stuck.
+  w.machine.workersAvailable = false;
+  for (let pass = 0; pass < 4; pass += 1) await advanceLooms(w.deps, PROJECT);
+  const waiting = w.only();
+  expect(waiting.state).toBe("stuck");
+  // FOUR PASSES, NO RUNGS SPENT. Unguarded, this walks rungs 1 and 2 and lands
+  // on `asking` — a question for a human about a ladder that was never tried.
+  expect(waiting.ladderRung).toBe(0);
+  expect(waiting.attempts).toBe(0);
+  expect(readLedger(w.paths, PROJECT).some((entry) => entry.summary.startsWith("rung "))).toBe(false);
+
+  // And the ladder is intact when there is something to enact it with.
+  w.machine.workersAvailable = true;
+  await advanceLooms(w.deps, PROJECT);
+  expect(w.only().ladderRung).toBe(1);
+});
+
+test("an answer nobody could act on is refused, and the question stays open", async () => {
+  /**
+   * AN ANSWER IS A HUMAN'S ONE TURN AT THIS LOOM. Taking it while nothing can
+   * enact it writes the misleading half of the record — a ledger line saying
+   * the human replied, beside a loom that never moved — and the human, having
+   * answered, has no reason to look again.
+   */
+  const w = world();
+  w.script("gate", { code: 1 });
+  await dispatchOne(w);
+  for (let pass = 0; pass < 8 && w.only().state !== "asking"; pass += 1) {
+    w.finishWorker();
+    await advanceLooms(w.deps, PROJECT);
+  }
+  const asking = w.only();
+  expect(asking.state).toBe("asking");
+
+  w.machine.workersAvailable = false;
+  const ledgerBefore = readLedger(w.paths, PROJECT).length;
+  const failed = await answerLoom(w.deps, asking.id, "narrow it to the parser and try again").catch((error: unknown) => error);
+  expect(failed).toBeInstanceOf(Error);
+  expect((failed as Error).message).toContain("cannot be restarted with your answer");
+  expect((failed as Error).message).toContain("no worker process is registered");
+
+  const untouched = w.only();
+  expect(untouched.state).toBe("asking");
+  expect(untouched.question).toBe(asking.question);
+  expect(readLedger(w.paths, PROJECT)).toHaveLength(ledgerBefore);
+
+  // The same words land once there is something to hand them to.
+  w.machine.workersAvailable = true;
+  const restarted = await answerLoom(w.deps, asking.id, "narrow it to the parser and try again");
+  expect(restarted.state).toBe("working");
 });
 
 test("a re-provisioned loom stops the worker it already had", async () => {

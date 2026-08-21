@@ -239,8 +239,16 @@ const daemon = await startEngine({
   },
   // `--real-agent` wires nothing of its own: the daemon's own orchestrator and
   // its own session port answer, and an embedded worker is started so the
-  // sessions it opens actually execute.
-  ...(realAgent ? { embeddedWorker: true } : { loomAgent, loomSession }),
+  // sessions it opens actually execute — which is also what makes the daemon's
+  // own `workersAvailable` true, so that branch overrides nothing.
+  //
+  // THE SCRIPTED BRANCH HAS TO SAY SO OUT LOUD. The engine refuses a dispatch
+  // when nothing is registered to claim the brief, and nothing here registers:
+  // `loomSession.start` below IS the worker, and it runs in-process. Stating
+  // that is honest — a worker really does pick this brief up and really does
+  // commit — where letting the default answer would have the demo refuse its
+  // own dispatch and print a deck with no looms on it.
+  ...(realAgent ? { embeddedWorker: true } : { loomAgent, loomSession, workersAvailable: () => true }),
 });
 const client = new EngineClient(daemon.discovery);
 
@@ -456,6 +464,42 @@ out("          and the git push that published the branch.");
 out(realAgent ? "  faked   nothing — --real-agent was passed." : "  faked   the orchestrator's decision, and the worker inside the worktree.");
 out("          Nothing else. No network was used and no GitHub concept exists anywhere");
 out("          in this Program or in the engine that ran it.");
+
+// ── did the loop actually close ─────────────────────────────────────────────
+
+/**
+ * THE DEMO HAS TO BE ABLE TO FAIL.
+ *
+ * Everything above prints; nothing above checks. So when a change made the
+ * engine refuse this demo's own dispatch, it printed "could not dispatch a1"
+ * and a deck with no looms on it — and exited 0. A verification artifact that
+ * reports success while showing a broken run is worse than no artifact: it is
+ * the one thing a person trusts instead of reading the output.
+ *
+ * SCRIPTED RUNS ONLY. With `--real-agent` the decision belongs to a model and
+ * "one published loom" is not this script's to promise; the scripted path is
+ * deterministic, and the closed loop is precisely what it exists to show.
+ */
+if (!realAgent) {
+  const broken: string[] = [];
+  if (published === undefined) {
+    broken.push(`no loom reached \`published\` — the deck holds ${overview.looms.map((loom) => `${loom.item} ${loom.state}`).join(", ") || "no looms at all"}`);
+  } else {
+    if (!published.branch || !gitOk(remote, "rev-parse", "--verify", published.branch)) {
+      broken.push(`${published.item} says published but ${published.branch ?? "its branch"} is not on the remote`);
+    }
+    if (!published.gate || published.gate.outcome !== "pass") {
+      broken.push(`${published.item} published without a passing gate (${published.gate?.outcome ?? "no gate recorded"})`);
+    }
+  }
+  if (worker.committed.length === 0) broken.push("the worker never committed anything, so nothing was gated");
+  if (git(remote, "rev-parse", "main").trim() !== mainAtStart) broken.push("`main` moved on the remote — the harness must never push to base");
+  if (broken.length > 0) {
+    await daemon.close();
+    if (!keep) fs.rmSync(root, { recursive: true, force: true });
+    throw new Error(`the demo did not close the loop:\n  - ${broken.join("\n  - ")}`);
+  }
+}
 
 // ── teardown ────────────────────────────────────────────────────────────────
 

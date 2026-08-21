@@ -29,6 +29,11 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import type { LoomAgent, LoomSessionPort } from "../src/loom/dispatch";
 import type { LoomExec } from "../src/loom/exec";
 import { appendLedger, loomPaths, writeLoom, writeTriage, type LoomRuntime } from "../src/loom/store";
+// The REAL runner and the REAL worktree location — the daemon composes
+// `defaultGitRunner` with no injection point, so a route test that wants to
+// know whether a worktree was cut has to ask git and the filesystem the same
+// way the daemon does.
+import { defaultGitRunner, worktreesRoot } from "../src/worktree";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -48,6 +53,15 @@ type Injected = {
   loomExec?: LoomExec;
   loomAgent?: LoomAgent;
   loomSession?: LoomSessionPort;
+  /**
+   * The daemon's own clock and worker lease. NOT an expensive port and not
+   * defaulted here — the suite's other tests want the real ones. It is here so
+   * that "a worker's lease ran out" is reachable as a fact about time, which is
+   * the form the failure actually takes: a worker that dies never says so, it
+   * simply stops heartbeating.
+   */
+  now?: () => number;
+  workerLeaseMs?: number;
 };
 
 async function looms(options: Injected = {}): Promise<Harness> {
@@ -79,6 +93,8 @@ async function looms(options: Injected = {}): Promise<Harness> {
     loomExec: options.loomExec ?? UNEXPECTED_EXEC,
     loomAgent: options.loomAgent ?? QUIET_AGENT,
     ...(options.loomSession ? { loomSession: options.loomSession } : {}),
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.workerLeaseMs === undefined ? {} : { workerLeaseMs: options.workerLeaseMs }),
   });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
@@ -400,6 +416,117 @@ test("a store refusal arrives with its sentence intact, not as a bare 400", asyn
   const error = (await client.saveLoomProgram("project_missing", "# Loom").catch((e: unknown) => e)) as EngineClientError;
   expect(error.status).toBe(404);
   expect(error.message).toBe("project does not exist");
+});
+
+test("a dispatch nothing could claim is refused before anything is cut, and goes through once a worker registers", async () => {
+  /**
+   * THE REFUSAL IS ONLY REAL AT THIS LAYER.
+   *
+   * `loom-runtime.test.ts` can prove the rule against an injected predicate,
+   * and that proves the rule and nothing about the wiring: `LoomRuntimeDeps`
+   * gaining `workersAvailable` is a type, and a type is satisfied just as well
+   * by a daemon that hands it `() => true` forever. What has to be true is that
+   * the daemon's answer is the SAME `workers` Map `POST /v2/turns` refuses
+   * against — pruned against the heartbeat lease — so this test never injects
+   * `workersAvailable` and moves the world the only way a worker can be moved:
+   * `POST /v2/workers/register`.
+   *
+   * THE PROPERTY, NOT THE MECHANISM. Nothing below reads the Map, counts
+   * registrations, or names a lease. It asserts what a person would notice —
+   * with nobody to claim it, the dispatch is refused in words and NOTHING is
+   * spent; with somebody, the same request produces a working loom. Both halves
+   * are needed: a wall that refuses everything passes the first on its own.
+   */
+  const started: Array<{ branch: string; title: string }> = [];
+  const clock = { at: 1_760_000_000_000 };
+  const { daemon, client, engineRoot, projectRoot } = await looms({
+    now: () => clock.at,
+    workerLeaseMs: 15_000,
+    loomSession: {
+      async start(input) {
+        started.push({ branch: input.branch, title: input.title });
+        return { sessionId: `worker-${started.length}` };
+      },
+      async create() {
+        return { sessionId: "orchestrator" };
+      },
+      async status() {
+        return "running" as const;
+      },
+      async stop() {
+        return undefined;
+      },
+    },
+  });
+
+  // A REAL REPOSITORY, because the refusal's whole claim is that it happens
+  // BEFORE a worktree is cut — and a project git could not have cut one in
+  // would let a broken check pass for the wrong reason.
+  const git = (args: string[]): void => {
+    const result = defaultGitRunner(projectRoot, args);
+    if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim()}`);
+  };
+  fs.writeFileSync(path.join(projectRoot, "README.md"), "# the project\n");
+  git(["init"]);
+  git(["config", "user.email", "loom@example.invalid"]);
+  git(["config", "user.name", "Loom Routes"]);
+  git(["config", "commit.gpgsign", "false"]);
+  git(["add", "-A"]);
+  git(["commit", "-m", "chore: the project as it stands"]);
+  git(["branch", "-M", "main"]);
+  // No `setup`, no `detail`: this test is about who can claim the brief, and a
+  // Program that shells out would make the refusing exec stub the thing under
+  // test instead.
+  await client.saveLoomProgram("project_one", ["# Loom program", "", "## Work source", "", "```list", "cat backlog", "```", ""].join("\n"));
+
+  const dispatch = () => call(daemon, "POST", "/v2/looms/dispatch", { body: { projectId: "project_one", item: "issue-7" } });
+
+  // ── nobody has registered ────────────────────────────────────────────────
+  const refused = await dispatch();
+  // 400 WITH THE WORDS. The sentence is the entire value of this refusal — it
+  // names the missing process and the command that starts it — so a 500 whose
+  // body reads "engine encountered an internal error" would be a regression
+  // that still passes any test asserting only "the dispatch did not happen".
+  expect(refused.status).toBe(400);
+  expect(refused.body.error.code).toBe("invalid_request");
+  expect(refused.body.error.message).toContain("issue-7 cannot be dispatched");
+  expect(refused.body.error.message).toContain("no worker process is registered");
+  expect(refused.body.error.message).toContain("bun run worker");
+
+  // AND NOTHING WAS SPENT, which is the half that distinguishes refusing from
+  // failing. No loom recorded, no ledger line promising one, no session, and no
+  // worktree — a `queued` loom written and then abandoned would satisfy "the
+  // dispatch was refused" while leaving exactly the phantom the deck renders as
+  // working.
+  expect((await client.looms()).looms).toEqual([]);
+  expect(await client.loomLedger("project_one")).toEqual({ entries: [] });
+  expect(started).toEqual([]);
+  expect(fs.existsSync(worktreesRoot(engineRoot))).toBe(false);
+
+  // ── a worker registers ───────────────────────────────────────────────────
+  const registered = await call(daemon, "POST", "/v2/workers/register", { body: { workerId: "worker-one" } });
+  expect(registered.status).toBe(200);
+
+  const dispatched = await dispatch();
+  expect(dispatched.status).toBe(200);
+  expect(dispatched.body.loom).toMatchObject({ item: "issue-7", state: "working" });
+  // The brief really was handed over — the same request, one registration
+  // later, reaches the worker port it could not reach before.
+  expect(started).toHaveLength(1);
+  expect(started[0]?.branch).toContain("t3code/");
+
+  // ── the worker stops heartbeating ────────────────────────────────────────
+  // A REGISTRATION IS NOT A WORKER. Nothing deregisters when a worker's process
+  // dies — the Map keeps the entry until the lease is noticed — so reading it
+  // without pruning answers for a process that has been gone since midnight,
+  // which is the exact case an overnight run needs this to catch. Deliberately
+  // dispatching the SAME item: the duplicate-item wall sits BELOW the worker
+  // wall, so if the stale registration were still counted this would come back
+  // refused in different words rather than passing quietly.
+  clock.at += 15_001;
+  const stale = await dispatch();
+  expect(stale.status).toBe(400);
+  expect(stale.body.error.message).toContain("no worker process is registered");
 });
 
 test("the route rejects only what the store cannot see", async () => {

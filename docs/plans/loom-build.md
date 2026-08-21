@@ -499,7 +499,8 @@ app's directory. Singular `loom/` is clear. Do not amend the ban list.
 
 ```ts
 LoomProgramDoc  = { projectId, path, exists, markdown, program: LoomProgram | null, warnings: string[] }
-LoomWatch       = { projectId, running, intervalSec, quietChecks, lastProbeAt?, lastChangeAt?, nextProbeAt?, lastError? }
+LoomWatch       = { projectId, running, intervalSec, quietChecks, lastProbeAt?, lastChangeAt?, nextProbeAt?,
+                    lastError?, worldUnreadable? }
 LoomRunKind     = 'tick' | 'dry-run'
 LoomRun         = { id, projectId, kind, state: 'running'|'done'|'failed'|'cancelled',
                     startedAt, settledAt?, step?, note?, decision?: TickDecision,
@@ -559,7 +560,11 @@ Placed with the other literal paths, **before** the `/:loomId` regex.
 ### Naming, settled during the build
 
 - `LoomWatch` is the **runtime record** — schedule, last probe, last error. The
-  Program's schedule block is `LoomWatchPolicy`.
+  Program's schedule block is `LoomWatchPolicy`. `lastError` is the deck's line
+  and every writer overwrites it; `worldUnreadable` is separate and persisted,
+  because "this project's backlog cannot be read" has to outlive the probe that
+  did not ask about it — a pass finding nothing while it is set is not evidence
+  of a quiet night and must not be spent on the backoff.
 - `TriageCache` is a keyed record; `loomTriage()` produces the `{entries}` wire
   shape with `Object.values`.
 - `EngineStore.loomStore` is the paths getter; `looms()` is the list method. A
@@ -638,24 +643,20 @@ says what it will do.
 Shipped with these open, deliberately and in writing, because an invisible
 limitation is the thing this whole design argues against.
 
-**The backoff suppression is in-memory.** When a project's world cannot be read,
-`lastError` is persisted so the deck stays honest across a restart — but the
-*suppression of the backoff* is not. A daemon that restarts mid-outage can back a
-broken project off once before the next tick re-earns the mark. Fixing it properly
-wants a field on `LoomWatch`. This is the weakest remaining seam.
-
-**`UNCLAIMED_GRACE_MS` is a constant, not policy.** Ten minutes is longer than any
-worker restart and far shorter than a night, but a project whose worker
-legitimately takes longer than that to *register* would stick a loom. The better
-answer is refusing at dispatch time, which needs `daemon.ts` to expose worker
-registration to the loom runtime — worker liveness lives in an in-memory map on
-the daemon, not in `EngineStore`.
-
 **`defaultGitRunner` is `execFileSync`.** A large rebase blocks the daemon's event
 loop. Pre-existing and engine-wide, but the loom path amplifies it: `provisionLoom`
 runs a worktree cut, a `checkout -B` and a `branch -D` synchronously, with the
 Program's `setup` sandwiched between them. At `concurrency: 2` or more, several
 looms provision in the same advance pass and serialise.
+
+**`resume()` runs before the embedded worker registers.** `startEngine` arms the
+supervisor immediately after publishing discovery, and starts the in-process
+worker after that. A watch whose `nextProbeAt` is long past therefore has a
+window — from `resume()` to `worker.start()` — in which a tick can decide to
+dispatch and be refused for having nobody to claim the brief. The refusal is
+correct and says so in the ledger, and the item is picked up on the next probe,
+but on a 300s cadence that is five minutes lost to a restart. Reordering the two
+is the obvious fix and is not done here.
 
 **Nothing has run overnight yet.** Every claim in this document is backed by tests
 and by `scripts/loom-demo.ts`, in which the model's decision and the worker's edit

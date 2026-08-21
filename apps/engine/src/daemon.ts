@@ -61,13 +61,14 @@ export type EngineDaemonOptions = {
    */
   gh?: GhRunner;
   /**
-   * ── THE LOOM'S FOUR INJECTION POINTS ──────────────────────────────────────
+   * ── THE LOOM'S INJECTION POINTS ───────────────────────────────────────────
    *
    * Same promise as `gh` and `probeProviderVersion`, and the loom is where it
    * costs the most: a tick spawns the Program's own shell commands, cuts git
    * worktrees, starts sessions and spends a model call. A route test that drives
-   * `POST /v2/looms/tick` must do none of those, so all four defaults are
-   * replaceable and every test in this repo replaces them.
+   * `POST /v2/looms/tick` must do none of those, so every expensive default is
+   * replaceable and every test in this repo replaces them. `workersAvailable`
+   * below joins them for a different reason — see its own note.
    *
    * The whole runtime, pre-composed. Short-circuits the other three and the
    * worktree machinery behind them — what a ROUTE test wants, where the seam
@@ -95,6 +96,26 @@ export type EngineDaemonOptions = {
   /** The sentinel's recurring timer, in `daemon.ts:343`'s shape, so a test can
    *  fire the supervisor's passes by hand instead of waiting on a clock. */
   loomInterval?: (fn: () => void, ms: number) => { clear(): void };
+  /**
+   * IS THERE ANYTHING ALIVE THAT COULD CLAIM A BRIEF — the loom's fifth
+   * injection point, and the only one whose default costs nothing.
+   *
+   * The default is the daemon's own answer and not a stand-in for one: the
+   * `workers` Map below, pruned against the heartbeat lease exactly as
+   * `POST /v2/turns` prunes it before its own `worker_unavailable`. Two
+   * different notions of "a worker is up" in one process would disagree at
+   * 4am, and the disagreement would read as a loom that dispatched into
+   * nothing.
+   *
+   * OVERRIDABLE FOR THE OPPOSITE REASON TO THE OTHERS. `gh`, `loomExec`,
+   * `loomAgent` and `loomSession` are injected so a test never spends money or
+   * rate limit; this one is injected so a test can state the world it means —
+   * "nobody is registered" is otherwise only reachable by not registering, and
+   * "somebody is" only by standing up a worker. A test that wants the real
+   * thing omits it and registers over `/v2/workers/register`, which is what the
+   * route tests do.
+   */
+  workersAvailable?: () => boolean;
   /**
    * Run a worker inside the daemon process.
    *
@@ -404,6 +425,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
   /**
+   * DECLARED HERE, ABOVE THE LOOM RUNTIME, because the runtime's
+   * `workersAvailable` closes over it: worker liveness has exactly one
+   * definition in this process — the Map, pruned against the lease — and the
+   * loom must read it through the same call `/v2/turns` does rather than
+   * inventing a second, kinder one.
+   */
+  const pruneWorkers = (): void => {
+    const expired = [...workers.values()].filter((worker) => now() - worker.heartbeatAt > workerLeaseMs);
+    for (const worker of expired) {
+      workers.delete(worker.workerId);
+      store.recoverInactiveWorker(worker.workerId);
+    }
+  };
+  /**
    * THE LOOM'S RUNTIME, COMPOSED AND ATTACHED — the one call that turns the
    * `/v2/looms/**` arms from "wired but refusing" into a working orchestrator.
    *
@@ -450,6 +485,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             projectRoot: (projectId) => store.listProjects().find((project) => project.id === projectId)?.root ?? null,
           }),
         session: options.loomSession ?? createLoomSessionPort({ store }),
+        /**
+         * THE ANSWER `/v2/turns` ALREADY GIVES, asked one layer earlier.
+         *
+         * PRUNED FIRST, deliberately: `workers` holds a registration until
+         * something notices the lease expired, so reading `size` without the
+         * prune answers for a worker that stopped heartbeating an hour ago.
+         * That is precisely the case the refusal exists to catch, and the
+         * un-pruned read would be the version that misses it.
+         *
+         * A CALL, NOT A VALUE. A worker registers a second after boot and its
+         * lease expires while a tick is mid-flight; a boolean captured here
+         * would be a fact about daemon startup, which is never the moment
+         * anybody is asking about.
+         */
+        workersAvailable:
+          options.workersAvailable ??
+          (() => {
+            pruneWorkers();
+            return workers.size > 0;
+          }),
         git: defaultGitRunner,
         // The project's root comes from the REGISTRY, never from a caller: it is
         // the same rule `loomProgram` states, and it is what keeps every path
@@ -472,13 +527,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const updateProvider =
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
-  const pruneWorkers = (): void => {
-    const expired = [...workers.values()].filter((worker) => now() - worker.heartbeatAt > workerLeaseMs);
-    for (const worker of expired) {
-      workers.delete(worker.workerId);
-      store.recoverInactiveWorker(worker.workerId);
-    }
-  };
   const activeWorker = (workerId: string): RegisteredWorker => {
     pruneWorkers();
     const worker = workers.get(workerId);

@@ -237,6 +237,14 @@ function world(options: ProgramOptions = {}) {
     },
     /** What the session store reports once the worker has let go. */
     after: "done" as "done" | "gone" | "running",
+    /**
+     * WHETHER THE ENGINE WOULD SEE A WORKER REGISTERED. Every test in this file
+     * has one — the stand-in below really does claim the brief and really does
+     * commit — so this is `true` as a statement of fact about the world these
+     * tests build, not as a stub that agrees with whatever is asked. Turn it
+     * off and the dispatch is refused, which is the point of the flag.
+     */
+    registered: true,
   };
 
   const sessions = new Map<string, "running" | "done" | "gone">();
@@ -277,6 +285,7 @@ function world(options: ProgramOptions = {}) {
     agent: loomAgent,
     session,
     engineRoot,
+    workersAvailable: () => worker.registered,
   };
 
   const remoteGit = (args: string[]): { status: number; stdout: string; stderr: string } => git(remote, args);
