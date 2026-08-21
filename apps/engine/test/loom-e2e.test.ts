@@ -50,7 +50,7 @@ import {
   type LoomSessionPort,
   type LoomTickDeps,
 } from "../src/loom/dispatch";
-import { defaultLoomExec } from "../src/loom/exec";
+import { defaultLoomExec, execGit, gitCommand } from "../src/loom/exec";
 import { createLoomRuns } from "../src/loom/run";
 import { createLoomSessionPort } from "../src/loom/session";
 import { listLooms, loomPaths, readLedger, readProgramDoc, readWatch, programPath } from "../src/loom/store";
@@ -963,6 +963,77 @@ test("the real session port, two looms at once: two workers, two worktrees, two 
     expect(real(session.workspace.path)).toBe(real(loom.worktreePath as string));
     expect(w.remoteShow(loom.branch as string, "fix.txt")).toContain(loom.title);
   }
+});
+
+// ── 12 · the loom's own git, through a real shell ───────────────────────────
+
+/**
+ * THE INJECTION SURFACE, AGAINST A REAL SHELL AND A REAL GIT.
+ *
+ * `execGit` runs git through `LoomExec`, which is `sh -c`. Every argument it
+ * passes is attacker-adjacent: a branch prefix comes out of a Program a human
+ * wrote, a ref comes back out of git's own output. If any of it were pasted into
+ * the command string, `"; touch pwned; echo "` in a branch name would be a
+ * command the daemon runs at 3am with the user's credentials.
+ *
+ * WHAT IS PINNED IS THE RULE — the value arrives at git as ONE literal argument
+ * and nothing else executes — not the environment trick that currently achieves
+ * it. `git config --default <value> --get <missing key>` echoes the value back
+ * verbatim, so git itself reports what it received, which is the only witness
+ * worth having here.
+ */
+test("a git argument that is a shell payload reaches git as one literal value and runs nothing", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-loom-argv-"));
+  temps.push(directory);
+
+  const payloads = [
+    // Quote-escape into a second command.
+    '"; touch pwned; echo "',
+    // Substitution, in all three spellings a shell honours.
+    "$(touch pwned) `touch pwned` ${IFS}",
+    // The mechanism's own env slot, which must not be dereferenced a second time.
+    "$LOOM_ARG0 and $LOOM_TITLE",
+    // A ref name with a newline in it, which is what breaks naive quoting: pasted
+    // into the string, the second line is a command in its own right. (`touch`
+    // rather than anything destructive on purpose — when this test is mutated to
+    // check that it can fail, the payload actually runs.)
+    "main\ntouch pwned",
+  ];
+
+  for (const payload of payloads) {
+    const run = await execGit(defaultLoomExec, directory, ["config", "--default", payload, "--get", "telar.loom.absent"]);
+    expect(run.status).toBe(0);
+    expect(run.timedOut).toBe(false);
+    // ONE argument, byte for byte. Split into two, and this is `"; touch` alone.
+    expect(run.stdout.replace(/\n$/, "")).toBe(payload);
+  }
+
+  expect(fs.existsSync(path.join(directory, "pwned"))).toBe(false);
+  // Nothing at all was created beside it either.
+  expect(fs.readdirSync(directory)).toEqual([]);
+
+  // And the command string carries no data to hide a payload in: `git`, then one
+  // opaque token per argument.
+  const built = gitCommand(["rebase", 'origin/main"; touch pwned; echo "']);
+  expect(built.command).toBe('git "$LOOM_ARG0" "$LOOM_ARG1"');
+  expect(built.command).not.toContain("pwned");
+  expect(Object.values(built.env)).toContain('origin/main"; touch pwned; echo "');
+});
+
+/**
+ * The same claim where it actually bites: a branch prefix a human could plausibly
+ * fat-finger into the Program, carried through the real gate. `git` refuses the
+ * name — which is the correct outcome — and the point is that it refuses it as a
+ * REF, having never been asked to run it.
+ */
+test("a branch name full of shell metacharacters fails as a ref rather than executing", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-loom-argv-ref-"));
+  temps.push(directory);
+  must(defaultGitRunner(directory, ["init", "--initial-branch=main"]), "git init");
+
+  const run = await execGit(defaultLoomExec, directory, ["rev-parse", "--verify", "--quiet", "$(touch pwned)x"]);
+  expect(run.status).not.toBe(0);
+  expect(fs.existsSync(path.join(directory, "pwned"))).toBe(false);
 });
 
 /** Symlink-resolved, because macOS spells one temp directory two ways and git

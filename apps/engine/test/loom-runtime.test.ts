@@ -23,7 +23,7 @@ import type { GitResult, GitRunner } from "../src/worktree";
 import { advanceLooms, answerLoom, cancelLoom, createLoomRuntime, dispatchLoom, parseListed, runLoomTick, type LoomAgent, type LoomSessionPort, type LoomTickDeps } from "../src/loom/dispatch";
 import { validateDecision } from "../src/loom/decide";
 import { substitute, slotEnv, truncate, type LoomExec, type LoomExecInput } from "../src/loom/exec";
-import { globMatch } from "../src/loom/gate";
+import { gateLoom, globMatch } from "../src/loom/gate";
 import { createLoomRuns } from "../src/loom/run";
 import { fingerprintFrom } from "../src/loom/sentinel";
 import { createLoomSupervisor, type LoomSupervisor } from "../src/loom/supervisor";
@@ -71,6 +71,37 @@ function ok(stdout = ""): GitResult {
   return { status: 0, stdout, stderr: "" };
 }
 
+/**
+ * THE FAKE SHELL, READING A GIT COMMAND BACK OUT OF THE ENVIRONMENT.
+ *
+ * The loom's heavy git (`fetch`, `rebase`, `diff`, `rev-list --count`) runs
+ * through `LoomExec` now, so it arrives here as a command string rather than as
+ * an argv array — and `exec.ts`'s rule is that the string carries NO DATA: only
+ * `git` and one `"$LOOM_ARGn"` token per argument, with the values in `env`.
+ *
+ * Decoding it that way rather than by splitting the string is what makes this
+ * fake an assertion instead of a convenience. A value pasted into the command
+ * — a branch name with a `;` in it, a ref built by interpolation — does not
+ * decode, and every gate test in this file fails at once with the offending
+ * command in the message. That is the injection guard, checked on every call
+ * the suite makes, rather than in one test somebody might delete.
+ */
+const ARG_TOKEN = /^"\$(LOOM_ARG\d+)"$/;
+
+function decodeGit(input: LoomExecInput): string[] | null {
+  const tokens = input.command.trim().split(/\s+/);
+  if (tokens[0] !== "git") return null;
+  return tokens.slice(1).map((token) => {
+    const name = ARG_TOKEN.exec(token)?.[1];
+    if (!name) {
+      throw new Error(`a git argument reached the shell as text (\`${token}\`) instead of through the environment: ${input.command}`);
+    }
+    const value = input.env?.[name];
+    if (value === undefined) throw new Error(`the git command references ${name}, which is not in its environment: ${input.command}`);
+    return value;
+  });
+}
+
 function world(options: { program?: LoomProgram } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-loom-runtime-"));
   roots.push(directory);
@@ -87,6 +118,19 @@ function world(options: { program?: LoomProgram } = {}) {
   const execCalls: LoomExecInput[] = [];
   const exec: LoomExec = async (input) => {
     execCalls.push(input);
+    // The loom's own git, answered by the same fake repository as the
+    // synchronous runner below — one set of opinions, two routes to it.
+    const argv = decodeGit(input);
+    if (argv) {
+      const result = answer(argv);
+      const joined = argv.join(" ");
+      // KILLED, which is not the same as a non-zero exit and must not read like
+      // one: no output, and `timedOut` is the only thing that says why.
+      if ([...repo.timeouts].some((prefix) => joined.startsWith(prefix))) {
+        return { code: 137, stdout: "", stderr: "", timedOut: true };
+      }
+      return { code: result.status, stdout: result.stdout, stderr: result.stderr, timedOut: false };
+    }
     const key = (input.command.split(/\s+/)[0] ?? "").trim();
     const seen = (counts.get(key) ?? 0) + 1;
     counts.set(key, seen);
@@ -101,7 +145,13 @@ function world(options: { program?: LoomProgram } = {}) {
   };
 
   // ── git, with just enough state to have opinions ────────────────────────
+  //
+  // TWO LOGS, ONE SET OF OPINIONS. `gitCalls` is every git the loom asked for,
+  // by whichever route; `syncGitCalls` is only the ones that came through the
+  // BLOCKING runner. Keeping them apart is what lets a test say "nothing
+  // unbounded ran on the event loop" without also having to say how.
   const gitCalls: string[][] = [];
+  const syncGitCalls: string[][] = [];
   const repo = {
     commits: 1,
     diffFiles: [] as string[],
@@ -110,8 +160,15 @@ function world(options: { program?: LoomProgram } = {}) {
      *  stopped resolving. Distinct from `commits: 0`, which is the whole point. */
     countFails: false,
     rebase: { status: 0, stdout: "", stderr: "" } as GitResult,
+    /**
+     * Git commands that never answer, by argv prefix — the failure mode that
+     * only exists now that the loom's heavy git runs under the shell's deadline.
+     * A killed command is `unknown`, which is a different thing from the
+     * non-zero exit `rebase` above scripts, and the two must not read alike.
+     */
+    timeouts: new Set<string>(),
   };
-  const git: GitRunner = (_cwd, args) => {
+  const answer = (args: string[]): GitResult => {
     gitCalls.push(args);
     const joined = args.join(" ");
     if (joined === "rev-parse --is-inside-work-tree") return ok("true");
@@ -126,6 +183,11 @@ function world(options: { program?: LoomProgram } = {}) {
       return repo.countFails ? { status: 128, stdout: "", stderr: "fatal: bad revision" } : ok(String(repo.commits));
     }
     return ok();
+  };
+
+  const git: GitRunner = (_cwd, args) => {
+    syncGitCalls.push(args);
+    return answer(args);
   };
 
   // ── sessions ────────────────────────────────────────────────────────────
@@ -199,6 +261,7 @@ function world(options: { program?: LoomProgram } = {}) {
     briefs,
     execCalls,
     gitCalls,
+    syncGitCalls,
     script(key: string, value: Scripted) {
       scripts.set(key, value);
     },
@@ -528,6 +591,198 @@ test("a rebase conflict sends the loom to the ladder's first rung with the confl
   // The next pass enters the ladder at rung 1.
   await advanceLooms(w.deps, PROJECT);
   expect(w.only().ladderRung).toBe(1);
+});
+
+// ── the gate's git, off the event loop ──────────────────────────────────────
+
+/**
+ * THE RULE, NOT THE ROUTE: no git whose duration is set by the network or by the
+ * size of the repository runs on the SYNCHRONOUS runner, because that runner
+ * blocks the daemon — every cockpit request behind it waits for the rebase.
+ *
+ * Stated as a property of `deps.git`'s call log rather than as "gate.ts calls
+ * `execGit`", so it survives the mechanism being replaced and fails the moment
+ * one of these verbs is moved back, whatever the new spelling is.
+ */
+test("no unbounded git verb reaches the synchronous runner during a whole loom lifecycle", async () => {
+  const w = world({ program: baseProgram({ neverTouch: [".env*"] }) });
+  w.repo.diffFiles = ["apps/engine/src/state.ts"];
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "https://example.test/pr/9" });
+
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+  expect(w.only().state).toBe("published");
+
+  const blocking = w.syncGitCalls.filter(
+    (args) => args[0] === "fetch" || args[0] === "rebase" || args[0] === "diff" || args[0] === "rev-list",
+  );
+  expect(blocking).toEqual([]);
+  // And they DID run — otherwise this test passes by the gate never happening.
+  const asked = w.gitCalls.map((args) => args.join(" "));
+  expect(asked.some((verb) => verb === "fetch origin main")).toBe(true);
+  expect(asked.some((verb) => verb.startsWith("rebase "))).toBe(true);
+  expect(asked.some((verb) => verb.startsWith("diff --name-only"))).toBe(true);
+  expect(asked.some((verb) => verb.startsWith("rev-list --count"))).toBe(true);
+});
+
+/**
+ * THE POINT OF ALL OF IT, ASSERTED BY ORDER RATHER THAN BY A CLOCK.
+ *
+ * A timer armed before the gate starts fires while the gate's `fetch` is still
+ * outstanding. That ordering is impossible when the fetch is `execFileSync`:
+ * the whole fetch would run inside the `gateLoom(...)` call expression, before
+ * control ever came back to this test, so `git ran` would be first in the list
+ * and the timer could not fire until it was done.
+ *
+ * No sleeps and no thresholds — the release of the fetch is explicit, so the
+ * sequence is the same on a loaded machine as on an idle one.
+ */
+test("a gate whose fetch has not answered has already handed the event loop back", async () => {
+  const order: string[] = [];
+  let releaseFetch: (() => void) | null = null;
+
+  const exec: LoomExec = async (input) => {
+    const argv = decodeGit(input);
+    if (argv?.[0] === "fetch") {
+      await new Promise<void>((resolve) => {
+        releaseFetch = resolve;
+      });
+      order.push("the fetch answered");
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    }
+    if (argv) return { code: 0, stdout: "", stderr: "", timedOut: false };
+    return { code: 0, stdout: "", stderr: "", timedOut: false };
+  };
+
+  const syncGit: GitRunner = (_cwd, args) => {
+    // Anything heavy arriving here is the regression: it would run to completion
+    // inside the call below, and the timer would be stuck behind it.
+    if (args[0] === "fetch" || args[0] === "rebase") order.push(`the synchronous runner ran ${args[0]}`);
+    if (args.join(" ").startsWith("rev-parse --verify --quiet origin/")) return { status: 1, stdout: "", stderr: "" };
+    return ok();
+  };
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-loom-loop-"));
+  roots.push(directory);
+  const at = new Date("2026-08-20T02:00:00.000Z");
+  const deps = {
+    paths: loomPaths(directory),
+    exec,
+    git: syncGit,
+    now: () => at,
+    projectRoot: () => directory,
+  };
+  const loom: Loom = {
+    id: "loom_loop",
+    projectId: PROJECT,
+    item: "issue-1",
+    title: "keep the loop free",
+    state: "gating",
+    worktreePath: directory,
+    branch: "t3code/keep-the-loop-free",
+    attempts: 0,
+    ladderRung: 0,
+    createdAt: at.getTime(),
+    updatedAt: at.getTime(),
+  };
+
+  const timerFired = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      order.push("a timer fired");
+      resolve();
+    }, 0);
+  });
+
+  const gating = gateLoom(deps, loom, baseProgram({ gates: [], neverTouch: [] }));
+  order.push("the gate handed control back");
+  await timerFired;
+  (releaseFetch as unknown as () => void)();
+  const verdict = await gating;
+
+  expect(verdict.verdict).toBe("publish");
+  expect(order[0]).toBe("the gate handed control back");
+  expect(order.indexOf("a timer fired")).toBeGreaterThanOrEqual(0);
+  expect(order.indexOf("a timer fired")).toBeLessThan(order.indexOf("the fetch answered"));
+});
+
+// ── killed is not failed ────────────────────────────────────────────────────
+
+test("a rebase killed at the deadline is reported as unknown, not as a conflict, and the worktree is still cleaned", async () => {
+  const w = world();
+  // `rebase --abort` must NOT be caught by this: the cleanup is exactly what a
+  // killed rebase needs most.
+  w.repo.timeouts.add("rebase main");
+  w.script("gate", { code: 0 });
+
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+
+  const stuck = w.only();
+  expect(stuck.state).toBe("stuck");
+  expect(stuck.parkedReason).toContain("was killed");
+  expect(stuck.parkedReason).toContain("unknown");
+  // The two sentences a human must never be told about a killed rebase.
+  expect(stuck.parkedReason).not.toContain("conflicts:");
+  expect(stuck.parkedReason).not.toContain("exited 137");
+  expect(w.gitCalls.some((args) => args.join(" ") === "rebase --abort")).toBe(true);
+  // Nothing was verified and nothing was published on the strength of it.
+  expect(w.execCalls.some((call) => call.command.startsWith("gate"))).toBe(false);
+  expect(w.execCalls.some((call) => call.command.startsWith("publish"))).toBe(false);
+});
+
+test("a never-touch diff killed at the deadline parks rather than publishing", async () => {
+  const w = world({ program: baseProgram({ neverTouch: [".env*"] }) });
+  w.repo.timeouts.add("diff --name-only");
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "https://example.test/pr/4" });
+
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+
+  const parked = w.only();
+  // FAILS CLOSED. A check that could not run is not a check that passed, and a
+  // deadline is the newest way for it not to run.
+  expect(parked.state).toBe("parked");
+  expect(parked.parkedReason).toContain("was killed");
+  expect(parked.parkedReason).toContain("never-touch");
+  expect(w.execCalls.some((call) => call.command.startsWith("publish"))).toBe(false);
+});
+
+test("a fetch that never answers still gates against the local base and says so when the rebase then conflicts", async () => {
+  const w = world();
+  w.repo.timeouts.add("fetch");
+  w.repo.rebase = { status: 1, stdout: "CONFLICT (content): Merge conflict in README.md", stderr: "" };
+  w.script("gate", { code: 0 });
+
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+
+  const stuck = w.only();
+  expect(stuck.state).toBe("stuck");
+  // Degrades exactly as an unreachable remote already did — the rebase happened.
+  expect(w.gitCalls.some((args) => args[0] === "rebase")).toBe(true);
+  expect(stuck.parkedReason).toContain("CONFLICT (content)");
+  // And the human is told why the base they are being measured against may not
+  // be the one they think.
+  expect(stuck.parkedReason).toContain("as fresh as the last fetch");
+});
+
+test("a fetch that never answers does not by itself stop a clean branch from publishing", async () => {
+  const w = world();
+  w.repo.timeouts.add("fetch");
+  w.script("gate", { code: 0 });
+  w.script("publish", { stdout: "https://example.test/pr/5" });
+
+  await dispatchOne(w);
+  w.finishWorker();
+  await advanceLooms(w.deps, PROJECT);
+
+  expect(w.only().state).toBe("published");
 });
 
 test("the ladder is walked in order, each rung once, and past the last enabled rung the loom is asking", async () => {

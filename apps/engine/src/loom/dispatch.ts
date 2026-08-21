@@ -61,7 +61,7 @@ import {
 } from "./store";
 import { baseRefFor, gateLoom, publishLoom, type LoomGateDeps } from "./gate";
 import { dryRunReport, LEDGER_WINDOW, orchestratorPrompt, setupPrompt, workerPrompt } from "./prompt";
-import { withSlots, type LoomExec } from "./exec";
+import { DEFAULT_TIMEOUT_MS, execGit, withSlots, type LoomExec } from "./exec";
 import { createLoomRuns, type LoomRunHandle, type LoomRunRegistry } from "./run";
 import { createLoomSupervisor, type LoomSupervisor, type WorldRead } from "./supervisor";
 import type { TickDecision } from "@telar/engine-client";
@@ -661,7 +661,7 @@ async function advanceOne(deps: LoomTickDeps, loom: Loom, program: LoomProgram, 
       }
 
       // §4's done-detection, and the whole reason `sessionId` is recorded.
-      const commits = countCommits(deps, loom, program);
+      const commits = await countCommits(deps, loom, program);
       if (commits === null) {
         // See `countCommits`: unknown, and it must not be spoken as zero.
         return stick(
@@ -806,9 +806,16 @@ function stick(deps: LoomTickDeps, loom: Loom, reason: string): Loom {
  * tri-state as everything else here: unknown is not a value, it is the absence
  * of one.
  */
-function countCommits(deps: LoomTickDeps, loom: Loom, program: LoomProgram): number | null {
+async function countCommits(deps: LoomTickDeps, loom: Loom, program: LoomProgram): Promise<number | null> {
   if (!loom.worktreePath) return null;
-  const counted = deps.git(loom.worktreePath, ["rev-list", "--count", `${program.work.base}..HEAD`]);
+  // THROUGH THE ASYNC SHELL, like the gate's git and for the same reason: this
+  // walks history from the merge base, so its cost is set by how far the base
+  // has moved, and it runs on every pass of every loom that has a worktree.
+  // `rev-parse` next door stays synchronous — see `gate.ts`'s header for where
+  // the line is and why it is there.
+  const counted = await execGit(deps.exec, loom.worktreePath, ["rev-list", "--count", `${program.work.base}..HEAD`], {
+    timeoutMs: DEFAULT_TIMEOUT_MS,
+  });
   if (counted.status !== 0) return null;
   const value = Number.parseInt(counted.stdout.trim(), 10);
   return Number.isFinite(value) ? value : null;

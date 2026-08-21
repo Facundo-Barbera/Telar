@@ -29,6 +29,20 @@
  *   4. `shouldPublish(outcome, onUnknown)`. `unknown` is a policy question the
  *      Program answers; it is never inferred here.
  *
+ * ── WHICH GIT RUNS WHERE, AND WHY THE LINE IS NOT ARBITRARY ─────────────────
+ * `deps.git` is `execFileSync`: it blocks the daemon's event loop for as long as
+ * git takes, and while it blocks, every cockpit request waits. The line drawn
+ * here is COST, not tidiness — anything whose duration is set by the network or
+ * by the size of the repository goes through the async `deps.exec` (`fetch`,
+ * `rebase`, `rebase --abort`, `diff --name-only`); a constant-time local ref
+ * read stays synchronous, because spawning a shell to avoid a sub-millisecond
+ * `rev-parse` costs more wall clock than the block it saves.
+ *
+ * The one thing that arrives with the shell is a TIMEOUT, and a timeout is
+ * `unknown` — never `fail`. A rebase that was killed at the deadline has not
+ * conflicted, and saying it did would send a human to resolve a conflict that
+ * does not exist. Every message below distinguishes the two.
+ *
  * ── WHAT THIS FILE WILL NOT DO, EVER ────────────────────────────────────────
  * It never merges. It never pushes to base. It never force-pushes. The terminal
  * happy state is an open pull request that a human merges in the morning (§3.5),
@@ -40,7 +54,10 @@ import type { GitRunner } from "../worktree";
 import { classifyExit, decideAfterGates, shouldPublish, suiteUnknownPolicy } from "./gates";
 import { transitionLoom } from "./machine";
 import { appendLedger, writeLoom, type LoomPaths } from "./store";
-import { GATE_TIMEOUT_MS, withSlots, type LoomExec } from "./exec";
+import { DEFAULT_TIMEOUT_MS, execGit, GATE_TIMEOUT_MS, withSlots, type LoomExec } from "./exec";
+
+const GATE_TIMEOUT_LABEL = `${Math.round(GATE_TIMEOUT_MS / 60_000)} minutes`;
+const FETCH_TIMEOUT_LABEL = `${Math.round(DEFAULT_TIMEOUT_MS / 1_000)}s`;
 
 export type LoomGateDeps = {
   paths: LoomPaths;
@@ -77,6 +94,11 @@ function requireRoot(deps: LoomGateDeps, loom: Loom): string {
  * `origin/<base>` WHEN IT EXISTS, `<base>` otherwise. A project with no remote
  * is a first-class case (§3.8) and must not be broken by a fetch that could
  * never have worked.
+ *
+ * SYNCHRONOUS ON PURPOSE, and the only git left in this file that is. It reads
+ * one ref out of `packed-refs` or a loose file: bounded by neither the network
+ * nor the repository, and quicker than the `fork` it would take to run it
+ * through a shell instead. See the header.
  */
 export function baseRefFor(deps: LoomGateDeps, cwd: string, base: string): string {
   const remote = deps.git(cwd, ["rev-parse", "--verify", "--quiet", `origin/${base}`]);
@@ -87,7 +109,7 @@ export async function rebaseOnBase(
   deps: LoomGateDeps,
   loom: Loom,
   program: LoomProgram,
-): Promise<{ ok: boolean; conflict?: string }> {
+): Promise<{ ok: boolean; reason?: string; baseNote?: string }> {
   const { worktree } = requireWorktree(loom);
   const root = requireRoot(deps, loom);
   const base = program.work.base;
@@ -96,13 +118,26 @@ export async function rebaseOnBase(
   // repo whose credentials expired — none of those are a reason to refuse to
   // gate. They only mean the base is as fresh as the last fetch, which is what
   // the local ref already says.
-  deps.git(root, ["fetch", "origin", base]);
+  //
+  // BOUNDED BY THE ORDINARY BUDGET RATHER THAN THE GATE'S. A gate may legitimately
+  // take fifteen minutes because it is a test suite; a fetch that has not answered
+  // in two is a network that is down, and waiting seven times longer for it buys
+  // nothing a human would want. Timing out here is not a failure — it degrades
+  // exactly the way an unreachable remote already does — but it IS carried out
+  // as `baseNote`, because "the base is stale" is the thing that explains an
+  // otherwise inexplicable result.
+  const fetched = await execGit(deps.exec, root, ["fetch", "origin", base], { timeoutMs: DEFAULT_TIMEOUT_MS });
 
   const ref = baseRefFor(deps, worktree, base);
-  const rebased = deps.git(worktree, ["rebase", ref]);
-  if (rebased.status === 0) return { ok: true };
+  const staleBase = fetched.timedOut
+    ? `The \`fetch\` of \`origin/${base}\` was still running after ${FETCH_TIMEOUT_LABEL} and was killed, so ${ref} is only as fresh as the last fetch that finished — nothing here says the remote is broken, only that it did not answer in time.`
+    : undefined;
+  const carry = staleBase ? { baseNote: staleBase } : {};
 
-  const conflict = [rebased.stdout, rebased.stderr]
+  const rebased = await execGit(deps.exec, worktree, ["rebase", ref], { timeoutMs: GATE_TIMEOUT_MS });
+  if (rebased.status === 0) return { ok: true, ...carry };
+
+  const output = [rebased.stdout, rebased.stderr]
     .map((text) => text.trim())
     .filter((text) => text !== "")
     .join("\n")
@@ -111,14 +146,32 @@ export async function rebaseOnBase(
   // LEAVE THE WORKTREE CLEAN. A worktree abandoned mid-rebase is unusable by
   // every later attempt AND by the human who opens it to look, and the rebase
   // state is not information anyone needs — the conflict text below is.
-  deps.git(worktree, ["rebase", "--abort"]);
+  //
+  // This one runs even when the rebase above was killed at the deadline, and
+  // especially then: a SIGKILLed rebase is the case that leaves `.git/rebase-merge`
+  // behind, so skipping the cleanup on a timeout would strand the worktree in
+  // precisely the state this line exists to prevent.
+  await execGit(deps.exec, worktree, ["rebase", "--abort"], { timeoutMs: GATE_TIMEOUT_MS });
+
+  // A KILLED REBASE HAS NOT CONFLICTED. Its exit code is an artefact of the kill
+  // and its output is however far it got, so reporting either as a conflict
+  // would invent a merge conflict for a human to go and resolve. The rung this
+  // parks at is the same; what it says there is not.
+  if (rebased.timedOut) {
+    return {
+      ok: false,
+      ...carry,
+      reason: `rebasing onto ${ref} was still running after ${GATE_TIMEOUT_LABEL} and was killed, so whether this branch conflicts is unknown — this is not a conflict and not a gate failure. The worktree was left clean; a slow or very large rebase is the usual cause.`,
+    };
+  }
 
   return {
     ok: false,
-    conflict:
-      conflict === ""
+    ...carry,
+    reason:
+      output === ""
         ? `rebasing ${loom.branch ?? "the branch"} onto ${ref} failed with no output`
-        : `rebasing onto ${ref} conflicts:\n${conflict}`,
+        : `rebasing onto ${ref} conflicts:\n${output}`,
   };
 }
 
@@ -172,16 +225,22 @@ export async function checkBoundaries(
   if (program.neverTouch.length === 0) return { ok: true, offending: [] };
 
   const ref = baseRefFor(deps, worktree, program.work.base);
-  const diff = deps.git(worktree, ["diff", "--name-only", `${ref}..HEAD`]);
+  const diff = await execGit(deps.exec, worktree, ["diff", "--name-only", `${ref}..HEAD`], {
+    timeoutMs: GATE_TIMEOUT_MS,
+  });
   if (diff.status !== 0) {
     // A DIFF THAT CANNOT BE READ IS NOT A CLEAN DIFF. Returning `ok` here would
     // make an unreadable repository the easiest way past the one check that is
     // terminal, which is the wrong direction for a rule whose whole purpose is
-    // to fail closed.
+    // to fail closed. A diff that was KILLED at the deadline is the same
+    // direction and a different sentence: nobody should go looking for a git
+    // error that was never reported.
     return {
       ok: false,
       offending: [
-        `the diff against ${ref} could not be read (git exited ${diff.status}), so the never-touch paths could not be checked`,
+        diff.timedOut
+          ? `the diff against ${ref} was still running after ${GATE_TIMEOUT_LABEL} and was killed, so the never-touch paths could not be checked`
+          : `the diff against ${ref} could not be read (git exited ${diff.status}), so the never-touch paths could not be checked`,
       ],
     };
   }
@@ -262,7 +321,14 @@ export async function gateLoom(
   | { verdict: "park"; reason: string; results: LoomGateResult[] }
 > {
   const rebase = await rebaseOnBase(deps, loom, program);
-  if (!rebase.ok) return { verdict: "stuck", reason: rebase.conflict ?? "the rebase failed", results: [] };
+  if (!rebase.ok) {
+    // The stale-base note rides along with the conflict rather than replacing
+    // it: the conflict text is what the human acts on, and "the base you are
+    // measured against is older than you think" is what stops them acting on it
+    // twice.
+    const reason = [rebase.reason ?? "the rebase failed", rebase.baseNote].filter((line) => line).join("\n\n");
+    return { verdict: "stuck", reason, results: [] };
+  }
 
   const boundaries = await checkBoundaries(deps, loom, program);
   if (!boundaries.ok) {

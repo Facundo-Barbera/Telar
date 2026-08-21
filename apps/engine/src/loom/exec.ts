@@ -114,6 +114,69 @@ export function withSlots(
   return { ...rest, command: substitute(input.command, vars), env: { ...slotEnv(vars), ...(input.env ?? {}) } };
 }
 
+// ── git, run here rather than on the synchronous runner ─────────────────────
+
+/**
+ * THE ENGINE'S OWN GIT, ASYNCHRONOUSLY.
+ *
+ * `GitRunner` (`worktree.ts`) is `execFileSync`. For a `rev-parse` that is the
+ * right trade — a ref read is faster than the fork it would take to avoid it.
+ * For `fetch` and `rebase` it is not: those are network- and repository-sized,
+ * and a synchronous one stalls the daemon's event loop, which means it stalls
+ * every HTTP request the cockpit makes, at exactly the moment several looms are
+ * advancing at once. Those calls come through here instead.
+ *
+ * ── WHY ARGV DOES NOT GO INTO THE COMMAND STRING ────────────────────────────
+ * `LoomExec` runs a shell, so `git rebase ${ref}` would be a command-injection
+ * surface — and the values are not hypothetical: a branch prefix comes from the
+ * Program a human authored, and a ref comes back out of `git` itself. So argv
+ * takes the route this file's header already argues for `$TITLE` and `$BODY`:
+ * each argument is exported as `LOOM_ARG<n>` and the command string references
+ * it QUOTED. The shell dereferences without re-parsing, so a value containing
+ * `;`, a backtick or a newline stays exactly one argument, and nothing an
+ * attacker can write into a branch name reaches the shell as syntax.
+ *
+ * The consequence worth stating: the command string contains no data at all,
+ * only `git` and a fixed number of `"$LOOM_ARGn"` tokens. That is the property
+ * to test, not the prefix.
+ */
+export const ARG_PREFIX = `${ENV_PREFIX}ARG`;
+
+export function gitCommand(args: string[]): { command: string; env: Record<string, string> } {
+  const env: Record<string, string> = {};
+  const parts = ["git"];
+  args.forEach((arg, index) => {
+    const name = `${ARG_PREFIX}${index}`;
+    env[name] = arg;
+    parts.push(`"$${name}"`);
+  });
+  return { command: parts.join(" "), env };
+}
+
+/**
+ * `GitResult`'s shape plus the one thing a shell adds: a command can be killed
+ * for taking too long, which is `unknown` rather than a git failure and must not
+ * be read as one by the caller.
+ */
+export type LoomGitResult = { status: number; stdout: string; stderr: string; timedOut: boolean };
+
+export async function execGit(
+  exec: LoomExec,
+  cwd: string,
+  args: string[],
+  options: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<LoomGitResult> {
+  const { command, env } = gitCommand(args);
+  const run = await exec({
+    command,
+    cwd,
+    env,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+  return { status: run.code, stdout: run.stdout, stderr: run.stderr, timedOut: run.timedOut };
+}
+
 /**
  * The real one. A shell, because the Program's commands are shell — same trust
  * level as a `package.json` script, which is the spec's decided posture.

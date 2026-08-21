@@ -655,11 +655,35 @@ says what it will do.
 Shipped with these open, deliberately and in writing, because an invisible
 limitation is the thing this whole design argues against.
 
-**`defaultGitRunner` is `execFileSync`.** A large rebase blocks the daemon's event
-loop. Pre-existing and engine-wide, but the loom path amplifies it: `provisionLoom`
-runs a worktree cut, a `checkout -B` and a `branch -D` synchronously, with the
-Program's `setup` sandwiched between them. At `concurrency: 2` or more, several
-looms provision in the same advance pass and serialise.
+**`defaultGitRunner` is `execFileSync`, and still is off the loom path.**
+`GitRunner` (`apps/engine/src/worktree.ts:33`) is synchronous by type and is used
+across `git.ts` (`sessionDiff`, `gitOverview`) and `state.ts`, so every one of
+those calls still blocks the daemon's event loop. Making the type async is an
+engine-wide refactor of the whole cockpit's git surface and was deliberately not
+attempted.
+
+What the loom itself runs no longer goes through it. The calls whose duration is
+set by the network or by the size of the repository — `fetch origin <base>`,
+`rebase <ref>`, `rebase --abort`, `diff --name-only <ref>..HEAD`
+(`apps/engine/src/loom/gate.ts`) and `rev-list --count <base>..HEAD`
+(`apps/engine/src/loom/dispatch.ts`, `countCommits`) — run through `execGit`
+(`apps/engine/src/loom/exec.ts`), which is the async `LoomExec` every other loom
+command already uses. Argv never enters the shell string: each argument is
+exported as `LOOM_ARG<n>` and referenced quoted, the same mechanism and the same
+reason as `$TITLE` and `$BODY` in §1.
+
+What stays synchronous is the constant-time half: `rev-parse --verify --quiet`,
+`checkout -B`, `branch -D`, and `createSessionWorktree` itself, which is shared
+with the ordinary session path and whose signature is the engine-wide refactor
+above. So `provisionLoom` still cuts a worktree synchronously, and at
+`concurrency: 2` or more the worktree cuts in one advance pass still serialise —
+what no longer serialises with them is the fetch, the rebase and the diff.
+
+One consequence is new and is a feature: those calls now carry `exec.ts`'s
+deadline. A killed `rebase` is `unknown`, not a conflict, and says so; a killed
+`diff` parks rather than passing the never-touch check; a `fetch` that does not
+answer in 120s degrades exactly as an unreachable remote already did, and the
+stale base is named in the reason if the rebase then conflicts.
 
 **Nothing has run overnight yet.** Every claim in this document is backed by tests
 and by `scripts/loom-demo.ts`, in which the model's decision and the worker's edit
