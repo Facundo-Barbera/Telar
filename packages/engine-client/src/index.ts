@@ -73,6 +73,7 @@ import {
   type LedgerEntry,
   type Loom,
   type LoomOverview,
+  type OverviewTriageEntry,
   type LoomProgramDoc,
   type LoomRun,
   type LoomWatch,

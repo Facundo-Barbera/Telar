@@ -31,8 +31,6 @@ export type SeenGroup = {
   classification: Classification;
   /** What this pile IS, in the human's words. */
   label: string;
-  /** Why it is not an error list — the pane is an asset, not a backlog of failures. */
-  blurb: string;
   entries: TriageEntry[];
 };
 
@@ -48,42 +46,55 @@ export type DeckSections = {
 };
 
 /**
- * The order the piles are read in, and the words that make each one legible.
+ * The order the piles are read in, and the words that name each one.
  *
  * THE MIDDLE THREE ARE THE FINDING. In the repo this design was tested against,
  * 4 of 37 items were dispatchable and nothing in the tracker distinguished the
  * other 33 — so the classification is the product, and this pane is where it is
- * delivered. The blurbs say what the pile is FOR, because a list of reasons
- * with no framing reads as 33 failures instead of 33 answers.
+ * delivered. Each pile gets a LABEL and nothing else: the paragraph that used
+ * to explain why a pile is an asset rather than an error list was the designer
+ * justifying himself inside the UI. The reasoning lives in
+ * `docs/plans/loom-build.md`.
  */
-const CLASSIFICATIONS: { id: Classification; label: string; blurb: string }[] = [
-  {
-    id: "needs-decision",
-    label: "Needs a decision",
-    blurb: "Judgment, not work. An agent cannot close these no matter how long it runs.",
-  },
-  {
-    id: "needs-credentials",
-    label: "Needs credentials or access",
-    blurb: "Cannot be finished from a worktree — something live is required.",
-  },
-  {
-    id: "needs-split",
-    label: "Too large for one unit",
-    blurb: "Real work, wrong shape. Split one of these and it becomes dispatchable.",
-  },
-  { id: "never", label: "Never", blurb: "Marked off-limits. Read once, and not read again." },
-  {
-    id: "dispatchable",
-    label: "Ready, waiting for a slot",
-    blurb: "Understood and takeable. Nothing is blocking these but concurrency.",
-  },
-  { id: "done", label: "Already done", blurb: "Seen, and there is nothing left to do." },
+const CLASSIFICATIONS: { id: Classification; label: string }[] = [
+  { id: "needs-decision", label: "Needs a decision" },
+  { id: "needs-credentials", label: "Needs credentials or access" },
+  { id: "needs-split", label: "Too large for one unit" },
+  { id: "never", label: "Never" },
+  { id: "dispatchable", label: "Ready, waiting for a slot" },
+  { id: "done", label: "Already done" },
 ];
 
 /** The projects on the overview, as a name lookup. Falls back to the id. */
 function projectNames(overview: Pick<LoomOverview, "projects">): Map<string, string> {
   return new Map(overview.projects.map((project) => [project.projectId, project.name || project.projectId]));
+}
+
+/**
+ * ONE PROJECT'S SLICE OF THE SNAPSHOT — a FILTER, never a second read.
+ *
+ * `/looms/[projectId]`'s Deck segment shows the same four piles as `/looms`,
+ * narrowed to one project. It is spelled here rather than in the component
+ * because the triage arm has a rule in it, and a rule in JSX is a rule nothing
+ * tests.
+ *
+ * THAT RULE: a triage entry names its owner (`OverviewTriageEntry.projectId`),
+ * because the per-project caches on disk are MERGED into one array on the way
+ * out and an unattributed merge is underivable. An entry with NO owner — an
+ * engine older than that field — belongs to the only project when there is
+ * exactly one, which is a fact rather than a guess; with two it is genuinely
+ * unattributable and appears on the whole-deck view alone. It is never guessed
+ * onto a project that may not own it.
+ */
+export function scopeOverview(overview: LoomOverview, projectId: string): LoomOverview {
+  const only = overview.projects.length === 1 && overview.projects[0]?.projectId === projectId;
+  return {
+    ...overview,
+    projects: overview.projects.filter((project) => project.projectId === projectId),
+    looms: overview.looms.filter((loom) => loom.projectId === projectId),
+    triage: overview.triage.filter((entry) => (entry.projectId ? entry.projectId === projectId : only)),
+    runs: overview.runs.filter((run) => run.projectId === projectId),
+  };
 }
 
 export function deckSections(overview: LoomOverview): DeckSections {
@@ -132,16 +143,27 @@ export function deckSections(overview: LoomOverview): DeckSections {
   const closed = looms.filter((loom) => loom.state === "parked" || loom.state === "cancelled");
 
   /**
-   * SEEN AND NOT TAKEN. An item currently held by a live loom is showing in
-   * Working, so it is excluded here — otherwise the same string appears twice
-   * on one page saying two different things about itself.
+   * SEEN AND NOT TAKEN — AND THE PROJECTION IS WHAT RECONCILES.
+   *
+   * The triage cache records what the LAST CLASSIFICATION PASS thought, and is
+   * deliberately not invalidated against loom state: an entry is re-read only
+   * when the item's own `updatedAt` moves, which is what makes reading a whole
+   * thread affordable. So it will go on saying `dispatchable` about an item
+   * that has since been dispatched, gated and published — correctly, because
+   * nothing about the ITEM changed.
+   *
+   * THE RULE: an item that has a loom AT ALL has been taken, `parked` and
+   * `cancelled` included. Those two are the tempting exception and they do not
+   * come back, because the loom is already drawn in **Stopped, with a reason**
+   * — the pile's copy would be a stale classification beside a written record
+   * of what actually happened. Nothing is dropped; every loom state lands in
+   * some section, and `loom-deck.test.ts` pins both halves together.
    */
-  const held = new Set(inFlight.map((loom) => loom.item));
+  const taken = new Set(looms.map((loom) => loom.item));
   const seen = CLASSIFICATIONS.map((group) => ({
     classification: group.id,
     label: group.label,
-    blurb: group.blurb,
-    entries: overview.triage.filter((entry) => entry.classification === group.id && !held.has(entry.item)),
+    entries: overview.triage.filter((entry) => entry.classification === group.id && !taken.has(entry.item)),
   })).filter((group) => group.entries.length > 0);
 
   const active = inFlight.length > 0 || overview.runs.some((run) => run.state === "running");

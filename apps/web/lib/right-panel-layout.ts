@@ -29,31 +29,3 @@ export const RIGHT_PANEL_MAIN_MIN_WIDTH = 384;
  * surface you were not looking at.
  */
 export const SPOOL_PANEL_WIDTH_STORAGE_KEY = "spool-panel";
-
-/**
- * THE ORCHESTRATOR'S PROGRAM/LEDGER PANEL — `/looms/[projectId]`.
- *
- * Its own remembered width, for the same reason the Spool's panel has one: the
- * Program is a column of short rows and the cockpit's panel is sized for a
- * diff, so one shared number would mean widening to read a diff also widened
- * the Program you were not looking at.
- *
- * IT DEFAULTS TO THE COCKPIT PANEL'S *FLOOR*, NOT ITS DEFAULT, and that is the
- * whole fix: the orchestrator already spends a rail on its looms before the
- * conversation gets a pixel, so a panel that opens at `RIGHT_PANEL_DEFAULT_WIDTH`
- * leaves the centre — the reason the page exists — narrower than itself.
- */
-export const PROGRAM_PANEL_WIDTH_STORAGE_KEY = "loom-program-panel";
-export const PROGRAM_PANEL_DEFAULT_WIDTH = RIGHT_PANEL_MIN_WIDTH;
-
-/**
- * Below this WINDOW width the loom rail, the conversation and the Program
- * cannot all hold their floors at once, so the Program starts closed rather
- * than crushing the conversation to a vertical ribbon of single words.
- *
- * The arithmetic, and why it is not a guess: the app shell's rail is 16rem, the
- * loom rail is ~210px, the conversation's floor is `RIGHT_PANEL_MAIN_MIN_WIDTH`
- * and the panel's is `RIGHT_PANEL_MIN_WIDTH` — 1234px, rounded to the 1280 the
- * cockpit already calls narrow so the two surfaces fold at the same place.
- */
-export const LOOM_NARROW_WINDOW = 1280;

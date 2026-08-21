@@ -53,6 +53,7 @@ import {
   type LoomRun,
   type LoomUnreadable,
   type LoomWatch,
+  type OverviewTriageEntry,
   type TriageEntry,
   type ModelCatalogue,
   type SessionDiff,
@@ -2638,7 +2639,7 @@ export class EngineStore {
    */
   loomOverview(): LoomOverview {
     const { looms, unreadable } = listLoomsInStore(this.loomStore);
-    const triage: TriageEntry[] = [];
+    const triage: OverviewTriageEntry[] = [];
     const projects: LoomProjectSummary[] = [];
 
     for (const project of this.listProjects()) {
@@ -2650,7 +2651,15 @@ export class EngineStore {
       // orchestrator session id live in the same file precisely so a summary
       // cannot report a running watch beside a session from before it started.
       const record = readLoomWatchRecord(this.loomStore, project.id);
-      triage.push(...Object.values(readLoomTriage(this.loomStore, project.id)));
+      // ATTRIBUTED ON THE WAY IN. The per-project caches merge into one array
+      // here, so the owner has to ride along or the surface cannot tell one
+      // project's classification from another's without a second read.
+      triage.push(
+        ...Object.values(readLoomTriage(this.loomStore, project.id)).map((entry) => ({
+          ...entry,
+          projectId: project.id,
+        })),
+      );
       projects.push({
         projectId: project.id,
         name: project.name,

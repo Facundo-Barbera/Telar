@@ -1,66 +1,58 @@
 "use client";
 
 /**
- * THE PROGRAM TAB — the thesis of this whole feature.
+ * THE PROGRAM — one of the four segments of `/looms/[projectId]`, and the
+ * thesis of the whole feature.
  *
  *   *The orchestrator helps you PROGRAM the automation; it does not merely run
  *   it.*
  *
- * Everything else in the loom UI reports. This surface is where the human
- * changes what will happen tonight, and it is deliberately the only new panel
- * in the feature: the conversation beside it is a stock Telar session, and the
- * rail is a list of sessions. The one new thing is the artifact.
+ * IT IS A FILE, AND THE FILE IS ALWAYS VISIBLE. `.telar/loom.md` lives in the
+ * project repo; blocks are the comfortable way to read it and "Source" is the
+ * honest one, one click away at all times.
  *
- * ── IT IS A FILE, AND THE FILE IS ALWAYS VISIBLE ─────────────────────────────
- * `.telar/loom.md` lives in the project repo. Blocks are the comfortable way to
- * read it; "Source" is the honest one, and it is one click away at all times
- * because the artifact is meant to be read at 2am by someone working out why it
- * did something stupid. A UI that could show you a rendering but not the text
- * would be back to a config window nobody can diff.
- *
- * ── EVERY WRITE IS A SURGICAL EDIT, ROUND-TRIPPED BY THE ENGINE ──────────────
+ * EVERY WRITE IS A SURGICAL EDIT, ROUND-TRIPPED BY THE ENGINE.
  * `PUT /api/looms/program` takes MARKDOWN. A block editor here rewrites only
  * the bytes that changed (`lib/loom-program-markdown.ts`) and re-renders from
  * the engine's response, never from what it sent — so the parser's warnings
  * arrive with the save instead of being hidden by an optimistic echo.
  *
- * ── GATES ARE NEVER A BOOLEAN ────────────────────────────────────────────────
- * Each gate shows its EXIT-CODE TABLE and the `on unknown` policy. There is no
- * pass/fail switch anywhere on this panel, because an undeclared exit code
- * means "could not verify", not "failed", and a switch cannot say that.
+ * GATES ARE NEVER A BOOLEAN. Each gate shows its EXIT-CODE TABLE and the
+ * `on unknown` policy; an undeclared exit code means "could not verify", not
+ * "failed", and a switch cannot say that.
+ *
+ * ── NO PROSE ─────────────────────────────────────────────────────────────────
+ * This surface used to explain itself in paragraphs — what a command slot is
+ * handed, why the interval doubles, why a visible assumption is survivable.
+ * That is the designer justifying himself inside the UI. Headings, labels and
+ * counts survive; the reasoning lives in `docs/plans/loom-build.md`. What is
+ * NOT prose and stays: the cost sentence under the setup button, and any
+ * sentence the engine wrote (a refusal, a parser warning, a gate's own words).
  */
 
-import { useRef, useState, type CSSProperties } from "react";
+import { useState } from "react";
 import {
   BookOpenIcon,
-  ChevronRightIcon,
   ClockIcon,
-  FileTextIcon,
   FlaskConicalIcon,
   HandIcon,
   ListTreeIcon,
-  PanelRightCloseIcon,
-  PanelRightOpenIcon,
   PauseIcon,
   PlayIcon,
-  ScrollTextIcon,
   ShieldCheckIcon,
   SparklesIcon,
   TerminalIcon,
 } from "lucide-react";
-import type { LedgerEntry, LoomProgram, LoomProgramDoc, LoomProjectSummary, LoomRun } from "@telar/engine-client";
-import { RightPanelResizeHandle } from "@/components/right-panel";
+import type { LoomProgram, LoomProgramDoc, LoomProjectSummary, LoomRun } from "@telar/engine-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtAgo } from "@/lib/format";
-import { PROGRAM_PANEL_DEFAULT_WIDTH, PROGRAM_PANEL_WIDTH_STORAGE_KEY } from "@/lib/right-panel-layout";
-import { useSidebarPrefs } from "@/lib/sidebar-width";
 import { gateExitRows, UNDECLARED_EXIT_SENTENCE } from "@/lib/loom-gate";
 import { dryRunLoom, ensureLoomSession, setLoomWatch } from "@/lib/loom-actions";
 import { useLoomProgram } from "@/lib/loom-program";
-import { useLoomLedger, useLoomWork } from "@/lib/loom-overview";
+import { useLoomWork } from "@/lib/loom-overview";
 import {
   setBullets,
   setCommand,
@@ -73,184 +65,71 @@ import {
 } from "@/lib/loom-program-markdown";
 import { GateToneChip } from "./gate-chip";
 
-/**
- * THE TAB STRIP, in `right-panel.tsx`'s idiom: a `SURFACES` array of `{id,
- * label, icon, blurb}` and a union derived from it. One entry today. The array
- * shape is what makes a second tab an addition rather than a refactor, which is
- * the whole reason that file spells it this way.
- */
-const SURFACES = [
-  { id: "program", label: "Program", icon: FileTextIcon, blurb: "What it will do, in your words. The file in the repo." },
-  /**
-   * THE LEDGER IS HERE BECAUSE THE TICK HAS NO TRANSCRIPT.
-   *
-   * The orchestrator session next door is a conversation. A TICK is not: it is
-   * a fresh instance every time, it remembers nothing, and that is exactly why
-   * cost does not ramp with uptime. So "what did it do at 3am" has no chat to
-   * open, and offering one would be an affordance with nothing behind it. This
-   * append-only journal is what an agent that deliberately does not remember
-   * leaves behind, and it belongs where a person would have looked for the
-   * conversation.
-   */
-  { id: "ledger", label: "Ledger", icon: ScrollTextIcon, blurb: "What the ticks did. A tick keeps no transcript; this is the record." },
-] as const;
-
-type PanelTab = (typeof SURFACES)[number]["id"];
-
-/** The four slots and what each one is handed. Substitution is literal `$NAME`
- *  replacement into a string run through the shell — the same trust level as a
- *  `package.json` script, and the reason the vars are shown rather than hidden. */
-const SLOTS: { id: CommandSlot; label: string; vars: string[]; contract: string }[] = [
-  {
-    id: "probe",
-    label: "probe",
-    vars: [],
-    contract: "One cheap line to stdout. That line is the fingerprint. No model runs. A non-zero exit means “unknown, do not wake”.",
-  },
-  { id: "list", label: "list", vars: [], contract: "Prints the candidate work items, however this project wants to." },
-  { id: "detail", label: "detail", vars: ["$ITEM"], contract: "Everything needed to understand one item." },
-  {
-    id: "publish",
-    label: "publish",
-    vars: ["$BRANCH", "$TITLE", "$BODY", "$BASE"],
-    contract: "Makes the work visible. Exit 0 means published; the first URL on stdout is recorded.",
-  },
+/** The four slots and the variables each is handed. Substitution is literal
+ *  `$NAME` replacement into a string run through the shell — the same trust
+ *  level as a `package.json` script, and the reason the vars are shown. */
+const SLOTS: { id: CommandSlot; label: string; vars: string[] }[] = [
+  { id: "probe", label: "probe", vars: [] },
+  { id: "list", label: "list", vars: [] },
+  { id: "detail", label: "detail", vars: ["$ITEM"] },
+  { id: "publish", label: "publish", vars: ["$BRANCH", "$TITLE", "$BODY", "$BASE"] },
 ];
 
 /**
- * THE PANEL IS A COLUMN OF THE ROOM, AND THE ROOM BELONGS TO THE CONVERSATION.
+ * THE PROGRAM, AS THE WHOLE CONTENT COLUMN.
  *
- * This used to be `w-[360px] shrink-0` and nothing else, which reads as modest
- * and is not: a fixed, unshrinkable column takes its 360px off the top and the
- * CENTRE absorbs every pixel the window does not have. Inside the app shell's
- * own 16rem rail plus this page's 210px loom rail, a 900px window left the
- * conversation 74px wide — the setup invitation rendered as one word per line.
- *
- * So it borrows the cockpit panel's three-part guard wholesale rather than
- * inventing a fourth spelling of it (`lib/right-panel-layout.ts`):
- *
- *   w-(--right-panel-width)      a REMEMBERED width, dragged by the shared handle
- *   min-w-80                     a floor, below which a panel is a column of truncation
- *   max-w-[calc(100%-24rem)]     the conversation's floor, in CSS, for when the
- *                                WINDOW shrinks rather than the handle moving
- *
- * The last of those is the one that was missing, and it is the whole bug: 24rem
- * is `RIGHT_PANEL_MAIN_MIN_WIDTH`, the same number that clamps the drag, so the
- * two cannot disagree about how little conversation is too little.
- *
- * AND IT CLOSES. Below `LOOM_NARROW_WINDOW` there is no arrangement of three
- * columns that leaves all three usable, so the orchestrator starts it shut and
- * leaves a rail behind that says so — an auxiliary surface that cannot get out
- * of the way is not auxiliary.
- *
- * `alone` IS THE OTHER HALF OF THAT, and it is why the floors above are not the
- * end of it. `min-width` beats `max-width` in CSS, so on a narrow window a
- * person who opens the panel anyway gets `min-w-80` against a room that cannot
- * pay for it, and the conversation is back to a ribbon — the exact bug, just
- * one click further away. Below the threshold the panel therefore takes the
- * WHOLE room and the conversation steps behind the toggle: two usable
- * arrangements you choose between, rather than one unusable one.
+ * This used to be a resizable `<aside>` with a remembered width, a close
+ * button and a rail to reopen it from — a THIRD column beside the app sidebar
+ * and the conversation, which the stock cockpit then made a fourth and a
+ * fifth. All of that chrome is gone: the page is two columns and this is one
+ * segment of the second, so it has no width to negotiate and nothing to get
+ * out of the way of. The command slots and the exit-code table get the room
+ * that argument used to cost.
  */
-export function ProgramPanel({
-  project,
-  now = 0,
-  open,
-  alone = false,
-  onOpenChange,
-}: {
-  project?: LoomProjectSummary;
-  now?: number;
-  open: boolean;
-  /** When open, take the whole room rather than a column of it. */
-  alone?: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
+export function ProgramView({ project, now = 0 }: { project?: LoomProjectSummary; now?: number }) {
   const projectId = project?.projectId;
-  const panelRef = useRef<HTMLElement | null>(null);
-  const prefs = useSidebarPrefs(PROGRAM_PANEL_WIDTH_STORAGE_KEY);
-  const width = prefs.width ?? PROGRAM_PANEL_DEFAULT_WIDTH;
   const { doc, loading, saving, error, save } = useLoomProgram(projectId);
-  const [tab, setTab] = useState<PanelTab>("program");
   const [showSource, setShowSource] = useState(false);
   const assumed = doc?.program?.assumed ?? [];
 
-  if (!open) return <ProgramPanelRail assumed={assumed.length} onOpen={() => onOpenChange(true)} />;
-
   return (
-    <aside
-      ref={panelRef}
-      aria-label="Program and ledger"
-      style={alone ? undefined : ({ "--right-panel-width": `${width}px` } as CSSProperties)}
-      className={`relative flex flex-col border-l border-border/70 bg-muted/20 ${
-        alone ? "min-w-0 flex-1" : "w-(--right-panel-width) min-w-80 max-w-[calc(100%-24rem)] shrink-0"
-      }`}
-    >
-      {!alone && <RightPanelResizeHandle panelRef={panelRef} storageKey={PROGRAM_PANEL_WIDTH_STORAGE_KEY} />}
-
-      <div className="flex min-w-0 shrink-0 items-center gap-3 border-b border-border/70 px-3 pt-2 text-[11px]">
-        {SURFACES.map((surface) => (
-          <button
-            key={surface.id}
-            type="button"
-            title={surface.blurb}
-            onClick={() => setTab(surface.id)}
-            className={`-mb-px flex shrink-0 items-center gap-1.5 pb-1.5 ${
-              tab === surface.id ? "border-b-2 border-primary font-medium text-foreground" : "text-muted-foreground/60"
-            }`}
-          >
-            <surface.icon className="size-3" />
-            {surface.label}
-          </button>
-        ))}
-        <div className="mb-1 ml-auto flex shrink-0 items-center gap-1.5">
-          {/* §4.4 — an assumption you can see is survivable. The badge is how it
-              stays visible from a panel that is not open. */}
+    <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <div className="mx-auto max-w-5xl space-y-2 px-4 py-3">
+        <div className="flex items-baseline gap-2">
+          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
+            {doc?.path ?? ".telar/loom.md"}
+          </span>
           {assumed.length > 0 && (
             <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
               {assumed.length} assumed
             </Badge>
           )}
-          {tab === "program" && (
-            <button
-              type="button"
-              onClick={() => setShowSource(!showSource)}
-              className={`rounded px-1.5 py-0.5 text-[10px] ${
-                showSource ? "bg-accent text-foreground" : "text-muted-foreground/70 hover:text-foreground"
-              }`}
-            >
-              Source
-            </button>
-          )}
           <button
             type="button"
-            onClick={() => onOpenChange(false)}
-            aria-label="Hide the Program"
-            title="Hide the Program"
-            className="rounded p-0.5 text-muted-foreground/70 transition-colors hover:text-foreground"
+            onClick={() => setShowSource(!showSource)}
+            aria-pressed={showSource}
+            className={`ml-auto shrink-0 rounded px-1.5 py-0.5 text-[11px] ${
+              showSource ? "bg-accent text-foreground" : "text-muted-foreground/70 hover:text-foreground"
+            }`}
           >
-            <PanelRightCloseIcon className="size-3.5" />
+            Source
           </button>
         </div>
-      </div>
 
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2.5">
-        {tab === "program" && loading && <p className="text-[11px] text-muted-foreground">Reading the Program…</p>}
+        {loading && <p className="text-[11px] text-muted-foreground">Reading the Program…</p>}
         {!loading && !projectId && <p className="text-[11px] text-muted-foreground">No project selected.</p>}
+        {/* THE ENGINE'S OWN WORDS, NEVER TRUNCATED TO A CODE. */}
         {error && <p className="rounded-md bg-destructive/10 px-2 py-1 text-[11px] text-destructive">{error}</p>}
 
-        {tab === "program" && doc && !doc.exists && (
-          <div className="rounded-lg border border-info/40 bg-info/5 px-2.5 py-2">
-            <p className="text-[11px] leading-relaxed">
-              There is no Program at <span className="font-mono">{doc.path}</span> yet. Everything below is the
-              default. Ask the orchestrator to draft one — it looks at the project first and asks only about what it
-              cannot determine.
-            </p>
-          </div>
+        {doc && !doc.exists && (
+          <p className="rounded-lg border border-info/40 bg-info/5 px-2.5 py-1.5 text-[11px]">
+            No Program at <span className="font-mono">{doc.path}</span> yet — everything below is the default.
+          </p>
         )}
 
-        {tab === "program" && doc?.warnings && doc.warnings.length > 0 && (
-          <div className="rounded-lg border border-warning/40 bg-warning/5 px-2.5 py-2">
-            <p className="text-[11px] font-medium text-warning">The parser degraded {doc.warnings.length} thing(s):</p>
+        {doc?.warnings && doc.warnings.length > 0 && (
+          <div className="rounded-lg border border-warning/40 bg-warning/5 px-2.5 py-1.5">
+            <p className="text-[11px] font-medium text-warning">Degraded · {doc.warnings.length}</p>
             <ul className="mt-1 space-y-0.5">
               {doc.warnings.map((warning) => (
                 <li key={warning} className="text-[10px] leading-relaxed text-muted-foreground">
@@ -261,50 +140,13 @@ export function ProgramPanel({
           </div>
         )}
 
-        {tab === "ledger" ? (
-          <Ledger projectId={projectId} />
-        ) : showSource ? (
+        {showSource ? (
           <SourceBlock key={doc?.markdown ?? ""} doc={doc} saving={saving} onSave={save} />
         ) : (
           doc && <Blocks doc={doc} program={doc.program} saving={saving} onSave={save} project={project} now={now} />
         )}
       </div>
-    </aside>
-  );
-}
-
-/**
- * THE PANEL, SHUT — a rail, not a vanishing.
- *
- * A control that disappears when the thing it controls is hidden is how a
- * surface becomes unreachable at exactly the width where it was already hard to
- * find. The assumption count rides along, because §4.4's promise is that an
- * assumption stays visible from a panel that is not open.
- */
-function ProgramPanelRail({ assumed, onOpen }: { assumed: number; onOpen: () => void }) {
-  return (
-    <aside
-      aria-label="Program and ledger"
-      className="flex w-9 shrink-0 flex-col items-center gap-1.5 border-l border-border/70 bg-muted/20 py-2"
-    >
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label="Show the Program"
-        title="Show the Program"
-        className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-      >
-        <PanelRightOpenIcon className="size-3.5" />
-      </button>
-      {assumed > 0 && (
-        <span
-          title={`${assumed} assumed`}
-          className="rounded-full bg-warning/15 px-1 font-mono text-[9px] leading-4 text-warning"
-        >
-          {assumed}
-        </span>
-      )}
-    </aside>
+    </div>
   );
 }
 
@@ -326,11 +168,7 @@ function Blocks({
   const markdown = doc.markdown;
   return (
     <>
-      <Block icon={TerminalIcon} title="Where work comes from" sub="four commands, no integration">
-        <p className="mb-1.5 text-[10px] leading-relaxed text-muted-foreground/80">
-          These run on your machine, unattended. Substitution is literal <span className="font-mono">$NAME</span>{" "}
-          replacement into the string.
-        </p>
+      <Block icon={TerminalIcon} title="Where work comes from" sub={plural(SLOTS.length, "command")}>
         {SLOTS.map((slot) => (
           /* KEYED ON THE SAVED VALUE, which is React's own answer to "reset
              this component's state when a prop changes": a save remounts the
@@ -348,7 +186,7 @@ function Blocks({
         ))}
       </Block>
 
-      <Block icon={BookOpenIcon} title="How to read one" sub="prose, handed to the agent verbatim">
+      <Block icon={BookOpenIcon} title="How to read one">
         <ProseEditor
           key={program?.notes ?? ""}
           value={program?.notes ?? ""}
@@ -358,12 +196,9 @@ function Blocks({
         />
       </Block>
 
-      <Block icon={ShieldCheckIcon} title="What must pass" sub={`${program?.gates.length ?? 0} gate(s)`}>
+      <Block icon={ShieldCheckIcon} title="What must pass" sub={plural(program?.gates.length ?? 0, "gate")}>
         {(program?.gates ?? []).length === 0 ? (
-          <p className="text-[10px] leading-relaxed text-muted-foreground">
-            No gate declared, so nothing is verified before publishing. Add one in Source, or ask the orchestrator to
-            find the check this project already has.
-          </p>
+          <p className="text-[10px] text-muted-foreground">No gate declared — nothing is verified before publishing.</p>
         ) : (
           (program?.gates ?? []).map((gate, index) => (
             <GateBlock
@@ -378,12 +213,9 @@ function Blocks({
         )}
       </Block>
 
-      <Block icon={ListTreeIcon} title="When stuck" sub="the ladder — tried in order, each once">
-        <p className="mb-1.5 text-[10px] leading-relaxed text-muted-foreground/80">
-          Escalations go to the orchestrator first. Past the last rung that is on, the loom waits for you.
-        </p>
+      <Block icon={ListTreeIcon} title="When stuck" sub={plural((program?.ladder ?? []).length, "rung")}>
         {(program?.ladder ?? []).length === 0 ? (
-          <p className="text-[10px] text-muted-foreground">No rungs. Anything that stalls reaches you immediately.</p>
+          <p className="text-[10px] text-muted-foreground">No rungs — anything that stalls reaches you immediately.</p>
         ) : (
           <div className="space-y-1">
             {[...(program?.ladder ?? [])]
@@ -421,7 +253,7 @@ function Blocks({
         )}
       </Block>
 
-      <Block icon={HandIcon} title="Ask me only when" sub="the last valve">
+      <Block icon={HandIcon} title="Ask me only when">
         <ProseEditor
           key={(program?.askWhen ?? []).join("\n")}
           value={(program?.askWhen ?? []).join("\n")}
@@ -431,7 +263,7 @@ function Blocks({
         />
       </Block>
 
-      <Block icon={ClockIcon} title="When to look" sub="idle is free">
+      <Block icon={ClockIcon} title="When to look">
         <ScheduleEditor
           key={`${program?.watch.intervalSec ?? 300}:${program?.watch.backoffMaxSec ?? 3600}`}
           intervalSec={program?.watch.intervalSec ?? 300}
@@ -443,10 +275,7 @@ function Blocks({
       </Block>
 
       {(program?.assumed ?? []).length > 0 && (
-        <Block icon={SparklesIcon} title="Assumed — confirm" sub="what setup guessed" tone="info">
-          <p className="mb-1.5 text-[10px] leading-relaxed text-muted-foreground/80">
-            A wrong assumption you can see is survivable; an invisible one is not.
-          </p>
+        <Block icon={SparklesIcon} title="Assumed — confirm" sub={plural((program?.assumed ?? []).length, "assumption")} tone="info">
           <ul className="space-y-1">
             {(program?.assumed ?? []).map((assumption) => (
               <li key={assumption} className="text-[11px] leading-relaxed">
@@ -454,15 +283,17 @@ function Blocks({
               </li>
             ))}
           </ul>
-          <p className="mt-1.5 text-[10px] text-muted-foreground/70">
-            Confirm or correct these on the deck, where everything blocked on a person lives.
-          </p>
         </Block>
       )}
 
       {project && <DryRun project={project} />}
     </>
   );
+}
+
+/** A count and its noun. `1 gate(s)` is not a label, it is a shrug. */
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 function Block({
@@ -557,7 +388,6 @@ function CommandSlotEditor({
           {value === "" ? "click to set" : value}
         </button>
       )}
-      <p className="mt-0.5 text-[9px] leading-relaxed text-muted-foreground/60">{slot.contract}</p>
     </div>
   );
 }
@@ -738,10 +568,6 @@ function ScheduleEditor({
         />
         <span className="text-muted-foreground">s</span>
       </div>
-      <p className="text-[9px] leading-relaxed text-muted-foreground/60">
-        The interval doubles after each quiet probe and resets on any change. A probe costs one command and no model,
-        so a silent night is free.
-      </p>
       {dirty && (
         <Button
           size="sm"
@@ -823,7 +649,7 @@ function DryRun({ project }: { project: LoomProjectSummary }) {
       <div className="flex items-baseline gap-1.5 px-2.5 py-1.5">
         <FlaskConicalIcon className="size-3 shrink-0 translate-y-0.5 text-muted-foreground" />
         <span className="text-[12px] font-medium">Dry run</span>
-        <span className="truncate text-[10px] text-muted-foreground/70">nothing is dispatched</span>
+        <span className="truncate text-[10px] text-muted-foreground/70">dispatches nothing</span>
         <Button
           size="sm"
           className="ml-auto h-5 px-1.5 text-[10px]"
@@ -842,12 +668,7 @@ function DryRun({ project }: { project: LoomProjectSummary }) {
       </div>
       <div className="px-2.5 pb-2">
         {failed && <p className="text-[10px] text-destructive">{failed}</p>}
-        {!run && !failed && (
-          <p className="text-[10px] leading-relaxed text-muted-foreground">
-            Shows what it would do right now against live data — including the thing you did not think to say. Press
-            it after every correction.
-          </p>
-        )}
+        {!run && !failed && <p className="text-[10px] text-muted-foreground">Not run yet.</p>}
         {run && <RunReport run={run} />}
       </div>
     </section>
@@ -932,10 +753,6 @@ function SourceBlock({
 
   return (
     <section className="space-y-1">
-      <div className="flex items-baseline gap-1.5">
-        <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground/50" />
-        <span className="truncate font-mono text-[10px] text-muted-foreground">{doc?.path ?? ".telar/loom.md"}</span>
-      </div>
       <Textarea
         value={draft}
         spellCheck={false}
@@ -963,65 +780,7 @@ function SourceBlock({
           </Button>
         )}
       </div>
-      <p className="text-[9px] leading-relaxed text-muted-foreground/60">
-        The engine parses this and renders it back, so what you see after a save is what it actually understood. An
-        unknown heading is kept as prose, never an error.
-      </p>
     </section>
-  );
-}
-
-/**
- * THE LEDGER, DRAWN AS A NARRATIVE.
- *
- * One line per thing that happened, newest last, the way it was written. It is
- * deliberately coarse — 40 lines a tick, read by a person, not a metrics
- * stream — and it is the only record a headless tick leaves.
- */
-function Ledger({ projectId }: { projectId?: string }) {
-  const { entries, loading } = useLoomLedger(projectId, true);
-  if (!projectId) return <p className="text-[11px] text-muted-foreground">No project selected.</p>;
-  if (loading && entries.length === 0) return <p className="text-[11px] text-muted-foreground">Reading the ledger…</p>;
-  if (entries.length === 0) {
-    return (
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        Nothing yet. A tick appends here; it keeps no conversation of its own, so this and the dry run are the whole
-        record of what it did.
-      </p>
-    );
-  }
-  return (
-    <div className="space-y-1">
-      <p className="text-[9px] leading-relaxed text-muted-foreground/60">
-        A tick is a fresh instance every time and remembers nothing. This is what it left behind.
-      </p>
-      {entries.map((entry, index) => (
-        <LedgerRow key={`${entry.at}:${index}`} entry={entry} />
-      ))}
-    </div>
-  );
-}
-
-function LedgerRow({ entry }: { entry: LedgerEntry }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="rounded border border-border/60 bg-card px-1.5 py-1">
-      <button
-        type="button"
-        disabled={!entry.detail}
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-baseline gap-1.5 text-left"
-      >
-        <span className="w-12 shrink-0 font-mono text-[9px] text-muted-foreground/60">{entry.kind}</span>
-        <span className="min-w-0 flex-1 text-[10px] leading-relaxed">{entry.summary}</span>
-        {entry.item && <span className="max-w-[5rem] shrink-0 truncate font-mono text-[9px] text-muted-foreground/50">{entry.item}</span>}
-      </button>
-      {open && entry.detail && (
-        <p className="mt-1 border-l border-border/60 pl-1.5 text-[9px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
-          {entry.detail}
-        </p>
-      )}
-    </div>
   );
 }
 
@@ -1052,31 +811,12 @@ function SetupInvitation({
   const [failed, setFailed] = useState<string>();
 
   return (
-    /**
-     * THE FIRST THING A NEW PERSON READS, so it is measured in LINE LENGTH
-     * rather than in columns: `max-w-md` is the prose measure, `min-w-0` is what
-     * lets this column shrink out of the panel's way instead of fighting it, and
-     * the padding steps down on a narrow window because 4rem of gutter either
-     * side of a 300px column is most of the column.
-     *
-     * `overflow-y-auto` because a centred block that cannot scroll loses its
-     * bottom — the button and the sentence saying what pressing it costs — on a
-     * short window, and that sentence is not optional.
-     */
     <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2.5 overflow-y-auto px-5 py-8 text-center sm:px-8">
       <SparklesIcon className="size-5 shrink-0 text-muted-foreground/40" />
       <h2 className="text-[14px] font-semibold tracking-tight text-balance">
         Nothing is orchestrating {project.name} yet
       </h2>
-      <p className="max-w-md text-[12px] leading-relaxed text-pretty text-muted-foreground">
-        Setting it up is a conversation, not a form. You say what you want watched; it looks at the project first —
-        the base branch, the check it already runs, how this project declares work — and asks only about what it
-        genuinely cannot determine.
-      </p>
-      <p className="max-w-md text-[11px] leading-relaxed text-pretty text-muted-foreground/70">
-        Its output is one file, <span className="font-mono break-all">{project.programPath}</span>, and a dry run
-        showing what it would do right now. It does not change anything else in the repo.
-      </p>
+      <p className="max-w-md font-mono text-[11px] break-all text-muted-foreground/70">{project.programPath}</p>
       <Button
         size="sm"
         className="mt-1"

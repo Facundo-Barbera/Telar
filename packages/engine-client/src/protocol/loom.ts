@@ -639,10 +639,32 @@ export type LoomProjectSummary = z.infer<typeof LoomProjectSummary>;
  * learned that the expensive way, and the rule is written into its store. A
  * snapshot is internally consistent by construction.
  */
+/**
+ * A TRIAGE ENTRY, ATTRIBUTED. The cache on disk is per project, so an entry
+ * inside it needs no owner; the overview MERGES every project's cache into one
+ * array, and the moment it does, "seen and not taken" for one project is
+ * underivable from the snapshot. The alternative — a second read of
+ * `GET /api/looms/triage` — is two cadences disagreeing with nothing saying
+ * which is stale, which is the rule this whole shape exists to keep.
+ */
+export const OverviewTriageEntry = TriageEntry.extend({
+  /**
+   * OPTIONAL, AND NOT BECAUSE THE ENGINE MIGHT SKIP IT — it never does. A
+   * DAEMON OLDER THAN THIS FIELD IS A REAL STATE: the engine is a long-lived
+   * process and the cockpit reloads under it, so a UI that treated the field as
+   * guaranteed would blank the classification pile for whoever is holding the
+   * old daemon. Consumers resolve an unattributed entry themselves —
+   * `apps/web/lib/loom-deck.ts`'s `scopeOverview` is the one that does, and it
+   * attributes rather than guesses.
+   */
+  projectId: Id.optional(),
+});
+export type OverviewTriageEntry = z.infer<typeof OverviewTriageEntry>;
+
 export const LoomOverview = z.object({
   projects: z.array(LoomProjectSummary).default([]),
   looms: z.array(Loom).default([]),
-  triage: z.array(TriageEntry).default([]),
+  triage: z.array(OverviewTriageEntry).default([]),
   runs: z.array(LoomRun).default([]),
   unreadable: z.array(LoomUnreadable).default([]),
 });

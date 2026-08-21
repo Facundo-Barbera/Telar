@@ -1,14 +1,25 @@
 import { LoomOrchestrator } from "@/components/loom/orchestrator";
+import { loomView } from "@/lib/loom-views";
 
 /**
- * ONE PROJECT'S ORCHESTRATOR: its looms, its conversation, its Program.
+ * ONE PROJECT: its deck, its Program, its ledger, its conversation — one of
+ * them at a time, in one content column beside the app sidebar.
  *
- * The centre pane is the STOCK session cockpit, which resolves its own session
- * on the client, so this page has nothing to await beyond the route param.
+ * `?view=` IS READ HERE rather than with `useSearchParams`, so the segment is
+ * linkable without a suspense boundary anyone can forget. An unrecognised value
+ * is the Deck; a shared link that outlives a segment name should land somewhere
+ * useful rather than on an error.
  */
 export const dynamic = "force-dynamic";
 
-export default async function LoomOrchestratorPage({ params }: { params: Promise<{ projectId: string }> }) {
+export default async function LoomOrchestratorPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ projectId: string }>;
+  searchParams: Promise<{ view?: string | string[] }>;
+}) {
   const { projectId } = await params;
-  return <LoomOrchestrator projectId={projectId} />;
+  const { view } = await searchParams;
+  return <LoomOrchestrator projectId={projectId} view={loomView(view)} />;
 }

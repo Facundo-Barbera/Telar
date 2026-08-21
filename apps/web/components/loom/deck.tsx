@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * THE DECK — `/looms`, loom-build.md §11.
+ * THE DECK — `/looms` across every project, and the `Deck` segment of
+ * `/looms/[projectId]` scoped to one.
  *
  * ORDERED BY WHAT THE HUMAN MUST DO, not by what the engine finds interesting:
  *
@@ -12,13 +13,15 @@
  *
  * (4) IS THE MOST VALUABLE PANE ON THE PAGE and it is drawn as an asset rather
  * than as an error list. The design's core finding is that TRIAGE, NOT
- * DISPATCH, IS THE BOTTLENECK: in the repo this was tested against, 4 of 37
- * items were dispatchable and nothing in the tracker distinguished the other
- * 33. Maintaining that classification is the durable output; a tick that
- * dispatches nothing and classifies six items correctly was a good tick.
+ * DISPATCH, IS THE BOTTLENECK. Each pile carries a LABEL and a COUNT and
+ * nothing else: the paragraph that used to sit above them explaining why was
+ * the designer justifying himself inside the UI, and it is gone. The reasoning
+ * lives in `docs/plans/loom-build.md`.
  *
- * ONE READ FOR THE WHOLE DECK. `GET /api/looms` returns the entire snapshot —
- * see `lib/loom-overview.ts` for why, and for the two cadences.
+ * ONE READ FOR THE WHOLE DECK, SCOPED OR NOT. `GET /api/looms` returns the
+ * entire snapshot and the project slice is a FILTER over it — never a second
+ * read of `/api/looms/triage`, which would be two cadences disagreeing with
+ * nothing saying which is stale.
  *
  * NOTHING HERE KNOWS WHAT A TRACKER IS. An item is a string the project's own
  * `list` command produced.
@@ -43,7 +46,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { deckSections, type NeedsYouRow } from "@/lib/loom-deck";
+import { deckSections, scopeOverview, type NeedsYouRow } from "@/lib/loom-deck";
 import { ladderSummary, ladderTrace } from "@/lib/loom-ladder";
 import { useLoomOverview } from "@/lib/loom-overview";
 import { useLoomPrograms } from "@/lib/loom-program";
@@ -51,13 +54,18 @@ import { answerLoom, saveLoomProgram, setLoomWatch } from "@/lib/loom-actions";
 import { removeAssumption } from "@/lib/loom-program-markdown";
 import { fmtAgo } from "@/lib/format";
 import { LoomRow, Section } from "./rows";
-import { GateChip } from "./gate-chip";
 
-export function LoomDeck() {
+export function LoomDeck({ projectId }: { projectId?: string }) {
   // ONE CLOCK, AND IT MOVES ONLY WHEN THE DATA DOES — `receivedAt` is stamped
   // when the snapshot lands. See `lib/loom-overview.ts`.
   const { overview, receivedAt: now, loading, error, refresh, began } = useLoomOverview();
-  const sections = useMemo(() => deckSections(overview), [overview]);
+  /** THE PROJECT SLICE IS A FILTER, NOT A SECOND FETCH — `scopeOverview` and
+   *  its test say why the triage arm is not a plain equality. */
+  const scoped = useMemo(
+    () => (projectId ? scopeOverview(overview, projectId) : overview),
+    [overview, projectId],
+  );
+  const sections = useMemo(() => deckSections(scoped), [scoped]);
 
   // Rung labels live in the artifact, so the projects with something waiting on
   // a person are the only ones whose Program has to be read.
@@ -67,13 +75,13 @@ export function LoomDeck() {
   );
   const { docs: programs, reload: reloadPrograms } = useLoomPrograms(needProgram);
 
-  if (!loading && overview.projects.length === 0) return <NoProgramYet error={error} />;
+  if (!loading && !projectId && overview.projects.length === 0) return <NoProgramYet error={error} />;
 
   return (
-    <div className="flex h-dvh flex-col overflow-hidden bg-background">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       <header className="shrink-0 border-b border-border/70 bg-card/50">
-        {overview.projects.map((project) => (
-          <WatchStrip key={project.projectId} project={project} now={now} onChanged={began} />
+        {scoped.projects.map((project) => (
+          <WatchStrip key={project.projectId} project={project} now={now} named={!projectId} onChanged={began} />
         ))}
       </header>
 
@@ -86,14 +94,9 @@ export function LoomDeck() {
 
         {/* 1. BLOCKED ON A PERSON. Leads, because it is the reason the night
               stopped short and nothing below it is waiting on anybody. */}
-        <Section
-          icon={HandIcon}
-          title="Needs you"
-          count={sections.needsYou.length}
-          hint={sections.needsYou.length === 0 ? "nothing is waiting on you" : "the ladder is spent"}
-        >
+        <Section icon={HandIcon} title="Needs you" count={sections.needsYou.length}>
           {sections.needsYou.length === 0 ? (
-            <Quiet>Nothing escalated. Everything that stalled was absorbed before it reached you.</Quiet>
+            <Quiet>Nothing is waiting on you.</Quiet>
           ) : (
             <div className="space-y-2">
               {sections.needsYou.map((row) =>
@@ -127,27 +130,22 @@ export function LoomDeck() {
         </Section>
 
         {/* 2. THE DELIVERABLE. A loom ends at an open PR and review happens
-              wherever the project publishes to, so these rows link OUT rather
-              than trying to be a diff tool. */}
-        <Section
-          icon={GitPullRequestIcon}
-          title="Ready to review"
-          count={sections.review.length}
-          hint="published · you decide what lands"
-        >
+              wherever the project publishes to, so these rows link OUT. */}
+        <Section icon={GitPullRequestIcon} title="Ready to review" count={sections.review.length}>
           {sections.review.length === 0 ? (
             <Quiet>Nothing published yet.</Quiet>
           ) : (
             <div className="space-y-2">
               {sections.review.map((loom) => (
-                <LoomRow key={loom.id} loom={loom} now={now} trailing={<GateChip gate={loom.gate} />}>
+                <LoomRow key={loom.id} loom={loom} now={now}>
                   {/* THE HAND-OFF ALWAYS NAMES SOMETHING. A `publish` of
-                      `git push -u origin $BRANCH` — the no-tracker case the
-                      Program's four slots are designed for — prints no URL, and
-                      a "Ready to review" row with nothing on it is not a
-                      hand-off. The branch is not made into a link: it is not a
-                      URL, and an `href` of `loom/x` would navigate off the deck
-                      to a 404. */}
+                      `git push -u origin $BRANCH` prints no URL, and a
+                      "Ready to review" row with nothing on it is not a
+                      hand-off. The branch and the gate chip are NOT repeated
+                      here — `LoomRow` draws each once — so this covers only the
+                      case that line says nothing about: no branch at all. The
+                      branch is never a link: an `href` of `loom/x` is relative
+                      and would navigate off the deck to a 404. */}
                   <div className="mt-2 ml-[1.4rem]">
                     {loom.publishedUrl ? (
                       <a
@@ -161,7 +159,7 @@ export function LoomDeck() {
                       </a>
                     ) : (
                       <span className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <span className="truncate font-mono text-foreground/70">{loom.branch ?? "no branch recorded"}</span>
+                        {!loom.branch && <span className="shrink-0 font-mono text-foreground/70">no branch recorded</span>}
                         <span className="truncate">published; the publish command printed no link</span>
                       </span>
                     )}
@@ -178,7 +176,7 @@ export function LoomDeck() {
           icon={Loader2Icon}
           title="Working"
           count={sections.working.reduce((total, group) => total + group.looms.length, 0)}
-          hint={sections.working.length > 1 ? `${sections.working.length} projects` : undefined}
+          {...(sections.working.length > 1 ? { hint: `${sections.working.length} projects` } : {})}
         >
           {sections.working.length === 0 ? (
             <Quiet>Nothing in flight.</Quiet>
@@ -212,19 +210,13 @@ export function LoomDeck() {
           icon={EyeOffIcon}
           title="Seen and not taken"
           count={sections.seen.reduce((total, group) => total + group.entries.length, 0)}
-          hint="the classification is the work"
         >
-          <p className="max-w-3xl text-[12px] leading-relaxed text-muted-foreground">
-            Most of a good backlog is not dispatchable, and nothing in it says why. Each item below was read once
-            and will not be read again until it changes — that is what makes reading the whole thread affordable,
-            and it is the durable output of a tick that dispatched nothing.
-          </p>
           {sections.seen.length === 0 ? (
             <Quiet>Nothing classified yet. A tick fills this in.</Quiet>
           ) : (
             <div className="space-y-3">
               {sections.seen.map((group) => (
-                <TriageGroup key={group.classification} label={group.label} blurb={group.blurb} entries={group.entries} />
+                <TriageGroup key={group.classification} label={group.label} entries={group.entries} />
               ))}
             </div>
           )}
@@ -276,10 +268,14 @@ function Quiet({ children }: { children: React.ReactNode }) {
 function WatchStrip({
   project,
   now,
+  named,
   onChanged,
 }: {
   project: LoomProjectSummary;
   now: number;
+  /** False inside a project, where the bar above this one already names it and
+   *  a second copy is the page saying the same word twice. */
+  named: boolean;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -289,9 +285,14 @@ function WatchStrip({
       <RadioIcon className={`size-4 shrink-0 ${watch.running ? "text-success" : "text-muted-foreground/40"}`} />
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <Link href={`/looms/${encodeURIComponent(project.projectId)}`} className="text-[14px] font-semibold tracking-tight hover:underline">
-            {project.name || project.projectId}
-          </Link>
+          {named && (
+            <Link
+              href={`/looms/${encodeURIComponent(project.projectId)}`}
+              className="text-[14px] font-semibold tracking-tight hover:underline"
+            >
+              {project.name || project.projectId}
+            </Link>
+          )}
           <Badge variant="secondary" className="h-4 px-1.5 font-mono text-[10px]">
             {watch.running ? "watching" : "paused"}
           </Badge>
@@ -384,8 +385,7 @@ function AskingRow({
           )}
           {steps.some((step) => !step.enabled) && (
             <p className="mt-1 text-[10px] text-muted-foreground/60">
-              {steps.filter((step) => !step.enabled).length} rung
-              {steps.filter((step) => !step.enabled).length === 1 ? " is" : "s are"} switched off and never ran.
+              {steps.filter((step) => !step.enabled).length} switched off
             </p>
           )}
         </div>
@@ -394,7 +394,7 @@ function AskingRow({
           <Textarea
             value={answer}
             onChange={(event) => setAnswer(event.target.value)}
-            placeholder="Answer it. This goes back to the orchestrator, not to a form."
+            placeholder="Answer"
             className="min-h-14 text-[12px]"
           />
           <div className="flex items-center gap-1.5">
@@ -494,41 +494,63 @@ function AssumedRow({
   );
 }
 
-/** One classification pile. Rows are one line: the item, and why. */
-function TriageGroup({ label, blurb, entries }: { label: string; blurb: string; entries: TriageEntry[] }) {
+/** One classification pile: a label, a count, and ONE LINE per item. */
+function TriageGroup({ label, entries }: { label: string; entries: TriageEntry[] }) {
   const [open, setOpen] = useState(true);
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-baseline gap-2 py-1 text-left"
-      >
+      <button type="button" onClick={() => setOpen(!open)} className="flex w-full items-baseline gap-2 py-1 text-left">
         <span className="text-[12px] font-medium">{label}</span>
         <span className="font-mono text-[11px] text-muted-foreground/60">{entries.length}</span>
-        <span className="ml-auto truncate text-[11px] text-muted-foreground/70">{blurb}</span>
       </button>
       {open && (
         <div className="space-y-px overflow-hidden rounded-lg border border-border/70">
           {entries.map((entry) => (
-            <div key={entry.item} className="bg-card px-3 py-1.5">
-              <div className="flex items-baseline gap-2.5">
-                <span className="max-w-[10rem] shrink-0 truncate font-mono text-[11px] text-muted-foreground">
-                  {entry.item}
-                </span>
-                <span className="min-w-0 flex-1 text-[12px] text-muted-foreground">{entry.reason}</span>
-              </div>
-              {/* THE DISTILLED CURRENT INTENT, which is the expensive half of a
-                  classification and the reason the cache exists: the newest
-                  thing said routinely retracts the original text. */}
-              {entry.ask.trim() !== "" && (
-                <p className="mt-0.5 pl-[10.6rem] text-[11px] text-foreground/70">{entry.ask}</p>
-              )}
-            </div>
+            <TriageRow key={entry.item} entry={entry} />
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * ONE CLASSIFIED ITEM, ON ONE LINE.
+ *
+ * 33 of 37 items land in this pile, so a paragraph each turns the one pane that
+ * answers "what did it decide about everything" into six screens.
+ *
+ * IT TRUNCATES, IT DOES NOT SUMMARISE. The reason and the ask are the
+ * classifier's own sentences and the durable output of a tick that dispatched
+ * nothing; every word is one click away. `truncate` rather than a character
+ * limit, so "short enough to stay visible" means one line at whatever width
+ * this renders at rather than a number chosen against one screen.
+ */
+function TriageRow({ entry }: { entry: TriageEntry }) {
+  const [open, setOpen] = useState(false);
+  const ask = entry.ask.trim();
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(!open)}
+      aria-expanded={open}
+      className="block w-full bg-card px-3 py-1.5 text-left hover:bg-accent/30"
+    >
+      <span className="flex items-baseline gap-2.5">
+        <span className="max-w-[10rem] shrink-0 truncate font-mono text-[11px] text-muted-foreground">{entry.item}</span>
+        <span className={`min-w-0 flex-1 text-[12px] text-muted-foreground ${open ? "" : "truncate"}`}>
+          {entry.reason}
+        </span>
+      </span>
+      {/* THE DISTILLED CURRENT INTENT, which is the expensive half of a
+          classification and the reason the cache exists: the newest thing said
+          routinely retracts the original text. */}
+      {ask !== "" && (
+        <span className={`mt-0.5 block pl-[10.6rem] text-[11px] text-foreground/70 ${open ? "" : "truncate"}`}>
+          {ask}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -544,14 +566,8 @@ function NoProgramYet({ error }: { error?: string }) {
     <div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background px-8 text-center">
       <SparklesIcon className="size-6 text-muted-foreground/40" />
       <h1 className="text-[15px] font-semibold tracking-tight">No orchestrator yet</h1>
-      <p className="max-w-md text-[12px] leading-relaxed text-muted-foreground">
-        An orchestrator watches one project, decides what is worth doing, and dispatches work into its own worktree.
-        It reads a single file in the project — <span className="font-mono">.telar/loom.md</span> — that you and it
-        write together.
-      </p>
-      <p className="max-w-md text-[12px] leading-relaxed text-muted-foreground/70">
-        Setup is a conversation, not a form: it looks at the project first and asks only about what it genuinely
-        cannot determine.
+      <p className="max-w-md text-[12px] text-muted-foreground">
+        An orchestrator watches one project and writes <span className="font-mono">.telar/loom.md</span>.
       </p>
       <Button render={<Link href="/projects" />} size="sm" className="mt-1">
         Choose a project

@@ -1,8 +1,8 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
-import { CircleDashedIcon, CircleDotIcon, HandIcon, Loader2Icon, TerminalIcon } from "lucide-react";
+import { ChevronDownIcon, CircleDashedIcon, CircleDotIcon, Loader2Icon, TerminalIcon } from "lucide-react";
 import type { Loom, LoomState } from "@telar/engine-client";
 import { loomStep } from "@/lib/loom-deck";
 import { fmtAgo } from "@/lib/format";
@@ -51,21 +51,26 @@ export function loomTitle(loom: Pick<Loom, "title" | "item">): string {
 }
 
 /**
- * THE DECK'S ROW. Session-sized: two lines, no card chrome beyond a hairline.
- * `children` is where a section hangs its own verb — an answer box, a link out
- * — so the row itself never learns what section it is in.
+ * THE DECK'S ROW — IT ANSWERS ONE QUESTION.
+ *
+ *   *What is this, and what do I do about it?*
+ *
+ * Title, item, state, gate, and the branch ONCE. A published row used to draw
+ * the gate chip twice, the branch twice, a full session id and an absolute
+ * worktree path: the bombardment the page was restructured to end, reassembled
+ * inside 60px. The addressing moved behind the disclosure — real, and not what
+ * a person reads the deck for in the morning.
+ *
+ * `trailing` WENT WITH IT: one caller, which used it to draw the second gate
+ * chip. `children` stays — that is where a section hangs its own VERB, which is
+ * the one thing a row cannot supply for itself.
  */
-export function LoomRow({
-  loom,
-  now,
-  children,
-  trailing,
-}: {
-  loom: Loom;
-  now: number;
-  children?: ReactNode;
-  trailing?: ReactNode;
-}) {
+export function LoomRow({ loom, now, children }: { loom: Loom; now: number; children?: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  /** Addressing: how to find this thing on disk or in the engine. Real, and
+   *  never the headline. Absent on a loom that never got a worktree. */
+  const addressable = Boolean(loom.sessionId || loom.worktreePath);
+
   return (
     <div className="rounded-lg border border-border/70 bg-card px-3 py-2">
       <div className="flex items-start gap-2.5">
@@ -77,15 +82,28 @@ export function LoomRow({
             <span className="text-muted-foreground/40">·</span>
             <span className="truncate">{loomStep(loom)}</span>
             {loom.branch && <span className="truncate font-mono text-muted-foreground/60">{loom.branch}</span>}
+            {/* THE ONE GATE CHIP. `gate-chip.tsx` is the only renderer and this
+                is the only place a deck row calls it. */}
             {loom.gate && <GateChip gate={loom.gate} />}
           </div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
+        <div className="flex shrink-0 items-center gap-1.5">
           <span className="text-[11px] text-muted-foreground/70">{fmtAgo(loom.updatedAt, now)}</span>
-          {trailing}
+          {addressable && (
+            <button
+              type="button"
+              onClick={() => setOpen(!open)}
+              aria-expanded={open}
+              aria-label={open ? "Hide addressing" : "Show addressing"}
+              className="rounded p-0.5 text-muted-foreground/50 transition-colors hover:text-foreground"
+            >
+              <ChevronDownIcon className={`size-3 transition-transform ${open ? "rotate-180" : ""}`} />
+            </button>
+          )}
         </div>
       </div>
       {loom.sessionId && <SessionLine loom={loom} />}
+      {open && <Addressing loom={loom} />}
       {children}
     </div>
   );
@@ -98,6 +116,9 @@ export function LoomRow({
  * bounded — rather than as a sibling in a rail that would grow without limit.
  * It links to the stock cockpit: reading the transcript is that page's job and
  * this row does not try to be a second one.
+ *
+ * IT NAMES NO ID. "session running" is the fact; `session_d7868765d2b6…` is the
+ * address, and an address belongs behind the disclosure with the worktree path.
  */
 function SessionLine({ loom }: { loom: Loom }) {
   if (!loom.sessionId) return null;
@@ -106,7 +127,7 @@ function SessionLine({ loom }: { loom: Loom }) {
     <div className="mt-1.5 ml-[1.4rem] border-l border-border/60 pl-3">
       <Link
         href={sessionHref({ id: loom.sessionId, projectId: loom.projectId })}
-        className="flex items-center gap-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+        className="inline-flex items-center gap-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
       >
         {live ? (
           <Loader2Icon className="size-3 shrink-0 animate-spin text-info" />
@@ -114,50 +135,20 @@ function SessionLine({ loom }: { loom: Loom }) {
           <TerminalIcon className="size-3 shrink-0 text-muted-foreground/50" />
         )}
         <span className="truncate">{live ? "session running" : "session"}</span>
-        <span className="truncate font-mono text-[10px] text-muted-foreground/60">{loom.sessionId}</span>
-        {loom.worktreePath && (
-          <span className="ml-auto hidden truncate font-mono text-[10px] text-muted-foreground/50 sm:inline">
-            {loom.worktreePath}
-          </span>
-        )}
       </Link>
     </div>
   );
 }
 
-/**
- * THE RAIL'S ROW — the same object at ~210px. Narrower, one line plus a step
- * line, and it SELECTS rather than navigates: the rail sits beside the
- * orchestrator's own conversation, and a click that left the page would throw
- * that conversation away.
- */
-export function LoomRailRow({
-  loom,
-  selected,
-  onSelect,
-}: {
-  loom: Loom;
-  selected: boolean;
-  onSelect: () => void;
-}) {
+/** The addressing, disclosed. Kept rather than dropped — at 2am the worktree
+ *  path is the first thing you want — and not on the collapsed row, because at
+ *  9am it is a wall of hex between you and the title. */
+function Addressing({ loom }: { loom: Loom }) {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-current={selected ? "true" : undefined}
-      className={`w-full rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent/50 ${
-        selected ? "bg-accent" : ""
-      }`}
-    >
-      <span className="flex items-center gap-1.5">
-        <LoomDot state={loom.state} />
-        <span className="min-w-0 flex-1 truncate text-[12px]">{loomTitle(loom)}</span>
-      </span>
-      <span className="mt-0.5 flex items-center gap-1.5 pl-[1.125rem]">
-        <span className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/70">{loomStep(loom)}</span>
-        {loom.state === "asking" && <HandIcon className="size-2.5 shrink-0 text-warning" />}
-      </span>
-    </button>
+    <div className="mt-1.5 ml-[1.4rem] space-y-0.5 border-l border-border/60 pl-3 font-mono text-[10px] text-muted-foreground/60">
+      {loom.sessionId && <div className="truncate">{loom.sessionId}</div>}
+      {loom.worktreePath && <div className="truncate">{loom.worktreePath}</div>}
+    </div>
   );
 }
 

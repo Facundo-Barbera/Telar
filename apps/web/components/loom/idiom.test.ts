@@ -287,6 +287,75 @@ describe("nothing here is shaped like one forge's schema", () => {
   });
 });
 
+describe("a row answers one question", () => {
+  /**
+   *   *What is this, and what do I do about it?*
+   *
+   * THE OWNER'S SECOND COMPLAINT, SURVIVING ONE LEVEL DOWN. A published row on
+   * the live deck rendered: the title, the item, the step sentence, the branch,
+   * a gate chip, a relative time, A SECOND GATE CHIP, a full session id, an
+   * absolute worktree path, the branch AGAIN, and then the publish sentence.
+   * Every one of those is true; together they are the bombardment the page was
+   * restructured to end, reassembled inside a 60px row.
+   */
+  const rows = read("rows.tsx");
+  const deck = read("deck.tsx");
+
+  test("each fact is stated once", () => {
+    expect(code(rows).split("<GateChip").length - 1, "the row draws more than one gate chip").toBe(1);
+    expect(code(deck).includes("<GateChip"), "the deck adds a second gate chip to a row it did not draw").toBe(false);
+    expect(code(rows).split("{loom.branch}").length - 1, "the row prints the branch more than once").toBe(1);
+    expect(code(deck).includes("{loom.branch}"), "the deck repeats the branch the row already drew").toBe(false);
+  });
+
+  test("a section cannot hang chrome on a row", () => {
+    // `trailing` existed for exactly one caller, and that caller used it to
+    // draw the gate chip a second time. `children` stays, because that is where
+    // a section hangs its own VERB — an answer box, a link out — and a verb is
+    // the one thing a row cannot supply for itself.
+    expect(code(rows).includes("trailing"), "rows.tsx took back a slot for section chrome").toBe(false);
+  });
+
+  test("addressing is disclosed, never displayed", () => {
+    /**
+     * `session_d7868765d2b649dcb04f52edbee17172` and
+     * `/private/tmp/telar-…/worktrees/loom-…` are DEBUGGING OUTPUT. Real, worth
+     * keeping — at 2am the worktree path is the first thing you want — and not
+     * what a person reads the deck for in the morning, when it is a wall of hex
+     * between them and the title.
+     */
+    const body = code(rows);
+    expect(body).toContain("aria-expanded");
+    // RENDERED, not merely mentioned: `Boolean(loom.sessionId || …)` decides
+    // whether there is anything to disclose, and that is not a rendering.
+    const disclosureAt = body.indexOf("function Addressing");
+    expect(disclosureAt, "rows.tsx has no disclosure to put the addressing behind").toBeGreaterThan(-1);
+    for (const field of ["{loom.worktreePath}", "{loom.sessionId}"]) {
+      const at = [...body.matchAll(new RegExp(field.replace(/[{}.]/g, "\\$&"), "g"))].map((match) => match.index ?? -1);
+      expect(at.length, `${field} is rendered ${at.length} times; it belongs in the disclosure once`).toBe(1);
+      expect(at[0], `${field} is rendered outside the disclosure`).toBeGreaterThan(disclosureAt);
+    }
+  });
+
+  test("the classification pile stays scannable, and nothing is summarised away", () => {
+    /**
+     * 33 of 37 items land in this pile. A paragraph each turns the one pane
+     * that answers "what did it decide about everything" into six screens.
+     *
+     * IT TRUNCATES, IT DOES NOT SUMMARISE. The reason and the ask are the
+     * classifier's own sentences and the durable output of a tick that
+     * dispatched nothing; cutting them to a code would throw away the product.
+     * Truncation is a rendering — every word is one click away and nothing was
+     * rewritten.
+     */
+    const body = code(deck);
+    expect(body).toContain("TriageRow");
+    expect(body.split('open ? "" : "truncate"').length - 1, "the reason and the ask do not both collapse").toBe(2);
+    expect(body).toContain("{entry.reason}");
+    expect(body).toContain("{ask}");
+  });
+});
+
 describe("the boundaries this vertical could trip", () => {
   test("nothing imports the frozen app's `@/components/looms`", () => {
     // PLURAL `looms/` is on the banned-import list in
@@ -299,6 +368,139 @@ describe("the boundaries this vertical could trip", () => {
 
   test("this directory is singular", () => {
     expect(path.basename(dir)).toBe("loom");
+  });
+});
+
+describe("two columns, and never a third", () => {
+  /**
+   * THE PRODUCT OWNER'S VERDICT, MADE EXECUTABLE.
+   *
+   *   "The 4 column design is not that good in general."
+   *
+   * This page was app sidebar + loom rail + conversation + Program panel, and
+   * five whenever a real session loaded, because the stock cockpit brings its
+   * own right panel. An earlier fix resized the panel, which treated the
+   * symptom: the arrangement was wrong, not its widths.
+   *
+   * SO THE RULE IS PINNED, NOT THE MECHANISM. The tests below do not care
+   * whether the segments are a query param, a route segment or a tab strip.
+   * They care that nothing in this vertical declares a PERSISTENT SIDE COLUMN
+   * of its own, that the orchestrator STACKS rather than rows, and that its one
+   * content region renders exactly one segment at a time. Any of the three
+   * going red means the third column is back, whatever it is spelled as.
+   *
+   * THE COCKPIT'S OWN PANEL IS NOT A THIRD COLUMN AND IS NOT BANNED. It is the
+   * second column of the conversation, which is the whole content column when
+   * it is on screen at all — that is exactly why the conversation had to become
+   * a segment rather than a pane.
+   */
+
+  test("no loom surface declares a side column of its own", () => {
+    for (const { name, source } of surfaces()) {
+      const body = code(source);
+      expect(/<aside\b/.test(body), `${name} declares an <aside> — a persistent column beside the content`).toBe(false);
+      // A remembered, draggable width is what an auxiliary COLUMN needs and
+      // nothing else does.
+      expect(/RightPanelResizeHandle|useSidebarPrefs|--right-panel-width/.test(body), `${name} carries panel-resize plumbing`).toBe(
+        false,
+      );
+      // A fixed, unshrinkable width is the other spelling: it takes its pixels
+      // off the top and the content absorbs whatever the window lacks.
+      expect(
+        /w-\[\d+px\][^"'`]*shrink-0|shrink-0[^"'`]*w-\[\d+px\]/.test(body),
+        `${name} pins a fixed-width column that cannot shrink`,
+      ).toBe(false);
+    }
+  });
+
+  test("nothing here folds a column away at a breakpoint, because there is none to fold", () => {
+    // `useNarrowWindow` existed to decide WHICH of three columns lost. A page
+    // with one content column has no such decision, and reaching for this hook
+    // again is the tell that a second one came back.
+    for (const { name, source } of vertical()) {
+      expect(code(source).includes("useNarrowWindow"), `${name} folds a column at a breakpoint`).toBe(false);
+      expect(code(source).includes("right-panel-layout"), `${name} imports the panel's sizing constants`).toBe(false);
+    }
+  });
+
+  test("the orchestrator stacks its children; it does not lay them out in a row", () => {
+    // A bar and one content region, top to bottom. A `flex` ROW at the page
+    // root is the shape a third column grows out of.
+    const body = code(read("orchestrator.tsx"));
+    const root = /<div className="([^"]*h-dvh[^"]*)"/.exec(body)?.[1] ?? "";
+    expect(root, "the orchestrator's root is not a full-height element").not.toBe("");
+    expect(root, "the orchestrator's root lays its children out in a row").toContain("flex-col");
+  });
+
+  test("the content column shows exactly one segment at a time", () => {
+    /**
+     * Every segment is rendered under its own `view === "…"` guard, one per
+     * entry in `LOOM_VIEWS` and no more. Two segments rendered as siblings —
+     * which is what a panel IS — would show up here as a guard missing.
+     */
+    const body = code(read("orchestrator.tsx"));
+    const views = read("../../lib/loom-views.ts");
+    const ids = [...views.matchAll(/id: "([a-z]+)"/g)].map((match) => match[1]);
+    expect(ids).toEqual(["deck", "program", "ledger", "conversation"]);
+    for (const id of ids) {
+      const guards = body.split(`view === "${id}"`).length - 1;
+      expect(guards, `the ${id} segment is not rendered under exactly one guard`).toBe(1);
+    }
+    // And nothing else renders one of these surfaces unguarded.
+    for (const tag of ["<LoomDeck", "<ProgramView", "<LoomLedger", "<SessionCockpit"]) {
+      expect(body.split(tag).length - 1, `${tag} appears more than once in the content region`).toBe(1);
+    }
+  });
+
+  test("only the conversation is kept mounted while hidden, and that is deliberate", () => {
+    /**
+     * §4.3 — CORRECTION IS THE LOOP. The product's core motion is Program ↔
+     * Conversation, flipped repeatedly while you correct the artifact; a plain
+     * unmount re-hydrates the session and loses its scroll position on every
+     * flip, taxing the one motion the feature exists for. So the conversation
+     * hides instead.
+     *
+     * THIS IS THE TEST THAT STOPS SOMEBODY "TIDYING" IT BACK. A `hidden` that
+     * looks redundant is exactly the kind of thing a later pass deletes.
+     *
+     * IT IS ALSO NOT A LOOPHOLE. `display:none` has no width and takes no room,
+     * so a hidden subtree is not the third column this page refuses — and there
+     * is exactly ONE of them, so "one content at a time" cannot be quietly
+     * relaxed into "render them all and hide four".
+     */
+    const body = code(read("orchestrator.tsx"));
+    // `"hidden"` with its quotes: `overflow-hidden` lives inside a longer
+    // class string and is deliberately not matched.
+    expect(body.split('"hidden"').length - 1, "more than one segment is kept mounted and hidden").toBe(1);
+    expect(body, "the conversation is hidden unconditionally rather than when it is not the active segment").toContain(
+      '!conversing && "hidden"',
+    );
+  });
+
+  test("hiding a segment did not smuggle a column back in", () => {
+    // The three structural guards, re-asserted against the file that got the
+    // exception, so the exception cannot be the hole they are read through.
+    const body = code(read("orchestrator.tsx"));
+    expect(/<aside\b/.test(body)).toBe(false);
+    expect(/w-\[\d+px\][^"'`]*shrink-0|shrink-0[^"'`]*w-\[\d+px\]/.test(body)).toBe(false);
+    expect(/RightPanelResizeHandle|useSidebarPrefs|--right-panel-width/.test(body)).toBe(false);
+  });
+
+  test("the chosen segment is in the URL, so a person can link someone to the Ledger", () => {
+    // A tab strip that keeps its choice in `useState` is a surface nobody can
+    // send you.
+    const views = read("../../lib/loom-views.ts");
+    expect(views).toContain("export function loomViewHref");
+    expect(views).toContain("?view=");
+    expect(read("../../app/looms/[projectId]/page.tsx")).toContain("searchParams");
+  });
+
+  test("the segment parser is not exported from a client module", () => {
+    // A function exported from `"use client"` is a CLIENT REFERENCE on the
+    // server, not a function. The page calls this one for real while rendering,
+    // so it lives where both sides can run it. This was a 500, not a theory.
+    expect(read("../../lib/loom-views.ts").startsWith('"use client"')).toBe(false);
+    expect(code(read("orchestrator.tsx"))).not.toContain("export function loomView");
   });
 });
 
@@ -324,6 +526,13 @@ describe("the chat is stock Telar and is not reimplemented", () => {
 
 describe("what the deck promises", () => {
   const deck = read("deck.tsx");
+
+  test("one project's deck is a slice of the same read, not a second one", () => {
+    // `/looms/[projectId]`'s Deck segment renders the same four piles narrowed
+    // to one project. The narrowing is a pure function over the snapshot.
+    expect(code(deck)).toContain("scopeOverview");
+    expect(read("../../lib/loom-deck.ts")).toContain("export function scopeOverview");
+  });
 
   test("the whole deck comes from one read", () => {
     // Two surfaces on separate cadences disagree with no way to tell which is
@@ -402,9 +611,22 @@ describe("what the deck promises", () => {
     expect(/href=\{loom\.branch/.test(body), "the deck links to a branch name as though it were a URL").toBe(false);
   });
 
-  test("the classification pane frames itself as an asset, not an error list", () => {
+  test("the classification pane is a heading and a count, and nothing else", () => {
+    /**
+     * "It bombards the user with too much information."
+     *
+     * This pane used to carry a paragraph above it explaining why a pile of
+     * unactionable items is an asset rather than an error list, and every pile
+     * carried a second sentence of its own. Both were the designer justifying
+     * himself inside the UI. The heading names the pile, the count sizes it,
+     * and the reasoning lives in `docs/plans/loom-build.md`.
+     */
     expect(deck).toContain("Seen and not taken");
-    expect(deck.replace(/\s+/g, " ")).toContain("the classification is the work");
+    const flat = code(deck).replace(/\s+/g, " ");
+    expect(flat).not.toContain("Most of a good backlog");
+    expect(flat).not.toContain("the classification is the work");
+    // The per-pile blurbs went with it — a pile is a label and a count.
+    expect(code(read("../../lib/loom-deck.ts"))).not.toContain("blurb");
   });
 
   test("a row that asks says what was already tried", () => {
@@ -415,8 +637,10 @@ describe("what the deck promises", () => {
   });
 
   test("an empty cockpit invites setup rather than rendering a broken page", () => {
+    // An empty section with no explanation is a dead end, so an empty state
+    // keeps ONE short line. It is one line and not three.
     expect(deck).toContain("NoProgramYet");
-    expect(deck.replace(/\s+/g, " ")).toContain("Setup is a conversation, not a form");
+    expect(deck).toContain("No orchestrator yet");
   });
 
   test("the diagnostic channel is rendered, so tolerance is never silent loss", () => {
@@ -428,8 +652,16 @@ describe("what the deck promises", () => {
   });
 });
 
-describe("what the Program tab promises", () => {
-  const panel = read("program-panel.tsx");
+describe("what the Program segment promises", () => {
+  const panel = read("program.tsx");
+
+  test("the per-slot explanations are gone and the substitution vars are not", () => {
+    // The prose said what each slot is HANDED, in a paragraph under every one
+    // of the four. The `$NAME` chips say the same thing in a word a sentence
+    // cannot replace, so they stay and the paragraphs do not.
+    expect(code(panel)).not.toContain("contract");
+    expect(code(panel).replace(/\s+/g, " ")).not.toContain("One cheap line to stdout");
+  });
 
   test("all four command slots are editable and their substitution vars are shown", () => {
     for (const slot of ["probe", "list", "detail", "publish"]) {
@@ -457,6 +689,32 @@ describe("what the Program tab promises", () => {
   test("the raw artifact is always one click away", () => {
     expect(panel).toContain("SourceBlock");
     expect(panel).toContain("Source");
+  });
+
+  test("the reasoning paragraphs are gone from every block", () => {
+    /**
+     * Each of these explained a design decision to a reader who did not ask.
+     * If a reader genuinely needs the reasoning, `docs/plans/loom-build.md` is
+     * where it lives — a UI that argues with you is not a UI.
+     */
+    const flat = code(panel).replace(/\s+/g, " ");
+    for (const prose of [
+      "These run on your machine, unattended",
+      "Escalations go to the orchestrator first",
+      "The interval doubles after each quiet probe",
+      "A wrong assumption you can see is survivable",
+      "The engine parses this and renders it back",
+      "Press it after every correction",
+    ]) {
+      expect(flat, `program.tsx still explains itself: "${prose}…"`).not.toContain(prose);
+    }
+  });
+
+  test("what the engine said is never truncated to a code", () => {
+    // A refusal and a parser warning are the whole value of the engine's
+    // refusals. The copy pass cut prose, not these.
+    expect(panel).toContain("{error}");
+    expect(panel).toContain("{warning}");
   });
 
   test("the dry run is rendered as a report, not a spinner", () => {
@@ -522,13 +780,13 @@ describe("nothing spends money without a human pressing something", () => {
   test("only the setup invitation creates an orchestrator session", () => {
     // One call site, so there is one place to read and one place to change.
     const callers = surfaces().filter(({ source }) => withoutImports(source).includes("ensureLoomSession("));
-    expect(callers.map((file) => file.name)).toEqual(["program-panel.tsx"]);
+    expect(callers.map((file) => file.name)).toEqual(["program.tsx"]);
   });
 
   test("the invitation says what pressing it will do", () => {
     // The dry run is the trust surface because it shows what WOULD happen before
     // anything is spent. The setup button carries the same honesty in miniature.
-    const flat = read("program-panel.tsx").replace(/\s+/g, " ");
+    const flat = read("program.tsx").replace(/\s+/g, " ");
     expect(flat).toContain("goes and reads the project, so it costs tokens");
     expect(flat).toContain("Nothing runs until you press it");
   });

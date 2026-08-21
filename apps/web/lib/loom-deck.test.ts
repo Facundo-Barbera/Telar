@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { Loom, LoomOverview, LoomState, TriageEntry } from "@telar/engine-client";
-import { classificationOrder, deckSections, loomStep, overviewActive } from "./loom-deck";
+import type { Loom, LoomOverview, LoomState, OverviewTriageEntry } from "@telar/engine-client";
+import { classificationOrder, deckSections, loomStep, overviewActive, scopeOverview } from "./loom-deck";
 
 const STATES: LoomState[] = [
   "queued",
@@ -30,8 +30,12 @@ function loom(state: LoomState, extra: Partial<Loom> = {}): Loom {
   } as Loom;
 }
 
-function triage(item: string, classification: TriageEntry["classification"]): TriageEntry {
-  return { item, updatedAt: "r1", classification, reason: `because ${item}`, ask: "", at: 1 };
+function triage(
+  item: string,
+  classification: OverviewTriageEntry["classification"],
+  projectId = "p1",
+): OverviewTriageEntry {
+  return { item, projectId, updatedAt: "r1", classification, reason: `because ${item}`, ask: "", at: 1 };
 }
 
 function overview(partial: Partial<LoomOverview> = {}): LoomOverview {
@@ -106,18 +110,60 @@ describe("deckSections", () => {
     expect(sections.working[1]?.name).toBe("Two");
   });
 
-  test("an item currently held by a live loom is not also listed as not taken", () => {
-    // The same string appearing twice on one page, saying two different things
-    // about itself, is worse than either statement alone.
-    const held = loom("working", { item: "held" });
-    const sections = deckSections(
-      overview({
-        projects: [project()],
-        looms: [held],
-        triage: [triage("held", "dispatchable"), triage("free", "needs-decision")],
-      }),
-    );
-    expect(sections.seen.flatMap((group) => group.entries.map((entry) => entry.item))).toEqual(["free"]);
+  test("AN ITEM WITH A LOOM IN ANY STATE HAS BEEN TAKEN", () => {
+    /**
+     * THE RULE, ACROSS THE WHOLE STATE SPACE — and it is a real bug fixed,
+     * measured on live data: `a1` had a `published` loom and a `dispatchable`
+     * triage entry, and the deck drew it under **Ready to review** AND under
+     * **Ready, waiting for a slot**. One string, one page, two contradictory
+     * statements about itself.
+     *
+     * The cache is not at fault and is not reconciled: it is re-read only when
+     * the item's own `updatedAt` moves, which is what makes reading a whole
+     * thread affordable. THE PROJECTION RECONCILES. An earlier guard excluded
+     * only the in-flight states — the subset that happened to be on screen
+     * while it was written — so this loops every state rather than naming the
+     * four that were wrong.
+     */
+    for (const state of STATES) {
+      const sections = deckSections(
+        overview({
+          projects: [project()],
+          looms: [loom(state, { item: "taken" })],
+          triage: [triage("taken", "dispatchable"), triage("free", "needs-decision")],
+        }),
+      );
+      expect(
+        sections.seen.flatMap((group) => group.entries.map((entry) => entry.item)),
+        `an item with a ${state} loom is still listed as seen and not taken`,
+      ).toEqual(["free"]);
+    }
+  });
+
+  test("a stopped loom's item does not return to the pile, because the loom is already drawn", () => {
+    /**
+     * THE TEMPTING EXCEPTION, DECIDED. Nobody is working a `parked` or
+     * `cancelled` loom, so the pile arguably owns its item again. It does not,
+     * and the reason is about this page rather than about the words: the loom
+     * is ALREADY on screen in **Stopped, with a reason**, carrying the reason
+     * it stopped. The pile's copy would be the strictly worse statement — a
+     * classification from before the work was attempted, beside a written
+     * record of what actually happened.
+     *
+     * NOTHING IS DROPPED, WHICH IS WHAT MAKES THE EXCLUSION SAFE. This asserts
+     * both halves together: absent from the pile, present in `closed`.
+     */
+    for (const state of ["parked", "cancelled"] as const) {
+      const sections = deckSections(
+        overview({
+          projects: [project()],
+          looms: [loom(state, { item: "stopped" })],
+          triage: [triage("stopped", "dispatchable")],
+        }),
+      );
+      expect(sections.seen).toEqual([]);
+      expect(sections.closed.map((entry) => entry.item)).toEqual(["stopped"]);
+    }
   });
 
   test("the three blocked classifications come before the takeable ones", () => {
@@ -177,5 +223,49 @@ describe("loomStep", () => {
 
   test("a park with no written reason is reported as the bug it is", () => {
     expect(loomStep(loom("parked"))).toContain("bug");
+  });
+});
+
+describe("scopeOverview — one project's slice of the one snapshot", () => {
+  const two = () =>
+    overview({
+      projects: [project(), project({ projectId: "p2", name: "Two" })],
+      looms: [loom("working"), loom("published", { id: "lm_p2", projectId: "p2", item: "other" })],
+      triage: [triage("mine", "never"), triage("theirs", "never", "p2")],
+      runs: [
+        { id: "r1", projectId: "p1", kind: "tick", state: "done", startedAt: 1 },
+        { id: "r2", projectId: "p2", kind: "tick", state: "done", startedAt: 1 },
+      ] as LoomOverview["runs"],
+    });
+
+  test("looms, projects, triage and runs all narrow to the one project", () => {
+    const scoped = scopeOverview(two(), "p1");
+    expect(scoped.projects.map((entry) => entry.projectId)).toEqual(["p1"]);
+    expect(scoped.looms.map((entry) => entry.projectId)).toEqual(["p1"]);
+    expect(scoped.triage.map((entry) => entry.item)).toEqual(["mine"]);
+    expect(scoped.runs.map((entry) => entry.id)).toEqual(["r1"]);
+  });
+
+  test("the slice comes out of the snapshot, so the piles still read the same way", () => {
+    // The project page must not fetch anything the deck did not already have.
+    const sections = deckSections(scopeOverview(two(), "p2"));
+    expect(sections.review.map((entry) => entry.item)).toEqual(["other"]);
+    expect(sections.seen.flatMap((group) => group.entries.map((entry) => entry.item))).toEqual(["theirs"]);
+  });
+
+  test("an unattributed entry lands on the only project there is", () => {
+    // A daemon older than `OverviewTriageEntry.projectId` sends no owner. With
+    // one project registered that is a FACT, not a guess, and blanking the
+    // whole pile instead would be the worse answer.
+    const stale = { ...triage("orphan", "never"), projectId: undefined } as OverviewTriageEntry;
+    const scoped = scopeOverview(overview({ projects: [project()], triage: [stale] }), "p1");
+    expect(scoped.triage.map((entry) => entry.item)).toEqual(["orphan"]);
+  });
+
+  test("with two projects an unattributed entry is guessed onto neither", () => {
+    const stale = { ...triage("orphan", "never"), projectId: undefined } as OverviewTriageEntry;
+    const both = overview({ projects: [project(), project({ projectId: "p2", name: "Two" })], triage: [stale] });
+    expect(scopeOverview(both, "p1").triage).toEqual([]);
+    expect(scopeOverview(both, "p2").triage).toEqual([]);
   });
 });
