@@ -120,6 +120,26 @@ export type WarpSpawnEnvironment = {
  *     hat. A notification is the run's to send once, not each child's.
  *   · MOVING THE CHECKOUT. Where a fan-out's writes land is the session's
  *     decision. A child that switched worktrees mid-run would scatter them.
+ *   · CREATING OR DRIVING A TELAR SESSION. `sessions_create` is FAN-OUT WEARING
+ *     ANOTHER HAT, and the worst-behaved kind: a warp child that could create
+ *     sessions would spend the engine's live-session budget from inside a
+ *     concurrency gate that is counting `claude` processes and knows nothing
+ *     about sessions, and each one it made would outlive the run with nothing
+ *     in the roster pointing at it. The other five `sessions_*` tools go with
+ *     it rather than only the create verb: steering, reading and stopping a
+ *     session from inside a fan-out is parallelism expressed outside the
+ *     script, which is the same rule as fan-out in a different hat again.
+ *
+ *     BELT AND BRACES, DELIBERATELY. Decision (2) already withholds Telar's
+ *     whole MCP server from a child, so under `createWarpSpawn` these names are
+ *     not reachable in the first place. They are listed anyway because the
+ *     server key is not the only way in: the socket at `/v2/sessions/mcp` is
+ *     designed to be added to a USER's own `claude mcp add` config, and the
+ *     user's servers ARE passed to a child. A name-level denial is the arm that
+ *     survives that. It is not a complete one — a user free to name their own
+ *     server can name it anything, and `mcp__whatever__sessions_create` is not
+ *     on this list — which is exactly why decision (2) is the load-bearing half
+ *     and this is the brace.
  *
  * THIS LIST IS VERSION-SHAPED. A future CLI can add a new way out; re-read a
  * child's `system/init` when upgrading rather than trusting this comment.
@@ -137,6 +157,15 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "PushNotification",
   "EnterWorktree",
   "ExitWorktree",
+  // Telar's own, fully qualified — `qualifyTelarTool` is what a model sees, and
+  // an unqualified `sessions_create` would match nothing.
+  "mcp__telar__sessions_list",
+  "mcp__telar__sessions_create",
+  "mcp__telar__sessions_send",
+  "mcp__telar__sessions_read",
+  "mcp__telar__sessions_status",
+  "mcp__telar__sessions_stop",
+  "mcp__telar__sessions_diff",
 ] as const;
 
 /**

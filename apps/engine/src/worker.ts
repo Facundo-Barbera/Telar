@@ -41,6 +41,21 @@ type WorkerClient = Pick<
   | "createSpoolNote"
   | "updateSpoolNote"
   | "spoolSearch"
+  // The `sessions` verbs. Same rule as the spool's above: no store handle,
+  // everything back over the loopback socket, so the toolkit is identical in
+  // the embedded worker and the out-of-process one. See `SessionsCapability`.
+  //
+  // NOTHING HERE ARCHIVES, DELETES OR MERGES. `EngineClient` has all three, and
+  // their absence from this Pick is what makes "the wall cannot land work"
+  // true of the worker's own reach and not only of the tool names: a handler
+  // that tried would not compile.
+  | "liveSessions"
+  | "createSession"
+  | "submitTurn"
+  | "events"
+  | "session"
+  | "stopTurn"
+  | "sessionDiff"
 >;
 
 /**
@@ -327,6 +342,41 @@ export class EngineWorker {
           updateNote: async (id, patch) => (await this.options.client.updateSpoolNote(id, patch)).note,
           search: async (query, subject) =>
             (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
+        },
+        /**
+         * THE SESSIONS TOOLKIT — a session's door to OTHER sessions.
+         *
+         * UNSCOPED, unlike the spool, and that is not an oversight: there is no
+         * scope to apply. A session created here is a PEER of the one that
+         * asked — no parent, no child, no link recorded anywhere — so there is
+         * nothing about this turn for the capability to be narrowed by. What
+         * bounds it is the store's live-session budget, which is a plain count
+         * and not a relationship.
+         *
+         * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
+         * do: the worker holds no store handle, and routing through the same
+         * HTTP surface the cockpit uses means there is exactly one
+         * implementation of every rule about a session — including the budget,
+         * which `createSession` enforces regardless of which door reached it.
+         *
+         * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
+         * on the wall carries it — the same construction as the spool's
+         * `source: "session"`.
+         */
+        sessions: {
+          list: () => this.options.client.liveSessions(),
+          create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
+          send: async (id, input) => {
+            const accepted = await this.options.client.submitTurn(id, input);
+            return { turn: accepted.turn, replayed: accepted.replayed };
+          },
+          read: async (id, after) => (await this.options.client.events(id, after)).events,
+          status: async (id) => {
+            const snapshot = await this.options.client.session(id);
+            return { session: snapshot.session, turns: snapshot.turns };
+          },
+          stop: (id) => this.options.client.stopTurn(id),
+          diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         },
         onRequest: askEngine,
         onObservations: async (observations) => {

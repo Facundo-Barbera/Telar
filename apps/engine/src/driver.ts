@@ -45,8 +45,9 @@ import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
+import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 
-export type { SpoolCapability };
+export type { SpoolCapability, SessionsCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -74,6 +75,24 @@ export type DriverRun = {
    * "no items" would report that as the truth.
    */
   spool?: SpoolCapability;
+  /**
+   * The session's door to OTHER sessions — create, send, read, status, stop,
+   * diff.
+   *
+   * PER-RUN, like the spool and for a related reason: it is assembled out of
+   * the worker's own client, so a deployment with no client has no toolkit
+   * rather than a broken one.
+   *
+   * ABSENT MEANS NO SESSIONS TOOLS, which is what a test gets and what an older
+   * worker produces — never an empty engine. A model told "no sessions exist"
+   * would report that as the truth.
+   *
+   * IT CARRIES NO IDENTITY. There is nothing on this capability that says which
+   * session is holding it, because nothing downstream records one: a session
+   * created through here is a PEER, not a child, and the absence of a link is
+   * the design rather than a gap in it.
+   */
+  sessions?: SessionsCapability;
   /**
    * Which model to run, resolved by the engine from the session.
    *
@@ -853,6 +872,7 @@ export function createClaudeDriver(
       providerInstanceId,
       browserSocket,
       spool,
+      sessions,
     }) {
       let sdk: ClaudeSdk;
       try {
@@ -1117,6 +1137,24 @@ export function createClaudeDriver(
        * interactive.
        */
       if (spool && sdk.tool) telarTools.push(...spoolTools(sdk.tool, spool));
+
+      /**
+       * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
+       *
+       * NO APPROVAL GATE ON ANY OF THESE, the same judgement the spool's verbs
+       * get and for the same reason: not one of them lands anything. Creating a
+       * session starts no work (nothing is queued until `sessions_send`),
+       * reading and stopping are read-and-brake, and there is deliberately no
+       * merge, no accept and no archive for a gate to guard. The guard that
+       * matters here is structural — the store's live-session budget — not
+       * interactive.
+       *
+       * THE ONE GATE THAT IS NOT HERE AT ALL is a warp child's. `warp/spawn.ts`
+       * withholds Telar's whole MCP server from a child and names these tools
+       * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
+       * `sessions_create` is fan-out wearing another hat.
+       */
+      if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, sessions));
 
       const warp = warpTool(sdk, {
         /**

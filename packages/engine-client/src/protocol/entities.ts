@@ -63,6 +63,24 @@ export const SessionState = z.enum(["active", "archived"]);
 export type SessionState = z.infer<typeof SessionState>;
 
 /**
+ * WHO ASKED FOR THIS SESSION TO EXIST — provenance, and deliberately NOT a link.
+ *
+ * The `sessions` toolkit lets one session create another. It does NOT create a
+ * parent, a child, a depth or an attachment: the two are peers the moment the
+ * second one exists, and nothing here records WHICH session made the call. What
+ * it records is the same thing `SpoolItem.provenance` records about a filed
+ * task — that an agent asked, not a hand — and it exists for exactly one
+ * mechanical reason: with no depth rule, a plain COUNT of live agent-made
+ * sessions is the only thing standing between a loop and forty worktrees.
+ *
+ * ABSENT MEANS "human", and must be read that way rather than as unknown: every
+ * session written before this field existed was opened from a surface a person
+ * was looking at.
+ */
+export const SessionOrigin = z.enum(["human", "session"]);
+export type SessionOrigin = z.infer<typeof SessionOrigin>;
+
+/**
  * WHAT A SESSION IS DOING, ordered by what it wants from the reader.
  *
  *   blocked     a request is open and nobody has answered it — it wants YOU
@@ -147,6 +165,8 @@ export const Session = z.object({
   environmentId: EnvironmentId,
   title: z.string(),
   state: SessionState,
+  /** Provenance, never a link — see `SessionOrigin`. Absent is "human". */
+  origin: SessionOrigin.optional(),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 
