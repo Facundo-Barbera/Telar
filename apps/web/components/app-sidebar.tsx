@@ -46,12 +46,14 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
+  RadioIcon,
   SettingsIcon,
   SpoolIcon,
   TypeIcon,
   XIcon,
 } from "lucide-react";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
+import { LoomsNav } from "@/components/loom/nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -154,6 +156,10 @@ function PlaceSwitcher() {
   const pathname = usePathname();
   const router = useRouter();
   const inSpool = pathname.startsWith("/spool");
+  // THE THIRD PLACE. Looms is the orchestrator's half of the system: the same
+  // switcher, one more entry, and the same `pathname.startsWith` test the other
+  // two already use. Chrome, not routing — a deep link still lands on its own.
+  const inLooms = pathname.startsWith("/looms");
 
   return (
     <DropdownMenu>
@@ -161,20 +167,28 @@ function PlaceSwitcher() {
         render={
           <button
             type="button"
-            title={inSpool ? "Spool" : "Telar"}
+            title={inSpool ? "Spool" : inLooms ? "Looms" : "Telar"}
             className="app-no-drag mr-auto flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         }
       >
-        {inSpool ? <SpoolIcon className="size-4 shrink-0 text-spool" /> : <TypeIcon className="size-4 shrink-0" />}
-        <span className="font-heading text-lg font-semibold tracking-tight">{inSpool ? "spool" : "telar"}</span>
+        {inSpool ? (
+          <SpoolIcon className="size-4 shrink-0 text-spool" />
+        ) : inLooms ? (
+          <RadioIcon className="size-4 shrink-0" />
+        ) : (
+          <TypeIcon className="size-4 shrink-0" />
+        )}
+        <span className="font-heading text-lg font-semibold tracking-tight">
+          {inSpool ? "spool" : inLooms ? "looms" : "telar"}
+        </span>
         <ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/45" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-48">
         <DropdownMenuGroup>
           <DropdownMenuLabel>Place</DropdownMenuLabel>
           <DropdownMenuItem onClick={() => router.push("/")}>
-            <span className="w-4">{inSpool ? null : <CheckIcon />}</span>
+            <span className="w-4">{inSpool || inLooms ? null : <CheckIcon />}</span>
             <TypeIcon className="size-4 shrink-0" />
             <span>Telar</span>
           </DropdownMenuItem>
@@ -182,6 +196,11 @@ function PlaceSwitcher() {
             <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
             <SpoolIcon className="size-4 shrink-0 text-spool" />
             <span>Spool</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => router.push("/looms")}>
+            <span className="w-4">{inLooms ? <CheckIcon /> : null}</span>
+            <RadioIcon className="size-4 shrink-0" />
+            <span>Looms</span>
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>
@@ -336,6 +355,9 @@ function SidebarBody() {
   // Telar's own session list everywhere else. The header above it (trigger,
   // switcher) is common to both; only what is below it changes.
   const inSpool = pathname.startsWith("/spool");
+  // Looms' arm replaces this body the same way the Spool's does: the rail there
+  // is a QUEUE OF DEMANDS, not an inventory of looms — see components/loom/nav.
+  const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -556,6 +578,8 @@ function SidebarBody() {
             Spool's place. The header (trigger, switcher) stays common. */}
         {inSpool ? (
           <SpoolWarehouseNav />
+        ) : inLooms ? (
+          <LoomsNav />
         ) : (
         <>
         {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see
