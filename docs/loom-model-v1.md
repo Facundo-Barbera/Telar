@@ -31,8 +31,19 @@ moment:
   the loom's room. Your sessions list is yours again.
 - The weaver reads the origin conversation (not a re-typed objective) plus the
   project's environment contract, and proposes threads. A human approves before
-  anything runs. The blank-objective form remains as the degenerate case: a
-  loom with no origin.
+  anything runs.
+
+### Amendment (2026-08-23): the conversation is the ONLY human entrance
+
+The blank-objective form was kept at first as "the degenerate case: a loom
+with no origin." Retired. A form is a second door to the same place with
+strictly less context behind it — there is no case where it produces a better
+loom than saying the same sentence to a session and spinning it — and a
+degenerate case with its own door becomes a default path. `/looms/new` is now
+purely the proposal room: where a spin lands and the weaver's threads are
+reviewed, approved, or discarded. The weave API keeps its `projectId +
+objective` mode for programmatic callers (MCP), but no human surface offers
+it.
 
 ### Contracts are tiers, not paragraphs
 

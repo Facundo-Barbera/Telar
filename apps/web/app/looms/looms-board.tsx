@@ -12,7 +12,7 @@
  */
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { PlusIcon, WorkflowIcon } from "lucide-react";
+import { MessageSquareIcon, WorkflowIcon } from "lucide-react";
 import type { SessionActivity } from "@telar/engine-client";
 import { PageHeader } from "@/components/common/page-header";
 import { EmptyState } from "@/components/common/empty-state";
@@ -113,14 +113,8 @@ export function LoomsBoard() {
         }
         description={
           looms === null
-            ? "Objective → threads → verification → a human accepts."
+            ? "Conversation → threads → verification → a human accepts."
             : `${looms.length} loom${looms.length === 1 ? "" : "s"}${ready > 0 ? ` · ${ready} ready to accept` : ""}`
-        }
-        actions={
-          <Button size="sm" variant="outline" render={<Link href="/looms/new" />}>
-            <PlusIcon data-icon="inline-start" />
-            New loom
-          </Button>
         }
       />
 
@@ -141,12 +135,12 @@ export function LoomsBoard() {
 
           {looms?.length === 0 ? (
             <EmptyState
-              icon={WorkflowIcon}
+              icon={MessageSquareIcon}
               title="Nothing on the loom"
-              description="Open a session, talk the work through, and press “Spin into loom” — or start from a bare objective."
+              description="A loom is born from a conversation: open a session, talk the work through, and press “Spin into loom” in its header."
               action={
-                <Button variant="outline" render={<Link href="/looms/new" />}>
-                  New loom
+                <Button variant="outline" render={<Link href="/" />}>
+                  Go to your sessions
                 </Button>
               }
             />

@@ -1,33 +1,30 @@
 "use client";
 
 /**
- * THE WEAVING ROOM — where a loom is proposed and approved, in the app's own
- * grammar: `PageHeader` introduces it, the form is the system's `Select` /
- * `Textarea` / `Button`, the proposal is `Card`s with the shared tier badges,
- * failure is `Alert`.
+ * THE PROPOSAL ROOM — where a spin lands and a loom proposal is reviewed.
  *
- * Two entrances: `?spin=<sessionId>` (a conversation's "Spin into loom")
- * starts the weaver on that conversation immediately; arriving bare offers
- * the objective form. Either way the output is a PROPOSAL — nothing runs
- * until Approve is pressed here.
+ * THERE IS NO CREATION FORM, and there used to be. A loom is born from a
+ * conversation (docs/loom-model-v1.md): you open a session, talk the work
+ * through, and press "Spin into loom" — the weaver reads the conversation and
+ * the project and proposes threads with contracts and tiers. The blank
+ * objective textarea that lived here was a second door to the same place with
+ * strictly less context behind it, and a degenerate case with its own door
+ * becomes the default path. Arriving here without a spin now says so instead
+ * of offering a form.
+ *
+ * The proposal is exactly that — a proposal. Nothing runs until Approve.
  */
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeftIcon, WorkflowIcon } from "lucide-react";
+import { ArrowLeftIcon, MessageSquareIcon, WorkflowIcon } from "lucide-react";
 import { PageHeader } from "@/components/common/page-header";
+import { EmptyState } from "@/components/common/empty-state";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Shimmer } from "@/components/ui/shimmer";
-import { Textarea } from "@/components/ui/textarea";
 import { TierBadge } from "@/components/loom/thread-row";
-
-interface ProjectView {
-  id: string;
-  name: string;
-}
 
 interface Proposal {
   projectId: string;
@@ -40,22 +37,20 @@ interface Proposal {
 
 export function NewLoom() {
   const router = useRouter();
-  const [projects, setProjects] = useState<ProjectView[]>([]);
-  const [projectId, setProjectId] = useState("");
-  const [objective, setObjective] = useState("");
-  const [weaving, setWeaving] = useState<"objective" | "spin" | null>(null);
+  const [weaving, setWeaving] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [bare, setBare] = useState(false);
 
-  const weave = useCallback(async (body: { projectId?: string; objective?: string; sessionId?: string }) => {
-    setWeaving(body.sessionId ? "spin" : "objective");
+  const weave = useCallback(async (sessionId: string) => {
+    setWeaving(true);
     setError(null);
     try {
       const r = await fetch("/api/looms/weave", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ sessionId }),
       });
       const payload = (await r.json()) as Proposal & { error?: { message?: string } };
       if (!r.ok) throw new Error(payload.error?.message ?? `weave: ${r.status}`);
@@ -63,23 +58,19 @@ export function NewLoom() {
     } catch (e) {
       setError(String(e));
     } finally {
-      setWeaving(null);
+      setWeaving(false);
     }
   }, []);
 
   useEffect(() => {
     const initial = setTimeout(() => {
-      void fetch("/api/projects")
-        .then((r) => r.json())
-        .then((d: { projects: ProjectView[] }) => {
-          setProjects(d.projects);
-          setProjectId((current) => current || (d.projects[0]?.id ?? ""));
-        })
-        .catch(() => undefined);
       const spin = new URLSearchParams(window.location.search).get("spin");
       if (spin) {
         window.history.replaceState(null, "", "/looms/new");
-        void weave({ sessionId: spin });
+        void weave(spin);
+      } else {
+        // No spin, no form: this room only reviews what a conversation started.
+        setBare(true);
       }
     }, 0);
     return () => clearTimeout(initial);
@@ -118,8 +109,8 @@ export function NewLoom() {
             <ArrowLeftIcon />
           </Button>
         }
-        title="New loom"
-        description="The weaver proposes threads with contracts and the tiers that prove them. Nothing runs until you approve."
+        title="Proposal"
+        description="The weaver read the conversation and the project. Nothing runs until you approve."
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -130,56 +121,35 @@ export function NewLoom() {
             </Alert>
           ) : null}
 
-          {weaving === "spin" ? (
+          {weaving ? (
             <Card size="sm">
               <CardContent>
-                <Shimmer>Spinning… the weaver is reading the origin conversation and the project.</Shimmer>
+                <Shimmer className="text-sm">Spinning… the weaver is reading the origin conversation and the project.</Shimmer>
               </CardContent>
             </Card>
-          ) : proposal === null ? (
-            <Card size="sm">
-              <CardContent className="space-y-3">
-                <Textarea
-                  value={objective}
-                  onChange={(e) => setObjective(e.target.value)}
-                  placeholder="An objective, in your own words — or better: open a session, talk it through, and press “Spin into loom” there."
-                  rows={4}
-                />
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={projectId || null}
-                    onValueChange={(value) => {
-                      if (typeof value === "string") setProjectId(value);
-                    }}
-                  >
-                    <SelectTrigger size="sm" className="w-48">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {projects.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>
-                          {p.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    size="sm"
-                    className="ml-auto"
-                    onClick={() => void weave({ projectId, objective })}
-                    disabled={weaving !== null || !projectId || objective.trim().length < 8}
-                  >
-                    <WorkflowIcon data-icon="inline-start" />
-                    {weaving === "objective" ? "Weaving…" : "Weave a proposal"}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
+          ) : null}
+
+          {bare && proposal === null && !weaving ? (
+            <EmptyState
+              icon={MessageSquareIcon}
+              title="A loom is born from a conversation"
+              description="Open a session, talk the work through, and press “Spin into loom” in its header — the weaver reads what you said and proposes the threads. There is no blank form on purpose."
+              action={
+                <Button variant="outline" render={<Link href="/" />}>
+                  Go to your sessions
+                </Button>
+              }
+            />
+          ) : null}
+
+          {proposal ? (
             <>
               <Card size="sm">
                 <CardHeader>
-                  <CardTitle>{proposal.title}</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    <WorkflowIcon className="size-4 shrink-0" />
+                    {proposal.title}
+                  </CardTitle>
                   <CardDescription>
                     {proposal.threads.length} threads proposed{proposal.originSessionId ? ", spun from your conversation" : ""} — nothing is
                     running yet. {proposal.objective}
@@ -209,12 +179,21 @@ export function NewLoom() {
                 <Button onClick={() => void approve()} disabled={approving}>
                   {approving ? "Spawning threads…" : "Approve — spawn the threads"}
                 </Button>
-                <Button variant="outline" onClick={() => setProposal(null)} disabled={approving}>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    // A discarded proposal leaves the room bare — the honest
+                    // state, and the one that names the way to try again.
+                    setProposal(null);
+                    setBare(true);
+                  }}
+                  disabled={approving}
+                >
                   Discard
                 </Button>
               </div>
             </>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
