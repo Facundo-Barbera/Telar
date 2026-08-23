@@ -1773,6 +1773,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             title: stringValue(input.title, "session title", true),
             ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
             ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
+            ...(typeof input.branchSlug === "string" ? { branchSlug: input.branchSlug } : {}),
             // Validated in the store rather than here, so the HTTP surface and
             // any in-process caller reject the same set of drivers.
             ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),

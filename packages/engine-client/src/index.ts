@@ -1075,6 +1075,9 @@ export class EngineClient {
     envMode?: "local" | "worktree";
     /** Which provider runs this session's turns. Defaults to Claude. */
     driver?: ProviderDriverKind;
+    /** Proposed branch for a worktree session, e.g. `loom/<loom>/<thread>`.
+     *  Must live under `loom/` or `telar/`; the engine refuses anything else. */
+    branchSlug?: string;
   }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
   }
