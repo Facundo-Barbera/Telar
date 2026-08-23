@@ -8,6 +8,13 @@ a future re-scan.*
 
 This is the master entry point for AI-assisted development on Telar. Point brownfield PRD / planning workflows here.
 
+> **Current direction (2026-08):** [`vision-2026-08.md`](vision-2026-08.md) — docs as the
+> interface, looms as workers, verification as the gate, and an **environment lease
+> scheduler** as the scarce-resource manager. Normative companion:
+> [`env-contract-v1.md`](env-contract-v1.md) (the five-verb environment contract and
+> sidecar/sovereignty rules). These supersede the cockpit-first framing below where they
+> conflict.
+
 ## Project Overview
 
 - **Type:** Monorepo (Bun workspaces: `apps/*`, `packages/*`) with 3 parts
