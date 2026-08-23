@@ -102,23 +102,23 @@ describe("lease lifecycle", () => {
     await release(b.lease!.id);
   });
 
-  test("stale leases are reclaimed: dead holder and expired TTL", async () => {
+  test("reclaim is TTL-only: a dead holder pid never kills a live lease", async () => {
     const repo = fakeProject();
     const granted = await acquire({ cwd: repo });
     withState((state) => {
-      state.leases[granted.lease!.id]!.pid = 99_999_999; // no such process
+      state.leases[granted.lease!.id]!.pid = 99_999_999; // grant process long gone — the CLI case
+    });
+    expect(reclaimStale().staleLeases).toEqual([]); // still leased
+    expect(existsSync(join(repo, "up-0"))).toBeTrue();
+
+    withState((state) => {
+      state.leases[granted.lease!.id]!.expiresAt = Date.now() - 1;
     });
     const stale = reclaimStale();
     expect(stale.staleLeases.map((l) => l.id)).toEqual([granted.lease!.id]);
     await downStale(stale);
     expect(existsSync(join(repo, "up-0"))).toBeFalse();
     expect(Object.keys(snapshotState().leases)).toHaveLength(0);
-
-    const again = await acquire({ cwd: repo });
-    withState((state) => {
-      state.leases[again.lease!.id]!.expiresAt = Date.now() - 1;
-    });
-    expect(reclaimStale().staleLeases.map((l) => l.id)).toEqual([again.lease!.id]);
   });
 
   test("renew extends the TTL", async () => {

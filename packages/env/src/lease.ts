@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadContract, loadMachinePolicy, type CostClass, type EnvContract, type MachinePolicy } from "./config.ts";
 import { recordEvent } from "./events.ts";
 import { projectIdentity, worktreeRoot } from "./id.ts";
-import { pidAlive, withState, type EnvState, type Lease, type WarmEnv } from "./state.ts";
+import { withState, type EnvState, type Lease, type WarmEnv } from "./state.ts";
 import { runVerb, waitReady, type VerbContext, type VerbResult } from "./verbs.ts";
 
 export interface AcquireResult {
@@ -75,7 +75,11 @@ export function reclaimStale(): ReclaimedEnvs {
   const now = Date.now();
   const ttlMs = loadMachinePolicy().leaseTtlMinutes * 60_000;
   return withState((state) => {
-    const staleLeases = Object.values(state.leases).filter((l) => !pidAlive(l.pid) || l.expiresAt < now);
+    // TTL only — never the holder pid. A CLI-granted lease's pid is the
+    // grant command, dead by definition a moment later; reclaiming on it
+    // tears down environments humans are actively using (it killed the
+    // cockpit out from under the /looms page the day this was written).
+    const staleLeases = Object.values(state.leases).filter((l) => l.expiresAt < now);
     for (const l of staleLeases) {
       delete state.leases[l.id];
       recordEvent("lease.reclaimed", { leaseId: l.id, projectId: l.projectId, worktree: l.worktree });
