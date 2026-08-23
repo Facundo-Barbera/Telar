@@ -1,13 +1,26 @@
 "use client";
 
 /**
- * THE BOARD — the looms place's lobby. An overview and nothing else: every
- * loom as a card whose thread rows tell you at a glance what is running, what
- * is verified, and what is stuck. Creation moved to its own room (/looms/new),
- * so the rail's two entries stopped being two links to the same page.
+ * THE BOARD — the looms place's lobby, wearing the app's own chrome.
+ *
+ * Composed ENTIRELY from the shared vocabulary: `PageHeader` introduces the
+ * surface the way every top-level surface introduces itself, looms are
+ * `Card`s, states are `Badge`s, threads speak the session rows' status
+ * language (components/loom/thread-row.tsx), emptiness is `EmptyState`,
+ * loading is `Skeleton`, failure is `Alert`. Nothing here is hand-rolled —
+ * the idiom test pins that.
  */
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { PlusIcon, WorkflowIcon } from "lucide-react";
+import type { SessionActivity } from "@telar/engine-client";
+import { PageHeader } from "@/components/common/page-header";
+import { EmptyState } from "@/components/common/empty-state";
+import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { LoomStateBadge, ThreadStatusSlot, TierBadge, VerificationBadge } from "@/components/loom/thread-row";
 
 interface ThreadView {
   sessionId: string;
@@ -15,8 +28,8 @@ interface ThreadView {
   title: string;
   tier?: string;
   branch?: string;
-  verification?: { tier: string; ok: boolean };
-  session?: { status?: string } | null;
+  verification?: { tier: string; ok: boolean; commit?: string };
+  session?: { status?: string; activity?: SessionActivity; activityAt?: number | null; updatedAt?: number } | null;
 }
 
 interface LoomView {
@@ -28,25 +41,6 @@ interface LoomView {
   state: "working" | "idle" | "verifying" | "ready" | "accepted";
   threads: ThreadView[];
   acceptedAt?: number;
-}
-
-const STATE_STYLE: Record<LoomView["state"], string> = {
-  working: "text-info border-info/40",
-  idle: "text-muted-foreground border-border",
-  verifying: "text-verify border-verify/40",
-  ready: "text-success border-success/40",
-  accepted: "text-muted-foreground border-border",
-};
-
-function threadDot(thread: ThreadView): string {
-  if (thread.verification) return thread.verification.ok ? "bg-success" : "bg-destructive";
-  if (thread.session?.status === "working") return "bg-info animate-pulse";
-  return "bg-muted-foreground/50";
-}
-
-function threadStatus(thread: ThreadView): string {
-  if (thread.verification) return thread.verification.ok ? `${thread.verification.tier} green` : `${thread.verification.tier} red`;
-  return thread.session?.status ?? "unreachable";
 }
 
 export function LoomsBoard() {
@@ -75,81 +69,99 @@ export function LoomsBoard() {
 
   const open = looms?.filter((loom) => loom.state !== "accepted") ?? [];
   const accepted = looms?.filter((loom) => loom.state === "accepted") ?? [];
+  const ready = open.filter((loom) => loom.state === "ready").length;
 
   const card = (loom: LoomView) => (
-    <Link
-      key={loom.id}
-      href={`/looms/${loom.id}`}
-      className="block rounded-lg border border-border bg-card p-4 hover:border-muted-foreground/40"
-    >
-      <div className="flex items-center gap-4">
-        <div className="min-w-0">
-          <h2 className="truncate font-medium">
-            {loom.title}
-            {loom.slug ? <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">loom/{loom.slug}</span> : null}
-          </h2>
-          <p className="mt-0.5 truncate text-sm text-muted-foreground">{loom.objective}</p>
-        </div>
-        <span
-          className={`ml-auto shrink-0 rounded-full border px-3 py-0.5 font-mono text-xs uppercase tracking-wide ${STATE_STYLE[loom.state]}`}
-        >
-          {loom.state}
-        </span>
-      </div>
-      {/* The thread rows ARE the overview: one line per thread, its dot, its
-          name, its tier, its live status. Bare dots said "four of something";
-          these say what. */}
-      <ul className="mt-3 space-y-1">
-        {loom.threads.map((thread) => (
-          <li key={thread.sessionId} className="flex items-center gap-2 text-xs">
-            <span className={`h-2 w-2 shrink-0 rounded-full ${threadDot(thread)}`} />
-            <span className="min-w-0 truncate text-foreground/90">{thread.title}</span>
-            {thread.tier ? (
-              <span className="shrink-0 rounded border border-verify/40 px-1 py-px font-mono text-[9px] uppercase text-verify">
-                {thread.tier}
-              </span>
-            ) : null}
-            <span className="ml-auto shrink-0 font-mono text-muted-foreground">{threadStatus(thread)}</span>
-          </li>
-        ))}
-      </ul>
+    <Link key={loom.id} href={`/looms/${loom.id}`} className="block outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <Card size="sm" className="transition-colors hover:ring-foreground/20">
+        <CardHeader>
+          <CardTitle className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate">{loom.title}</span>
+            {loom.slug ? <span className="shrink-0 font-mono text-xs font-normal text-muted-foreground">loom/{loom.slug}</span> : null}
+          </CardTitle>
+          <CardDescription className="truncate">{loom.objective}</CardDescription>
+          <CardAction>
+            <LoomStateBadge state={loom.state} />
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          <ul className="space-y-1.5">
+            {loom.threads.map((thread) => (
+              <li key={thread.sessionId} className="flex items-center gap-2 text-xs">
+                <span className="min-w-0 truncate text-foreground/90">{thread.title}</span>
+                <TierBadge {...(thread.tier ? { tier: thread.tier } : {})} />
+                <span className="ml-auto flex shrink-0 items-center gap-2">
+                  <VerificationBadge {...(thread.verification ? { verification: thread.verification } : {})} />
+                  <ThreadStatusSlot live={thread.session ?? null} />
+                </span>
+              </li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
     </Link>
   );
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-10 text-foreground">
-      <header className="mb-6 flex items-start gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Looms</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Born from a conversation, detached into their own home. Verification runs on a clean checkout; only a human accepts.
-          </p>
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        title={
+          <span className="flex items-center gap-2">
+            <WorkflowIcon className="size-4 shrink-0" />
+            Looms
+          </span>
+        }
+        description={
+          looms === null
+            ? "Objective → threads → verification → a human accepts."
+            : `${looms.length} loom${looms.length === 1 ? "" : "s"}${ready > 0 ? ` · ${ready} ready to accept` : ""}`
+        }
+        actions={
+          <Button size="sm" variant="outline" render={<Link href="/looms/new" />}>
+            <PlusIcon data-icon="inline-start" />
+            New loom
+          </Button>
+        }
+      />
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-4xl space-y-3 px-6 py-6">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertTitle>{error}</AlertTitle>
+            </Alert>
+          ) : null}
+
+          {looms === null ? (
+            <>
+              <Skeleton className="h-28 w-full rounded-xl" />
+              <Skeleton className="h-28 w-full rounded-xl" />
+            </>
+          ) : null}
+
+          {looms?.length === 0 ? (
+            <EmptyState
+              icon={WorkflowIcon}
+              title="Nothing on the loom"
+              description="Open a session, talk the work through, and press “Spin into loom” — or start from a bare objective."
+              action={
+                <Button variant="outline" render={<Link href="/looms/new" />}>
+                  New loom
+                </Button>
+              }
+            />
+          ) : null}
+
+          {open.map(card)}
+
+          {accepted.length > 0 ? (
+            <>
+              <h2 className="pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Accepted</h2>
+              <div className="space-y-3 opacity-70">{accepted.map(card)}</div>
+            </>
+          ) : null}
         </div>
-        <Link
-          href="/looms/new"
-          className="ml-auto shrink-0 rounded border border-border px-3 py-1.5 text-sm hover:bg-muted"
-        >
-          New loom
-        </Link>
-      </header>
-
-      {error ? <p className="mb-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
-
-      {looms === null ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
-      {looms?.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No looms yet. Open a session, talk the work through, and press “Spin into loom” — or start from an objective with New loom.
-        </p>
-      ) : null}
-
-      <div className="space-y-3">{open.map(card)}</div>
-
-      {accepted.length > 0 ? (
-        <>
-          <h2 className="mb-2 mt-8 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Accepted</h2>
-          <div className="space-y-3 opacity-70">{accepted.map(card)}</div>
-        </>
-      ) : null}
+      </div>
     </div>
   );
 }

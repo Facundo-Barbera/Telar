@@ -1,7 +1,26 @@
 "use client";
 
+/**
+ * THE LOOM ROOM — one loom told in loom language, wearing the app's chrome.
+ *
+ * `PageHeader` carries the way back, the loom's name, its state, and the two
+ * verbs (Verify, Accept) in the actions cluster where every surface keeps its
+ * verbs. Each thread is a `Card` wearing the session rows' own status
+ * language — hairline, activity badge, ticking duration — because a thread IS
+ * a session and must read like one. The accept moat is unchanged: the button
+ * refuses until every thread has a loom-run green.
+ */
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
+import type { SessionActivity } from "@telar/engine-client";
+import { PageHeader } from "@/components/common/page-header";
+import { fmtAgo } from "@/lib/format";
+import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { LoomStateBadge, statusHairline, ThreadStatusSlot, TierBadge } from "@/components/loom/thread-row";
 
 interface LiveThread {
   sessionId: string;
@@ -14,6 +33,9 @@ interface LiveThread {
   verification?: { tier: string; ok: boolean; at: number; detail?: string; commit?: string };
   live: {
     status: string;
+    activity?: SessionActivity;
+    activityAt?: number | null;
+    updatedAt?: number;
     worktree: string | null;
     branch: string | null;
     lastAct: string | null;
@@ -34,25 +56,6 @@ interface LoomDetail {
   origin: { sessionId: string; title: string } | null;
   createdAt: number;
   acceptedAt?: number;
-}
-
-const STATE_STYLE: Record<LoomDetail["state"], string> = {
-  working: "text-info border-info/40",
-  idle: "text-muted-foreground border-border",
-  verifying: "text-verify border-verify/40",
-  ready: "text-success border-success/40",
-  accepted: "text-muted-foreground border-border",
-};
-
-function ThreadDot({ thread }: { thread: LiveThread }) {
-  const color = thread.verification
-    ? thread.verification.ok
-      ? "bg-success"
-      : "bg-destructive"
-    : thread.live?.status === "working"
-      ? "bg-info animate-pulse"
-      : "bg-muted-foreground";
-  return <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${color}`} />;
 }
 
 export function LoomRoom({ loomId }: { loomId: string }) {
@@ -103,96 +106,117 @@ export function LoomRoom({ loomId }: { loomId: string }) {
     [loomId, refresh],
   );
 
-  if (loom === null) {
-    return <div className="mx-auto max-w-4xl px-6 py-10 text-sm text-muted-foreground">{error ?? "Loading…"}</div>;
-  }
-
   return (
-    <div className="mx-auto max-w-4xl px-6 py-10 text-foreground">
-      <header className="mb-6">
-        <div className="flex items-center gap-3">
-          <Link href="/looms" className="text-sm text-muted-foreground hover:text-foreground">
-            ← Looms
-          </Link>
-          {loom.slug ? <span className="font-mono text-xs text-muted-foreground">loom/{loom.slug}</span> : null}
-          <span className={`ml-auto rounded-full border px-3 py-0.5 font-mono text-xs uppercase tracking-wide ${STATE_STYLE[loom.state]}`}>
-            {loom.state}
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        leading={
+          <Button variant="ghost" size="icon-sm" aria-label="Back to looms" render={<Link href="/looms" />}>
+            <ArrowLeftIcon />
+          </Button>
+        }
+        title={
+          <span className="flex items-center gap-2">
+            <span className="truncate">{loom?.title ?? "Loom"}</span>
+            {loom ? <LoomStateBadge state={loom.state} /> : null}
           </span>
-        </div>
-        <h1 className="mt-3 text-2xl font-semibold">{loom.title}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{loom.objective}</p>
-        {loom.origin ? (
-          <p className="mt-2 text-xs text-muted-foreground">
-            Spun from{" "}
-            <Link
-              href={`/looms/${loom.id}/threads/${loom.origin.sessionId}`}
-              className="underline decoration-dotted hover:text-foreground"
-            >
-              {loom.origin.title}
-            </Link>{" "}
-            — that conversation now lives here.
-          </p>
-        ) : null}
-      </header>
+        }
+        description={loom ? loom.objective : undefined}
+        actions={
+          loom && !loom.acceptedAt ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null}
+                title="Checks out each thread's branch fresh and runs its tier — uncommitted work does not exist"
+                onClick={() => void act("verify")}
+              >
+                {busy === "verify" ? "Verifying…" : "Verify"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-success"
+                disabled={busy !== null || loom.state !== "ready"}
+                title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
+                onClick={() => void act("accept")}
+              >
+                Accept
+              </Button>
+            </>
+          ) : null
+        }
+      />
 
-      {error ? <p className="mb-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-4xl space-y-3 px-6 py-6">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertTitle>{error}</AlertTitle>
+            </Alert>
+          ) : null}
 
-      <div className="space-y-4">
-        {loom.threads.map((thread) => (
-          <section key={thread.sessionId} className="rounded-lg border border-border bg-card p-4">
-            <div className="flex items-start gap-3">
-              <ThreadDot thread={thread} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-3">
-                  <h2 className="truncate font-medium">{thread.title}</h2>
-                  {thread.tier ? (
-                    <span className="shrink-0 rounded border border-verify/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-verify">
-                      {thread.tier}
-                    </span>
-                  ) : (
-                    <span
-                      className="shrink-0 rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-warning"
-                      title="No executable tier backs this contract — verification is prose-only"
-                    >
-                      no tier
-                    </span>
-                  )}
-                  <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
-                    {thread.live?.status ?? "unreachable"}
-                    {thread.live && thread.live.openTasks > 0 ? ` · ${thread.live.openTasks} sub-agents` : ""}
-                  </span>
-                </div>
+          {loom === null ? (
+            <>
+              <Skeleton className="h-32 w-full rounded-xl" />
+              <Skeleton className="h-32 w-full rounded-xl" />
+            </>
+          ) : null}
 
+          {loom?.origin ? (
+            <p className="text-xs text-muted-foreground">
+              Spun from{" "}
+              <Link href={`/looms/${loom.id}/threads/${loom.origin.sessionId}`} className="underline decoration-dotted hover:text-foreground">
+                {loom.origin.title}
+              </Link>{" "}
+              — that conversation now lives here.
+            </p>
+          ) : null}
+
+          {loom?.threads.map((thread) => (
+            <Card key={thread.sessionId} size="sm" className={`relative overflow-visible ${statusHairline(thread.live)}`}>
+              <CardHeader>
+                <CardTitle className="flex min-w-0 items-center gap-2">
+                  <Link href={`/looms/${loom.id}/threads/${thread.sessionId}`} className="truncate hover:underline">
+                    {thread.title}
+                  </Link>
+                  <TierBadge {...(thread.tier ? { tier: thread.tier } : {})} />
+                </CardTitle>
+                <CardAction>
+                  <ThreadStatusSlot live={thread.live} />
+                </CardAction>
+              </CardHeader>
+              <CardContent className="space-y-3">
                 {thread.live?.lastAct ? (
-                  <p className="mt-1 truncate font-mono text-xs text-muted-foreground">now: {thread.live.lastAct}</p>
+                  <p className="truncate font-mono text-xs text-muted-foreground">now: {thread.live.lastAct}</p>
                 ) : null}
 
                 {thread.contract ? (
-                  <p className="mt-3 border-l-2 border-verify/50 pl-3 text-sm text-muted-foreground">
+                  <p className="border-l-2 border-verify/50 pl-3 text-sm text-muted-foreground">
                     <span className="font-medium text-verify">Contract:</span> {thread.contract}
                   </p>
                 ) : null}
 
                 {thread.verification ? (
-                  <p
-                    className={`mt-3 border-l-2 pl-3 text-sm ${
+                  <div
+                    className={`border-l-2 pl-3 text-sm ${
                       thread.verification.ok ? "border-success/50 text-success" : "border-destructive/50 text-destructive"
                     }`}
                   >
                     {thread.verification.tier} {thread.verification.ok ? "green" : "red"} · clean checkout
-                    {thread.verification.commit ? ` of ${thread.verification.commit.slice(0, 7)}` : ""} ·{" "}
-                    {new Date(thread.verification.at).toLocaleTimeString()}
+                    {thread.verification.commit ? ` of ${thread.verification.commit.slice(0, 7)}` : ""}
                     {thread.verification.detail ? (
-                      <span className="mt-1 block whitespace-pre-wrap font-mono text-xs text-muted-foreground">
-                        {thread.verification.detail}
-                      </span>
+                      <p className="mt-1 whitespace-pre-wrap font-mono text-xs text-muted-foreground">{thread.verification.detail}</p>
                     ) : null}
-                  </p>
+                  </div>
                 ) : null}
 
-                <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                   {(thread.branch ?? thread.live?.branch) ? (
-                    <span className="font-mono">{thread.branch ?? thread.live?.branch}</span>
+                    <>
+                      <GitBranchIcon className="size-3 shrink-0" />
+                      <span className="min-w-0 truncate font-mono">{thread.branch ?? thread.live?.branch}</span>
+                    </>
                   ) : null}
                   <Link
                     href={`/looms/${loom.id}/threads/${thread.sessionId}`}
@@ -201,38 +225,15 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                     open thread →
                   </Link>
                 </div>
-              </div>
-            </div>
-          </section>
-        ))}
-      </div>
+              </CardContent>
+            </Card>
+          ))}
 
-      {loom.acceptedAt ? (
-        <p className="mt-6 text-sm text-muted-foreground">Accepted {new Date(loom.acceptedAt).toLocaleString()} — this loom is done.</p>
-      ) : (
-        <div className="mt-6 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void act("verify")}
-            disabled={busy !== null}
-            className="rounded border border-border px-3 py-1.5 text-sm text-foreground hover:bg-muted disabled:opacity-50"
-          >
-            {busy === "verify" ? "Verifying at a clean desk…" : "Verify"}
-          </button>
-          <span className="text-xs text-muted-foreground">
-            checks out each thread&apos;s branch fresh and runs its tier — uncommitted work does not exist
-          </span>
-          <button
-            type="button"
-            onClick={() => void act("accept")}
-            disabled={busy !== null || loom.state !== "ready"}
-            title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
-            className="ml-auto rounded border border-success/50 px-3 py-1.5 text-sm text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Accept
-          </button>
+          {loom?.acceptedAt ? (
+            <p className="text-sm text-muted-foreground">Accepted {fmtAgo(loom.acceptedAt)} — this loom is done.</p>
+          ) : null}
         </div>
-      )}
+      </div>
     </div>
   );
 }

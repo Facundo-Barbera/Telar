@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ArrowLeftIcon } from "lucide-react";
 import { SessionCockpit } from "@/components/session-cockpit";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { getLoom } from "@/lib/looms/store";
 
 /**
@@ -25,16 +28,17 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/20 px-4 text-xs">
-        <Link href={`/looms/${loom.id}`} className="shrink-0 font-medium text-muted-foreground hover:text-foreground">
-          ← {loom.title}
-        </Link>
+      <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/20 px-2 text-xs">
+        <Button variant="ghost" size="xs" render={<Link href={`/looms/${loom.id}`} />}>
+          <ArrowLeftIcon data-icon="inline-start" />
+          {loom.title}
+        </Button>
         <span className="text-border">/</span>
-        <span className="shrink-0 text-foreground">{thread ? thread.title : "origin conversation"}</span>
+        <span className="shrink-0 font-medium text-foreground">{thread ? thread.title : "origin conversation"}</span>
         {thread?.tier ? (
-          <span className="shrink-0 rounded border border-verify/40 px-1.5 py-px font-mono text-[10px] uppercase text-verify">
+          <Badge variant="outline" className="font-mono text-[10px] uppercase text-verify">
             {thread.tier}
-          </span>
+          </Badge>
         ) : null}
         {thread?.contract ? (
           <span className="min-w-0 truncate text-muted-foreground" title={thread.contract}>

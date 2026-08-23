@@ -1,18 +1,28 @@
 "use client";
 
 /**
- * THE WEAVING ROOM — where a loom is proposed and approved.
+ * THE WEAVING ROOM — where a loom is proposed and approved, in the app's own
+ * grammar: `PageHeader` introduces it, the form is the system's `Select` /
+ * `Textarea` / `Button`, the proposal is `Card`s with the shared tier badges,
+ * failure is `Alert`.
  *
- * Two entrances: arrive with `?spin=<sessionId>` (a conversation's "Spin into
- * loom") and the weaver starts on it immediately; or arrive bare and write an
- * objective. Either way, the output is a PROPOSAL — threads with briefs,
- * contracts and tiers — and nothing runs until "Approve" is pressed here.
- * Its own room rather than a form on the board, so "All looms" and "New loom"
- * stopped being two links to the same place.
+ * Two entrances: `?spin=<sessionId>` (a conversation's "Spin into loom")
+ * starts the weaver on that conversation immediately; arriving bare offers
+ * the objective form. Either way the output is a PROPOSAL — nothing runs
+ * until Approve is pressed here.
  */
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { ArrowLeftIcon, WorkflowIcon } from "lucide-react";
+import { PageHeader } from "@/components/common/page-header";
+import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Shimmer } from "@/components/ui/shimmer";
+import { Textarea } from "@/components/ui/textarea";
+import { TierBadge } from "@/components/loom/thread-row";
 
 interface ProjectView {
   id: string;
@@ -101,109 +111,112 @@ export function NewLoom() {
   }, [proposal, router]);
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10 text-foreground">
-      <header className="mb-6">
-        <Link href="/looms" className="text-sm text-muted-foreground hover:text-foreground">
-          ← Looms
-        </Link>
-        <h1 className="mt-3 text-2xl font-semibold">New loom</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          The weaver reads the project and proposes threads — each with a contract and the tier that proves it. Nothing runs until you
-          approve.
-        </p>
-      </header>
+    <div className="flex h-full min-h-0 flex-col">
+      <PageHeader
+        leading={
+          <Button variant="ghost" size="icon-sm" aria-label="Back to looms" render={<Link href="/looms" />}>
+            <ArrowLeftIcon />
+          </Button>
+        }
+        title="New loom"
+        description="The weaver proposes threads with contracts and the tiers that prove them. Nothing runs until you approve."
+      />
 
-      {error ? <p className="mb-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-3xl space-y-3 px-6 py-6">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertTitle>{error}</AlertTitle>
+            </Alert>
+          ) : null}
 
-      {weaving === "spin" ? (
-        <p className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
-          Spinning… the weaver is reading the origin conversation and the project.
-        </p>
-      ) : proposal === null ? (
-        <div className="space-y-3 rounded-lg border border-border bg-card p-4">
-          <select
-            value={projectId}
-            onChange={(e) => setProjectId(e.target.value)}
-            className="rounded border border-border bg-background px-2 py-1.5 text-sm"
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          <textarea
-            value={objective}
-            onChange={(e) => setObjective(e.target.value)}
-            placeholder="An objective, in your own words — or better: open a session, talk it through, and press “Spin into loom” there."
-            rows={4}
-            className="w-full rounded border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/60"
-          />
-          <button
-            type="button"
-            onClick={() => void weave({ projectId, objective })}
-            disabled={weaving !== null || !projectId || objective.trim().length < 8}
-            className="rounded border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-          >
-            {weaving === "objective" ? "Weaving… (the weaver is reading the project)" : "Weave a proposal"}
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="rounded-lg border border-border bg-card p-4">
-            <p className="text-sm">
-              <span className="font-medium">{proposal.title}</span>
-              <span className="text-muted-foreground">
-                {" "}
-                — {proposal.threads.length} threads proposed{proposal.originSessionId ? ", spun from your conversation" : ""}. Nothing is
-                running yet.
-              </span>
-            </p>
-            <p className="mt-1 text-sm text-muted-foreground">{proposal.objective}</p>
-          </div>
-          <ul className="space-y-2">
-            {proposal.threads.map((t, i) => (
-              <li key={i} className="rounded-lg border border-border bg-card p-3 text-sm">
-                <div className="flex items-baseline gap-2">
-                  <p className="font-medium">{t.title}</p>
-                  <span className="font-mono text-xs text-muted-foreground">{t.slug}</span>
-                  {t.tier ? (
-                    <span className="ml-auto rounded border border-verify/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-verify">
-                      {t.tier}
-                    </span>
-                  ) : (
-                    <span className="ml-auto rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-warning">
-                      no tier
-                    </span>
-                  )}
+          {weaving === "spin" ? (
+            <Card size="sm">
+              <CardContent>
+                <Shimmer>Spinning… the weaver is reading the origin conversation and the project.</Shimmer>
+              </CardContent>
+            </Card>
+          ) : proposal === null ? (
+            <Card size="sm">
+              <CardContent className="space-y-3">
+                <Textarea
+                  value={objective}
+                  onChange={(e) => setObjective(e.target.value)}
+                  placeholder="An objective, in your own words — or better: open a session, talk it through, and press “Spin into loom” there."
+                  rows={4}
+                />
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={projectId || null}
+                    onValueChange={(value) => {
+                      if (typeof value === "string") setProjectId(value);
+                    }}
+                  >
+                    <SelectTrigger size="sm" className="w-48">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {projects.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => void weave({ projectId, objective })}
+                    disabled={weaving !== null || !projectId || objective.trim().length < 8}
+                  >
+                    <WorkflowIcon data-icon="inline-start" />
+                    {weaving === "objective" ? "Weaving…" : "Weave a proposal"}
+                  </Button>
                 </div>
-                <p className="mt-1 text-muted-foreground">{t.brief}</p>
-                <p className="mt-2 border-l-2 border-verify/50 pl-2 text-xs text-muted-foreground">
-                  <span className="text-verify">Contract:</span> {t.contract}
-                </p>
-              </li>
-            ))}
-          </ul>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => void approve()}
-              disabled={approving}
-              className="rounded border border-success/50 px-3 py-1.5 text-sm text-success hover:bg-success/10 disabled:opacity-50"
-            >
-              {approving ? "Spawning threads…" : "Approve — spawn the threads"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setProposal(null)}
-              disabled={approving}
-              className="rounded border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
-            >
-              Discard
-            </button>
-          </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <Card size="sm">
+                <CardHeader>
+                  <CardTitle>{proposal.title}</CardTitle>
+                  <CardDescription>
+                    {proposal.threads.length} threads proposed{proposal.originSessionId ? ", spun from your conversation" : ""} — nothing is
+                    running yet. {proposal.objective}
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+              {proposal.threads.map((t, i) => (
+                <Card key={i} size="sm">
+                  <CardHeader>
+                    <CardTitle className="flex min-w-0 items-baseline gap-2 text-sm">
+                      <span className="truncate">{t.title}</span>
+                      <span className="shrink-0 font-mono text-xs font-normal text-muted-foreground">{t.slug}</span>
+                    </CardTitle>
+                    <CardAction>
+                      <TierBadge {...(t.tier ? { tier: t.tier } : {})} />
+                    </CardAction>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    <p className="text-muted-foreground">{t.brief}</p>
+                    <p className="border-l-2 border-verify/50 pl-2 text-xs text-muted-foreground">
+                      <span className="text-verify">Contract:</span> {t.contract}
+                    </p>
+                  </CardContent>
+                </Card>
+              ))}
+              <div className="flex gap-2">
+                <Button onClick={() => void approve()} disabled={approving}>
+                  {approving ? "Spawning threads…" : "Approve — spawn the threads"}
+                </Button>
+                <Button variant="outline" onClick={() => setProposal(null)} disabled={approving}>
+                  Discard
+                </Button>
+              </div>
+            </>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

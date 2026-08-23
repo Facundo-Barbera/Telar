@@ -18,6 +18,12 @@ export async function GET() {
             const session = snapshot
               ? {
                   status: threadStatus(snapshot.session.activity, snapshot.session.state),
+                  // The raw activity rides along so the UI can render it with
+                  // the SAME badge language as every session row, instead of
+                  // inventing a dialect from the folded status string.
+                  activity: snapshot.session.activity,
+                  activityAt: snapshot.session.activityAt ?? null,
+                  updatedAt: snapshot.session.updatedAt,
                   title: snapshot.session.title,
                   worktree: snapshot.session.workspace?.path ?? null,
                 }

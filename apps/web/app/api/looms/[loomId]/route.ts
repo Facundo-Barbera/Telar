@@ -30,6 +30,9 @@ export async function GET(_request: Request, context: Context) {
           ...thread,
           live: {
             status,
+            activity: snapshot.session.activity,
+            activityAt: snapshot.session.activityAt ?? null,
+            updatedAt: snapshot.session.updatedAt,
             worktree: snapshot.session.workspace?.path ?? null,
             branch: snapshot.session.workspace?.mode === "worktree" ? snapshot.session.workspace.branch : null,
             lastAct: last?.title ?? null,
