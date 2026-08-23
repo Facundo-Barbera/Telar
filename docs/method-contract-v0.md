@@ -194,6 +194,65 @@ method:
    the v2 "spec as the loom's body" falls out of the contract rather than
    being a separate feature.
 
+## Amendment v0.1 — skills are the unit, and the conductor is episodic
+
+Two corrections from review, both structural.
+
+### Phases invoke skills; they do not contain prompts
+
+bmad and its kin are already provider-native skills/commands — dispatch
+machinery the CLI owns. A method pack that re-encoded them as Telar prompts
+would be a worse copy of an existing mechanism. So `run` is an INVOCATION:
+
+```yaml
+- id: prd
+  run: { skill: "bmad:pm", args: "from docs/brief.md" }   # sent as a /command turn
+```
+
+Telar's responsibilities shrink to the two things it is actually for:
+
+- **Provisioning.** A method pack is, concretely, a sidecar-held config dir
+  with the skills installed, mounted into loom sessions via the engine's
+  existing per-provider-instance `configDir`. Installing bmad = pointing the
+  pack at bmad's own standard install. Nothing committed; sovereignty intact.
+- **Sequencing.** Which skill, in which order, producing which artifact,
+  behind which gate. The contract describes the order of operations and the
+  artifacts — never how to think. Any published skill-based methodology is a
+  candidate method pack with near-zero adaptation.
+
+### The conductor is an agent, and its memory is the document
+
+The phase graph cannot be walked by hardcoded routes — steering takes
+judgment (a stalled thread, an interestingly-failed verification, a plan that
+needs amending mid-flight). But a long-lived conductor agent accrues
+unbounded context. The resolution: the conductor needs long-lived STATE, not
+long-lived CONTEXT, and state lives on disk.
+
+**The episodic conductor:**
+
+- **Woken by events, not clocks.** Engine journal events — turn completed,
+  verification finished, gate cleared, window opened — each wake one
+  conductor episode. A slow heartbeat exists only as a stuck-state fallback.
+- **Each episode boots from the loom document**: phases, gate states,
+  contracts, evidence, its own prior decisions, fresh thread summaries, and
+  anything the human said in the origin session since last time. It makes ONE
+  move — advance a phase, re-brief a thread, run verify, escalate — through
+  the MCP tools, writes the decision and its reasoning back into the
+  document, and dies.
+- **Why not compaction:** compaction is lossy and INVISIBLE — nobody can see
+  what was forgotten. Respawn-from-document is lossy but legible: the
+  conductor knows exactly what is written down, which is exactly what the
+  human can read. The forgetting is auditable. It also pressures the loom
+  document into being good enough to steer from — spec-driven development
+  enforced by architecture rather than by discipline.
+- **Small remits.** One conductor per loom (its world is one spec). A
+  separate, smaller dispatcher drains the queue during windows. Workers
+  unchanged. No agent holds everything.
+- **Human steering** stays where the conversation already is: the origin
+  session. The conductor reads it as state; its own moves are visible in the
+  room. The accept moat is untouched — a conductor can do everything except
+  the one thing that matters.
+
 ## Verdict
 
 bmad fits. The contortions are two real machine gaps (plural gates, shared
@@ -202,6 +261,7 @@ scenario ("handle my issues while I sleep") needs anyway. The contract is
 worth building against.
 
 Build order implied, when cooking resumes: gates + `waiting on you` in the
-loom lifecycle → document artifacts → method packs (weave first, expressed as
-data) → shared-workspace execution → bmad pack → intake adapters → standing
-orders.
+loom lifecycle → document artifacts (the conductor's memory) → episodic
+conductor on engine events → method packs as skill sequences (weave first,
+expressed as data) → shared-workspace execution → bmad pack via provisioned
+config dirs → intake adapters → dispatcher + windows → standing orders.
