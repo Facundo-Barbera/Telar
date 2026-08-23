@@ -53,6 +53,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
+import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -349,10 +350,12 @@ function SessionShelf({
 
 function SidebarBody() {
   const pathname = usePathname();
-  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`,
-  // Telar's own session list everywhere else. The header above it (trigger,
-  // switcher) is common to both; only what is below it changes.
+  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`, the
+  // looms floor plan on `/looms`, Telar's own session list everywhere else.
+  // The header above it (trigger, switcher) is common to all; only what is
+  // below it changes.
   const inSpool = pathname.startsWith("/spool");
+  const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -573,6 +576,8 @@ function SidebarBody() {
             Spool's place. The header (trigger, switcher) stays common. */}
         {inSpool ? (
           <SpoolWarehouseNav />
+        ) : inLooms ? (
+          <LoomsNav />
         ) : (
         <>
         {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see

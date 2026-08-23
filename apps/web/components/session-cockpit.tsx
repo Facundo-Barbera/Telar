@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
+import { FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   type EngineEvent,
   type EngineRequest,
@@ -219,7 +219,25 @@ function SessionMasthead({
       {/* The whole trailing cluster is controls, so it opts out as a block
           rather than one button at a time. `shrink-0`: these are fixed-size
           glyphs, and the title beside them is what absorbs a narrow window. */}
-      <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">{panel}</div>
+      <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">
+        {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
+            produced enough shape, hand it to the weaver. The session becomes
+            the loom's origin and detaches — it leaves this surface and lives
+            in the loom's room from then on. */}
+        {session && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Spin into loom"
+            title="Spin into loom — the weaver reads this conversation and proposes threads"
+            render={<Link href={`/looms?spin=${encodeURIComponent(session.id)}`} />}
+          >
+            <WorkflowIcon />
+          </Button>
+        )}
+        {panel}
+      </div>
     </header>
   );
 }

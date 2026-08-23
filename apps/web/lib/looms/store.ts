@@ -4,13 +4,16 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 /**
- * The loom store — v0 of the front for the loom model.
+ * The loom store — v1 of the loom model (docs/loom-model-v1.md).
  *
- * A loom is an objective decomposed into threads (worktree sessions), each of
- * which must pass verification before a HUMAN accepts the loom. Deliberately a
- * plain JSON file under TELAR_HOME rather than an engine table: this surface
- * exists to make the loom lifecycle visible and to hold the accept moat while
- * the real wiring into the engine lands. Nothing here may ever grow an
+ * A loom is born from a conversation and then DETACHES: it owns its origin
+ * session and every thread session, and the ordinary sessions surface
+ * subtracts them (see loomOwnedSessionIds). Contracts are bound to executable
+ * verification tiers from the env contract, and verification runs against a
+ * clean checkout of each thread's branch — never the agent's own worktree.
+ *
+ * Deliberately a plain JSON file under TELAR_HOME rather than an engine
+ * table: the engine stays ignorant of looms. Nothing here may ever grow an
  * agent-callable accept — `acceptedAt` is stamped only by the accept route,
  * which only the UI calls.
  */
@@ -22,23 +25,33 @@ export interface ThreadVerification {
   ok: boolean;
   at: number;
   detail?: string;
+  /** The commit that was verified — evidence names its exact subject. */
+  commit?: string;
 }
 
 export interface LoomThread {
   sessionId: string;
+  slug: string;
   title: string;
   brief: string;
-  /** The thread's verification contract — what must be demonstrably true for
-   *  this thread to be done, in the weaver's (or human's) own words. */
+  /** Human-readable intent: what must be demonstrably true. */
   contract?: string;
+  /** Executable binding: a verification tier from the project's env contract.
+   *  Absent means the weaver found no fitting tier — visible, not hidden. */
+  tier?: string;
+  branch?: string;
   verification?: ThreadVerification;
 }
 
 export interface Loom {
   id: string;
+  slug: string;
   title: string;
   objective: string;
   projectId: string;
+  /** The conversation this loom was spun from. Owned: it leaves the ordinary
+   *  sessions surface with the threads. */
+  originSessionId?: string;
   threads: LoomThread[];
   createdAt: number;
   /** Human sign-off. There is no code path that sets this from an agent. */
@@ -86,8 +99,47 @@ export function saveLoom(loom: Loom): Loom {
   return loom;
 }
 
-export function newLoom(init: Omit<Loom, "id" | "createdAt">): Loom {
-  return saveLoom({ ...init, id: `loom_${randomUUID().replaceAll("-", "").slice(0, 12)}`, createdAt: Date.now() });
+export function newLoom(init: Omit<Loom, "id" | "createdAt" | "slug"> & { slug?: string }): Loom {
+  const slug = uniqueLoomSlug(init.slug ?? slugify(init.title), listLooms());
+  return saveLoom({ ...init, slug, id: `loom_${randomUUID().replaceAll("-", "").slice(0, 12)}`, createdAt: Date.now() });
+}
+
+/** Names come from the work: "Hito 1 · Agosto" → "hito-1-agosto". */
+export function slugify(text: string): string {
+  return (
+    text
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "loom"
+  );
+}
+
+/** A slug that collides with a live loom gets a numeric suffix rather than
+ *  silently sharing branches with it. */
+export function uniqueLoomSlug(base: string, existing: Loom[]): string {
+  const taken = new Set(existing.map((l) => l.slug));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+/**
+ * Every session a loom owns — threads AND origin. The ordinary sessions
+ * surface subtracts these; loom internals are reachable only through the room.
+ */
+export function loomOwnedSessionIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const loom of listLooms()) {
+    if (loom.originSessionId) ids.add(loom.originSessionId);
+    for (const thread of loom.threads) ids.add(thread.sessionId);
+  }
+  return ids;
+}
+
+export function findLoomBySession(sessionId: string): Loom | undefined {
+  return listLooms().find((l) => l.originSessionId === sessionId || l.threads.some((t) => t.sessionId === sessionId));
 }
 
 /** Derived, never stored: the state is what the evidence says it is. */

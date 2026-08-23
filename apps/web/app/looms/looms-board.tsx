@@ -12,6 +12,7 @@ interface ThreadView {
 
 interface LoomView {
   id: string;
+  slug?: string;
   title: string;
   objective: string;
   projectId: string;
@@ -29,7 +30,9 @@ interface Proposal {
   projectId: string;
   objective: string;
   title: string;
-  threads: Array<{ title: string; brief: string; contract: string }>;
+  threads: Array<{ title: string; slug: string; brief: string; contract: string; tier: string | null }>;
+  tiers: string[];
+  originSessionId?: string;
 }
 
 const STATE_STYLE: Record<LoomView["state"], string> = {
@@ -46,7 +49,7 @@ export function LoomsBoard() {
 
   const [projectId, setProjectId] = useState("");
   const [objective, setObjective] = useState("");
-  const [weaving, setWeaving] = useState(false);
+  const [weaving, setWeaving] = useState<"objective" | "spin" | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [approving, setApproving] = useState(false);
 
@@ -61,6 +64,25 @@ export function LoomsBoard() {
     }
   }, []);
 
+  const weave = useCallback(async (body: { projectId?: string; objective?: string; sessionId?: string }) => {
+    setWeaving(body.sessionId ? "spin" : "objective");
+    setError(null);
+    try {
+      const r = await fetch("/api/looms/weave", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = (await r.json()) as Proposal & { error?: { message?: string } };
+      if (!r.ok) throw new Error(payload.error?.message ?? `weave: ${r.status}`);
+      setProposal(payload);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setWeaving(null);
+    }
+  }, []);
+
   useEffect(() => {
     const initial = setTimeout(() => {
       void refresh();
@@ -71,32 +93,20 @@ export function LoomsBoard() {
           setProjectId((current) => current || (d.projects[0]?.id ?? ""));
         })
         .catch(() => undefined);
+      // The SPIN entrance: /looms?spin=<sessionId> arrives from a session's
+      // "Spin into loom" action and starts the weaver on that conversation.
+      const spin = new URLSearchParams(window.location.search).get("spin");
+      if (spin) {
+        window.history.replaceState(null, "", "/looms");
+        void weave({ sessionId: spin });
+      }
     }, 0);
     const poll = setInterval(() => void refresh(), 10_000);
     return () => {
       clearTimeout(initial);
       clearInterval(poll);
     };
-  }, [refresh]);
-
-  const weave = useCallback(async () => {
-    setWeaving(true);
-    setError(null);
-    try {
-      const r = await fetch("/api/looms/weave", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ projectId, objective }),
-      });
-      const body = (await r.json()) as Proposal & { error?: { message?: string } };
-      if (!r.ok) throw new Error(body.error?.message ?? `weave: ${r.status}`);
-      setProposal(body);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setWeaving(false);
-    }
-  }, [projectId, objective]);
+  }, [refresh, weave]);
 
   const approve = useCallback(async () => {
     if (!proposal) return;
@@ -109,7 +119,8 @@ export function LoomsBoard() {
           projectId: proposal.projectId,
           title: proposal.title,
           objective: proposal.objective,
-          threads: proposal.threads,
+          threads: proposal.threads.map((t) => ({ ...t, tier: t.tier ?? undefined })),
+          ...(proposal.originSessionId ? { originSessionId: proposal.originSessionId } : {}),
         }),
       });
       if (!r.ok) {
@@ -131,7 +142,8 @@ export function LoomsBoard() {
       <header className="mb-8">
         <h1 className="text-2xl font-semibold">Looms</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Objective → threads in their own worktrees → verification → a human accepts. There is no accept an agent can call.
+          A loom is born from a conversation and detaches: its sessions leave your list and live here. Verification runs on a clean
+          checkout of each thread&apos;s branch; only a human accepts.
         </p>
       </header>
 
@@ -139,7 +151,9 @@ export function LoomsBoard() {
 
       <section className="mb-8 rounded-lg border border-border bg-card p-4">
         <h2 className="text-sm font-medium">New loom</h2>
-        {proposal === null ? (
+        {weaving === "spin" ? (
+          <p className="mt-3 text-sm text-muted-foreground">Spinning… the weaver is reading the origin conversation and the project.</p>
+        ) : proposal === null ? (
           <div className="mt-3 space-y-3">
             <div className="flex gap-2">
               <select
@@ -157,29 +171,46 @@ export function LoomsBoard() {
             <textarea
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
-              placeholder="The objective, in your own words. The weaver reads the project and proposes threads with verification contracts — nothing runs until you approve."
+              placeholder="An objective, in your own words — or better: open a session, talk it through, and press “Spin into loom” there. The weaver proposes threads with contracts and tiers; nothing runs until you approve."
               rows={3}
               className="w-full rounded border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/60"
             />
             <button
               type="button"
-              onClick={() => void weave()}
-              disabled={weaving || !projectId || objective.trim().length < 8}
+              onClick={() => void weave({ projectId, objective })}
+              disabled={weaving !== null || !projectId || objective.trim().length < 8}
               className="rounded border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
             >
-              {weaving ? "Weaving… (the weaver is reading the project)" : "Weave a proposal"}
+              {weaving === "objective" ? "Weaving… (the weaver is reading the project)" : "Weave a proposal"}
             </button>
           </div>
         ) : (
           <div className="mt-3 space-y-3">
             <p className="text-sm">
               <span className="font-medium">{proposal.title}</span>
-              <span className="text-muted-foreground"> — {proposal.threads.length} threads proposed. Nothing is running yet.</span>
+              <span className="text-muted-foreground">
+                {" "}
+                — {proposal.threads.length} threads proposed{proposal.originSessionId ? ", spun from your conversation" : ""}. Nothing is
+                running yet.
+              </span>
             </p>
+            <p className="text-sm text-muted-foreground">{proposal.objective}</p>
             <ul className="space-y-2">
               {proposal.threads.map((t, i) => (
                 <li key={i} className="rounded border border-border bg-background p-3 text-sm">
-                  <p className="font-medium">{t.title}</p>
+                  <div className="flex items-baseline gap-2">
+                    <p className="font-medium">{t.title}</p>
+                    <span className="font-mono text-xs text-muted-foreground">{t.slug}</span>
+                    {t.tier ? (
+                      <span className="ml-auto rounded border border-verify/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-verify">
+                        {t.tier}
+                      </span>
+                    ) : (
+                      <span className="ml-auto rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-warning">
+                        no tier
+                      </span>
+                    )}
+                  </div>
                   <p className="mt-1 text-muted-foreground">{t.brief}</p>
                   <p className="mt-2 border-l-2 border-verify/50 pl-2 text-xs text-muted-foreground">
                     <span className="text-verify">Contract:</span> {t.contract}
@@ -221,7 +252,10 @@ export function LoomsBoard() {
           >
             <div className="flex items-center gap-4">
               <div className="min-w-0">
-                <h2 className="truncate font-medium">{loom.title}</h2>
+                <h2 className="truncate font-medium">
+                  {loom.title}
+                  {loom.slug ? <span className="ml-2 font-mono text-xs font-normal text-muted-foreground">loom/{loom.slug}</span> : null}
+                </h2>
                 <p className="mt-0.5 truncate text-sm text-muted-foreground">{loom.objective}</p>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-3">

@@ -5,10 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 
 interface LiveThread {
   sessionId: string;
+  slug?: string;
   title: string;
   brief: string;
   contract?: string;
-  verification?: { tier: string; ok: boolean; at: number; detail?: string };
+  tier?: string;
+  branch?: string;
+  verification?: { tier: string; ok: boolean; at: number; detail?: string; commit?: string };
   live: {
     status: string;
     worktree: string | null;
@@ -22,11 +25,13 @@ interface LiveThread {
 
 interface LoomDetail {
   id: string;
+  slug?: string;
   title: string;
   objective: string;
   projectId: string;
   state: "working" | "verifying" | "ready" | "accepted";
   threads: LiveThread[];
+  origin: { sessionId: string; title: string } | null;
   createdAt: number;
   acceptedAt?: number;
 }
@@ -75,13 +80,13 @@ export function LoomRoom({ loomId }: { loomId: string }) {
   }, [refresh]);
 
   const act = useCallback(
-    async (action: "verify" | "accept", tier?: string) => {
+    async (action: "verify" | "accept") => {
       setBusy(action);
       try {
         const r = await fetch(`/api/looms/${loomId}/${action}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(tier ? { tier } : {}),
+          body: JSON.stringify({}),
         });
         if (!r.ok) {
           const body = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
@@ -108,12 +113,25 @@ export function LoomRoom({ loomId }: { loomId: string }) {
           <Link href="/looms" className="text-sm text-muted-foreground hover:text-foreground">
             ← Looms
           </Link>
+          {loom.slug ? <span className="font-mono text-xs text-muted-foreground">loom/{loom.slug}</span> : null}
           <span className={`ml-auto rounded-full border px-3 py-0.5 font-mono text-xs uppercase tracking-wide ${STATE_STYLE[loom.state]}`}>
             {loom.state}
           </span>
         </div>
         <h1 className="mt-3 text-2xl font-semibold">{loom.title}</h1>
         <p className="mt-1 text-sm text-muted-foreground">{loom.objective}</p>
+        {loom.origin ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Spun from{" "}
+            <Link
+              href={`/projects/${loom.projectId}/sessions/${loom.origin.sessionId}`}
+              className="underline decoration-dotted hover:text-foreground"
+            >
+              {loom.origin.title}
+            </Link>{" "}
+            — that conversation now lives here.
+          </p>
+        ) : null}
       </header>
 
       {error ? <p className="mb-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
@@ -126,6 +144,18 @@ export function LoomRoom({ loomId }: { loomId: string }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline gap-3">
                   <h2 className="truncate font-medium">{thread.title}</h2>
+                  {thread.tier ? (
+                    <span className="shrink-0 rounded border border-verify/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-verify">
+                      {thread.tier}
+                    </span>
+                  ) : (
+                    <span
+                      className="shrink-0 rounded border border-warning/40 px-1.5 py-0.5 font-mono text-[10px] uppercase text-warning"
+                      title="No executable tier backs this contract — verification is prose-only"
+                    >
+                      no tier
+                    </span>
+                  )}
                   <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
                     {thread.live?.status ?? "unreachable"}
                     {thread.live && thread.live.openTasks > 0 ? ` · ${thread.live.openTasks} sub-agents` : ""}
@@ -148,7 +178,8 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                       thread.verification.ok ? "border-success/50 text-success" : "border-destructive/50 text-destructive"
                     }`}
                   >
-                    {thread.verification.tier} {thread.verification.ok ? "green" : "red"} ·{" "}
+                    {thread.verification.tier} {thread.verification.ok ? "green" : "red"} · clean checkout
+                    {thread.verification.commit ? ` of ${thread.verification.commit.slice(0, 7)}` : ""} ·{" "}
                     {new Date(thread.verification.at).toLocaleTimeString()}
                     {thread.verification.detail ? (
                       <span className="mt-1 block whitespace-pre-wrap font-mono text-xs text-muted-foreground">
@@ -159,12 +190,14 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                 ) : null}
 
                 <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
-                  {thread.live?.branch ? <span className="font-mono">{thread.live.branch}</span> : null}
+                  {(thread.branch ?? thread.live?.branch) ? (
+                    <span className="font-mono">{thread.branch ?? thread.live?.branch}</span>
+                  ) : null}
                   <Link
                     href={`/projects/${loom.projectId}/sessions/${thread.sessionId}`}
                     className="ml-auto shrink-0 hover:text-foreground"
                   >
-                    open session →
+                    open thread session →
                   </Link>
                 </div>
               </div>
@@ -176,21 +209,24 @@ export function LoomRoom({ loomId }: { loomId: string }) {
       {loom.acceptedAt ? (
         <p className="mt-6 text-sm text-muted-foreground">Accepted {new Date(loom.acceptedAt).toLocaleString()} — this loom is done.</p>
       ) : (
-        <div className="mt-6 flex gap-2">
+        <div className="mt-6 flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void act("verify", "unit")}
+            onClick={() => void act("verify")}
             disabled={busy !== null}
             className="rounded border border-border px-3 py-1.5 text-sm text-foreground hover:bg-muted disabled:opacity-50"
           >
-            {busy === "verify" ? "Verifying…" : "Verify (unit)"}
+            {busy === "verify" ? "Verifying at a clean desk…" : "Verify"}
           </button>
+          <span className="text-xs text-muted-foreground">
+            checks out each thread&apos;s branch fresh and runs its tier — uncommitted work does not exist
+          </span>
           <button
             type="button"
             onClick={() => void act("accept")}
             disabled={busy !== null || loom.state !== "ready"}
             title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
-            className="rounded border border-success/50 px-3 py-1.5 text-sm text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
+            className="ml-auto rounded border border-success/50 px-3 py-1.5 text-sm text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Accept
           </button>

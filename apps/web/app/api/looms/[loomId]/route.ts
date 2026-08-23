@@ -39,7 +39,13 @@ export async function GET(_request: Request, context: Context) {
         };
       }),
     );
-    return Response.json({ ...loom, state: loomState(loom), threads });
+    const origin = loom.originSessionId
+      ? await client
+          .session(loom.originSessionId)
+          .then((s) => ({ sessionId: s.session.id, title: s.session.title }))
+          .catch(() => ({ sessionId: loom.originSessionId!, title: "origin session" }))
+      : null;
+    return Response.json({ ...loom, state: loomState(loom), threads, origin });
   } catch (error) {
     return engineErrorResponse(error);
   }
