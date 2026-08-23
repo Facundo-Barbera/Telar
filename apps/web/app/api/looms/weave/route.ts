@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { engineClient, engineErrorResponse, requestObject, optionalString } from "@/lib/engine/engine-server";
+import { appendJournal, newLoom, slugify, writeSpec } from "@/lib/looms/store";
+import { initialPhases, loadMethod } from "@/lib/looms/methods";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -111,20 +113,59 @@ export async function POST(request: Request) {
     if (!Array.isArray(proposal.threads) || proposal.threads.length === 0) {
       return Response.json({ error: { code: "weaver_empty", message: "the weaver proposed no threads" } }, { status: 502 });
     }
-    const threads = proposal.threads.map((t) => ({
-      ...t,
-      // A tier the contract does not define would fail at verify time with a
-      // confusing error; refuse it here where the fix is obvious.
-      tier: t.tier && tiers.includes(t.tier) ? t.tier : null,
-    }));
-    return Response.json({
-      projectId,
-      objective: proposal.objective ?? objective ?? "",
+    const usedSlugs = new Set<string>();
+    const threads = proposal.threads.map((t) => {
+      let slug = slugify(t.slug || t.title);
+      while (usedSlugs.has(slug)) slug = `${slug}-2`;
+      usedSlugs.add(slug);
+      return {
+        slug,
+        title: t.title,
+        brief: t.brief,
+        ...(t.contract ? { contract: t.contract } : {}),
+        // A tier the contract does not define would fail at verify time with a
+        // confusing error; refuse it here where the fix is obvious.
+        ...(t.tier && tiers.includes(t.tier) ? { tier: t.tier } : {}),
+      };
+    });
+
+    /**
+     * THE PROPOSAL IS A LOOM NOW — a draft one, parked at the execute gate.
+     * It used to live only in React state, where a page refresh silently ate
+     * the weaver's work. As a draft loom it survives navigation, shows in the
+     * rail, and its spec document exists on disk from the first moment: the
+     * conductor's memory starts here.
+     */
+    const finalObjective = proposal.objective ?? objective ?? "";
+    const loom = newLoom({
       title: proposal.title,
+      objective: finalObjective,
+      projectId,
+      method: "weave",
+      phases: initialPhases(loadMethod("weave")),
       threads,
-      tiers,
       ...(sessionId ? { originSessionId: sessionId } : {}),
     });
+    writeSpec(
+      loom.id,
+      [
+        `# ${loom.title}`,
+        `\nObjective: ${finalObjective}`,
+        sessionId ? `Origin: session ${sessionId}` : "Origin: bare objective (programmatic)",
+        `Method: weave · Project: ${project.name}`,
+        `\n## Threads`,
+        ...threads.map((t) =>
+          [
+            `\n### ${t.title} (\`${t.slug}\`)`,
+            t.brief,
+            t.contract ? `\n**Contract:** ${t.contract}` : "",
+            `**Tier:** ${t.tier ?? "none — contract is prose-only"}`,
+          ].join("\n"),
+        ),
+      ].join("\n"),
+    );
+    appendJournal(loom.id, "weaver", `proposed ${threads.length} threads (${threads.map((t) => t.slug).join(", ")})`);
+    return Response.json({ loomId: loom.id }, { status: 201 });
   } catch (error) {
     return engineErrorResponse(error);
   }

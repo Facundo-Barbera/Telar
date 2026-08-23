@@ -1,24 +1,38 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 /**
- * The loom store — v1 of the loom model (docs/loom-model-v1.md).
+ * The loom store — v2 of the loom model (docs/loom-model-v1.md + the method
+ * contract, docs/method-contract-v0.md).
  *
- * A loom is born from a conversation and then DETACHES: it owns its origin
- * session and every thread session, and the ordinary sessions surface
- * subtracts them (see loomOwnedSessionIds). Contracts are bound to executable
- * verification tiers from the env contract, and verification runs against a
- * clean checkout of each thread's branch — never the agent's own worktree.
+ * v2 adds the pieces the paper test demanded:
+ *  - PHASES with GATES. A loom walks a method's phase graph; a phase whose
+ *    gate is `human` parks the loom in `waiting` until it is cleared in the
+ *    room. Approval stopped being creation-time — threads exist as PLANS
+ *    (sessionId absent) until the execute gate clears and they spawn.
+ *  - THE LOOM DOCUMENT. Each loom owns a directory (spec.md, journal.md)
+ *    under TELAR_HOME — the conductor's whole memory. The conductor is
+ *    episodic: it boots from these files, moves once, writes back, dies.
+ *    Long-lived state, never long-lived context.
  *
- * Deliberately a plain JSON file under TELAR_HOME rather than an engine
- * table: the engine stays ignorant of looms. Nothing here may ever grow an
- * agent-callable accept — `acceptedAt` is stamped only by the accept route,
- * which only the UI calls.
+ * Unchanged and non-negotiable: `acceptedAt` is stamped only by the accept
+ * route, which only the UI calls. No agent-callable accept exists.
  */
 
-export type LoomState = "working" | "verifying" | "ready" | "accepted";
+export type LoomState = "waiting" | "working" | "verifying" | "ready" | "accepted";
+
+export type PhaseStatus = "pending" | "running" | "waiting" | "done";
+
+export interface LoomPhase {
+  id: string;
+  kind: "plan" | "execute";
+  /** `human` parks the loom until the room clears it; `none` advances alone. */
+  gate: "human" | "none";
+  status: PhaseStatus;
+  at?: number;
+}
 
 export interface ThreadVerification {
   tier: string;
@@ -30,7 +44,9 @@ export interface ThreadVerification {
 }
 
 export interface LoomThread {
-  sessionId: string;
+  /** ABSENT UNTIL SPAWNED. A thread is a plan first; the execute gate
+   *  clearing is what turns it into a session. */
+  sessionId?: string;
   slug: string;
   title: string;
   brief: string;
@@ -49,10 +65,18 @@ export interface Loom {
   title: string;
   objective: string;
   projectId: string;
+  /** Which method pack produced this loom's phase graph. */
+  method?: string;
+  phases?: LoomPhase[];
   /** The conversation this loom was spun from. Owned: it leaves the ordinary
    *  sessions surface with the threads. */
   originSessionId?: string;
   threads: LoomThread[];
+  /** An escalation from the conductor — something it judged a human should
+   *  see. Cleared by the room. */
+  attention?: string;
+  /** Last conductor episode, for throttling. */
+  conductedAt?: number;
   createdAt: number;
   /** Human sign-off. There is no code path that sets this from an agent. */
   acceptedAt?: number;
@@ -63,9 +87,12 @@ interface LoomsFile {
   looms: Loom[];
 }
 
+function telarHome(): string {
+  return process.env.TELAR_HOME ?? join(homedir(), ".telar");
+}
+
 function storePath(): string {
-  const home = process.env.TELAR_HOME ?? join(homedir(), ".telar");
-  return join(home, "looms", "looms.json");
+  return join(telarHome(), "looms", "looms.json");
 }
 
 function readAll(): LoomsFile {
@@ -104,6 +131,19 @@ export function newLoom(init: Omit<Loom, "id" | "createdAt" | "slug"> & { slug?:
   return saveLoom({ ...init, slug, id: `loom_${randomUUID().replaceAll("-", "").slice(0, 12)}`, createdAt: Date.now() });
 }
 
+/** A draft loom (nothing spawned) can be discarded; one with sessions cannot
+ *  — those sessions are work, and work is archived through the engine, not
+ *  vanished by a store delete. */
+export function deleteDraftLoom(id: string): boolean {
+  const file = readAll();
+  const loom = file.looms.find((l) => l.id === id);
+  if (!loom || loom.threads.some((t) => t.sessionId)) return false;
+  file.looms = file.looms.filter((l) => l.id !== id);
+  writeAll(file);
+  rmSync(loomDir(id), { recursive: true, force: true });
+  return true;
+}
+
 /** Names come from the work: "Hito 1 · Agosto" → "hito-1-agosto". */
 export function slugify(text: string): string {
   return (
@@ -133,7 +173,7 @@ export function loomOwnedSessionIds(): Set<string> {
   const ids = new Set<string>();
   for (const loom of listLooms()) {
     if (loom.originSessionId) ids.add(loom.originSessionId);
-    for (const thread of loom.threads) ids.add(thread.sessionId);
+    for (const thread of loom.threads) if (thread.sessionId) ids.add(thread.sessionId);
   }
   return ids;
 }
@@ -142,11 +182,53 @@ export function findLoomBySession(sessionId: string): Loom | undefined {
   return listLooms().find((l) => l.originSessionId === sessionId || l.threads.some((t) => t.sessionId === sessionId));
 }
 
-/** Derived, never stored: the state is what the evidence says it is. */
+/**
+ * Derived, never stored: the state is what the evidence says it is.
+ *
+ * `waiting` is v2's addition — a gate is open for a human. It outranks
+ * everything except acceptance, because a parked loom's one true fact is
+ * that YOU are what it is waiting for.
+ */
 export function loomState(loom: Loom): LoomState {
   if (loom.acceptedAt) return "accepted";
-  const verifications = loom.threads.map((t) => t.verification);
+  if (loom.phases?.some((p) => p.status === "waiting")) return "waiting";
+  const spawned = loom.threads.filter((t) => t.sessionId);
+  if (spawned.length === 0) return "waiting";
+  const verifications = spawned.map((t) => t.verification);
   if (verifications.every((v) => v?.ok)) return "ready";
   if (verifications.some((v) => v !== undefined)) return "verifying";
   return "working";
+}
+
+/* ------------------------------------------------------------------ *
+ * The loom document — the conductor's memory, on disk and legible.
+ * ------------------------------------------------------------------ */
+
+export function loomDir(id: string): string {
+  return join(telarHome(), "looms", id);
+}
+
+export function writeSpec(id: string, markdown: string): void {
+  mkdirSync(loomDir(id), { recursive: true });
+  writeFileSync(join(loomDir(id), "spec.md"), markdown);
+}
+
+export function readSpec(id: string): string | null {
+  const path = join(loomDir(id), "spec.md");
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
+
+/** Append-only. Every machine event and every conductor decision lands here,
+ *  timestamped — the audit trail the episodic conductor reboots from. */
+export function appendJournal(id: string, actor: string, entry: string): void {
+  mkdirSync(loomDir(id), { recursive: true });
+  const line = `- ${new Date().toISOString()} **${actor}**: ${entry.replaceAll("\n", " ").slice(0, 500)}\n`;
+  appendFileSync(join(loomDir(id), "journal.md"), line);
+}
+
+export function readJournal(id: string, tailLines = 40): string {
+  const path = join(loomDir(id), "journal.md");
+  if (!existsSync(path)) return "";
+  const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+  return lines.slice(-tailLines).join("\n");
 }

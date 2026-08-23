@@ -14,7 +14,7 @@ export async function GET() {
       listLooms().map(async (loom) => {
         const threads = await Promise.all(
           loom.threads.map(async (thread) => {
-            const snapshot = await client.session(thread.sessionId).catch(() => null);
+            const snapshot = thread.sessionId ? await client.session(thread.sessionId).catch(() => null) : null;
             const session = snapshot
               ? {
                   status: threadStatus(snapshot.session.activity, snapshot.session.state),

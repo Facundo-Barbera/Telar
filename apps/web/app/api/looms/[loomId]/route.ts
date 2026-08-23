@@ -1,5 +1,5 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
-import { getLoom } from "@/lib/looms/store";
+import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/engine-server";
+import { appendJournal, deleteDraftLoom, getLoom, readJournal, readSpec, saveLoom } from "@/lib/looms/store";
 import { displayState, threadStatus } from "@/lib/looms/status";
 
 export const dynamic = "force-dynamic";
@@ -8,10 +8,10 @@ export const runtime = "nodejs";
 type Context = { params: Promise<{ loomId: string }> };
 
 /**
- * The loom room's read: loom-native detail per thread, so the room can tell
- * the loom's story without sending the person into four chat transcripts.
- * `lastAct` is the newest titled item from the session journal — "what is it
- * doing right now" in one line.
+ * The loom room's read: loom-native detail per thread, plus the loom
+ * DOCUMENT — phases, spec, and the journal the conductor writes. The room
+ * renders the same memory the conductor reboots from; there is no second
+ * story.
  */
 export async function GET(_request: Request, context: Context) {
   try {
@@ -21,7 +21,8 @@ export async function GET(_request: Request, context: Context) {
     const client = await engineClient();
     const threads = await Promise.all(
       loom.threads.map(async (thread) => {
-        const snapshot = await client.session(thread.sessionId).catch(() => null);
+        // A planned thread has no session yet — it renders from the spec alone.
+        const snapshot = thread.sessionId ? await client.session(thread.sessionId).catch(() => null) : null;
         if (!snapshot) return { ...thread, live: null };
         const titled = snapshot.items.filter((i) => i.title);
         const last = titled.at(-1);
@@ -56,7 +57,44 @@ export async function GET(_request: Request, context: Context) {
       state: displayState(loom, threads.map((t) => t.live?.status ?? "unreachable")),
       threads,
       origin,
+      spec: readSpec(loomId),
+      journal: readJournal(loomId, 30),
     });
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
+}
+
+/** Discard a DRAFT — a loom whose gate was never cleared. Once sessions
+ *  exist the loom is work, and work is not deleted by a button. */
+export async function DELETE(_request: Request, context: Context) {
+  try {
+    const { loomId } = await context.params;
+    if (!deleteDraftLoom(loomId)) {
+      return Response.json(
+        { error: { code: "conflict", message: "only a draft loom (no spawned threads) can be discarded" } },
+        { status: 409 },
+      );
+    }
+    return Response.json({ deleted: true });
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
+}
+
+/** The one mutable room fact: clearing the conductor's escalation flag once
+ *  a human has seen it. */
+export async function PATCH(request: Request, context: Context) {
+  try {
+    const [{ loomId }, body] = await Promise.all([context.params, requestObject(request)]);
+    const loom = getLoom(loomId);
+    if (!loom) return Response.json({ error: { code: "not_found", message: `no loom ${loomId}` } }, { status: 404 });
+    if (body.clearAttention === true && loom.attention) {
+      appendJournal(loomId, "human", `saw the escalation: ${loom.attention.slice(0, 120)}`);
+      delete loom.attention;
+      saveLoom(loom);
+    }
+    return Response.json(loom);
   } catch (error) {
     return engineErrorResponse(error);
   }

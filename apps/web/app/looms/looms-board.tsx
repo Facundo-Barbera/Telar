@@ -23,7 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { LoomStateBadge, ThreadStatusSlot, TierBadge, VerificationBadge } from "@/components/loom/thread-row";
 
 interface ThreadView {
-  sessionId: string;
+  sessionId?: string;
   slug?: string;
   title: string;
   tier?: string;
@@ -38,7 +38,7 @@ interface LoomView {
   title: string;
   objective: string;
   projectId: string;
-  state: "working" | "idle" | "verifying" | "ready" | "accepted";
+  state: "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
   threads: ThreadView[];
   acceptedAt?: number;
 }
@@ -87,7 +87,7 @@ export function LoomsBoard() {
         <CardContent>
           <ul className="space-y-1.5">
             {loom.threads.map((thread) => (
-              <li key={thread.sessionId} className="flex items-center gap-2 text-xs">
+              <li key={thread.slug ?? thread.sessionId} className="flex items-center gap-2 text-xs">
                 <span className="min-w-0 truncate text-foreground/90">{thread.title}</span>
                 <TierBadge {...(thread.tier ? { tier: thread.tier } : {})} />
                 <span className="ml-auto flex shrink-0 items-center gap-2">

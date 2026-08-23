@@ -3,16 +3,15 @@
 /**
  * THE LOOM ROOM — one loom told in loom language, wearing the app's chrome.
  *
- * `PageHeader` carries the way back, the loom's name, its state, and the two
- * verbs (Verify, Accept) in the actions cluster where every surface keeps its
- * verbs. Each thread is a `Card` wearing the session rows' own status
- * language — hairline, activity badge, ticking duration — because a thread IS
- * a session and must read like one. The accept moat is unchanged: the button
- * refuses until every thread has a loom-run green.
+ * v2: the room renders the loom DOCUMENT — the same spec + journal the
+ * episodic conductor reboots from. A waiting loom shows its open gate
+ * (Approve/Discard for the execute gate); a running one shows live threads,
+ * the conductor's decisions, and its escalations. The accept moat is
+ * unchanged: Accept refuses until every thread has a loom-run green.
  */
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { ArrowLeftIcon, GitBranchIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeftIcon, GitBranchIcon, SparklesIcon } from "lucide-react";
 import type { SessionActivity } from "@telar/engine-client";
 import { PageHeader } from "@/components/common/page-header";
 import { fmtAgo } from "@/lib/format";
@@ -23,8 +22,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { LoomStateBadge, statusHairline, ThreadStatusSlot, TierBadge } from "@/components/loom/thread-row";
 
 interface LiveThread {
-  sessionId: string;
-  slug?: string;
+  sessionId?: string;
+  slug: string;
   title: string;
   brief: string;
   contract?: string;
@@ -51,9 +50,13 @@ interface LoomDetail {
   title: string;
   objective: string;
   projectId: string;
-  state: "working" | "idle" | "verifying" | "ready" | "accepted";
+  method?: string;
+  state: "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
+  phases?: Array<{ id: string; kind: string; gate: string; status: string }>;
   threads: LiveThread[];
   origin: { sessionId: string; title: string } | null;
+  attention?: string;
+  journal?: string;
   createdAt: number;
   acceptedAt?: number;
 }
@@ -62,6 +65,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
   const [loom, setLoom] = useState<LoomDetail | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const lastAutoConduct = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -84,7 +88,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
   }, [refresh]);
 
   const act = useCallback(
-    async (action: "verify" | "accept") => {
+    async (action: "verify" | "accept" | "approve" | "conduct") => {
       setBusy(action);
       try {
         const r = await fetch(`/api/looms/${loomId}/${action}`, {
@@ -92,7 +96,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({}),
         });
-        if (!r.ok) {
+        if (!r.ok && r.status !== 202) {
           const body = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
           throw new Error(body?.error?.message ?? `${action}: ${r.status}`);
         }
@@ -105,6 +109,38 @@ export function LoomRoom({ loomId }: { loomId: string }) {
     },
     [loomId, refresh],
   );
+
+  const discard = useCallback(async () => {
+    setBusy("discard");
+    try {
+      const r = await fetch(`/api/looms/${loomId}`, { method: "DELETE" });
+      if (!r.ok) {
+        const body = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
+        throw new Error(body?.error?.message ?? `discard: ${r.status}`);
+      }
+      window.location.href = "/looms";
+    } catch (e) {
+      setError(String(e));
+      setBusy(null);
+    }
+  }, [loomId]);
+
+  /**
+   * THE v0 CONDUCTOR TRIGGER: the room's own poll wakes an episode when the
+   * loom is running with nothing visibly moving. Client-initiated is honest
+   * about what it is — an engine-event trigger replaces it when the
+   * dispatcher lands. Server-side cooldown makes over-calling free.
+   */
+  useEffect(() => {
+    if (!loom) return;
+    const quiet = loom.state === "working" && loom.threads.every((t) => !t.live || t.live.status !== "working");
+    if (quiet && Date.now() - lastAutoConduct.current > 120_000) {
+      lastAutoConduct.current = Date.now();
+      void fetch(`/api/looms/${loomId}/conduct`, { method: "POST" }).then(() => void refresh());
+    }
+  }, [loom, loomId, refresh]);
+
+  const waitingGate = loom?.phases?.find((p) => p.kind === "execute" && p.status === "waiting");
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -123,27 +159,38 @@ export function LoomRoom({ loomId }: { loomId: string }) {
         description={loom ? loom.objective : undefined}
         actions={
           loom && !loom.acceptedAt ? (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={busy !== null}
-                title="Checks out each thread's branch fresh and runs its tier — uncommitted work does not exist"
-                onClick={() => void act("verify")}
-              >
-                {busy === "verify" ? "Verifying…" : "Verify"}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="text-success"
-                disabled={busy !== null || loom.state !== "ready"}
-                title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
-                onClick={() => void act("accept")}
-              >
-                Accept
-              </Button>
-            </>
+            waitingGate ? (
+              <>
+                <Button size="sm" onClick={() => void act("approve")} disabled={busy !== null}>
+                  {busy === "approve" ? "Spawning threads…" : "Approve — spawn the threads"}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void discard()} disabled={busy !== null}>
+                  Discard
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy !== null}
+                  title="Checks out each thread's branch fresh and runs its tier — uncommitted work does not exist"
+                  onClick={() => void act("verify")}
+                >
+                  {busy === "verify" ? "Verifying…" : "Verify"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-success"
+                  disabled={busy !== null || loom.state !== "ready"}
+                  title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
+                  onClick={() => void act("accept")}
+                >
+                  Accept
+                </Button>
+              </>
+            )
           ) : null
         }
       />
@@ -156,11 +203,39 @@ export function LoomRoom({ loomId }: { loomId: string }) {
             </Alert>
           ) : null}
 
+          {loom?.attention ? (
+            <Alert>
+              <SparklesIcon />
+              <AlertTitle className="flex items-baseline gap-2">
+                <span className="min-w-0 flex-1 text-warning">Conductor: {loom.attention}</span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() =>
+                    void fetch(`/api/looms/${loomId}`, {
+                      method: "PATCH",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ clearAttention: true }),
+                    }).then(() => void refresh())
+                  }
+                >
+                  Seen
+                </Button>
+              </AlertTitle>
+            </Alert>
+          ) : null}
+
           {loom === null ? (
             <>
               <Skeleton className="h-32 w-full rounded-xl" />
               <Skeleton className="h-32 w-full rounded-xl" />
             </>
+          ) : null}
+
+          {waitingGate ? (
+            <p className="text-sm text-muted-foreground">
+              The weaver proposed {loom?.threads.length} threads. Nothing is running — review the plans below and clear the gate.
+            </p>
           ) : null}
 
           {loom?.origin ? (
@@ -174,19 +249,29 @@ export function LoomRoom({ loomId }: { loomId: string }) {
           ) : null}
 
           {loom?.threads.map((thread) => (
-            <Card key={thread.sessionId} size="sm" className={`relative overflow-visible ${statusHairline(thread.live)}`}>
+            <Card key={thread.slug} size="sm" className={`relative overflow-visible ${statusHairline(thread.live)}`}>
               <CardHeader>
                 <CardTitle className="flex min-w-0 items-center gap-2">
-                  <Link href={`/looms/${loom.id}/threads/${thread.sessionId}`} className="truncate hover:underline">
-                    {thread.title}
-                  </Link>
+                  {thread.sessionId ? (
+                    <Link href={`/looms/${loom.id}/threads/${thread.sessionId}`} className="truncate hover:underline">
+                      {thread.title}
+                    </Link>
+                  ) : (
+                    <span className="truncate">{thread.title}</span>
+                  )}
                   <TierBadge {...(thread.tier ? { tier: thread.tier } : {})} />
                 </CardTitle>
                 <CardAction>
-                  <ThreadStatusSlot live={thread.live} />
+                  {thread.sessionId ? (
+                    <ThreadStatusSlot live={thread.live} />
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">planned</span>
+                  )}
                 </CardAction>
               </CardHeader>
               <CardContent className="space-y-3">
+                {!thread.sessionId ? <p className="text-sm text-muted-foreground">{thread.brief}</p> : null}
+
                 {thread.live?.lastAct ? (
                   <p className="truncate font-mono text-xs text-muted-foreground">now: {thread.live.lastAct}</p>
                 ) : null}
@@ -211,23 +296,45 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                   </div>
                 ) : null}
 
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  {(thread.branch ?? thread.live?.branch) ? (
-                    <>
-                      <GitBranchIcon className="size-3 shrink-0" />
-                      <span className="min-w-0 truncate font-mono">{thread.branch ?? thread.live?.branch}</span>
-                    </>
-                  ) : null}
-                  <Link
-                    href={`/looms/${loom.id}/threads/${thread.sessionId}`}
-                    className="ml-auto shrink-0 hover:text-foreground"
-                  >
-                    open thread →
-                  </Link>
-                </div>
+                {thread.sessionId ? (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    {(thread.branch ?? thread.live?.branch) ? (
+                      <>
+                        <GitBranchIcon className="size-3 shrink-0" />
+                        <span className="min-w-0 truncate font-mono">{thread.branch ?? thread.live?.branch}</span>
+                      </>
+                    ) : null}
+                    <Link href={`/looms/${loom.id}/threads/${thread.sessionId}`} className="ml-auto shrink-0 hover:text-foreground">
+                      open thread →
+                    </Link>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           ))}
+
+          {loom && !waitingGate && loom.journal !== undefined ? (
+            <Card size="sm">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                  Conductor journal
+                </CardTitle>
+                <CardAction>
+                  <Button size="xs" variant="ghost" onClick={() => void act("conduct")} disabled={busy !== null || Boolean(loom.acceptedAt)}>
+                    {busy === "conduct" ? "Conducting…" : "Conduct now"}
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent>
+                {loom.journal ? (
+                  <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap font-mono text-xs text-muted-foreground">{loom.journal}</pre>
+                ) : (
+                  <p className="text-xs text-muted-foreground">No entries yet — the conductor wakes when the loom goes quiet.</p>
+                )}
+              </CardContent>
+            </Card>
+          ) : null}
 
           {loom?.acceptedAt ? (
             <p className="text-sm text-muted-foreground">Accepted {fmtAgo(loom.acceptedAt)} — this loom is done.</p>

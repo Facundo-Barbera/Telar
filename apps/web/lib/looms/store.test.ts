@@ -8,7 +8,20 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findLoomBySession, loomOwnedSessionIds, loomState, newLoom, slugify, uniqueLoomSlug } from "./store";
+import {
+  appendJournal,
+  deleteDraftLoom,
+  findLoomBySession,
+  getLoom,
+  loomOwnedSessionIds,
+  loomState,
+  newLoom,
+  readJournal,
+  readSpec,
+  slugify,
+  uniqueLoomSlug,
+  writeSpec,
+} from "./store";
 
 let home: string;
 let previousHome: string | undefined;
@@ -56,6 +69,52 @@ test("detachment: origin AND threads are owned, and the subtraction set says so"
   expect(owned.has("session_b")).toBe(true);
   expect(owned.has("session_unrelated")).toBe(false);
   expect(findLoomBySession("session_origin")?.title).toBe("Hito 1");
+});
+
+test("a gate parks the loom in waiting, and so does an unspawned plan", () => {
+  // The two shapes of "you are what it is waiting for": an explicit human
+  // gate on a phase, and threads that are still plans (no sessions).
+  const draft = newLoom({
+    title: "Draft",
+    objective: "x",
+    projectId: "p",
+    phases: [
+      { id: "plan", kind: "plan", gate: "human", status: "done" },
+      { id: "execute", kind: "execute", gate: "human", status: "waiting" },
+    ],
+    threads: [{ slug: "a", title: "A", brief: "..." }],
+  });
+  expect(loomState(draft)).toBe("waiting");
+  // Gate cleared but still unspawned (mid-approve crash): still waiting, never "ready".
+  draft.phases![1]!.status = "running";
+  expect(loomState(draft)).toBe("waiting");
+  // Spawned: the ordinary lifecycle takes over.
+  draft.threads[0]!.sessionId = "session_a";
+  expect(loomState(draft)).toBe("working");
+});
+
+test("only a draft can be discarded, and its document goes with it", () => {
+  const draft = newLoom({ title: "D", objective: "x", projectId: "p", threads: [{ slug: "a", title: "A", brief: "..." }] });
+  writeSpec(draft.id, "# spec");
+  expect(readSpec(draft.id)).toBe("# spec");
+  expect(deleteDraftLoom(draft.id)).toBe(true);
+  expect(getLoom(draft.id)).toBeUndefined();
+  expect(readSpec(draft.id)).toBeNull();
+
+  const live = newLoom({ title: "L", objective: "x", projectId: "p", threads: [{ slug: "a", title: "A", brief: "...", sessionId: "s1" }] });
+  expect(deleteDraftLoom(live.id)).toBe(false);
+  expect(getLoom(live.id)).toBeDefined();
+});
+
+test("the journal is append-only, timestamped, and tail-readable", () => {
+  const loom = newLoom({ title: "J", objective: "x", projectId: "p", threads: [] });
+  appendJournal(loom.id, "weaver", "proposed 2 threads");
+  appendJournal(loom.id, "conductor", "wait: all threads working\nmultiline is flattened");
+  const tail = readJournal(loom.id);
+  expect(tail).toContain("**weaver**: proposed 2 threads");
+  expect(tail).toContain("**conductor**: wait");
+  expect(tail).not.toContain("\nmultiline");
+  expect(readJournal(loom.id, 1).split("\n")).toHaveLength(1);
 });
 
 test("state is what the evidence says: green everywhere is ready, a human stamp is accepted", () => {

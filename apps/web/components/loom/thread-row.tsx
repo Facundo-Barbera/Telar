@@ -68,12 +68,13 @@ export function ThreadStatusSlot({ live }: { live: ThreadLiveness | null }) {
   );
 }
 
-export type LoomDisplayStateName = "working" | "idle" | "verifying" | "ready" | "accepted";
+export type LoomDisplayStateName = "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
 
 /** The loom's state chip on the five-token vocabulary, as a Badge like
  *  everywhere else a state is worn in this app. */
 export function LoomStateBadge({ state }: { state: LoomDisplayStateName }) {
   const tone: Record<LoomDisplayStateName, string> = {
+    waiting: "text-warning",
     working: "text-info",
     idle: "text-muted-foreground",
     verifying: "text-verify",

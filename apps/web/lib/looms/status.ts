@@ -14,7 +14,7 @@ export function threadStatus(activity: string | undefined, state: string): strin
   return state === "active" ? "idle" : state;
 }
 
-export type LoomDisplayState = "working" | "idle" | "verifying" | "ready" | "accepted";
+export type LoomDisplayState = "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
 
 /** The lifecycle says "working" until verification starts — but a loom whose
  *  every thread has gone quiet is NOT working, and a chip that says so is a

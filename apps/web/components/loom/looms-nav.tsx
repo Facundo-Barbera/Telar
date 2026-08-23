@@ -22,11 +22,12 @@ interface NavLoom {
   id: string;
   title: string;
   slug?: string;
-  state: "working" | "idle" | "verifying" | "ready" | "accepted";
+  state: "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
   threads: Array<{ sessionId: string }>;
 }
 
 const STATE_DOT: Record<NavLoom["state"], string> = {
+  waiting: "bg-warning",
   working: "bg-info",
   idle: "bg-muted-foreground/40",
   verifying: "bg-verify",
