@@ -225,6 +225,22 @@ export function SessionRow({
    * appear to do nothing.
    */
   const settledByDecision = session.settledOverride === "settled";
+  /**
+   * EVERY SETTLED ROW CAN COME BACK NOW, not only the decision-settled ones.
+   * Settled rows stay settled when merely read (see session-list.ts), so this
+   * button is the one road back — and a shelf where some rows have it and some
+   * do not reads as broken, not as principled.
+   */
+  const unsettles = settledByDecision || band === "settled";
+  const unsettle = async () => {
+    // A drift-settled session has no override to clear, and clearing nothing
+    // writes nothing — so nothing would change. Setting an override first makes
+    // the clearing patch a real change, and a real change stamps `updatedAt`,
+    // which is what actually restarts the inactivity clock.
+    if (!settledByDecision) await patchSession(session.id, { settledOverride: "active" });
+    await patchSession(session.id, { settledOverride: null });
+    onRefresh();
+  };
 
   // Deleting the session you are currently VIEWING must not maroon you on it:
   // the survivor rule in deriveSessionList keeps this row visible for as long as
@@ -570,15 +586,15 @@ export function SessionRow({
             <Button
               variant="ghost"
               size="icon-xs"
-              aria-label={settledByDecision ? "Return to the list" : "Settle session"}
-              title={settledByDecision ? "Return to the list" : "Settle"}
-              disabled={!settledByDecision && !canSettle(sessionActivity)}
+              aria-label={unsettles ? "Return to the list" : "Settle session"}
+              title={unsettles ? "Return to the list" : "Settle"}
+              disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                void patchSession(session.id, { settledOverride: settledByDecision ? null : "settled" }).then(onRefresh);
+                void (unsettles ? unsettle() : patchSession(session.id, { settledOverride: "settled" }).then(onRefresh));
               }}
             >
-              {settledByDecision ? <UndoIcon /> : <CircleCheckIcon />}
+              {unsettles ? <UndoIcon /> : <CircleCheckIcon />}
             </Button>
           )}
           {/**

@@ -473,7 +473,11 @@ function SidebarBody() {
   // With ONE registered project every row would carry the same project name,
   // which is not information — it is the same word repeated down the list,
   // wearing the space the title needs. Scoping to a project does the same thing.
-  const showProject = !selectedScope && projects.length > 1;
+  // WHENEVER THE SCOPE IS "ALL", even with one project registered. It used to
+  // also require `projects.length > 1`, which read as a regression the moment
+  // someone ran a fresh engine home with a single project: every card lost its
+  // project line and the list stopped saying whose work it was showing.
+  const showProject = !selectedScope;
 
   const activeSessionId = activeSessionFromPathname(pathname);
   const list = deriveSessionList({
@@ -814,7 +818,11 @@ function SidebarBody() {
               label="Settled"
               count={list.settledCount}
               rows={list.settled}
-              open={settledOpen}
+              // FORCED OPEN WHILE IT HOLDS THE SESSION YOU ARE READING. The
+              // settled survivor stays on its shelf now (see session-list.ts),
+              // and a shelf that hides the row you are inside would look like
+              // the session vanished from the rail entirely.
+              open={settledOpen || (activeSessionId !== undefined && list.settled.some((row) => row.id === activeSessionId))}
               onToggle={() => setSettledOpen((open) => !open)}
               hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
               onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
