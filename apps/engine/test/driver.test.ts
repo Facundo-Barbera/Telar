@@ -1,14 +1,15 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { TurnObservation } from "@telar/engine-client";
+import { qualifyTelarTool, requiresHuman, type TurnObservation } from "@telar/engine-client";
 import { unifiedDiff } from "../src/diff";
 import {
   createClaudeDriver as createRealClaudeDriver,
   itemDetailForToolCall,
   planDetailForTodos,
   ProviderUnavailableError,
+  requestKindForTool,
   taskKindForType,
   taskStateForStatus,
   titleForToolCall,
@@ -512,6 +513,69 @@ test("the browser registers under the ONE Telar server, because the key is what 
   expect(seen.serverKeys).toEqual(["telar"]);
 });
 
+test("the spool registers under the SAME one server, and only when the turn carries one", async () => {
+  // THE SEAM, not the toolkit — `spool-tools.test.ts` owns what the four tools
+  // do. What this pins is that they reach the model at all, under `telar` like
+  // every other Telar capability, and that a turn without a spool gets no spool
+  // tools rather than empty ones. A model handed a tool that answers "no items"
+  // for a store it cannot see would report that as the truth.
+  const seen: { serverKeys?: string[] } = {};
+  const names: string[] = [];
+  const sdk = async () => ({
+    tool: (name: string, _d: string, _s: unknown, handler: (a: Record<string, unknown>) => Promise<{ content: unknown[] }>) => {
+      names.push(name);
+      return { name, handler };
+    },
+    createSdkMcpServer: (input: { tools: { name: string }[] }) => input,
+    async *query(input: { options: { mcpServers?: Record<string, { tools: { name: string }[] }> } }) {
+      seen.serverKeys = Object.keys(input.options.mcpServers ?? {});
+      yield { type: "result", subtype: "success" };
+    },
+  });
+
+  const spool = {
+    project: "aurora",
+    snapshot: async () => ({ lanes: [], rows: [], desk: [], unreadable: [], totalItems: 0, agentsAdded: 0 }),
+    item: async () => null,
+    create: async () => ({ id: "i-1", title: "x", provenance: "session", captured: "Tue 16:42", schemaVersion: 1 }),
+    update: async () => ({ id: "i-1", title: "x", provenance: "session", captured: "Tue 16:42", schemaVersion: 1 }),
+    consult: async () => ({ ok: false as const, reason: "not in this test" }),
+  };
+  await run(createClaudeDriver(sdk), { spool }).result;
+  expect(seen.serverKeys).toEqual(["telar"]);
+  expect(names).toEqual([
+    "spool_list_items",
+    "spool_list_lanes",
+    "spool_create_item",
+    "spool_update_item",
+    "spool_consult_expert",
+    "spool_list_threads",
+    "spool_open_question",
+    "spool_mark_waiting",
+    "spool_answer_question",
+    "spool_settle_thread",
+    "spool_set_focus",
+    "spool_end_focus",
+    "spool_look",
+    "spool_pin",
+    "spool_set_area_permits",
+    "spool_set_terrain",
+    "spool_set_subject_identity",
+    "spool_shelf",
+    "spool_write_note",
+    "spool_search",
+    "warp",
+  ]);
+
+  // …and without one, the spool tools are GONE while `warp` stays — it is
+  // unconditional by design, which is also what keeps this from passing for the
+  // trivial reason that nothing registers at all.
+  names.length = 0;
+  await run(createClaudeDriver(sdk)).result;
+  expect(names).toEqual(["warp"]);
+  expect(seen.serverKeys).toEqual(["telar"]);
+});
+
 test("a browser call that CHANGED the page journals what it is now looking at", async () => {
   const calls: string[] = [];
   const browser = {
@@ -897,4 +961,39 @@ test("no Claude Code on this machine fails the turn with what to install", async
     },
   );
   await expect(run(driver).result).rejects.toThrow(ProviderUnavailableError);
+});
+
+describe("the Spool's reads are reads", () => {
+  test("listing your own spool is a file_read, so the front door does not park on it", () => {
+    /**
+     * FOUND BY DRIVING THE MASTER CHAT. The front door opened, the assistant
+     * reached for `spool_list_items` to answer "where did I stop?", and the turn
+     * parked asking the user to approve reading their own task list.
+     *
+     * `approval-required` auto-accepts `file_read` and parks everything else, so
+     * classifying these correctly is what lets the existing ladder work. This is
+     * not a bypass: no mode's decision is skipped, a read simply stops being
+     * declared an action.
+     */
+    expect(requestKindForTool(qualifyTelarTool("spool_list_items"))).toBe("file_read");
+    expect(requestKindForTool(qualifyTelarTool("spool_list_lanes"))).toBe("file_read");
+    expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool("spool_list_items")))).toBe(false);
+  });
+
+  test("everything that writes or spends still parks, in every attended mode", () => {
+    // The half that makes the classification defensible. Two of these write to
+    // the user's store and the third spends money on a model turn.
+    for (const tool of ["spool_create_item", "spool_update_item", "spool_consult_expert"]) {
+      expect(requestKindForTool(qualifyTelarTool(tool))).toBe("tool_call");
+      expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool(tool)))).toBe(true);
+      expect(requiresHuman("auto-accept-edits", requestKindForTool(qualifyTelarTool(tool)))).toBe(true);
+    }
+  });
+
+  test("a stranger's server cannot inherit the engine's posture by naming a tool the same", () => {
+    // The reason the check is on (server, tool) and not on the bare name: a
+    // user-configured MCP server called anything else must not get a free read.
+    expect(requestKindForTool("mcp__notmine__spool_list_items")).toBe("tool_call");
+    expect(requestKindForTool("spool_list_items")).toBe("tool_call");
+  });
 });

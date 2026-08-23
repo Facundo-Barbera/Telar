@@ -259,18 +259,43 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
   return { runId: turn.runId, state: turn.state, input: turn.prompt };
 }
 
-function SessionTurn({
+/**
+ * ONE TURN, RENDERED — your message, then everything the agent did about it.
+ *
+ * EXPORTED, AND IT COSTS NOTHING TO EXPORT: this component reads `projectId`
+ * zero times. It was written for the project cockpit and turns out to be the
+ * shared conversation shell the Spool's master chat needed — the extraction the
+ * donor planned, already done by accident because nothing in a rendered turn is
+ * a property of a repository.
+ *
+ * So the master chat consumes THIS rather than hand-rebuilding a second
+ * transcript. The donor's own rule for that situation was to stop rather than
+ * build the second one, and the reason is visible here: approvals, sub-agent
+ * chips, the activity fold, the live step window and the ambiguous-turn recovery
+ * are all decided in this function. A copy would start identical and drift.
+ */
+export function SessionTurn({
   turn,
   requests,
   sending,
   live,
   now,
+  quiet = false,
   onDecide,
   onRetry,
   onDiscard,
   onOpenAgent,
   onOpenTab,
 }: {
+  /**
+   * CONVERSATION FIRST, TELEMETRY BEHIND A FOLD. The Spool's chat sets this:
+   * there, a settled turn's step summary and token count read as telemetry
+   * presented as conversation, so both fold behind one quiet disclosure and
+   * the answer leads. The cockpit leaves it unset and renders exactly as it
+   * always has — a LIVE turn ignores it too, because the step window is the
+   * one part of the work worth watching while it happens.
+   */
+  quiet?: boolean;
   requests: EngineRequest[];
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
   /** Pressing a sub-agent's chip: the transcript names it, the cockpit opens
@@ -302,6 +327,10 @@ function SessionTurn({
   const activity = lastProse === -1 ? turn.items : turn.items.slice(0, lastProse);
   const closing = lastProse === -1 ? [] : turn.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
+  /** The quiet fold's own toggle. Per turn, never persisted — looking at how
+   *  one answer was made is a glance, not a mode. */
+  const [workShown, setWorkShown] = useState(false);
+  const folded = quiet && !live;
 
   return (
     <div className="flex flex-col gap-8">
@@ -341,7 +370,9 @@ function SessionTurn({
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}
-          <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
+          {!folded && (
+            <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
+          )}
           {closing.map((item) => (
             <TranscriptItem key={item.id} item={item} />
           ))}
@@ -358,10 +389,35 @@ function SessionTurn({
               now={now}
             />
           )}
-          {turn.usage && !live && (
+          {!folded && turn.usage && !live && (
             <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
             </p>
+          )}
+          {folded && (activity.length > 0 || turn.usage) && (
+            <div>
+              {/* A quiet INLINE control in the message flow, not floating mono
+                  micro-text — the Spool's transcript is the only caller of the
+                  quiet fold, and this is its one disclosure. */}
+              <button
+                type="button"
+                aria-expanded={workShown}
+                onClick={() => setWorkShown((v) => !v)}
+                className="mt-1 inline-flex items-center gap-1 rounded-md text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+              >
+                {workShown ? "hide the work" : "how it did this"}
+              </button>
+              {workShown && (
+                <div className="mt-2 space-y-2">
+                  <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
+                  {turn.usage && (
+                    <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+                      {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           {turn.state === "ambiguous" && (
             <RecoveryActions sending={sending} onRetry={() => onRetry(retryInputForJournalTurn(turn))} onDiscard={() => onDiscard(turn)} />

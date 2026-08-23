@@ -174,11 +174,7 @@ const ROOTS = [
   "scripts",
 ];
 const EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".js", ".mjs"]);
-// Matched by DIRECTORY NAME anywhere in the path. `_bmad-output` is here for a
-// reason of its own: it holds reference implementations preserved beside a SPEC,
-// carrying the relative imports of the location they were written for. It is
-// excluded from test discovery by bunfig.toml for the same reason, and scanning
-// it would make an invariant fail on documentation.
+// Matched by DIRECTORY NAME anywhere in the path.
 const EXCLUDED_DIRS = new Set([
   "node_modules",
   ".next",
@@ -190,7 +186,6 @@ const EXCLUDED_DIRS = new Set([
   ".git",
   "out",
   "coverage",
-  "_bmad-output",
 ]);
 
 // …AND A PATTERN BESIDE THE LIST, because Next's dist directory is CONFIGURABLE.
@@ -871,11 +866,7 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     expect(broken).toEqual([]);
   });
 
-  test("INDEX-1 the excluded trees are genuinely absent, and _bmad-output is one of them", () => {
-    // _bmad-output holds a preserved reference implementation whose imports
-    // belong to another location; bunfig.toml excludes it from test discovery
-    // for the same reason. Scanning it would report violations in documentation.
-    //
+  test("INDEX-1 the excluded trees are genuinely absent from the index", () => {
     // SPELLED INDEPENDENTLY OF EXCLUDED_DIRS, and that is the whole point of
     // this test. Deriving the check from the same set walk() skipped with makes
     // `leaked` empty BY CONSTRUCTION: typo "node_modules" to "node_module" and
@@ -892,7 +883,6 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
       ".git",
       "out",
       "coverage",
-      "_bmad-output",
     ];
     const leaked = INDEX.filter((f) =>
       f.rel.split("/").some((seg) => MUST_NOT_BE_INDEXED.includes(seg)),
@@ -906,9 +896,8 @@ describe("the scan index — T-A0, asserted before any invariant so a broken wal
     // …and the exclusion is load-bearing: those trees really do exist on disk,
     // WITH REAL SCANNABLE FILES IN THEM, and a named one really is absent from
     // the index. That is the positive control the derived-set version lacked.
-    expect(fs.existsSync(path.join(REPO, "_bmad-output"))).toBe(true);
     expect(fs.existsSync(path.join(REPO, "node_modules"))).toBe(true);
-    const control = firstScannableUnder(path.join(REPO, "_bmad-output"));
+    const control = firstScannableUnder(path.join(REPO, "node_modules"));
     expect(control).not.toBe(null);
     expect(byRel.has(control!)).toBe(false);
   });
@@ -1838,16 +1827,6 @@ const SANCTIONED_ROOT_RESOLVERS = [
 // the difference between a quarantine and a suppression.
 const KNOWN_VIOLATIONS = [
   {
-    file: "scripts/backfill-tool-detail.ts",
-    invariant: "INV-3",
-    owner: "not Track A — a one-off maintenance script, outside packages/core/test",
-    why:
-      "its module-level TELAR_DIR is path.join(os.homedir(), \".telar\") with no TELAR_HOME " +
-      "anywhere, and it then opens projects.json (manifest.ts's) and chats.json (store.ts's) by " +
-      "raw path — the only remaining ~/.telar literal outside a sanctioned resolver.",
-    recorded: "story 1.1 review findings; _bmad-output/implementation-artifacts/deferred-work.md",
-  },
-  {
     file: "scripts/dev.mjs",
     invariant: "INV-3",
     owner: "the dogfood launcher — a dev entry point, outside packages/core",
@@ -1972,13 +1951,15 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     // a quarantine widens by one line otherwise, and silently.
     const quarantined = KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-3").map((k) => k.file);
     // Anti-vacuity: the derivations really are found, so a broken pattern cannot
-    // pass. FLOOR MOVED 5 → 4 when apps/web was frozen, and the arithmetic is
-    // worth stating because it is not "5 minus 3": the scan now finds FOUR
-    // derivations — core's two sanctioned resolvers plus the two quarantined
-    // KNOWN_VIOLATIONS entries, which are derivations that this invariant
-    // reports and tolerates rather than derivations it approves. The floor
-    // counts what the SCANNER sees, not what the allow-list permits.
-    expect(HOME_DERIVERS.length).toBeGreaterThanOrEqual(4);
+    // pass. FLOOR MOVED 5 → 4 when apps/web was frozen, then 4 → 3 when the
+    // frozen tree was deleted outright and scripts/backfill-tool-detail.ts went
+    // with it — it imported apps/web_old/lib/transcript, so it could not outlive
+    // that app. The arithmetic is worth stating: the scan now finds THREE
+    // derivations — core's two sanctioned resolvers plus the ONE quarantined
+    // KNOWN_VIOLATIONS entry, which is a derivation this invariant reports and
+    // tolerates rather than one it approves. The floor counts what the SCANNER
+    // sees, not what the allow-list permits.
+    expect(HOME_DERIVERS.length).toBeGreaterThanOrEqual(3);
     for (const r of SANCTIONED_ROOT_RESOLVERS) expect(HOME_DERIVERS).toContain(r);
     const violations = unsanctioned
       .filter((f) => !quarantined.includes(f))
@@ -2004,13 +1985,19 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
     // and was already red before that change — it was simply not the first
     // failure INV-3e reported, so nobody had read it. Freezing apps/web moved
     // it to the front of the queue. It is quarantined with a full `why` (it
-    // derives ~/.telar only to REFUSE it) rather than sanctioned, and this
-    // count is raised deliberately here in the same pass, which is exactly what
-    // the message below asks for.
-    if (KNOWN_VIOLATIONS.length !== 2) {
+    // derives ~/.telar only to REFUSE it) rather than sanctioned.
+    //
+    // LOWERED 2 → 1 WHEN apps/web_old WAS DELETED. The other entry,
+    // scripts/backfill-tool-detail.ts, imported that app's lib/transcript and
+    // lib/store and rewrote the legacy ~/.telar/chats.json those modules owned,
+    // so it did not survive the tree it was written against. Note the shape of
+    // that removal: the entry was dropped because THE FILE IS GONE, which is the
+    // one way a quarantine is allowed to shrink — the violation was not
+    // relabelled, sanctioned, or quietly fixed.
+    if (KNOWN_VIOLATIONS.length !== 1) {
       throw new Error(
         `KNOWN_VIOLATIONS holds ${KNOWN_VIOLATIONS.length} entries; this test was written when it ` +
-          `held exactly 2 (scripts/backfill-tool-detail.ts and scripts/dev.mjs, both INV-3). ` +
+          `held exactly 1 (scripts/dev.mjs, INV-3). ` +
           `Each entry is a REAL violation of a REAL invariant left in place only because the file ` +
           `belongs to another track's write set. CONSEQUENCE: a list that grows without a reviewer ` +
           `noticing is how an invariant becomes decorative. NEXT STEP: if the new entry is ` +
@@ -2030,11 +2017,12 @@ describe("INV-3 no module reads another module's TELAR_HOME subtree by path — 
           `LONGER APPLIES; DELETE IT from KNOWN_VIOLATIONS in this file. Recorded at: ${k.recorded}.`,
     );
     expect(stale).toEqual([]);
-    // …and it is still doing the thing that makes it a CROSS-MODULE read, not
-    // merely an unsanctioned resolver: it opens two other modules' state files.
-    const backfill = byRel.get("scripts/backfill-tool-detail.ts")!;
-    expect(backfill.code).toContain("projects.json");
-    expect(backfill.code).toContain("chats.json");
+    // …and the surviving entry is still doing the specific thing its `why`
+    // describes — deriving the legacy root only to REFUSE it — rather than
+    // having drifted into reading or writing through it. Without this, the
+    // quarantine would keep excusing the file after its reason had changed.
+    const dev = byRel.get("scripts/dev.mjs")!;
+    expect(dev.code).toContain("legacyHomes");
   });
 
   test("INV-3g the path scan DISCRIMINATES — a composition off the root is reported, a sub-path off a port is not", () => {
@@ -4177,11 +4165,13 @@ describe("INV-11 the workspace item store is reachable only through its port —
   test("INV-11f the quarantine did not grow — INV-11 added no KNOWN_VIOLATIONS entry", () => {
     // The shape INV-7f / INV-9e already use (INV-8h and INV-10e went with
     // apps/web). KNOWN_VIOLATIONS held at exactly ONE entry across nine
-    // stories and is now TWO — the second is scripts/dev.mjs under INV-3,
-    // added when freezing apps/web surfaced a pre-existing derivation. INV-3f
-    // pins the LENGTH and explains the raise; this still pins the thing it was
-    // written to pin, which is that INV-11 did not reach for the quarantine.
+    // stories, went to TWO when freezing apps/web surfaced scripts/dev.mjs's
+    // pre-existing derivation, and is back to ONE now that deleting apps/web_old
+    // took scripts/backfill-tool-detail.ts with it — the entry went because THE
+    // FILE went, not because anything was excused. INV-3f pins the LENGTH and
+    // explains both moves; this still pins the thing it was written to pin,
+    // which is that INV-11 did not reach for the quarantine.
     expect(KNOWN_VIOLATIONS.filter((k) => k.invariant === "INV-11")).toEqual([]);
-    expect(KNOWN_VIOLATIONS.length).toBe(2);
+    expect(KNOWN_VIOLATIONS.length).toBe(1);
   });
 });

@@ -450,11 +450,25 @@ test("project roots are canonical existing directories and legacy homes are reje
   fs.symlinkSync("/tmp", link);
   expect(store.registerProject({ id: "canonical", name: "Canonical", root: link }).root).toBe(fs.realpathSync.native("/tmp"));
 
+  // THE LEGACY HOME HAS TO EXIST for the symlink half to mean anything.
+  // canonicalPath resolves through realpath, and a symlink to a missing target
+  // is not resolvable — it walks up to the nearest existing parent and rebuilds
+  // the rest literally, so `alias` never becomes ~/.telar and the guard has
+  // nothing to match. On a developer's machine ~/.telar is usually there and
+  // this passed by luck; on a CI runner it is not, which is exactly where the
+  // test was failing. Created only if absent, and removed with rmdir, which
+  // refuses a non-empty directory — a real ~/.telar is never touched.
   const legacy = path.join(os.homedir(), ".telar");
-  const alias = path.join(stateRoot, "legacy-link");
-  fs.symlinkSync(legacy, alias);
-  expect(() => engineRootFromEnv({ TELAR_HOME: legacy })).toThrow(/legacy Telar state/);
-  expect(() => engineRootFromEnv({ TELAR_HOME: alias })).toThrow(/legacy Telar state/);
+  const createdLegacy = !fs.existsSync(legacy);
+  if (createdLegacy) fs.mkdirSync(legacy, { recursive: true });
+  try {
+    const alias = path.join(stateRoot, "legacy-link");
+    fs.symlinkSync(legacy, alias);
+    expect(() => engineRootFromEnv({ TELAR_HOME: legacy })).toThrow(/legacy Telar state/);
+    expect(() => engineRootFromEnv({ TELAR_HOME: alias })).toThrow(/legacy Telar state/);
+  } finally {
+    if (createdLegacy) fs.rmdirSync(legacy);
+  }
 });
 
 test("an interrupted final journal append is truncated, while malformed complete records are rejected", () => {
@@ -936,7 +950,11 @@ test("fast mode reaches the claim without a model", () => {
 test("an MCP server belongs to a project or to the machine, and the project's wins", () => {
   const { store } = readyStore();
   // A distinct root: the registry refuses two projects pointing at one checkout.
-  store.registerProject({ id: "project_two", name: "Two", root: os.tmpdir() });
+  // It must be distinct AFTER canonicalization, which os.tmpdir() is not —
+  // readyStore registers project_one at "/tmp", and on Linux os.tmpdir() IS
+  // /tmp, so this collided and threw "already registered" in CI while passing
+  // on macOS, where os.tmpdir() is a per-user /var/folders path.
+  store.registerProject({ id: "project_two", name: "Two", root: root() });
   store.saveMcpServer({ id: "linear", spec: { transport: "http", url: "https://global.example" } });
   store.saveMcpServer({ id: "browser", spec: { transport: "stdio", command: "node" } });
   store.saveMcpServer({ id: "linear", projectId: "project_one", spec: { transport: "http", url: "https://one.example" } });

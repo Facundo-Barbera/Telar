@@ -1,9 +1,8 @@
-// Admission control (AD-17 / CAP-4). Re-homed from the SPEC's reference
-// implementation at _bmad-output/specs/spec-runtime-foundations/reference/
-// admission-impl/admission.test.ts, which sits inside bunfig.toml's
-// pathIgnorePatterns and is therefore INVISIBLE to `bun test` where it lives.
-// Its relative imports ("../src/admission") only resolve from here, which is
-// the whole reason the re-home is a task and not a copy.
+// Admission control (AD-17 / CAP-4). Re-homed from the runtime-foundations
+// SPEC's reference implementation, which lived beside the spec in the retired
+// planning tree (now in git history only) and was excluded from test discovery
+// there. Its relative imports ("../src/admission") only resolve from here,
+// which is the whole reason the re-home was a task and not a copy.
 //
 // Two adaptations from the reference: `it(` -> `test(` (the house convention —
 // zero of packages/core/test's files use `it(`), and a reset between tests.

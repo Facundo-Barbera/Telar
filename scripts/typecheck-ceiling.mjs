@@ -171,7 +171,7 @@ let loadedFiles = listFiles("file-listing");
 const run = spawnTsc(["--noEmit"], "typecheck");
 
 // WHICH COMPILER ACTUALLY RAN, printed always. This workspace declares TWO
-// TypeScript majors (packages/core wants ^6, apps/web_old wants ^5), so `bunx tsc`
+// TypeScript majors (packages/core wants ^6, apps/web wants ^5), so `bunx tsc`
 // has more than one thing it could legitimately resolve to, and which one it
 // picks depends on how the install laid out node_modules. A gate whose result
 // depends on that must say which one it got — on a green run as well as a red
@@ -272,7 +272,7 @@ if (testFiles.length < MIN_TEST_FILES && onDisk >= MIN_TEST_FILES) {
     `${onDisk} .ts files are present under packages/core/test RIGHT NOW. The tree did not ` +
     `move — tsc did not include it. This is a TOOLCHAIN RESOLUTION problem, not a config or ` +
     `coverage one. tsc reported itself as "${tscVersion}"; this workspace declares two ` +
-    `TypeScript majors (packages/core ^6, apps/web_old ^5), so compare that version against the ` +
+    `TypeScript majors (packages/core ^6, apps/web ^5), so compare that version against the ` +
     `last green run. NEXT STEP: pin the compiler; do not edit tsconfig.typecheck.json and do ` +
     `not lower MIN_TEST_FILES.`;
   console.error(inActions ? `::error::${message}` : `\n${message}`);

@@ -124,7 +124,26 @@ export type SessionWorkspace = z.infer<typeof SessionWorkspace>;
 
 export const Session = z.object({
   id: Id,
-  projectId: Id,
+  /**
+   * WHICH PROJECT THIS SESSION BELONGS TO — and OPTIONAL, which is new and is
+   * the whole of what makes a project-less session expressible.
+   *
+   * Every ordinary session has one. The exception is the Spool's master chat:
+   * `SPEC-organization-workspace` CAP-1 makes it "one project-less
+   * conversation — the module's front door", and the reason is structural
+   * rather than cosmetic. The master answers "where did I stop" ACROSS
+   * projects, and its per-project experts are each scoped to their own — so a
+   * master that carried a project would be scoped to the one thing it must not
+   * be scoped to.
+   *
+   * ABSENT IS NOT "UNKNOWN". It is a positive statement that this session has
+   * no project, and readers must treat it as one: the spool toolkit reads it as
+   * "every project's items", MCP resolution reads it as "the environment's
+   * global servers and no project's", and a project-scoped list simply does not
+   * contain it. A reader that treats absence as an error turns the front door
+   * into a bug report.
+   */
+  projectId: Id.optional(),
   environmentId: EnvironmentId,
   title: z.string(),
   state: SessionState,
