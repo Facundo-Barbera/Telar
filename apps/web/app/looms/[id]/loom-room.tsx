@@ -124,7 +124,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
           <p className="mt-2 text-xs text-muted-foreground">
             Spun from{" "}
             <Link
-              href={`/projects/${loom.projectId}/sessions/${loom.origin.sessionId}`}
+              href={`/looms/${loom.id}/threads/${loom.origin.sessionId}`}
               className="underline decoration-dotted hover:text-foreground"
             >
               {loom.origin.title}
@@ -194,10 +194,10 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                     <span className="font-mono">{thread.branch ?? thread.live?.branch}</span>
                   ) : null}
                   <Link
-                    href={`/projects/${loom.projectId}/sessions/${thread.sessionId}`}
+                    href={`/looms/${loom.id}/threads/${thread.sessionId}`}
                     className="ml-auto shrink-0 hover:text-foreground"
                   >
-                    open thread session →
+                    open thread →
                   </Link>
                 </div>
               </div>

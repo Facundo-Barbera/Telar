@@ -101,10 +101,18 @@ export function LoomsNav() {
             All looms
           </Link>
           <Link
-            href="/looms"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            href="/looms/new"
+            className={cn(
+              "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+              pathname === "/looms/new"
+                ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+            )}
           >
-            <PlusIcon className="size-3.5 shrink-0 text-sidebar-foreground/50" aria-hidden />
+            <PlusIcon
+              className={cn("size-3.5 shrink-0", pathname === "/looms/new" ? "text-sidebar-accent-foreground" : "text-sidebar-foreground/50")}
+              aria-hidden
+            />
             New loom
           </Link>
         </SidebarGroupContent>

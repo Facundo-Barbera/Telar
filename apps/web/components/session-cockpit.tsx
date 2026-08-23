@@ -231,7 +231,7 @@ function SessionMasthead({
             size="icon-sm"
             aria-label="Spin into loom"
             title="Spin into loom — the weaver reads this conversation and proposes threads"
-            render={<Link href={`/looms?spin=${encodeURIComponent(session.id)}`} />}
+            render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
           >
             <WorkflowIcon />
           </Button>
