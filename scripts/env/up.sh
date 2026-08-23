@@ -14,6 +14,8 @@ if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
 fi
 
 cd "$TELAR_WORKTREE"
-TELAR_HOME="$APP_HOME" TELAR_WEB_PORT="$TELAR_PORT_BASE" \
+# 0.0.0.0 so the cockpit is reachable over the tailnet (and the LAN) — the
+# owner's explicit call, 2026-08-23. The engine API keeps its own token.
+TELAR_HOME="$APP_HOME" TELAR_WEB_PORT="$TELAR_PORT_BASE" TELAR_WEB_HOST="0.0.0.0" \
   nohup bun scripts/dev.mjs >> "$APP_HOME/env-run.log" 2>&1 &
 echo $! > "$PIDFILE"
