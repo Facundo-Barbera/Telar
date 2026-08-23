@@ -48,7 +48,14 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
           <span className="min-w-0 truncate text-muted-foreground">the conversation this loom was spun from</span>
         ) : null}
       </div>
-      <div className="min-h-0 flex-1">
+      {/* A FLEX COLUMN, NOT A BLOCK. The cockpit's own root is `flex-1 min-h-0
+          overflow-hidden` — it expects the h-dvh flex column the app shell
+          provides on the ordinary route. Inside a plain block div those
+          classes do nothing: the cockpit grew to content height, the DOCUMENT
+          scrolled instead of the transcript, the composer sat below the fold,
+          and the viewport's stick-to-bottom had no scroll container to stick
+          in. Reproducing the shell's contract here restores all three. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <SessionCockpit projectId={loom.projectId} sessionId={sessionId} />
       </div>
     </div>
