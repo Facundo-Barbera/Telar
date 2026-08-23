@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 
 export interface VerbContext {
@@ -47,7 +48,9 @@ export function runVerb(
   const started = Date.now();
   const timeout = timeoutMs ?? TIMEOUTS_MS[verb] ?? 120_000;
   return new Promise((resolvePromise) => {
-    const proc = spawn("/bin/sh", ["-c", command], {
+    // The explicit annotation pins the spawn overload; some @types/node
+    // versions otherwise reduce the union of overload returns to `never`.
+    const proc: ChildProcessByStdio<null, Readable, Readable> = spawn("/bin/sh", ["-c", command], {
       cwd: ctx.worktree,
       env: injectedEnv(ctx),
       stdio: ["ignore", "pipe", "pipe"],
