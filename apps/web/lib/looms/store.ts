@@ -28,6 +28,9 @@ export interface LoomThread {
   sessionId: string;
   title: string;
   brief: string;
+  /** The thread's verification contract — what must be demonstrably true for
+   *  this thread to be done, in the weaver's (or human's) own words. */
+  contract?: string;
   verification?: ThreadVerification;
 }
 

@@ -63,10 +63,14 @@ export async function POST(request: Request) {
       for (const raw of body.threads as Array<Record<string, unknown>>) {
         const threadTitle = requiredString(raw.title, "thread title");
         const brief = requiredString(raw.brief, "thread brief");
+        const contract = optionalString(raw.contract, "thread contract");
         const created = await client.createSession({ projectId, title: threadTitle, envMode: "worktree" });
         const sessionId = created.session.id;
-        await client.submitTurn(sessionId, { runId: randomUUID(), input: brief });
-        threads.push({ sessionId, title: threadTitle, brief });
+        const input = contract
+          ? `${brief}\n\nContrato de verificación (tu trabajo se acepta solo si esto es demostrable):\n${contract}\n\nReglas loom: trabajás en tu propio worktree; no toques main; NO cierres issues (los cierra un humano tras verificar); terminá con diff acotado + pasos de verificación + pendientes honestos.`
+          : brief;
+        await client.submitTurn(sessionId, { runId: randomUUID(), input });
+        threads.push({ sessionId, title: threadTitle, brief, ...(contract ? { contract } : {}) });
       }
     }
 

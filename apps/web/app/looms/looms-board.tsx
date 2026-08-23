@@ -1,13 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 interface ThreadView {
   sessionId: string;
   title: string;
-  brief: string;
-  verification?: { tier: string; ok: boolean; at: number; detail?: string };
-  session?: { status?: string; title?: string } | null;
+  verification?: { tier: string; ok: boolean };
+  session?: { status?: string } | null;
 }
 
 interface LoomView {
@@ -17,8 +17,19 @@ interface LoomView {
   projectId: string;
   state: "working" | "verifying" | "ready" | "accepted";
   threads: ThreadView[];
-  createdAt: number;
   acceptedAt?: number;
+}
+
+interface ProjectView {
+  id: string;
+  name: string;
+}
+
+interface Proposal {
+  projectId: string;
+  objective: string;
+  title: string;
+  threads: Array<{ title: string; brief: string; contract: string }>;
 }
 
 const STATE_STYLE: Record<LoomView["state"], string> = {
@@ -30,8 +41,14 @@ const STATE_STYLE: Record<LoomView["state"], string> = {
 
 export function LoomsBoard() {
   const [looms, setLooms] = useState<LoomView[] | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectView[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  const [projectId, setProjectId] = useState("");
+  const [objective, setObjective] = useState("");
+  const [weaving, setWeaving] = useState(false);
+  const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [approving, setApproving] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -45,106 +62,185 @@ export function LoomsBoard() {
   }, []);
 
   useEffect(() => {
-    const initial = setTimeout(() => void refresh(), 0);
-    const poll = setInterval(() => void refresh(), 8000);
+    const initial = setTimeout(() => {
+      void refresh();
+      void fetch("/api/projects")
+        .then((r) => r.json())
+        .then((d: { projects: ProjectView[] }) => {
+          setProjects(d.projects);
+          setProjectId((current) => current || (d.projects[0]?.id ?? ""));
+        })
+        .catch(() => undefined);
+    }, 0);
+    const poll = setInterval(() => void refresh(), 10_000);
     return () => {
       clearTimeout(initial);
       clearInterval(poll);
     };
   }, [refresh]);
 
-  const act = useCallback(
-    async (loomId: string, action: "verify" | "accept", tier?: string) => {
-      setBusy(`${loomId}:${action}`);
-      try {
-        const r = await fetch(`/api/looms/${loomId}/${action}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(tier ? { tier } : {}),
-        });
-        if (!r.ok) {
-          const body = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
-          throw new Error(body?.error?.message ?? `${action}: ${r.status}`);
-        }
-        await refresh();
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setBusy(null);
+  const weave = useCallback(async () => {
+    setWeaving(true);
+    setError(null);
+    try {
+      const r = await fetch("/api/looms/weave", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ projectId, objective }),
+      });
+      const body = (await r.json()) as Proposal & { error?: { message?: string } };
+      if (!r.ok) throw new Error(body.error?.message ?? `weave: ${r.status}`);
+      setProposal(body);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setWeaving(false);
+    }
+  }, [projectId, objective]);
+
+  const approve = useCallback(async () => {
+    if (!proposal) return;
+    setApproving(true);
+    try {
+      const r = await fetch("/api/looms", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          projectId: proposal.projectId,
+          title: proposal.title,
+          objective: proposal.objective,
+          threads: proposal.threads,
+        }),
+      });
+      if (!r.ok) {
+        const body = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
+        throw new Error(body?.error?.message ?? `create: ${r.status}`);
       }
-    },
-    [refresh],
-  );
+      setProposal(null);
+      setObjective("");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setApproving(false);
+    }
+  }, [proposal, refresh]);
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10 text-foreground">
       <header className="mb-8">
         <h1 className="text-2xl font-semibold">Looms</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Objective → threads in their own worktrees → verification through the environment pool → a human accepts.
-          There is no accept an agent can call.
+          Objective → threads in their own worktrees → verification → a human accepts. There is no accept an agent can call.
         </p>
       </header>
 
       {error ? <p className="mb-4 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p> : null}
-      {looms === null ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
-      {looms?.length === 0 ? <p className="text-sm text-muted-foreground">No looms yet. Create one from the API or adopt running sessions.</p> : null}
 
-      <div className="space-y-6">
-        {looms?.map((loom) => (
-          <section key={loom.id} className="rounded-lg border border-border bg-card p-5">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="font-medium">{loom.title}</h2>
-                <p className="mt-0.5 text-sm text-muted-foreground">{loom.objective}</p>
-              </div>
-              <span className={`shrink-0 rounded-full border px-3 py-0.5 font-mono text-xs uppercase tracking-wide ${STATE_STYLE[loom.state]}`}>
-                {loom.state}
-              </span>
+      <section className="mb-8 rounded-lg border border-border bg-card p-4">
+        <h2 className="text-sm font-medium">New loom</h2>
+        {proposal === null ? (
+          <div className="mt-3 space-y-3">
+            <div className="flex gap-2">
+              <select
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                className="rounded border border-border bg-background px-2 py-1.5 text-sm"
+              >
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
             </div>
-
-            <ul className="mt-4 space-y-2">
-              {loom.threads.map((thread) => (
-                <li key={thread.sessionId} className="flex items-center gap-3 rounded border border-border bg-background px-3 py-2 text-sm">
-                  <span
-                    className={`h-2 w-2 shrink-0 rounded-full ${
-                      thread.verification ? (thread.verification.ok ? "bg-success" : "bg-destructive") : "bg-info"
-                    }`}
-                  />
-                  <span className="truncate">{thread.title}</span>
-                  <span className="ml-auto shrink-0 font-mono text-xs text-muted-foreground">
-                    {thread.verification
-                      ? `${thread.verification.tier} ${thread.verification.ok ? "green" : "red"}`
-                      : (thread.session?.status ?? "…")}
-                  </span>
+            <textarea
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              placeholder="The objective, in your own words. The weaver reads the project and proposes threads with verification contracts — nothing runs until you approve."
+              rows={3}
+              className="w-full rounded border border-border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground/60"
+            />
+            <button
+              type="button"
+              onClick={() => void weave()}
+              disabled={weaving || !projectId || objective.trim().length < 8}
+              className="rounded border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+            >
+              {weaving ? "Weaving… (the weaver is reading the project)" : "Weave a proposal"}
+            </button>
+          </div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            <p className="text-sm">
+              <span className="font-medium">{proposal.title}</span>
+              <span className="text-muted-foreground"> — {proposal.threads.length} threads proposed. Nothing is running yet.</span>
+            </p>
+            <ul className="space-y-2">
+              {proposal.threads.map((t, i) => (
+                <li key={i} className="rounded border border-border bg-background p-3 text-sm">
+                  <p className="font-medium">{t.title}</p>
+                  <p className="mt-1 text-muted-foreground">{t.brief}</p>
+                  <p className="mt-2 border-l-2 border-verify/50 pl-2 text-xs text-muted-foreground">
+                    <span className="text-verify">Contract:</span> {t.contract}
+                  </p>
                 </li>
               ))}
             </ul>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => void approve()}
+                disabled={approving}
+                className="rounded border border-success/50 px-3 py-1.5 text-sm text-success hover:bg-success/10 disabled:opacity-50"
+              >
+                {approving ? "Spawning threads…" : "Approve — spawn the threads"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setProposal(null)}
+                disabled={approving}
+                className="rounded border border-border px-3 py-1.5 text-sm hover:bg-muted disabled:opacity-50"
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
-            {loom.acceptedAt ? (
-              <p className="mt-4 text-xs text-muted-foreground">accepted {new Date(loom.acceptedAt).toLocaleString()}</p>
-            ) : (
-              <div className="mt-4 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => void act(loom.id, "verify", "unit")}
-                  disabled={busy !== null}
-                  className="rounded border border-border px-3 py-1 text-sm text-foreground hover:bg-muted disabled:opacity-50"
-                >
-                  {busy === `${loom.id}:verify` ? "Verifying…" : "Verify (unit)"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void act(loom.id, "accept")}
-                  disabled={busy !== null || loom.state !== "ready"}
-                  title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
-                  className="rounded border border-success/50 px-3 py-1 text-sm text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Accept
-                </button>
+      {looms === null ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+      {looms?.length === 0 ? <p className="text-sm text-muted-foreground">No looms yet.</p> : null}
+
+      <div className="space-y-3">
+        {looms?.map((loom) => (
+          <Link
+            key={loom.id}
+            href={`/looms/${loom.id}`}
+            className="block rounded-lg border border-border bg-card p-4 hover:border-muted-foreground/40"
+          >
+            <div className="flex items-center gap-4">
+              <div className="min-w-0">
+                <h2 className="truncate font-medium">{loom.title}</h2>
+                <p className="mt-0.5 truncate text-sm text-muted-foreground">{loom.objective}</p>
               </div>
-            )}
-          </section>
+              <div className="ml-auto flex shrink-0 items-center gap-3">
+                <span className="flex gap-1">
+                  {loom.threads.map((t) => (
+                    <span
+                      key={t.sessionId}
+                      className={`h-2 w-2 rounded-full ${
+                        t.verification ? (t.verification.ok ? "bg-success" : "bg-destructive") : "bg-info"
+                      }`}
+                    />
+                  ))}
+                </span>
+                <span className={`rounded-full border px-3 py-0.5 font-mono text-xs uppercase tracking-wide ${STATE_STYLE[loom.state]}`}>
+                  {loom.state}
+                </span>
+              </div>
+            </div>
+          </Link>
         ))}
       </div>
     </div>

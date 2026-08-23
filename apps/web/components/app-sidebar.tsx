@@ -49,6 +49,7 @@ import {
   SettingsIcon,
   SpoolIcon,
   TypeIcon,
+  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
@@ -154,6 +155,11 @@ function PlaceSwitcher() {
   const pathname = usePathname();
   const router = useRouter();
   const inSpool = pathname.startsWith("/spool");
+  // Looms is the third place — the milestone-shaped entry (objective →
+  // threads → verify → human accept), per the default-path invariant in
+  // docs/vision-2026-08.md. Same uncoloured line-icon family as Telar's mark.
+  const inLooms = pathname.startsWith("/looms");
+  const place = inSpool ? "spool" : inLooms ? "looms" : "telar";
 
   return (
     <DropdownMenu>
@@ -161,22 +167,33 @@ function PlaceSwitcher() {
         render={
           <button
             type="button"
-            title={inSpool ? "Spool" : "Telar"}
+            title={inSpool ? "Spool" : inLooms ? "Looms" : "Telar"}
             className="app-no-drag mr-auto flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         }
       >
-        {inSpool ? <SpoolIcon className="size-4 shrink-0 text-spool" /> : <TypeIcon className="size-4 shrink-0" />}
-        <span className="font-heading text-lg font-semibold tracking-tight">{inSpool ? "spool" : "telar"}</span>
+        {inSpool ? (
+          <SpoolIcon className="size-4 shrink-0 text-spool" />
+        ) : inLooms ? (
+          <WorkflowIcon className="size-4 shrink-0" />
+        ) : (
+          <TypeIcon className="size-4 shrink-0" />
+        )}
+        <span className="font-heading text-lg font-semibold tracking-tight">{place}</span>
         <ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/45" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-48">
         <DropdownMenuGroup>
           <DropdownMenuLabel>Place</DropdownMenuLabel>
           <DropdownMenuItem onClick={() => router.push("/")}>
-            <span className="w-4">{inSpool ? null : <CheckIcon />}</span>
+            <span className="w-4">{inSpool || inLooms ? null : <CheckIcon />}</span>
             <TypeIcon className="size-4 shrink-0" />
             <span>Telar</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => router.push("/looms")}>
+            <span className="w-4">{inLooms ? <CheckIcon /> : null}</span>
+            <WorkflowIcon className="size-4 shrink-0" />
+            <span>Looms</span>
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => router.push("/spool")}>
             <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
