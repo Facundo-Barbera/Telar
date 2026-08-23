@@ -25,13 +25,14 @@ interface LoomView {
   title: string;
   objective: string;
   projectId: string;
-  state: "working" | "verifying" | "ready" | "accepted";
+  state: "working" | "idle" | "verifying" | "ready" | "accepted";
   threads: ThreadView[];
   acceptedAt?: number;
 }
 
 const STATE_STYLE: Record<LoomView["state"], string> = {
   working: "text-info border-info/40",
+  idle: "text-muted-foreground border-border",
   verifying: "text-verify border-verify/40",
   ready: "text-success border-success/40",
   accepted: "text-muted-foreground border-border",

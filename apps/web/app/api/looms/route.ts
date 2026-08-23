@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { engineClient, engineErrorResponse, requestObject, requiredString, optionalString } from "@/lib/engine/engine-server";
-import { listLooms, loomState, newLoom, slugify, uniqueLoomSlug, type LoomThread } from "@/lib/looms/store";
+import { listLooms, newLoom, slugify, uniqueLoomSlug, type LoomThread } from "@/lib/looms/store";
+import { displayState, threadStatus } from "@/lib/looms/status";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,23 +11,26 @@ export async function GET() {
   try {
     const client = await engineClient();
     const looms = await Promise.all(
-      listLooms().map(async (loom) => ({
-        ...loom,
-        state: loomState(loom),
-        threads: await Promise.all(
+      listLooms().map(async (loom) => {
+        const threads = await Promise.all(
           loom.threads.map(async (thread) => {
             const snapshot = await client.session(thread.sessionId).catch(() => null);
             const session = snapshot
               ? {
-                  status: snapshot.tasks.length > 0 ? "working" : snapshot.session.state,
+                  status: threadStatus(snapshot.session.activity, snapshot.session.state),
                   title: snapshot.session.title,
                   worktree: snapshot.session.workspace?.path ?? null,
                 }
               : null;
             return { ...thread, session };
           }),
-        ),
-      })),
+        );
+        return {
+          ...loom,
+          state: displayState(loom, threads.map((t) => t.session?.status ?? "unreachable")),
+          threads,
+        };
+      }),
     );
     return Response.json({ looms });
   } catch (error) {

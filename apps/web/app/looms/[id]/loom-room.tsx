@@ -29,7 +29,7 @@ interface LoomDetail {
   title: string;
   objective: string;
   projectId: string;
-  state: "working" | "verifying" | "ready" | "accepted";
+  state: "working" | "idle" | "verifying" | "ready" | "accepted";
   threads: LiveThread[];
   origin: { sessionId: string; title: string } | null;
   createdAt: number;
@@ -38,6 +38,7 @@ interface LoomDetail {
 
 const STATE_STYLE: Record<LoomDetail["state"], string> = {
   working: "text-info border-info/40",
+  idle: "text-muted-foreground border-border",
   verifying: "text-verify border-verify/40",
   ready: "text-success border-success/40",
   accepted: "text-muted-foreground border-border",

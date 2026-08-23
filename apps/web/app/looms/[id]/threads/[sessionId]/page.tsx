@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { SessionCockpit } from "@/components/session-cockpit";
 import { getLoom } from "@/lib/looms/store";
@@ -8,9 +9,9 @@ import { getLoom } from "@/lib/looms/store";
  * Loom sessions are not ordinary Telar sessions — they are detached, owned by
  * the loom, and subtracted from every ordinary surface. Opening one therefore
  * must not eject the reader into `/projects/...`: this route mounts the same
- * cockpit UNDER `/looms`, so the rail stays the looms floor plan and the
- * reader never leaves the place. The cockpit itself is reused wholesale — the
- * transcript is the same machinery either way; only the address is loom-owned.
+ * cockpit UNDER `/looms`, framed by a strip that names the loom, the thread's
+ * contract, and the way back to the room — so the reader always knows they are
+ * standing inside the loom, one level down, not in a different app.
  */
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,34 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
   const { id, sessionId } = await params;
   const loom = getLoom(id);
   if (!loom) notFound();
-  const owned = loom.originSessionId === sessionId || loom.threads.some((t) => t.sessionId === sessionId);
-  if (!owned) notFound();
-  return <SessionCockpit projectId={loom.projectId} sessionId={sessionId} />;
+  const thread = loom.threads.find((t) => t.sessionId === sessionId);
+  const isOrigin = loom.originSessionId === sessionId;
+  if (!thread && !isOrigin) notFound();
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/20 px-4 text-xs">
+        <Link href={`/looms/${loom.id}`} className="shrink-0 font-medium text-muted-foreground hover:text-foreground">
+          ← {loom.title}
+        </Link>
+        <span className="text-border">/</span>
+        <span className="shrink-0 text-foreground">{thread ? thread.title : "origin conversation"}</span>
+        {thread?.tier ? (
+          <span className="shrink-0 rounded border border-verify/40 px-1.5 py-px font-mono text-[10px] uppercase text-verify">
+            {thread.tier}
+          </span>
+        ) : null}
+        {thread?.contract ? (
+          <span className="min-w-0 truncate text-muted-foreground" title={thread.contract}>
+            <span className="text-verify">contract:</span> {thread.contract}
+          </span>
+        ) : isOrigin ? (
+          <span className="min-w-0 truncate text-muted-foreground">the conversation this loom was spun from</span>
+        ) : null}
+      </div>
+      <div className="min-h-0 flex-1">
+        <SessionCockpit projectId={loom.projectId} sessionId={sessionId} />
+      </div>
+    </div>
+  );
 }
