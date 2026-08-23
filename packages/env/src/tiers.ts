@@ -34,6 +34,11 @@ export interface RunTierOptions {
 
 const UNLEASED_TIERS = new Set(["unit"]);
 
+/** Every tier gets the verify budget (600s) unless the contract overrides it. */
+function tierTimeoutMs(contract: { timeouts?: { verify?: number } }, _tier: string): number {
+  return (contract.timeouts?.verify ?? 600) * 1000;
+}
+
 export async function runTier(opts: RunTierOptions): Promise<TierResult> {
   const identity = projectIdentity(opts.cwd);
   const worktree = worktreeRoot(opts.cwd);
@@ -53,7 +58,7 @@ export async function runTier(opts: RunTierOptions): Promise<TierResult> {
     // No environment: run in place. Slot/ports are informational if assigned.
     const slot = snapshotState().slots[identity.id]?.[worktree] ?? 0;
     const ctx: VerbContext = { projectId: identity.id, worktree, slot, portBase: 0 };
-    const run = await runVerb("verify", command, ctx);
+    const run = await runVerb(`tier:${opts.tier}`, command, ctx, tierTimeoutMs(loaded.contract, opts.tier));
     return { tier: opts.tier, ok: run.ok, run };
   }
 
@@ -74,7 +79,7 @@ export async function runTier(opts: RunTierOptions): Promise<TierResult> {
     portBase: lease.portBase,
     leaseId: lease.id,
   };
-  const run = await runVerb("verify", command, ctx);
+  const run = await runVerb(`tier:${opts.tier}`, command, ctx, tierTimeoutMs(loaded.contract, opts.tier));
   if (opts.keepLease) {
     return { tier: opts.tier, ok: run.ok, leaseId: lease.id, leaseKept: true, run };
   }

@@ -254,7 +254,7 @@ export async function acquire(opts: AcquireOptions): Promise<AcquireResult> {
   }
 
   // Two-phase: the slot is reserved; bring the environment up outside the lock.
-  const up = await runVerb("up", contract.up!, ctx);
+  const up = await runVerb("up", contract.up!, ctx, contract.timeouts?.up && contract.timeouts.up * 1000);
   verbs.push(up);
   if (up.ok) {
     const ready = await waitReady(contract.ready!, ctx, opts.readyTimeoutMs ?? 180_000);

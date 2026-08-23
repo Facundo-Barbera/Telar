@@ -16,6 +16,16 @@ const EnvBlock = z
     down: z.string().optional(),
     verify: z.string().optional(),
     tiers: z.record(z.string(), z.string()).optional(),
+    /** Per-verb timeout overrides in seconds — heavy stacks may need `up: 900`. */
+    timeouts: z
+      .object({
+        up: z.number().int().min(1).optional(),
+        ready: z.number().int().min(1).optional(),
+        reset: z.number().int().min(1).optional(),
+        down: z.number().int().min(1).optional(),
+        verify: z.number().int().min(1).optional(),
+      })
+      .optional(),
   })
   .superRefine((env, ctx) => {
     if (env.cost === "none") return;

@@ -114,3 +114,27 @@ against a real non-zero slot:
 **The generality rule:** if onboarding a new project requires a change to this
 contract or to Telar, the contract is wrong. Amend the contract deliberately
 (bump to v2); never special-case a project inside Telar.
+
+## v1.1 amendments (from the first real onboardings, 2026-08)
+
+Reported by the onboarding agents per the gap rule; the first two are
+implemented, the last two are open design questions for v2.
+
+1. **Per-verb timeout overrides** (implemented): `env.timeouts: {up: 900, ...}`
+   in seconds. Cold container stacks routinely exceed the 300s default, and a
+   SIGKILL mid-`supabase start` leaves a half-built stack no verb owns.
+2. **Tier runs are labelled and budgeted as tiers** (implemented): a tier run
+   reports `tier:<name>` and gets the verify budget (600s default,
+   `timeouts.verify` overrides) instead of silently inheriting mislabelled
+   defaults.
+3. **Conform's scratch slot is not a scratch worktree** (open): `conform` runs
+   the verbs in the *invoking* worktree. For projects whose isolation unit is
+   the worktree (ozom-gv's model), a "scratch slot" from the primary checkout
+   would cycle the developer's live stack. Until conform provisions its own
+   throwaway worktree, onboarding agents MUST run it from one (the ozom-gv
+   onboarding did exactly this). v2 direction: conform provisions and removes
+   a scratch worktree itself, and refuses the primary checkout.
+4. **No way to declare "reset requires credentials"** (open): today the only
+   honest move is omitting `reset`; the contract should let a project say why
+   (`reset: {unavailable: "needs real vault keys"}`) so schedulers and agents
+   can distinguish "no reset" from "reset is unsafe unattended".

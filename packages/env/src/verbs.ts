@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { EnvContract } from "./config.ts";
 
 export interface VerbContext {
   projectId: string;
@@ -40,12 +39,13 @@ function injectedEnv(ctx: VerbContext): Record<string, string | undefined> {
 
 /** Run one contract verb in the worktree with the TELAR_* variables injected. */
 export function runVerb(
-  verb: keyof EnvContract & string,
+  verb: string,
   command: string,
   ctx: VerbContext,
+  timeoutMs?: number,
 ): Promise<VerbResult> {
   const started = Date.now();
-  const timeout = TIMEOUTS_MS[verb] ?? 120_000;
+  const timeout = timeoutMs ?? TIMEOUTS_MS[verb] ?? 120_000;
   return new Promise((resolvePromise) => {
     const proc = spawn("/bin/sh", ["-c", command], {
       cwd: ctx.worktree,
