@@ -71,6 +71,11 @@ export interface Loom {
   /** The conversation this loom was spun from. Owned: it leaves the ordinary
    *  sessions surface with the threads. */
   originSessionId?: string;
+  /** THE CONDUCTOR'S OWN SESSION — created lazily on the first episode.
+   *  Episodes are TURNS in it, so its whole reasoning is a transcript a human
+   *  can read, steer by replying to, or stop — the same machinery as any
+   *  session. Loom-owned like everything else here. */
+  conductorSessionId?: string;
   threads: LoomThread[];
   /** An escalation from the conductor — something it judged a human should
    *  see. Cleared by the room. */
@@ -173,13 +178,16 @@ export function loomOwnedSessionIds(): Set<string> {
   const ids = new Set<string>();
   for (const loom of listLooms()) {
     if (loom.originSessionId) ids.add(loom.originSessionId);
+    if (loom.conductorSessionId) ids.add(loom.conductorSessionId);
     for (const thread of loom.threads) if (thread.sessionId) ids.add(thread.sessionId);
   }
   return ids;
 }
 
 export function findLoomBySession(sessionId: string): Loom | undefined {
-  return listLooms().find((l) => l.originSessionId === sessionId || l.threads.some((t) => t.sessionId === sessionId));
+  return listLooms().find(
+    (l) => l.originSessionId === sessionId || l.conductorSessionId === sessionId || l.threads.some((t) => t.sessionId === sessionId),
+  );
 }
 
 /**

@@ -24,7 +24,8 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
   if (!loom) notFound();
   const thread = loom.threads.find((t) => t.sessionId === sessionId);
   const isOrigin = loom.originSessionId === sessionId;
-  if (!thread && !isOrigin) notFound();
+  const isConductor = loom.conductorSessionId === sessionId;
+  if (!thread && !isOrigin && !isConductor) notFound();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -34,7 +35,9 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
           {loom.title}
         </Button>
         <span className="text-border">/</span>
-        <span className="shrink-0 font-medium text-foreground">{thread ? thread.title : "origin conversation"}</span>
+        <span className="shrink-0 font-medium text-foreground">
+          {thread ? thread.title : isConductor ? "conductor" : "origin conversation"}
+        </span>
         {thread?.tier ? (
           <Badge variant="outline" className="font-mono text-[10px] uppercase text-verify">
             {thread.tier}
@@ -46,6 +49,10 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
           </span>
         ) : isOrigin ? (
           <span className="min-w-0 truncate text-muted-foreground">the conversation this loom was spun from</span>
+        ) : isConductor ? (
+          <span className="min-w-0 truncate text-muted-foreground">
+            the agent that steers this loom — reply here to steer it; its next episode reads what you say
+          </span>
         ) : null}
       </div>
       {/* A FLEX COLUMN, NOT A BLOCK. The cockpit's own root is `flex-1 min-h-0

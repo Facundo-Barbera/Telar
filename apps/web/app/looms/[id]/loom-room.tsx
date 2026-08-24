@@ -51,6 +51,7 @@ interface LoomDetail {
   objective: string;
   projectId: string;
   method?: string;
+  conductorSessionId?: string;
   state: "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
   phases?: Array<{ id: string; kind: string; gate: string; status: string }>;
   threads: LiveThread[];
@@ -320,7 +321,12 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                   <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   Conductor journal
                 </CardTitle>
-                <CardAction>
+                <CardAction className="flex items-center gap-1">
+                  {loom.conductorSessionId ? (
+                    <Button size="xs" variant="ghost" render={<Link href={`/looms/${loom.id}/threads/${loom.conductorSessionId}`} />}>
+                      open session →
+                    </Button>
+                  ) : null}
                   <Button size="xs" variant="ghost" onClick={() => void act("conduct")} disabled={busy !== null || Boolean(loom.acceptedAt)}>
                     {busy === "conduct" ? "Conducting…" : "Conduct now"}
                   </Button>
@@ -332,6 +338,11 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                 ) : (
                   <p className="text-xs text-muted-foreground">No entries yet — the conductor wakes when the loom goes quiet.</p>
                 )}
+                {loom.conductorSessionId ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    The journal is the record; the session is the reasoning. Reply in the session to steer — the next episode reads it.
+                  </p>
+                ) : null}
               </CardContent>
             </Card>
           ) : null}

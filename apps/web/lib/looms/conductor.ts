@@ -1,27 +1,23 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 import type { EngineClient } from "@telar/engine-client";
 import { appendJournal, getLoom, loomState, readJournal, readSpec, saveLoom, type Loom } from "./store";
 import { runLoomVerification } from "./verify";
 
-const exec = promisify(execFile);
-
 /**
- * THE EPISODIC CONDUCTOR — docs/method-contract-v0.md, v0.1.
+ * THE CONDUCTOR — an agent that steers, hosted in a SESSION OF ITS OWN.
  *
- * An agent that steers, with long-lived STATE instead of long-lived CONTEXT.
- * Each episode boots from the loom document (spec.md + journal.md + live
- * thread status), makes exactly ONE move, writes its decision and reasoning
- * back into the journal, and dies. No compaction, because there is nothing
- * to compact: what the conductor knows is exactly what is written down,
- * which is exactly what the human can read. The forgetting is auditable.
+ * Still episodic in the way that matters (docs/method-contract-v0.md v0.1):
+ * every episode re-boots from the loom document — spec, journal, live thread
+ * status — and between episodes nothing runs. But episodes are TURNS in one
+ * loom-owned engine session, which buys what an invisible `claude -p` never
+ * had: the whole reasoning is a transcript a human can read in the cockpit,
+ * steer by replying to (the next episode sees your reply as conversation),
+ * and stop like any session. The document stays the memory of record; the
+ * transcript is the window onto it.
  *
- * THE CONDUCTOR PROPOSES; THE MACHINE EXECUTES. The agent returns a typed
- * decision and this module applies it through the same code paths the UI
- * uses — the verify it triggers is the identical clean-desk gate, the nudge
- * is an ordinary turn. It has no tools of its own, so it cannot invent a
- * softer path around the moat: `accept` is not in its vocabulary at all.
+ * THE CONDUCTOR PROPOSES; THE MACHINE EXECUTES. Each episode must end in one
+ * typed decision, applied here through the same code paths as the room's
+ * buttons. `accept` is not in its vocabulary at all — the moat holds.
  */
 
 export type ConductorMove =
@@ -39,6 +35,9 @@ export interface EpisodeResult {
 /** Throttle: a conductor that can be re-woken every poll would burn tokens
  *  restating "wait". One episode per minute is plenty for v0's triggers. */
 export const CONDUCT_COOLDOWN_MS = 60_000;
+
+/** How long an episode may think before the machine records a non-answer. */
+const EPISODE_TIMEOUT_MS = 180_000;
 
 async function gatherBriefing(loom: Loom, client: EngineClient): Promise<string> {
   const threads = await Promise.all(
@@ -63,10 +62,13 @@ async function gatherBriefing(loom: Loom, client: EngineClient): Promise<string>
 }
 
 function parseDecision(raw: string): ConductorMove | null {
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) return null;
+  // The LAST JSON object in the reply: the conductor may think out loud
+  // first, and the transcript is exactly where that thinking should live.
+  const matches = raw.match(/\{[\s\S]*?\}(?=[^{}]*$)/);
+  const candidate = matches?.[0] ?? raw.match(/\{[\s\S]*\}/)?.[0];
+  if (!candidate) return null;
   try {
-    const parsed = JSON.parse(match[0]) as ConductorMove;
+    const parsed = JSON.parse(candidate) as ConductorMove;
     if (parsed.move === "wait" || parsed.move === "verify") return parsed;
     if (parsed.move === "nudge" && typeof parsed.thread === "string" && typeof parsed.message === "string") return parsed;
     if (parsed.move === "escalate" && typeof parsed.message === "string") return parsed;
@@ -74,6 +76,39 @@ function parseDecision(raw: string): ConductorMove | null {
   } catch {
     return null;
   }
+}
+
+/** The conductor's home, created on first need and owned by the loom. */
+async function ensureConductorSession(loom: Loom, client: EngineClient): Promise<string> {
+  if (loom.conductorSessionId) {
+    const alive = await client.session(loom.conductorSessionId).catch(() => null);
+    if (alive && alive.session.state !== "archived") return loom.conductorSessionId;
+  }
+  const created = await client.createSession({
+    projectId: loom.projectId,
+    title: `Conductor · ${loom.title}`,
+    // Local, not worktree: the conductor reads and reasons; it edits nothing,
+    // so it gets no checkout of its own to be tempted by.
+    envMode: "local",
+  });
+  const fresh = getLoom(loom.id)!;
+  fresh.conductorSessionId = created.session.id;
+  saveLoom(fresh);
+  appendJournal(loom.id, "machine", `conductor session created: ${created.session.id}`);
+  return created.session.id;
+}
+
+async function awaitTurn(client: EngineClient, sessionId: string, runId: string): Promise<string | null> {
+  const deadline = Date.now() + EPISODE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2_500));
+    const snapshot = await client.session(sessionId).catch(() => null);
+    const turn = snapshot?.turns.find((t) => t.runId === runId);
+    if (!turn) continue;
+    if (turn.state === "completed") return turn.resultText ?? "";
+    if (turn.state === "failed" || turn.state === "stopped" || turn.state === "discarded" || turn.state === "ambiguous") return null;
+  }
+  return null;
 }
 
 export async function conductEpisode(loomId: string, client: EngineClient): Promise<EpisodeResult> {
@@ -86,30 +121,28 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
     return { decision: { move: "wait", reason: `loom is ${state}; nothing for a conductor here` }, applied: false };
   }
 
+  const sessionId = await ensureConductorSession(loom, client);
   const briefing = await gatherBriefing(loom, client);
   const prompt = [
-    "Sos el conductor de un loom de Telar: el agente que STEERS, no el que trabaja.",
+    "Episodio del conductor. Sos el conductor de este loom de Telar: el agente que STEERS, no el que trabaja.",
+    "Tu memoria de registro es el documento de abajo (spec + journal) — el transcript de esta sesión es la ventana del humano sobre tu razonamiento, y si el humano te escribió algo acá arriba, tomalo como steering.",
     briefing,
-    "Decidí UN movimiento y nada más:",
+    "Pensá lo que necesites y cerrá con EXACTAMENTE UN movimiento, como último JSON del mensaje:",
     '- {"move":"wait","reason":"..."} — todo avanza solo; no molestar.',
     '- {"move":"verify","reason":"..."} — los threads parecen terminados (idle + trabajo commiteado); correr la verificación de escritorio limpio.',
     '- {"move":"nudge","thread":"<slug>","message":"...","reason":"..."} — un thread está trabado o se desvió; mandale UN mensaje concreto.',
     '- {"move":"escalate","message":"...","reason":"..."} — esto necesita un humano (contrato imposible, verificación roja repetida, conflicto entre threads).',
-    "No existe ningún movimiento que acepte el loom ni cierre issues — eso es del humano, siempre.",
-    "Respondé SOLO el JSON.",
+    "No existe ningún movimiento que acepte el loom ni cierre issues — eso es del humano, siempre. No edites archivos: proponés, la máquina ejecuta.",
   ].join("\n\n");
 
-  const { stdout } = await exec("claude", ["-p", prompt, "--output-format", "json", "--model", "sonnet", "--max-turns", "1"], {
-    timeout: 120_000,
-    maxBuffer: 1024 * 1024,
-  });
-  const envelope = JSON.parse(stdout) as { result?: string; is_error?: boolean };
-  const decision = envelope.result ? parseDecision(envelope.result) : null;
+  const runId = randomUUID();
+  await client.submitTurn(sessionId, { runId, input: prompt });
+  const result = await awaitTurn(client, sessionId, runId);
+  const decision = result === null ? null : parseDecision(result);
   if (!decision) {
-    appendJournal(loomId, "conductor", `episode produced no parseable decision: ${(envelope.result ?? "").slice(0, 120)}`);
-    const fallback: ConductorMove = { move: "wait", reason: "unparseable episode output" };
-    saveLoom({ ...loom, conductedAt: Date.now() });
-    return { decision: fallback, applied: false };
+    appendJournal(loomId, "conductor", `episode ended without a parseable decision (turn ${result === null ? "failed/timed out" : "answered off-format"})`);
+    saveLoom({ ...getLoom(loomId)!, conductedAt: Date.now() });
+    return { decision: { move: "wait", reason: "episode produced no decision" }, applied: false };
   }
 
   appendJournal(loomId, "conductor", `${decision.move}: ${decision.reason}`);
@@ -141,7 +174,6 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
       break;
     }
   }
-  const after = getLoom(loomId)!;
-  saveLoom({ ...after, conductedAt: Date.now() });
+  saveLoom({ ...getLoom(loomId)!, conductedAt: Date.now() });
   return { decision, applied, ...(detail ? { detail } : {}) };
 }
