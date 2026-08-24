@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { engineClient, engineErrorResponse, requestObject, requiredString, optionalString } from "@/lib/engine/engine-server";
 import { listLooms, newLoom, slugify, uniqueLoomSlug, type LoomThread } from "@/lib/looms/store";
 import { displayState, threadStatus } from "@/lib/looms/status";
+import { spawnThreads } from "@/lib/looms/spawn";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -79,46 +79,18 @@ export async function POST(request: Request) {
         let slug = optionalString(raw.slug, "thread slug") ?? slugify(threadTitle);
         while (usedSlugs.has(slug)) slug = `${slug}-2`;
         usedSlugs.add(slug);
-        const created = await client.createSession({
-          projectId,
-          title: threadTitle,
-          envMode: "worktree",
-          branchSlug: `loom/${loomSlug}/${slug}`,
-        });
-        const sessionId = created.session.id;
-        const branch = created.session.workspace?.mode === "worktree" ? created.session.workspace.branch : undefined;
-        const parts = [brief];
-        if (contract) {
-          parts.push(`Contrato de verificación (tu trabajo se acepta solo si esto es demostrable):\n${contract}`);
-        }
-        if (tier) {
-          parts.push(
-            `Tier de verificación: "${tier}". El loom lo va a correr con telar-env sobre un checkout LIMPIO de tu rama — lo que no está commiteado no existe. Podés correrlo vos (\`telar-env tier ${tier}\`) mientras trabajás, pero solo cuenta la corrida del loom.`,
-          );
-        }
-        parts.push(
-          "Reglas loom: trabajás en tu propio worktree; no toques main; NO cierres issues (los cierra un humano tras verificar); commiteá tu trabajo (commits atómicos); terminá con diff acotado + pasos de verificación + pendientes honestos.",
-        );
-        await client.submitTurn(sessionId, { runId: randomUUID(), input: parts.join("\n\n") });
-        threads.push({
-          sessionId,
-          slug,
-          title: threadTitle,
-          brief,
-          ...(contract ? { contract } : {}),
-          ...(tier ? { tier } : {}),
-          ...(branch ? { branch } : {}),
-        });
+        threads.push({ slug, title: threadTitle, brief, ...(contract ? { contract } : {}), ...(tier ? { tier } : {}) });
       }
     }
 
     if (threads.length === 0) {
       return Response.json({ error: { code: "invalid_request", message: "a loom needs threads — pass threads[]" } }, { status: 400 });
     }
-    return Response.json(
-      newLoom({ title, objective, projectId, threads, slug: loomSlug, ...(originSessionId ? { originSessionId } : {}) }),
-      { status: 201 },
-    );
+    // The one spawner (lib/looms/spawn.ts) — this legacy path used to carry
+    // its own copy of the briefs, which drifted (it still spoke Spanish after
+    // the machine went English). One code path, one voice.
+    const loom = newLoom({ title, objective, projectId, threads, slug: loomSlug, ...(originSessionId ? { originSessionId } : {}) });
+    return Response.json(await spawnThreads(loom, client), { status: 201 });
   } catch (error) {
     return engineErrorResponse(error);
   }

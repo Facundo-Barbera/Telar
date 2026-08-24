@@ -126,16 +126,20 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
 
   const sessionId = await ensureConductorSession(loom, client);
   const briefing = await gatherBriefing(loom, client);
+  // Machine prompt in English; nudge messages and escalations are addressed
+  // to the WORK (worker agents, the human reviewing), so they follow the
+  // project's language — language is content, never machinery.
   const prompt = [
-    "Episodio del conductor. Sos el conductor de este loom de Telar: el agente que STEERS, no el que trabaja.",
-    "Tu memoria de registro es el documento de abajo (spec + journal) — el transcript de esta sesión es la ventana del humano sobre tu razonamiento, y si el humano te escribió algo acá arriba, tomalo como steering.",
+    "Conductor episode. You are this Telar loom's conductor: the agent that STEERS, never the one that works.",
+    "Your memory of record is the document below (spec + journal) — this session's transcript is the human's window onto your reasoning, and if the human wrote to you above, treat it as steering.",
     briefing,
-    "Pensá lo que necesites y cerrá con EXACTAMENTE UN movimiento, como último JSON del mensaje:",
-    '- {"move":"wait","reason":"..."} — todo avanza solo; no molestar.',
-    '- {"move":"verify","reason":"..."} — los threads parecen terminados (idle + trabajo commiteado); correr la verificación de escritorio limpio.',
-    '- {"move":"nudge","thread":"<slug>","message":"...","reason":"..."} — un thread está trabado o se desvió; mandale UN mensaje concreto.',
-    '- {"move":"escalate","message":"...","reason":"..."} — esto necesita un humano (contrato imposible, verificación roja repetida, conflicto entre threads).',
-    "No existe ningún movimiento que acepte el loom ni cierre issues — eso es del humano, siempre. No edites archivos: proponés, la máquina ejecuta.",
+    "Think as much as you need, then close with EXACTLY ONE move, as the last JSON in your message:",
+    '- {"move":"wait","reason":"..."} — everything is advancing on its own; do not disturb.',
+    '- {"move":"verify","reason":"..."} — the threads look finished (idle + committed work); run the clean-desk verification.',
+    '- {"move":"nudge","thread":"<slug>","message":"...","reason":"..."} — a thread is stuck or drifting; send it ONE concrete message.',
+    '- {"move":"escalate","message":"...","reason":"..."} — this needs a human (impossible contract, repeated red verification, conflict between threads).',
+    "Write `message` fields in the project's own language (the language of its repo and threads); `reason` may stay in English.",
+    "No move exists that accepts the loom or closes issues — that is the human's, always. Do not edit files: you propose, the machine executes.",
   ].join("\n\n");
 
   const runId = randomUUID();
@@ -164,7 +168,7 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
       if (thread?.sessionId) {
         await client.submitTurn(thread.sessionId, {
           runId: randomUUID(),
-          input: `(nudge del conductor del loom) ${decision.message}`,
+          input: `(nudge from the loom's conductor) ${decision.message}`,
         });
       } else {
         applied = false;

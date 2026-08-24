@@ -82,18 +82,20 @@ export async function POST(request: Request) {
     }
     const tiers = await projectTiers(project.root);
 
+    // Machine prompt in English; the WORK-FACING text (briefs, contracts,
+    // titles) follows the project's language — language is content.
     const prompt = [
-      "Sos el weaver de Telar: convertís una intención en un plan de threads paralelos.",
+      "You are Telar's weaver: you turn an intention into a plan of parallel threads.",
       conversation
-        ? `Esta conversación es el ORIGEN del loom — el objetivo sale de acá, no lo inventes:\n"""\n${conversation}\n"""`
-        : `Objetivo del humano para este proyecto:\n"""${objective}"""`,
-      "Explorá el repo lo justo (README, docs, estructura) para descomponer bien.",
-      "Descomponé en 2 a 5 threads paralelos e independientes (cada uno correrá como agente en su propio worktree, en una rama loom/<loom>/<thread>). Amplio antes que profundo; agrupá por causa raíz compartida.",
-      "Para cada thread: `title`; `slug` (kebab-case corto, nombra el TRABAJO, no la maquinaria); `brief` accionable (contexto + qué hacer, en el idioma del repo); `contract` legible: qué tiene que ser demostrablemente cierto para aceptar, verificable por alguien que no lo escribió.",
+        ? `This conversation is the loom's ORIGIN — the objective comes from here, do not invent one:\n"""\n${conversation}\n"""`
+        : `The human's objective for this project:\n"""${objective}"""`,
+      "Explore the repo just enough (README, docs, structure) to decompose well.",
+      "Decompose into 2 to 5 parallel, independent threads (each will run as an agent in its own worktree, on a loom/<loom>/<thread> branch). Broad before deep; group by shared root cause.",
+      "For each thread: `title`; `slug` (short kebab-case, names the WORK, not the machinery); an actionable `brief` (context + what to do); a legible `contract`: what must be demonstrably true to accept, verifiable by someone who did not write it. Write titles, briefs and contracts in the PROJECT'S OWN LANGUAGE (the language of its README, issues and conversation).",
       tiers.length > 0
-        ? `Y \`tier\`: el tier de verificación ejecutable que respalda el contrato. Tiers definidos en el contrato de entorno de este proyecto: ${tiers.join(", ")}. Elegí el más barato que realmente pruebe el contrato. Si NINGUNO lo prueba, poné null y decilo en el contract — un contrato sin tier es visible, no inventado.`
-        : "Este proyecto no define tiers de verificación (sin contrato de entorno). Poné `tier: null` en cada thread y hacé el contract igual de concreto.",
-      'Respondé SOLO con JSON válido, sin markdown: {"title": "...", "objective": "una frase con el objetivo destilado", "threads": [{"title": "...", "slug": "...", "brief": "...", "contract": "...", "tier": "..." | null}]}',
+        ? `And \`tier\`: the executable verification tier that backs the contract. Tiers defined in this project's environment contract: ${tiers.join(", ")}. Pick the cheapest one that actually proves the contract. If NONE proves it, set null and say so in the contract — a tierless contract is visible, never invented.`
+        : "This project defines no verification tiers (no environment contract). Set `tier: null` on every thread and make the contract just as concrete.",
+      'Reply ONLY with valid JSON, no markdown: {"title": "...", "objective": "one sentence distilling the objective", "threads": [{"title": "...", "slug": "...", "brief": "...", "contract": "...", "tier": "..." | null}]}',
     ].join("\n\n");
 
     const { stdout } = await exec(
