@@ -41,7 +41,10 @@ const EPISODE_TIMEOUT_MS = 180_000;
 
 async function gatherBriefing(loom: Loom, client: EngineClient): Promise<string> {
   const threads = await Promise.all(
-    loom.threads.map(async (t) => {
+    loom.threads.map(async (raw) => {
+      // Pre-v2 records had no slug; a briefing that prints `undefined` sends
+      // the conductor chasing a data artefact instead of the work.
+      const t = { ...raw, slug: raw.slug ?? raw.title };
       if (!t.sessionId) return `- ${t.slug}: PLANNED, not spawned (tier: ${t.tier ?? "none"})`;
       const snapshot = await client.session(t.sessionId).catch(() => null);
       if (!snapshot) return `- ${t.slug}: session unreachable`;
