@@ -1,7 +1,7 @@
 /**
- * The causality graph's load-bearing facts: lanes are roles, edges exist only
- * where causality is certain, and old markdown-only journals are recoverable
- * into typed events.
+ * The braid's load-bearing facts: the spine is the story in order, strands
+ * exist only where history does, human moments are stations, and the only
+ * cross-links are causes the machine is certain of.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -27,6 +27,15 @@ afterEach(() => {
 });
 
 function loom(): Loom {
+  // Born BEFORE the fixture's event times — a real loom cannot have events
+  // that precede its own creation, and the braid roots the story at birth.
+  return {
+    ...base(),
+    createdAt: Date.parse("2026-08-24T09:00:00Z"),
+  };
+}
+
+function base(): Loom {
   return newLoom({
     title: "L",
     objective: "x",
@@ -39,6 +48,8 @@ function loom(): Loom {
     ],
   });
 }
+
+const t0 = Date.parse("2026-08-24T10:00:00Z");
 
 test("events round-trip through the jsonl, and the journal renders the same entry", () => {
   const l = loom();
@@ -66,60 +77,62 @@ test("a markdown-only journal is recovered into typed events", () => {
   );
   const kinds = readEvents(l.id).map((e) => e.kind);
   expect(kinds).toEqual(["proposal", "gate", "spawn", "verify", "decision", "escalation", "note"]);
-  const verify = readEvents(l.id).find((e) => e.kind === "verify")!;
-  expect(verify).toMatchObject({ thread: "a", ok: true, commit: "abc1234" });
 });
 
-test("lanes are roles, and certain causality becomes edges", () => {
-  const l = loom();
-  const t0 = Date.parse("2026-08-23T10:00:00Z");
+test("the spine is the story in order, and human moments are stations", () => {
   const events: LoomEvent[] = [
     { at: t0, actor: "weaver", kind: "proposal", detail: "proposed 2 threads" },
-    { at: t0 + 1000, actor: "human", kind: "gate", detail: "cleared the execute gate" },
-    { at: t0 + 2000, actor: "machine", kind: "spawn", thread: "a", sessionId: "session_a", detail: "spawned a" },
-    { at: t0 + 3000, actor: "machine", kind: "spawn", thread: "b", sessionId: "session_b", detail: "spawned b" },
-    { at: t0 + 4000, actor: "conductor", kind: "decision", move: "nudge", thread: "b", detail: "nudge(b): stalled" },
-    { at: t0 + 5000, actor: "conductor", kind: "nudge-delivered", thread: "b", sessionId: "session_b", detail: "nudged b" },
-    { at: t0 + 6000, actor: "conductor", kind: "escalation", detail: "escalate: help" },
-    { at: t0 + 7000, actor: "human", kind: "seen", detail: "saw the escalation" },
+    { at: t0 + 1000, actor: "human", kind: "gate", detail: "cleared the gate" },
+    { at: t0 + 4000, actor: "conductor", kind: "escalation", detail: "escalate: help" },
+    { at: t0 + 5000, actor: "human", kind: "seen", detail: "saw the escalation" },
   ];
-  const graph = deriveGraph(l, events);
-
-  expect(graph.lanes.map((lane) => lane.id)).toEqual(["human", "conductor", "machine", "thread:a", "thread:b"]);
-  // The human lane holds only human acts — the moat as geometry.
-  const humanNodes = graph.nodes.filter((n) => n.lane === "human");
-  expect(humanNodes.map((n) => n.kind).sort()).toEqual(["gate", "origin", "seen"]);
-
-  const byKind = (kind: string) => graph.nodes.filter((n) => n.kind === kind);
-  const gate = byKind("gate")[0]!;
-  const spawns = byKind("spawn");
-  expect(spawns).toHaveLength(2);
-  // Gate → both spawns; nudge decision → delivery in the thread lane;
-  // escalation → seen.
-  for (const spawn of spawns) expect(graph.edges.some((e) => e.from === gate.id && e.to === spawn.id)).toBe(true);
-  const decision = byKind("decision")[0]!;
-  const delivered = byKind("nudge-delivered")[0]!;
-  expect(delivered.lane).toBe("thread:b");
-  expect(graph.edges.some((e) => e.from === decision.id && e.to === delivered.id)).toBe(true);
-  const escalation = byKind("escalation")[0]!;
-  const seen = byKind("seen")[0]!;
-  expect(graph.edges.some((e) => e.from === escalation.id && e.to === seen.id && e.tone === "warning")).toBe(true);
+  const braid = deriveGraph(loom(), events);
+  expect(braid.spine.map((n) => n.kind)).toEqual(["origin", "proposal", "gate", "escalation", "seen"]);
+  // Stations = exactly the human moments (origin is the human's conversation).
+  expect(braid.spine.filter((n) => n.station).map((n) => n.kind)).toEqual(["origin", "gate", "seen"]);
+  // The story reads in row order.
+  const rows = braid.spine.map((n) => n.row);
+  expect([...rows].sort((x, y2) => x - y2)).toEqual(rows);
 });
 
-test("an accepted loom draws accept fed by each thread's latest green", () => {
-  const l = { ...loom(), acceptedAt: Date.parse("2026-08-23T12:00:00Z") };
-  const t0 = Date.parse("2026-08-23T10:00:00Z");
+test("strands exist only where history does, and carry their own events", () => {
   const events: LoomEvent[] = [
-    { at: t0, actor: "machine", kind: "verify", thread: "a", ok: false, commit: "old", detail: "red" },
-    { at: t0 + 1000, actor: "machine", kind: "verify", thread: "a", ok: true, commit: "new", detail: "green" },
-    { at: t0 + 2000, actor: "machine", kind: "verify", thread: "b", ok: true, commit: "bbb", detail: "green" },
+    { at: t0, actor: "human", kind: "gate", detail: "cleared" },
+    { at: t0 + 1000, actor: "machine", kind: "spawn", thread: "a", sessionId: "session_a", detail: "spawned a" },
+    { at: t0 + 2000, actor: "machine", kind: "verify", thread: "a", ok: true, commit: "abc", detail: "green" },
   ];
-  const graph = deriveGraph(l, events);
-  const accept = graph.nodes.find((n) => n.kind === "accept")!;
-  const greens = graph.nodes.filter((n) => n.kind === "verify" && n.tone === "success");
-  expect(greens).toHaveLength(2);
-  for (const green of greens) expect(graph.edges.some((e) => e.from === green.id && e.to === accept.id && e.tone === "success")).toBe(true);
-  // The red run feeds nothing into accept.
-  const red = graph.nodes.find((n) => n.tone === "destructive")!;
-  expect(graph.edges.some((e) => e.from === red.id && e.to === accept.id)).toBe(false);
+  const braid = deriveGraph(loom(), events);
+  expect(braid.strands.map((s) => s.slug)).toEqual(["a"]);
+  expect(braid.strands[0].nodes.map((n) => n.kind)).toEqual(["spawn", "verify"]);
+  // B never acted: not a strand, named as quiet instead.
+  expect(braid.quietStrands).toEqual(["B"]);
+});
+
+test("a nudge is the one true cross-link, decision → delivery in the strand", () => {
+  const events: LoomEvent[] = [
+    { at: t0, actor: "machine", kind: "spawn", thread: "b", sessionId: "session_b", detail: "spawned b" },
+    { at: t0 + 1000, actor: "conductor", kind: "decision", move: "nudge", thread: "b", detail: "nudge(b): stalled" },
+    { at: t0 + 2000, actor: "conductor", kind: "nudge-delivered", thread: "b", sessionId: "session_b", detail: "nudged b" },
+  ];
+  const braid = deriveGraph(loom(), events);
+  const decision = braid.spine.find((n) => n.kind === "decision")!;
+  const delivered = braid.strands.find((s) => s.slug === "b")!.nodes.find((n) => n.kind === "nudge-delivered")!;
+  expect(braid.arrows).toEqual([{ from: decision.id, to: delivered.id, tone: "verify" }]);
+});
+
+test("an accepted loom merges green strands into the accept station", () => {
+  const l = { ...loom(), acceptedAt: t0 + 10_000 };
+  const events: LoomEvent[] = [
+    { at: t0, actor: "machine", kind: "spawn", thread: "a", sessionId: "session_a", detail: "spawned a" },
+    { at: t0 + 1000, actor: "machine", kind: "verify", thread: "a", ok: true, commit: "abc", detail: "green" },
+    { at: t0 + 2000, actor: "machine", kind: "spawn", thread: "b", sessionId: "session_b", detail: "spawned b" },
+    { at: t0 + 3000, actor: "machine", kind: "verify", thread: "b", ok: false, commit: "bad", detail: "red" },
+  ];
+  const braid = deriveGraph(l, events);
+  const accept = braid.spine.at(-1)!;
+  expect(accept.kind).toBe("accept");
+  expect(accept.station).toBe(true);
+  expect(braid.strands.find((s) => s.slug === "a")!.mergesIntoAccept).toBe(true);
+  // A red-latest strand does not merge — the braid does not launder evidence.
+  expect(braid.strands.find((s) => s.slug === "b")!.mergesIntoAccept).toBe(false);
 });
