@@ -51,6 +51,7 @@ interface LoomGraphData {
   lanes: GraphLane[];
   nodes: GraphNode[];
   edges: GraphEdge[];
+  quietLanes?: string[];
 }
 
 const LANE_W = 172;
@@ -232,6 +233,12 @@ export function LoomGraph({ loomId }: { loomId: string }) {
                 );
               })}
             </svg>
+
+            {graph.quietLanes && graph.quietLanes.length > 0 ? (
+              <p className="px-4 pb-4 text-xs text-muted-foreground">
+                Quiet, no history yet: {graph.quietLanes.join(" · ")} — each takes its lane with its first event.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>

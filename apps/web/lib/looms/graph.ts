@@ -45,6 +45,9 @@ export interface LoomGraph {
   lanes: GraphLane[];
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** Lanes with no history yet, named so the UI can say they exist without
+   *  spending a column of nothing on each. */
+  quietLanes: string[];
 }
 
 const NUDGE_WINDOW_MS = 30 * 60_000;
@@ -221,5 +224,12 @@ export function deriveGraph(loom: Loom, events: LoomEvent[]): LoomGraph {
     for (let i = 1; i < inLane.length; i++) edges.push({ from: inLane[i - 1].id, to: inLane[i].id, tone: "muted" });
   }
 
-  return { lanes, nodes, edges };
+  // A LANE IS EARNED BY HISTORY. Reserving a column per thread before
+  // anything ever happened in it drew a graph that was mostly reserved
+  // emptiness — the one real cause arcing across four blank columns read as
+  // broken, not as sparse. Quiet lanes are named below the graph instead,
+  // and each takes its column the moment its first event lands.
+  const populated = new Set(nodes.map((n) => n.lane));
+  const quietLanes = lanes.filter((lane) => !populated.has(lane.id)).map((lane) => lane.label);
+  return { lanes: lanes.filter((lane) => populated.has(lane.id)), nodes, edges, quietLanes };
 }
