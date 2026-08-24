@@ -1,25 +1,44 @@
 "use client";
 
 /**
- * THE LOOM ROOM — one loom told in loom language, wearing the app's chrome.
+ * THE LOOM ROOM — the loom's header facts up top, and below them a ROSTER,
+ * not furniture.
  *
- * v2: the room renders the loom DOCUMENT — the same spec + journal the
- * episodic conductor reboots from. A waiting loom shows its open gate
- * (Approve/Discard for the execute gate); a running one shows live threads,
- * the conductor's decisions, and its escalations. The accept moat is
- * unchanged: Accept refuses until every thread has a loom-run green.
+ * A loom is a POPULATION of sessions: an origin sometimes, a conductor that
+ * materialises mid-life, threads that appear when a gate clears, more later
+ * when re-seeds land, replacements when the conductor reincarnates. The old
+ * room drew four permanent cards as if the page had thread slots; this one
+ * draws whoever is alive right now as rows in the session-list idiom the
+ * sidebar already taught — rows appear, expand for their contract and
+ * evidence, and leave. A planned thread is visibly a ghost until approval
+ * makes it real. The accept moat is unchanged.
  */
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeftIcon, GitBranchIcon, NetworkIcon, SparklesIcon } from "lucide-react";
+import { ArrowLeftIcon, ChevronRightIcon, GitBranchIcon, NetworkIcon, SparklesIcon } from "lucide-react";
 import type { SessionActivity } from "@telar/engine-client";
 import { PageHeader } from "@/components/common/page-header";
 import { fmtAgo } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoomStateBadge, statusHairline, ThreadStatusSlot, TierBadge } from "@/components/loom/thread-row";
+
+interface Liveness {
+  status: string;
+  activity?: SessionActivity;
+  activityAt?: number | null;
+  updatedAt?: number;
+  title?: string;
+  worktree: string | null;
+  branch: string | null;
+  lastAct: string | null;
+  lastActAt: number | null;
+  openTasks: number;
+  itemCount: number;
+}
 
 interface LiveThread {
   sessionId?: string;
@@ -30,18 +49,7 @@ interface LiveThread {
   tier?: string;
   branch?: string;
   verification?: { tier: string; ok: boolean; at: number; detail?: string; commit?: string };
-  live: {
-    status: string;
-    activity?: SessionActivity;
-    activityAt?: number | null;
-    updatedAt?: number;
-    worktree: string | null;
-    branch: string | null;
-    lastAct: string | null;
-    lastActAt: number | null;
-    openTasks: number;
-    itemCount: number;
-  } | null;
+  live: Liveness | null;
 }
 
 interface LoomDetail {
@@ -55,17 +63,80 @@ interface LoomDetail {
   state: "waiting" | "working" | "idle" | "verifying" | "ready" | "accepted";
   phases?: Array<{ id: string; kind: string; gate: string; status: string }>;
   threads: LiveThread[];
-  origin: { sessionId: string; title: string } | null;
+  origin: { sessionId: string; title: string; live: Liveness | null } | null;
+  conductor: { sessionId: string; live: Liveness | null } | null;
   attention?: string;
   journal?: string;
   createdAt: number;
   acceptedAt?: number;
 }
 
+const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-muted-foreground";
+
+/**
+ * One inhabitant of the loom, one row. The session-list grammar: status
+ * hairline on the leading edge, title carries the line, activity badge in the
+ * timestamp slot, detail one click away — never permanently occupying the
+ * column.
+ */
+function RosterRow({
+  href,
+  title,
+  live,
+  ghost,
+  badges,
+  subtitle,
+  expanded,
+  onToggle,
+  children,
+}: {
+  href?: string;
+  title: string;
+  live: Liveness | null;
+  /** A planned member: visible, clearly not yet real. */
+  ghost?: boolean;
+  badges?: React.ReactNode;
+  subtitle?: string | null;
+  expanded: boolean;
+  onToggle: () => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className={cn("relative", statusHairline(live), ghost && "opacity-70")}>
+      <button type="button" onClick={onToggle} className="flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-muted/40" aria-expanded={expanded}>
+        <ChevronRightIcon className={cn("mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")} />
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={cn("min-w-0 truncate text-sm font-medium", ghost && "italic")}>{title}</span>
+            {badges}
+            <span className="ml-auto shrink-0">
+              {ghost ? <span className="text-[11px] text-muted-foreground">planned</span> : <ThreadStatusSlot live={live} />}
+            </span>
+          </span>
+          {subtitle ? <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">{subtitle}</span> : null}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="space-y-3 border-t border-border/40 bg-muted/20 px-9 py-3 text-sm">
+          {children}
+          {href ? (
+            <div className="flex">
+              <Link href={href} className="ml-auto text-xs text-muted-foreground hover:text-foreground">
+                open session →
+              </Link>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function LoomRoom({ loomId }: { loomId: string }) {
   const [loom, setLoom] = useState<LoomDetail | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
   const lastAutoConduct = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -142,6 +213,15 @@ export function LoomRoom({ loomId }: { loomId: string }) {
   }, [loom, loomId, refresh]);
 
   const waitingGate = loom?.phases?.find((p) => p.kind === "execute" && p.status === "waiting");
+  const toggle = (key: string) => setExpanded((current) => (current === key ? null : key));
+
+  // The living first: a roster is an inbox, not an org chart.
+  const sortedThreads = loom
+    ? [...loom.threads].sort((a, b) => {
+        const rank = (t: LiveThread) => (t.live?.status === "working" ? 0 : t.live?.status === "waiting on you" ? 1 : t.sessionId ? 2 : 3);
+        return rank(a) - rank(b);
+      })
+    : [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -160,49 +240,49 @@ export function LoomRoom({ loomId }: { loomId: string }) {
         description={loom ? loom.objective : undefined}
         actions={
           <>
-          <Button variant="ghost" size="icon-sm" aria-label="Causality graph" title="Causality graph" render={<Link href={`/looms/${loomId}/graph`} />}>
-            <NetworkIcon />
-          </Button>
-          {loom && !loom.acceptedAt ? (
-            waitingGate ? (
-              <>
-                <Button size="sm" onClick={() => void act("approve")} disabled={busy !== null}>
-                  {busy === "approve" ? "Spawning threads…" : "Approve — spawn the threads"}
-                </Button>
-                <Button size="sm" variant="outline" onClick={() => void discard()} disabled={busy !== null}>
-                  Discard
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy !== null}
-                  title="Checks out each thread's branch fresh and runs its tier — uncommitted work does not exist"
-                  onClick={() => void act("verify")}
-                >
-                  {busy === "verify" ? "Verifying…" : "Verify"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-success"
-                  disabled={busy !== null || loom.state !== "ready"}
-                  title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
-                  onClick={() => void act("accept")}
-                >
-                  Accept
-                </Button>
-              </>
-            )
-          ) : null}
+            <Button variant="ghost" size="icon-sm" aria-label="Causality graph" title="Causality graph" render={<Link href={`/looms/${loomId}/graph`} />}>
+              <NetworkIcon />
+            </Button>
+            {loom && !loom.acceptedAt ? (
+              waitingGate ? (
+                <>
+                  <Button size="sm" onClick={() => void act("approve")} disabled={busy !== null}>
+                    {busy === "approve" ? "Spawning threads…" : "Approve — spawn the threads"}
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => void discard()} disabled={busy !== null}>
+                    Discard
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== null}
+                    title="Checks out each thread's branch fresh and runs its tier — uncommitted work does not exist"
+                    onClick={() => void act("verify")}
+                  >
+                    {busy === "verify" ? "Verifying…" : "Verify"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-success"
+                    disabled={busy !== null || loom.state !== "ready"}
+                    title={loom.state !== "ready" ? "Accept unlocks when every thread's verification is green" : undefined}
+                    onClick={() => void act("accept")}
+                  >
+                    Accept
+                  </Button>
+                </>
+              )
+            ) : null}
           </>
         }
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-4xl space-y-3 px-6 py-6">
+        <div className="mx-auto max-w-4xl space-y-4 px-6 py-6">
           {error ? (
             <Alert variant="destructive">
               <AlertTitle>{error}</AlertTitle>
@@ -233,91 +313,112 @@ export function LoomRoom({ loomId }: { loomId: string }) {
 
           {loom === null ? (
             <>
-              <Skeleton className="h-32 w-full rounded-xl" />
-              <Skeleton className="h-32 w-full rounded-xl" />
+              <Skeleton className="h-24 w-full rounded-xl" />
+              <Skeleton className="h-40 w-full rounded-xl" />
             </>
           ) : null}
 
           {waitingGate ? (
             <p className="text-sm text-muted-foreground">
-              The weaver proposed {loom?.threads.length} threads. Nothing is running — review the plans below and clear the gate.
+              The weaver proposed {loom?.threads.length} threads. Nothing is running — the rows below are plans until you clear the gate.
             </p>
           ) : null}
 
-          {loom?.origin ? (
-            <p className="text-xs text-muted-foreground">
-              Spun from{" "}
-              <Link href={`/looms/${loom.id}/threads/${loom.origin.sessionId}`} className="underline decoration-dotted hover:text-foreground">
-                {loom.origin.title}
-              </Link>{" "}
-              — that conversation now lives here.
-            </p>
+          {/* THE ROSTER: whoever is alive in this loom right now. Rows appear
+              when the population grows; nothing here is layout. */}
+          {loom ? (
+            <div className="space-y-4">
+              {loom.conductor || loom.origin ? (
+                <div>
+                  <div className={cn(CAPTION, "px-1 pb-1.5")}>Steering</div>
+                  <div className="divide-y divide-border/40 overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+                    {loom.conductor ? (
+                      <RosterRow
+                        title="Conductor"
+                        live={loom.conductor.live}
+                        badges={<SparklesIcon className="size-3 shrink-0 text-verify" />}
+                        subtitle={loom.conductor.live?.lastAct ? `now: ${loom.conductor.live.lastAct}` : null}
+                        expanded={expanded === "conductor"}
+                        onToggle={() => toggle("conductor")}
+                        href={`/looms/${loom.id}/threads/${loom.conductor.sessionId}`}
+                      >
+                        <p className="text-xs text-muted-foreground">
+                          The agent that steers this loom. Reply in its session to steer it — the next episode reads what you say.
+                        </p>
+                      </RosterRow>
+                    ) : null}
+                    {loom.origin ? (
+                      <RosterRow
+                        title={loom.origin.title}
+                        live={loom.origin.live}
+                        subtitle="origin — the conversation this loom was spun from"
+                        expanded={expanded === "origin"}
+                        onToggle={() => toggle("origin")}
+                        href={`/looms/${loom.id}/threads/${loom.origin.sessionId}`}
+                      >
+                        <p className="text-xs text-muted-foreground">It lives here now — detached from the ordinary sessions surface.</p>
+                      </RosterRow>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
+
+              <div>
+                <div className={cn(CAPTION, "px-1 pb-1.5")}>
+                  Threads
+                  <span className="ml-1.5 font-mono text-muted-foreground/60">{loom.threads.length}</span>
+                </div>
+                <div className="divide-y divide-border/40 overflow-hidden rounded-xl bg-card ring-1 ring-foreground/10">
+                  {sortedThreads.map((thread) => (
+                    <RosterRow
+                      key={thread.slug}
+                      title={thread.title}
+                      live={thread.live}
+                      ghost={!thread.sessionId}
+                      badges={<TierBadge {...(thread.tier ? { tier: thread.tier } : {})} />}
+                      subtitle={
+                        thread.live?.lastAct
+                          ? `now: ${thread.live.lastAct}`
+                          : thread.verification
+                            ? `${thread.verification.tier} ${thread.verification.ok ? "green" : "red"} · ${fmtAgo(thread.verification.at)}`
+                            : null
+                      }
+                      expanded={expanded === thread.slug}
+                      onToggle={() => toggle(thread.slug)}
+                      {...(thread.sessionId ? { href: `/looms/${loom.id}/threads/${thread.sessionId}` } : {})}
+                    >
+                      <p className="text-sm text-muted-foreground">{thread.brief}</p>
+                      {thread.contract ? (
+                        <p className="border-l-2 border-verify/50 pl-3 text-sm text-muted-foreground">
+                          <span className="font-medium text-verify">Contract:</span> {thread.contract}
+                        </p>
+                      ) : null}
+                      {thread.verification ? (
+                        <div
+                          className={cn(
+                            "border-l-2 pl-3 text-sm",
+                            thread.verification.ok ? "border-success/50 text-success" : "border-destructive/50 text-destructive",
+                          )}
+                        >
+                          {thread.verification.tier} {thread.verification.ok ? "green" : "red"} · clean checkout
+                          {thread.verification.commit ? ` of ${thread.verification.commit.slice(0, 7)}` : ""}
+                          {thread.verification.detail ? (
+                            <p className="mt-1 whitespace-pre-wrap font-mono text-xs text-muted-foreground">{thread.verification.detail}</p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {(thread.branch ?? thread.live?.branch) ? (
+                        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          <GitBranchIcon className="size-3 shrink-0" />
+                          <span className="min-w-0 truncate font-mono">{thread.branch ?? thread.live?.branch}</span>
+                        </p>
+                      ) : null}
+                    </RosterRow>
+                  ))}
+                </div>
+              </div>
+            </div>
           ) : null}
-
-          {loom?.threads.map((thread) => (
-            <Card key={thread.slug} size="sm" className={`relative overflow-visible ${statusHairline(thread.live)}`}>
-              <CardHeader>
-                <CardTitle className="flex min-w-0 items-center gap-2">
-                  {thread.sessionId ? (
-                    <Link href={`/looms/${loom.id}/threads/${thread.sessionId}`} className="truncate hover:underline">
-                      {thread.title}
-                    </Link>
-                  ) : (
-                    <span className="truncate">{thread.title}</span>
-                  )}
-                  <TierBadge {...(thread.tier ? { tier: thread.tier } : {})} />
-                </CardTitle>
-                <CardAction>
-                  {thread.sessionId ? (
-                    <ThreadStatusSlot live={thread.live} />
-                  ) : (
-                    <span className="text-[11px] text-muted-foreground">planned</span>
-                  )}
-                </CardAction>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {!thread.sessionId ? <p className="text-sm text-muted-foreground">{thread.brief}</p> : null}
-
-                {thread.live?.lastAct ? (
-                  <p className="truncate font-mono text-xs text-muted-foreground">now: {thread.live.lastAct}</p>
-                ) : null}
-
-                {thread.contract ? (
-                  <p className="border-l-2 border-verify/50 pl-3 text-sm text-muted-foreground">
-                    <span className="font-medium text-verify">Contract:</span> {thread.contract}
-                  </p>
-                ) : null}
-
-                {thread.verification ? (
-                  <div
-                    className={`border-l-2 pl-3 text-sm ${
-                      thread.verification.ok ? "border-success/50 text-success" : "border-destructive/50 text-destructive"
-                    }`}
-                  >
-                    {thread.verification.tier} {thread.verification.ok ? "green" : "red"} · clean checkout
-                    {thread.verification.commit ? ` of ${thread.verification.commit.slice(0, 7)}` : ""}
-                    {thread.verification.detail ? (
-                      <p className="mt-1 whitespace-pre-wrap font-mono text-xs text-muted-foreground">{thread.verification.detail}</p>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {thread.sessionId ? (
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    {(thread.branch ?? thread.live?.branch) ? (
-                      <>
-                        <GitBranchIcon className="size-3 shrink-0" />
-                        <span className="min-w-0 truncate font-mono">{thread.branch ?? thread.live?.branch}</span>
-                      </>
-                    ) : null}
-                    <Link href={`/looms/${loom.id}/threads/${thread.sessionId}`} className="ml-auto shrink-0 hover:text-foreground">
-                      open thread →
-                    </Link>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-          ))}
 
           {loom && !waitingGate && loom.journal !== undefined ? (
             <Card size="sm">
@@ -326,12 +427,7 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                   <SparklesIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   Conductor journal
                 </CardTitle>
-                <CardAction className="flex items-center gap-1">
-                  {loom.conductorSessionId ? (
-                    <Button size="xs" variant="ghost" render={<Link href={`/looms/${loom.id}/threads/${loom.conductorSessionId}`} />}>
-                      open session →
-                    </Button>
-                  ) : null}
+                <CardAction>
                   <Button size="xs" variant="ghost" onClick={() => void act("conduct")} disabled={busy !== null || Boolean(loom.acceptedAt)}>
                     {busy === "conduct" ? "Conducting…" : "Conduct now"}
                   </Button>
@@ -343,11 +439,6 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                 ) : (
                   <p className="text-xs text-muted-foreground">No entries yet — the conductor wakes when the loom goes quiet.</p>
                 )}
-                {loom.conductorSessionId ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    The journal is the record; the session is the reasoning. Reply in the session to steer — the next episode reads it.
-                  </p>
-                ) : null}
               </CardContent>
             </Card>
           ) : null}

@@ -19,44 +19,45 @@ export async function GET(_request: Request, context: Context) {
     const loom = getLoom(loomId);
     if (!loom) return Response.json({ error: { code: "not_found", message: `no loom ${loomId}` } }, { status: 404 });
     const client = await engineClient();
-    const threads = await Promise.all(
-      loom.threads.map(async (thread) => {
-        // A planned thread has no session yet — it renders from the spec alone.
-        const snapshot = thread.sessionId ? await client.session(thread.sessionId).catch(() => null) : null;
-        if (!snapshot) return { ...thread, live: null };
-        const titled = snapshot.items.filter((i) => i.title);
-        const last = titled.at(-1);
-        const status = threadStatus(snapshot.session.activity, snapshot.session.state);
-        return {
-          ...thread,
-          live: {
-            status,
-            activity: snapshot.session.activity,
-            activityAt: snapshot.session.activityAt ?? null,
-            updatedAt: snapshot.session.updatedAt,
-            worktree: snapshot.session.workspace?.path ?? null,
-            branch: snapshot.session.workspace?.mode === "worktree" ? snapshot.session.workspace.branch : null,
-            lastAct: last?.title ?? null,
-            lastActAt: last?.startedAt ?? null,
-            // Task records outlive a dead engine; counting them while the
-            // session is idle would resurrect the forever-working bug.
-            openTasks: status === "working" ? snapshot.tasks.length : 0,
-            itemCount: snapshot.items.length,
-          },
-        };
-      }),
-    );
+    /** One liveness shape for EVERY member of the loom's population —
+     *  threads, conductor, origin. The roster renders them identically
+     *  because they are the same kind of thing: a session this loom owns. */
+    const liveOf = async (sessionId: string | undefined) => {
+      const snapshot = sessionId ? await client.session(sessionId).catch(() => null) : null;
+      if (!snapshot) return null;
+      const titled = snapshot.items.filter((i) => i.title);
+      const last = titled.at(-1);
+      const status = threadStatus(snapshot.session.activity, snapshot.session.state);
+      return {
+        status,
+        activity: snapshot.session.activity,
+        activityAt: snapshot.session.activityAt ?? null,
+        updatedAt: snapshot.session.updatedAt,
+        title: snapshot.session.title,
+        worktree: snapshot.session.workspace?.path ?? null,
+        branch: snapshot.session.workspace?.mode === "worktree" ? snapshot.session.workspace.branch : null,
+        lastAct: last?.title ?? null,
+        lastActAt: last?.startedAt ?? null,
+        // Task records outlive a dead engine; counting them while the
+        // session is idle would resurrect the forever-working bug.
+        openTasks: status === "working" ? snapshot.tasks.length : 0,
+        itemCount: snapshot.items.length,
+      };
+    };
+    const threads = await Promise.all(loom.threads.map(async (thread) => ({ ...thread, live: await liveOf(thread.sessionId) })));
+    const conductor = loom.conductorSessionId
+      ? { sessionId: loom.conductorSessionId, live: await liveOf(loom.conductorSessionId) }
+      : null;
+    const originLive = loom.originSessionId ? await liveOf(loom.originSessionId) : null;
     const origin = loom.originSessionId
-      ? await client
-          .session(loom.originSessionId)
-          .then((s) => ({ sessionId: s.session.id, title: s.session.title }))
-          .catch(() => ({ sessionId: loom.originSessionId!, title: "origin session" }))
+      ? { sessionId: loom.originSessionId, title: originLive?.title ?? "origin session", live: originLive }
       : null;
     return Response.json({
       ...loom,
       state: displayState(loom, threads.map((t) => t.live?.status ?? "unreachable")),
       threads,
       origin,
+      conductor,
       spec: readSpec(loomId),
       journal: readJournal(loomId, 30),
     });
