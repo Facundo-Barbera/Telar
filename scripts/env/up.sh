@@ -16,6 +16,11 @@ fi
 cd "$TELAR_WORKTREE"
 # 0.0.0.0 so the cockpit is reachable over the tailnet (and the LAN) — the
 # owner's explicit call, 2026-08-23. The engine API keeps its own token.
+# The allowed-origins list is the OTHER half (next.config.ts explains): the
+# names a browser actually reaches this machine by, which a 0.0.0.0 bind
+# cannot imply on its own.
+TS_IP="$(/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4 2>/dev/null || true)"
 TELAR_HOME="$APP_HOME" TELAR_WEB_PORT="$TELAR_PORT_BASE" TELAR_WEB_HOST="0.0.0.0" \
+  TELAR_WEB_ALLOWED_ORIGINS="${TS_IP:+$TS_IP,}$(hostname -s),$(hostname -s).local" \
   nohup bun scripts/dev.mjs >> "$APP_HOME/env-run.log" 2>&1 &
 echo $! > "$PIDFILE"
