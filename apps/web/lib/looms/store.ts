@@ -226,12 +226,103 @@ export function readSpec(id: string): string | null {
   return existsSync(path) ? readFileSync(path, "utf8") : null;
 }
 
-/** Append-only. Every machine event and every conductor decision lands here,
- *  timestamped — the audit trail the episodic conductor reboots from. */
-export function appendJournal(id: string, actor: string, entry: string): void {
+export type LoomEventActor = "human" | "machine" | "conductor" | "weaver";
+
+export type LoomEventKind =
+  | "proposal"
+  | "gate"
+  | "spawn"
+  | "verify"
+  | "decision"
+  | "escalation"
+  | "nudge-delivered"
+  | "seen"
+  | "conductor-born"
+  | "note";
+
+/**
+ * One typed event in the loom's history — the unit the causality graph is
+ * drawn from. `detail` is the human sentence; the other fields are the
+ * structure a renderer (or a future dispatcher) reads without regexes.
+ */
+export interface LoomEvent {
+  at: number;
+  actor: LoomEventActor;
+  kind: LoomEventKind;
+  detail: string;
+  thread?: string;
+  sessionId?: string;
+  move?: string;
+  ok?: boolean;
+  commit?: string;
+}
+
+/**
+ * Append-only, TWICE: `events.jsonl` is the structured record the graph and
+ * the dispatcher read; `journal.md` is the same entry as a human sentence,
+ * which the room's journal card and the conductor's briefing keep reading.
+ * One entry point so the two files cannot disagree.
+ */
+export function appendEvent(id: string, event: Omit<LoomEvent, "at"> & { at?: number }): LoomEvent {
   mkdirSync(loomDir(id), { recursive: true });
-  const line = `- ${new Date().toISOString()} **${actor}**: ${entry.replaceAll("\n", " ").slice(0, 500)}\n`;
-  appendFileSync(join(loomDir(id), "journal.md"), line);
+  const full: LoomEvent = { at: Date.now(), ...event, detail: event.detail.replaceAll("\n", " ").slice(0, 500) };
+  appendFileSync(join(loomDir(id), "events.jsonl"), `${JSON.stringify(full)}\n`);
+  appendFileSync(join(loomDir(id), "journal.md"), `- ${new Date(full.at).toISOString()} **${full.actor}**: ${full.detail}\n`);
+  return full;
+}
+
+/** Back-compat spelling for note-grade entries. */
+export function appendJournal(id: string, actor: string, entry: string): void {
+  const known: LoomEventActor[] = ["human", "machine", "conductor", "weaver"];
+  appendEvent(id, { actor: known.includes(actor as LoomEventActor) ? (actor as LoomEventActor) : "machine", kind: "note", detail: entry });
+}
+
+/**
+ * The structured history. Looms older than `events.jsonl` are RECOVERED from
+ * journal.md — the human sentences were written by known templates, so the
+ * structure is parseable back out. Recovery is read-time and lossy-but-safe:
+ * an unrecognised line survives as a `note`.
+ */
+export function readEvents(id: string): LoomEvent[] {
+  const jsonlPath = join(loomDir(id), "events.jsonl");
+  if (existsSync(jsonlPath)) {
+    return readFileSync(jsonlPath, "utf8")
+      .trimEnd()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as LoomEvent);
+  }
+  const mdPath = join(loomDir(id), "journal.md");
+  if (!existsSync(mdPath)) return [];
+  const events: LoomEvent[] = [];
+  for (const line of readFileSync(mdPath, "utf8").trimEnd().split("\n")) {
+    const head = /^- (\S+) \*\*(\w+)\*\*: (.*)$/.exec(line);
+    if (!head) continue;
+    const at = Date.parse(head[1]);
+    const actor = (["human", "machine", "conductor", "weaver"].includes(head[2]) ? head[2] : "machine") as LoomEventActor;
+    const detail = head[3];
+    let match: RegExpExecArray | null;
+    if (detail.startsWith("proposed ")) events.push({ at, actor, kind: "proposal", detail });
+    else if (detail.startsWith("cleared the execute gate")) events.push({ at, actor, kind: "gate", detail });
+    else if ((match = /^spawned thread (\S+) as (\S+)/.exec(detail))) {
+      events.push({ at, actor, kind: "spawn", detail, thread: match[1], sessionId: match[2] });
+    } else if ((match = /^verified (\S+): (\S+) (green|red) at (\w+)/.exec(detail))) {
+      events.push({ at, actor, kind: "verify", detail, thread: match[1], ok: match[3] === "green", commit: match[4] });
+    } else if ((match = /^conductor session created: (\S+)/.exec(detail))) {
+      events.push({ at, actor, kind: "conductor-born", detail, sessionId: match[1] });
+    } else if (detail.startsWith("saw the escalation")) events.push({ at, actor, kind: "seen", detail });
+    else if (actor === "conductor" && (match = /^(wait|verify|nudge|escalate)(?:\(([^)]+)\))?: /.exec(detail))) {
+      events.push({
+        at,
+        actor,
+        kind: match[1] === "escalate" ? "escalation" : "decision",
+        detail,
+        move: match[1],
+        ...(match[2] ? { thread: match[2] } : {}),
+      });
+    } else events.push({ at, actor, kind: "note", detail });
+  }
+  return events;
 }
 
 export function readJournal(id: string, tailLines = 40): string {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { EngineClient } from "@telar/engine-client";
-import { appendJournal, getLoom, loomState, readJournal, readSpec, saveLoom, type Loom } from "./store";
+import { appendEvent, getLoom, loomState, readJournal, readSpec, saveLoom, type Loom } from "./store";
 import { runLoomVerification } from "./verify";
 
 /**
@@ -97,7 +97,7 @@ async function ensureConductorSession(loom: Loom, client: EngineClient): Promise
   const fresh = getLoom(loom.id)!;
   fresh.conductorSessionId = created.session.id;
   saveLoom(fresh);
-  appendJournal(loom.id, "machine", `conductor session created: ${created.session.id}`);
+  appendEvent(loom.id, { actor: "machine", kind: "conductor-born", sessionId: created.session.id, detail: `conductor session created: ${created.session.id}` });
   return created.session.id;
 }
 
@@ -147,12 +147,22 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
   const result = await awaitTurn(client, sessionId, runId);
   const decision = result === null ? null : parseDecision(result);
   if (!decision) {
-    appendJournal(loomId, "conductor", `episode ended without a parseable decision (turn ${result === null ? "failed/timed out" : "answered off-format"})`);
+    appendEvent(loomId, {
+      actor: "conductor",
+      kind: "note",
+      detail: `episode ended without a parseable decision (turn ${result === null ? "failed/timed out" : "answered off-format"})`,
+    });
     saveLoom({ ...getLoom(loomId)!, conductedAt: Date.now() });
     return { decision: { move: "wait", reason: "episode produced no decision" }, applied: false };
   }
 
-  appendJournal(loomId, "conductor", `${decision.move}: ${decision.reason}`);
+  appendEvent(loomId, {
+    actor: "conductor",
+    kind: decision.move === "escalate" ? "escalation" : "decision",
+    move: decision.move,
+    ...(decision.move === "nudge" ? { thread: decision.thread } : {}),
+    detail: `${decision.move}${decision.move === "nudge" ? `(${decision.thread})` : ""}: ${decision.reason}`,
+  });
 
   let applied = true;
   let detail: string | undefined;
@@ -169,6 +179,13 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
         await client.submitTurn(thread.sessionId, {
           runId: randomUUID(),
           input: `(nudge from the loom's conductor) ${decision.message}`,
+        });
+        appendEvent(loomId, {
+          actor: "conductor",
+          kind: "nudge-delivered",
+          thread: thread.slug,
+          sessionId: thread.sessionId,
+          detail: `nudged ${thread.slug}: ${decision.message.slice(0, 200)}`,
         });
       } else {
         applied = false;

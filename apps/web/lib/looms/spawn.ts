@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { EngineClient } from "@telar/engine-client";
-import { appendJournal, saveLoom, type Loom } from "./store";
+import { appendEvent, saveLoom, type Loom } from "./store";
 
 /**
  * Spawning is what clearing the execute gate DOES — the moment a loom's
@@ -39,7 +39,13 @@ export async function spawnThreads(loom: Loom, client: EngineClient): Promise<Lo
       "Loom rules: work in your own worktree; never touch main; do NOT close issues (a human closes them after verifying); commit your work (atomic commits); finish with a scoped diff + verification steps + honest leftovers. Write everything addressed to the work — commits, comments, reports — in the project's own language.",
     );
     await client.submitTurn(thread.sessionId, { runId: randomUUID(), input: parts.join("\n\n") });
-    appendJournal(loom.id, "machine", `spawned thread ${thread.slug} as ${thread.sessionId} on ${thread.branch ?? "?"}`);
+    appendEvent(loom.id, {
+      actor: "machine",
+      kind: "spawn",
+      thread: thread.slug,
+      sessionId: thread.sessionId,
+      detail: `spawned thread ${thread.slug} as ${thread.sessionId} on ${thread.branch ?? "?"}`,
+    });
   }
   return saveLoom(loom);
 }

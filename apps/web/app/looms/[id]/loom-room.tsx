@@ -11,7 +11,7 @@
  */
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeftIcon, GitBranchIcon, SparklesIcon } from "lucide-react";
+import { ArrowLeftIcon, GitBranchIcon, NetworkIcon, SparklesIcon } from "lucide-react";
 import type { SessionActivity } from "@telar/engine-client";
 import { PageHeader } from "@/components/common/page-header";
 import { fmtAgo } from "@/lib/format";
@@ -159,7 +159,11 @@ export function LoomRoom({ loomId }: { loomId: string }) {
         }
         description={loom ? loom.objective : undefined}
         actions={
-          loom && !loom.acceptedAt ? (
+          <>
+          <Button variant="ghost" size="icon-sm" aria-label="Causality graph" title="Causality graph" render={<Link href={`/looms/${loomId}/graph`} />}>
+            <NetworkIcon />
+          </Button>
+          {loom && !loom.acceptedAt ? (
             waitingGate ? (
               <>
                 <Button size="sm" onClick={() => void act("approve")} disabled={busy !== null}>
@@ -192,7 +196,8 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                 </Button>
               </>
             )
-          ) : null
+          ) : null}
+          </>
         }
       />
 

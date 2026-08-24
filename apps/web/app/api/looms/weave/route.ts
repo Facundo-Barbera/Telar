@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { engineClient, engineErrorResponse, requestObject, optionalString } from "@/lib/engine/engine-server";
-import { appendJournal, newLoom, slugify, writeSpec } from "@/lib/looms/store";
+import { appendEvent, newLoom, slugify, writeSpec } from "@/lib/looms/store";
 import { initialPhases, loadMethod } from "@/lib/looms/methods";
 
 export const dynamic = "force-dynamic";
@@ -166,7 +166,7 @@ export async function POST(request: Request) {
         ),
       ].join("\n"),
     );
-    appendJournal(loom.id, "weaver", `proposed ${threads.length} threads (${threads.map((t) => t.slug).join(", ")})`);
+    appendEvent(loom.id, { actor: "weaver", kind: "proposal", detail: `proposed ${threads.length} threads (${threads.map((t) => t.slug).join(", ")})` });
     return Response.json({ loomId: loom.id }, { status: 201 });
   } catch (error) {
     return engineErrorResponse(error);

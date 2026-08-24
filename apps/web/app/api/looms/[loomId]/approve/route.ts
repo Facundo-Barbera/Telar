@@ -1,5 +1,5 @@
 import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
-import { appendJournal, getLoom, saveLoom } from "@/lib/looms/store";
+import { appendEvent, getLoom, saveLoom } from "@/lib/looms/store";
 import { spawnThreads } from "@/lib/looms/spawn";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +26,7 @@ export async function POST(_request: Request, context: Context) {
     execute.status = "running";
     execute.at = Date.now();
     saveLoom(loom);
-    appendJournal(loomId, "human", "cleared the execute gate — spawning threads");
+    appendEvent(loomId, { actor: "human", kind: "gate", detail: "cleared the execute gate — spawning threads" });
     const spawned = await spawnThreads(getLoom(loomId)!, await engineClient());
     return Response.json(spawned);
   } catch (error) {

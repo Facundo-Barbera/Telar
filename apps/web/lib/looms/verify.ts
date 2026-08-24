@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { EngineClient } from "@telar/engine-client";
-import { appendJournal, saveLoom, type Loom } from "./store";
+import { appendEvent, saveLoom, type Loom } from "./store";
 
 const exec = promisify(execFile);
 
@@ -95,11 +95,14 @@ export async function runLoomVerification(loom: Loom, client: EngineClient): Pro
       await git(projectRoot, ["worktree", "prune"]);
       rmSync(scratchParent, { recursive: true, force: true });
     }
-    appendJournal(
-      loom.id,
-      "machine",
-      `verified ${thread.slug}: ${tier} ${thread.verification.ok ? "green" : "red"} at ${commit.slice(0, 7)}`,
-    );
+    appendEvent(loom.id, {
+      actor: "machine",
+      kind: "verify",
+      thread: thread.slug,
+      ok: thread.verification.ok,
+      commit,
+      detail: `verified ${thread.slug}: ${tier} ${thread.verification.ok ? "green" : "red"} at ${commit.slice(0, 7)}`,
+    });
   }
   return saveLoom(loom);
 }

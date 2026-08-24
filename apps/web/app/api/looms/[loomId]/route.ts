@@ -1,5 +1,5 @@
 import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/engine-server";
-import { appendJournal, deleteDraftLoom, getLoom, readJournal, readSpec, saveLoom } from "@/lib/looms/store";
+import { appendEvent, deleteDraftLoom, getLoom, readJournal, readSpec, saveLoom } from "@/lib/looms/store";
 import { displayState, threadStatus } from "@/lib/looms/status";
 
 export const dynamic = "force-dynamic";
@@ -90,7 +90,7 @@ export async function PATCH(request: Request, context: Context) {
     const loom = getLoom(loomId);
     if (!loom) return Response.json({ error: { code: "not_found", message: `no loom ${loomId}` } }, { status: 404 });
     if (body.clearAttention === true && loom.attention) {
-      appendJournal(loomId, "human", `saw the escalation: ${loom.attention.slice(0, 120)}`);
+      appendEvent(loomId, { actor: "human", kind: "seen", detail: `saw the escalation: ${loom.attention.slice(0, 120)}` });
       delete loom.attention;
       saveLoom(loom);
     }
