@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EngineClient } from "@telar/engine-client";
 import { appendEvent, getLoom, loomState, readJournal, readSpec, saveLoom, type Loom } from "./store";
 import { runLoomVerification } from "./verify";
+import { spawnThreads } from "./spawn";
 
 /**
  * THE CONDUCTOR — an agent that steers, hosted in a SESSION OF ITS OWN.
@@ -24,6 +25,7 @@ export type ConductorMove =
   | { move: "wait"; reason: string }
   | { move: "verify"; reason: string }
   | { move: "nudge"; thread: string; message: string; reason: string }
+  | { move: "respawn"; threads: string[]; reason: string }
   | { move: "escalate"; message: string; reason: string };
 
 export interface EpisodeResult {
@@ -74,6 +76,7 @@ function parseDecision(raw: string): ConductorMove | null {
     const parsed = JSON.parse(candidate) as ConductorMove;
     if (parsed.move === "wait" || parsed.move === "verify") return parsed;
     if (parsed.move === "nudge" && typeof parsed.thread === "string" && typeof parsed.message === "string") return parsed;
+    if (parsed.move === "respawn" && Array.isArray(parsed.threads) && parsed.threads.every((t) => typeof t === "string")) return parsed;
     if (parsed.move === "escalate" && typeof parsed.message === "string") return parsed;
     return null;
   } catch {
@@ -137,6 +140,7 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
     '- {"move":"wait","reason":"..."} — everything is advancing on its own; do not disturb.',
     '- {"move":"verify","reason":"..."} — the threads look finished (idle + committed work); run the clean-desk verification.',
     '- {"move":"nudge","thread":"<slug>","message":"...","reason":"..."} — a thread is stuck or drifting; send it ONE concrete message.',
+    '- {"move":"respawn","threads":["<slug>", ...],"reason":"..."} — threads died without producing work (no commits, no green verification); retire their dead sessions and spawn fresh ones from the same plans. Refused for any thread with a green verification.',
     '- {"move":"escalate","message":"...","reason":"..."} — this needs a human (impossible contract, repeated red verification, conflict between threads).',
     "Write `message` fields in the project's own language (the language of its repo and threads); `reason` may stay in English.",
     "No move exists that accepts the loom or closes issues — that is the human's, always. Do not edit files: you propose, the machine executes.",
@@ -190,6 +194,37 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
       } else {
         applied = false;
         detail = `no spawned thread "${decision.thread}"`;
+      }
+      break;
+    }
+    case "respawn": {
+      const fresh = getLoom(loomId)!;
+      const refused: string[] = [];
+      for (const slug of decision.threads) {
+        const thread = fresh.threads.find((t) => t.slug === slug);
+        if (!thread) {
+          refused.push(`${slug} (unknown)`);
+          continue;
+        }
+        // A green thread carries accepted-grade work; respawning it would
+        // reset its branch. The machine refuses rather than trusting the
+        // conductor's judgment on the one irreversible move it has.
+        if (thread.verification?.ok) {
+          refused.push(`${slug} (verified green)`);
+          continue;
+        }
+        if (thread.sessionId) {
+          await client.archiveSession(thread.sessionId).catch(() => undefined);
+          delete thread.sessionId;
+          delete thread.verification;
+        }
+      }
+      saveLoom(fresh);
+      await spawnThreads(getLoom(loomId)!, client);
+      if (refused.length > 0) {
+        applied = decision.threads.length > refused.length;
+        detail = `refused: ${refused.join(", ")}`;
+        appendEvent(loomId, { actor: "machine", kind: "note", detail: `respawn refused for ${refused.join(", ")}` });
       }
       break;
     }

@@ -15,7 +15,7 @@
  */
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeftIcon, GitBranchIcon, NetworkIcon, SparklesIcon } from "lucide-react";
+import { ArrowLeftIcon, GitBranchIcon, SparklesIcon } from "lucide-react";
 import type { SessionActivity } from "@telar/engine-client";
 import { PageHeader } from "@/components/common/page-header";
 import { fmtAgo } from "@/lib/format";
@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoomStateBadge, statusHairline, ThreadStatusSlot, TierBadge } from "@/components/loom/thread-row";
 import { SessionCockpit } from "@/components/session-cockpit";
+import { MiniBraid } from "@/components/loom/mini-braid";
 
 interface Liveness {
   status: string;
@@ -203,6 +204,14 @@ export function LoomRoom({ loomId }: { loomId: string }) {
       })
     : [];
   const selectedThread = typeof selection === "object" ? loom?.threads.find((t) => t.slug === selection.thread) : undefined;
+  // The journal, parsed for reading: newest first, actor named once, no
+  // markdown noise. The raw file stays the record; this is its digest.
+  const journalEntries = (loom?.journal ?? "")
+    .split("\n")
+    .map((line) => /^- (\S+) \*\*(\w+)\*\*: (.*)$/.exec(line))
+    .filter((m): m is RegExpExecArray => m !== null)
+    .map((m) => ({ when: fmtAgo(Date.parse(m[1])), actor: m[2], text: m[3] }))
+    .reverse();
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -221,9 +230,6 @@ export function LoomRoom({ loomId }: { loomId: string }) {
         description={loom ? loom.objective : undefined}
         actions={
           <>
-            <Button variant="ghost" size="icon-sm" aria-label="The braid" title="The braid" render={<Link href={`/looms/${loomId}/graph`} />}>
-              <NetworkIcon />
-            </Button>
             {loom && !loom.acceptedAt ? (
               waitingGate ? (
                 <>
@@ -336,6 +342,19 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                   />
                 ))}
               </div>
+            </div>
+
+            <div className="mt-auto border-t border-border/40 pt-2">
+              <div className={cn(CAPTION, "px-2 pb-1")}>History</div>
+              <MiniBraid
+                loomId={loomId}
+                onPick={({ sessionId, threadSlug }) => {
+                  if (threadSlug) setSelection({ thread: threadSlug });
+                  else if (sessionId && sessionId === loom.conductorSessionId) setSelection("conductor");
+                  else if (sessionId && sessionId === loom.origin?.sessionId) setSelection("origin");
+                  else setSelection("overview");
+                }}
+              />
             </div>
           </div>
 
@@ -455,11 +474,43 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                     </p>
                   ) : null}
 
+                  <DetailBlock label="Where it stands">
+                    <div className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60 text-center">
+                      {[
+                        { label: "working", value: loom.threads.filter((t) => t.live?.status === "working").length },
+                        { label: "green", value: loom.threads.filter((t) => t.verification?.ok).length },
+                        { label: "red", value: loom.threads.filter((t) => t.verification && !t.verification.ok).length },
+                      ].map((stat) => (
+                        <div key={stat.label} className="bg-card py-2">
+                          <div className="text-sm font-semibold tabular-nums">{stat.value}</div>
+                          <div className="text-[9px] uppercase tracking-wider text-muted-foreground">{stat.label}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </DetailBlock>
+
                   <DetailBlock label="Journal">
-                    {loom.journal ? (
-                      <pre className="max-h-[50vh] overflow-y-auto whitespace-pre-wrap font-mono text-xs leading-5 text-muted-foreground">
-                        {loom.journal}
-                      </pre>
+                    {journalEntries.length > 0 ? (
+                      <ul className="max-h-[45vh] space-y-1.5 overflow-y-auto">
+                        {journalEntries.map((entry, i) => (
+                          <li key={i} className="flex items-baseline gap-2 text-xs">
+                            <span className="w-14 shrink-0 text-right font-mono tabular-nums text-muted-foreground/60">{entry.when}</span>
+                            <span
+                              className={cn(
+                                "w-16 shrink-0 font-mono text-[10px] uppercase",
+                                entry.actor === "human"
+                                  ? "text-foreground"
+                                  : entry.actor === "conductor"
+                                    ? "text-verify"
+                                    : "text-muted-foreground",
+                              )}
+                            >
+                              {entry.actor}
+                            </span>
+                            <span className="min-w-0 flex-1 text-muted-foreground">{entry.text}</span>
+                          </li>
+                        ))}
+                      </ul>
                     ) : (
                       <p className="text-sm text-muted-foreground">Nothing decided yet.</p>
                     )}
