@@ -24,6 +24,7 @@ import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoomStateBadge, statusHairline, ThreadStatusSlot, TierBadge } from "@/components/loom/thread-row";
+import { SessionCockpit } from "@/components/session-cockpit";
 
 interface Liveness {
   status: string;
@@ -338,7 +339,83 @@ export function LoomRoom({ loomId }: { loomId: string }) {
             </div>
           </div>
 
-          {/* THE ONE SELECTED THING, told fully. */}
+          {/* THE ONE SELECTED THING. A member with a session IS its session:
+              the cockpit mounts right here, under a one-line loom strip that
+              carries the contract facts — no summary page standing between
+              you and the conversation. Only the overview and unspawned plans
+              are summaries, because they have no session to be. */}
+          {(() => {
+            const memberSession =
+              selection === "conductor"
+                ? loom.conductor?.sessionId
+                : selection === "origin"
+                  ? loom.origin?.sessionId
+                  : selectedThread?.sessionId;
+            if (selection !== "overview" && memberSession) {
+              return (
+                <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+                  <div className="flex min-h-8 shrink-0 items-center gap-2 border-b border-border/40 bg-muted/20 px-3 text-xs">
+                    {selectedThread ? (
+                      <>
+                        <TierBadge {...(selectedThread.tier ? { tier: selectedThread.tier } : {})} />
+                        {selectedThread.verification ? (
+                          <span
+                            className={cn(
+                              "shrink-0 font-mono",
+                              selectedThread.verification.ok ? "text-success" : "text-destructive",
+                            )}
+                            title={selectedThread.verification.detail}
+                          >
+                            {selectedThread.verification.tier} {selectedThread.verification.ok ? "green" : "red"}
+                            {selectedThread.verification.commit ? ` @ ${selectedThread.verification.commit.slice(0, 7)}` : ""}
+                          </span>
+                        ) : null}
+                        {(selectedThread.branch ?? selectedThread.live?.branch) ? (
+                          <span className="flex min-w-0 shrink items-center gap-1 text-muted-foreground">
+                            <GitBranchIcon className="size-3 shrink-0" />
+                            <span className="truncate font-mono">{selectedThread.branch ?? selectedThread.live?.branch}</span>
+                          </span>
+                        ) : null}
+                        {selectedThread.contract ? (
+                          <span className="min-w-0 truncate text-muted-foreground" title={selectedThread.contract}>
+                            <span className="text-verify">contract:</span> {selectedThread.contract}
+                          </span>
+                        ) : null}
+                      </>
+                    ) : selection === "conductor" ? (
+                      <>
+                        <SparklesIcon className="size-3 shrink-0 text-verify" />
+                        <span className="min-w-0 truncate text-muted-foreground">
+                          steering — it proposes, the machine executes, it cannot accept. Reply here to steer.
+                        </span>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="ml-auto shrink-0"
+                          onClick={() => void act("conduct")}
+                          disabled={busy !== null || Boolean(loom.acceptedAt)}
+                        >
+                          {busy === "conduct" ? "Conducting…" : "Conduct now"}
+                        </Button>
+                      </>
+                    ) : (
+                      <span className="min-w-0 truncate text-muted-foreground">
+                        origin — the conversation this loom was spun from, still yours to talk in.
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                    <SessionCockpit
+                      key={memberSession}
+                      projectId={loom.projectId}
+                      sessionId={memberSession}
+                      observe={Boolean(selectedThread)}
+                    />
+                  </div>
+                </div>
+              );
+            }
+            return (
           <div className="min-w-0 flex-1 overflow-y-auto">
             <div className="mx-auto max-w-2xl space-y-5 px-6 py-6">
               {error ? (
@@ -394,130 +471,27 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                 </>
               ) : null}
 
-              {selection === "conductor" && loom.conductor ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-base font-semibold">Conductor</h2>
-                    <span className="ml-auto flex items-center gap-2">
-                      <Button size="xs" variant="ghost" onClick={() => void act("conduct")} disabled={busy !== null || Boolean(loom.acceptedAt)}>
-                        {busy === "conduct" ? "Conducting…" : "Conduct now"}
-                      </Button>
-                      <Button size="xs" variant="outline" render={<Link href={`/looms/${loom.id}/threads/${loom.conductor.sessionId}`} />}>
-                        open session →
-                      </Button>
-                    </span>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    The agent that steers this loom — it proposes, the machine executes, and it cannot accept. Reply in its session to
-                    steer; the next episode reads what you say.
-                  </p>
-                  {loom.conductor.live?.lastAct ? (
-                    <DetailBlock label="Now">
-                      <p className="truncate font-mono text-xs text-muted-foreground">{loom.conductor.live.lastAct}</p>
-                    </DetailBlock>
-                  ) : null}
-                  <DetailBlock label="Decisions">
-                    {loom.journal ? (
-                      <pre className="max-h-[50vh] overflow-y-auto whitespace-pre-wrap font-mono text-xs leading-5 text-muted-foreground">
-                        {loom.journal
-                          .split("\n")
-                          .filter((line) => line.includes("**conductor**"))
-                          .join("\n") || "No decisions yet."}
-                      </pre>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">No decisions yet.</p>
-                    )}
-                  </DetailBlock>
-                </>
-              ) : null}
-
-              {selection === "origin" && loom.origin ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <h2 className="min-w-0 truncate text-base font-semibold">{loom.origin.title}</h2>
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      className="ml-auto shrink-0"
-                      render={<Link href={`/looms/${loom.id}/threads/${loom.origin.sessionId}`} />}
-                    >
-                      open conversation →
-                    </Button>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    The conversation this loom was spun from. It lives here now, detached from the ordinary sessions surface — and it is
-                    still yours to talk in.
-                  </p>
-                </>
-              ) : null}
-
-              {selectedThread ? (
+              {selectedThread && !selectedThread.sessionId ? (
                 <>
                   <div className="flex items-center gap-2">
                     <h2 className="min-w-0 truncate text-base font-semibold">{selectedThread.title}</h2>
                     <TierBadge {...(selectedThread.tier ? { tier: selectedThread.tier } : {})} />
-                    {selectedThread.sessionId ? (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        className="ml-auto shrink-0"
-                        render={<Link href={`/looms/${loom.id}/threads/${selectedThread.sessionId}`} />}
-                      >
-                        observe →
-                      </Button>
-                    ) : null}
                   </div>
-
-                  {!selectedThread.sessionId ? (
-                    <p className="text-sm text-muted-foreground">A plan, not yet a session — approving the gate spawns it.</p>
-                  ) : selectedThread.live?.lastAct ? (
-                    <DetailBlock label="Now">
-                      <p className="truncate font-mono text-xs text-muted-foreground">{selectedThread.live.lastAct}</p>
-                    </DetailBlock>
-                  ) : null}
-
+                  <p className="text-sm text-muted-foreground">A plan, not yet a session — approving the gate spawns it.</p>
                   <DetailBlock label="Brief">
                     <p className="text-sm text-muted-foreground">{selectedThread.brief}</p>
                   </DetailBlock>
-
                   {selectedThread.contract ? (
                     <DetailBlock label="Contract">
                       <p className="border-l-2 border-verify/50 pl-3 text-sm text-muted-foreground">{selectedThread.contract}</p>
-                    </DetailBlock>
-                  ) : null}
-
-                  {selectedThread.verification ? (
-                    <DetailBlock label="Evidence">
-                      <div
-                        className={cn(
-                          "border-l-2 pl-3 text-sm",
-                          selectedThread.verification.ok ? "border-success/50 text-success" : "border-destructive/50 text-destructive",
-                        )}
-                      >
-                        {selectedThread.verification.tier} {selectedThread.verification.ok ? "green" : "red"} · clean checkout
-                        {selectedThread.verification.commit ? ` of ${selectedThread.verification.commit.slice(0, 7)}` : ""} ·{" "}
-                        {fmtAgo(selectedThread.verification.at)}
-                        {selectedThread.verification.detail ? (
-                          <p className="mt-1 whitespace-pre-wrap font-mono text-xs text-muted-foreground">
-                            {selectedThread.verification.detail}
-                          </p>
-                        ) : null}
-                      </div>
-                    </DetailBlock>
-                  ) : null}
-
-                  {(selectedThread.branch ?? selectedThread.live?.branch) ? (
-                    <DetailBlock label="Branch">
-                      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <GitBranchIcon className="size-3 shrink-0" />
-                        <span className="min-w-0 truncate font-mono">{selectedThread.branch ?? selectedThread.live?.branch}</span>
-                      </p>
                     </DetailBlock>
                   ) : null}
                 </>
               ) : null}
             </div>
           </div>
+            );
+          })()}
         </div>
       )}
     </div>
