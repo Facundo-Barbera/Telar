@@ -63,7 +63,10 @@ export default async function LoomThreadPage({ params }: { params: Promise<{ id:
           and the viewport's stick-to-bottom had no scroll container to stick
           in. Reproducing the shell's contract here restores all three. */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <SessionCockpit projectId={loom.projectId} sessionId={sessionId} />
+        {/* WORKER THREADS ARE OBSERVED, never driven: their boss is the loom.
+            The conductor and origin keep the composer — talking there IS the
+            human's steering channel. */}
+        <SessionCockpit projectId={loom.projectId} sessionId={sessionId} observe={Boolean(thread)} />
       </div>
     </div>
   );
