@@ -20,7 +20,7 @@ import type { SessionActivity } from "@telar/engine-client";
 import { PageHeader } from "@/components/common/page-header";
 import { fmtAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoomStateBadge, statusHairline, ThreadStatusSlot, TierBadge } from "@/components/loom/thread-row";
@@ -446,24 +446,38 @@ export function LoomRoom({ loomId }: { loomId: string }) {
               {selection === "overview" ? (
                 <>
                   {loom.attention ? (
+                    /* THE ESCALATION, AS A HEADLINE — the conductor's full
+                       reasoning lives in its transcript; the overview only
+                       announces that it asked, in two lines at most. The
+                       answer happens in the conductor's session, so the one
+                       real action here is going there. */
                     <Alert>
-                      <SparklesIcon />
-                      <AlertTitle className="flex items-baseline gap-2">
-                        <span className="min-w-0 flex-1 text-warning">Conductor: {loom.attention}</span>
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={() =>
-                            void fetch(`/api/looms/${loomId}`, {
-                              method: "PATCH",
-                              headers: { "content-type": "application/json" },
-                              body: JSON.stringify({ clearAttention: true }),
-                            }).then(() => void refresh())
-                          }
-                        >
-                          Seen
-                        </Button>
-                      </AlertTitle>
+                      <SparklesIcon className="text-warning" />
+                      <AlertTitle className="text-warning">The conductor needs a decision from you</AlertTitle>
+                      <AlertDescription>
+                        <p className="line-clamp-2" title={loom.attention}>
+                          {loom.attention}
+                        </p>
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <Button size="xs" variant="outline" onClick={() => setSelection("conductor")}>
+                            Reply to the conductor
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            title="Stop flagging this — the escalation stays in the journal, and the conductor moves on"
+                            onClick={() =>
+                              void fetch(`/api/looms/${loomId}`, {
+                                method: "PATCH",
+                                headers: { "content-type": "application/json" },
+                                body: JSON.stringify({ clearAttention: true }),
+                              }).then(() => void refresh())
+                            }
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      </AlertDescription>
                     </Alert>
                   ) : null}
 
