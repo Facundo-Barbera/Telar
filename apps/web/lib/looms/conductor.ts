@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EngineClient } from "@telar/engine-client";
 import { appendEvent, getLoom, loomState, readJournal, readSpec, saveLoom, type Loom } from "./store";
 import { runLoomVerification } from "./verify";
-import { spawnThreads } from "./spawn";
+import { respawnLoomThreads } from "./respawn";
 
 /**
  * THE CONDUCTOR — an agent that steers, hosted in a SESSION OF ITS OWN.
@@ -142,7 +142,7 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
     '- {"move":"nudge","thread":"<slug>","message":"...","reason":"..."} — a thread is stuck or drifting; send it ONE concrete message.',
     '- {"move":"respawn","threads":["<slug>", ...],"reason":"..."} — threads died without producing work (no commits, no green verification); retire their dead sessions and spawn fresh ones from the same plans. Refused for any thread with a green verification.',
     '- {"move":"escalate","message":"...","reason":"..."} — this needs a human (impossible contract, repeated red verification, conflict between threads).',
-    "Write `message` fields in the project's own language (the language of its repo and threads); `reason` may stay in English.",
+    "Language: the steering channel — this transcript and any `escalate` message — is English by default; if the human writes to you in another language, you may mirror it. A `nudge` `message` is addressed to a worker inside the project, so it follows the project's own language. `reason` stays English.",
     "No move exists that accepts the loom or closes issues — that is the human's, always. Do not edit files: you propose, the machine executes.",
   ].join("\n\n");
 
@@ -198,33 +198,12 @@ export async function conductEpisode(loomId: string, client: EngineClient): Prom
       break;
     }
     case "respawn": {
-      const fresh = getLoom(loomId)!;
-      const refused: string[] = [];
-      for (const slug of decision.threads) {
-        const thread = fresh.threads.find((t) => t.slug === slug);
-        if (!thread) {
-          refused.push(`${slug} (unknown)`);
-          continue;
-        }
-        // A green thread carries accepted-grade work; respawning it would
-        // reset its branch. The machine refuses rather than trusting the
-        // conductor's judgment on the one irreversible move it has.
-        if (thread.verification?.ok) {
-          refused.push(`${slug} (verified green)`);
-          continue;
-        }
-        if (thread.sessionId) {
-          await client.archiveSession(thread.sessionId).catch(() => undefined);
-          delete thread.sessionId;
-          delete thread.verification;
-        }
-      }
-      saveLoom(fresh);
-      await spawnThreads(getLoom(loomId)!, client);
-      if (refused.length > 0) {
-        applied = decision.threads.length > refused.length;
-        detail = `refused: ${refused.join(", ")}`;
-        appendEvent(loomId, { actor: "machine", kind: "note", detail: `respawn refused for ${refused.join(", ")}` });
+      // The same lib as the human's Restart button — one recovery point,
+      // one guard (green threads refused), whoever asks.
+      const result = await respawnLoomThreads(loomId, client, { threads: decision.threads, actor: "conductor" });
+      if (result.refused.length > 0) {
+        applied = result.respawned.length > 0;
+        detail = `refused: ${result.refused.join(", ")}`;
       }
       break;
     }

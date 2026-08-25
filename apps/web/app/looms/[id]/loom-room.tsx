@@ -171,6 +171,33 @@ export function LoomRoom({ loomId }: { loomId: string }) {
     [loomId, refresh],
   );
 
+  /** The human's recovery point — same lib and green-thread guard as the
+   *  conductor's respawn move; the confirm names exactly what gets re-seeded. */
+  const restart = useCallback(
+    async (slugs?: string[]) => {
+      const label = slugs ? `Restart thread "${slugs[0]}"` : "Restart every non-green thread";
+      if (!window.confirm(`${label}? Dead sessions are retired and fresh ones spawn from the same plans. Green-verified threads are never touched.`)) return;
+      setBusy("restart");
+      try {
+        const r = await fetch(`/api/looms/${loomId}/respawn`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(slugs ? { threads: slugs } : {}),
+        });
+        if (!r.ok) {
+          const body = (await r.json().catch(() => null)) as { error?: { message?: string } } | null;
+          throw new Error(body?.error?.message ?? `restart: ${r.status}`);
+        }
+        await refresh();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [loomId, refresh],
+  );
+
   const discard = useCallback(async () => {
     setBusy("discard");
     try {
@@ -400,6 +427,18 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                             <span className="text-verify">contract:</span> {selectedThread.contract}
                           </span>
                         ) : null}
+                        {!selectedThread.verification?.ok && !loom.acceptedAt ? (
+                          <Button
+                            size="xs"
+                            variant="ghost"
+                            className="ml-auto shrink-0"
+                            title="Retire this session and spawn a fresh one from the same plan"
+                            onClick={() => void restart([selectedThread.slug])}
+                            disabled={busy !== null}
+                          >
+                            {busy === "restart" ? "Restarting…" : "Restart"}
+                          </Button>
+                        ) : null}
                       </>
                     ) : selection === "conductor" ? (
                       <>
@@ -502,6 +541,17 @@ export function LoomRoom({ loomId }: { loomId: string }) {
                       ))}
                     </div>
                   </DetailBlock>
+
+                  {!loom.acceptedAt && loom.threads.some((t) => t.sessionId && !t.verification?.ok) ? (
+                    <div>
+                      <Button size="xs" variant="outline" onClick={() => void restart()} disabled={busy !== null}>
+                        {busy === "restart" ? "Restarting…" : "Restart loom"}
+                      </Button>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        re-seeds every non-green thread from its plan — green work is never touched
+                      </span>
+                    </div>
+                  ) : null}
 
                   <DetailBlock label="Journal">
                     {journalEntries.length > 0 ? (
