@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
+import { APP_SIDEBAR_STORAGE_KEY, SIDEBAR_RESIZE_MIN_WIDTH, useSidebarPrefs } from "@/lib/sidebar-width";
 
 export type SettingsSection = {
   id: string;
@@ -48,6 +49,15 @@ export function SettingsShell({
 }) {
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
   const ActiveIcon = activeSection.icon;
+  /**
+   * THE SAME WIDTH AS THE RAIL IT REPLACES. This nav stands where the app
+   * sidebar stood (see app-shell.tsx), and a fixed `w-60` beside the rail's
+   * 16rem default — or whatever width the human dragged it to — made every
+   * trip into Settings a 16px-plus jump. Reading the rail's own persisted
+   * record keeps the left edge still across the switch. Null (nothing stored,
+   * and every server render) is the rail's own default.
+   */
+  const navWidth = useSidebarPrefs(APP_SIDEBAR_STORAGE_KEY).width ?? SIDEBAR_RESIZE_MIN_WIDTH;
 
   // Group the nav if any section declares a group; otherwise flat.
   const groups = sections.some((s) => s.group)
@@ -60,7 +70,10 @@ export function SettingsShell({
   return (
     <div className="flex h-full min-h-0 bg-background text-foreground">
       {/* Side-nav — fixed, never scrolls the shell */}
-      <nav className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar/40 p-3">
+      <nav
+        className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar/40 p-3"
+        style={{ width: navWidth }}
+      >
         {/*
           THIS NAV IS THE WINDOW'S LEFT EDGE, ALWAYS: settings screens mount no
           app rail (see app-shell.tsx) — this nav REPLACES it rather than
@@ -138,7 +151,10 @@ export function SettingsShell({
       {/* Content pane — sticky header + internal scroll */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Drag region: the top of the window on the macOS shell. */}
-        <header className="app-drag sticky top-0 z-10 flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 py-2 text-foreground backdrop-blur">
+        {/* EXACTLY the titlebar height, as the app header is — `min-h` plus
+            padding let this bar settle a few pixels off the one it replaces,
+            and the seam jumped on every trip into Settings. */}
+        <header className="app-drag sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 text-foreground backdrop-blur">
           <ActiveIcon className="size-4 text-muted-foreground" />
           <h3 className="font-heading text-sm font-semibold tracking-tight">
             {activeSection.label}
