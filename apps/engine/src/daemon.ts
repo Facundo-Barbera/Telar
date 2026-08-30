@@ -24,6 +24,7 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
@@ -115,13 +116,6 @@ function errorFor(error: unknown): HttpError {
 function writeJson(response: http.ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   response.end(JSON.stringify(body));
-}
-
-function bearerIsValid(value: string | undefined, token: string): boolean {
-  if (!value?.startsWith("Bearer ")) return false;
-  const supplied = Buffer.from(value.slice("Bearer ".length));
-  const expected = Buffer.from(token);
-  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
 async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -2103,6 +2097,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // path for claim/heartbeat/observe instead of two that can diverge.
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
+    let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
       const [{ EngineClient }, { EngineWorker }] = await Promise.all([
@@ -2115,14 +2110,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const { BrowserRuntime } = await import("./browser");
       browser = new BrowserRuntime();
       store.attachBrowser(browser);
-      const capability = (await import("./drivers")).browserCapability(browser);
-      const createDriver =
-        config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers({ browser: capability }));
+      // The browser reaches sessions over the worker-hosted MCP socket, for
+      // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
+      // the way it owns the browser: it outlives any turn and is closed once.
+      browserSocket = (await import("./drivers")).createBrowserToolSocket(browser);
+      const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const worker = new EngineWorker({
         client: new EngineClient(discovery),
         workerId,
         driver: await createDriver(),
+        browserSocket,
         ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
       });
       await worker.start();
@@ -2140,6 +2138,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The worker stops FIRST: it holds claims, and a claim outliving the
         // server it reports to becomes an ambiguous turn on the next start.
         await embedded?.stop();
+        // The socket before the browser it fronts: a listener that outlived
+        // its browser would answer tool calls with a runtime already closing.
+        await browserSocket?.close();
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");
