@@ -16,12 +16,11 @@
  * upside. Each new conversation gets the next phrase; pressing it steps on.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderGit2Icon } from "lucide-react";
-import type { Project } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
 import { GREETINGS, greetingForVisit, nextGreeting } from "@/lib/greetings";
+import { useProjects } from "@/lib/projects";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,8 +28,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-const api = createEngineApi();
 
 export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { projectId: string; projectName?: string; index?: number }) {
   const router = useRouter();
@@ -45,20 +42,14 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
    * arrives as a prop is a number the client never disagrees about.
    */
   const [index, setIndex] = useState(greetingForVisit(initial));
-  const [projects, setProjects] = useState<Project[]>([]);
-
-  const loadProjects = useCallback(async () => {
-    try {
-      setProjects((await api.projects()).projects);
-    } catch {
-      // The picker simply does not open. The sentence still reads.
-    }
-  }, []);
-
-  useEffect(() => {
-    const task = window.setTimeout(() => void loadProjects(), 0);
-    return () => window.clearTimeout(task);
-  }, [loadProjects]);
+  /**
+   * THE SHARED REGISTRY, NOT A ONE-SHOT FETCH. This component lives for the
+   * whole composer (switching projects is a router.push that reuses it), so a
+   * list loaded once on mount was frozen: a project registered after the
+   * composer opened stayed invisible in this picker until a hard reload. The
+   * hook re-reads on the registry's own change event.
+   */
+  const { projects } = useProjects();
 
   const greeting = GREETINGS[index] ?? GREETINGS[0]!;
   const name = projectName ?? projectId;
