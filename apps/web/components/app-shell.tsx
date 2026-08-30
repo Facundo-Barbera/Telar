@@ -1,9 +1,22 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { APP_SIDEBAR_STORAGE_KEY } from "@/lib/sidebar-width";
 import { AppSidebar } from "./app-sidebar";
+
+/**
+ * SETTINGS SCREENS CARRY NO APP RAIL. They bring a full-height side-nav of
+ * their own (`SettingsShell`), and two rails side by side read as two apps.
+ * The settings nav's Back arrow is the one road out, so nothing the app rail
+ * offers is needed while you are here. The provider still mounts — the inset
+ * and the session surfaces' sidebar hooks read its context — the RAIL is what
+ * stays home.
+ */
+function isSettingsRoute(pathname: string): boolean {
+  return pathname === "/settings" || /^\/projects\/[^/]+\/settings(\/|$)/.test(pathname);
+}
 
 /**
  * The product shell: a resizable rail and the inset it frames.
@@ -25,9 +38,10 @@ import { AppSidebar } from "./app-sidebar";
  * the rail comes back at the default width every reload.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
   return (
     <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY}>
-      <AppSidebar />
+      {!isSettingsRoute(pathname) && <AppSidebar />}
       <SidebarInset className="flex h-dvh min-w-0 flex-col">{children}</SidebarInset>
     </SidebarProvider>
   );
