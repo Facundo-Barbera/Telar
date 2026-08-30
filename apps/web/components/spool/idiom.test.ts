@@ -357,13 +357,17 @@ describe("the shell says what is built and what is not", () => {
     expect(nav).not.toMatch(/Badge|unread|notification/i);
   });
 
-  test("the wordmark is the place switcher, and the retired Spool button is gone", () => {
+  test("the wordmark is STATIC and the switcher is a button beside it; the retired Spool button is gone", () => {
     /**
-     * loops §11: "Telar and Spool are different, but part of the same
-     * system — overlap one on top of the other." The wordmark that always
-     * named the app becomes the control that names which half you are in.
-     * CHROME, NOT ROUTING: the switcher only reads the pathname to decide
-     * which entry is current; picking one navigates.
+     * REVISED FROM loops §11's wordmark-as-switcher. The band under the macOS
+     * traffic lights is window decoration by adjacency, and a wordmark that
+     * read "telar" or "spool" depending on the route mutated the one region
+     * that must not move. The wordmark is now the app's name — "Telar",
+     * capitalised, always — and the places live behind one small square
+     * button beside it. The main area has its own name in that menu:
+     * "Sessions"; an app cannot be one of its own places.
+     * CHROME, NOT ROUTING still holds: the menu only reads the pathname to
+     * decide which entry is checked; picking one navigates.
      */
     const sidebar = fs.readFileSync(path.join(dir, "..", "app-sidebar.tsx"), "utf8");
     expect(sidebar).toContain("function PlaceSwitcher");
@@ -373,16 +377,19 @@ describe("the shell says what is built and what is not", () => {
     // The footer's Spool destination retired — the switcher is its one home.
     expect(sidebar).not.toContain("function SpoolButton");
     expect(code(sidebar)).not.toMatch(/<SpoolButton\b/);
-    // The new glyph is drawn in the SAME line-icon family as the Spool
-    // mark it sits beside in the menu — no bespoke SVG, and no `--spool`
-    // hue on Telar's own entry: colour marks the place, not the neutral one.
-    expect(sidebar).toContain("TypeIcon");
     const switcherBody2 = sidebar.slice(sidebar.indexOf("function PlaceSwitcher"), sidebar.indexOf("function SidebarEmpty"));
-    // Every `TypeIcon` use in the switcher is bare — Telar's own entry never
-    // wears the room's hue, only the Spool entry beside it does.
-    for (const use of switcherBody2.match(/<TypeIcon[^/]*\/>/g) ?? []) {
-      expect(use).not.toContain("text-spool");
-    }
+    // The brand is the capitalised app name, never the lowercase place word,
+    // and never route-conditional.
+    expect(switcherBody2).toContain(">Telar</span>");
+    expect(switcherBody2).not.toMatch(/\{place\}/);
+    // The retired Telar T glyph stays retired — the wordmark alone is the mark.
+    expect(switcherBody2).not.toContain("TypeIcon");
+    // The main area is a place with its OWN name in the menu.
+    expect(switcherBody2).toContain("<span>Sessions</span>");
+    // Colour marks the place, not the neutral entries: only the Spool entry
+    // wears the room's hue inside the switcher.
+    const hued = (switcherBody2.match(/text-spool/g) ?? []).length;
+    expect(hued).toBe(1);
   });
 
   test("the Spool's place puts the warehouse nav where the sessions list was", () => {

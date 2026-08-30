@@ -80,22 +80,16 @@ export function SettingsShell({
           standing beside it, so it is the strip that leaves room for the macOS
           traffic lights and is grabbable, unconditionally.
 
-          THE BACK ARROW IS THE ONE ROAD OUT. The rail-restore trigger that
-          used to sit beside it restored a rail this screen no longer hides —
-          it replaces it — so the control is gone with the double sidebar.
+          THE BAND UNDER THE TRAFFIC LIGHTS IS THE APP'S, NOT THIS SCREEN'S.
+          It is window decoration by adjacency, so it says what the app rail's
+          band says — the static "Telar" wordmark, same type, same height —
+          and nothing route-dependent. The road out lives at the BOTTOM of the
+          nav (see below), where the app rail keeps its own meta-navigation.
         */}
-        <div className={cn("app-drag px-1 pt-1", "pl-[var(--titlebar-inset)]")}>
-          <div className="mb-2 flex items-center gap-1">
-            {backHref && (
-              <Link
-                href={backHref}
-                className="app-no-drag flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                aria-label="Back"
-              >
-                <ArrowLeftIcon className="size-4" />
-              </Link>
-            )}
-          </div>
+        <div className={cn("app-drag -m-3 mb-0 flex h-[var(--titlebar-height)] shrink-0 items-center border-b border-sidebar-border/60 px-3", "pl-[calc(var(--titlebar-inset)+0.75rem)]")}>
+          <span className="px-1.5 font-heading text-lg font-semibold tracking-tight text-foreground">Telar</span>
+        </div>
+        <div className="px-1 pt-1">
           <div className="px-1">
             <h2 className="font-heading text-sm font-semibold tracking-tight text-foreground">
               {title}
@@ -105,7 +99,7 @@ export function SettingsShell({
             )}
           </div>
         </div>
-        <div className="flex flex-col gap-4">
+        <div className="flex min-h-0 flex-1 flex-col gap-4">
           {groups.map(({ group, items }) => (
             <div key={group} className="flex flex-col gap-0.5">
               {group && (
@@ -146,6 +140,21 @@ export function SettingsShell({
             </div>
           ))}
         </div>
+        {/* THE ROAD OUT, AT THE FLOOR. The app rail keeps Settings in its
+            footer; this nav keeps the way back in the same slot — the inverse
+            door, where the hand already knows to look. Top of the nav is
+            window decoration and carries no navigation at all. */}
+        {backHref && (
+          <div className="mt-auto shrink-0 pt-2">
+            <Link
+              href={backHref}
+              className="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+            >
+              <ArrowLeftIcon className="size-4 shrink-0 text-muted-foreground/70" />
+              <span className="flex-1 truncate">Back</span>
+            </Link>
+          </div>
+        )}
       </nav>
 
       {/* Content pane — sticky header + internal scroll */}

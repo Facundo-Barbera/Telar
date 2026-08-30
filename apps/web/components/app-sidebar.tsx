@@ -43,12 +43,12 @@ import {
   ChevronRightIcon,
   FolderGit2Icon,
   FolderPlusIcon,
+  LayoutGridIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
   SettingsIcon,
   SpoolIcon,
-  TypeIcon,
   WorkflowIcon,
   XIcon,
 } from "lucide-react";
@@ -131,26 +131,24 @@ function TelarSidebarHeader() {
 }
 
 /**
- * THE SWITCHER — `docs/spool-loops.md` §11. Telar and Spool are "different,
- * but part of the same system — overlap one on top of the other", so the
- * wordmark that always named the app becomes the control that names WHICH
- * half of it you are in. This is CHROME, NOT ROUTING: picking a place
- * navigates (`/` or `/spool`), but a deep link — `/spool`, `/projects/…` —
- * still lands correctly on its own; the switcher only ever reads the
- * pathname to decide which entry to show as current, the same
- * `pathname.startsWith(...)` test `SettingsButton` already used below.
+ * THE BRAND IS STATIC, THE SWITCHER IS A BUTTON BESIDE IT.
  *
- * ONE OF THE FIVE. `--spool`'s five-mark budget already spent one of its
- * five on the Spool's own header glyph (`header.tsx`'s `SpoolIcon`); this
- * entry occupies that SAME slot — the place mark, wherever the place's own
- * chrome puts it — rather than opening a sixth.
+ * This band sits under the macOS traffic lights — it is window decoration by
+ * adjacency — and window decoration does not change with the route. The first
+ * cut made the wordmark ITSELF the switcher, so the top-left of the window
+ * read "telar" or "spool" or "looms" depending on where you were: the one
+ * region that should never move, mutating on every navigation. Now the
+ * wordmark is the app's name, capitalised, always "Telar" — and the places
+ * live behind one small square button beside it, whose glyph never changes
+ * either.
  *
- * THE TELAR GLYPH IS NEW, AND DELIBERATELY UNCOLOURED. `TypeIcon` is
- * lucide's own capital-T mark, drawn in the same line-icon family as
- * `SpoolIcon` — no bespoke SVG, because the family is already the "hand" the
- * spec asks the new glyph to match. It carries no `--spool` hue: Telar is
- * the neutral place, and colour on this mark would spend a share of the
- * budget the definition never allotted it.
+ * THE MAIN AREA HAS A NAME OF ITS OWN NOW: "Sessions". It used to borrow
+ * "Telar" in the switcher, which stopped working the moment "Telar" became
+ * the static brand above it — an app cannot be one of its own places.
+ *
+ * Switching is CHROME, NOT ROUTING: picking a place navigates (`/`, `/looms`,
+ * `/spool`), but a deep link still lands correctly on its own; the menu only
+ * reads the pathname to decide which entry to check.
  */
 function PlaceSwitcher() {
   const pathname = usePathname();
@@ -158,52 +156,47 @@ function PlaceSwitcher() {
   const inSpool = pathname.startsWith("/spool");
   // Looms is the third place — the milestone-shaped entry (objective →
   // threads → verify → human accept), per the default-path invariant in
-  // docs/vision-2026-08.md. Same uncoloured line-icon family as Telar's mark.
+  // docs/vision-2026-08.md.
   const inLooms = pathname.startsWith("/looms");
-  const place = inSpool ? "spool" : inLooms ? "looms" : "telar";
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <button
-            type="button"
-            title={inSpool ? "Spool" : inLooms ? "Looms" : "Telar"}
-            className="app-no-drag mr-auto flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        }
-      >
-        {inSpool ? (
-          <SpoolIcon className="size-4 shrink-0 text-spool" />
-        ) : inLooms ? (
-          <WorkflowIcon className="size-4 shrink-0" />
-        ) : (
-          <TypeIcon className="size-4 shrink-0" />
-        )}
-        <span className="font-heading text-lg font-semibold tracking-tight">{place}</span>
-        <ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/45" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-48">
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>Place</DropdownMenuLabel>
-          <DropdownMenuItem onClick={() => router.push("/")}>
-            <span className="w-4">{inSpool || inLooms ? null : <CheckIcon />}</span>
-            <TypeIcon className="size-4 shrink-0" />
-            <span>Telar</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => router.push("/looms")}>
-            <span className="w-4">{inLooms ? <CheckIcon /> : null}</span>
-            <WorkflowIcon className="size-4 shrink-0" />
-            <span>Looms</span>
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => router.push("/spool")}>
-            <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
-            <SpoolIcon className="size-4 shrink-0 text-spool" />
-            <span>Spool</span>
-          </DropdownMenuItem>
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <div className="mr-auto flex min-w-0 items-center gap-1 px-1.5">
+      <span className="font-heading text-lg font-semibold tracking-tight">Telar</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <button
+              type="button"
+              aria-label="Switch place"
+              title="Switch place"
+              className="app-no-drag flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/55 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          }
+        >
+          <LayoutGridIcon className="size-3.5" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-48">
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Place</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => router.push("/")}>
+              <span className="w-4">{inSpool || inLooms ? null : <CheckIcon />}</span>
+              <MessageSquareIcon className="size-4 shrink-0" />
+              <span>Sessions</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push("/looms")}>
+              <span className="w-4">{inLooms ? <CheckIcon /> : null}</span>
+              <WorkflowIcon className="size-4 shrink-0" />
+              <span>Looms</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => router.push("/spool")}>
+              <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
+              <SpoolIcon className="size-4 shrink-0 text-spool" />
+              <span>Spool</span>
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 
