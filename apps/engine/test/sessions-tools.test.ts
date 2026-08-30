@@ -179,7 +179,9 @@ describe("creating a session", () => {
     expect(created.isError).toBe(false);
     const id = created.json!.id as string;
     expect(created.json!.envMode).toBe("worktree");
-    expect(created.json!.branch).toBe(`telar/${id}`);
+    // Branch slugs come from the WORK, not the machinery (d3e615b):
+    // `telar/<title-slug>-<id6>` when the session has a usable title.
+    expect(created.json!.branch).toBe(`telar/port-the-parser-${id.replace(/^session_/, "").slice(0, 6)}`);
     // A REAL CHECKOUT, on disk, off the real repository.
     const session = store.getSession(id);
     expect(fs.existsSync(path.join(session.workspace.path, "README.md"))).toBe(true);

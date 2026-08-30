@@ -196,7 +196,9 @@ describe("the protocol surface", () => {
     });
     expect(created.isError).toBe(false);
     const made = JSON.parse(created.text) as { id: string; branch: string };
-    expect(made.branch).toBe(`telar/${made.id}`);
+    // Branch slugs come from the WORK, not the machinery (d3e615b):
+    // `telar/<title-slug>-<id6>` when the session has a usable title.
+    expect(made.branch).toBe(`telar/cut-from-a-chat-client-${made.id.replace(/^session_/, "").slice(0, 6)}`);
 
     // The same engine every other surface reads, and the socket is an AGENT'S
     // door, so the session is stamped as one.
