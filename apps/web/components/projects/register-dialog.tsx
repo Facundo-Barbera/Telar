@@ -21,6 +21,7 @@ import { useState } from "react";
 import { FolderOpenIcon, FolderPlusIcon, Loader2Icon, XIcon } from "lucide-react";
 import { chooseDirectory } from "@/lib/choose-directory";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { announceProjectsChanged } from "@/lib/projects";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -129,6 +130,11 @@ export function RegisterProjectDialog({
       setSubmitting(false);
       return;
     }
+    // ANNOUNCED THE MOMENT THE ENGINE ACCEPTED IT, before the gitignore side
+    // trip: every mounted project list (the greeting's picker, the rail, the
+    // breadcrumb) re-reads now, on BOTH exits below — a gitignore failure is
+    // not the registration's.
+    announceProjectsChanged();
     /**
      * A SECOND REQUEST, AND ITS FAILURE IS NOT THE PROJECT'S.
      *

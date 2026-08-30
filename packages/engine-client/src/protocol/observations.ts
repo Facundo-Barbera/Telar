@@ -106,6 +106,20 @@ export const TurnObservation = z.discriminatedUnion("kind", [
    * observation.
    */
   z.object({ kind: z.literal("browser.state"), provider: BrowserProvider, tabs: z.array(BrowserTab) }),
+
+  /**
+   * The provider's own session id, THE MOMENT THE DRIVER LEARNS IT.
+   *
+   * It used to travel only in the driver's RESULT, which `completeTurn` alone
+   * persisted — so a turn that was STOPPED left the session with no resume
+   * cursor and the next turn started a fresh provider session, all context
+   * silently gone. Both drivers know the id within milliseconds of starting
+   * (Claude's first message carries `session_id`; Codex's `thread/start`
+   * answers with the thread id), so it is reported as an observation and the
+   * engine persists it while the turn is still running. `completeTurn`'s
+   * write remains the authoritative end-of-turn value.
+   */
+  z.object({ kind: z.literal("provider.session"), providerSessionId: z.string().min(1).max(512) }),
 ]);
 export type TurnObservation = z.infer<typeof TurnObservation>;
 

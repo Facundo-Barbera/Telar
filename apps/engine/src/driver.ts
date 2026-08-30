@@ -57,6 +57,28 @@ export type DriverRequest = {
   toolUseId: string;
 };
 
+/**
+ * The engine's answer — and, for a `user_input` request, what the human
+ * actually typed. A bare `RequestDecision` remains a legal answer (it is what
+ * every test and every approval-shaped caller returns); `normalizeOutcome`
+ * is how a consumer that cares about answers reads both shapes.
+ */
+export type DriverRequestOutcome = { decision: RequestDecision; answers?: Record<string, unknown> };
+
+export function normalizeOutcome(value: RequestDecision | DriverRequestOutcome): DriverRequestOutcome {
+  return typeof value === "string" ? { decision: value } : value;
+}
+
+/**
+ * WHY THE QUESTION TOOL RIDES `canUseTool`, NOT THE DIALOG CHANNEL. The CLI
+ * does define a `request_user_dialog` kind for it
+ * (`permission_ask_user_question`), but claude-cli 2.1.246 never emits it to
+ * SDK 0.3.224 even with the kinds declared in initialize — measured by
+ * running it. What DOES work, also measured: `canUseTool` answering
+ * `{behavior:"allow", updatedInput:{...input, answers}}`, which completes the
+ * tool with the human's answers. See the AskUserQuestion arm in `canUseTool`.
+ */
+
 export type DriverRun = {
   prompt: string;
   cwd: string;
@@ -166,7 +188,7 @@ export type DriverRun = {
    * human. ABSENT means the driver runs with no gate at all, which is the
    * `full-access` shape and is what the tests use.
    */
-  onRequest?(request: DriverRequest): Promise<RequestDecision>;
+  onRequest?(request: DriverRequest): Promise<RequestDecision | DriverRequestOutcome>;
 };
 
 export type DriverResult = {
@@ -1053,12 +1075,73 @@ export function createClaudeDriver(
             // call ran; answering again here would put two cards in front of
             // one click.
             if (parseToolName(toolName).server === TELAR_BROWSER_MCP_SERVER) return { behavior: "allow" };
-            try {
-              const decision = await onRequest({
-                kind: requestKindForTool(toolName),
-                detail: requestDetailForToolCall(toolName, input),
-                toolUseId: options.toolUseID,
+            /**
+             * `AskUserQuestion`, ANSWERED THROUGH THE PERMISSION CALLBACK.
+             *
+             * Measured against claude-cli 2.1.246 / SDK 0.3.224: the CLI's
+             * dialog channel (`request_user_dialog`) is never emitted to this
+             * SDK even with the kinds declared, so a question used to reach
+             * the human NOWHERE — the tool reported "the user did not answer"
+             * and, before that, killed the stream outright. What DOES work,
+             * measured by running it: `allow` with `updatedInput` carrying an
+             * `answers` map (question text → chosen label) completes the tool
+             * with those answers. So the questions become the contract's own
+             * `user_input` request — which no runtime mode auto-answers — and
+             * the human's form answers ride back in `updatedInput`.
+             */
+            if (toolName === "AskUserQuestion") {
+              const questions = Array.isArray(asRecord(input).questions)
+                ? (asRecord(input).questions as unknown[]).map(asRecord)
+                : [];
+              const fields = questions.flatMap((question) => {
+                const text = str(question.question);
+                if (!text) return [];
+                const choices = Array.isArray(question.options)
+                  ? question.options.map(asRecord).flatMap((option) => (str(option.label) ? [str(option.label)!] : []))
+                  : [];
+                // KEYED BY THE QUESTION TEXT — that is AskUserQuestionOutput's
+                // own answer key. The label repeats it because the header is a
+                // 12-character chip, not a sentence a human can answer.
+                return [{ key: text, label: text, kind: "choice" as const, choices, required: true }];
               });
+              if (fields.length > 0) {
+                try {
+                  const outcome = normalizeOutcome(
+                    await onRequest({
+                      kind: "user_input",
+                      detail: { kind: "user_input", prompt: "The agent needs your input to continue.", fields },
+                      toolUseId: options.toolUseID,
+                    }),
+                  );
+                  if (outcome.decision === "cancel") {
+                    return { behavior: "deny", message: "The human cancelled this turn.", interrupt: true };
+                  }
+                  if ((outcome.decision === "accept" || outcome.decision === "acceptForSession") && outcome.answers) {
+                    const answers: Record<string, string> = {};
+                    for (const field of fields) {
+                      const value = outcome.answers[field.key];
+                      if (value !== undefined) answers[field.key] = Array.isArray(value) ? value.join(", ") : String(value);
+                    }
+                    return { behavior: "allow", updatedInput: { ...asRecord(input), answers } };
+                  }
+                } catch {
+                  // Fall through: an unanswerable question is a DISMISSED one,
+                  // never a hang — same rule as the generic arm below.
+                }
+                // Declined, or answered with nothing: the tool's own graceful
+                // arm ("the user did not answer") beats a deny that reads as a
+                // broken tool.
+                return { behavior: "allow" };
+              }
+            }
+            try {
+              const { decision } = normalizeOutcome(
+                await onRequest({
+                  kind: requestKindForTool(toolName),
+                  detail: requestDetailForToolCall(toolName, input),
+                  toolUseId: options.toolUseID,
+                }),
+              );
               if (decision === "accept" || decision === "acceptForSession") return { behavior: "allow" };
               // `cancel` withdraws the whole turn rather than just this call.
               return {
@@ -1282,7 +1365,14 @@ export function createClaudeDriver(
             };
           };
 
-          if (str(item.session_id)) reportedSessionId = item.session_id;
+          if (str(item.session_id) && item.session_id !== reportedSessionId) {
+            reportedSessionId = item.session_id;
+            // REPORTED THE MOMENT IT IS KNOWN, not only in the result: a turn
+            // that is stopped never completes, and without this the session
+            // would lose its resume cursor — the next turn starting a fresh
+            // provider session with all context silently gone.
+            emit({ kind: "provider.session", providerSessionId: item.session_id! });
+          }
 
           /**
            * Whose work is this?

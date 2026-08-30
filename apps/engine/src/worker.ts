@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
-import { ProviderUnavailableError, type DriverRequest, type TurnDriver } from "./driver";
+import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type TurnDriver } from "./driver";
 import { providerProcessEnv } from "./provider-instances";
 
 type WorkerClient = Pick<
@@ -77,6 +77,20 @@ export class UnsupportedDriverError extends Error {
   }
 }
 
+/** Under the browser's scope target (6) with headroom for the machine: four
+ *  concurrent provider processes is a laptop's honest ceiling. */
+const DEFAULT_WORKER_CONCURRENCY = 4;
+
+/** The deployment knob, read by BOTH worker construction sites so the
+ *  embedded and standalone workers cannot drift — same rule as
+ *  `createDefaultDrivers`. */
+export function workerConcurrencyFromEnv(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env.TELAR_WORKER_CONCURRENCY?.trim();
+  if (!raw) return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export type EngineWorkerOptions = {
   client: WorkerClient;
   workerId: string;
@@ -87,6 +101,17 @@ export type EngineWorkerOptions = {
    * and strictly better than a socket describing a browser that is not there.
    */
   browserSocket?: BrowserToolSocket;
+  /**
+   * HOW MANY TURNS THIS WORKER RUNS AT ONCE. The engine already refuses two
+   * concurrent turns of the SAME session (`claimTurn` skips a session with a
+   * claimed or running turn), so this cap only decides how many DIFFERENT
+   * sessions may progress together — the old hard-coded 1 was why creating
+   * three sessions queued them single-file across unrelated projects.
+   * Clamped to at least 1; keep it ≤ the browser's scope target
+   * (MAX_BROWSER_SCOPES = 6) or concurrent browsing sessions grow Chromiums
+   * past what the pool aims to hold.
+   */
+  concurrency?: number;
   /** Short testable polling loop; production process supervision is outside this leaf. */
   pollMs?: number;
   /** Used by the process supervisor to rediscover a restarted daemon. */
@@ -110,7 +135,7 @@ export class EngineWorker {
    * turn is blocked, and therefore why the "one turn at a time" early-return in
    * `tick()` comes AFTER the heartbeat rather than before it.
    */
-  private readonly awaiting = new Map<string, (decision: RequestDecision) => void>();
+  private readonly awaiting = new Map<string, (outcome: DriverRequestOutcome) => void>();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -137,16 +162,28 @@ export class EngineWorker {
       const status = await this.options.client.workerHeartbeat(this.options.workerId);
       for (const cancellation of status.cancel) this.active.get(cancellation.claimToken)?.abort(new Error("turn stopped"));
       // Settle anything a human answered since the last beat. This must happen
-      // even while a turn is active — the turn is what is waiting.
+      // even while a turn is active — the turn is what is waiting. KEYED BY
+      // RUN AND REQUEST, not request alone: with concurrent turns, two
+      // providers could mint the same tool-use id and a request-only key
+      // would settle the wrong session's approval.
       for (const resolution of status.resolved) {
-        const settle = this.awaiting.get(resolution.requestId);
+        const settle = this.awaiting.get(`${resolution.runId}:${resolution.requestId}`);
         if (!settle) continue;
-        this.awaiting.delete(resolution.requestId);
-        settle(resolution.decision);
+        this.awaiting.delete(`${resolution.runId}:${resolution.requestId}`);
+        // The ANSWERS ride along — a `user_input` request is worthless to the
+        // driver as a bare decision.
+        settle({ decision: resolution.decision, ...(resolution.answers ? { answers: resolution.answers } : {}) });
       }
-      if (this.active.size !== 0) return;
-      const { claim } = await this.options.client.claimTurn(this.options.workerId);
-      if (claim) void this.execute(claim);
+      // Claim until the cap or the queue runs dry. One claim per call is the
+      // engine's shape (`claimNextTurn` hands out the oldest claimable turn),
+      // so the loop is what turns a per-tick single claim into real
+      // cross-session concurrency.
+      const cap = Math.max(1, this.options.concurrency ?? DEFAULT_WORKER_CONCURRENCY);
+      while (this.active.size < cap) {
+        const { claim } = await this.options.client.claimTurn(this.options.workerId);
+        if (!claim) break;
+        void this.execute(claim);
+      }
     } catch (error) {
       if (isConnectivityLoss(error)) this.loseConnection(error);
       else throw error;
@@ -175,7 +212,7 @@ export class EngineWorker {
      * the driver's own `onRequest`, and the browser socket's per-call gate.
      * Factored rather than duplicated so an abort settles BOTH the same way.
      */
-    const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<RequestDecision> => {
+    const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<DriverRequestOutcome> => {
       const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
       const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
         requestId,
@@ -183,18 +220,21 @@ export class EngineWorker {
         detail,
       });
       // Auto-resolved by the session's runtime mode — no human involved,
-      // no wait. This is the common path in a detached session.
-      if (opened.state === "resolved") return opened.decision;
+      // no wait. This is the common path in a detached session. (`user_input`
+      // never auto-resolves — no mode can invent a human's answer.)
+      if (opened.state === "resolved") return { decision: opened.decision };
 
       // Parked. Wait for the heartbeat to carry an answer, or for the turn
       // to be aborted. ABORT MUST SETTLE THIS PROMISE: a stop arriving
       // while a human is deciding would otherwise leave the driver blocked
       // forever inside canUseTool, and the turn would never end.
-      return new Promise<RequestDecision>((resolve) => {
-        this.awaiting.set(requestId, resolve);
+      return new Promise<DriverRequestOutcome>((resolve) => {
+        // The runId in the key mirrors the heartbeat's settle lookup — see
+        // `tick()` for why request-only keying breaks under concurrency.
+        this.awaiting.set(`${runId}:${requestId}`, resolve);
         const onAbort = () => {
-          if (!this.awaiting.delete(requestId)) return;
-          resolve("cancel");
+          if (!this.awaiting.delete(`${runId}:${requestId}`)) return;
+          resolve({ decision: "cancel" });
         };
         if (controller.signal.aborted) onAbort();
         else controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -220,7 +260,7 @@ export class EngineWorker {
         // share a tab, and a session's tabs must survive between its turns.
         scopeKey: sessionId,
         gate: async ({ name, args, readOnly }) => {
-          const decision = await askEngine({
+          const { decision } = await askEngine({
             // A CLASSIFICATION, NOT A BYPASS — the same rule TELAR_READ_TOOLS
             // states in driver.ts. A read-only browser call changes nothing,
             // so it is declared as a read and the mode ladder's existing

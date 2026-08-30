@@ -103,13 +103,15 @@ describe("groupFamilies", () => {
     ]);
   });
 
-  test("the name comes from the standard row where there is one, and loses the window where there is not", () => {
+  test("the name comes from the standard row where there is one, loses the window, and GAINS its version", () => {
     const families = groupFamilies(CLAUDE);
-    // Sonnet has both; "Sonnet" is what the provider called the plain one.
-    expect(families[2]!.label).toBe("Sonnet");
+    // Claude publishes bare names; the version comes back from the family key
+    // (the resolved wire id), dashes read as dots. Three bare names across
+    // generations could not say WHICH Sonnet you were choosing.
+    expect(families[2]!.label).toBe("Sonnet 5");
     // Opus has only the long row, so its label is that one, minus the window.
-    expect(families[0]!.label).toBe("Opus");
-    expect(families[1]!.label).toBe("Fable");
+    expect(families[0]!.label).toBe("Opus 5");
+    expect(families[1]!.label).toBe("Fable 5");
   });
 
   test("a family is default if any of its windows is", () => {
@@ -192,8 +194,8 @@ describe("rowOf and familyOf", () => {
 
   test("a family is found through either spelling", () => {
     const families = groupFamilies(CLAUDE);
-    expect(familyOf(families, "sonnet[1m]")?.label).toBe("Sonnet");
-    expect(familyOf(families, "claude-sonnet-5")?.label).toBe("Sonnet");
+    expect(familyOf(families, "sonnet[1m]")?.label).toBe("Sonnet 5");
+    expect(familyOf(families, "claude-sonnet-5")?.label).toBe("Sonnet 5");
     expect(familyOf(families, "gpt-5.6-sol")).toBeUndefined();
     expect(familyOf(families, undefined)).toBeUndefined();
   });

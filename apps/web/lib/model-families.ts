@@ -118,12 +118,35 @@ export function groupFamilies(models: readonly ProviderModel[]): ModelFamily[] {
     const named = rows.find((row) => contextWindowOf(row) === "standard") ?? rows[0]!;
     return {
       id,
-      label: stripWindow(named.label) || named.label,
+      label: versionedLabel(stripWindow(named.label) || named.label, id),
       isDefault: rows.some((row) => row.isDefault),
       hidden: rows.every((row) => row.hidden),
       rows,
     };
   });
+}
+
+/**
+ * The version, restored to a label the provider published without one.
+ *
+ * Claude Code's `displayName`s are bare — "Opus", "Sonnet", "Haiku" — while
+ * the version lives in the wire id this family is already keyed by
+ * (`claude-sonnet-5`, `claude-haiku-4-5`). A picker listing three bare names
+ * across generations cannot say WHICH Sonnet you are choosing, so the trailing
+ * numeric run of the family key is appended, dashes read as dots.
+ *
+ * ONLY when the label carries no digit of its own: Codex's "GPT-5.6-Sol"
+ * already says its version, and doubling it would be the stutter this module
+ * exists to remove. And ONLY from the id — no version is ever invented for a
+ * family whose key ends in prose.
+ *
+ * NOT `modelVersion` (model-generations.ts): that is an ORDERING key —
+ * `claude-haiku-4-5` → 4.05 — correct for sorting and wrong as a string.
+ */
+function versionedLabel(label: string, id: string): string {
+  if (/\d/.test(label)) return label;
+  const version = /-(\d+(?:-\d+)*)$/.exec(id)?.[1]?.replaceAll("-", ".");
+  return version ? `${label} ${version}` : label;
 }
 
 /**

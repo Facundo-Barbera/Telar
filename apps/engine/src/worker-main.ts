@@ -5,7 +5,7 @@ import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
 import { hydrateHostPath } from "./host-path";
 import { engineRootFromEnv } from "./state";
-import { EngineWorker } from "./worker";
+import { EngineWorker, workerConcurrencyFromEnv } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
 
 /**
@@ -51,7 +51,17 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const drivers = createDefaultDrivers();
 const supervisor = new WorkerReconnectController({
   connect: () => connectEngine(path.resolve(root)),
-  createWorker: (client, onConnectionLost) => new EngineWorker({ client, workerId, driver: drivers, browserSocket, onConnectionLost }),
+  createWorker: (client, onConnectionLost) => {
+    const concurrency = workerConcurrencyFromEnv();
+    return new EngineWorker({
+      client,
+      workerId,
+      driver: drivers,
+      browserSocket,
+      ...(concurrency === undefined ? {} : { concurrency }),
+      onConnectionLost,
+    });
+  },
   pause,
 });
 

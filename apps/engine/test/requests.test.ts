@@ -13,7 +13,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { EngineStateError, EngineStore } from "../src/state";
 import { EngineWorker } from "../src/worker";
-import type { TurnDriver } from "../src/driver";
+import { normalizeOutcome, type TurnDriver } from "../src/driver";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -192,11 +192,15 @@ test("a driver blocked on a human is unblocked by the heartbeat, end to end", as
   let decided: string | undefined;
   const driver: TurnDriver = {
     async run({ onRequest }) {
-      decided = await onRequest!({
-        kind: "command_execution",
-        detail: bashDetail,
-        toolUseId: "toolu_1",
-      });
+      // The worker answers with an OUTCOME ({decision, answers?}) — the shape
+      // user_input needs; approval-shaped callers read `.decision`.
+      decided = normalizeOutcome(
+        await onRequest!({
+          kind: "command_execution",
+          detail: bashDetail,
+          toolUseId: "toolu_1",
+        }),
+      ).decision;
       return { text: `decided:${decided}` };
     },
   };
@@ -233,7 +237,7 @@ test("a stop while a human is deciding settles the driver instead of hanging the
   let seen: string | undefined;
   const driver: TurnDriver = {
     async run({ onRequest }) {
-      seen = await onRequest!({ kind: "command_execution", detail: bashDetail, toolUseId: "toolu_1" });
+      seen = normalizeOutcome(await onRequest!({ kind: "command_execution", detail: bashDetail, toolUseId: "toolu_1" })).decision;
       return { text: "unreachable" };
     },
   };

@@ -2251,11 +2251,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       browserSocket = (await import("./drivers")).createBrowserToolSocket(browser);
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
+      const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const worker = new EngineWorker({
         client: new EngineClient(discovery),
         workerId,
         driver: await createDriver(),
         browserSocket,
+        ...(concurrency === undefined ? {} : { concurrency }),
         ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
       });
       await worker.start();

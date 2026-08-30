@@ -256,6 +256,84 @@ test("a completed Claude session id is persisted and used for the next claimed t
   expect(seen).toEqual([undefined, "claude-session-one"]);
 });
 
+test("turns from DIFFERENT sessions run concurrently up to the cap; one session stays serial", async () => {
+  // THE REPORTED BUG: creating several sessions queued their turns single-file
+  // because the worker hard-capped itself at one active turn — the engine's
+  // own rule was always per-session only.
+  const running = new Set<string>();
+  let peak = 0;
+  const gate: { release?: () => void } = {};
+  const released = new Promise<void>((resolve) => {
+    gate.release = resolve;
+  });
+  const driver: TurnDriver = {
+    async run({ prompt }) {
+      running.add(prompt);
+      peak = Math.max(peak, running.size);
+      await released;
+      running.delete(prompt);
+      return { text: `done ${prompt}` };
+    },
+  };
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_a", projectId: project.project.id });
+  await client.createSession({ id: "session_b", projectId: project.project.id });
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, concurrency: 2, pollMs: 60_000 });
+  workers.push(worker);
+  await worker.start();
+
+  await client.submitTurn("session_a", { runId: "a1", input: "A1" });
+  await client.submitTurn("session_a", { runId: "a2", input: "A2" });
+  await client.submitTurn("session_b", { runId: "b1", input: "B1" });
+  await worker.tick();
+  // Both SESSIONS progress together; session_a's second turn must NOT start
+  // while its first is running — that exclusion is the engine's, and it holds.
+  await eventually(() => expect([...running].sort()).toEqual(["A1", "B1"]));
+  expect(peak).toBe(2);
+  gate.release!();
+  await eventually(async () => expect((await client.session("session_a")).turns[0]?.state).toBe("completed"));
+  await worker.tick();
+  await eventually(async () => expect((await client.session("session_a")).turns[1]?.state).toBe("completed"));
+});
+
+test("a STOPPED first turn keeps the provider session — continuity survives the abort", async () => {
+  // THE REPORTED BUG: stop landed before completeTurn (the only writer of the
+  // resume cursor), so the next turn started a fresh provider session and the
+  // human's context silently vanished. The driver now reports the id the
+  // moment it learns it, and the engine persists it mid-turn.
+  const seenCursor: Array<string | undefined> = [];
+  const driver: TurnDriver = {
+    async run({ providerSessionId, signal, onObservations }) {
+      seenCursor.push(providerSessionId);
+      if (seenCursor.length === 1) {
+        // First turn: report the provider session early, then park until the
+        // human stops the turn — the shape of a long generation.
+        await onObservations([{ kind: "provider.session", providerSessionId: "provider-abc" }]);
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        throw new Error("stopped mid-generation");
+      }
+      return { text: "resumed fine" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  await client.submitTurn(sessionId, { runId: "first", input: "One" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
+  await client.stopTurn(sessionId);
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
+  // The cursor survived the stop…
+  expect((await client.session(sessionId)).session.resumeCursor).toBe("provider-abc");
+  // …and the next turn RESUMES rather than starting fresh.
+  await client.submitTurn(sessionId, { runId: "second", input: "Two" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[1]?.state).toBe("completed"));
+  expect(seenCursor).toEqual([undefined, "provider-abc"]);
+});
+
 // ── the browser lease ────────────────────────────────────────────────────────
 
 const fakeBrowserSocket = () =>

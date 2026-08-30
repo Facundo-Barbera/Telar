@@ -58,6 +58,7 @@ import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
+import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { useCommandKeys } from "@/lib/use-command-keys";
 import {
   activeSessionFromPathname,
@@ -425,7 +426,14 @@ function SidebarBody() {
 
   useEffect(() => {
     const task = window.setTimeout(() => void loadAll(), 0);
-    return () => window.clearTimeout(task);
+    // A registration from ANOTHER surface (first-run, the greeting's flow)
+    // reaches this rail immediately rather than on the next poll tick.
+    const onProjectsChanged = () => void loadAll();
+    window.addEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+    return () => {
+      window.clearTimeout(task);
+      window.removeEventListener(PROJECTS_CHANGED_EVENT, onProjectsChanged);
+    };
   }, [loadAll]);
 
   /**

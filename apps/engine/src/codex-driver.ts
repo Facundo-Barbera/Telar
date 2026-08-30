@@ -49,7 +49,7 @@ import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, 
 import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
-import type { DriverRun, DriverResult, TurnDriver } from "./driver";
+import { normalizeOutcome, type DriverRun, type DriverResult, type TurnDriver } from "./driver";
 
 /**
  * The posture a thread runs under.
@@ -344,7 +344,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         if (!approval || !onRequest) return;
         let decision: RequestDecision;
         try {
-          decision = await onRequest(approval);
+          decision = normalizeOutcome(await onRequest(approval)).decision;
         } catch {
           // A gate that failed is a DECLINE, never a hang: the app-server has
           // no deadline on an unanswered request.
@@ -612,6 +612,10 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         // stranding the next turn with no cursor.
         rootThreadId = str(thread.thread?.id) ?? providerSessionId ?? "";
         if (!rootThreadId) throw new Error("codex app-server started no thread");
+        // REPORTED THE MOMENT IT IS KNOWN, not only in the result — a stopped
+        // turn never completes, and without this the session loses its resume
+        // cursor. Same rule as the Claude driver's first `session_id`.
+        emit({ kind: "provider.session", providerSessionId: rootThreadId });
 
         // Refresh the app-server's MCP tool catalogue before the turn, the way
         // t3 code does — a thread resumed across an engine restart is pointed
