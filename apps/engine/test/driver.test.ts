@@ -476,41 +476,88 @@ test("a TodoWrite whose payload is not a todo list stays an ordinary tool row", 
 });
 
 // ── the browser ──────────────────────────────────────────────────────────────
+//
+// The browser's TOOLS moved to the worker-hosted `BrowserToolSocket`
+// (`browser-socket.test.ts` owns gating, state reporting and auth). What this
+// driver still owns is REGISTRATION: pointing the SDK at the socket, and waving
+// the socket's own tools past `canUseTool` so one click yields one card.
 
-/** An SDK whose in-process MCP server is real enough to invoke a tool. */
-function sdkWithBrowserTools(
-  invoke: (handlers: Map<string, (args: Record<string, unknown>) => Promise<unknown>>) => Promise<void>,
-  seen: { serverKeys?: string[] } = {},
-) {
-  const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
-  return async () => ({
-    tool: (name: string, _description: string, _shape: unknown, handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>) => {
-      handlers.set(name, handler);
-      return { name };
-    },
+test("the browser socket registers as its own http server, ALONGSIDE the in-process telar server", async () => {
+  // THE KEY IS WHAT NAMES THE SERVER — `mcp__telar-browser__…` is the prefix
+  // the model sees and every client parses, so the key must be the contract's
+  // `TELAR_BROWSER_MCP_SERVER`, on both providers.
+  let servers: Record<string, unknown> | undefined;
+  const sdk = async () => ({
+    tool: (name: string) => ({ name }),
     createSdkMcpServer: (input: unknown) => input,
     async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
-      seen.serverKeys = Object.keys(input.options.mcpServers ?? {});
-      await invoke(handlers);
+      servers = input.options.mcpServers;
       yield { type: "result", subtype: "success" };
     },
   });
-}
+  await run(createClaudeDriver(sdk), {
+    browserSocket: { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_abc" },
+  }).result;
+  // Both Telar registrations present; the http entry carries the lease.
+  expect(Object.keys(servers ?? {})).toEqual(["telar-browser", "telar"]);
+  expect(servers?.["telar-browser"]).toEqual({
+    type: "http",
+    url: "http://127.0.0.1:1234/v2/browser/mcp",
+    headers: { Authorization: "Bearer tok_abc" },
+  });
+  // …and the in-process server holds NO browser tools any more: `warp` only,
+  // on a turn with no spool. One tool surface per capability, not two.
+  const telar = servers?.telar as { tools?: { name?: string }[] } | undefined;
+  expect((telar?.tools ?? []).map((tool) => tool.name)).toEqual(["warp"]);
+});
 
-test("the browser registers under the ONE Telar server, because the key is what names it", async () => {
-  // FOUND BY RUNNING IT. `createSdkMcpServer({ name })` is not what forms the
-  // model-visible prefix — the `mcpServers` KEY is. With the key left as
-  // `browser` the model saw `mcp__browser__browser_navigate` and every call
-  // fell back to `mcp_tool_call`, while the row's TITLE still read correctly.
-  const seen: { serverKeys?: string[] } = {};
-  const browser = {
-    call: async () => ({ content: [{ type: "text", text: "ok" }] }),
-    isReadOnly: () => true,
-    tools: [{ name: "browser_navigate", description: "go", input: { shape: {} } }],
-  };
-  const driver = createClaudeDriver(sdkWithBrowserTools(async () => {}, seen), { browser });
-  await run(driver, { browserScopeKey: "session_one" }).result;
-  expect(seen.serverKeys).toEqual(["telar"]);
+test("a turn with no browser socket registers no telar-browser server", async () => {
+  // Anti-vacuity for the spread above: absence means ABSENT, not an entry with
+  // an undefined url the provider would then try to reach.
+  let servers: Record<string, unknown> | undefined;
+  const sdk = async () => ({
+    tool: (name: string) => ({ name }),
+    createSdkMcpServer: (input: unknown) => input,
+    async *query(input: { options: { mcpServers?: Record<string, unknown> } }) {
+      servers = input.options.mcpServers;
+      yield { type: "result", subtype: "success" };
+    },
+  });
+  await run(createClaudeDriver(sdk)).result;
+  expect(Object.keys(servers ?? {})).toEqual(["telar"]);
+});
+
+test("canUseTool waves the browser socket's tools through, and ONLY those", async () => {
+  // THE SOCKET IS THE DECIDER for its own tools — its per-lease gate already
+  // asked the engine. Answering again in `canUseTool` would put two cards in
+  // front of one click. The spool tool alongside it is the anti-vacuity: the
+  // skip is per-server, never a blanket allow.
+  const asked: string[] = [];
+  const answers: unknown[] = [];
+  const sdk = async () => ({
+    tool: (name: string) => ({ name }),
+    createSdkMcpServer: (input: unknown) => input,
+    async *query(input: {
+      options: {
+        canUseTool?: (name: string, args: Record<string, unknown>, opts: { signal: AbortSignal; toolUseID: string }) => Promise<unknown>;
+      };
+    }) {
+      const opts = { signal: new AbortController().signal, toolUseID: "toolu_1" };
+      answers.push(await input.options.canUseTool!("mcp__telar-browser__browser_click", {}, opts));
+      answers.push(await input.options.canUseTool!("mcp__telar__spool_create_item", {}, opts));
+      yield { type: "result", subtype: "success" };
+    },
+  });
+  await run(createClaudeDriver(sdk), {
+    browserSocket: { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_abc" },
+    onRequest: async (request: { detail: { kind: string; call?: { name: string } } }) => {
+      asked.push(request.detail.kind === "tool_call" ? (request.detail.call?.name ?? "?") : request.detail.kind);
+      return "accept";
+    },
+  }).result;
+  expect(answers).toEqual([{ behavior: "allow" }, { behavior: "allow" }]);
+  // The engine heard about the spool call and ONLY the spool call.
+  expect(asked).toEqual(["mcp__telar__spool_create_item"]);
 });
 
 test("the spool registers under the SAME one server, and only when the turn carries one", async () => {
@@ -574,60 +621,6 @@ test("the spool registers under the SAME one server, and only when the turn carr
   await run(createClaudeDriver(sdk)).result;
   expect(names).toEqual(["warp"]);
   expect(seen.serverKeys).toEqual(["telar"]);
-});
-
-test("a browser call that CHANGED the page journals what it is now looking at", async () => {
-  const calls: string[] = [];
-  const browser = {
-    call: async (_scope: string, name: string) => {
-      calls.push(name);
-      return { content: [{ type: "text", text: "ok" }] };
-    },
-    isReadOnly: (name: string) => name === "browser_snapshot",
-    tools: [
-      { name: "browser_navigate", description: "go", input: { shape: {} } },
-      { name: "browser_snapshot", description: "look", input: { shape: {} } },
-    ],
-    state: async () => ({ provider: "headless" as const, tabs: [{ id: "0", url: "http://x", title: "X", active: true }] }),
-  };
-  const driver = createClaudeDriver(
-    sdkWithBrowserTools(async (handlers) => {
-      await handlers.get("browser_navigate")!({ url: "http://x" });
-      // A READ must not trigger a state report: polling after every snapshot
-      // puts a page listing behind each look at the DOM.
-      await handlers.get("browser_snapshot")!({});
-    }),
-    { browser },
-  );
-  const { sink, result } = run(driver, { browserScopeKey: "session_one" });
-  await result;
-
-  const states = sink.observations.filter((o) => o.kind === "browser.state");
-  expect(states).toHaveLength(1);
-  expect(states[0]?.kind === "browser.state" && states[0].tabs[0]?.url).toBe("http://x");
-  expect(calls).toEqual(["browser_navigate", "browser_snapshot"]);
-});
-
-test("a browser whose state cannot be read still lets the tool call succeed", async () => {
-  // A browser panel that cannot be described must never fail the navigation
-  // that moved it — the agent asked to browse, not to be observed.
-  const browser = {
-    call: async () => ({ content: [{ type: "text", text: "ok" }] }),
-    isReadOnly: () => false,
-    tools: [{ name: "browser_navigate", description: "go", input: { shape: {} } }],
-    state: async () => Promise.reject(new Error("the browser went away")),
-  };
-  let toolResult: unknown;
-  const driver = createClaudeDriver(
-    sdkWithBrowserTools(async (handlers) => {
-      toolResult = await handlers.get("browser_navigate")!({ url: "http://x" });
-    }),
-    { browser },
-  );
-  const { sink, result } = run(driver, { browserScopeKey: "session_one" });
-  await expect(result).resolves.toBeDefined();
-  expect(toolResult).toMatchObject({ content: [{ type: "text", text: "ok" }] });
-  expect(sink.observations.filter((o) => o.kind === "browser.state")).toHaveLength(0);
 });
 
 // ── sub-agents ───────────────────────────────────────────────────────────────

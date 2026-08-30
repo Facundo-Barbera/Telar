@@ -15,8 +15,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { z } from "zod";
 import type {
-  BrowserProvider,
-  BrowserTab,
   ItemDetail,
   ItemSeed,
   McpServer,
@@ -33,7 +31,14 @@ import type {
 } from "@telar/engine-client";
 // The tool NAMING rule lives in the contract, not here — see ./protocol/tools.ts
 // in engine-client. Every client renders these names too.
-import { displayToolName, parseToolName, qualifyTelarTool, TELAR_MCP_SERVER } from "@telar/engine-client";
+import {
+  displayToolName,
+  isTelarMcpServer,
+  parseToolName,
+  qualifyTelarTool,
+  TELAR_BROWSER_MCP_SERVER,
+  TELAR_MCP_SERVER,
+} from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 import { createWarpRunner, type WarpSpawn } from "./warp/runner";
@@ -49,28 +54,6 @@ export type DriverRequest = {
   detail: RequestDetail;
   /** The provider's own tool-use id, so the row and the request correlate. */
   toolUseId: string;
-};
-
-/**
- * The engine's browser, handed to the driver as a capability.
- *
- * PASSED IN RATHER THAN IMPORTED, so a driver constructed without one simply
- * has no browser tools instead of dragging Chromium into every unit test. It is
- * also what makes the headless/attached swap invisible to the model: the driver
- * only ever sees `call`.
- */
-export type BrowserCapability = {
-  call(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ content: unknown[]; isError?: boolean }>;
-  isReadOnly(name: string, args?: Record<string, unknown>): boolean;
-  tools: readonly { name: string; description: string; input: unknown }[];
-  /**
-   * What the browser is looking at now, WITHOUT launching one.
-   *
-   * Optional because a capability assembled by a test has no browser to
-   * describe. Its absence means the session simply never journals browser
-   * state, which is strictly better than journalling an invented one.
-   */
-  state?(scopeKey: string): Promise<{ provider: BrowserProvider; tabs: BrowserTab[] }>;
 };
 
 export type DriverRun = {
@@ -147,11 +130,13 @@ export type DriverRun = {
    */
   providerInstanceId?: string;
   /**
-   * Scopes this turn's browser. Sessions are the natural boundary: two
-   * sessions must not share a tab, and a session's tabs must survive between
-   * its turns.
+   * Telar's browser, as an HTTP MCP server the WORKER hosts — see
+   * `browser/socket.ts`. PER-RUN because the token is: it binds this turn's
+   * scope, gate and observation sink, and dies with the turn. The driver only
+   * registers the endpoint with its provider; scoping and approval are already
+   * bound behind it.
    */
-  browserScopeKey?: string;
+  browserSocket?: { url: string; token: string };
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /** Batched back to the engine. Never called after the run settles. */
@@ -378,49 +363,6 @@ type ClaudeSdk = {
 };
 
 /**
- * The engine's browser, as MCP tools.
- *
- * RETURNS TOOLS RATHER THAN A SERVER, because Telar has more than one capability
- * to offer and there is exactly ONE server for all of them — see
- * `telarMcpServer` below. A session with no browser still gets `warp`, which is
- * not true if the browser is what builds the server.
- *
- * `gate` RETURNS FALSE FOR A DECLINE and the tool answers with `isError`
- * rather than throwing. A thrown handler reads to the model as a broken tool
- * and it retries; an error result reads as "you may not do that" and it adapts.
- * That distinction is the whole reason a decline carries a reason.
- */
-function browserTools(
-  sdk: ClaudeSdk,
-  browser: BrowserCapability,
-  scopeKey: string,
-  gate: (name: string, args: Record<string, unknown>) => Promise<boolean>,
-  onNavigated: () => void,
-): unknown[] {
-  const { tool } = sdk;
-  if (!tool) return [];
-  return browser.tools.map((definition) =>
-    tool(
-      definition.name,
-      definition.description,
-      // The SDK wants a raw shape, not a wrapped object schema.
-      ((definition.input as { shape?: Record<string, unknown> }).shape ?? {}) as Record<string, unknown>,
-      async (args) => {
-        if (!(await gate(definition.name, args))) {
-          return { content: [{ type: "text", text: "The human declined this browser action." }], isError: true };
-        }
-        const result = await browser.call(scopeKey, definition.name, args);
-        // A call that CHANGED something is the only one worth re-reading state
-        // for. Polling after every read would put a screenshot's worth of work
-        // behind each `browser_snapshot`.
-        if (!browser.isReadOnly(definition.name, args) && !result.isError) onNavigated();
-        return result;
-      },
-    ),
-  );
-}
-
-/**
  * WHAT THE DIRECTING AGENT READS, and the only documentation of Warp that a
  * model ever sees.
  *
@@ -602,9 +544,9 @@ export function requestKindForTool(name: string): RequestKind {
   if (name === "Read" || name === "NotebookRead" || name === "Glob" || name === "Grep") return "file_read";
   if (name === "Write" || name === "Edit" || name === "MultiEdit" || name === "NotebookEdit") return "file_change";
   const parsed = parseToolName(name);
-  // Only OUR server's tools qualify — a user-configured server that happened to
+  // Only OUR servers' tools qualify — a user-configured server that happened to
   // name a tool `spool_list_items` must not inherit the engine's own posture.
-  if (parsed.server === TELAR_MCP_SERVER && TELAR_READ_TOOLS.has(parsed.tool)) return "file_read";
+  if (isTelarMcpServer(parsed.server) && TELAR_READ_TOOLS.has(parsed.tool)) return "file_read";
   return "tool_call";
 }
 
@@ -876,7 +818,6 @@ function defaultClaudeExecutable(binaryPath?: string): string {
 export function createClaudeDriver(
   loadSdk: () => Promise<ClaudeSdk> = () => import("@anthropic-ai/claude-agent-sdk") as Promise<ClaudeSdk>,
   options: {
-    browser?: BrowserCapability;
     /**
      * INJECTED so a test never depends on which CLIs the machine running it
      * happens to have installed. The default resolves the user's own Claude
@@ -910,7 +851,7 @@ export function createClaudeDriver(
       onRequest,
       providerSessionId,
       providerInstanceId,
-      browserScopeKey,
+      browserSocket,
       spool,
     }) {
       let sdk: ClaudeSdk;
@@ -1057,7 +998,7 @@ export function createClaudeDriver(
        * folds a `running` over a `completed` it has already stored. The task then
        * reads as live for ever, with nothing left in the stream to correct it.
        *
-       * Same failure mode `reportBrowserState` avoids with its own queue, for the
+       * Same failure mode the browser socket's state queue avoids, for the
        * same reason; this generalises it to every observation.
        */
       let flushQueue: Promise<unknown> = Promise.resolve();
@@ -1087,6 +1028,11 @@ export function createClaudeDriver(
        */
       const canUseTool: SdkCanUseTool | undefined = onRequest
         ? async (toolName, input, options) => {
+            // THE BROWSER SOCKET IS THE DECIDER for its own tools. The gate
+            // bound to this turn's lease already asked the engine before the
+            // call ran; answering again here would put two cards in front of
+            // one click.
+            if (parseToolName(toolName).server === TELAR_BROWSER_MCP_SERVER) return { behavior: "allow" };
             try {
               const decision = await onRequest({
                 kind: requestKindForTool(toolName),
@@ -1105,40 +1051,6 @@ export function createClaudeDriver(
             }
           }
         : undefined;
-
-      /**
-       * The browser, as an in-process MCP server.
-       *
-       * IN-PROCESS RATHER THAN A SPAWNED SERVER because the engine already owns
-       * the Chromium; a stdio MCP server would be a second process brokering
-       * to the first. The scope key is resolved PER CALL from the run, never
-       * captured once — a driver instance outlives any single turn.
-       *
-       * A MUTATING call goes through the SAME `onRequest` gate as every other
-       * tool. Clicking a button on a live page is an action with consequences,
-       * and the legacy stack classified browser calls for exactly this reason.
-       */
-      /**
-       * Journal what the browser is looking at after it moves.
-       *
-       * SEQUENCED THROUGH A SINGLE PROMISE rather than fired per call: a page
-       * that redirects produces several mutating calls in quick succession, and
-       * two overlapping `state()` reads would report the intermediate page after
-       * the final one. Failures are swallowed — a browser panel that cannot be
-       * described must not fail the tool call that moved it.
-       */
-      let browserStateQueue: Promise<void> = Promise.resolve();
-      const reportBrowserState = (): void => {
-        const read = options.browser?.state;
-        if (!read || !browserScopeKey) return;
-        browserStateQueue = browserStateQueue
-          .then(async () => {
-            const state = await read.call(options.browser, browserScopeKey);
-            emit({ kind: "browser.state", provider: state.provider, tabs: state.tabs });
-            await flush();
-          })
-          .catch(() => undefined);
-      };
 
       /**
        * THE KEY IS WHAT NAMES THE SERVER, not `createSdkMcpServer`'s `name`.
@@ -1182,36 +1094,15 @@ export function createClaudeDriver(
       };
 
       /**
-       * TELAR'S TOOLS, IN ONE SERVER.
+       * TELAR'S IN-PROCESS TOOLS, IN ONE SERVER — the spool and `warp`.
        *
-       * The browser's are conditional on there being a browser; `warp` is not
-       * conditional on anything, which is the whole reason the browser builder
-       * returns TOOLS rather than a server now. A session with no browser scope
-       * still gets to fan out.
+       * THE BROWSER IS NOT HERE ANY MORE: it is served by the worker's own
+       * `BrowserToolSocket` and registered below as an HTTP entry, the same
+       * registration the Codex driver makes — one transport, both providers.
+       * Its approval gate rides the socket's binding, which is why `canUseTool`
+       * above waves its calls through.
        */
-      const telarTools: unknown[] = [
-        ...(options.browser && browserScopeKey
-          ? browserTools(
-              sdk,
-              options.browser,
-              browserScopeKey,
-              async (name, args) => {
-                if (!onRequest || options.browser!.isReadOnly(name, args)) return true;
-                const decision = await onRequest({
-                  kind: "tool_call",
-                  // The QUALIFIED name, so the approval and the timeline row
-                  // name the same tool. A client shortens it for display
-                  // (`displayToolName`); the data does not lie about which
-                  // server it belongs to.
-                  detail: { kind: "tool_call", call: { name: qualifyTelarTool(name), server: TELAR_MCP_SERVER, input: args } },
-                  toolUseId: `${TELAR_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
-                });
-                return decision === "accept" || decision === "acceptForSession";
-              },
-              reportBrowserState,
-            )
-          : []),
-      ];
+      const telarTools: unknown[] = [];
 
       /**
        * THE SPOOL, WHEN THE TURN CARRIES ONE — CAP-12's "tasks are a
@@ -1263,6 +1154,20 @@ export function createClaudeDriver(
           ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
           : undefined;
 
+      // The worker-hosted browser socket, in the SDK's own http shape — the
+      // same entry `claudeMcpServers` builds for a user's http server. The
+      // token rides a header; the URL is loopback and the credential is
+      // per-turn, so nothing here outlives the run that minted it.
+      const telarBrowserServer = browserSocket
+        ? {
+            [TELAR_BROWSER_MCP_SERVER]: {
+              type: "http" as const,
+              url: browserSocket.url,
+              headers: { Authorization: `Bearer ${browserSocket.token}` },
+            },
+          }
+        : undefined;
+
       /**
        * TELAR'S SERVERS AND THE USER'S, IN ONE RECORD — and Telar's are applied
        * LAST on purpose. The keys become the `mcp__<key>__<tool>` addressing
@@ -1272,7 +1177,9 @@ export function createClaudeDriver(
        * is the one the naming standard in ./protocol/tools.ts already assumes.
        */
       const mcpServers =
-        userServers || telarServer ? { ...(userServers ?? {}), ...(telarServer ?? {}) } : undefined;
+        userServers || telarServer || telarBrowserServer
+          ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarServer ?? {}) }
+          : undefined;
 
       try {
         for await (const message of sdk.query({
@@ -1628,11 +1535,6 @@ export function createClaudeDriver(
 
         if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
         if (!completed) throw new Error("Claude ended without a successful result");
-
-        // Drained BEFORE the turn settles. A state read still in flight would
-        // otherwise report against a turn the engine has already closed, which
-        // it rejects as a conflict.
-        await browserStateQueue;
 
         // A tool whose result never arrived (the stream ended first) would
         // otherwise sit spinning in the UI forever.

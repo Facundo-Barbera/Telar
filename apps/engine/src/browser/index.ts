@@ -34,6 +34,7 @@ import { BrowserToolResult, parseBrowserToolInput } from "./tools";
 
 export * from "./helpers";
 export * from "./pool";
+export * from "./socket";
 export * from "./tools";
 export * from "./transport";
 

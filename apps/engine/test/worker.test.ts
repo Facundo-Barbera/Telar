@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
+import { BrowserToolSocket } from "../src/browser/socket";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
@@ -37,13 +38,16 @@ async function eventually(check: () => void | Promise<void>): Promise<void> {
   throw last;
 }
 
-async function setup(driver: TurnDriver): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
+async function setup(
+  driver: TurnDriver,
+  extras: { browserSocket?: BrowserToolSocket } = {},
+): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
   const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   const session = await client.createSession({ id: "session_one", projectId: project.project.id });
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, ...extras, pollMs: 60_000 });
   workers.push(worker);
   await worker.start();
   return { client, sessionId: session.session.id, worker };
@@ -250,4 +254,83 @@ test("a completed Claude session id is persisted and used for the next claimed t
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[1]?.state).toBe("completed"));
   expect(seen).toEqual([undefined, "claude-session-one"]);
+});
+
+// ── the browser lease ────────────────────────────────────────────────────────
+
+const fakeBrowserSocket = () =>
+  new BrowserToolSocket({
+    call: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    isReadOnly: () => false,
+    tools: [{ name: "browser_navigate", description: "go", input: { shape: {} } }],
+    state: async () => ({ provider: "headless", tabs: [{ id: "0", url: "http://x", title: "X", active: true }] }),
+  });
+
+test("each claimed turn gets its OWN lease, and the lease dies with the turn", async () => {
+  const leases: Array<{ url: string; token: string }> = [];
+  const driver: TurnDriver = {
+    async run({ browserSocket }) {
+      leases.push(browserSocket!);
+      return { text: "done" };
+    },
+  };
+  const socket = fakeBrowserSocket();
+  const { client, sessionId, worker } = await setup(driver, { browserSocket: socket });
+  try {
+    await client.submitTurn(sessionId, { runId: "first", input: "One" });
+    await worker.tick();
+    await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("completed"));
+    await client.submitTurn(sessionId, { runId: "second", input: "Two" });
+    await worker.tick();
+    await eventually(async () => expect((await client.session(sessionId)).turns[1]?.state).toBe("completed"));
+
+    // Two turns of the SAME session: same endpoint, DIFFERENT credentials —
+    // the token's validity window is the turn's, not the session's.
+    expect(leases).toHaveLength(2);
+    expect(leases[0]!.url).toBe(leases[1]!.url);
+    expect(leases[0]!.token).not.toBe(leases[1]!.token);
+
+    // A settled turn's token is a 401 — release IS revocation, and a provider
+    // subprocess that outlived its run holds nothing.
+    const stale = await fetch(leases[1]!.url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${leases[1]!.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(stale.status).toBe(401);
+  } finally {
+    await socket.close();
+  }
+});
+
+test("a mutating socket call journals browser.state onto the turn that made it", async () => {
+  // THE WHOLE LOOP, over real HTTP: driver → socket → gate (auto-accepted by
+  // the session's default mode) → browser → onNavigated → reportObservations.
+  const driver: TurnDriver = {
+    async run({ browserSocket }) {
+      const response = await fetch(browserSocket!.url, {
+        method: "POST",
+        headers: { authorization: `Bearer ${browserSocket!.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "browser_navigate", arguments: {} } }),
+      });
+      const answer = (await response.json()) as { result: { isError?: boolean } };
+      if (answer.result.isError) throw new Error("the socket declined a call the mode should have accepted");
+      return { text: "done" };
+    },
+  };
+  const socket = fakeBrowserSocket();
+  const { client, sessionId, worker } = await setup(driver, { browserSocket: socket });
+  try {
+    await client.submitTurn(sessionId, { runId: "run_one", input: "Browse" });
+    await worker.tick();
+    await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("completed"));
+    // The state report is asynchronous to the tool answer; it must still land
+    // on THIS turn before it settles or arrive as this session's state.
+    await eventually(async () => {
+      const events = (await client.events(sessionId)).events;
+      expect(events.some((event) => event.type === "browser.state.changed")).toBeTrue();
+    });
+  } finally {
+    await socket.close();
+  }
 });

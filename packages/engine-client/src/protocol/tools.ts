@@ -29,8 +29,32 @@
  * bucket.
  */
 
-/** The one server every Telar-provided tool is registered under. */
+/** The server Telar's in-process tools are registered under. */
 export const TELAR_MCP_SERVER = "telar";
+
+/**
+ * The browser's own server — ONE NAMESPACE, TWO REGISTRATIONS, and the second
+ * exists for a wire reason rather than a naming one. The browser must be
+ * reachable by Codex, and the Codex app-server takes MCP servers as CONFIG (a
+ * url), not as an in-process handle — so the browser is served over HTTP by the
+ * worker that owns it, and an HTTP server cannot share the `telar` key with the
+ * in-process server that still carries the spool and warp. Both keys are
+ * Telar's: `isTelarMcpServer` is what the capability mapping and the approval
+ * posture read, so a `browser_*` call is a `browser_action` row on either
+ * provider.
+ *
+ * THE NAME IS CONSTRAINED BY CODEX: server ids must match `^[a-zA-Z0-9_-]+$`
+ * (measured — see docs/deferred-work.md), so no dot-separated spelling.
+ */
+export const TELAR_BROWSER_MCP_SERVER = "telar-browser";
+
+/** Every server key Telar registers its own tools under. */
+export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER] as const;
+
+/** Whether a parsed server key is one of Telar's own. */
+export function isTelarMcpServer(server: string | undefined): boolean {
+  return server !== undefined && (TELAR_MCP_SERVERS as readonly string[]).includes(server);
+}
 
 /**
  * Capabilities Telar exposes. Adding one here is the whole registration: the
@@ -61,9 +85,12 @@ export function canonicalToolName(server: string | undefined, tool: string): str
   return server ? `${MCP_PREFIX}${server}__${tool}` : tool;
 }
 
-/** The name a model sees for one of our tools. */
-export function qualifyTelarTool(tool: string): string {
-  return canonicalToolName(TELAR_MCP_SERVER, tool);
+/** The name a model sees for one of our tools. The default server is the
+ *  in-process one; the browser's callers name `TELAR_BROWSER_MCP_SERVER`
+ *  explicitly. The default is deliberately unchanged — shifting it would
+ *  silently rename every spool tool. */
+export function qualifyTelarTool(tool: string, server: string = TELAR_MCP_SERVER): string {
+  return canonicalToolName(server, tool);
 }
 
 export type ParsedToolName = {
@@ -89,7 +116,7 @@ export function parseToolName(name: string): ParsedToolName {
   const [, server, ...rest] = name.split("__");
   if (!server || rest.length === 0) return { tool: name };
   const tool = rest.join("__");
-  if (server !== TELAR_MCP_SERVER) return { server, tool };
+  if (!isTelarMcpServer(server)) return { server, tool };
   const capability = TELAR_CAPABILITIES.find((known) => tool.startsWith(`${known}_`));
   return { server, tool, ...(capability ? { capability } : {}) };
 }

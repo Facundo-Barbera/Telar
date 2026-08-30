@@ -18,19 +18,20 @@
  */
 import type { ProviderDriverKind } from "@telar/engine-client";
 import { BROWSER_TOOLS, type BrowserRuntime } from "./browser";
+import { BrowserToolSocket, type BrowserSocketCapability } from "./browser/socket";
 import { createCodexDriver } from "./codex-driver";
-import { createClaudeDriver, type BrowserCapability, type TurnDriver } from "./driver";
+import { createClaudeDriver, type TurnDriver } from "./driver";
 import type { DriverSelector } from "./worker";
 
 /**
- * The engine's browser, narrowed to what a driver may do with it.
+ * The engine's browser, narrowed to what the session socket may do with it.
  *
- * ASSEMBLED HERE, ONCE, for both deployments. The driver must not import
+ * ASSEMBLED HERE, ONCE, for both deployments. The drivers never import
  * `./browser` — every driver would then drag Chromium's transport in whether or
  * not a session ever browses — so this is the seam, and having ONE of it is
  * what stops the embedded and standalone workers offering different browsers.
  */
-export function browserCapability(browser: BrowserRuntime): BrowserCapability {
+export function browserCapability(browser: BrowserRuntime): BrowserSocketCapability {
   return {
     call: (scopeKey, name, args) => browser.call(scopeKey, name, args),
     isReadOnly: (name, args) => browser.isReadOnly(name, args),
@@ -45,37 +46,35 @@ export function browserCapability(browser: BrowserRuntime): BrowserCapability {
   };
 }
 
-export type DefaultDriverOptions = {
-  /** Handed to Claude only. The Codex app-server runs its own tooling and has
-   *  no seam for an engine-owned browser yet — see `codex-driver.ts`'s header. */
-  browser?: BrowserCapability;
-};
+/**
+ * The browser socket, from the runtime, through the ONE capability assembly
+ * above — same anti-drift argument: two construction sites is how the embedded
+ * and standalone workers end up serving different browsers.
+ */
+export function createBrowserToolSocket(browser: BrowserRuntime): BrowserToolSocket {
+  return new BrowserToolSocket(browserCapability(browser));
+}
 
 /**
- * WHAT CODEX SESSIONS DO NOT GET, STATED WHERE IT IS DECIDED.
+ * WHAT CODEX SESSIONS STILL DO NOT GET, STATED WHERE IT IS DECIDED.
  *
- * Telar's own toolkits — the browser, and now `spool` — are registered as an
- * IN-PROCESS MCP server through the Claude SDK's `createSdkMcpServer`. The Codex
- * app-server has no equivalent: it accepts MCP servers as CONFIG (a url or a
- * command it launches itself), so an in-process one cannot be handed to it. See
- * `codex-driver.ts`'s `codexMcpServers`, which passes the USER's servers through
- * and has nothing to add ours to.
+ * The BROWSER half of the old gap is CLOSED: it is served by the worker's
+ * `BrowserToolSocket` (see `./browser/socket.ts`) and registered with both
+ * providers — Claude as an `http` entry in `mcpServers`, Codex through
+ * `thread/start`'s `config.mcp_servers` overlay. One transport, both drivers.
  *
- * THE CONSEQUENCE IS A REAL, NAMED GAP: CAP-12 says items are a Telar-wide
- * substrate reachable from any session, and today that is TRUE FOR CLAUDE
- * SESSIONS ONLY. A Codex session cannot read or file the user's tasks. It is not
- * silently wrong — the model simply has no such tool and says so — but it is not
- * the contract either.
- *
- * CLOSING IT IS ONE PIECE OF WORK FOR BOTH TOOLKITS: expose the engine's own
- * tools over a transport Codex can be pointed at (`-c mcp_servers.telar.url=…`),
- * at which point the browser lands with the spool. That is stage I of
- * `docs/spool-port.md`, and it is deliberately not faked here — a Codex session
- * with a spool tool that did nothing would be worse than one without.
+ * The SPOOL and WARP remain in-process Claude SDK servers, so CAP-12 ("items
+ * are a Telar-wide substrate reachable from any session") is still TRUE FOR
+ * CLAUDE SESSIONS ONLY. A Codex session cannot read or file the user's tasks.
+ * It is not silently wrong — the model simply has no such tool and says so —
+ * but it is not the contract either. Moving the spool onto a session-scoped
+ * socket like the browser's is the remainder of stage I of
+ * `docs/spool-port.md`, and it is deliberately not faked here — a Codex
+ * session with a spool tool that did nothing would be worse than one without.
  */
 
-export function createDefaultDrivers(options: DefaultDriverOptions = {}): DriverSelector {
-  const claude = createClaudeDriver(undefined, options.browser ? { browser: options.browser } : {});
+export function createDefaultDrivers(): DriverSelector {
+  const claude = createClaudeDriver();
   const codex = createCodexDriver();
   const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex };
   // Returns `undefined` for a kind this build does not know, which the worker
