@@ -450,10 +450,13 @@ function SidebarBody() {
   const projectIds = projects.map((project) => project.id);
   const selectedScope = scope && projectIds.includes(scope) ? scope : undefined;
   const selectedProject = projects.find((project) => project.id === selectedScope);
-  // With ONE registered project every row would carry the same project name,
-  // which is not information — it is the same word repeated down the list,
-  // wearing the space the title needs. Scoping to a project does the same thing.
-  const showProject = !selectedScope && projects.length > 1;
+  // The unscoped rail ALWAYS names each row's project — even with one project
+  // registered. A previous cut hid it for a single project ("the same word
+  // repeated is not information"), and it read as a bug every time: a row with
+  // no project line looks unfiled, and the human checking "did this land in the
+  // right project" gets no answer. Scoping to a project is the one state where
+  // the name is genuinely redundant — the header already says it.
+  const showProject = !selectedScope;
 
   const activeSessionId = activeSessionFromPathname(pathname);
   const list = deriveSessionList({
