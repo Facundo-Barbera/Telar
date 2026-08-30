@@ -184,6 +184,40 @@ describe("readClaudeModels", () => {
     });
     expect(answer).toEqual({ models: [], message: "claude is not installed" });
   });
+
+  test("the handshake names the user's own binary, exactly as a turn does", async () => {
+    // REGRESSION — the packaged app. Without `pathToClaudeCodeExecutable` the
+    // SDK falls back to its optional platform package, which the packaged app
+    // excludes: the handshake failed "Native CLI binary not found", the picker
+    // went empty, and the app read as "not detecting Claude Code" while turns
+    // (which pass the path) worked fine.
+    let options: Record<string, unknown> | undefined;
+    await readClaudeModels(
+      async () => ({
+        query: (input) => {
+          options = input.options;
+          return { supportedModels: async () => CLAUDE_ROWS };
+        },
+      }),
+      1_000,
+      () => "/resolved/bin/claude",
+    );
+    expect(options?.pathToClaudeCodeExecutable).toBe("/resolved/bin/claude");
+
+    // No install: the option is OMITTED — the SDK's own lookup and its own
+    // sentence stand, never a path-shaped undefined.
+    await readClaudeModels(
+      async () => ({
+        query: (input) => {
+          options = input.options;
+          return { supportedModels: async () => CLAUDE_ROWS };
+        },
+      }),
+      1_000,
+      () => undefined,
+    );
+    expect("pathToClaudeCodeExecutable" in (options ?? {})).toBe(false);
+  });
 });
 
 describe("readModelCatalogue", () => {
