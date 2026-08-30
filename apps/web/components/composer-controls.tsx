@@ -102,7 +102,10 @@ export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>
   ({ open, icon, label, detail, ariaLabel, className, ...props }, ref) => (
     <button {...props} ref={ref} type="button" className={cn(controlClass(open, props.disabled), className)} aria-label={ariaLabel}>
       <span className="flex shrink-0 [&_svg]:size-3.5">{icon}</span>
-      <span className="max-w-32 truncate text-foreground">{label}</span>
+      {/* max-w-48, was max-w-32: versioned model names ("Haiku 4.5") are the
+          longest labels a pill carries, and 128px truncated them immediately.
+          The other pills' labels are single words and never reach the cap. */}
+      <span className="max-w-48 truncate text-foreground">{label}</span>
       {/* THE SECONDARY FACT APPEARS ONLY WHILE THE ROW IS FOLDED. The donor hid
           it below `md:` — a VIEWPORT query, which is the wrong instrument: this
           pill lives in a column that the right panel narrows while the window
@@ -588,7 +591,9 @@ export function AgentControl({
             ariaLabel={`Model: ${label} on ${PROVIDER_LABEL[driver]}`}
             // Shrinks rather than forcing the row to overflow: the composer
             // shares the window with the right panel and cannot assume width.
-            className="min-w-0 max-w-44 justify-start"
+            // Wider than the other pills — versioned model names ("Haiku 4.5")
+            // are the longest labels this row carries.
+            className="min-w-0 max-w-56 justify-start"
           />
         }
       />
@@ -596,7 +601,10 @@ export function AgentControl({
         align="start"
         side="top"
         sideOffset={8}
-        className="max-h-[min(26rem,70vh)] w-64 flex-col gap-0 overflow-hidden rounded-xl p-0"
+        // w-80, not the old w-64: a 44px provider rail plus a star, a tick and
+        // a badge left ~130px of truncating label per row — versioned names
+        // need the room more than the composer needs the popover narrow.
+        className="max-h-[min(26rem,70vh)] w-80 flex-col gap-0 overflow-hidden rounded-xl p-0"
       >
         {/**
          * THE RAIL — the donor's own column, star and all.
