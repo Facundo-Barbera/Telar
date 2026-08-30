@@ -27,6 +27,7 @@
  * and the cache is what makes them acceptable to call from a popover.
  */
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
+import { requireCli } from "./cli-resolution";
 import { CodexAppServer, resolveCodexBinary } from "./codex/app-server";
 
 /**
@@ -124,6 +125,17 @@ export function parseClaudeModels(payload: unknown): ProviderModel[] {
   });
 }
 
+/** `requireCli` throws its actionable sentence when there is no install; the
+ *  model list wants a soft absence instead — the SDK then reports in its own
+ *  words, which is what an empty catalogue's `message` carries to the picker. */
+function defaultModelListExecutable(): string | undefined {
+  try {
+    return requireCli("claude", {});
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Ask the installed Claude Code what it can run.
  *
@@ -137,6 +149,7 @@ export function parseClaudeModels(payload: unknown): ProviderModel[] {
 export async function readClaudeModels(
   loadSdk: () => Promise<ClaudeModelSdk> = () => import("@anthropic-ai/claude-agent-sdk") as unknown as Promise<ClaudeModelSdk>,
   timeoutMs = MODEL_LIST_TIMEOUT_MS,
+  resolveExecutable: () => string | undefined = defaultModelListExecutable,
 ): Promise<{ models: ProviderModel[]; message?: string }> {
   let sdk: ClaudeModelSdk;
   try {
@@ -150,9 +163,24 @@ export async function readClaudeModels(
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    /**
+     * THE USER'S OWN CLAUDE, EXACTLY AS A TURN RESOLVES IT. Without
+     * `pathToClaudeCodeExecutable` the SDK falls back to its own optional
+     * ~272MB platform package — present in a dev checkout, EXCLUDED from the
+     * packaged app — so the handshake failed there with "Native CLI binary not
+     * found", the picker went empty, and the app read as "not detecting Claude
+     * Code" while turns (which do pass the path) worked fine. Resolution is
+     * soft: with no install the SDK's own lookup and its own sentence stand.
+     */
+    const executable = resolveExecutable();
     const session = sdk.query({
       prompt: silent(),
-      options: { cwd: process.cwd(), permissionMode: "default", abortController: controller },
+      options: {
+        cwd: process.cwd(),
+        permissionMode: "default",
+        abortController: controller,
+        ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      },
     });
     /**
      * A DEADLINE, because this is a subprocess handshake reached from a menu.
