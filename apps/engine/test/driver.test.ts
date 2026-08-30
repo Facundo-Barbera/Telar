@@ -623,6 +623,78 @@ test("the spool registers under the SAME one server, and only when the turn carr
   expect(seen.serverKeys).toEqual(["telar"]);
 });
 
+// ── AskUserQuestion ──────────────────────────────────────────────────────────
+
+const COLOR_QUESTION = {
+  questions: [
+    {
+      question: "Which color do you prefer?",
+      header: "Color",
+      options: [
+        { label: "Red", description: "warm" },
+        { label: "Blue", description: "cool" },
+      ],
+      multiSelect: false,
+    },
+  ],
+};
+
+function sdkAskingQuestion(seen: { permission?: unknown }) {
+  return async () => ({
+    async *query(input: {
+      options: {
+        canUseTool?: (name: string, args: Record<string, unknown>, opts: { signal: AbortSignal; toolUseID: string }) => Promise<unknown>;
+      };
+    }) {
+      seen.permission = await input.options.canUseTool!("AskUserQuestion", structuredClone(COLOR_QUESTION), {
+        signal: new AbortController().signal,
+        toolUseID: "toolu_q1",
+      });
+      yield { type: "result", subtype: "success" };
+    },
+  });
+}
+
+test("AskUserQuestion parks as a user_input request and the answers ride back in updatedInput", async () => {
+  // MEASURED against claude-cli 2.1.246: the dialog channel is never emitted
+  // to this SDK, but `allow` + `updatedInput.answers` completes the tool with
+  // the human's answers — so the questions become the contract's own
+  // `user_input` form, which no runtime mode auto-answers.
+  const asked: Array<{ kind: string; detail: unknown }> = [];
+  const seen: { permission?: unknown } = {};
+  await run(createClaudeDriver(sdkAskingQuestion(seen)), {
+    onRequest: async (request: { kind: string; detail: unknown }) => {
+      asked.push(request);
+      return { decision: "accept", answers: { "Which color do you prefer?": "Blue" } };
+    },
+  }).result;
+  // Parked as user_input, keyed by the QUESTION TEXT — that is
+  // AskUserQuestionOutput's own answer key.
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.kind).toBe("user_input");
+  const detail = asked[0]!.detail as { kind: string; fields: Array<{ key: string; choices: string[] }> };
+  expect(detail.kind).toBe("user_input");
+  expect(detail.fields[0]!.key).toBe("Which color do you prefer?");
+  expect(detail.fields[0]!.choices).toEqual(["Red", "Blue"]);
+  expect(seen.permission).toEqual({
+    behavior: "allow",
+    updatedInput: { ...COLOR_QUESTION, answers: { "Which color do you prefer?": "Blue" } },
+  });
+});
+
+test("a DECLINED question lets the tool dismiss itself rather than inventing an answer", async () => {
+  // A deny reads to the model as a broken tool; a bare allow lands on the
+  // tool's own graceful "the user did not answer" arm. Cancel still withdraws
+  // the whole turn.
+  const seen: { permission?: unknown } = {};
+  await run(createClaudeDriver(sdkAskingQuestion(seen)), { onRequest: async () => "decline" }).result;
+  expect(seen.permission).toEqual({ behavior: "allow" });
+
+  const cancelled: { permission?: unknown } = {};
+  await run(createClaudeDriver(sdkAskingQuestion(cancelled)), { onRequest: async () => "cancel" }).result;
+  expect(cancelled.permission).toEqual({ behavior: "deny", message: "The human cancelled this turn.", interrupt: true });
+});
+
 // ── sub-agents ───────────────────────────────────────────────────────────────
 
 test("a Task call becomes a HANDLE row, not a generic tool row", async () => {

@@ -601,8 +601,12 @@ function assertStateVersion(value: unknown, document: string): void {
 }
 
 function latestProviderSessionId(queue: SessionQueue): string | undefined {
+  // ANY state, not `completed` only: a `provider.session` observation writes
+  // the id onto a RUNNING turn precisely so a stop cannot lose it, and this
+  // recovery read must honour the same rule or a restart after a stopped
+  // first turn would strand the session fresh again.
   return queue.turns
-    .filter((turn) => turn.state === "completed" && typeof turn.providerSessionId === "string" && turn.providerSessionId.trim())
+    .filter((turn) => typeof turn.providerSessionId === "string" && turn.providerSessionId.trim())
     .sort((left, right) => right.sequence - left.sequence)[0]?.providerSessionId;
 }
 
@@ -4108,17 +4112,20 @@ export class EngineStore {
    * provider message in the journal.
    */
   ingestObservations(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
-    const turn = this.requireRunningClaim(sessionId, runId, claimToken);
+    const queue = this.readQueue(sessionId);
+    const turn = this.requireRunningClaimFromQueue(queue, runId, claimToken);
     const parsed = TurnObservationSchema.array().safeParse(observations);
     if (!parsed.success) throw new EngineStateError("invalid_request", "turn observations are invalid");
-    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), tasksTouched: false };
+    const projection = { items: this.readItems(sessionId), tasks: this.readTasks(sessionId), tasksTouched: false, turnTouched: false };
     for (const observation of parsed.data) {
       this.journalObservation(sessionId, turn, observation, projection);
     }
     this.writeItems(sessionId, projection.items);
     // Most batches carry no task at all — a rewrite per batch would be a file
-    // write per streamed provider message for nothing.
+    // write per streamed provider message for nothing. Same rule for the
+    // queue: only a `provider.session` observation ever mutates the turn.
     if (projection.tasksTouched) this.writeTasks(sessionId, projection.tasks);
+    if (projection.turnTouched) this.writeQueue(sessionId, queue);
     return { accepted: parsed.data.length };
   }
 
@@ -4774,7 +4781,7 @@ export class EngineStore {
     sessionId: string,
     turn: Turn,
     observation: TurnObservation,
-    projection: { items: Map<string, Item>; tasks: Map<string, Task>; tasksTouched: boolean },
+    projection: { items: Map<string, Item>; tasks: Map<string, Task>; tasksTouched: boolean; turnTouched: boolean },
   ): void {
     const at = this.now();
     const items = projection.items;
@@ -4805,6 +4812,21 @@ export class EngineStore {
       };
       items.set(item.id, item);
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
+      return;
+    }
+    if (observation.kind === "provider.session") {
+      /**
+       * PERSISTED WHILE THE TURN STILL RUNS, which is the whole point: a turn
+       * that is later STOPPED never reaches `completeTurn`, and before this
+       * observation existed that stop erased the session's continuity — the
+       * next turn started a fresh provider session. `completeTurn`'s own
+       * write remains the authoritative end-of-turn value; this is the early
+       * copy that survives an abort. No journal event: the id is metadata,
+       * not something a transcript reader scrolls past.
+       */
+      turn.providerSessionId = observation.providerSessionId;
+      projection.turnTouched = true;
+      this.touchSession(sessionId, at, observation.providerSessionId);
       return;
     }
     if (observation.kind === "browser.state") {
