@@ -49,9 +49,11 @@ import {
   SettingsIcon,
   SpoolIcon,
   TypeIcon,
+  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
+import { LoomsNav } from "@/components/loom/looms-nav";
 import { SidebarSearchField } from "@/components/sidebar-search-field";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -154,6 +156,11 @@ function PlaceSwitcher() {
   const pathname = usePathname();
   const router = useRouter();
   const inSpool = pathname.startsWith("/spool");
+  // Looms is the third place — the milestone-shaped entry (objective →
+  // threads → verify → human accept), per the default-path invariant in
+  // docs/vision-2026-08.md. Same uncoloured line-icon family as Telar's mark.
+  const inLooms = pathname.startsWith("/looms");
+  const place = inSpool ? "spool" : inLooms ? "looms" : "telar";
 
   return (
     <DropdownMenu>
@@ -161,22 +168,33 @@ function PlaceSwitcher() {
         render={
           <button
             type="button"
-            title={inSpool ? "Spool" : "Telar"}
+            title={inSpool ? "Spool" : inLooms ? "Looms" : "Telar"}
             className="app-no-drag mr-auto flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         }
       >
-        {inSpool ? <SpoolIcon className="size-4 shrink-0 text-spool" /> : <TypeIcon className="size-4 shrink-0" />}
-        <span className="font-heading text-lg font-semibold tracking-tight">{inSpool ? "spool" : "telar"}</span>
+        {inSpool ? (
+          <SpoolIcon className="size-4 shrink-0 text-spool" />
+        ) : inLooms ? (
+          <WorkflowIcon className="size-4 shrink-0" />
+        ) : (
+          <TypeIcon className="size-4 shrink-0" />
+        )}
+        <span className="font-heading text-lg font-semibold tracking-tight">{place}</span>
         <ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/45" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-48">
         <DropdownMenuGroup>
           <DropdownMenuLabel>Place</DropdownMenuLabel>
           <DropdownMenuItem onClick={() => router.push("/")}>
-            <span className="w-4">{inSpool ? null : <CheckIcon />}</span>
+            <span className="w-4">{inSpool || inLooms ? null : <CheckIcon />}</span>
             <TypeIcon className="size-4 shrink-0" />
             <span>Telar</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => router.push("/looms")}>
+            <span className="w-4">{inLooms ? <CheckIcon /> : null}</span>
+            <WorkflowIcon className="size-4 shrink-0" />
+            <span>Looms</span>
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => router.push("/spool")}>
             <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
@@ -332,10 +350,12 @@ function SessionShelf({
 
 function SidebarBody() {
   const pathname = usePathname();
-  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`,
-  // Telar's own session list everywhere else. The header above it (trigger,
-  // switcher) is common to both; only what is below it changes.
+  // THE PLACE THIS RAIL'S BODY SHOWS — §11's warehouse nav on `/spool`, the
+  // looms floor plan on `/looms`, Telar's own session list everywhere else.
+  // The header above it (trigger, switcher) is common to all; only what is
+  // below it changes.
   const inSpool = pathname.startsWith("/spool");
+  const inLooms = pathname.startsWith("/looms");
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
 
@@ -450,10 +470,13 @@ function SidebarBody() {
   const projectIds = projects.map((project) => project.id);
   const selectedScope = scope && projectIds.includes(scope) ? scope : undefined;
   const selectedProject = projects.find((project) => project.id === selectedScope);
-  // With ONE registered project every row would carry the same project name,
-  // which is not information — it is the same word repeated down the list,
-  // wearing the space the title needs. Scoping to a project does the same thing.
-  const showProject = !selectedScope && projects.length > 1;
+  // The unscoped rail ALWAYS names each row's project — even with one project
+  // registered. A previous cut hid it for a single project ("the same word
+  // repeated is not information"), and it read as a bug every time: a row with
+  // no project line looks unfiled, and the human checking "did this land in the
+  // right project" gets no answer. Scoping to a project is the one state where
+  // the name is genuinely redundant — the header already says it.
+  const showProject = !selectedScope;
 
   const activeSessionId = activeSessionFromPathname(pathname);
   const list = deriveSessionList({
@@ -556,6 +579,8 @@ function SidebarBody() {
             Spool's place. The header (trigger, switcher) stays common. */}
         {inSpool ? (
           <SpoolWarehouseNav />
+        ) : inLooms ? (
+          <LoomsNav />
         ) : (
         <>
         {/* THE SEARCH FIELD'S CHROME IS SHARED WITH THE SPOOL'S RAIL — see
@@ -792,7 +817,11 @@ function SidebarBody() {
               label="Settled"
               count={list.settledCount}
               rows={list.settled}
-              open={settledOpen}
+              // FORCED OPEN WHILE IT HOLDS THE SESSION YOU ARE READING. The
+              // settled survivor stays on its shelf now (see session-list.ts),
+              // and a shelf that hides the row you are inside would look like
+              // the session vanished from the rail entirely.
+              open={settledOpen || (activeSessionId !== undefined && list.settled.some((row) => row.id === activeSessionId))}
               onToggle={() => setSettledOpen((open) => !open)}
               hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
               onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}

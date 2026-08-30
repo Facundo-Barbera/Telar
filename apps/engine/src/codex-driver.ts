@@ -46,6 +46,7 @@
  */
 import crypto from "node:crypto";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
 import type { DriverRun, DriverResult, TurnDriver } from "./driver";
@@ -265,6 +266,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       env: instanceEnv,
       binaryPath,
       mcpServers: userMcpServers,
+      browserSocket,
       onObservations,
       onRequest,
     }: DriverRun): Promise<DriverResult> {
@@ -387,6 +389,18 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       // Assigned BEFORE the first await, so no stdout line can be processed
       // against a client that cannot yet answer approvals.
       client.onServerRequest = (request) => {
+        /**
+         * THE BROWSER SOCKET IS THE DECIDER for its own tools — the gate bound
+         * to this turn's lease already asked the engine before the call runs.
+         * Answering Codex's elicitation here again would put two cards in
+         * front of one click, so it is accepted in the elicitation's own
+         * vocabulary. NEVER `return false` for this: a `-32601` reads to Codex
+         * as a refused TOOL, naming a user who was never asked.
+         */
+        if (request.method === MCP_ELICITATION && str(record(request.params).serverName) === TELAR_BROWSER_MCP_SERVER) {
+          client.respond(request.id, { action: "accept", content: {} });
+          return true;
+        }
         if (onRequest && codexApprovalRequest(request.method, request.params)) {
           void answerApproval(request);
           return true;
@@ -562,7 +576,18 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
          * with none must say nothing rather than declare an empty registry,
          * which would read as "forget the ones in config.toml".
          */
-        const mcpServers = codexMcpServers(userMcpServers);
+        const userTable = codexMcpServers(userMcpServers);
+        // The worker-hosted browser socket, in Codex's own config vocabulary.
+        // THE TOKEN RIDES STDIN, NOT ARGV: `thread/start`'s `config` overlay is
+        // why headers are allowed here at all (see `codexMcpServers`' header) —
+        // `codex app-server` is still spawned with exactly one argument. Telar's
+        // entry is applied LAST, the same shadowing rule as the Claude merge:
+        // there is no `strictMcpConfig` on this path, so shadowing a colliding
+        // user server is the only defence available.
+        const telarTable = browserSocket
+          ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
+          : undefined;
+        const mcpServers = userTable || telarTable ? { ...(userTable ?? {}), ...(telarTable ?? {}) } : undefined;
         const threadParams = {
           cwd,
           approvalPolicy: threadConfig.approvalPolicy,
@@ -587,6 +612,19 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         // stranding the next turn with no cursor.
         rootThreadId = str(thread.thread?.id) ?? providerSessionId ?? "";
         if (!rootThreadId) throw new Error("codex app-server started no thread");
+
+        // Refresh the app-server's MCP tool catalogue before the turn, the way
+        // t3 code does — a thread resumed across an engine restart is pointed
+        // at a NEW socket URL, and a stale catalogue would call the old one.
+        // NON-FATAL by design: a stale catalogue costs tools, a throw costs
+        // the turn.
+        if (mcpServers) {
+          try {
+            await client.request("config/mcpServer/reload", {});
+          } catch (error) {
+            console.warn("codex MCP catalogue refresh failed before turn", error instanceof Error ? error.message : error);
+          }
+        }
 
         const turn = await client.request<{ turn?: { id?: string } }>("turn/start", {
           threadId: rootThreadId,

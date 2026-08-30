@@ -287,6 +287,41 @@ async function playTurn() {
       return;
     }
 
+    // The SAME elicitation, but for Telar's own browser socket. The driver
+    // must answer it itself — the socket's per-lease gate already asked the
+    // engine — so this one must NOT reach `onRequest`.
+    case "mcp-elicitation-telar": {
+      const reply = ask("mcpServer/elicitation/request", {
+        threadId,
+        turnId,
+        serverName: "telar-browser",
+        mode: "form",
+        _meta: {
+          codex_approval_kind: "mcp_tool_call",
+          persist: ["session", "always"],
+          tool_description: "Drives the engine's browser.",
+          tool_params: { url: "http://x" },
+          tool_params_display: [],
+        },
+        message: 'Allow the telar-browser MCP server to run tool "browser_navigate"?',
+        requestedSchema: { type: "object", properties: {} },
+      });
+      const action = (await reply).result?.action;
+      done({
+        type: "mcpToolCall",
+        id: "item-mcp-telar",
+        server: "telar-browser",
+        tool: "browser_navigate",
+        arguments: { url: "http://x" },
+        status: action === "accept" ? "completed" : "declined",
+        ...(action === "accept"
+          ? { result: { content: [{ type: "text", text: "ok" }] } }
+          : { error: { message: "user rejected MCP tool call" } }),
+      });
+      finish(`action=${action}`);
+      return;
+    }
+
     case "approval-file": {
       const reply = ask("item/fileChange/requestApproval", {
         threadId,

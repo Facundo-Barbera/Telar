@@ -204,21 +204,25 @@ before choosing: a new session kind adds a profile, it does not add an `if`,
 because the guardrail enforcing the accept moat rides that path and every extra
 branch is another one that must remember to wire it.
 
-### 2. Codex cannot reach in-process tools
+### 2. Codex cannot reach in-process tools — HALF CLOSED
 
-`drivers.ts` states it: "The Codex app-server runs its own tooling and has no
-seam for an engine-owned browser yet." Codex receives *external* MCP servers as
-url/command config (`codexMcpServers()`), not SDK-side in-process servers. The
-engine's own browser tools do not reach Codex today for exactly this reason.
+**The transport now exists, and the browser rides it.** The worker hosts a
+session-scoped streamable-HTTP MCP socket (`apps/engine/src/browser/socket.ts`):
+per-claimed-turn bearer tokens, the approval gate enforced at the socket, and
+BOTH drivers pointed at it — Claude as an `http` entry in `mcpServers`, Codex
+through `thread/start`'s `config.mcp_servers` overlay (never argv; the token
+rides stdin). Registered under `telar-browser` on both providers, so a browser
+call is the same `browser_action` row whichever provider placed it.
 
-CAP-12 — "any session anywhere in Telar can read its project's slice" — is
-therefore **Claude-only** unless the engine exposes spool tools over a transport
-Codex can be pointed at, which means a real MCP endpoint on the daemon and a
-`-c mcp_servers.spool.url=…` injection. That is net-new work the donor never had
-to do, and it is the single largest hidden cost in this port. It is also
-reusable: solving it once gives Codex the browser too.
+What remains of this problem is the SPOOL: its tools are still an in-process
+Claude SDK server (`driver.ts`), so CAP-12 — "any session anywhere in Telar can
+read its project's slice" — is still **Claude-only**. Closing it is now the
+small half of the work: bind a per-run spool capability onto a socket the way
+the browser's is (the session-scoped socket is deliberately SEPARATE from the
+master-scope `/v2/spool/mcp` daemon socket — a leaked credential for one must
+not open the other).
 
-Until it exists, CAP-12 ships degraded and the degradation must be visible, not
+Until then, CAP-12 ships degraded and the degradation must be visible, not
 silent.
 
 ### 3. The store has no protection mechanism yet
@@ -392,9 +396,10 @@ neither should be started by half-widening the cockpit.
 door and its stated success signal; then brain dump to receipt (9), bed mode
 (11), external roster (12).
 
-**I · Codex tool transport.** Problem 2. Closes CAP-12 properly and hands the
-browser to Codex as a side effect. Can move earlier if Codex-backed sessions
-matter sooner.
+**I · Codex tool transport.** Problem 2. **The transport landed with the
+browser on it** (`apps/engine/src/browser/socket.ts` — worker-hosted,
+per-turn tokens, both drivers). What this stage still owes is the SPOOL's
+session-scoped tools riding the same pattern, which closes CAP-12 properly.
 
 ### Sequencing against Warp
 

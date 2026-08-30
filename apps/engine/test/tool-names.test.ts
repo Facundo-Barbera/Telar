@@ -14,8 +14,10 @@ import { itemDetailForToolCall, titleForToolCall } from "../src/driver";
 import {
   assertTelarToolNames,
   displayToolName,
+  isTelarMcpServer,
   parseToolName,
   qualifyTelarTool,
+  TELAR_BROWSER_MCP_SERVER,
   TELAR_CAPABILITIES,
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
@@ -29,11 +31,44 @@ test("every tool Telar exposes declares its capability in its name", () => {
   expect(() => assertTelarToolNames(["loom_open"])).toThrow(/must be prefixed/);
 });
 
-test("one server holds every capability, rather than one server per toolkit", () => {
-  expect(qualifyTelarTool("browser_navigate")).toBe("mcp__telar__browser_navigate");
-  // The stutter this replaced: `mcp__browser__browser_navigate`.
-  expect(qualifyTelarTool("browser_navigate")).not.toContain("browser__browser");
+test("one NAMESPACE holds every capability — two registrations, because one must cross a wire", () => {
+  // The default is unchanged: a spool tool still qualifies under `telar`.
+  // Shifting the default would silently rename every spool tool.
+  expect(qualifyTelarTool("spool_list_items")).toBe("mcp__telar__spool_list_items");
+  // The browser's callers name its server explicitly.
+  expect(qualifyTelarTool("browser_navigate", TELAR_BROWSER_MCP_SERVER)).toBe("mcp__telar-browser__browser_navigate");
   expect(TELAR_CAPABILITIES).toContain("browser");
+});
+
+test("the browser server's name survives Codex's own naming rule", () => {
+  // Codex rejects MCP server ids outside this set at thread/start — a name
+  // that failed it would make the browser vanish on one provider only.
+  expect(TELAR_BROWSER_MCP_SERVER).toMatch(/^[a-zA-Z0-9_-]+$/);
+});
+
+test("both Telar servers are Telar's; lookalikes are not", () => {
+  expect(isTelarMcpServer(TELAR_MCP_SERVER)).toBe(true);
+  expect(isTelarMcpServer(TELAR_BROWSER_MCP_SERVER)).toBe(true);
+  // Anti-vacuity: a user server that PREFIXES ours must not inherit the
+  // engine's posture (row types, read classification, approval skips).
+  expect(isTelarMcpServer("telar-browsers")).toBe(false);
+  expect(isTelarMcpServer("linear")).toBe(false);
+  expect(isTelarMcpServer(undefined)).toBe(false);
+});
+
+test("a socket-served browser tool parses, renders and classifies exactly like the in-process ones did", () => {
+  expect(parseToolName("mcp__telar-browser__browser_click")).toEqual({
+    server: TELAR_BROWSER_MCP_SERVER,
+    tool: "browser_click",
+    capability: "browser",
+  });
+  const detail = itemDetailForToolCall("mcp__telar-browser__browser_navigate", { url: "https://example.com" });
+  // The row type both providers' calls land on — the whole naming decision.
+  expect(detail.type).toBe("browser_action");
+  expect(detail.type === "browser_action" && detail.call.server).toBe(TELAR_BROWSER_MCP_SERVER);
+  expect(displayToolName("mcp__telar-browser__browser_click")).toBe("browser_click");
+  // The lookalike server's call stays a generic MCP row.
+  expect(itemDetailForToolCall("mcp__telar-browsers__browser_navigate", {}).type).toBe("mcp_tool_call");
 });
 
 test("a tool name splits into server, tool and capability — keeping the whole tool", () => {

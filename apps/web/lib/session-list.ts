@@ -268,20 +268,22 @@ export function deriveSessionList({
     (band === "pinned" ? pinned : band === "snoozed" ? snoozed : band === "settled" ? settled : current).push(session);
   }
 
-  // An open session remains reachable even when it has dropped into a shelf.
-  // Moving it into the live band avoids rendering the same row twice, and it
-  // covers BOTH shelves: reading a session you snoozed from another window is
-  // exactly as disorienting as reading one that aged out.
-  const shelved = [...snoozed, ...settled];
-  const activeShelved = activeSessionId ? shelved.find((session) => session.id === activeSessionId) : undefined;
-  const currentWithSurvivor = activeShelved ? [...current, activeShelved].sort(createdNewestFirst) : current;
-  const withoutSurvivor = (rows: SidebarSession[]) =>
-    activeShelved ? rows.filter((session) => session.id !== activeShelved.id) : rows;
-  const snoozedRest = withoutSurvivor(snoozed);
-  const settledRest = withoutSurvivor(settled);
+  // An open SNOOZED session moves into the live band while you are reading it —
+  // its shelf is collapsed and time-sorted, so leaving it there strands you.
+  //
+  // A SETTLED ONE STAYS SETTLED. The survivor rule used to promote it too, and
+  // that read as a bug: clicking a settled row pushed it back to the top of the
+  // list, undoing the settle nobody asked to undo. Settled is a decision (or an
+  // aged-out fact), and merely READING a session is neither — the row stays on
+  // its shelf, highlighted there, until the person presses "Return to the list".
+  const activeSnoozed = activeSessionId ? snoozed.find((session) => session.id === activeSessionId) : undefined;
+  const currentWithSurvivor = activeSnoozed ? [...current, activeSnoozed].sort(createdNewestFirst) : current;
+  const snoozedRest = activeSnoozed ? snoozed.filter((session) => session.id !== activeSnoozed.id) : snoozed;
 
   const currentPage = pageWithActive(currentWithSurvivor, limit, activeSessionId);
-  const settledPage = pageWithActive(settledRest, settledLimit);
+  // `activeSessionId` threaded so the settled row you are READING stays on the
+  // visible page of its own shelf instead of vanishing behind "Show more".
+  const settledPage = pageWithActive(settled, settledLimit, activeSessionId);
 
   return {
     // NOT PAGED. You chose every row in this band by hand, so there is nothing
@@ -295,7 +297,7 @@ export function deriveSessionList({
     snoozed: snoozedRest.slice().sort((left, right) => (left.snoozedUntil ?? 0) - (right.snoozedUntil ?? 0)),
     snoozedCount: snoozedRest.length,
     settled: settledPage.rows,
-    settledCount: settledRest.length,
+    settledCount: settled.length,
     hasMoreSessions: currentPage.hasMore,
     hasMoreSettled: settledPage.hasMore,
     flat: false,

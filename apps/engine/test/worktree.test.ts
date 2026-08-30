@@ -99,6 +99,47 @@ test("removal reports whether the directory is ACTUALLY gone", () => {
   expect(removeSessionWorktree(deaf, projectRoot, stubborn.path)).toBe(false);
 });
 
+test("a branch slug names the branch and the directory after the work", () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const cut = createSessionWorktree(defaultGitRunner, {
+    engineRoot,
+    projectRoot,
+    sessionId: "session_one",
+    branchSlug: "loom/hito1-agosto/presupuestos",
+  });
+  expect(cut.branch).toBe("loom/hito1-agosto/presupuestos");
+  // The directory drops the namespace prefix — a human scanning the worktrees
+  // folder reads loom and thread, not machinery.
+  expect(path.basename(cut.path)).toMatch(/^hito1-agosto--presupuestos-[0-9a-f]{8}$/);
+});
+
+test("a branch slug outside the engine-owned namespaces is refused", () => {
+  // `-B` resets an existing branch; that is only safe where humans do not
+  // branch. `main` through this path would be catastrophic.
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  for (const slug of ["main", "feature/login", "loom", "loom//x"]) {
+    expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", branchSlug: slug })).toThrow(
+      WorktreeError,
+    );
+  }
+});
+
+test("a titled worktree session derives its branch from the title", () => {
+  const projectRoot = repo();
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  const session = store.createSession({
+    id: "session_abcdef123456",
+    projectId: "project_one",
+    title: "Fix «Presupuestos» login!",
+    envMode: "worktree",
+  });
+  if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
+  expect(session.workspace.branch).toBe("telar/fix-presupuestos-login-abcdef");
+});
+
 test("a session created with envMode worktree records its branch and base", () => {
   const projectRoot = repo();
   const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);

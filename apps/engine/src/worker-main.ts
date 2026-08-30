@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
-import { browserCapability, createDefaultDrivers } from "./drivers";
+import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
 import { hydrateHostPath } from "./host-path";
 import { engineRootFromEnv } from "./state";
 import { EngineWorker } from "./worker";
@@ -37,18 +37,21 @@ let stopping = false;
  *
  * One browser per worker process is correct rather than merely convenient:
  * scopes are per session, and a session is only ever claimed by one worker.
+ * ONE SOCKET PER WORKER PROCESS for the same reason — and the socket is why a
+ * worker in its own process can serve the browser at all: the daemon cannot
+ * reach this runtime, so the tools are served from where it lives.
  */
 const browser = new BrowserRuntime();
-const capability = browserCapability(browser);
+const browserSocket = createBrowserToolSocket(browser);
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 // The SAME factory the daemon's embedded worker uses. Both deployments must
 // offer the same providers with the same capabilities, or which one started the
 // engine changes what a session can do.
-const drivers = createDefaultDrivers({ browser: capability });
+const drivers = createDefaultDrivers();
 const supervisor = new WorkerReconnectController({
   connect: () => connectEngine(path.resolve(root)),
-  createWorker: (client, onConnectionLost) => new EngineWorker({ client, workerId, driver: drivers, onConnectionLost }),
+  createWorker: (client, onConnectionLost) => new EngineWorker({ client, workerId, driver: drivers, browserSocket, onConnectionLost }),
   pause,
 });
 
@@ -59,8 +62,10 @@ const stop = async (exitCode: number) => {
   if (stopping) return;
   stopping = true;
   await supervisor.stop();
-  // After the supervisor: a live Chromium holding a profile lock outlives the
-  // process that spawned it otherwise.
+  // The socket before the browser it fronts, and both after the supervisor: a
+  // live Chromium holding a profile lock outlives the process that spawned it
+  // otherwise.
+  await browserSocket.close();
   await browser.close("worker shutting down");
   process.exit(exitCode);
 };

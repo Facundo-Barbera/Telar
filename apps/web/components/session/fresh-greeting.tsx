@@ -18,7 +18,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronDownIcon, FolderGit2Icon } from "lucide-react";
+import { FolderGit2Icon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { GREETINGS, greetingForVisit, nextGreeting } from "@/lib/greetings";
@@ -88,8 +88,9 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
               />
             }
           >
+            {/* No chevron: the underline already reads as "press me", and the
+                arrow crowded the sentence it lives inside. */}
             <span className="min-w-0 truncate">{name}</span>
-            <ChevronDownIcon className="size-4 shrink-0 self-center opacity-50" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="center" className="w-64">
             {projects.map((project) => (

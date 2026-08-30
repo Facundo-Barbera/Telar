@@ -8,3 +8,10 @@ gates:
 guardrails:
   disallowedTools: []
   protectedPaths: []
+# Environment contract v1 (docs/env-contract-v1.md) — committed because this is
+# a solo repo; shared repos keep this in the ~/.telar sidecar instead.
+env:
+  cost: light
+  up: scripts/env/up.sh
+  ready: scripts/env/ready.sh
+  down: scripts/env/down.sh

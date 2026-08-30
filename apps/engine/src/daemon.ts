@@ -24,11 +24,20 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
-import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard, type SocketTool } from "./spool/socket";
+import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
+import type { SocketTool } from "./mcp-socket";
 import type { SpoolCapability } from "./spool/tools";
+import {
+  collectSessionsWallTools,
+  ensureSessionsSocketSecret,
+  handleSessionsSocketMessage,
+  sessionsSocketConnectCard,
+} from "./sessions-tools/socket";
+import type { SessionsCapability } from "./sessions-tools/tools";
 import type { GhRunner } from "./github";
 import type { DriverSelector } from "./worker";
 
@@ -53,6 +62,19 @@ export type EngineDaemonOptions = {
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
+  /**
+   * HOW MANY LIVE SESSIONS THE `sessions` TOOLKIT MAY HAVE CREATED AT ONCE.
+   *
+   * The toolkit has no depth rule and no parent/child link by design, so this
+   * plain count is the only structural thing between a session that creates
+   * sessions and forty worktrees. Enforced in `EngineStore.createSession` — not
+   * at the tool wall and not at this HTTP edge — so an in-process caller meets
+   * it too.
+   *
+   * INJECTED so a test that wants to see the refusal does not have to CUT
+   * EIGHT WORKTREES to reach it. Set it to 2 and the third create refuses.
+   */
+  sessionsBudget?: number;
   /**
    * Run a worker inside the daemon process.
    *
@@ -115,13 +137,6 @@ function errorFor(error: unknown): HttpError {
 function writeJson(response: http.ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   response.end(JSON.stringify(body));
-}
-
-function bearerIsValid(value: string | undefined, token: string): boolean {
-  if (!value?.startsWith("Bearer ")) return false;
-  const supplied = Buffer.from(value.slice("Bearer ".length));
-  const expected = Buffer.from(token);
-  return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
 async function body(request: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -307,6 +322,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const store = new EngineStore(root, options.now, {
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
+    ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
   });
   const lock = acquireDaemonLock(statePaths(root));
   const daemonId = crypto.randomUUID();
@@ -411,6 +427,40 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     return socketToolsCache;
   };
 
+  /**
+   * THE SESSIONS SOCKET'S SECRET AND TOOLS, lazy for the same reason and minted
+   * SEPARATELY from the spool's: two doors, two keys.
+   */
+  let sessionsSecretCache: string | undefined;
+  const sessionsSecret = () => (sessionsSecretCache ??= ensureSessionsSocketSecret(store.paths));
+  let sessionsToolsCache: SocketTool[] | undefined;
+  const sessionsSocketTools = (): SocketTool[] => {
+    if (sessionsToolsCache) return sessionsToolsCache;
+    /**
+     * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS, exactly
+     * as the spool socket's capability does. There is no validation here and
+     * there must not be: `createSession` owns the budget, the env-mode rule and
+     * the driver check; `submitTurn` owns the backlog cap; `readEvents` owns
+     * the cursor check. A check written at this seam would protect the socket
+     * and nothing else.
+     *
+     * `origin: "session"` IS DECLARED BY THIS CODE, never by a caller: no tool
+     * shape on the wall carries it. It is the same construction the spool's
+     * `source: "session"` uses, and it is what makes the budget countable.
+     */
+    const capability: SessionsCapability = {
+      list: async () => store.liveSessions(),
+      create: async (input) => store.createSession({ ...input, origin: "session" }),
+      send: async (sessionId, input) => store.submitTurn(sessionId, input),
+      read: async (sessionId, after) => store.readEvents(sessionId, after),
+      status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
+      stop: async (sessionId) => store.stopTurn(sessionId),
+      diff: async (sessionId) => store.sessionDiff(sessionId),
+    };
+    sessionsToolsCache = collectSessionsWallTools(capability);
+    return sessionsToolsCache;
+  };
+
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -445,6 +495,42 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         writeJson(response, 405, { error: { code: "invalid_request", message: "the spool socket is POST-only — it keeps no stream open" } });
+        return;
+      }
+      /**
+       * THE SESSIONS SOCKET — beside the spool's, and before the bearer check
+       * for the identical reason: it answers to its OWN secret in both
+       * directions. The engine token does not open it, and its secret opens no
+       * other route — including, deliberately, the archive and delete verbs
+       * that would let a client free its own create budget.
+       *
+       * IT MUST STAY ABOVE `sessionPath`, which would otherwise read
+       * `/v2/sessions/mcp` as a session whose id is "mcp" and answer 404. That
+       * is only true because the literal arms sit here; hoisting `sessionPath`
+       * breaks this and the two routes below it.
+       */
+      if (url.pathname === "/v2/sessions/mcp") {
+        if (!bearerIsValid(request.headers.authorization, sessionsSecret())) {
+          writeJson(response, 401, {
+            error: { code: "engine_unauthorized", message: "the sessions socket answers to its own secret — see /v2/sessions/mcp-info" },
+          });
+          return;
+        }
+        if (request.method === "POST") {
+          const message = await body(request);
+          const answer = await handleSessionsSocketMessage(sessionsSocketTools(), message);
+          if (answer === undefined) {
+            response.writeHead(202).end();
+            return;
+          }
+          writeJson(response, 200, answer);
+          return;
+        }
+        if (request.method === "DELETE") {
+          writeJson(response, 200, {});
+          return;
+        }
+        writeJson(response, 405, { error: { code: "invalid_request", message: "the sessions socket is POST-only — it keeps no stream open" } });
         return;
       }
       if (!bearerIsValid(request.headers.authorization, token)) {
@@ -1764,6 +1850,34 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { sessions: store.listSessions(projectId) });
         return;
       }
+      /**
+       * EVERY LIVE SESSION, ACROSS PROJECTS, plus the project registry beside
+       * it — what `sessions_list` answers with, and the only read in this file
+       * that is not scoped to one project or one session.
+       *
+       * A LITERAL PATH UNDER `/v2/sessions/`, so it must stay ABOVE the
+       * `sessionPath` block at the bottom: that regex matches `live` as
+       * happily as it matches a session id, and hoisting it would turn this
+       * route into "no session by that id".
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/live") {
+        writeJson(response, 200, store.liveSessions());
+        return;
+      }
+      /**
+       * THE SESSIONS SOCKET'S CONNECT CARD — where it listens and its dedicated
+       * secret. BEHIND THE NORMAL BEARER, exactly as the spool's is: the card
+       * mints and reveals the socket's credential, so only something already
+       * holding engine access may read it.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/sessions/mcp-info") {
+        const bound = server.address();
+        const port = bound && typeof bound === "object" ? bound.port : 0;
+        writeJson(response, 200, {
+          mcp: sessionsSocketConnectCard(`http://127.0.0.1:${port}/v2/sessions/mcp`, sessionsSecret()),
+        });
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/sessions") {
         const input = await body(request);
         writeJson(response, 201, {
@@ -1773,12 +1887,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             title: stringValue(input.title, "session title", true),
             ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
             ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
+            ...(typeof input.branchSlug === "string" ? { branchSlug: input.branchSlug } : {}),
             // Validated in the store rather than here, so the HTTP surface and
             // any in-process caller reject the same set of drivers.
             ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),
             // Naming an instance also names the driver, so the store ignores
             // `driver` when this is present rather than refusing the pair.
             ...(typeof input.providerInstanceId === "string" ? { providerInstanceId: input.providerInstanceId } : {}),
+            /**
+             * WHO ASKED — provenance, and the only value that spends the
+             * `sessions` budget. Forwarded rather than ignored because the
+             * OUT-OF-PROCESS worker reaches this route to build the toolkit's
+             * `create`, exactly as it reaches `/v2/spool/items` to build the
+             * spool's: the capability is assembled out of client calls in one
+             * deployment and out of `store.*` calls in the other, and both must
+             * meet the same cap.
+             *
+             * ONLY `"session"` IS HONOURED. Anything else — including a literal
+             * "human" — falls through to absent, which IS human; two spellings
+             * of the same state is how the two drift.
+             */
+            ...(input.origin === "session" ? { origin: "session" as const } : {}),
           }),
         });
         return;
@@ -2103,6 +2232,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     // path for claim/heartbeat/observe instead of two that can diverge.
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
+    let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
       const [{ EngineClient }, { EngineWorker }] = await Promise.all([
@@ -2115,14 +2245,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const { BrowserRuntime } = await import("./browser");
       browser = new BrowserRuntime();
       store.attachBrowser(browser);
-      const capability = (await import("./drivers")).browserCapability(browser);
-      const createDriver =
-        config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers({ browser: capability }));
+      // The browser reaches sessions over the worker-hosted MCP socket, for
+      // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
+      // the way it owns the browser: it outlives any turn and is closed once.
+      browserSocket = (await import("./drivers")).createBrowserToolSocket(browser);
+      const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const worker = new EngineWorker({
         client: new EngineClient(discovery),
         workerId,
         driver: await createDriver(),
+        browserSocket,
         ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
       });
       await worker.start();
@@ -2140,6 +2273,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The worker stops FIRST: it holds claims, and a claim outliving the
         // server it reports to becomes an ambiguous turn on the next start.
         await embedded?.stop();
+        // The socket before the browser it fronts: a listener that outlived
+        // its browser would answer tool calls with a runtime already closing.
+        await browserSocket?.close();
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");

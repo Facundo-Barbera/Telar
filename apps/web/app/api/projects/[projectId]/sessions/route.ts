@@ -4,6 +4,7 @@ import {
   engineClient,
   engineErrorResponse,
 } from "@/lib/engine/engine-server";
+import { loomOwnedSessionIds } from "@/lib/looms/store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,7 +14,14 @@ type Context = { params: Promise<{ projectId: string }> };
 export async function GET(_request: Request, context: Context) {
   try {
     const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).listSessions(projectId));
+    const { sessions } = await (await engineClient()).listSessions(projectId);
+    // DETACHMENT (docs/loom-model-v1.md): sessions a loom owns — origin and
+    // threads — do not exist on the ordinary surface. They are reachable only
+    // through the loom's room. This route is the one list every ordinary
+    // surface (sidebar, project pages) reads, so subtracting here is the
+    // whole enforcement.
+    const owned = loomOwnedSessionIds();
+    return Response.json({ sessions: sessions.filter((session) => !owned.has(session.id)) });
   } catch (error) {
     return engineErrorResponse(error);
   }

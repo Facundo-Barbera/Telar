@@ -67,6 +67,7 @@ type RunOptions = {
   controller?: AbortController;
   options?: CodexDriverOptions;
   mcpServers?: McpServer[];
+  browserSocket?: { url: string; token: string };
 };
 
 function runTurn(scenario: string, run: RunOptions = {}) {
@@ -84,6 +85,7 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.providerSessionId ? { providerSessionId: run.providerSessionId } : {}),
     ...(run.onRequest ? { onRequest: run.onRequest } : {}),
     ...(run.mcpServers ? { mcpServers: run.mcpServers } : {}),
+    ...(run.browserSocket ? { browserSocket: run.browserSocket } : {}),
   });
   return { result, observations, controller };
 }
@@ -222,6 +224,57 @@ test("the user's MCP servers ride thread/start's config overlay", async () => {
       linear: { url: "https://mcp.linear.app/mcp", http_headers: { Authorization: "Bearer managed" } },
     },
   });
+});
+
+test("the browser socket rides the SAME overlay, Telar last, and the token never touches argv", async () => {
+  const lease = { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_secret_abc" };
+  await runTurn("plain", {
+    browserSocket: lease,
+    mcpServers: [mcp("linear", { transport: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer managed" } })],
+  }).result;
+
+  // Merged WITH the user's servers, Telar's entry applied last — there is no
+  // `strictMcpConfig` on this path, so shadowing a colliding user server is
+  // the only defence available.
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: {
+      linear: { url: "https://mcp.linear.app/mcp", http_headers: { Authorization: "Bearer managed" } },
+      "telar-browser": { url: lease.url, http_headers: { Authorization: "Bearer tok_secret_abc" } },
+    },
+  });
+  // The spawn rule survives the injection: exactly one argument, and the
+  // token reaches the app-server on stdin only.
+  const argv = sent("@argv").argv as string[];
+  expect(argv.slice(1)).toEqual(["app-server"]);
+  expect(JSON.stringify(argv)).not.toContain("tok_secret_abc");
+});
+
+test("a RESUMED turn carries the browser overlay too — a new socket URL must reach an old thread", async () => {
+  const lease = { url: "http://127.0.0.1:4321/v2/browser/mcp", token: "tok_next" };
+  await runTurn("plain", { providerSessionId: "thread-42", browserSocket: lease }).result;
+  expect(sent("thread/resume").config).toEqual({
+    mcp_servers: { "telar-browser": { url: lease.url, http_headers: { Authorization: "Bearer tok_next" } } },
+  });
+});
+
+test("the tool catalogue is refreshed AFTER the thread call and BEFORE turn/start, and its failure costs nothing", async () => {
+  const lease = { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_abc" };
+  const { result } = runTurn("plain", { browserSocket: lease });
+  await expect(result).resolves.toMatchObject({ text: expect.any(String) });
+  // The fixture answers `config/mcpServer/reload` with -32601 (it implements
+  // nothing it was not taught), so this test ALSO proves the refresh is
+  // non-fatal: a stale catalogue costs tools, a throw would cost the turn.
+  const methods = wire().map((entry) => entry.method);
+  const reload = methods.indexOf("config/mcpServer/reload");
+  expect(reload).toBeGreaterThan(methods.indexOf("thread/start"));
+  expect(reload).toBeLessThan(methods.indexOf("turn/start"));
+});
+
+test("a turn with no MCP servers at all sends no catalogue refresh", async () => {
+  // Anti-vacuity for the guard: a session with nothing registered must not
+  // grow a new request on every turn.
+  await runTurn("plain").result;
+  expect(wire().some((entry) => entry.method === "config/mcpServer/reload")).toBeFalse();
 });
 
 test("the translation names Codex's fields, not the contract's", () => {
@@ -656,4 +709,33 @@ test("a declined MCP approval answers in the elicitation's vocabulary, not the a
 test("an accepted MCP approval carries the content field the protocol requires", async () => {
   await runTurn("mcp-elicitation", { onRequest: async () => "accept" }).result;
   expect(replies()[0]?.result).toEqual({ action: "accept", content: {} });
+});
+
+test("the browser socket's OWN elicitation is answered by the driver, never by the engine", async () => {
+  // THE SOCKET IS THE DECIDER for its tools — the per-lease gate already asked
+  // the engine before the call ran. Routing Codex's elicitation to `onRequest`
+  // too would put two cards in front of one click. And it must be an ACCEPT in
+  // the elicitation's vocabulary, never an unanswered request: a -32601 reads
+  // to Codex as a refused tool, naming a user who was never asked.
+  const seen: DriverRequest[] = [];
+  const { result, observations } = runTurn("mcp-elicitation-telar", {
+    browserSocket: { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_abc" },
+    onRequest: async (request) => {
+      seen.push(request);
+      return "decline";
+    },
+  });
+  await result;
+  // A gate that would have said NO was never consulted — and the tool ran,
+  // because the socket's gate is where that no belongs.
+  expect(seen).toEqual([]);
+  expect(replies()[0]?.result).toEqual({ action: "accept", content: {} });
+  // …and the call lands on the SAME row type a Claude session's browser call
+  // produces, under the same canonical name — the whole point of sharing the
+  // `telar-browser` key across providers.
+  const row = observations.find((o) => o.kind === "item.completed" && o.status === "completed");
+  expect(row?.kind === "item.completed" && row.detail?.type).toBe("browser_action");
+  expect(row?.kind === "item.completed" && row.detail?.type === "browser_action" && row.detail.call.name).toBe(
+    "mcp__telar-browser__browser_navigate",
+  );
 });

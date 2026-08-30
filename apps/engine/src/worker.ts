@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
-import { EngineClientError } from "@telar/engine-client";
-import { ProviderUnavailableError, type TurnDriver } from "./driver";
+import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
+import type { BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
+import { ProviderUnavailableError, type DriverRequest, type TurnDriver } from "./driver";
 import { providerProcessEnv } from "./provider-instances";
 
 type WorkerClient = Pick<
@@ -39,6 +41,21 @@ type WorkerClient = Pick<
   | "createSpoolNote"
   | "updateSpoolNote"
   | "spoolSearch"
+  // The `sessions` verbs. Same rule as the spool's above: no store handle,
+  // everything back over the loopback socket, so the toolkit is identical in
+  // the embedded worker and the out-of-process one. See `SessionsCapability`.
+  //
+  // NOTHING HERE ARCHIVES, DELETES OR MERGES. `EngineClient` has all three, and
+  // their absence from this Pick is what makes "the wall cannot land work"
+  // true of the worker's own reach and not only of the tool names: a handler
+  // that tried would not compile.
+  | "liveSessions"
+  | "createSession"
+  | "submitTurn"
+  | "events"
+  | "session"
+  | "stopTurn"
+  | "sessionDiff"
 >;
 
 /**
@@ -64,6 +81,12 @@ export type EngineWorkerOptions = {
   client: WorkerClient;
   workerId: string;
   driver: DriverSelector;
+  /**
+   * The browser, as the worker-hosted MCP socket both drivers are pointed at.
+   * Absent means sessions simply have no browser tools — what a test gets,
+   * and strictly better than a socket describing a browser that is not there.
+   */
+  browserSocket?: BrowserToolSocket;
   /** Short testable polling loop; production process supervision is outside this leaf. */
   pollMs?: number;
   /** Used by the process supervisor to rediscover a restarted daemon. */
@@ -147,6 +170,37 @@ export class EngineWorker {
     const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();
     this.active.set(claimToken, controller);
+    /**
+     * ONE park/heartbeat implementation for both doors into the engine's gate:
+     * the driver's own `onRequest`, and the browser socket's per-call gate.
+     * Factored rather than duplicated so an abort settles BOTH the same way.
+     */
+    const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<RequestDecision> => {
+      const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+      const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
+        requestId,
+        kind,
+        detail,
+      });
+      // Auto-resolved by the session's runtime mode — no human involved,
+      // no wait. This is the common path in a detached session.
+      if (opened.state === "resolved") return opened.decision;
+
+      // Parked. Wait for the heartbeat to carry an answer, or for the turn
+      // to be aborted. ABORT MUST SETTLE THIS PROMISE: a stop arriving
+      // while a human is deciding would otherwise leave the driver blocked
+      // forever inside canUseTool, and the turn would never end.
+      return new Promise<RequestDecision>((resolve) => {
+        this.awaiting.set(requestId, resolve);
+        const onAbort = () => {
+          if (!this.awaiting.delete(requestId)) return;
+          resolve("cancel");
+        };
+        if (controller.signal.aborted) onAbort();
+        else controller.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    let lease: BrowserSocketLease | undefined;
     try {
       // AFTER `markTurnRunning`, NOT BEFORE, and the ordering is load-bearing:
       // `failTurn` only settles a turn that is RUNNING, so a worker with no
@@ -155,6 +209,45 @@ export class EngineWorker {
       // Measured — the test below asserted `failed` and got `claimed`.
       await this.options.client.markTurnRunning(sessionId, runId, claimToken);
       const driver = this.driverFor(driverKind);
+      /**
+       * THE TURN'S BROWSER LEASE. One token per claimed run, released in the
+       * `finally` below — the token is handed to a provider subprocess, and
+       * per-run is what keeps its validity window equal to the window in which
+       * this turn's browser scope is legitimately reachable.
+       */
+      lease = await this.options.browserSocket?.bind({
+        // Sessions are the browser's natural boundary: two sessions must not
+        // share a tab, and a session's tabs must survive between its turns.
+        scopeKey: sessionId,
+        gate: async ({ name, args, readOnly }) => {
+          const decision = await askEngine({
+            // A CLASSIFICATION, NOT A BYPASS — the same rule TELAR_READ_TOOLS
+            // states in driver.ts. A read-only browser call changes nothing,
+            // so it is declared as a read and the mode ladder's existing
+            // auto-accept does its job; a mutation stays `tool_call` and
+            // parks where the mode says to park.
+            kind: readOnly ? "file_read" : "tool_call",
+            // The QUALIFIED name, so the approval and the timeline row name
+            // the same tool. A client shortens it for display
+            // (`displayToolName`); the data does not lie about which server
+            // it belongs to.
+            detail: {
+              kind: "tool_call",
+              call: { name: qualifyTelarTool(name, TELAR_BROWSER_MCP_SERVER), server: TELAR_BROWSER_MCP_SERVER, input: args },
+            },
+            toolUseId: `${TELAR_BROWSER_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
+          });
+          return decision === "accept" || decision === "acceptForSession";
+        },
+        onNavigated: (state) => {
+          // A stop is terminal the moment the engine records it — same guard
+          // as `onObservations` below, for the same conflict.
+          if (controller.signal.aborted) return;
+          void this.options.client
+            .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
+            .catch(() => undefined);
+        },
+      });
       const result = await driver.run({
         prompt,
         cwd,
@@ -187,9 +280,10 @@ export class EngineWorker {
         // requires of any row that names a model at all.
         providerInstanceId: claim.providerInstanceId,
         providerSessionId,
-        // Sessions are the browser's natural boundary: two sessions must not
-        // share a tab, and a session's tabs must survive between its turns.
-        browserScopeKey: sessionId,
+        // The browser rides the worker's socket; the driver only learns where
+        // and with which credential. Spread on the same absent-means-absent
+        // rule as everything above it.
+        ...(lease ? { browserSocket: { url: lease.url, token: lease.token } } : {}),
         /**
          * THE SPOOL, SCOPED TO THIS TURN'S PROJECT.
          *
@@ -249,31 +343,42 @@ export class EngineWorker {
           search: async (query, subject) =>
             (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
         },
-        onRequest: async ({ kind, detail, toolUseId }) => {
-          const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
-          const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
-            requestId,
-            kind,
-            detail,
-          });
-          // Auto-resolved by the session's runtime mode — no human involved,
-          // no wait. This is the common path in a detached session.
-          if (opened.state === "resolved") return opened.decision;
-
-          // Parked. Wait for the heartbeat to carry an answer, or for the turn
-          // to be aborted. ABORT MUST SETTLE THIS PROMISE: a stop arriving
-          // while a human is deciding would otherwise leave the driver blocked
-          // forever inside canUseTool, and the turn would never end.
-          return new Promise<RequestDecision>((resolve) => {
-            this.awaiting.set(requestId, resolve);
-            const onAbort = () => {
-              if (!this.awaiting.delete(requestId)) return;
-              resolve("cancel");
-            };
-            if (controller.signal.aborted) onAbort();
-            else controller.signal.addEventListener("abort", onAbort, { once: true });
-          });
+        /**
+         * THE SESSIONS TOOLKIT — a session's door to OTHER sessions.
+         *
+         * UNSCOPED, unlike the spool, and that is not an oversight: there is no
+         * scope to apply. A session created here is a PEER of the one that
+         * asked — no parent, no child, no link recorded anywhere — so there is
+         * nothing about this turn for the capability to be narrowed by. What
+         * bounds it is the store's live-session budget, which is a plain count
+         * and not a relationship.
+         *
+         * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
+         * do: the worker holds no store handle, and routing through the same
+         * HTTP surface the cockpit uses means there is exactly one
+         * implementation of every rule about a session — including the budget,
+         * which `createSession` enforces regardless of which door reached it.
+         *
+         * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
+         * on the wall carries it — the same construction as the spool's
+         * `source: "session"`.
+         */
+        sessions: {
+          list: () => this.options.client.liveSessions(),
+          create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
+          send: async (id, input) => {
+            const accepted = await this.options.client.submitTurn(id, input);
+            return { turn: accepted.turn, replayed: accepted.replayed };
+          },
+          read: async (id, after) => (await this.options.client.events(id, after)).events,
+          status: async (id) => {
+            const snapshot = await this.options.client.session(id);
+            return { session: snapshot.session, turns: snapshot.turns };
+          },
+          stop: (id) => this.options.client.stopTurn(id),
+          diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         },
+        onRequest: askEngine,
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the
           // driver may still be mid-message when the abort lands. Reporting
@@ -284,6 +389,10 @@ export class EngineWorker {
           await this.options.client.reportObservations(sessionId, runId, claimToken, observations);
         },
       });
+      // Drained BEFORE the turn settles. A state read still in flight would
+      // otherwise report against a turn the engine has already closed, which
+      // it rejects as a conflict — the guarantee the old in-driver queue gave.
+      await lease?.drain();
       if (!controller.signal.aborted) {
         await this.options.client.completeTurn(sessionId, runId, claimToken, {
           text: result.text,
@@ -308,6 +417,9 @@ export class EngineWorker {
         if (!(settleError instanceof EngineClientError && settleError.code === "conflict")) throw settleError;
       }
     } finally {
+      // The lease dies with the turn: a provider subprocess that outlives its
+      // run holds a token that now answers 401, which is the revocation.
+      lease?.release();
       this.active.delete(claimToken);
     }
   }

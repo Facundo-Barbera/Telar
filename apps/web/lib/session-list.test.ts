@@ -175,12 +175,23 @@ describe("deriveSessionList", () => {
     expect(titles(deriveSessionList({ sessions: FIXTURE, projectId: "p2", now: NOW }).sessions)).toEqual(["Browser naming"]);
   });
 
-  test("the open session survives its own shelving, and is not rendered twice", () => {
+  test("reading a settled session does NOT unsettle it", () => {
+    // The survivor rule used to promote the open settled row into the live
+    // list, which read as "clicking a settled session pushes it back to the
+    // top". Settled is a state only the person changes — reading is not
+    // unsettling. The row stays on its shelf, where the rail highlights it.
     const list = deriveSessionList({ sessions: FIXTURE, activeSessionId: "s2", now: NOW });
-    expect(titles(list.sessions)).toContain("Old spike");
-    expect(titles(list.settled)).not.toContain("Old spike");
-    // It left the shelf, so the shelf's count must agree.
-    expect(list.settledCount).toBe(0);
+    expect(titles(list.sessions)).not.toContain("Old spike");
+    expect(titles(list.settled)).toContain("Old spike");
+    expect(list.settledCount).toBe(1);
+  });
+
+  test("the settled session being read stays on its shelf's visible page", () => {
+    const extra = Array.from({ length: 3 }, (_, i) =>
+      row(`old${i}`, `Old ${i}`, { updatedAt: NOW - SETTLED_AFTER_MS - 1, createdAt: NOW - 1_000 - i }),
+    );
+    const list = deriveSessionList({ sessions: [...FIXTURE, ...extra], activeSessionId: "s2", now: NOW, settledLimit: 1 });
+    expect(titles(list.settled)).toContain("Old spike");
   });
 
   test("the open session survives a SNOOZE too", () => {

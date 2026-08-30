@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon } from "lucide-react";
+import { EyeIcon, FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   type EngineEvent,
   type EngineRequest,
@@ -101,6 +101,7 @@ function SessionMasthead({
   sending,
   onRename,
   panel,
+  readOnly = false,
 }: {
   projectId: string;
   /** Resolved from the project record. Absent until it loads — the breadcrumb
@@ -114,6 +115,9 @@ function SessionMasthead({
    *  masthead stays identity-only and does not acquire the session record's
    *  items, tasks, turns and events just to hand them straight through. */
   panel: React.ReactNode;
+  /** Observe mode: the title is a fact, not a field, and there is no spin —
+   *  a loom-owned session cannot be spun into another loom. */
+  readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -197,7 +201,7 @@ function SessionMasthead({
             <span className="truncate" title={title}>
               {title}
             </span>
-            {session && (
+            {session && !readOnly && (
               <Button
                 type="button"
                 variant="ghost"
@@ -219,7 +223,25 @@ function SessionMasthead({
       {/* The whole trailing cluster is controls, so it opts out as a block
           rather than one button at a time. `shrink-0`: these are fixed-size
           glyphs, and the title beside them is what absorbs a narrow window. */}
-      <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">{panel}</div>
+      <div className="app-no-drag ml-auto flex shrink-0 items-center gap-2">
+        {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
+            produced enough shape, hand it to the weaver. The session becomes
+            the loom's origin and detaches — it leaves this surface and lives
+            in the loom's room from then on. */}
+        {session && !readOnly && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Spin into loom"
+            title="Spin into loom — the weaver reads this conversation and proposes threads"
+            render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
+          >
+            <WorkflowIcon />
+          </Button>
+        )}
+        {panel}
+      </div>
     </header>
   );
 }
@@ -449,6 +471,7 @@ export function SessionCockpit({
   sessionId: routeSessionId,
   projectName: serverProjectName,
   greeting,
+  observe = false,
 }: {
   projectId: string;
   sessionId?: string;
@@ -459,6 +482,16 @@ export function SessionCockpit({
    *  reason: a phrase picked after mount is a phrase the reader watches
    *  change. */
   greeting?: number;
+  /**
+   * WATCHING, NOT DRIVING. A loom's worker thread is driven by its loom —
+   * brief, contract, conductor nudges — and a human typing into it would be
+   * a second boss. Observe mode keeps everything that informs (transcript,
+   * panel, diff) and removes everything that drives: the composer, rename,
+   * spin. Engine requests (an agent's explicit question) stay answerable —
+   * a parked question IS for a human. The conductor and origin sessions are
+   * never observed: talking there is steering, which is the human's job.
+   */
+  observe?: boolean;
 }) {
   /**
    * THE SESSION ID IS STATE, NOT JUST A PROP.
@@ -1136,6 +1169,7 @@ export function SessionCockpit({
           projectName={projectName}
           session={session}
           sending={sending}
+          readOnly={observe}
           onRename={(next) => void rename(next)}
           panel={
             <>
@@ -1188,6 +1222,12 @@ export function SessionCockpit({
           </ConversationContent>
           <ConversationScrollButton />
         </ConversationViewport>
+        {observe ? (
+          <div className="mx-auto mb-4 flex w-full max-w-[50rem] items-center gap-2 rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground">
+            <EyeIcon className="size-3.5 shrink-0" />
+            Observing — this thread is driven by its loom. To steer it, talk to the conductor; questions it asks you still appear above.
+          </div>
+        ) : (
         <Composer
           draft={draft}
           // A fresh canvas is READY: there is nothing to wait for, because the
@@ -1242,6 +1282,7 @@ export function SessionCockpit({
           onModelChange={fresh ? setDraftModel : (next) => void setModel(next)}
           onOpenChanges={() => showPanelTab("diff")}
         />
+        )}
       </div>
       {panel.open && (
         <RightPanel
