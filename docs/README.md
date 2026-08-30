@@ -1,5 +1,10 @@
 # docs
 
+**Current direction (2026-08):** [`vision-2026-08.md`](vision-2026-08.md) — docs as
+the interface, looms as workers, verification as the gate, and environment leasing
+as the scarce-resource manager. Normative companion: [`env-contract-v1.md`](env-contract-v1.md)
+(implemented by `packages/env`). A visual summary lives in [`artifacts/`](artifacts/).
+
 Fresh documentation is being written here. What is already in this directory is
 not part of that effort — it is the set of pages that **live source code cites as
 its own rationale**, kept when the generated 2026-07-17 doc set was cleared:

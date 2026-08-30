@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Telar — Vision 2026-08</title>
+<style>
+  :root {
+    --bg: #0e0f12;
+    --panel: #16181d;
+    --panel-2: #1c1f26;
+    --line: #2a2e37;
+    --text: #e8e6e1;
+    --muted: #9aa0ab;
+    --accent: #d4a24e;      /* weaver gold */
+    --accent-dim: #8a6a33;
+    --green: #6fbf8b;
+    --blue: #7aa7d9;
+    --red: #d97a7a;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: -apple-system, "Inter", "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.55;
+    padding: 48px 24px 96px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+
+  header { margin-bottom: 56px; }
+  .kicker {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--accent); margin-bottom: 12px;
+  }
+  h1 { font-size: 42px; font-weight: 650; letter-spacing: -.02em; line-height: 1.15; }
+  h1 .dim { color: var(--muted); font-weight: 400; }
+  .sub { margin-top: 16px; font-size: 17px; color: var(--muted); max-width: 640px; }
+  .sub b { color: var(--text); font-weight: 600; }
+
+  h2 {
+    font-size: 13px; font-family: var(--mono); letter-spacing: .16em;
+    text-transform: uppercase; color: var(--muted);
+    margin: 64px 0 20px; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+  }
+  h2 .num { color: var(--accent); margin-right: 10px; }
+
+  /* four pillars */
+  .pillars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .pillar {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 16px;
+  }
+  .pillar .t { font-weight: 650; font-size: 15px; margin-bottom: 6px; }
+  .pillar .d { font-size: 13px; color: var(--muted); }
+  .pillar .role { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+
+  /* loop */
+  .loop { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .step {
+    flex: 1 1 0; min-width: 130px; background: var(--panel); border: 1px solid var(--line);
+    padding: 16px 14px; position: relative;
+  }
+  .step:first-child { border-radius: 10px 0 0 10px; }
+  .step:last-child { border-radius: 0 10px 10px 0; }
+  .step + .step { border-left: none; }
+  .step .who { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 8px; }
+  .who.human { color: var(--accent); } .who.agent { color: var(--blue); } .who.verifier { color: var(--green); }
+  .step .t { font-weight: 650; font-size: 14.5px; margin-bottom: 4px; }
+  .step .d { font-size: 12.5px; color: var(--muted); }
+  .loop-note { margin-top: 14px; font-size: 13.5px; color: var(--muted); }
+  .loop-note b { color: var(--text); }
+
+  /* scheduler diagram */
+  .sched { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+  .lanes { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .lane h3 { font-size: 14px; font-weight: 650; margin-bottom: 4px; }
+  .lane .cap { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+  .lane .cap em { color: var(--green); font-style: normal; }
+  .lane.heavy .cap em { color: var(--red); }
+  .wt {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 12px; margin-bottom: 8px; font-family: var(--mono); font-size: 12px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot.b { background: var(--blue); } .dot.g { background: var(--green); }
+  .dot.q { background: var(--muted); } .dot.a { background: var(--accent); }
+  .wt .st { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .wt.holder { border-color: var(--accent-dim); }
+  .wt.holder .st { color: var(--accent); }
+  .sched-foot { margin-top: 18px; padding-top: 16px; border-top: 1px dashed var(--line); font-size: 13.5px; color: var(--muted); }
+  .sched-foot b { color: var(--text); }
+
+  /* contract */
+  .contract { display: grid; grid-template-columns: 1.1fr .9fr; gap: 20px; align-items: start; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; font-family: var(--mono); font-size: 12.5px; line-height: 1.7;
+    overflow-x: auto; color: var(--text);
+  }
+  pre .c { color: #626a77; } pre .k { color: var(--blue); } pre .v { color: var(--green); }
+  pre .a { color: var(--accent); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+  td code, .rule code, .loop-note code, .sched-foot code {
+    font-family: var(--mono); font-size: .92em; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px;
+  }
+  td:first-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+  .cost td:first-child { color: var(--text); font-weight: 600; }
+  .cost .pill { font-family: var(--mono); font-size: 10.5px; border-radius: 99px; padding: 2px 9px; border: 1px solid; }
+  .pill.none  { color: var(--green); border-color: var(--green); }
+  .pill.light { color: var(--blue);  border-color: var(--blue); }
+  .pill.heavy { color: var(--red);   border-color: var(--red); }
+
+  /* rules */
+  .rules { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .rule {
+    background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 16px 18px; font-size: 13.5px;
+  }
+  .rule .t { font-weight: 650; margin-bottom: 6px; font-size: 14px; }
+  .rule p { color: var(--muted); }
+  .rule p b { color: var(--text); }
+
+  /* sequencing */
+  ol.seq { list-style: none; counter-reset: s; }
+  ol.seq li {
+    counter-increment: s; display: flex; gap: 16px; padding: 13px 0;
+    border-bottom: 1px solid var(--line); font-size: 14px; align-items: baseline;
+  }
+  ol.seq li::before {
+    content: counter(s); font-family: var(--mono); color: var(--accent);
+    font-size: 13px; min-width: 20px;
+  }
+  ol.seq li b { font-weight: 650; }
+  ol.seq li span { color: var(--muted); }
+  ol.seq li.gate { border-left: 3px solid var(--accent); padding-left: 13px; margin-left: -16px; }
+
+  @media (max-width: 760px) {
+    .pillars, .lanes, .contract, .rules { grid-template-columns: 1fr; }
+    .loop { flex-direction: column; }
+    .step:first-child { border-radius: 10px 10px 0 0; }
+    .step:last-child { border-radius: 0 0 10px 10px; }
+    .step + .step { border-left: 1px solid var(--line); border-top: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">Telar · Vision · August 2026</div>
+  <h1>Docs are the interface.<br><span class="dim">Environments are the scarce resource.</span></h1>
+  <p class="sub">Telar stops competing with the chat cockpit. Its job starts <b>before the chat</b> — deciding
+  what work exists — and <b>after it</b> — verifying and accepting. In between, an environment
+  scheduler makes N parallel agents survivable on one 24&nbsp;GB machine.</p>
+</header>
+
+<h2><span class="num">01</span>Four pillars</h2>
+<div class="pillars">
+  <div class="pillar"><div class="role">Interface</div><div class="t">Documentation</div>
+    <div class="d">Writing docs is how agents are programmed. Intent is the artifact being curated — never re-explained per session.</div></div>
+  <div class="pillar"><div class="role">Workers</div><div class="t">Looms</div>
+    <div class="d">Self-verifying units of work in isolated worktrees. The shape for the 10% you don't babysit — not the front door.</div></div>
+  <div class="pillar"><div class="role">Gate</div><div class="t">Verifier</div>
+    <div class="d">Observe-only, cannot edit code, cannot make itself pass. Load-bearing once pickup is unsupervised.</div></div>
+  <div class="pillar"><div class="role">Scheduler</div><div class="t">Env leases</div>
+    <div class="d">Live stacks are pooled and leased, sized to review bandwidth (k≈1–2), not agent count.</div></div>
+</div>
+
+<h2><span class="num">02</span>The daily loop</h2>
+<div class="loop">
+  <div class="step"><div class="who human">Human</div><div class="t">Curate intent</div><div class="d">Docs, specs, decisions.</div></div>
+  <div class="step"><div class="who agent">Agent</div><div class="t">Triage</div><div class="d">Reads doc diffs, proposes looms.</div></div>
+  <div class="step"><div class="who human">Human</div><div class="t">Approve pickup</div><div class="d">One click. Autonomy is earned later.</div></div>
+  <div class="step"><div class="who agent">Agent</div><div class="t">Build</div><div class="d">Isolated worktree. No environment needed.</div></div>
+  <div class="step"><div class="who verifier">Verifier</div><div class="t">Verify</div><div class="d">Leased env. Red → repair on same lease.</div></div>
+  <div class="step"><div class="who human">Human</div><div class="t">Accept</div><div class="d">Always. No agent-callable accept.</div></div>
+</div>
+<p class="loop-note"><b>Escape hatch, not core:</b> live meddling (UI polish, debugging) = open t3&nbsp;code or a
+terminal <em>in the loom's worktree</em>. Telar does not rebuild the chat.</p>
+
+<h2><span class="num">03</span>The environment scheduler</h2>
+<div class="sched">
+  <div class="lanes">
+    <div class="lane">
+      <h3>Build lanes</h3>
+      <div class="cap">typecheck · unit tests · no Docker — <em>N in parallel, nearly free</em></div>
+      <div class="wt"><span class="dot b"></span>wt-auth-codes <span class="st">building</span></div>
+      <div class="wt"><span class="dot b"></span>wt-kb-search <span class="st">building</span></div>
+      <div class="wt"><span class="dot g"></span>wt-invite-flow <span class="st">unit ✓ → wants verify</span></div>
+      <div class="wt"><span class="dot g"></span>wt-export-csv <span class="st">unit ✓ → wants verify</span></div>
+    </div>
+    <div class="lane heavy">
+      <h3>Verify pool &nbsp;<span style="font-family:var(--mono);font-size:11px;color:var(--red)">k = 1</span></h3>
+      <div class="cap">full stack · browser · real RAM — <em>a queue, not a fan-out</em></div>
+      <div class="wt holder"><span class="dot a"></span>wt-billing-fix <span class="st">holds lease · repairing</span></div>
+      <div class="wt"><span class="dot q"></span>wt-invite-flow <span class="st">queued #1</span></div>
+      <div class="wt"><span class="dot q"></span>wt-export-csv <span class="st">queued #2</span></div>
+    </div>
+  </div>
+  <div class="sched-foot">
+    The reframe: <b>you review one thing at a time</b>, so the pool matches review bandwidth, not agent count.
+    A lease is held through verify <em>and repair</em>, released on green. Cheap tiers
+    (<code>unit</code> → <code>integration</code> → <code>live</code>) run in parallel; only the heavy tier queues.
+    A loom can reach <b>“ready pending live-verify”</b> without touching Docker.
+  </div>
+</div>
+
+<h2><span class="num">04</span>The contract — five verbs, one cost class</h2>
+<div class="contract">
+  <pre><span class="c"># ~/.telar/projects/&lt;id&gt;/env.yaml — the sidecar</span>
+<span class="k">version</span>: <span class="v">1</span>
+<span class="k">env</span>:
+  <span class="k">cost</span>: <span class="v">heavy</span>        <span class="c"># none | light | heavy</span>
+  <span class="k">up</span>: <span class="v">bun run up</span>     <span class="c"># idempotent, slot-isolated</span>
+  <span class="k">ready</span>: <span class="v">curl -sf :</span><span class="a">$TELAR_PORT_BASE</span><span class="v">/health</span>
+  <span class="k">reset</span>: <span class="v">bun run db:reset</span>
+  <span class="k">down</span>: <span class="v">bun run down</span>
+  <span class="k">tiers</span>:
+    <span class="k">unit</span>: <span class="v">bun test</span>            <span class="c"># cost: none</span>
+    <span class="k">live</span>: <span class="v">bun run test:e2e</span>   <span class="c"># leased heavy env</span>
+
+<span class="c"># Telar injects: TELAR_SLOT · TELAR_PORT_BASE
+#                TELAR_WORKTREE · TELAR_LEASE_ID</span></pre>
+  <div>
+    <table class="cost">
+      <tr><th>cost</th><th>meaning</th><th>policy</th></tr>
+      <tr><td><span class="pill none">none</span></td><td>Library. Tests need no services.</td><td>Unlimited parallel.</td></tr>
+      <tr><td><span class="pill light">light</span></td><td>A process or two, no containers.</td><td>Per-worktree, cap&nbsp;4.</td></tr>
+      <tr><td><span class="pill heavy">heavy</span></td><td>Containers, DBs, real RAM.</td><td>Leased pool, k&nbsp;=&nbsp;1.</td></tr>
+    </table>
+    <table style="margin-top:14px">
+      <tr><th>verb</th><th>semantics</th></tr>
+      <tr><td>up</td><td>Idempotent; never touches other slots.</td></tr>
+      <tr><td>ready</td><td>Exit 0 when usable; polled with timeout.</td></tr>
+      <tr><td>reset</td><td>Clean data state; else down + up.</td></tr>
+      <tr><td>down</td><td>Safe on an already-down slot.</td></tr>
+      <tr><td>verify</td><td>Optional; else the Verifier drives directly.</td></tr>
+    </table>
+  </div>
+</div>
+
+<h2><span class="num">05</span>Rules that keep it honest</h2>
+<div class="rules">
+  <div class="rule"><div class="t">No adapters, ever</div>
+    <p>Telar never knows Docker or Supabase exist. The project's scripts absorb all weirdness.
+    <b>If onboarding a project requires changing Telar, the contract is wrong</b> — bump to v2, never special-case.</p></div>
+  <div class="rule"><div class="t">Sovereignty</div>
+    <p>Telar config is personal, like editor config. <b>Nothing Telar-shaped is committed to a shared repo.</b>
+    Adaptation lives in the sidecar; upstream only tool-neutral improvements a teammate who's never heard of Telar would thank you for.</p></div>
+  <div class="rule"><div class="t">Onboarding is an agent's job</div>
+    <p><code>telar init</code> = an agent reads the repo, writes the mapping, and <b>proves it</b> —
+    lease slot 1, ready, reset, down, ports in range. You accept it like any loom.</p></div>
+  <div class="rule"><div class="t">Isolation per database, not per container</div>
+    <p>One Postgres, N databases. Supabase/Neon branching where available —
+    <b>zero local RAM</b> for per-worktree data.</p></div>
+</div>
+
+<h2><span class="num">06</span>Sequencing</h2>
+<ol class="seq">
+  <li><b>Freeze the contract on paper</b>&nbsp;<span>— env-contract-v1.md. Done.</span></li>
+  <li><b>Orchestrator speaks it by hand</b>&nbsp;<span>— its slot system is ~90% there; sidecar mapping only.</span></li>
+  <li class="gate"><b>Build the lease daemon — no UI</b>&nbsp;<span>— <code>telar env lease / release / status</code>. If this alone changes how many agents run in parallel, the thesis is confirmed.</span></li>
+  <li><b>Onboarding agent vs. ozom-gv</b>&nbsp;<span>— the test of generality.</span></li>
+  <li><b>Only then: docs-as-interface + triage loop</b>&nbsp;<span>— the surface comes last.</span></li>
+</ol>
+
+</div>
+</body>
+</html>

@@ -710,6 +710,12 @@ export function Composer({
 
       <BackgroundPresence count={backgroundTasks} onStop={onStop} />
 
+      {/* ONE BLOCK, form plus foot. The outer wrapper is a flex column with a
+          gap, and the foot's whole fuse (workspace-environment.tsx's `-mt-px`,
+          `border-t-0`) is defeated by any gap between it and the form — the
+          tray read as a second card floating below. Grouping them makes the
+          gap apply around the pair, never inside it. */}
+      <div>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -916,6 +922,7 @@ export function Composer({
         {...(onOpenChanges ? { onOpenChanges } : {})}
       />
       )}
+      </div>
     </div>
   );
 }

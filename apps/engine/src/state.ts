@@ -3417,6 +3417,15 @@ export class EngineStore {
      * cross-checked and refused.
      */
     providerInstanceId?: string;
+    /**
+     * Caller-proposed branch for a worktree session, e.g.
+     * `loom/hito1-agosto/presupuestos`. Must live under `loom/` or `telar/`
+     * (enforced in worktree.ts). Absent, the branch derives from the title —
+     * `telar/<title-slug>-<id6>` — and only falls back to the session id when
+     * there is no usable title. Names should come from the work, not the
+     * machinery.
+     */
+    branchSlug?: string;
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
@@ -3445,10 +3454,20 @@ export class EngineStore {
     const workspace: Session["workspace"] =
       envMode === "worktree"
         ? (() => {
+            const titleSlug = (input.title ?? "")
+              .toLowerCase()
+              .normalize("NFD")
+              .replace(/[\u0300-\u036f]/g, "")
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, "")
+              .slice(0, 40);
+            const branchSlug =
+              input.branchSlug ?? (titleSlug ? `telar/${titleSlug}-${id.replace(/^session_/, "").slice(0, 6)}` : undefined);
             const cut = createSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
               sessionId: id,
+              ...(branchSlug !== undefined ? { branchSlug } : {}),
             });
             return { mode: "worktree" as const, path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
           })()
