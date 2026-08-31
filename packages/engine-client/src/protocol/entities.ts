@@ -54,6 +54,17 @@ export const Project = z.object({
    * support — not every project is a git repository.
    */
   branch: z.string().min(1).optional(),
+  /**
+   * Present when the engine found an icon file in the project's checkout —
+   * a favicon, an app icon, a `.telar/icon.*`. The value is an opaque cache
+   * key derived from the file's path, mtime and size; the bytes are served by
+   * `GET /v2/projects/:id/icon`. Because the key changes whenever the file
+   * does, a client may cache the bytes immutably against `?v=<icon>`.
+   *
+   * DERIVED ON LIST like `branch` above, and for the same reason: the file
+   * lives in somebody's working tree and changes without telling the engine.
+   */
+  icon: z.string().min(1).max(64).optional(),
 });
 export type Project = z.infer<typeof Project>;
 

@@ -200,6 +200,40 @@ export class EngineClient {
     return this.request("GET", "/v2/health");
   }
 
+  /**
+   * The project's icon, as bytes — the image behind `Project.icon`.
+   *
+   * The one binary GET on this client. Not folded into `request` because that
+   * envelope parses JSON, and generalising it for one route would put a
+   * content-type branch on every call in the class.
+   */
+  async projectIcon(projectId: string): Promise<{ data: Uint8Array; contentType: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/projects/${encodeURIComponent(projectId)}/icon`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.discovery.token}` },
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+    }
+    if (!response.ok) {
+      let code: EngineErrorCode = "engine_unavailable";
+      let message = "engine request failed";
+      try {
+        const error = ((await response.json()) as EngineErrorBody | null)?.error;
+        if (error) ({ code, message } = error);
+      } catch {
+        // A non-JSON failure body keeps the defaults.
+      }
+      throw new EngineClientError(code, message, response.status);
+    }
+    return {
+      data: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+    };
+  }
+
   listProjects(): Promise<{ projects: Project[] }> {
     return this.request("GET", "/v2/projects");
   }
