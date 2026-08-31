@@ -23,6 +23,8 @@ function report(buckets: UsageBucket[], overrides: Partial<UsageReport> = {}): U
     resolution: "day",
     timeZone: "UTC",
     buckets,
+    sources: [],
+    pricing: "fresh",
     sessions: 2,
     readAt: 0,
     ...overrides,

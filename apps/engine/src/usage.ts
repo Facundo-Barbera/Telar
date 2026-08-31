@@ -1,152 +1,212 @@
 /**
- * The usage report — spend over time, folded from the engine's own journals.
+ * The usage report — spend over time, scanned from the provider CLIs' own
+ * transcripts. t3 code's architecture (itself modeled on ccusage), adopted
+ * over folding Telar's journals because the transcripts know two things the
+ * journals never will: WHICH model a default-riding turn actually ran, and
+ * everything this machine spent OUTSIDE Telar. Telar's own turns land in the
+ * same directories, so one source counts everything exactly once.
  *
- * NO SECOND RECORDING PATH. Every settled turn's journal already ends with a
- * `turn.completed` carrying its final `UsageSnapshot`; this module reads what
- * is there rather than teaching the write path to also keep a ledger the two
- * could disagree about. The trade is stated where it bites: usage lives and
- * dies with the session's journal, so deleting a session deletes its history
- * from this page. (t3 code scans the provider CLIs' transcript directories
- * instead — its threads run outside its own store; Telar's do not.)
+ * Verified against the real files on disk, not the docs:
  *
- * ABORTED TURNS COUNT WHAT THEY LAST REPORTED. A stopped or failed turn has
- * no `turn.completed`, so its spend is the LAST `usage.updated` seen for that
- * run — a floor, not a total (Claude's mid-turn snapshots are per-envelope),
- * and better than pretending an interrupted turn cost nothing. When a
- * `turn.completed` exists it wins outright: the result figure is the
- * provider's own whole-turn total, and adding snapshots on top would double
- * count.
+ *   Claude — `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`, one record
+ *   per assistant message: `{type:"assistant", timestamp, sessionId,
+ *   requestId, costUSD, message:{id, model, usage:{input_tokens,
+ *   cache_read_input_tokens, cache_creation_input_tokens, output_tokens}}}`.
+ *   `input_tokens` already EXCLUDES cache reads. `costUSD` is null on
+ *   subscription plans. Dedupe by `messageId:requestId` (a resumed session
+ *   copies its parent's history into a new file).
+ *
+ *   Codex — `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`:
+ *   `{type:"event_msg", payload:{type:"token_count", info:{last_token_usage:
+ *   {input_tokens, cached_input_tokens, cache_write_input_tokens,
+ *   output_tokens, reasoning_output_tokens}}}}` — `input_tokens` INCLUDES the
+ *   cached and cache-write figures, so uncached input is the difference. The
+ *   model rides separately on `turn_context` records and is carried forward.
+ *   Consecutive identical usage payloads are re-emissions, not new spend.
+ *
+ * Cost: the transcript's own figure when present, else the LiteLLM rate
+ * table (usage-pricing.ts), else absent — never guessed.
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport, UsageResolution } from "@telar/engine-client";
+import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport, UsageResolution, UsageSource } from "@telar/engine-client";
+import { loadRates, priceTokens, type RatesTable } from "./usage-pricing";
 
-type TurnSpend = {
+export type UsageRecord = {
   at: number;
-  runId: string;
+  model: string;
   tokens: TokenUsage;
   costUsd?: number;
-  /** True when this figure is a turn.completed total, false for the
-   *  last-snapshot floor of an aborted turn. */
-  settled: boolean;
-};
-
-type SessionScan = {
-  driver: ProviderDriverKind;
-  /** runId → model actually selected for that turn (or the session default). */
-  modelOf: Map<string, string>;
-  spends: TurnSpend[];
+  sessionId: string;
+  /** Cross-file dedupe key; undefined means "trust the file order dedupe". */
+  dedupe?: string;
 };
 
 /**
- * Parse results memoised per journal file by (size, mtime) — the same key t3
- * code's scan cache uses, for the same reason: journals only ever append, and
- * a usage page refresh must not re-read every session ever run. In memory
- * only; a daemon restart pays one cold scan.
+ * Files whose mtime predates the window by more than this cannot contain
+ * records inside it — minus clock skew and long sessions, hence the generous
+ * slack (t3 code's own figure). This is what keeps a 90-day scan from
+ * re-reading a year of transcripts.
  */
-const scanCache = new Map<string, { size: number; mtimeMs: number; scan: SessionScan }>();
+const MTIME_SLACK_MS = 36 * 3_600_000;
 
-function readJsonLoose(file: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
-}
+/** Per-file parse results memoised by (size, mtime) — transcripts append. */
+const scanCache = new Map<string, { size: number; mtimeMs: number; records: UsageRecord[] }>();
 
-function tokensFrom(value: unknown): TokenUsage | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const raw = value as Record<string, unknown>;
-  const n = (key: string): number => (typeof raw[key] === "number" && raw[key] >= 0 ? Math.floor(raw[key]) : 0);
+function tokensOf(input: number, output: number, cacheRead: number, cacheCreate: number, reasoning?: number): TokenUsage {
   return {
-    input: n("input"),
-    output: n("output"),
-    cacheRead: n("cacheRead"),
-    cacheCreate: n("cacheCreate"),
-    ...(typeof raw["reasoning"] === "number" ? { reasoning: Math.floor(raw["reasoning"] as number) } : {}),
+    input: Math.max(0, Math.floor(input)),
+    output: Math.max(0, Math.floor(output)),
+    cacheRead: Math.max(0, Math.floor(cacheRead)),
+    cacheCreate: Math.max(0, Math.floor(cacheCreate)),
+    ...(reasoning !== undefined ? { reasoning: Math.max(0, Math.floor(reasoning)) } : {}),
   };
 }
 
-function scanSession(sessionDir: string): SessionScan | undefined {
-  const eventsFile = path.join(sessionDir, "events.ndjson");
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(eventsFile);
-  } catch {
-    return undefined;
-  }
-  const cached = scanCache.get(eventsFile);
-  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.scan;
-
-  const session = readJsonLoose(path.join(sessionDir, "session.json"));
-  const driver = session?.["driver"];
-  if (driver !== "claude" && driver !== "codex") return undefined;
-  const sessionModel =
-    typeof session?.["model"] === "object" && session["model"] !== null
-      ? (session["model"] as Record<string, unknown>)["model"]
-      : undefined;
-
-  const modelOf = new Map<string, string>();
-  const queue = readJsonLoose(path.join(sessionDir, "queue.json"));
-  if (Array.isArray(queue?.["turns"])) {
-    for (const entry of queue["turns"] as unknown[]) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const turn = entry as Record<string, unknown>;
-      const runId = turn["runId"];
-      if (typeof runId !== "string") continue;
-      const model = typeof turn["model"] === "object" && turn["model"] !== null ? (turn["model"] as Record<string, unknown>)["model"] : undefined;
-      const chosen = model ?? sessionModel;
-      if (typeof chosen === "string" && chosen) modelOf.set(runId, chosen);
-    }
-  }
-
-  /**
-   * STREAMED LINE BY LINE, LAST WRITER PER RUN WINS. The journal is
-   * append-only NDJSON; a malformed line (a crash mid-append) costs that line,
-   * never the file.
-   */
-  const byRun = new Map<string, TurnSpend>();
-  let text: string;
-  try {
-    text = fs.readFileSync(eventsFile, "utf8");
-  } catch {
-    return undefined;
-  }
+function parseClaudeFile(text: string, fallbackSession: string): UsageRecord[] {
+  const records: UsageRecord[] = [];
   for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    let event: Record<string, unknown>;
+    // The cheap gate before JSON.parse — most lines are content, not usage.
+    if (!line.includes('"assistant"') || !line.includes("usage")) continue;
+    let entry: Record<string, unknown>;
     try {
-      const parsed: unknown = JSON.parse(line);
-      if (typeof parsed !== "object" || parsed === null) continue;
-      event = parsed as Record<string, unknown>;
+      entry = JSON.parse(line) as Record<string, unknown>;
     } catch {
       continue;
     }
-    const type = event["type"];
-    if (type !== "usage.updated" && type !== "turn.completed") continue;
-    const runId = event["runId"];
-    const at = event["at"];
-    if (typeof runId !== "string" || typeof at !== "number") continue;
-    const usage = typeof event["usage"] === "object" && event["usage"] !== null ? (event["usage"] as Record<string, unknown>) : undefined;
-    const tokens = tokensFrom(usage?.["tokens"]);
-    if (!tokens) continue;
-    const existing = byRun.get(runId);
-    // A snapshot never overwrites a settled total.
-    if (existing?.settled && type === "usage.updated") continue;
-    byRun.set(runId, {
+    if (entry["type"] !== "assistant") continue;
+    const message = entry["message"];
+    if (typeof message !== "object" || message === null) continue;
+    const m = message as Record<string, unknown>;
+    const usage = m["usage"];
+    if (typeof usage !== "object" || usage === null) continue;
+    const u = usage as Record<string, unknown>;
+    const n = (key: string): number => (typeof u[key] === "number" ? (u[key] as number) : 0);
+    const at = Date.parse(typeof entry["timestamp"] === "string" ? entry["timestamp"] : "");
+    if (!Number.isFinite(at)) continue;
+    const model = typeof m["model"] === "string" && m["model"] ? m["model"] : "unknown";
+    const messageId = typeof m["id"] === "string" ? m["id"] : undefined;
+    const requestId = typeof entry["requestId"] === "string" ? entry["requestId"] : undefined;
+    records.push({
       at,
-      runId,
-      tokens,
-      ...(typeof usage?.["costUsd"] === "number" ? { costUsd: usage["costUsd"] as number } : {}),
-      settled: type === "turn.completed",
+      model,
+      tokens: tokensOf(n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), n("cache_creation_input_tokens")),
+      ...(typeof entry["costUSD"] === "number" ? { costUsd: entry["costUSD"] as number } : {}),
+      sessionId: typeof entry["sessionId"] === "string" ? (entry["sessionId"] as string) : fallbackSession,
+      ...(messageId ? { dedupe: `${messageId}:${requestId ?? ""}` } : {}),
     });
   }
+  return records;
+}
 
-  const scan: SessionScan = { driver, modelOf, spends: [...byRun.values()] };
-  scanCache.set(eventsFile, { size: stat.size, mtimeMs: stat.mtimeMs, scan });
-  return scan;
+function parseCodexFile(text: string, fallbackSession: string): UsageRecord[] {
+  const records: UsageRecord[] = [];
+  let model = "unknown";
+  let sessionId = fallbackSession;
+  let lastSignature = "";
+  for (const line of text.split("\n")) {
+    if (!line.includes("token_count") && !line.includes("turn_context") && !line.includes("session_meta")) continue;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    const payload = entry["payload"];
+    if (typeof payload !== "object" || payload === null) continue;
+    const p = payload as Record<string, unknown>;
+    if (entry["type"] === "session_meta" && typeof p["id"] === "string") {
+      sessionId = p["id"];
+      continue;
+    }
+    if (entry["type"] === "turn_context") {
+      if (typeof p["model"] === "string" && p["model"]) model = p["model"];
+      continue;
+    }
+    if (p["type"] !== "token_count") continue;
+    const info = p["info"];
+    if (typeof info !== "object" || info === null) continue;
+    const last = (info as Record<string, unknown>)["last_token_usage"];
+    if (typeof last !== "object" || last === null) continue;
+    const u = last as Record<string, unknown>;
+    const n = (key: string): number => (typeof u[key] === "number" ? (u[key] as number) : 0);
+    // The same figures re-stamped are a UI refresh, not new spend.
+    const signature = `${n("input_tokens")}:${n("cached_input_tokens")}:${n("cache_write_input_tokens")}:${n("output_tokens")}`;
+    if (signature === lastSignature) continue;
+    lastSignature = signature;
+    const at = Date.parse(typeof entry["timestamp"] === "string" ? entry["timestamp"] : "");
+    if (!Number.isFinite(at)) continue;
+    const output = n("output_tokens");
+    records.push({
+      at,
+      model,
+      tokens: tokensOf(
+        n("input_tokens") - n("cached_input_tokens") - n("cache_write_input_tokens"),
+        output,
+        n("cached_input_tokens"),
+        n("cache_write_input_tokens"),
+        Math.min(output, n("reasoning_output_tokens")),
+      ),
+      sessionId,
+    });
+  }
+  return records;
+}
+
+function scanFile(file: string, provider: ProviderDriverKind, sinceMs: number): UsageRecord[] | undefined {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return undefined;
+  }
+  if (stat.mtimeMs < sinceMs - MTIME_SLACK_MS) return [];
+  const cached = scanCache.get(file);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.records;
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return undefined;
+  }
+  const fallbackSession = path.basename(file, ".jsonl");
+  const records = provider === "claude" ? parseClaudeFile(text, fallbackSession) : parseCodexFile(text, fallbackSession);
+  scanCache.set(file, { size: stat.size, mtimeMs: stat.mtimeMs, records });
+  return records;
+}
+
+function* walkJsonl(root: string): Generator<string> {
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) yield full;
+    }
+  }
+}
+
+export type UsageScanRoots = {
+  claude: string;
+  codex: string;
+};
+
+/** Where each CLI keeps its transcripts, honouring the same env vars the
+ *  CLIs themselves read. */
+export function defaultScanRoots(env: NodeJS.ProcessEnv = process.env): UsageScanRoots {
+  const home = os.homedir();
+  const claudeHome = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
+  const codexHome = env.CODEX_HOME?.trim() || path.join(home, ".codex");
+  return { claude: path.join(claudeHome, "projects"), codex: path.join(codexHome, "sessions") };
 }
 
 /** `YYYY-MM-DD` in the requested zone. `en-CA` is the locale whose short date
@@ -161,52 +221,77 @@ function dayOf(at: number, timeZone: string): string {
 
 const HOUR_MS = 3_600_000;
 
-export function readUsageReport(
-  sessionsRoot: string,
+export async function readUsageReport(
   input: { sinceMs: number; untilMs: number; resolution: UsageResolution; timeZone: string },
-): UsageReport {
-  const buckets = new Map<string, UsageBucket & { allPriced: boolean }>();
-  let sessions = 0;
+  options: {
+    roots?: UsageScanRoots;
+    /** Where the rates snapshot lives — the engine state root. */
+    ratesCachePath: string;
+    /** Test seam; the default fetches LiteLLM's table. */
+    loadRatesTable?: () => Promise<RatesTable>;
+  },
+): Promise<UsageReport> {
+  const roots = options.roots ?? defaultScanRoots();
+  const rates = await (options.loadRatesTable ?? (() => loadRates(options.ratesCachePath)))();
 
-  let entries: string[] = [];
-  try {
-    entries = fs.readdirSync(sessionsRoot);
-  } catch {
-    // No sessions directory is a fresh install, not an error.
-  }
-  for (const entry of entries) {
-    const scan = scanSession(path.join(sessionsRoot, entry));
-    if (!scan) continue;
-    let spentHere = false;
-    for (const spend of scan.spends) {
-      if (spend.at < input.sinceMs || spend.at >= input.untilMs) continue;
-      spentHere = true;
-      const period =
-        input.resolution === "hour" ? String(Math.floor(spend.at / HOUR_MS) * HOUR_MS) : dayOf(spend.at, input.timeZone);
-      const model = scan.modelOf.get(spend.runId) ?? "default";
-      const key = `${period}\0${scan.driver}\0${model}`;
-      const bucket = buckets.get(key) ?? {
-        period,
-        driver: scan.driver,
-        model,
-        tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
-        costUsd: 0,
-        priced: true,
-        allPriced: true,
-        turns: 0,
-      };
-      bucket.tokens.input += spend.tokens.input;
-      bucket.tokens.output += spend.tokens.output;
-      bucket.tokens.cacheRead += spend.tokens.cacheRead;
-      bucket.tokens.cacheCreate += spend.tokens.cacheCreate;
-      bucket.costUsd += spend.costUsd ?? 0;
-      // ONE unpriced turn makes the bucket unpriced: a figure missing part of
-      // itself must say so rather than read as a smaller true number.
-      bucket.allPriced = bucket.allPriced && spend.costUsd !== undefined;
-      bucket.turns += 1;
-      buckets.set(key, bucket);
+  const buckets = new Map<string, UsageBucket & { allPriced: boolean }>();
+  const sessions = new Set<string>();
+  const seen = new Set<string>();
+  const sources: UsageSource[] = [];
+
+  for (const provider of ["claude", "codex"] as const) {
+    const root = roots[provider];
+    if (!fs.existsSync(root)) {
+      sources.push({ provider, status: "missing", path: root, files: 0, sessions: 0 });
+      continue;
     }
-    if (spentHere) sessions += 1;
+    let files = 0;
+    let failed = false;
+    const providerSessions = new Set<string>();
+    for (const file of walkJsonl(root)) {
+      const records = scanFile(file, provider, input.sinceMs);
+      if (records === undefined) {
+        failed = true;
+        continue;
+      }
+      if (records.length > 0) files += 1;
+      for (const record of records) {
+        if (record.at < input.sinceMs || record.at >= input.untilMs) continue;
+        if (record.dedupe) {
+          const key = `${provider}:${record.dedupe}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        providerSessions.add(record.sessionId);
+        sessions.add(`${provider}:${record.sessionId}`);
+
+        const period = input.resolution === "hour" ? String(Math.floor(record.at / HOUR_MS) * HOUR_MS) : dayOf(record.at, input.timeZone);
+        const key = `${period}\0${provider}\0${record.model}`;
+        const bucket = buckets.get(key) ?? {
+          period,
+          driver: provider,
+          model: record.model,
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
+          costUsd: 0,
+          priced: true,
+          allPriced: true,
+          turns: 0,
+        };
+        bucket.tokens.input += record.tokens.input;
+        bucket.tokens.output += record.tokens.output;
+        bucket.tokens.cacheRead += record.tokens.cacheRead;
+        bucket.tokens.cacheCreate += record.tokens.cacheCreate;
+        if (record.tokens.reasoning !== undefined) {
+          bucket.tokens.reasoning = (bucket.tokens.reasoning ?? 0) + record.tokens.reasoning;
+        }
+        const cost = record.costUsd ?? priceTokens(rates, record.model, record.tokens);
+        bucket.costUsd += cost ?? 0;
+        bucket.allPriced = bucket.allPriced && cost !== undefined;
+        bucket.turns += 1;
+        buckets.set(key, bucket);
+      }
+    }
+    sources.push({ provider, status: failed ? "failed" : "ok", path: root, files, sessions: providerSessions.size });
   }
 
   return {
@@ -217,7 +302,9 @@ export function readUsageReport(
     buckets: [...buckets.values()]
       .map(({ allPriced, ...bucket }) => ({ ...bucket, priced: allPriced }))
       .sort((left, right) => left.period.localeCompare(right.period) || left.driver.localeCompare(right.driver) || left.model.localeCompare(right.model)),
-    sessions,
+    sources,
+    pricing: rates.status,
+    sessions: sessions.size,
     readAt: Date.now(),
   };
 }

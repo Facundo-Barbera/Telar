@@ -591,7 +591,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         const resolution = url.searchParams.get("resolution") === "hour" ? "hour" : "day";
         const timeZone = url.searchParams.get("tz")?.trim() || "UTC";
-        writeJson(response, 200, { usage: readUsageReport(store.paths.sessions, { sinceMs, untilMs, resolution, timeZone }) });
+        writeJson(response, 200, {
+          usage: await readUsageReport(
+            { sinceMs, untilMs, resolution, timeZone },
+            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json") },
+          ),
+        });
         return;
       }
       /** Who writes generated titles and branch names — a document of the

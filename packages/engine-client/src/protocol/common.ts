@@ -211,13 +211,20 @@ export type UsageSnapshot = z.infer<typeof UsageSnapshot>;
 /**
  * THE USAGE PAGE'S WIRE SHAPE — spend over time, bucketed.
  *
- * Folded from the engine's own journals: every settled turn already carries
- * its final `UsageSnapshot`, so the report needs no second recording path and
- * no provider-transcript scanning (t3 code scans `~/.claude` et al. because
- * its threads run outside its own store; Telar's don't). The cost figure is
- * only ever the provider's own — Claude reports one per turn, Codex reports
- * none, and a bucket that had to guess would be a second price. `priced:
- * false` with a zero cost is "the provider does not say", not "free".
+ * Derived by SCANNING THE PROVIDER CLIS' OWN TRANSCRIPTS (`~/.claude/
+ * projects`, `~/.codex/sessions`) — t3 code's architecture, adopted after the
+ * journal-fold version shipped and immediately showed its two limits: a turn
+ * that rode the provider default bucketed as literal `default` (the journals
+ * never learn which model that was), and nothing run OUTSIDE Telar counted at
+ * all, though it is the same machine spending against the same plans. The
+ * transcripts name the real model on every record and cover every harness
+ * run, Telar's included — Telar's own turns land in those directories too, so
+ * one source counts everything exactly once.
+ *
+ * Cost is the provider's figure where the transcript carries one, and the
+ * LiteLLM rate table's base tier where it does not (Codex never reports cost;
+ * Claude omits it on subscription plans). A model neither knows stays
+ * unpriced: tokens count, cost reads as absent — never $0.00.
  */
 export const UsageResolution = z.enum(["day", "hour"]);
 export type UsageResolution = z.infer<typeof UsageResolution>;
@@ -228,16 +235,28 @@ export const UsageBucket = z.object({
    *  parse, without this contract committing to a locale. */
   period: z.string().min(1),
   driver: ProviderDriverKind,
-  /** The model the turn ran on, as selected; `default` when the turn rode the
-   *  provider's own default and never said which. */
+  /** The model the transcript names for these records. */
   model: z.string().min(1),
   tokens: TokenUsage,
   costUsd: z.number().nonnegative(),
-  /** Whether `costUsd` is provider-reported for every turn in this bucket. */
+  /** Whether every record here has a cost — provider-reported or rate-priced. */
   priced: z.boolean(),
+  /** Records, not turns: one Claude assistant message or one Codex token
+   *  count. The page says "requests" for this reason. */
   turns: z.number().int().nonnegative(),
 });
 export type UsageBucket = z.infer<typeof UsageBucket>;
+
+/** One transcript directory's scan outcome, so the page can say what was and
+ *  was not counted rather than letting a missing install read as zero use. */
+export const UsageSource = z.object({
+  provider: ProviderDriverKind,
+  status: z.enum(["ok", "missing", "failed"]),
+  path: z.string().min(1),
+  files: z.number().int().nonnegative(),
+  sessions: z.number().int().nonnegative(),
+});
+export type UsageSource = z.infer<typeof UsageSource>;
 
 export const UsageReport = z.object({
   sinceMs: Timestamp,
@@ -245,7 +264,11 @@ export const UsageReport = z.object({
   resolution: UsageResolution,
   timeZone: z.string().min(1),
   buckets: z.array(UsageBucket),
-  /** Distinct sessions that spent anything in the window. */
+  sources: z.array(UsageSource),
+  /** Where rate-priced costs came from: a fetch this read, a disk snapshot,
+   *  or nowhere — in which case unreported costs are absent, not guessed. */
+  pricing: z.enum(["fresh", "cached", "unavailable"]),
+  /** Distinct transcript sessions that spent anything in the window. */
   sessions: z.number().int().nonnegative(),
   readAt: Timestamp,
 });

@@ -3,14 +3,13 @@
 /**
  * USAGE — what this engine's sessions spent, over time.
  *
- * t3 code's usage page on Telar's own data: hero figure + per-provider rail
- * beside the chart, a totals row, and a Model/Period breakdown that doubles
- * as the chart's table view. One deliberate difference from the donor: the
- * data comes from the ENGINE'S JOURNALS (one read, already normalized), not
- * from scanning provider transcript directories — and cost is only ever the
- * provider's own figure. Claude reports one per turn; Codex reports none, so
- * Codex cost renders as "—", never as a lying $0.00, and shares are of
- * processed tokens for the same reason.
+ * t3 code's usage page, architecture included: the engine scans the provider
+ * CLIs' OWN transcripts (`~/.claude/projects`, `~/.codex/sessions`), so the
+ * page counts everything this machine ran — inside Telar or not — with the
+ * real model on every record. Cost is the transcript's own figure where one
+ * exists, the LiteLLM rate table's base tier where it doesn't, and ABSENT
+ * (a dash, never $0.00) for models neither knows; shares are of processed
+ * tokens so a missing rate cannot skew them.
  *
  * The two series colors are chart-local custom properties validated with the
  * dataviz six-check palette validator against both surfaces (light `#436ed1`
@@ -106,7 +105,7 @@ export function UsagePage() {
   const chartSeries: ChartSeries[] = useMemo(() => {
     if (!fold) return [];
     return fold.providers
-      .filter((provider) => metric === "tokens" || provider.priced)
+      .filter((provider) => metric === "tokens" || provider.costUsd > 0)
       .map((provider) => ({
         key: provider.driver,
         label: DRIVER_LABEL[provider.driver],
@@ -129,7 +128,7 @@ export function UsagePage() {
       <style>{`.usage-viz{--usage-claude:#436ed1;--usage-codex:#a84d95}.dark .usage-viz{--usage-claude:#6990e2;--usage-codex:#ca549d}`}</style>
       <PageHeader
         title="Usage"
-        description={error ?? (unpricedProvider && metric === "cost" ? `${DRIVER_LABEL[unpricedProvider.driver]} reports no cost figures.` : undefined)}
+        description={error ?? (unpricedProvider && metric === "cost" ? "Some models have no known rate; their cost is not counted." : undefined)}
         actions={
           <div className="flex items-center gap-2">
             <Segmented<Metric>
@@ -172,8 +171,10 @@ export function UsagePage() {
                         <Dot driver={provider.driver} />
                         <span className="min-w-0 flex-1 truncate">{DRIVER_LABEL[provider.driver]}</span>
                         <span className="tabular-nums text-muted-foreground">{formatShare(provider.share)}</span>
+                        {/* A partially-priced figure is a FLOOR and still worth
+                            showing; the dash is only for "no cost known at all". */}
                         <span className="w-20 text-right tabular-nums">
-                          {metric === "cost" ? (provider.priced ? formatUsd(provider.costUsd) : "—") : formatTokens(provider.processed)}
+                          {metric === "cost" ? (provider.costUsd > 0 ? formatUsd(provider.costUsd) : "—") : formatTokens(provider.processed)}
                         </span>
                       </div>
                     ))}
@@ -195,11 +196,26 @@ export function UsagePage() {
                   <Tile label="Uncached input" value={formatTokens(fold.total.tokens.input)} />
                   <Tile label="Cached input" value={formatTokens(fold.total.tokens.cacheRead)} />
                   <Tile label="Output" value={formatTokens(fold.total.tokens.output)} />
-                  <Tile label="Turns" value={String(fold.total.turns)} />
+                  <Tile label="Requests" value={formatTokens(fold.total.turns)} />
                 </div>
               </section>
 
               <Breakdown fold={fold} metric={metric} resolution={resolution} />
+
+              {/* WHERE THE NUMBERS CAME FROM — a missing install must read as
+                  "not scanned", never as "spent nothing". */}
+              {report && (
+                <p className="text-xs text-muted-foreground">
+                  {report.sources
+                    .map((source) =>
+                      source.status === "ok"
+                        ? `${DRIVER_LABEL[source.provider]}: ${source.sessions} session${source.sessions === 1 ? "" : "s"} scanned`
+                        : `${DRIVER_LABEL[source.provider]}: no transcripts at ${source.path}`,
+                    )
+                    .join(" · ")}
+                  {report.pricing === "unavailable" ? " · Rate table unreachable — unreported costs are not counted." : ""}
+                </p>
+              )}
             </>
           )}
         </div>
@@ -246,7 +262,7 @@ function Breakdown({ fold, metric, resolution }: { fold: UsageFold; metric: Metr
                       <span className="truncate font-mono text-xs">{model.model}</span>
                     </span>
                   </td>
-                  <td className={num}>{model.priced ? formatUsd(model.costUsd) : "—"}</td>
+                  <td className={num}>{model.costUsd > 0 ? formatUsd(model.costUsd) : "—"}</td>
                   <td className={num}>{formatShare(model.share)}</td>
                   <td className={num}>{formatTokens(model.processed)}</td>
                 </tr>
@@ -278,13 +294,7 @@ function Breakdown({ fold, metric, resolution }: { fold: UsageFold; metric: Metr
                       const slice = period.byDriver[provider.driver];
                       return (
                         <td key={provider.driver} className={num}>
-                          {slice
-                            ? metric === "cost"
-                              ? slice.priced
-                                ? formatUsd(slice.costUsd)
-                                : "—"
-                              : formatTokens(slice.processed)
-                            : ""}
+                          {slice ? (metric === "cost" ? (slice.costUsd > 0 ? formatUsd(slice.costUsd) : "—") : formatTokens(slice.processed)) : ""}
                         </td>
                       );
                     })}
