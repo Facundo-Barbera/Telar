@@ -1,0 +1,114 @@
+import Foundation
+import Testing
+@testable import TelarMobile
+
+/// URLProtocol stub: each test registers a handler keyed by path.
+final class StubURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else { return }
+        // httpBody is emptied by URLSession; the stream carries it.
+        var request = self.request
+        if request.httpBody == nil, let stream = request.httpBodyStream {
+            stream.open()
+            var data = Data()
+            let size = 4096
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
+            defer { buffer.deallocate() }
+            while stream.hasBytesAvailable {
+                let read = stream.read(buffer, maxLength: size)
+                if read <= 0 { break }
+                data.append(buffer, count: read)
+            }
+            stream.close()
+            request.httpBody = data
+        }
+        let (status, body) = handler(request)
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private func stubAPI() -> HTTPEngineAPI {
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [StubURLProtocol.self]
+    return HTTPEngineAPI(baseURL: URL(string: "http://stub.test:3000")!, session: URLSession(configuration: config))
+}
+
+@Suite(.serialized) struct NetworkingTests {
+    @Test func runIdShape() {
+        let a = RunID.newRunId()
+        let b = RunID.newRunId()
+        #expect(a.wholeMatch(of: /run_[0-9a-f]{32}/) != nil)
+        #expect(a != b)
+    }
+
+    @Test func submitSendsIdempotencyKeyAndAcceptsReplay() async throws {
+        let turnJSON = """
+        {"turn":{"runId":"run_abc","sessionId":"s","sequence":1,"state":"queued",
+         "input":"hi","acceptedAt":1,"updatedAt":1},"replayed":true}
+        """
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path() == "/api/sessions/s/turns")
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            #expect(body?["runId"] as? String == "run_abc")
+            #expect(body?["input"] as? String == "hi")
+            // 200 + replayed — the retry path is a SUCCESS, not an error.
+            return (200, Data(turnJSON.utf8))
+        }
+        let result = try await stubAPI().submitTurn("s", runId: "run_abc", input: "hi")
+        #expect(result.replayed)
+        #expect(result.turn.runId == "run_abc")
+    }
+
+    @Test func engineErrorBodyBecomesTypedError() async {
+        StubURLProtocol.handler = { _ in
+            (503, Data(#"{"error":{"code":"engine_unavailable","message":"down"}}"#.utf8))
+        }
+        do {
+            _ = try await stubAPI().health()
+            Issue.record("expected throw")
+        } catch let error as EngineAPIError {
+            guard case .engine(let code, _, let status) = error else {
+                Issue.record("wrong case"); return
+            }
+            #expect(code == "engine_unavailable")
+            #expect(status == 503)
+        } catch {
+            Issue.record("unexpected error type")
+        }
+    }
+
+    @Test func resolveRequestEncodesAnswers() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path() == "/api/sessions/s/requests/req_9")
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            #expect(body?["decision"] as? String == "accept")
+            let answers = body?["answers"] as? [String: Any]
+            #expect(answers?["color"] as? String == "red")
+            #expect(answers?["confirm"] as? Bool == true)
+            return (200, Data("{}".utf8))
+        }
+        try await stubAPI().resolveRequest(
+            "s", requestId: "req_9", decision: .accept, reason: nil,
+            answers: ["color": .text("red"), "confirm": .bool(true)]
+        )
+    }
+
+    @Test func eventsPassesCursor() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.query() == "after=41")
+            return (200, Data(#"{"events":[],"cursor":41,"more":false}"#.utf8))
+        }
+        let page = try await stubAPI().events("s", after: 41)
+        #expect(page.cursor == 41)
+    }
+}
