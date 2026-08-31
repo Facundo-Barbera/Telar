@@ -43,11 +43,15 @@ struct MarkdownText: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(segments) { segment in
                 switch segment {
                 case .prose(_, let body):
+                    // t3code chat body: 14pt, relaxed line.
                     Text(attributed(body))
+                        .font(Theme.body)
+                        .lineSpacing(5)
+                        .foregroundStyle(Theme.text)
                         .textSelection(.enabled)
                 case .code(_, let body):
                     CodeBlockView(code: body)
@@ -70,13 +74,15 @@ struct CodeBlockView: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(code)
-                .font(.system(.caption, design: .monospaced))
+                .font(Theme.mono)
+                .foregroundStyle(Theme.text)
                 .textSelection(.enabled)
                 .padding(10)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .background(Theme.codeBackground)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusRow))
+        .hairline(Theme.radiusRow)
         .contextMenu {
             Button("Copy", systemImage: "doc.on.doc") {
                 UIPasteboard.general.string = code

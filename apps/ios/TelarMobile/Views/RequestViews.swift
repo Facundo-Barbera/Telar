@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// The card pinned above the composer while a request is open. While one is
-/// open, NO further work happens on the session — this card is the phone's
-/// reason to exist.
+/// The approval panel, styled after t3code's composer pending-approval
+/// drawer: content stacked above a right-aligned row of GHOST buttons —
+/// no filled destructive button anywhere; "Decline" signals with red text
+/// only, "Approve" with full-strength foreground. The surrounding surface
+/// comes from ComposerDrawer.
 struct RequestCardView: View {
     let request: EngineRequest
     let store: SessionStore
@@ -10,19 +12,22 @@ struct RequestCardView: View {
     @State private var declineReason = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             switch request.detail {
             case .commandExecution(let command):
                 header("Run a command", icon: "terminal")
                 if let cwd = command.cwd {
-                    Text(cwd).font(.caption2).foregroundStyle(.tertiary)
+                    Text(cwd).font(Theme.monoSmall).foregroundStyle(Theme.textMuted.opacity(0.7)).lineLimit(1)
                 }
-                CodeBlockView(code: command.command)
+                commandPreview(command.command)
                 approvalButtons
             case .fileChange(let change):
-                header("\(change.kind.capitalized) \(change.path)", icon: "pencil")
+                header("\(change.kind.capitalized) \(change.path)", icon: "pencil.line")
                 if let diff = change.unifiedDiff {
-                    CodeBlockView(code: diff).frame(maxHeight: 200)
+                    ScrollView {
+                        commandPreview(diff)
+                    }
+                    .frame(maxHeight: 160)
                 }
                 approvalButtons
             case .fileRead(let read):
@@ -31,7 +36,10 @@ struct RequestCardView: View {
             case .toolCall(let call):
                 header(displayToolName(call.name), icon: "wrench.and.screwdriver")
                 if let input = call.input {
-                    CodeBlockView(code: input.prettyPrinted).frame(maxHeight: 200)
+                    ScrollView {
+                        commandPreview(input.prettyPrinted)
+                    }
+                    .frame(maxHeight: 160)
                 }
                 approvalButtons
             case .userInput(let prompt, let fields):
@@ -42,15 +50,11 @@ struct RequestCardView: View {
             case .unknown(let kind):
                 header("Approval needed (\(kind))", icon: "questionmark.diamond")
                 Text("This build doesn't know this request kind — you can still answer it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(Theme.metaSmall)
+                    .foregroundStyle(Theme.textMuted)
                 approvalButtons
             }
         }
-        .padding(12)
-        .background(Color(.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.orange.opacity(0.5)))
         .sheet(isPresented: $declining) {
             NavigationStack {
                 Form {
@@ -78,41 +82,83 @@ struct RequestCardView: View {
     }
 
     private func header(_ title: String, icon: String) -> some View {
-        Label(title, systemImage: icon)
-            .font(.subheadline.weight(.semibold))
-            .lineLimit(2)
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.statusAmber)
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.text)
+                .lineLimit(2)
+        }
+    }
+
+    /// t3code's command preview: mono 11pt at 85% ink, no box of its own.
+    private func commandPreview(_ text: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(text)
+                .font(Theme.monoSmall)
+                .foregroundStyle(Theme.text.opacity(0.85))
+                .textSelection(.enabled)
+        }
+        .frame(maxHeight: 80)
     }
 
     private var approvalButtons: some View {
-        HStack(spacing: 8) {
-            Button("Accept") {
-                Task { await store.resolve(request, decision: .accept) }
-            }
-            .buttonStyle(.borderedProminent)
-            Button("Always") {
-                Task { await store.resolve(request, decision: .acceptForSession) }
-            }
-            .buttonStyle(.bordered)
-            Button("Decline", role: .destructive) {
-                declining = true
-            }
-            .buttonStyle(.bordered)
-            Spacer()
+        HStack(spacing: 4) {
             Menu {
                 Button("Withdraw the turn", role: .destructive) {
                     Task { await store.resolve(request, decision: .cancel) }
                 }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            Spacer(minLength: 0)
+            GhostButton("Decline", tint: Theme.statusRed) { declining = true }
+            GhostButton("Always allow", tint: Theme.textMuted) {
+                Task { await store.resolve(request, decision: .acceptForSession) }
+            }
+            GhostButton("Approve", tint: Theme.text) {
+                Task { await store.resolve(request, decision: .accept) }
             }
         }
-        .controlSize(.small)
+        .padding(.top, 2)
+    }
+}
+
+/// t3code approval buttons: ghost — text only, a soft fill on press, color
+/// carrying the meaning.
+struct GhostButton: View {
+    let label: String
+    let tint: Color
+    let action: () -> Void
+
+    init(_ label: String, tint: Color, action: @escaping () -> Void) {
+        self.label = label
+        self.tint = tint
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(RowButtonStyle())
     }
 }
 
 /// A real form: the agent is asking, not asking permission. Never
 /// auto-resolved in any runtime mode — it is genuinely waiting on the person
-/// holding this phone.
+/// holding this phone. Options render as full-width rows, t3code style.
 struct UserInputFormView: View {
     let prompt: String
     let fields: [UserInputField]
@@ -127,22 +173,23 @@ struct UserInputFormView: View {
             ForEach(fields) { field in
                 fieldView(field)
             }
-            Button("Submit") {
-                var answers: [String: AnswerValue] = [:]
-                for field in fields {
-                    switch field.kind {
-                    case "boolean":
-                        answers[field.key] = .bool(boolAnswers[field.key] ?? false)
-                    default:
-                        let value = textAnswers[field.key] ?? ""
-                        if !value.isEmpty { answers[field.key] = .text(value) }
+            HStack {
+                Spacer(minLength: 0)
+                GhostButton("Submit", tint: requiredFilled ? Theme.accent : Theme.textMuted.opacity(0.5)) {
+                    var answers: [String: AnswerValue] = [:]
+                    for field in fields {
+                        switch field.kind {
+                        case "boolean":
+                            answers[field.key] = .bool(boolAnswers[field.key] ?? false)
+                        default:
+                            let value = textAnswers[field.key] ?? ""
+                            if !value.isEmpty { answers[field.key] = .text(value) }
+                        }
                     }
+                    submit(answers)
                 }
-                submit(answers)
+                .disabled(!requiredFilled)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(!requiredFilled)
         }
     }
 
@@ -159,27 +206,56 @@ struct UserInputFormView: View {
         switch field.kind {
         case "choice":
             VStack(alignment: .leading, spacing: 4) {
-                Text(field.label).font(.caption).foregroundStyle(.secondary)
-                Picker(field.label, selection: binding(field)) {
-                    Text("—").tag("")
-                    ForEach(field.choices ?? [], id: \.self) { choice in
-                        Text(choice).tag(choice)
+                Text(field.label)
+                    .font(Theme.metaSmall)
+                    .foregroundStyle(Theme.textMuted)
+                ForEach(field.choices ?? [], id: \.self) { choice in
+                    Button {
+                        textAnswers[field.key] = choice
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(choice)
+                                .font(Theme.body)
+                                .foregroundStyle(Theme.text)
+                            Spacer(minLength: 0)
+                            if textAnswers[field.key] == choice {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(textAnswers[field.key] == choice ? Theme.messageSurface : .clear)
+                        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusRow))
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
-                .pickerStyle(.menu)
             }
         case "boolean":
             Toggle(field.label, isOn: Binding(
                 get: { boolAnswers[field.key] ?? false },
                 set: { boolAnswers[field.key] = $0 }
             ))
-            .font(.caption)
+            .font(Theme.body)
+            .tint(Theme.accent)
         case "secret":
             SecureField(field.label, text: binding(field))
-                .textFieldStyle(.roundedBorder)
+                .font(Theme.body)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl))
+                .hairline(Theme.radiusControl)
         default:
             TextField(field.label, text: binding(field), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+                .font(Theme.body)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Theme.fill)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.radiusControl))
+                .hairline(Theme.radiusControl)
         }
     }
 

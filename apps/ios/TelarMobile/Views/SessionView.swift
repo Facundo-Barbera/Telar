@@ -27,6 +27,7 @@ struct SessionView: View {
             }
             footer
         }
+        .background(Theme.canvas)
         .navigationTitle(store.sync.session?.title ?? "Session")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
@@ -46,28 +47,43 @@ struct SessionView: View {
         }
     }
 
+    /// The composer region: approvals and errors render as drawers FUSED to
+    /// the composer's top edge (t3code's `.chat-composer-top-drawer`), the
+    /// composer itself is a 22pt glass shell with a hairline.
     @ViewBuilder private var footer: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 0) {
             if case .retrying(let message) = store.sync.connection {
-                Label(message, systemImage: "wifi.exclamationmark")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ComposerDrawer(tint: Theme.statusAmber) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "wifi.exclamationmark").font(.system(size: 11))
+                        Text(message).font(Theme.metaSmall).lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(Theme.statusAmber)
+                }
             }
             ForEach(store.sync.openRequests) { request in
-                RequestCardView(request: request, store: store)
+                ComposerDrawer(tint: Theme.statusAmber) {
+                    RequestCardView(request: request, store: store)
+                }
             }
             if let error = store.sendError, store.pendingSend != nil {
-                HStack {
-                    Text("Not sent — \(error)")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                    Spacer()
-                    Button("Retry") { Task { await store.retryPending() } }
-                        .controlSize(.small)
-                    Button("Discard", role: .destructive) { store.discardPending() }
-                        .controlSize(.small)
+                ComposerDrawer(tint: Theme.statusRed) {
+                    HStack(spacing: 8) {
+                        Text("Not sent — \(error)")
+                            .font(Theme.metaSmall)
+                            .foregroundStyle(Theme.statusRed)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                        Button("Retry") { Task { await store.retryPending() } }
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .buttonStyle(.plain)
+                        Button("Discard") { store.discardPending() }
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.statusRed)
+                            .buttonStyle(.plain)
+                    }
                 }
             }
             ComposerView(
@@ -77,23 +93,24 @@ struct SessionView: View {
                 stop: { Task { await store.stopActiveTurn() } }
             )
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+        .padding(.top, 6)
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             VStack(spacing: 1) {
                 Text(store.sync.session?.title ?? "Session")
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Theme.text)
                     .lineLimit(1)
                 if let session = store.sync.session {
                     HStack(spacing: 4) {
                         ActivityBadge(activity: session.activity)
                         Text(session.workspace.branch ?? session.driver)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(Theme.metaSmall)
+                            .foregroundStyle(Theme.textMuted)
                             .lineLimit(1)
                     }
                 }
@@ -121,6 +138,7 @@ struct SessionView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
+                    .foregroundStyle(Theme.textMuted)
             }
         }
     }
@@ -137,6 +155,32 @@ struct SessionView: View {
     }
 }
 
+/// A drawer that attaches above the composer and fuses with it: rounded top
+/// corners only, hairline, and no gap — t3code's approval/info drawers.
+struct ComposerDrawer<Content: View>: View {
+    let tint: Color
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(tint.opacity(0.06))
+            .background(.ultraThinMaterial)
+            .clipShape(UnevenRoundedRectangle(topLeadingRadius: Theme.radiusDrawer, topTrailingRadius: Theme.radiusDrawer))
+            .overlay(
+                UnevenRoundedRectangle(topLeadingRadius: Theme.radiusDrawer, topTrailingRadius: Theme.radiusDrawer)
+                    .strokeBorder(Theme.border, lineWidth: 1)
+            )
+            .padding(.bottom, -6)
+            .zIndex(0)
+    }
+}
+
+/// t3code's composer: a 22pt glass shell, hairline outline, multiline field,
+/// and a 32pt circular accent-filled send button.
 struct ComposerView: View {
     @Binding var draft: String
     let isRunning: Bool
@@ -145,29 +189,48 @@ struct ComposerView: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message", text: $draft, axis: .vertical)
+            TextField("Ask anything…", text: $draft, axis: .vertical)
+                .font(Theme.body)
                 .lineLimit(1...6)
-                .textFieldStyle(.roundedBorder)
+                .padding(.vertical, 10)
+                .padding(.leading, 14)
             if isRunning {
                 Button {
                     stop()
                 } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.red)
+                    Image(systemName: "square.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.text)
+                        .frame(width: 32, height: 32)
+                        .background(Theme.messageSurface)
+                        .clipShape(Circle())
                 }
                 .accessibilityLabel("Stop the running turn")
+                .padding(.bottom, 4)
             }
             Button {
                 let text = draft
                 draft = ""
                 send(text)
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.title2)
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(Theme.accent)
+                    .clipShape(Circle())
             }
             .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .opacity(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.3 : 1)
             .accessibilityLabel("Send")
+            .padding(.bottom, 4)
+            .padding(.trailing, 4)
         }
+        .background(.ultraThinMaterial)
+        .background(Theme.surface.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusComposer))
+        .hairline(Theme.radiusComposer)
+        .shadow(color: .black.opacity(0.12), radius: 14, y: 8)
+        .zIndex(1)
     }
 }
