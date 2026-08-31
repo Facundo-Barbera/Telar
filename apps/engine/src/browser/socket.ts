@@ -55,12 +55,14 @@ export type BrowserRunBinding = {
    */
   gate?(input: { name: string; args: Record<string, unknown>; readOnly: boolean }): Promise<boolean>;
   /**
-   * Fired with fresh state after a mutating call that succeeded. The reads are
-   * SEQUENCED by the socket, per binding: a page that redirects produces
-   * several mutating calls in quick succession, and two overlapping `state()`
-   * reads would report the intermediate page after the final one. Failures are
-   * swallowed — a browser panel that cannot be described must not fail the
-   * tool call that moved it.
+   * Fired with fresh state after any successful call that CHANGED the tab set
+   * — the socket re-reads after every success and reports only when the tabs
+   * differ from the last report, so a read-only-only session still surfaces
+   * its pages. The reads are SEQUENCED by the socket, per binding: a page that
+   * redirects produces several mutating calls in quick succession, and two
+   * overlapping `state()` reads would report the intermediate page after the
+   * final one. Failures are swallowed — a browser panel that cannot be
+   * described must not fail the tool call that moved it.
    */
   onNavigated?(state: { provider: BrowserProvider; tabs: BrowserTab[] }): void;
 };
@@ -81,6 +83,8 @@ type Binding = {
   binding: BrowserRunBinding;
   tools: SocketTool[];
   stateQueue: Promise<void>;
+  /** The last tab set actually reported, so identical reads report nothing. */
+  lastReported?: string;
 };
 
 /** The transport's own body cap, mirroring the daemon's `body()` — one guard,
@@ -235,10 +239,15 @@ export class BrowserToolSocket {
           return { content: [{ type: "text", text: "The human declined this browser action." }], isError: true };
         }
         const result = await this.capability.call(binding.scopeKey, definition.name, args);
-        // A call that CHANGED something is the only one worth re-reading state
-        // for. Polling after every read would put a screenshot's worth of work
-        // behind each `browser_snapshot`.
-        if (!readOnly && !result.isError) this.reportState(binding.scopeKey);
+        /**
+         * EVERY successful call re-reads state, not just mutations. A session
+         * whose agent only ever READS a page — snapshot, list tabs — used to
+         * journal no `browser.state.changed` at all, so its pages never
+         * appeared in the panel. The dedupe in `reportState` is what keeps
+         * this cheap: an unchanged tab set reports nothing, so the cost of a
+         * read-only call is one tab-list read, not a journal row.
+         */
+        if (!result.isError) this.reportState(binding.scopeKey);
         return result;
       },
     }));
@@ -269,6 +278,11 @@ export class BrowserToolSocket {
       bound.stateQueue = bound.stateQueue
         .then(async () => {
           const state = await read.call(this.capability, scopeKey);
+          // An unchanged tab set is not news. Without this, every read-only
+          // call would journal an identical `browser.state.changed` row.
+          const signature = `${state.provider}:${JSON.stringify(state.tabs)}`;
+          if (bound.lastReported === signature) return;
+          bound.lastReported = signature;
           bound.binding.onNavigated?.(state);
         })
         .catch(() => undefined);

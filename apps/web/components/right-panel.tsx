@@ -9,7 +9,6 @@ import {
   FolderTreeIcon,
   GitPullRequestIcon,
   FileIcon,
-  GaugeIcon,
   GlobeIcon,
   LayersIcon,
   Maximize2Icon,
@@ -29,7 +28,6 @@ import type {
   Item,
   Task,
   TaskState,
-  Turn,
   TurnState,
 } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -86,7 +84,15 @@ const api = createEngineApi();
  * record itself. A browser PAGE is not one of these — see `PanelTab` below.
  */
 const SURFACES = [
-  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and background work." },
+  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents, and Warp runs holding their own." },
+  /**
+   * BACKGROUND WORK IS NOT A SUB-AGENT. A watch loop and a five-minute build
+   * share a surface with nothing: an agent has a transcript and a conclusion, a
+   * process has liveness and an owner who may want it gone. Filing both under
+   * "Agents" made every background shell read as a delegate that never reports.
+   * The split is `Task.kind`, which the engine already decides.
+   */
+  { id: "processes", label: "Processes", icon: TerminalIcon, blurb: "Background shells, watch loops and long-running work." },
   /**
    * DIFF AND FILES, WHICH USED TO BE CHANGES AND GIT — and the old pair was a
    * duplicate wearing two names. "Changes" folded the journal and "Git" read the
@@ -106,7 +112,6 @@ const SURFACES = [
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues. Drag one into the message." },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests, and this session's own." },
-  { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this conversation has spent." },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -313,33 +318,6 @@ export function latestBrowserState(events: readonly EngineEvent[]): BrowserState
     if (event.type === "browser.state.changed") state = { provider: event.provider, tabs: event.tabs };
   }
   return state;
-}
-
-export type SessionUsage = {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheCreate?: number;
-  /** How many turns reported a figure, out of how many exist. An em dash means
-   *  a figure is MISSING, and this is what lets the surface say so. */
-  reported: number;
-  turns: number;
-};
-
-/** NO `costUsd` FOLD. `UsageSnapshot` still carries the provider's own price and
- *  nothing here reads it — see `UsageSurface` for why money left this cockpit. */
-export function sessionUsage(turns: readonly Turn[]): SessionUsage {
-  const total = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
-  let reported = 0;
-  for (const turn of turns) {
-    if (!turn.usage) continue;
-    reported += 1;
-    total.input += turn.usage.tokens.input;
-    total.output += turn.usage.tokens.output;
-    total.cacheRead += turn.usage.tokens.cacheRead;
-    total.cacheCreate += turn.usage.tokens.cacheCreate;
-  }
-  return { ...(reported > 0 ? total : {}), reported, turns: turns.length };
 }
 
 const LIVE_TASK_STATES = new Set<TaskState>(["pending", "running", "waiting"]);
@@ -644,6 +622,30 @@ export function groupWarps(tasks: readonly JournalTask[]): { groups: WarpGroup[]
 
 const warpAgents = (group: WarpGroup): JournalTask[] => group.phases.flatMap((phase) => phase.agents);
 
+/**
+ * The roster, split for the two task surfaces.
+ *
+ * THE KIND SPLIT HAPPENS AFTER THE WARP FOLD, never before. A Warp run's own
+ * row is a `background` task whose children are `agent` tasks — splitting on
+ * kind first would file the run under Processes and strand its agents on the
+ * Agents surface as an orphaned group. A run belongs with its agents, so groups
+ * stay whole on the Agents side and only LOOSE tasks are divided.
+ *
+ * `kind !== "background"` rather than `=== "agent"`, matching the contract's
+ * own denylist posture: anything the engine did not recognise as background is
+ * presumed to be an agent (protocol/tasks.ts).
+ */
+export type RosterSplit = { groups: WarpGroup[]; agents: JournalTask[]; processes: JournalTask[] };
+
+export function splitRoster(tasks: readonly JournalTask[]): RosterSplit {
+  const { groups, loose } = groupWarps(tasks);
+  return {
+    groups,
+    agents: loose.filter((task) => task.kind !== "background"),
+    processes: loose.filter((task) => task.kind === "background"),
+  };
+}
+
 function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocus }) {
   const agents = warpAgents(group);
   const live = agents.filter(isLiveTask).length;
@@ -719,12 +721,12 @@ function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocu
 }
 
 function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
-  const { groups, loose } = useMemo(() => groupWarps(tasks), [tasks]);
-  if (tasks.length === 0) {
+  const { groups, agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
+  if (groups.length === 0 && loose.length === 0) {
     return (
       <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
-        A task carries its own title, state and result. Background work — a watch loop, a long shell — is listed the same way and
-        can outlive the turn that started it. A Warp run is one row holding its own agents.
+        A task carries its own title, state and result. A Warp run is one row holding its own agents. Background work — a watch
+        loop, a long shell — lives on the Processes tab.
       </PanelEmpty>
     );
   }
@@ -766,39 +768,34 @@ function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focu
 }
 
 /**
- * TOKENS, AND NO PRICE. The engine still carries the provider's `costUsd` and
- * this surface deliberately does not read it: only some providers report one, a
- * subscription seat has no per-turn price to report, and the total that results
- * is a number a human cannot act on. Tokens are reported by everything, are
- * what actually runs out, and are the same unit the context gauge speaks.
+ * Background work, in the same row vocabulary as the agents — a process still
+ * has steps, a result and a state, so `TaskRow` renders it unchanged. What
+ * differs is the framing: this list can OUTLIVE the turn that started it, and
+ * the empty state says who can put something here.
  */
-function UsageSurface({ usage }: { usage: SessionUsage }) {
-  const total =
-    usage.input === undefined
-      ? undefined
-      : usage.input + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheCreate ?? 0);
-  const rows: Array<[string, string]> = [
-    ["Input", figure(usage.input)],
-    ["Output", figure(usage.output)],
-    ["Cache read", figure(usage.cacheRead)],
-    ["Cache write", figure(usage.cacheCreate)],
-    ["Total", figure(total)],
-  ];
+function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
+  const { processes } = useMemo(() => splitRoster(tasks), [tasks]);
+  if (processes.length === 0) {
+    return (
+      <PanelEmpty icon={<TerminalIcon />} title="Background work appears here">
+        A shell run in the background, a monitor, a watch loop — anything the agent leaves running. A process can outlive the turn
+        that started it. Codex sessions never file anything here: that provider reports every child as an agent.
+      </PanelEmpty>
+    );
+  }
+  const live = processes.filter(isLiveTask);
+  const finished = processes.filter((task) => !isLiveTask(task));
+  const row = (task: JournalTask) =>
+    focused?.id === task.id ? (
+      <TaskRow key={`${task.id}:${focused.nonce}`} task={task} focused />
+    ) : (
+      <TaskRow key={task.id} task={task} />
+    );
   return (
     <div className="flex flex-col">
-      <dl className="flex flex-col">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-2 px-4 py-1.5 text-xs">
-            <dt className="text-muted-foreground">{label}</dt>
-            <dd className="font-mono tabular-nums">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      <p className="px-4 py-2 text-[11px] text-muted-foreground">
-        {usage.reported === 0
-          ? "No turn has reported usage yet. Every figure above is missing, not zero."
-          : `Totalled across ${usage.reported} of ${usage.turns} turns. A turn the provider gave no figures for contributes nothing rather than a zero.`}
-      </p>
+      {live.map(row)}
+      {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
+      {finished.map(row)}
     </div>
   );
 }
@@ -808,7 +805,6 @@ export function PanelSurface({
   writes,
   tasks,
   focusedTask,
-  turns,
   browser,
   sessionId,
   sessionTitle,
@@ -827,7 +823,6 @@ export function PanelSurface({
   tasks: readonly JournalTask[];
   /** The sub-agent a transcript chip just asked for. */
   focusedTask?: TaskFocus;
-  turns: readonly Turn[];
   browser?: BrowserState;
   /** Absent on a session that does not exist yet. Every surface that needs a
    *  checkout falls back to the project's own, which is the same directory until
@@ -850,7 +845,6 @@ export function PanelSurface({
   onOpenTab: (tab: PanelTab) => void;
   active?: TurnState;
 }) {
-  const usage = useMemo(() => sessionUsage(turns), [turns]);
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (
@@ -901,7 +895,11 @@ export function PanelSurface({
       />
     );
   if (tab === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
-  return <UsageSurface usage={usage} />;
+  if (tab === "processes") return <ProcessesSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
+  // Every tab kind is handled above. This used to be the Usage surface's arm;
+  // as a fallthrough it would render some OTHER pane for an unknown tab id, so
+  // an unknown tab now renders nothing rather than the wrong thing.
+  return null;
 }
 
 /**
@@ -925,7 +923,18 @@ export function PanelSurface({
  * one line of description on a single line that truncates, at any width the
  * panel can be dragged to.
  */
-function PanelEmptyState({ onOpen, browser }: { onOpen: (tab: PanelTab) => void; browser?: BrowserState }) {
+function PanelEmptyState({
+  onOpen,
+  browser,
+  onOpenBrowser,
+}: {
+  onOpen: (tab: PanelTab) => void;
+  browser?: BrowserState;
+  /** Absent when the engine cannot start a browser here — the affordance
+   *  hides rather than offering a launch that would land beside the worker's
+   *  own browser (see BrowserSnapshot.canStart). */
+  onOpenBrowser?: () => void;
+}) {
   const pages = browser?.tabs ?? [];
   return (
     <div className="flex h-full flex-col justify-center p-4">
@@ -949,6 +958,22 @@ function PanelEmptyState({ onOpen, browser }: { onOpen: (tab: PanelTab) => void;
             </button>
           ))}
         </div>
+        {/* Launch, not navigate: pages the agent already opened are listed
+            below; this row exists for the session where nobody has browsed
+            yet and a human wants to. */}
+        {onOpenBrowser && pages.length === 0 && (
+          <button
+            type="button"
+            onClick={onOpenBrowser}
+            className="mt-1 flex w-full items-center gap-2.5 rounded-lg border border-dashed border-border px-2.5 py-2 text-left transition-colors hover:bg-muted/60"
+          >
+            <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-foreground">Open a browser</span>
+              <span className="block truncate text-[11px] text-muted-foreground">Start this session’s browser and watch it here.</span>
+            </span>
+          </button>
+        )}
         {/* ONE ROW PER PAGE, not one row for "Browser". Opening a page opens
             that page's tab, which is the whole point of the change. */}
         {pages.length > 0 && (
@@ -1138,7 +1163,7 @@ export function RightPanel({
   items = [],
   tasks = [],
   focusedTask,
-  turns = [],
+  onOpenBrowser,
   events = [],
   tabs,
   tab,
@@ -1162,7 +1187,9 @@ export function RightPanel({
   /** The sub-agent a transcript chip just asked for. Owned by the cockpit
    *  because the chip that names one lives over there. */
   focusedTask?: TaskFocus;
-  turns?: readonly Turn[];
+  /** Launch the session's browser by hand. Absent when the engine cannot
+   *  start one here, and the affordances hide with it. */
+  onOpenBrowser?: () => void;
   events?: readonly EngineEvent[];
   /** Owned by the cockpit, not by the panel: the pinned summary's rows and the
    *  composer's foot are "go there" gestures, and they have to be able to say
@@ -1193,9 +1220,13 @@ export function RightPanel({
    * between stages. That failure has no other row to appear on, and a failure
    * nothing flags is the worse of the two errors.
    */
-  const isWarpRun = (task: Task): boolean => task.warp?.warpRunId === task.id;
-  const running = tasks.filter((task) => isLiveTask(task) && !isWarpRun(task)).length;
-  const failed = tasks.filter((task) => task.state === "failed").length;
+  const roster = useMemo(() => splitRoster(tasks), [tasks]);
+  const agentSide = [...roster.groups.flatMap(warpAgents), ...roster.agents];
+  const running = agentSide.filter(isLiveTask).length;
+  const failed = agentSide.filter((task) => task.state === "failed").length +
+    roster.groups.filter((group) => group.run?.state === "failed").length;
+  const processesRunning = roster.processes.filter(isLiveTask).length;
+  const processesFailed = roster.processes.filter((task) => task.state === "failed").length;
   /**
    * NO COUNT ON DIFF, deliberately. The badge used to carry the journal's file
    * count, and the surface now lists git's — which is a different, larger number
@@ -1203,7 +1234,12 @@ export function RightPanel({
    * the list underneath it is worse than no badge: it teaches the reader that one
    * of the two is lying, without saying which.
    */
-  const counts: Partial<Record<PanelTab, number>> = { agents: tasks.length };
+  const counts: Partial<Record<PanelTab, number>> = {
+    // A run counts as ONE — its agents are inside it, and a badge that counted
+    // both would say thirteen where the surface shows one group and no rows.
+    agents: roster.groups.length + roster.agents.length,
+    processes: roster.processes.length,
+  };
   /** Everything openable that is not already open — fixed surfaces first, then
    *  one entry per browser page the engine currently reports. */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon }[] = [
@@ -1288,13 +1324,19 @@ export function RightPanel({
                     <span
                       className={cn(
                         "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[9px] leading-4",
-                        id === "agents" && failed > 0
+                        (id === "agents" ? failed : id === "processes" ? processesFailed : 0) > 0
                           ? "bg-destructive/15 text-destructive"
-                          : id === "agents" && running > 0
+                          : (id === "agents" ? running : id === "processes" ? processesRunning : 0) > 0
                             ? "bg-primary/15 text-primary"
                             : "bg-muted-foreground/15 text-muted-foreground",
                       )}
-                      title={id === "agents" && running > 0 ? `${running} running` : undefined}
+                      title={
+                        id === "agents" && running > 0
+                          ? `${running} running`
+                          : id === "processes" && processesRunning > 0
+                            ? `${processesRunning} running`
+                            : undefined
+                      }
                     >
                       {count}
                     </span>
@@ -1335,6 +1377,14 @@ export function RightPanel({
                     <span className="truncate">{candidate.label}</span>
                   </DropdownMenuItem>
                 ))}
+                {/* A LAUNCH, not a tab: once pages exist they are listed above
+                    by id, so this only appears while there is nothing to open. */}
+                {onOpenBrowser && (browser?.tabs.length ?? 0) === 0 && (
+                  <DropdownMenuItem onClick={onOpenBrowser}>
+                    <GlobeIcon />
+                    <span className="truncate">Open a browser</span>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -1382,7 +1432,6 @@ export function RightPanel({
               tab={tab}
               writes={writes}
               tasks={tasks}
-              turns={turns}
               {...(focusedTask ? { focusedTask } : {})}
               openPaths={openPaths}
               openIssueNumbers={openIssueNumbers}
@@ -1397,7 +1446,7 @@ export function RightPanel({
             />
           </>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} {...(browser ? { browser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
       </div>
     </aside>

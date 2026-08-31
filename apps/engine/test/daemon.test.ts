@@ -140,7 +140,7 @@ test("attachments upload as raw bytes, ride the turn, and the browser answers ev
   // that is a `none` rather than a failure — the same answer a session that has
   // never browsed gets.
   await expect(client.browserState(session.session.id)).resolves.toEqual({
-    browser: { scopeKey: session.session.id, provider: "none", running: false, tabs: [] },
+    browser: { scopeKey: session.session.id, provider: "none", running: false, tabs: [], canStart: false },
   });
 });
 
