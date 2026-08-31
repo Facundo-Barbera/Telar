@@ -291,7 +291,7 @@ function SessionShelf({
   activeSessionId,
   showProject,
   renderedAt,
-  autoSettleAfterDays,
+  autoSettleAfterHours,
   onRefresh,
 }: {
   label: string;
@@ -305,7 +305,7 @@ function SessionShelf({
   activeSessionId?: string;
   showProject: boolean;
   renderedAt: number;
-  autoSettleAfterDays: number | null;
+  autoSettleAfterHours: number | null;
   onRefresh: () => void;
 }) {
   if (count === 0) return null;
@@ -324,7 +324,7 @@ function SessionShelf({
               // ahead of you — so its rows give their space back, one dim line
               // each. See session-row.tsx for the two volumes.
               variant="slim"
-              band={bandOf(session, { now: renderedAt, autoSettleAfterDays })}
+              band={bandOf(session, { now: renderedAt, autoSettleAfterHours })}
               renderedAt={renderedAt}
               onRefresh={onRefresh}
             />
@@ -363,7 +363,7 @@ function SidebarBody() {
    * sessions the same way. See lib/inbox-policy.ts.
    */
   const { policy } = useInboxPolicy();
-  const autoSettleAfterDays = policy.autoSettleAfterDays;
+  const autoSettleAfterHours = policy.autoSettleAfterHours;
   // The server and first client render must use the same clock. Reading
   // Date.now() independently on each side crosses minute boundaries often
   // enough to produce a hydration mismatch and force React to regenerate the
@@ -490,14 +490,14 @@ function SidebarBody() {
     query,
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
-    autoSettleAfterDays,
+    autoSettleAfterHours,
     limit: sessionLimit,
     settledLimit,
   });
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
-  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterDays });
+  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterHours });
 
   /**
    * ⌘N, ⌘T, ⌘1..⌘9 and ⌘, — mounted HERE because this is the one component
@@ -507,7 +507,7 @@ function SidebarBody() {
    * The desktop menu has carried these accelerators the whole time; nothing in
    * this cockpit was listening for them, so they did nothing.
    */
-  useCommandKeys(sessions, activeSessionId, autoSettleAfterDays);
+  useCommandKeys(sessions, activeSessionId, autoSettleAfterHours);
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
@@ -830,7 +830,7 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}
               renderedAt={renderedAt}
-              autoSettleAfterDays={autoSettleAfterDays}
+              autoSettleAfterHours={autoSettleAfterHours}
               onRefresh={() => void loadAll()}
             />
             <SessionShelf
@@ -849,7 +849,7 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}
               renderedAt={renderedAt}
-              autoSettleAfterDays={autoSettleAfterDays}
+              autoSettleAfterHours={autoSettleAfterHours}
               onRefresh={() => void loadAll()}
             />
           </>

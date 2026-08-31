@@ -251,7 +251,7 @@ export class EngineClient {
     return this.request("GET", "/v2/inbox");
   }
 
-  setInboxPolicy(patch: { autoSettleAfterDays?: number | null }): Promise<{ inbox: InboxPolicy }> {
+  setInboxPolicy(patch: { autoSettleAfterHours?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
   }
 

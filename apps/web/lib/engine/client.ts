@@ -100,7 +100,7 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
-    setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
+    setInbox: (patch: { autoSettleAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
     /** Spend over time, folded from the engine's journals. */
     usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {

@@ -45,11 +45,11 @@ function desktop(): DesktopCommandKeyBridge | undefined {
  * never reserved, and the desktop shell (where this app actually runs) routes
  * every one of them through the menu.
  */
-export function useCommandKeys(sessions: readonly SidebarSession[], activeSessionId?: string, autoSettleAfterDays: number | null = 3) {
+export function useCommandKeys(sessions: readonly SidebarSession[], activeSessionId?: string, autoSettleAfterHours: number | null = 72) {
   const router = useRouter();
 
   useEffect(() => {
-    const recentHrefs = recentSessionsForCommandKeys(sessions, activeSessionId, Date.now(), autoSettleAfterDays).map((session) =>
+    const recentHrefs = recentSessionsForCommandKeys(sessions, activeSessionId, Date.now(), autoSettleAfterHours).map((session) =>
       sessionHref(session),
     );
 
@@ -76,5 +76,5 @@ export function useCommandKeys(sessions: readonly SidebarSession[], activeSessio
       window.removeEventListener("keydown", onKeyDown);
       offInvoke?.();
     };
-  }, [sessions, activeSessionId, autoSettleAfterDays, router]);
+  }, [sessions, activeSessionId, autoSettleAfterHours, router]);
 }

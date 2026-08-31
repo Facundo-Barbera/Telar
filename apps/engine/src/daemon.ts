@@ -573,7 +573,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // PRESENT-BUT-NULL IS THE OFF SWITCH, so `in` rather than a
             // truthiness test: `null` and "not mentioned" are different
             // requests and JSON can only tell them apart by the key.
-            ...("autoSettleAfterDays" in input ? { autoSettleAfterDays: input.autoSettleAfterDays } : {}),
+            ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
           }),
         });
         return;
