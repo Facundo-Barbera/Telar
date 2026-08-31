@@ -460,6 +460,28 @@ export function listGitRefs(git: GitRunner, projectRoot: string): GitRefEntry[] 
   return [...half("refs/heads", "local"), ...half("refs/remotes", "remote")].slice(0, MAX_REFS);
 }
 
+/**
+ * What a fresh worktree should be cut from when nobody says otherwise: the
+ * remote's own default branch. `origin/HEAD` is the authoritative pointer, but
+ * it only exists after a clone (or `remote set-head`) — a hand-added remote
+ * never has one, so the common names are checked against the refs that
+ * actually exist. Absent when there is no remote-tracking state at all, and
+ * the caller's default falls back to the checkout's HEAD.
+ */
+export function defaultRemoteBase(git: GitRunner, projectRoot: string, refs: GitRefEntry[]): string | undefined {
+  const pointed = git(projectRoot, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
+  if (pointed.status === 0) {
+    const name = pointed.stdout.trim().replace(/^refs\/remotes\//, "");
+    // Trusted only if the branch it points at is still real — a stale pointer
+    // to a deleted default would seed every worktree with a failing ref.
+    if (name && refs.some((ref) => ref.kind === "remote" && ref.name === name)) return name;
+  }
+  for (const guess of ["origin/main", "origin/master"]) {
+    if (refs.some((ref) => ref.kind === "remote" && ref.name === guess)) return guess;
+  }
+  return undefined;
+}
+
 export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const inside = git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || inside.stdout.trim() !== "true") return EMPTY;
@@ -479,6 +501,8 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
 
   const worktrees = git(projectRoot, ["worktree", "list", "--porcelain"]);
+  const refs = listGitRefs(git, projectRoot);
+  const defaultBase = defaultRemoteBase(git, projectRoot, refs);
 
   return {
     repository: true,
@@ -486,6 +510,7 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
     dirtyFiles,
     ...(divergence ?? {}),
     worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [],
-    refs: listGitRefs(git, projectRoot),
+    refs,
+    ...(defaultBase ? { defaultBase } : {}),
   };
 }

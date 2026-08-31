@@ -266,4 +266,27 @@ test("the overview lists cuttable refs: locals and remote-tracking, current mark
   expect(names.some((name) => name.endsWith("/HEAD"))).toBe(false);
   // The checkout's branch is marked, so a picker can say "current".
   expect((overview.refs ?? []).find((ref) => ref.name === "main")?.head).toBe(true);
+  // origin/HEAD names the default base a fresh worktree is cut from.
+  expect(overview.defaultBase).toBe("origin/main");
+});
+
+test("the default base falls back to common names, and is absent without remote state", () => {
+  const projectRoot = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // No remote-tracking refs at all: nothing to default to.
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBeUndefined();
+
+  // A hand-added remote has refs but no origin/HEAD pointer — the common
+  // names are the fallback.
+  const sha = git("rev-parse", "HEAD").trim();
+  git("update-ref", "refs/remotes/origin/master", sha);
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/master");
+  git("update-ref", "refs/remotes/origin/main", sha);
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
+
+  // A pointer to a branch that no longer exists must not be trusted — every
+  // worktree cut from it would fail its rev-parse.
+  git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone");
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
 });
