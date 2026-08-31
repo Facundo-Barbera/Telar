@@ -75,14 +75,11 @@ export function InboxSection() {
   return (
     <SettingsGroup
       title="Settling"
-      description="A settled session is off your list, not finished. It comes back the moment you send it anything."
+      description="A settled session is off your list, not finished."
     >
       <Row
         label="Settle quiet sessions"
-        hint={
-          error ??
-          "Off means nothing leaves the list on its own — only what you settle, snooze or pin."
-        }
+        hint={error ?? "Off means nothing leaves the list on its own."}
         control={
           <Switch
             checked={days !== null}
@@ -95,7 +92,7 @@ export function InboxSection() {
       {days !== null && (
         <Row
           label="After"
-          hint={`Days without activity. Anything you pin stays put; anything that asks you a question comes back.`}
+          hint="Days without activity. Pinned sessions stay put."
           control={<DaysInput value={days} onCommit={(next) => void save({ autoSettleAfterDays: next })} />}
         />
       )}

@@ -598,7 +598,7 @@ export function GitHubSurface({
                 <span className="max-w-24 truncate text-muted-foreground">{filter.assignee ?? "anyone"}</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-56">
-                <FacetList loading={loadingFacets} empty="Nobody can be assigned here, or gh could not say who.">
+                <FacetList loading={loadingFacets} empty="No assignees to choose from.">
                   <DropdownMenuRadioGroup value={filter.assignee ?? ""} onValueChange={(next) => choose({ assignee: next || undefined })}>
                     <DropdownMenuRadioItem value="">Anyone</DropdownMenuRadioItem>
                     {/* THE VIEWER FIRST AND BY NAME. "assigned to me" is the filter
@@ -704,9 +704,9 @@ export function GitHubSurface({
       {rows.length === 0 ? (
         <p className="px-4 py-6 text-center text-[11px] leading-snug text-muted-foreground">
           {shownChips.length > 0
-            ? `Nothing matches those filters. Remove one above, or clear them all from the menu.`
+            ? `Nothing matches those filters.`
             : shown.state === "open"
-              ? `Nothing open. Closed ${label} are one click away in the filter above.`
+              ? `Nothing open.`
               : `No ${label} in this repository match that.`}
         </p>
       ) : (
@@ -736,12 +736,11 @@ export function GitHubSurface({
           )}
           {snapshot.projectsUnavailable === "failed" && (
             <p className="border-t border-border px-4 py-2 text-[11px] leading-snug text-muted-foreground">
-              Boards could not be read this time. Everything else on these rows is current.
+              Boards could not be read this time.
             </p>
           )}
           <p className="px-4 py-2 text-[11px] leading-snug text-muted-foreground">
-            Click a row to read it here — body, conversation{kind === "pulls" ? ", checks, reviews and the merge" : " and status"}. Drag one into
-            the message to reference it instead; what lands in the box is exactly what the agent gets.
+            Click a row to read it here; drag one into the message to reference it.
           </p>
         </>
       )}

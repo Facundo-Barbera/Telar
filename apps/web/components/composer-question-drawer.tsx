@@ -166,9 +166,9 @@ export function ComposerQuestionDrawer({
               <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
                 {canAdvance(fields, draft)
                   ? isLastQuestion(fields, draft)
-                    ? "Enter submits your answers."
-                    : "Enter moves to the next question."
-                  : "Pick an option, or type your own answer below."}
+                    ? "Enter submits"
+                    : "Enter continues"
+                  : "Pick one, or type your own"}
               </span>
               <button
                 type="button"

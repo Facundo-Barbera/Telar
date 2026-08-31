@@ -194,7 +194,7 @@ export function RegisterProjectDialog({
               a folder you have to go and find; typing is faster for one you can
               name, and pasting is faster than both. Replacing the field with a
               button would take the third away. */}
-          <Field htmlFor="project-root" label="Repository path" hint="Absolute path to the repo root on this machine.">
+          <Field htmlFor="project-root" label="Repository path" hint="Absolute path to the repo root.">
             <div className="flex items-center gap-1.5">
               <Input
                 id="project-root"
@@ -215,7 +215,7 @@ export function RegisterProjectDialog({
           <Field
             htmlFor="project-name"
             label="Project name (optional)"
-            hint={basename ? `Defaults to the folder name: ${basename}` : "Defaults to the repository folder name."}
+            hint={basename ? `Defaults to ${basename}` : "Defaults to the folder name."}
           >
             <Input
               id="project-name"
@@ -240,8 +240,7 @@ export function RegisterProjectDialog({
               <span className="block text-xs font-medium text-foreground">Ignore Telar&apos;s files in this repo</span>
               <span className="mt-0.5 block text-xs leading-snug text-muted-foreground">
                 Appends <span className="font-mono">telar.yaml</span>, <span className="font-mono">.telar/</span> and{" "}
-                <span className="font-mono">.telar-worktrees/</span> to <span className="font-mono">.gitignore</span>, skipping any rule that is
-                already there. Telar writes none of these into a checkout — worktrees live outside it — so this is a precaution, not a cleanup.
+                <span className="font-mono">.telar-worktrees/</span> to <span className="font-mono">.gitignore</span>.
               </span>
             </span>
           </label>

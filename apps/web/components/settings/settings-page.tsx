@@ -96,7 +96,7 @@ function AboutSection({
       />
       <Row
         label="State"
-        hint="Sessions, transcripts, worktrees and settings. Telar never reads or writes the legacy state root."
+        hint="Sessions, transcripts, worktrees and settings."
         control={<Mono>{about?.stateRoot ?? "—"}</Mono>}
       />
     </SettingsGroup>
@@ -136,8 +136,8 @@ export function SettingsPage() {
   return (
     <SettingsShell title="Settings" subtitle="cockpit" sections={SECTIONS} active={active} onSelect={setActive} backHref="/">
       {active === "appearance" && (
-        <SettingsGroup title="Theme" description="Applied before first paint, so switching never flashes the other theme.">
-          <Row label="Colour scheme" hint="System follows the OS setting and changes with it." control={<ThemeControl />} />
+        <SettingsGroup title="Theme" description="Applied before first paint.">
+          <Row label="Colour scheme" hint="System follows the OS setting." control={<ThemeControl />} />
         </SettingsGroup>
       )}
 

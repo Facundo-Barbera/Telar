@@ -132,19 +132,20 @@ export function SessionInboxMenu({
             {session.settledOverride === "active" ? (
               <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { settledOverride: null }))}>
                 <PinOffIcon />
-                Stop keeping in the list
+                Unpin
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { settledOverride: "active" }))}>
                 <PinIcon />
-                Keep in the list
+                Pin to the list
               </DropdownMenuItem>
             )}
 
             {snoozing ? (
               <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { snoozedUntil: null }))}>
                 <AlarmClockIcon />
-                {`Wake now — sleeping ${wakeLabel(session.snoozedUntil!, now)}`}
+                <span className="flex-1">Wake now</span>
+                <span className="text-xs text-muted-foreground">{wakeLabel(session.snoozedUntil!, now)}</span>
               </DropdownMenuItem>
             ) : (
               <DropdownMenuGroup>

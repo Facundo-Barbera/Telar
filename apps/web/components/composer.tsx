@@ -105,12 +105,12 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
 }
 
 function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
-  if (!ready) return "Waiting for the engine-owned session…";
+  if (!ready) return "Waiting for the session…";
   // The ONLY place the cockpit mentions that queueing exists.
   if (busy) return "Enter queues a message…";
   // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
   // which the Spool's front door does not have one of.
-  return placeholder ?? "Ask for changes, explore the project, or continue this conversation…";
+  return placeholder ?? "Ask for changes, or explore the project…";
 }
 
 /** One waiting message. Ported from the donor's QueueChip — the numbered badge
@@ -148,7 +148,7 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
             <button
               type="button"
               aria-label="Add context"
-              title="Attach photos or files"
+              title="Add context"
               className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             />
           }
@@ -168,7 +168,7 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
             Take screenshot
           </DropdownMenuItem>
           <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
-            Images are shown to the model directly. Anything else is written beside the session and named by path, so the agent can open it.
+            Images go to the model; other files land beside the session, named by path.
           </p>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -287,7 +287,7 @@ function QueueChip({
           <button
             type="button"
             aria-label="Send this message into the running turn"
-            title={sendNowDisabled ? (sendNowReason ?? "Send now is unavailable right now.") : "Send now — the running turn hears it without stopping"}
+            title={sendNowDisabled ? (sendNowReason ?? "Send now is unavailable.") : "The running turn hears it without stopping"}
             disabled={sendNowDisabled}
             onClick={() => onSendNow(item.runId)}
             className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
@@ -882,7 +882,7 @@ export function Composer({
             active={Math.min(active, Math.max(0, completions.length - 1))}
             heading={trigger.kind === "path" ? "Files and folders" : "Commands"}
             {...(trigger.kind === "path" && reading ? { loading: true } : {})}
-            emptyText={trigger.kind === "path" ? "No matching files or folders." : "No matching command."}
+            emptyText="No matches."
             onActive={setActive}
             onPick={apply}
           />
@@ -927,7 +927,7 @@ export function Composer({
             value={questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft}
             placeholder={
               questionActive
-                ? "Type your own answer, or leave this blank to use the selected option"
+                ? "Type your own answer, or leave blank…"
                 : placeholderFor(ready, busy, placeholder)
             }
             // NOT disabled while busy. That is the whole point.
@@ -1029,7 +1029,7 @@ export function Composer({
               {...(session ? { driver: session.driver } : {})}
               {...(onCompact ? { onCompact } : {})}
               compactDisabled={busy || sending || Boolean(compacting)}
-              compactReason={compacting ? "Already compacting." : "Wait for the running turn to finish."}
+              compactReason={compacting ? "Already compacting." : "A turn is running."}
             />
             {/* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
                 oversight: `InputGroup` carries `has-disabled:opacity-50`, so a

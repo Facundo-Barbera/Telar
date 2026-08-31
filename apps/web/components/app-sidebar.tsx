@@ -125,7 +125,7 @@ function TelarSidebarHeader() {
   return (
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
       <div className="flex min-w-0 items-center gap-1">
-        <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="app-no-drag shrink-0" />
+        <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
         <PlaceSwitcher />
       </div>
     </SidebarHeader>
@@ -774,7 +774,7 @@ function SidebarBody() {
               <SidebarEmpty
                 icon={MessageSquareIcon}
                 title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
-                detail={query ? "Try another title or project name." : "Start a new session from the button above."}
+                detail={query ? "Try another title or project." : "Start one from the button above."}
               />
             ) : (
               list.sessions.map((session, index) => (

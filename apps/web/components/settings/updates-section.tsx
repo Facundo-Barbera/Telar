@@ -72,7 +72,7 @@ export function UpdatesSection() {
         <Row
           icon={MonitorIcon}
           label="Desktop app only"
-          hint="Auto-update runs inside the Telar desktop app. This browser tab has no updater to check."
+          hint="This browser tab has no updater to check."
         />
       </SettingsGroup>
     );
@@ -107,7 +107,7 @@ export function UpdatesSection() {
     );
 
   return (
-    <SettingsGroup title="Updates" description="Beta and nightly builds check in with a private Cloudflare-hosted update feed.">
+    <SettingsGroup title="Updates" description="Beta and nightly builds check a private update feed.">
       <Row label="Update status" hint={updateStatusHint(status)} control={control} />
       <Row
         label="Channel"
@@ -143,8 +143,8 @@ export function UpdatesSection() {
         label="Install on quit"
         hint={
           prefs?.installOnQuit
-            ? "A downloaded update installs itself the next time you quit Telar. Install & restart still works while this is on."
-            : "Downloaded updates wait for you to press Install & restart."
+            ? "A downloaded update installs itself the next time you quit Telar."
+            : "Downloaded updates wait for Install & restart."
         }
         control={
           <Switch
@@ -158,7 +158,7 @@ export function UpdatesSection() {
         <Row
           icon={MonitorIcon}
           label="No update feed in this build"
-          hint="These preferences are saved, but this build was packaged locally rather than published to a channel, so nothing will check or install."
+          hint="This build was packaged locally, so nothing will check or install. Preferences are still saved."
         />
       )}
     </SettingsGroup>

@@ -216,10 +216,10 @@ export const RUNTIME_MODE_LABELS: Record<RuntimeMode, string> = {
 };
 
 export const RUNTIME_MODE_HELP: Record<RuntimeMode, string> = {
-  "approval-required": "Ask before commands and file changes.",
-  "auto-accept-edits": "Auto-approve edits, ask before other actions.",
-  auto: "A reviewer approves routine actions; risky ones still ask.",
-  "full-access": "Allow commands and edits without prompts.",
+  "approval-required": "Asks before every action",
+  "auto-accept-edits": "Other actions still ask",
+  auto: "A reviewer waves routine actions through",
+  "full-access": "No prompts",
 };
 
 const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
@@ -442,7 +442,7 @@ function FamilyRow({
       <button
         type="button"
         aria-label={starred ? `Unstar ${family.label}` : `Star ${family.label}`}
-        title={starred ? "Remove from favourites" : "Keep it in favourites"}
+        title={starred ? "Unstar" : "Star"}
         onClick={onStar}
         className={cn(
           "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
@@ -625,7 +625,7 @@ export function AgentControl({
                 setShowLegacy(false);
               }}
               aria-label="Favourites"
-              title="Starred models"
+              title="Favourites"
               className={cn(
                 "flex size-8 items-center justify-center rounded-lg transition-colors",
                 view === "favorites"
@@ -650,7 +650,7 @@ export function AgentControl({
                   if (option !== driver) onDriverChange?.(option);
                 }}
                 aria-label={PROVIDER_LABEL[option]}
-                title={onDriverChange || option === driver ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed once the session exists`}
+                title={onDriverChange || option === driver ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed for this session`}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
                   option === view
@@ -716,14 +716,10 @@ export function AgentControl({
           </div>
         </div>
         <p className="border-t border-border px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
-          {readOnly
-            ? "Chosen when the session starts."
-            : onDriverChange
-              ? "Applies to the first message. The provider is fixed after that."
-              : `Next turn. Provider stays ${PROVIDER_LABEL[driver]}.`}
+          {readOnly ? "Chosen when the session starts." : onDriverChange ? "Applies to the first message." : "Takes effect next turn."}
           {/* Whether this list was ASKED FOR or guessed. The distinction matters
               the moment an id here 404s at the provider. */}
-          {catalogue?.source === "builtin" && models.length > 0 ? " List is this cockpit's own." : ""}
+          {catalogue?.source === "builtin" && models.length > 0 ? " Built-in list." : ""}
         </p>
       </PopoverContent>
     </Popover>
@@ -959,7 +955,7 @@ export function ComposerOverflowMenu({
           <button
             type="button"
             aria-label="More composer settings"
-            title="Everything else about this message"
+            title="More settings"
             className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           />
         }
@@ -1148,8 +1144,8 @@ export function ContextPill({
           <button
             type="button"
             className="relative flex size-8 items-center justify-center rounded-full text-[9px] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
-            aria-label={`Context window${unknown ? ", size not reported by this provider" : usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
-            title="View context window"
+            aria-label={`Context window${unknown ? ", size not reported" : usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
+            title="Context window"
           />
         }
       >
@@ -1183,17 +1179,13 @@ export function ContextPill({
             <span className="text-muted-foreground">Total processed</span>
             <span className="font-mono font-medium">{unknown ? "—" : compactTokens(used)}</span>
           </div>
-          {unknown && (
-            <p className="mt-3 max-w-56 text-sm leading-snug text-muted-foreground">
-              {harness} does not report context size to the engine yet, so there is nothing to measure here.
-            </p>
-          )}
-          <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">{harness} automatically compacts its context when needed.</p>
+          {unknown && <p className="mt-3 max-w-56 text-sm leading-snug text-muted-foreground">{harness} does not report context size yet.</p>}
+          <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">{harness} compacts automatically when needed.</p>
           {onCompact && (
             <button
               type="button"
               disabled={compactDisabled}
-              title={compactDisabled ? compactReason : "Summarise the conversation so far to free the window"}
+              title={compactDisabled ? compactReason : "Summarise the conversation to free space"}
               onClick={() => {
                 setOpen(false);
                 onCompact();
