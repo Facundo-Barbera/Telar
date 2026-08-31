@@ -1,3 +1,4 @@
+import os from "node:os";
 import type { NextConfig } from "next";
 
 /**
@@ -25,8 +26,25 @@ const extraOrigins = (process.env.TELAR_WEB_ALLOWED_ORIGINS ?? "")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+/**
+ * BINDING EVERYTHING IMPLIES ALLOWING EVERY LOCAL ADDRESS AS AN ORIGIN. A
+ * wildcard bind never equals the origin a browser presents — the laptop
+ * reaching this machine over Tailscale says `100.x.y.z`, not `0.0.0.0` — so
+ * the bound host alone allowed nothing, and the page loaded with every dev
+ * asset refused: an app that renders and does not respond. The machine's own
+ * interface addresses are exactly the set of origins a wildcard bind makes
+ * reachable, so they are derived rather than asked for. MagicDNS or other
+ * NAMES for this machine still need `TELAR_WEB_ALLOWED_ORIGINS`.
+ */
+const wildcardBind = devHost === "0.0.0.0" || devHost === "::";
+const interfaceAddresses = wildcardBind
+  ? Object.values(os.networkInterfaces())
+      .flat()
+      .flatMap((entry) => (entry && !entry.internal ? [entry.address] : []))
+  : [];
 const allowedDevOrigins = [
-  ...(devHost && devHost !== "127.0.0.1" && devHost !== "localhost" ? [devHost] : []),
+  ...(devHost && devHost !== "127.0.0.1" && devHost !== "localhost" && !wildcardBind ? [devHost] : []),
+  ...interfaceAddresses,
   ...extraOrigins,
 ];
 
