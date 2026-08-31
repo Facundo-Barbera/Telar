@@ -38,6 +38,7 @@ import {
   GlobeIcon,
   ListTodoIcon,
   Loader2Icon,
+  Minimize2Icon,
   PencilIcon,
   SearchIcon,
   TerminalIcon,
@@ -46,6 +47,7 @@ import {
 } from "lucide-react";
 import type { Item } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { fmtTokens } from "@/lib/format";
 import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
 import { Badge } from "@/components/ui/badge";
@@ -351,10 +353,41 @@ function AgentChip({ task, onOpen }: { task: JournalTask; onOpen?: (taskId: stri
   );
 }
 
+/**
+ * A compaction is a SEAM in the conversation, not a tool call: the provider
+ * squeezed its own memory, and this row is why the agent may suddenly know
+ * less than it did a message ago. Which is exactly why it must render — the
+ * generic fallback drew the bare string "context_compaction", and before that
+ * the Claude driver dropped the message entirely and the seam was invisible.
+ */
+function CompactionRow({ item }: { item: JournalItem }) {
+  const detail = item.detail.type === "context_compaction" ? item.detail : undefined;
+  const label = running(item) ? "Compacting context…" : item.status === "failed" ? "Compaction failed" : "Compacted context";
+  const reclaimed =
+    detail?.preTokens !== undefined && detail?.postTokens !== undefined
+      ? `${fmtTokens(detail.preTokens)} → ${fmtTokens(detail.postTokens)}`
+      : undefined;
+  return (
+    <p className={cn(ROW, item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+      <Minimize2Icon className="size-3.5 shrink-0" />
+      {running(item) ? (
+        <Shimmer as="span" className="min-w-0 flex-1 truncate">
+          {label}
+        </Shimmer>
+      ) : (
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+      )}
+      {detail?.reason === "auto" && <span className="shrink-0 text-[10px] opacity-70">automatic</span>}
+      {reclaimed && <span className="shrink-0 font-mono text-[10px] tabular-nums">{reclaimed}</span>}
+    </p>
+  );
+}
+
 export function TranscriptItem({ item }: { item: JournalItem }) {
   if (item.detail.type === "task") return null;
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
+  if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
   if (item.detail.type === "error") {
     return (
@@ -593,6 +626,12 @@ export function WorkingIndicator({
  * directly above and could not see in the one line that claimed to summarise it.
  */
 export function turnActivity(turn: Pick<JournalTurn, "items" | "tasks">): { label: string; delegated: boolean } {
+  // A compaction outranks everything: while it runs the provider is not
+  // working on the task, it is squeezing its memory, and "Thinking" over a
+  // long silence is exactly the read this line exists to prevent.
+  if (turn.items.some((item) => item.detail?.type === "context_compaction" && item.status === "inProgress")) {
+    return { label: "Compacting context", delegated: false };
+  }
   const live = turn.tasks.filter((task) => task.state === "running" || task.state === "pending" || task.state === "waiting");
   const agents = live.filter((task) => task.kind !== "background").length;
   if (agents > 0) return { label: `${agents} sub-agent${agents === 1 ? "" : "s"} working`, delegated: true };

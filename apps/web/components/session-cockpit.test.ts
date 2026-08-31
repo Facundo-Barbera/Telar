@@ -58,4 +58,17 @@ describe("what a live turn says it is doing", () => {
     expect(turnActivity(turn({ items: [{ status: "inProgress" }] })).label).toBe("Working");
     expect(turnActivity(turn({ items: [{ status: "completed" }] })).label).toBe("Thinking");
   });
+
+  test("a compaction outranks everything the line could say", () => {
+    // While the provider squeezes its memory it is not working on the task,
+    // and "Thinking" over that long silence is the read this line prevents.
+    expect(
+      turnActivity(
+        turn({
+          items: [{ status: "inProgress", detail: { type: "context_compaction" } }],
+          tasks: [task()],
+        }),
+      ).label,
+    ).toBe("Compacting context");
+  });
 });
