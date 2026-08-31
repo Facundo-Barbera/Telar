@@ -585,7 +585,38 @@ test("a store with no browser attached reports none rather than failing", async 
   const { store } = readyStore();
   // The ordinary answer for a session that has never browsed, and the same one
   // a deployment whose worker owns the browser gives. One code path, not two.
-  expect(await store.browserState("session_one")).toEqual({ scopeKey: "session_one", provider: "none", running: false, tabs: [] });
+  // `canStart: false` is what tells a client not to offer an "open a browser"
+  // button that would start one beside the worker's own.
+  expect(await store.browserState("session_one")).toEqual({
+    scopeKey: "session_one",
+    provider: "none",
+    running: false,
+    tabs: [],
+    canStart: false,
+  });
+});
+
+test("a hand-started browser journals its tabs exactly once, so the panel can show them", async () => {
+  const { store } = readyStore();
+  const tabs = [{ id: "0", url: "http://x", title: "X", active: true }];
+  store.attachBrowser({
+    state: async () => ({ provider: "headless" as const, running: true, tabs }),
+    release: async () => undefined,
+  } as never);
+
+  // A plain read journals nothing: asking what the browser shows must never
+  // become history. Only the explicit `start` gesture is an event.
+  await store.browserState("session_one");
+  const before = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  expect(before).toHaveLength(0);
+
+  const started = await store.browserState("session_one", { start: true });
+  expect(started.canStart).toBe(true);
+  // A second press with the same tab set journals nothing new.
+  await store.browserState("session_one", { start: true });
+  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  expect(events).toHaveLength(1);
+  expect((events[0] as { tabs: { url: string }[] }).tabs[0]?.url).toBe("http://x");
 });
 
 test("a local session records the commit it started from, so its review survives the agent committing", () => {

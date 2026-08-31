@@ -290,6 +290,14 @@ export const BrowserSnapshot = z.object({
    *  one anyway. */
   screenshot: z.string().min(1).optional(),
   error: z.string().min(1).optional(),
+  /**
+   * Whether asking with `start` could launch a browser HERE. False when the
+   * daemon has no runtime attached — the out-of-process worker owns its own,
+   * which this process cannot reach — so a client can hide its "open a
+   * browser" affordance instead of offering a button that starts a browser
+   * beside the one the agent is actually driving.
+   */
+  canStart: z.boolean().optional(),
 });
 export type BrowserSnapshot = z.infer<typeof BrowserSnapshot>;
 

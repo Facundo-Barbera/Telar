@@ -914,6 +914,10 @@ export class EngineStore {
    * EngineStore directly and must not pull Chromium in to do it.
    */
   private browser?: AttachedBrowser;
+  /** The last tab set journalled from a HAND-STARTED browser read, per session.
+   *  In memory like the caches above: it only exists to stop repeated `start`
+   *  reads writing identical `browser.state.changed` rows. */
+  private readonly browserJournalSignature = new Map<string, string>();
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
@@ -937,12 +941,27 @@ export class EngineStore {
   async browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
     this.getSession(sessionId);
     if (!this.browser?.state) {
-      return { scopeKey: sessionId, provider: "none", running: false, tabs: [] };
+      return { scopeKey: sessionId, provider: "none", running: false, tabs: [], canStart: false };
     }
     const state = await this.browser.state(sessionId, {
       ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
       ...(options.start === undefined ? {} : { start: options.start }),
     });
+    /**
+     * A browser opened BY HAND has no worker to report it. The socket journals
+     * `browser.state.changed` for agent-driven navigation; a human pressing
+     * "open a browser" goes through this read with `start`, and without this
+     * write the launched page would exist with no tab in the panel — the panel
+     * folds the journal, not this snapshot. Deduped by signature so repeated
+     * presses (or a poll that someone hands `start` to) journal nothing new.
+     */
+    if (options.start && !state.error && state.running) {
+      const signature = `${state.provider}:${JSON.stringify(state.tabs)}`;
+      if (this.browserJournalSignature.get(sessionId) !== signature) {
+        this.browserJournalSignature.set(sessionId, signature);
+        this.appendEvent(sessionId, { type: "browser.state.changed", provider: state.provider, tabs: state.tabs });
+      }
+    }
     return {
       scopeKey: sessionId,
       provider: state.provider,
@@ -950,6 +969,7 @@ export class EngineStore {
       tabs: state.tabs,
       ...(state.screenshot ? { screenshot: state.screenshot } : {}),
       ...(state.error ? { error: state.error } : {}),
+      canStart: true,
     };
   }
 
