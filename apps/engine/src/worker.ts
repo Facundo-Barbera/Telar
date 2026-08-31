@@ -4,6 +4,7 @@ import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@
 import type { BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type TurnDriver } from "./driver";
 import { providerProcessEnv } from "./provider-instances";
+import { SteerMailbox } from "./steering";
 
 type WorkerClient = Pick<
   EngineClient,
@@ -15,6 +16,7 @@ type WorkerClient = Pick<
   | "openRequest"
   | "completeTurn"
   | "failTurn"
+  | "ackSteer"
   // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
   // back over the same loopback socket as everything else here, which is what
   // makes the toolkit identical in the embedded worker and the out-of-process
@@ -136,6 +138,18 @@ export class EngineWorker {
    * `tick()` comes AFTER the heartbeat rather than before it.
    */
   private readonly awaiting = new Map<string, (outcome: DriverRequestOutcome) => void>();
+  /**
+   * Each running turn's steer mailbox, keyed by claim token like `active`.
+   *
+   * PUSH THEN ACK, deliberately. Ack-first loses the message if this process
+   * dies between ack and push; push-first can deliver it twice if the ack is
+   * lost and the heartbeat re-carries it. Losing a typed message is the worse
+   * failure everywhere in this codebase, so duplication is the accepted side —
+   * `pushedSteers` narrows the window to an actually-lost ack rather than
+   * every heartbeat until one lands.
+   */
+  private readonly steering = new Map<string, SteerMailbox>();
+  private readonly pushedSteers = new Set<string>();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -174,6 +188,26 @@ export class EngineWorker {
         // driver as a bare decision.
         settle({ decision: resolution.decision, ...(resolution.answers ? { answers: resolution.answers } : {}) });
       }
+      // Deliver send-now messages into their running turns' mailboxes.
+      for (const delivery of status.steer ?? []) {
+        if (!this.pushedSteers.has(delivery.steerRunId)) {
+          const mailbox = this.steering.get(delivery.claimToken);
+          // No mailbox (or closed): this worker cannot deliver — leave the
+          // turn `steering`; the engine's settlement sweep requeues it.
+          if (!mailbox?.push(delivery.text)) continue;
+          this.pushedSteers.add(delivery.steerRunId);
+        }
+        try {
+          await this.options.client.ackSteer(delivery.sessionId, delivery.steerRunId, delivery.claimToken);
+          this.pushedSteers.delete(delivery.steerRunId);
+        } catch (error) {
+          // A conflict means the engine already settled the running turn and
+          // requeued the message; the (possibly duplicate) delivery is the
+          // documented side of push-then-ack. Anything else retries next beat.
+          if (error instanceof EngineClientError && error.code === "conflict") this.pushedSteers.delete(delivery.steerRunId);
+          else if (isConnectivityLoss(error)) throw error;
+        }
+      }
       // Claim until the cap or the queue runs dry. One claim per call is the
       // engine's shape (`claimNextTurn` hands out the oldest claimable turn),
       // so the loop is what turns a per-tick single claim into real
@@ -207,6 +241,11 @@ export class EngineWorker {
     const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();
     this.active.set(claimToken, controller);
+    // The turn's send-now mailbox, registered before the first heartbeat that
+    // could carry a delivery. Closed with the turn — a push after close is
+    // refused and the engine's sweep requeues the message instead.
+    const steer = new SteerMailbox();
+    this.steering.set(claimToken, steer);
     /**
      * ONE park/heartbeat implementation for both doors into the engine's gate:
      * the driver's own `onRequest`, and the browser socket's per-call gate.
@@ -320,6 +359,9 @@ export class EngineWorker {
         // requires of any row that names a model at all.
         providerInstanceId: claim.providerInstanceId,
         providerSessionId,
+        // Send-now deliveries land here; how the driver injects them is its
+        // own affair (Claude at turn boundaries, Codex mid-turn).
+        steer,
         // The browser rides the worker's socket; the driver only learns where
         // and with which credential. Spread on the same absent-means-absent
         // rule as everything above it.
@@ -460,6 +502,8 @@ export class EngineWorker {
       // The lease dies with the turn: a provider subprocess that outlives its
       // run holds a token that now answers 401, which is the revocation.
       lease?.release();
+      steer.close();
+      this.steering.delete(claimToken);
       this.active.delete(claimToken);
     }
   }

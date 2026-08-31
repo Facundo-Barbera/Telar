@@ -45,6 +45,7 @@ import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
+import type { SteerMailbox } from "./steering";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 
 export type { SpoolCapability, SessionsCapability };
@@ -83,6 +84,15 @@ export type DriverRun = {
   prompt: string;
   cwd: string;
   signal: AbortSignal;
+  /**
+   * SEND NOW: text a human pushed into this running turn. The worker fills
+   * it from the heartbeat; how a driver injects it is the driver's own
+   * affair — Claude yields it at the next turn boundary of its streaming
+   * prompt, Codex sends `turn/steer` the moment it lands. Absent means the
+   * deployment (or test) has no send-now channel, and the driver behaves
+   * exactly as before it existed.
+   */
+  steer?: SteerMailbox;
   /**
    * The session's door to the user's item store.
    *
