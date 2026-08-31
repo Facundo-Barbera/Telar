@@ -13,7 +13,9 @@ import {
   defaultInstanceIdForDriver,
   livenessOf,
   DEFAULT_INBOX_POLICY,
+  DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
+  TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
   MAX_AUTO_SETTLE_DAYS,
   MIN_AUTO_SETTLE_DAYS,
@@ -45,6 +47,7 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type TextGenPolicy,
   type ModelCatalogue,
   type SessionDiff,
   type EngineEvent,
@@ -372,6 +375,9 @@ export type EngineStatePaths = {
    * the same session in two different bands depending on which window you opened.
    */
   inbox: string;
+  /** Who writes generated titles and branch names — see `TextGenPolicy`.
+   *  Environment-scoped like `inbox`, and for the same reason. */
+  textGen: string;
   engine: string;
   lock: string;
 };
@@ -457,6 +463,7 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    textGen: path.join(resolved, "text-generation.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
@@ -547,6 +554,25 @@ function seedProviderInstance(driver: ProviderDriverKind, at: number): ProviderI
     createdAt: at,
     updatedAt: at,
   };
+}
+
+/**
+ * The engine-cut branch a title implies: `telar/<title-slug>-<id6>`, or
+ * undefined when the title yields no usable slug (worktree creation then falls
+ * back to `telar/<sessionId>`). One function because TWO callers must agree on
+ * it exactly: `createSession` names the branch from the seed title, and
+ * `refreshWorktreeBranchFromTitle` may only rename a branch it can prove the
+ * engine derived — which it proves by re-deriving.
+ */
+export function derivedBranchFor(title: string, sessionId: string): string | undefined {
+  const slug = title
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug ? `telar/${slug}-${sessionId.replace(/^session_/, "").slice(0, 6)}` : undefined;
 }
 
 function assertText(value: unknown): asserts value is string {
@@ -1091,6 +1117,55 @@ export class EngineStore {
       }
     }
     atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /** Same never-throws rule as `getInboxPolicy`, same reason: a malformed
+   *  preference costs the preference, never the turn it decorates. */
+  getTextGenPolicy(): TextGenPolicy {
+    try {
+      const parsed = TextGenPolicySchema.safeParse(readJson(this.paths.textGen));
+      return parsed.success ? parsed.data : { ...DEFAULT_TEXT_GEN_POLICY };
+    } catch {
+      return { ...DEFAULT_TEXT_GEN_POLICY };
+    }
+  }
+
+  setTextGenPolicy(patch: { titles?: unknown; renameBranches?: unknown; driver?: unknown; model?: unknown }): TextGenPolicy {
+    const next: TextGenPolicy = { ...this.getTextGenPolicy() };
+    if (patch.titles !== undefined) {
+      if (typeof patch.titles !== "boolean") throw new EngineStateError("invalid_request", "titles must be a boolean");
+      next.titles = patch.titles;
+    }
+    if (patch.renameBranches !== undefined) {
+      if (typeof patch.renameBranches !== "boolean") throw new EngineStateError("invalid_request", "renameBranches must be a boolean");
+      next.renameBranches = patch.renameBranches;
+    }
+    if (patch.driver !== undefined) {
+      if (patch.driver !== "claude" && patch.driver !== "codex") {
+        throw new EngineStateError("invalid_request", "text generation driver must be claude or codex");
+      }
+      /**
+       * A DRIVER CHANGE DROPS THE MODEL rather than carrying it: model ids are
+       * meaningless across harnesses, and `haiku` handed to Codex would fail
+       * every generation until somebody worked out why. The new driver starts
+       * on its own default; the settings page offers its catalogue from there.
+       */
+      if (patch.driver !== next.driver) delete next.model;
+      next.driver = patch.driver;
+    }
+    if (patch.model !== undefined) {
+      if (patch.model === null) {
+        delete next.model;
+      } else {
+        const parsed = TextGenPolicySchema.shape.model.safeParse(patch.model);
+        if (!parsed.success || parsed.data === undefined) {
+          throw new EngineStateError("invalid_request", "text generation model must be a short model id, or null for the driver's default");
+        }
+        next.model = parsed.data;
+      }
+    }
+    atomicWrite(this.paths.textGen, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -3582,15 +3657,7 @@ export class EngineStore {
     const workspace: Session["workspace"] =
       envMode === "worktree"
         ? (() => {
-            const titleSlug = (input.title ?? "")
-              .toLowerCase()
-              .normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/[^a-z0-9]+/g, "-")
-              .replace(/^-+|-+$/g, "")
-              .slice(0, 40);
-            const branchSlug =
-              input.branchSlug ?? (titleSlug ? `telar/${titleSlug}-${id.replace(/^session_/, "").slice(0, 6)}` : undefined);
+            const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
             if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
               throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
             }
@@ -3789,6 +3856,37 @@ export class EngineStore {
     atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.updated", session: next });
     return structuredClone(next);
+  }
+
+  /**
+   * Re-derive the worktree branch from the CURRENT title, after a generated
+   * title replaced the seed. Returns the new branch, or undefined for every
+   * way this can decline — and it declines rather than throws, because it runs
+   * behind a turn nobody should lose to a naming nicety.
+   *
+   * ONLY A `telar/` BRANCH IS TOUCHED. Human-named branches live outside the
+   * namespace by construction (`sanitizeBranchName` refuses it), and a loom's
+   * `loom/…` slugs encode the loom's own structure — both are names somebody
+   * or something else owns. `git branch -m` refusing a collision is the
+   * remaining guard, and its failure is a no-op here, not an error.
+   *
+   * The worktree DIRECTORY keeps its seed-derived name: it is an address the
+   * session document already holds, and moving a directory a provider process
+   * may be running in is how checkouts get corrupted.
+   */
+  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined {
+    const session = this.getSession(sessionId);
+    if (session.state === "archived" || session.workspace.mode !== "worktree") return undefined;
+    const current = session.workspace.branch;
+    if (!current.startsWith("telar/")) return undefined;
+    const next = derivedBranchFor(session.title, sessionId);
+    if (next === undefined || next === current) return undefined;
+    const renamed = this.git(session.workspace.path, ["branch", "-m", current, next]);
+    if (renamed.status !== 0) return undefined;
+    const updated: Session = { ...session, workspace: { ...session.workspace, branch: next }, updatedAt: this.now() };
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+    return next;
   }
 
   getSession(sessionId: string): Session {

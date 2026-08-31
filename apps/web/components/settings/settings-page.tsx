@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
+import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import { ThemeControl } from "@/components/theme-control";
 import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
 import { ProvidersSection } from "./providers-section";
+import { TextGenSection } from "./textgen-section";
 import { UpdatesSection } from "./updates-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
@@ -47,6 +48,11 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "inbox", label: "Inbox", icon: InboxIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
+  /**
+   * UNDER "RUNTIME": it decides which harness process runs and spends tokens,
+   * which is a fact about the machine, not about what this window shows.
+   */
+  { id: "textgen", label: "Text generation", icon: SparklesIcon, group: "Runtime" },
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
   /**
    * UNDER "COCKPIT", beside About, because an update is a fact about THIS
@@ -144,6 +150,8 @@ export function SettingsPage() {
       {active === "inbox" && <InboxSection />}
 
       {active === "providers" && <ProvidersSection />}
+
+      {active === "textgen" && <TextGenSection />}
 
       {active === "mcp" && <McpSection />}
 

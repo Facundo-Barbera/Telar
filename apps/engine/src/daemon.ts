@@ -28,6 +28,7 @@ import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
+import { maybeRetitleSession } from "./textgen";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
 import type { SpoolCapability } from "./spool/tools";
@@ -572,6 +573,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // truthiness test: `null` and "not mentioned" are different
             // requests and JSON can only tell them apart by the key.
             ...("autoSettleAfterDays" in input ? { autoSettleAfterDays: input.autoSettleAfterDays } : {}),
+          }),
+        });
+        return;
+      }
+      /** Who writes generated titles and branch names — a document of the
+       *  environment, like the inbox rule above and for the same reason. */
+      if (url.pathname === "/v2/textgen" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { textGen: store.getTextGenPolicy() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          textGen: store.setTextGenPolicy({
+            ...("titles" in input ? { titles: input.titles } : {}),
+            ...("renameBranches" in input ? { renameBranches: input.renameBranches } : {}),
+            ...("driver" in input ? { driver: input.driver } : {}),
+            // `null` returns to the driver's default model; the key's presence
+            // is the question, same rule as the inbox window above.
+            ...("model" in input ? { model: input.model } : {}),
           }),
         });
         return;
@@ -2182,6 +2203,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           const result: TurnSubmissionResult = accepted;
           writeJson(response, accepted.replayed ? 200 : 202, result);
+          /**
+           * THE FIRST TURN ALSO NAMES THE SESSION. Sequence 1 is the moment
+           * both placeholders exist — the truncated-message title and the
+           * branch slugged from it — and the only moment worth a model call:
+           * a session that already has a real name keeps it (`titleIsSeed`).
+           * After the response and unawaited, because a title is never worth
+           * a millisecond of turn latency, let alone a failure.
+           */
+          if (!accepted.replayed && accepted.turn.sequence === 1) {
+            void maybeRetitleSession(store, session.sessionId, accepted.turn.input);
+          }
           return;
         }
         if (request.method === "PATCH" && session.tail === "") {

@@ -13,6 +13,7 @@ import type {
   GitignoreResult,
   GitOverview,
   InboxPolicy,
+  TextGenPolicy,
   ModelCatalogue,
   SessionDiff,
   EngineErrorCode,
@@ -99,6 +100,10 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
     setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** Who writes generated titles and branch names — see `TextGenPolicy`. */
+    textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
+    setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
+      request<{ textGen: TextGenPolicy }>(fetcher, "PATCH", "/api/textgen", patch),
     /** Which models a provider says it has — asked of the provider where it can
      *  answer, and this cockpit's own short list where it cannot. */
     modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {
