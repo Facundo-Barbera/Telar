@@ -4209,6 +4209,7 @@ export class EngineStore {
       }
       turn.providerSessionId = input.providerSessionId;
     }
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
     this.touchSession(sessionId, at, input.providerSessionId);
@@ -4222,6 +4223,7 @@ export class EngineStore {
       },
       turn.runId,
     );
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     return structuredClone(turn);
   }
 
@@ -4241,10 +4243,12 @@ export class EngineStore {
     turn.completedAt = at;
     turn.updatedAt = at;
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn failed before this agent reported back");
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     return structuredClone(turn);
   }
 
@@ -4260,11 +4264,100 @@ export class EngineStore {
     turn.state = "stopped";
     turn.completedAt = at;
     turn.updatedAt = at;
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     return { turn: structuredClone(turn), stopped: true };
+  }
+
+  /**
+   * SEND NOW: promote a queued turn into the RUNNING one.
+   *
+   * `promoteTurn` is a promise of NOT-LOSING, never of delivery: the turn goes
+   * `steering`, the worker hears about it on its next heartbeat, and if the
+   * running turn settles first the sweep in the terminal transitions puts the
+   * message back to `queued`, where it runs as an ordinary next turn.
+   *
+   * REFUSED WHILE THE PROVIDER COMPACTS. Codex rejects a steer during
+   * compaction at the protocol level ("cannot steer a compact turn"), so the
+   * engine refuses up front rather than discovering it as a failed delivery —
+   * and the client disables the button for the same reason, so all three tell
+   * one story.
+   */
+  promoteTurn(sessionId: string, runId: string): Turn {
+    assertId(runId, "run id");
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
+    const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
+    if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
+    const compacting = [...this.readItems(sessionId).values()].some(
+      (item) => item.runId === running.runId && item.detail.type === "context_compaction" && item.status === "inProgress",
+    );
+    if (compacting) {
+      throw new EngineStateError("conflict", "the provider is compacting its context and cannot take a message right now");
+    }
+    const at = this.now();
+    turn.state = "steering";
+    turn.steer = { intoRunId: running.runId, requestedAt: at };
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.steering", intoRunId: running.runId }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
+   * The worker's half of delivery: the text is in the driver's mailbox.
+   * IDEMPOTENT — a retried ack after a dropped response returns the already-
+   * steered turn rather than a conflict, because the provider has the words
+   * either way and the record must not lie about that.
+   */
+  ackSteer(sessionId: string, steerRunId: string, claimToken: string): Turn {
+    assertId(steerRunId, "run id");
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === steerRunId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    if (turn.state === "steered") return structuredClone(turn);
+    if (turn.state !== "steering" || !turn.steer) {
+      throw new EngineStateError("conflict", "turn is not being steered");
+    }
+    const running = queue.turns.find((candidate) => candidate.runId === turn.steer!.intoRunId);
+    if (!running || running.state !== "running" || running.claim?.token !== claimToken) {
+      throw new EngineStateError("conflict", "the running turn is not held by this claim");
+    }
+    const at = this.now();
+    turn.state = "steered";
+    turn.steer.deliveredAt = at;
+    turn.completedAt = at;
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.steered", intoRunId: turn.steer.intoRunId }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
+   * THE NOT-LOSING GUARANTEE. Every terminal transition of a running turn
+   * calls this: any `steering` turn still pointing at it was never delivered,
+   * and goes back to `queued` to run as its own turn. Mutates the queue the
+   * caller is about to write; the caller appends the events after its own, so
+   * the journal reads settlement-then-requeue.
+   */
+  private requeueUndeliveredSteers(queue: { turns: Turn[] }, runId: string, at: number): Turn[] {
+    const reverted: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.state !== "steering" || turn.steer?.intoRunId !== runId) continue;
+      turn.state = "queued";
+      delete turn.steer;
+      turn.updatedAt = at;
+      reverted.push(turn);
+    }
+    return reverted;
   }
 
   /**
@@ -4533,6 +4626,31 @@ export class EngineStore {
     });
   }
 
+  /**
+   * Promoted turns waiting for this worker's running turns, the same shape of
+   * query as `resolutionsForWorker` and riding the same heartbeat: the worker
+   * pushes the text into the driver's mailbox, THEN acks — duplication over
+   * loss, see the worker's mailbox note.
+   */
+  steerForWorker(workerId: string): WorkerStatus["steer"] {
+    assertId(workerId, "worker id");
+    return this.allSessions().flatMap((session) => {
+      const queue = this.readQueue(session.id);
+      const claimed = new Map(
+        queue.turns
+          .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
+          .map((turn) => [turn.runId, turn.claim!.token] as const),
+      );
+      if (claimed.size === 0) return [];
+      return queue.turns.flatMap((turn) => {
+        if (turn.state !== "steering" || !turn.steer) return [];
+        const claimToken = claimed.get(turn.steer.intoRunId);
+        if (!claimToken) return [];
+        return [{ sessionId: session.id, runId: turn.steer.intoRunId, claimToken, steerRunId: turn.runId, text: turn.input }];
+      });
+    });
+  }
+
   readEvents(sessionId: string, after = 0): EngineEvent[] {
     this.getSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
@@ -4593,6 +4711,15 @@ export class EngineStore {
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
           changed = true;
+        } else if (turn.state === "steering") {
+          // Delivery is unknowable across a restart; requeue is the side the
+          // channel is built to err on (duplication over loss).
+          turn.state = "queued";
+          delete turn.steer;
+          turn.updatedAt = at;
+          requeued.push(turn.runId);
+          recoveryEvents.push({ type: "turn.requeued", runId: turn.runId });
+          changed = true;
         }
       }
       if (changed) {
@@ -4638,6 +4765,12 @@ export class EngineStore {
           // turn reached the provider is still undecided; whether its agents
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
+          // A promoted message aimed at this turn was never delivered by the
+          // vanished worker; back to the queue rather than gone.
+          for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
+            requeued.push(reverted.runId);
+            this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, reverted.runId);
+          }
           changed = true;
         }
       }
