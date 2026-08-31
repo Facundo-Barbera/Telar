@@ -209,6 +209,49 @@ export const UsageSnapshot = z.object({
 export type UsageSnapshot = z.infer<typeof UsageSnapshot>;
 
 /**
+ * THE USAGE PAGE'S WIRE SHAPE — spend over time, bucketed.
+ *
+ * Folded from the engine's own journals: every settled turn already carries
+ * its final `UsageSnapshot`, so the report needs no second recording path and
+ * no provider-transcript scanning (t3 code scans `~/.claude` et al. because
+ * its threads run outside its own store; Telar's don't). The cost figure is
+ * only ever the provider's own — Claude reports one per turn, Codex reports
+ * none, and a bucket that had to guess would be a second price. `priced:
+ * false` with a zero cost is "the provider does not say", not "free".
+ */
+export const UsageResolution = z.enum(["day", "hour"]);
+export type UsageResolution = z.infer<typeof UsageResolution>;
+
+export const UsageBucket = z.object({
+  /** `YYYY-MM-DD` in the requested zone for days; the hour-start epoch ms as
+   *  a decimal string for hours — a shape a client can sort lexically or
+   *  parse, without this contract committing to a locale. */
+  period: z.string().min(1),
+  driver: ProviderDriverKind,
+  /** The model the turn ran on, as selected; `default` when the turn rode the
+   *  provider's own default and never said which. */
+  model: z.string().min(1),
+  tokens: TokenUsage,
+  costUsd: z.number().nonnegative(),
+  /** Whether `costUsd` is provider-reported for every turn in this bucket. */
+  priced: z.boolean(),
+  turns: z.number().int().nonnegative(),
+});
+export type UsageBucket = z.infer<typeof UsageBucket>;
+
+export const UsageReport = z.object({
+  sinceMs: Timestamp,
+  untilMs: Timestamp,
+  resolution: UsageResolution,
+  timeZone: z.string().min(1),
+  buckets: z.array(UsageBucket),
+  /** Distinct sessions that spent anything in the window. */
+  sessions: z.number().int().nonnegative(),
+  readAt: Timestamp,
+});
+export type UsageReport = z.infer<typeof UsageReport>;
+
+/**
  * The untranslated provider payload behind a normalized event.
  *
  * KEEP IT, KEEP IT OPTIONAL, AND NEVER DEPEND ON IT. It is how a normalization

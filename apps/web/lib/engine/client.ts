@@ -14,6 +14,8 @@ import type {
   GitOverview,
   InboxPolicy,
   TextGenPolicy,
+  UsageReport,
+  UsageResolution,
   ModelCatalogue,
   SessionDiff,
   EngineErrorCode,
@@ -100,6 +102,13 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
     setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** Spend over time, folded from the engine's journals. */
+    usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {
+      const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
+      if (input.resolution) query.set("resolution", input.resolution);
+      if (input.timeZone) query.set("tz", input.timeZone);
+      return request<{ usage: UsageReport }>(fetcher, "GET", `/api/usage?${query.toString()}`);
+    },
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>

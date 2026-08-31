@@ -47,6 +47,7 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
+  ChartNoAxesColumnIcon,
   SettingsIcon,
   SpoolIcon,
   WorkflowIcon,
@@ -859,6 +860,7 @@ function SidebarBody() {
 
       <SidebarFooter>
         <div className="p-1">
+          <UsageButton onNavigate={onNavigate} />
           <SettingsButton onNavigate={onNavigate} />
         </div>
       </SidebarFooter>
@@ -872,6 +874,26 @@ function SidebarBody() {
 // rail, where "telar" already was. See that component's docblock for why
 // the switcher is where this button's job — and its "no count on it" law —
 // went.
+
+// The same slot the donor keeps it in: the sidebar's meta row, beside
+// Settings — a place, not a filter over the session list.
+function UsageButton({ onNavigate }: { onNavigate: () => void }) {
+  const pathname = usePathname();
+  const active = pathname.startsWith("/usage");
+  return (
+    <Link
+      href="/usage"
+      title="Usage"
+      onClick={onNavigate}
+      className={`flex items-center gap-2 rounded-md text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
+        active ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ""
+      } w-full p-2`}
+    >
+      <ChartNoAxesColumnIcon className="size-4 shrink-0" />
+      <span>Usage</span>
+    </Link>
+  );
+}
 
 function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
   const pathname = usePathname();
