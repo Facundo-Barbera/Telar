@@ -383,11 +383,26 @@ function CompactionRow({ item }: { item: JournalItem }) {
   );
 }
 
+/**
+ * A message the human SENT NOW — injected into the running turn rather than
+ * queued behind it. Rendered as a user bubble where it landed, because that is
+ * where the agent heard it; without this row the agent's change of direction
+ * would have no visible cause.
+ */
+function SteeredMessageRow({ item }: { item: JournalItem }) {
+  return (
+    <div className="flex justify-end py-1">
+      <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">{itemText(item)}</p>
+    </div>
+  );
+}
+
 export function TranscriptItem({ item }: { item: JournalItem }) {
   if (item.detail.type === "task") return null;
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
+  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
   if (item.detail.type === "error") {
     return (

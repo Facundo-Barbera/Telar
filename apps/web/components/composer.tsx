@@ -26,7 +26,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SendHorizontalIcon, SquareIcon, XIcon } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { EngineRequest, ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import {
@@ -74,7 +74,14 @@ const api = createEngineApi();
  *  end of a submit that also uploaded the first sixteen. */
 const MAX_ATTACHMENTS = 16;
 
-export type QueuedMessage = { runId: string; text: string };
+export type QueuedMessage = {
+  runId: string;
+  text: string;
+  /** `steering` while a send-now is in flight to the worker — the chip shows
+   *  a spinner and withdraws its edit/remove affordances, because a message
+   *  the provider may already hold cannot honestly be recalled. */
+  state?: "queued" | "steering";
+};
 
 /**
  * ONE VALUE FOR EVERY PROVIDER KNOB, and one place that derives it.
@@ -230,25 +237,39 @@ function QueueChip({
   index,
   onWithdraw,
   onRecall,
+  onSendNow,
+  sendNowDisabled,
+  sendNowReason,
 }: {
   item: QueuedMessage;
   index?: number;
   onWithdraw: (runId: string) => void;
   onRecall?: (item: QueuedMessage) => void;
+  /** SEND NOW — push this message into the RUNNING turn instead of waiting.
+   *  Present only while a turn is running; the engine does the promoting. */
+  onSendNow?: (runId: string) => void;
+  sendNowDisabled?: boolean;
+  sendNowReason?: string;
 }) {
+  const steering = item.state === "steering";
   return (
     <div className="group rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
       <div className="flex items-center gap-2">
-        {index !== undefined && (
-          <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
-            {index}
-          </span>
+        {steering ? (
+          <Spinner className="size-3.5 shrink-0 text-primary" />
+        ) : (
+          index !== undefined && (
+            <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
+              {index}
+            </span>
+          )
         )}
+        {steering && <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-primary">sending</span>}
         {/* THE TEXT ITSELF IS THE EDIT TARGET, as in the donor. A queued line is
             a sentence you wrote thirty seconds ago and can still improve;
             clicking it pulls it back into the box rather than making you
             withdraw and retype. */}
-        {onRecall ? (
+        {onRecall && !steering ? (
           <button
             type="button"
             onClick={() => onRecall(item)}
@@ -262,7 +283,20 @@ function QueueChip({
             {item.text}
           </span>
         )}
-        {onRecall && (
+        {onSendNow && !steering && (
+          <button
+            type="button"
+            aria-label="Send this message into the running turn"
+            title={sendNowDisabled ? (sendNowReason ?? "Send now is unavailable right now.") : "Send now — the running turn hears it without stopping"}
+            disabled={sendNowDisabled}
+            onClick={() => onSendNow(item.runId)}
+            className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <SendHorizontalIcon className="size-3" />
+            Send now
+          </button>
+        )}
+        {onRecall && !steering && (
           <button
             type="button"
             aria-label="Edit this queued message"
@@ -272,14 +306,16 @@ function QueueChip({
             <PencilIcon className="size-3.5" />
           </button>
         )}
-        <button
-          type="button"
-          aria-label="Remove this queued message"
-          onClick={() => onWithdraw(item.runId)}
-          className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          <XIcon className="size-3.5" />
-        </button>
+        {!steering && (
+          <button
+            type="button"
+            aria-label="Remove this queued message"
+            onClick={() => onWithdraw(item.runId)}
+            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -311,6 +347,9 @@ export function Composer({
   onStop,
   onWithdraw,
   onRecall,
+  onSendNow,
+  sendNowDisabled,
+  sendNowReason,
   onRuntimeMode,
   placeholder,
   onModelChange,
@@ -390,6 +429,14 @@ export function Composer({
   /** Pull a queued message back into the box to re-edit it. Withdrawing it
    *  is the caller's job — the composer only asks for the text. */
   onRecall?: (item: QueuedMessage) => void;
+  /** SEND NOW — promote a queued message into the RUNNING turn. Passed only
+   *  while something is running; the engine owns the promoting. */
+  onSendNow?: (runId: string) => void;
+  sendNowDisabled?: boolean;
+  /** Why the button is disabled, as its tooltip — "compacting", "a question
+   *  is waiting". The client mirrors the engine's own refusals so the two
+   *  tell one story rather than the client discovering a 409. */
+  sendNowReason?: string;
   onRuntimeMode: (mode: RuntimeMode) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
@@ -781,6 +828,9 @@ export function Composer({
               {...(queued.length > 1 ? { index: index + 1 } : {})}
               onWithdraw={onWithdraw}
               {...(onRecall ? { onRecall } : {})}
+              {...(onSendNow ? { onSendNow } : {})}
+              sendNowDisabled={Boolean(sendNowDisabled)}
+              {...(sendNowReason ? { sendNowReason } : {})}
             />
           ))}
         </div>

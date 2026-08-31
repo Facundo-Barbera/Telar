@@ -219,6 +219,15 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       case "turn.requeued":
         if (turn) turn.state = "queued";
         break;
+      // Send now: promoted into the running turn, then delivered. The
+      // delivered turn is TERMINAL — its words render inside the run they
+      // joined (a user_message item), not as a turn of their own.
+      case "turn.steering":
+        if (turn) turn.state = "steering";
+        break;
+      case "turn.steered":
+        if (turn) turn.state = "steered";
+        break;
       case "turn.completed":
         if (turn) {
           turn.state = "completed";

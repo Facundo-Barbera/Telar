@@ -58,6 +58,8 @@ const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, str
   stopped: "Stopped",
   ambiguous: "Needs recovery decision",
   discarded: "Discarded after recovery decision",
+  steering: "Sending into the running turn",
+  steered: "Sent into the running turn",
 };
 
 export function describeTurnState(state: TurnState): { label: string; tone: "active" | "done" | "attention" | "danger" | "muted" } {
@@ -68,6 +70,8 @@ export function describeTurnState(state: TurnState): { label: string; tone: "act
   if (state === "failed") return { label: terminal.failed, tone: "danger" };
   if (state === "ambiguous") return { label: terminal.ambiguous, tone: "attention" };
   if (state === "stopped") return { label: terminal.stopped, tone: "muted" };
+  if (state === "steering") return { label: terminal.steering, tone: "active" };
+  if (state === "steered") return { label: terminal.steered, tone: "done" };
   return { label: terminal.discarded, tone: "muted" };
 }
 
@@ -899,9 +903,14 @@ export function SessionCockpit({
    *  context_compaction row on the live turn. Gates the compact button (and,
    *  soon, send-now) so the client tells the same story the engine enforces. */
   const compacting = isCompacting(active);
-  /** Everything typed but not yet started, oldest first — the pending strip. */
+  /** Everything typed but not yet started, oldest first — the pending strip.
+   *  A `steering` turn stays in the strip as a spinner: it is mid-flight to
+   *  the running turn and no longer withdrawable. */
   const queued = useMemo(
-    () => transcript.filter((turn) => turn.state === "queued").map((turn) => ({ runId: turn.runId, text: turn.prompt })),
+    () =>
+      transcript
+        .filter((turn) => turn.state === "queued" || turn.state === "steering")
+        .map((turn) => ({ runId: turn.runId, text: turn.prompt, state: turn.state as "queued" | "steering" })),
     [transcript],
   );
 
@@ -940,6 +949,18 @@ export function SessionCockpit({
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the turn."));
     } finally {
       setSending(false);
+    }
+  };
+  /** SEND NOW: the engine promotes; the strip's chip goes spinner via the
+   *  next hydrate. Failures surface like any other action's. */
+  const promote = async (runId: string) => {
+    if (!sessionId) return;
+    try {
+      await api.promoteTurn(sessionId, runId);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not send the message now."));
     }
   };
   /**
@@ -1215,7 +1236,10 @@ export function SessionCockpit({
     }
   };
 
-  const shown = transcript.filter((turn) => turn.state !== "queued");
+  // Queued and mid-flight turns live in the composer's strip; a STEERED turn
+  // is terminal but renders nowhere as a turn — its words are a user_message
+  // row inside the run they joined, and a second copy here would double them.
+  const shown = transcript.filter((turn) => turn.state !== "queued" && turn.state !== "steering" && turn.state !== "steered");
   /**
    * The NEWEST reported usage, not the active turn's: a running turn has no
    * figures yet, and blanking the context readout the moment work starts is
@@ -1353,6 +1377,15 @@ export function SessionCockpit({
           onSubmit={() => void submit()}
           onStop={() => void stop()}
           onWithdraw={(runId) => void withdraw(runId)}
+          {...(running ? { onSendNow: (runId: string) => void promote(runId) } : {})}
+          sendNowDisabled={compacting || openRequests.length > 0}
+          sendNowReason={
+            compacting
+              ? "The provider is compacting its context and cannot take a message right now."
+              : openRequests.length > 0
+                ? "Answer the waiting request first."
+                : undefined
+          }
           /**
            * Recall WITHDRAWS the queued turn and puts its words back in the box.
            *
