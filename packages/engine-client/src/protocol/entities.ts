@@ -628,6 +628,14 @@ export const GitOverview = z.object({
    * them. Absent (never empty) on a non-repository.
    */
   refs: z.array(GitRefEntry).optional(),
+  /**
+   * The remote's default branch (`origin/main`), when remote-tracking state
+   * exists — what a fresh worktree is cut from unless the person picks
+   * otherwise. From `origin/HEAD` where a clone recorded one, else the common
+   * names checked against `refs`. Absent means "default to the checkout's
+   * HEAD", which is also what absent always meant.
+   */
+  defaultBase: z.string().min(1).optional(),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
 

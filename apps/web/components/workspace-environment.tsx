@@ -78,9 +78,11 @@ function BaseRefPicker({
   const locals = filtered.filter((ref) => ref.kind === "local").slice(0, 25);
   const remotes = filtered.filter((ref) => ref.kind === "remote").slice(0, 25);
 
+  // `HEAD` is the EXPLICIT "current checkout" choice (see the row below), so
+  // it reads as the branch it means, not as a literal "from HEAD".
   const label = pending.branchName
     ? pending.branchName
-    : pending.baseRef
+    : pending.baseRef && pending.baseRef !== "HEAD"
       ? `from ${pending.baseRef}`
       : (currentBranch ?? "no branch");
 
@@ -120,13 +122,15 @@ function BaseRefPicker({
           className="mb-1 w-full rounded-md border border-border/60 bg-transparent px-2 py-1 text-xs outline-none placeholder:text-muted-foreground focus:border-ring"
         />
         <div className="max-h-64 overflow-y-auto">
-          {/* HEAD is the default and stays offerable after picking something else. */}
+          {/* AN EXPLICIT CHOICE, SENT AS `HEAD` — not an empty pending. Empty
+              means "nobody chose yet", which the foot fills with the remote's
+              default branch; this row must be able to override that. */}
           <button
             type="button"
-            onClick={() => pick(undefined)}
+            onClick={() => pick("HEAD")}
             className={cn(
               "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
-              !pending.baseRef && "bg-accent",
+              (!pending.baseRef || pending.baseRef === "HEAD") && "bg-accent",
             )}
           >
             <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -230,6 +234,23 @@ export function WorkspaceEnvironment({
   /** Only while the session does not exist. Afterwards the worktree is a fact
    *  on disk, not a setting. */
   const choosing = Boolean(onEnvMode) && !session;
+
+  /**
+   * A FRESH WORKTREE DEFAULTS TO THE REMOTE'S DEFAULT BRANCH. The moment
+   * worktree mode is on with nothing picked, the pending base becomes
+   * `origin/main` (or whatever the remote calls it) — set through `onBase` so
+   * it is VISIBLE in the foot and changeable in the picker, not applied
+   * silently at create. Explicit choices survive because "Current HEAD" is
+   * sent as `HEAD`: an empty pending only ever means "nobody has chosen yet".
+   * Deferred a task for the same reason the loader above is.
+   */
+  const wantsDefaultBase = choosing && envMode === "worktree" && !pendingBase?.baseRef && !pendingBase?.branchName;
+  const defaultBase = git?.defaultBase;
+  useEffect(() => {
+    if (!wantsDefaultBase || !defaultBase || !onBase) return;
+    const task = window.setTimeout(() => onBase({ baseRef: defaultBase }), 0);
+    return () => window.clearTimeout(task);
+  }, [wantsDefaultBase, defaultBase, onBase]);
   const willBeWorktree = envMode === "worktree";
   const isWorktree = choosing ? willBeWorktree : Boolean(worktreeBranch);
   const modeLabel = isWorktree ? "Own worktree" : "Project checkout";
