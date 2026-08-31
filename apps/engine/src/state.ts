@@ -3512,6 +3512,15 @@ export class EngineStore {
      * machinery.
      */
     branchSlug?: string;
+    /**
+     * What the worktree is CUT FROM — any local or remote-tracking ref from
+     * `GitOverview.refs`, resolved to a sha at creation. Absent means HEAD.
+     * Validated conservatively here because it becomes a `git rev-parse`
+     * argument: a name that starts with `-` is an option, not a ref.
+     */
+    baseRef?: string;
+    /** A human's own name for the new branch — see `sanitizeBranchName`. */
+    branchName?: string;
     workspace?: { path: string; branch: string; baseRef?: string };
     /**
      * WHO ASKED — provenance, not a link. `"session"` means this came through
@@ -3582,11 +3591,16 @@ export class EngineStore {
               .slice(0, 40);
             const branchSlug =
               input.branchSlug ?? (titleSlug ? `telar/${titleSlug}-${id.replace(/^session_/, "").slice(0, 6)}` : undefined);
+            if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
+              throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
+            }
             const cut = createSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
               sessionId: id,
               ...(branchSlug !== undefined ? { branchSlug } : {}),
+              ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
+              ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
             });
             return { mode: "worktree" as const, path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
           })()

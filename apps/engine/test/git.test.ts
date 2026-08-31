@@ -326,3 +326,4 @@ describe("commitSessionWork", () => {
     expect(commitSessionWork(git, { cwd: "/repo", message: "x" }).reason).toBe("pre-commit: lint failed on 3 files");
   });
 });
+

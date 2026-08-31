@@ -1122,6 +1122,12 @@ export class EngineClient {
     /** Proposed branch for a worktree session, e.g. `loom/<loom>/<thread>`.
      *  Must live under `loom/` or `telar/`; the engine refuses anything else. */
     branchSlug?: string;
+    /** What a worktree is cut from — any name in `GitOverview.refs`
+     *  (`main`, `origin/feature-x`). Absent means HEAD. Worktree only. */
+    baseRef?: string;
+    /** A human's own name for the new branch, OUTSIDE loom//telar/. The engine
+     *  refuses (never resets) a collision with an existing branch. */
+    branchName?: string;
     /**
      * WHO ASKED — provenance, never a link to anything. `"session"` marks a
      * session that the `sessions` toolkit created and is the ONLY value the

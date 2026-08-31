@@ -38,6 +38,10 @@ export async function POST(request: Request, context: Context) {
       // and an in-process caller refuse the same set.
       ...(body.driver === "claude" || body.driver === "codex" ? { driver: body.driver } : {}),
       ...(body.envMode === "local" || body.envMode === "worktree" ? { envMode: body.envMode } : {}),
+      // The base-ref picker's knobs — validated in the engine (store +
+      // worktree.ts) so every caller refuses the same names.
+      ...(typeof body.baseRef === "string" && body.baseRef ? { baseRef: body.baseRef } : {}),
+      ...(typeof body.branchName === "string" && body.branchName ? { branchName: body.branchName } : {}),
     });
     return Response.json(result, { status: 201 });
   } catch (error) {

@@ -1908,6 +1908,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
             ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
             ...(typeof input.branchSlug === "string" ? { branchSlug: input.branchSlug } : {}),
+            // The base-ref picker's two knobs. Validated in the store and in
+            // worktree.ts, for the same one-wall reason as `driver` below.
+            ...(typeof input.baseRef === "string" ? { baseRef: input.baseRef } : {}),
+            ...(typeof input.branchName === "string" ? { branchName: input.branchName } : {}),
             // Validated in the store rather than here, so the HTTP surface and
             // any in-process caller reject the same set of drivers.
             ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),

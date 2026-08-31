@@ -169,7 +169,18 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
-    createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>
+    createSession: (
+      projectId: string,
+      input: {
+        title?: string;
+        driver?: ProviderDriverKind;
+        envMode?: "local" | "worktree";
+        /** Worktree base — any name from `GitOverview.refs`. Absent = HEAD. */
+        baseRef?: string;
+        /** A human's own branch name, outside loom//telar/. */
+        branchName?: string;
+      } = {},
+    ) =>
       request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, input),
     // The contract's own snapshot type, not a hand-copied structural twin: this
     // route proxies the engine verbatim, so a field the engine adds is already
