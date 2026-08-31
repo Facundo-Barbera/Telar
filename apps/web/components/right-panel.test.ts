@@ -19,6 +19,7 @@ import {
   openForgeNumbers,
   pullPanelNumber,
   pullPanelTab,
+  splitRoster,
 } from "./right-panel";
 
 function fileChange(overrides: {
@@ -236,6 +237,28 @@ describe("groupWarps", () => {
       agent("y", { warpRunId: "w2", warpName: "review" }),
     ] as never);
     expect(groups).toHaveLength(2);
+  });
+
+  test("the kind split happens AFTER the warp fold, so a run keeps its agents", () => {
+    // A Warp run's own row is a `background` task whose children are agents.
+    // Splitting on kind first would file the run under Processes and orphan its
+    // agents on the Agents surface as a headless group.
+    const split = splitRoster([
+      runRow("warp_1", "review"),
+      agent("child", { warpRunId: "warp_1", warpName: "review", phaseIndex: 0, phaseTitle: "Find", agentIndex: 0 }),
+      { id: "shell", kind: "background", state: "running", items: [] },
+      { id: "plain", kind: "agent", state: "running", items: [] },
+    ] as never);
+    expect(split.groups).toHaveLength(1);
+    expect(split.groups[0]!.run?.id).toBe("warp_1");
+    expect(split.agents.map((task) => task.id)).toEqual(["plain"]);
+    expect(split.processes.map((task) => task.id)).toEqual(["shell"]);
+  });
+
+  test("a task with no kind at all is presumed an agent, matching the contract's denylist", () => {
+    const split = splitRoster([{ id: "unkinded", state: "running", items: [] }] as never);
+    expect(split.agents).toHaveLength(1);
+    expect(split.processes).toHaveLength(0);
   });
 
   test("an ordinary sub-agent carries no linkage and stays loose", () => {

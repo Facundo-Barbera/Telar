@@ -84,7 +84,15 @@ const api = createEngineApi();
  * record itself. A browser PAGE is not one of these — see `PanelTab` below.
  */
 const SURFACES = [
-  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and background work." },
+  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents, and Warp runs holding their own." },
+  /**
+   * BACKGROUND WORK IS NOT A SUB-AGENT. A watch loop and a five-minute build
+   * share a surface with nothing: an agent has a transcript and a conclusion, a
+   * process has liveness and an owner who may want it gone. Filing both under
+   * "Agents" made every background shell read as a delegate that never reports.
+   * The split is `Task.kind`, which the engine already decides.
+   */
+  { id: "processes", label: "Processes", icon: TerminalIcon, blurb: "Background shells, watch loops and long-running work." },
   /**
    * DIFF AND FILES, WHICH USED TO BE CHANGES AND GIT — and the old pair was a
    * duplicate wearing two names. "Changes" folded the journal and "Git" read the
@@ -614,6 +622,30 @@ export function groupWarps(tasks: readonly JournalTask[]): { groups: WarpGroup[]
 
 const warpAgents = (group: WarpGroup): JournalTask[] => group.phases.flatMap((phase) => phase.agents);
 
+/**
+ * The roster, split for the two task surfaces.
+ *
+ * THE KIND SPLIT HAPPENS AFTER THE WARP FOLD, never before. A Warp run's own
+ * row is a `background` task whose children are `agent` tasks — splitting on
+ * kind first would file the run under Processes and strand its agents on the
+ * Agents surface as an orphaned group. A run belongs with its agents, so groups
+ * stay whole on the Agents side and only LOOSE tasks are divided.
+ *
+ * `kind !== "background"` rather than `=== "agent"`, matching the contract's
+ * own denylist posture: anything the engine did not recognise as background is
+ * presumed to be an agent (protocol/tasks.ts).
+ */
+export type RosterSplit = { groups: WarpGroup[]; agents: JournalTask[]; processes: JournalTask[] };
+
+export function splitRoster(tasks: readonly JournalTask[]): RosterSplit {
+  const { groups, loose } = groupWarps(tasks);
+  return {
+    groups,
+    agents: loose.filter((task) => task.kind !== "background"),
+    processes: loose.filter((task) => task.kind === "background"),
+  };
+}
+
 function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocus }) {
   const agents = warpAgents(group);
   const live = agents.filter(isLiveTask).length;
@@ -689,12 +721,12 @@ function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocu
 }
 
 function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
-  const { groups, loose } = useMemo(() => groupWarps(tasks), [tasks]);
-  if (tasks.length === 0) {
+  const { groups, agents: loose } = useMemo(() => splitRoster(tasks), [tasks]);
+  if (groups.length === 0 && loose.length === 0) {
     return (
       <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
-        A task carries its own title, state and result. Background work — a watch loop, a long shell — is listed the same way and
-        can outlive the turn that started it. A Warp run is one row holding its own agents.
+        A task carries its own title, state and result. A Warp run is one row holding its own agents. Background work — a watch
+        loop, a long shell — lives on the Processes tab.
       </PanelEmpty>
     );
   }
@@ -728,6 +760,39 @@ function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focu
         );
       })}
       {groups.length > 0 && loose.length > 0 && <PanelDivider label="other work" />}
+      {live.map(row)}
+      {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
+      {finished.map(row)}
+    </div>
+  );
+}
+
+/**
+ * Background work, in the same row vocabulary as the agents — a process still
+ * has steps, a result and a state, so `TaskRow` renders it unchanged. What
+ * differs is the framing: this list can OUTLIVE the turn that started it, and
+ * the empty state says who can put something here.
+ */
+function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focused?: TaskFocus }) {
+  const { processes } = useMemo(() => splitRoster(tasks), [tasks]);
+  if (processes.length === 0) {
+    return (
+      <PanelEmpty icon={<TerminalIcon />} title="Background work appears here">
+        A shell run in the background, a monitor, a watch loop — anything the agent leaves running. A process can outlive the turn
+        that started it. Codex sessions never file anything here: that provider reports every child as an agent.
+      </PanelEmpty>
+    );
+  }
+  const live = processes.filter(isLiveTask);
+  const finished = processes.filter((task) => !isLiveTask(task));
+  const row = (task: JournalTask) =>
+    focused?.id === task.id ? (
+      <TaskRow key={`${task.id}:${focused.nonce}`} task={task} focused />
+    ) : (
+      <TaskRow key={task.id} task={task} />
+    );
+  return (
+    <div className="flex flex-col">
       {live.map(row)}
       {finished.length > 0 && live.length > 0 && <PanelDivider label={`done · ${finished.length}`} />}
       {finished.map(row)}
@@ -830,6 +895,7 @@ export function PanelSurface({
       />
     );
   if (tab === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
+  if (tab === "processes") return <ProcessesSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
   // Every tab kind is handled above. This used to be the Usage surface's arm;
   // as a fallthrough it would render some OTHER pane for an unknown tab id, so
   // an unknown tab now renders nothing rather than the wrong thing.
@@ -1123,9 +1189,13 @@ export function RightPanel({
    * between stages. That failure has no other row to appear on, and a failure
    * nothing flags is the worse of the two errors.
    */
-  const isWarpRun = (task: Task): boolean => task.warp?.warpRunId === task.id;
-  const running = tasks.filter((task) => isLiveTask(task) && !isWarpRun(task)).length;
-  const failed = tasks.filter((task) => task.state === "failed").length;
+  const roster = useMemo(() => splitRoster(tasks), [tasks]);
+  const agentSide = [...roster.groups.flatMap(warpAgents), ...roster.agents];
+  const running = agentSide.filter(isLiveTask).length;
+  const failed = agentSide.filter((task) => task.state === "failed").length +
+    roster.groups.filter((group) => group.run?.state === "failed").length;
+  const processesRunning = roster.processes.filter(isLiveTask).length;
+  const processesFailed = roster.processes.filter((task) => task.state === "failed").length;
   /**
    * NO COUNT ON DIFF, deliberately. The badge used to carry the journal's file
    * count, and the surface now lists git's — which is a different, larger number
@@ -1133,7 +1203,12 @@ export function RightPanel({
    * the list underneath it is worse than no badge: it teaches the reader that one
    * of the two is lying, without saying which.
    */
-  const counts: Partial<Record<PanelTab, number>> = { agents: tasks.length };
+  const counts: Partial<Record<PanelTab, number>> = {
+    // A run counts as ONE — its agents are inside it, and a badge that counted
+    // both would say thirteen where the surface shows one group and no rows.
+    agents: roster.groups.length + roster.agents.length,
+    processes: roster.processes.length,
+  };
   /** Everything openable that is not already open — fixed surfaces first, then
    *  one entry per browser page the engine currently reports. */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon }[] = [
@@ -1218,13 +1293,19 @@ export function RightPanel({
                     <span
                       className={cn(
                         "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[9px] leading-4",
-                        id === "agents" && failed > 0
+                        (id === "agents" ? failed : id === "processes" ? processesFailed : 0) > 0
                           ? "bg-destructive/15 text-destructive"
-                          : id === "agents" && running > 0
+                          : (id === "agents" ? running : id === "processes" ? processesRunning : 0) > 0
                             ? "bg-primary/15 text-primary"
                             : "bg-muted-foreground/15 text-muted-foreground",
                       )}
-                      title={id === "agents" && running > 0 ? `${running} running` : undefined}
+                      title={
+                        id === "agents" && running > 0
+                          ? `${running} running`
+                          : id === "processes" && processesRunning > 0
+                            ? `${processesRunning} running`
+                            : undefined
+                      }
                     >
                       {count}
                     </span>
