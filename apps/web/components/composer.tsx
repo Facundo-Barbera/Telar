@@ -331,6 +331,8 @@ export function Composer({
   onDriverChange,
   envMode,
   onEnvMode,
+  pendingBase,
+  onBase,
   pendingModel,
   busy,
   sending,
@@ -375,6 +377,9 @@ export function Composer({
    *  worktree is cut when the session is created. */
   envMode?: "local" | "worktree";
   onEnvMode?: (mode: "local" | "worktree") => void;
+  /** The base-ref picker's create-time choice — worktree only. */
+  pendingBase?: { baseRef?: string; branchName?: string };
+  onBase?: (next: { baseRef?: string; branchName?: string }) => void;
   /** The provider knobs the first message will create the session with, while
    *  fresh. Same shape as `session.model` minus the instance, which the engine
    *  stamps. */
@@ -1094,6 +1099,8 @@ export function Composer({
         {...(session ? { session } : {})}
         {...(envMode ? { envMode } : {})}
         {...(onEnvMode ? { onEnvMode } : {})}
+        {...(pendingBase ? { pendingBase } : {})}
+        {...(onBase ? { onBase } : {})}
         {...(onOpenChanges ? { onOpenChanges } : {})}
       />
       )}

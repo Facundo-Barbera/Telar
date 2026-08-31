@@ -535,6 +535,10 @@ export function SessionCockpit({
   /** Where the first message will land. `local` matches the engine's own
    *  default, so an untouched canvas creates what it says it will. */
   const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
+  /** The base-ref picker's create-time choice: what a worktree is cut from,
+   *  and optionally the human's own name for its branch. Only meaningful with
+   *  `envMode: "worktree"` — picking a base is what flips the mode there. */
+  const [draftBase, setDraftBase] = useState<{ baseRef?: string; branchName?: string }>({});
   /**
    * How much rope the session will start with.
    *
@@ -1060,6 +1064,8 @@ export function SessionCockpit({
           title: text.replace(/\s+/g, " ").slice(0, 80),
           driver: draftDriver,
           envMode: draftEnvMode,
+          ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
+          ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
         });
         target = created.session.id;
         // EITHER HALF ALONE COUNTS. A canvas left on the provider default with
@@ -1347,6 +1353,14 @@ export function SessionCockpit({
                 pendingModel: draftModel,
                 envMode: draftEnvMode,
                 onEnvMode: setDraftEnvMode,
+                pendingBase: draftBase,
+                // Picking a base IS choosing a worktree: a base for the
+                // shared checkout would mean switching its branch, which the
+                // engine's read-only git surface refuses by construction.
+                onBase: (next: { baseRef?: string; branchName?: string }) => {
+                  setDraftBase(next);
+                  if (next.baseRef || next.branchName) setDraftEnvMode("worktree");
+                },
               }
             : {})}
           busy={Boolean(active)}

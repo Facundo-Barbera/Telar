@@ -560,6 +560,20 @@ export const SessionDiff = z.object({
 });
 export type SessionDiff = z.infer<typeof SessionDiff>;
 
+/**
+ * One ref a worktree session could be cut from. `remote` names come qualified
+ * (`origin/main`) because that is both what a human recognises and what
+ * `git rev-parse` resolves — the picker forwards the name verbatim as
+ * `createSession.baseRef`.
+ */
+export const GitRefEntry = z.object({
+  name: z.string().min(1),
+  kind: z.enum(["local", "remote"]),
+  /** The checkout's current branch, so a picker can mark it. Local only. */
+  head: z.boolean().optional(),
+});
+export type GitRefEntry = z.infer<typeof GitRefEntry>;
+
 export const GitOverview = z.object({
   repository: z.boolean(),
   branch: z.string().optional(),
@@ -568,6 +582,13 @@ export const GitOverview = z.object({
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
   worktrees: z.array(GitWorktreeEntry),
+  /**
+   * Local and remote-tracking branches, newest commit first, capped — the
+   * base-ref picker's menu. Remote entries are whatever the last fetch saw:
+   * the engine's git surface stays read-only, so it never fetches to freshen
+   * them. Absent (never empty) on a non-repository.
+   */
+  refs: z.array(GitRefEntry).optional(),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
 

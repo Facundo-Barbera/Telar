@@ -39,6 +39,15 @@ export type GitWorktreeEntry = {
   isMainCheckout: boolean;
 };
 
+export type GitRefEntry = {
+  /** Short name, remote-qualified for remotes (`origin/main`) — resolvable
+   *  verbatim as a worktree base. */
+  name: string;
+  kind: "local" | "remote";
+  /** The checkout's current branch. Local only. */
+  head?: boolean;
+};
+
 export type GitOverview = {
   repository: boolean;
   branch?: string;
@@ -49,6 +58,8 @@ export type GitOverview = {
   ahead?: number;
   behind?: number;
   worktrees: GitWorktreeEntry[];
+  /** Cuttable bases, newest commit first, capped. Absent on a non-repository. */
+  refs?: GitRefEntry[];
 };
 
 const EMPTY: GitOverview = { repository: false, dirtyFiles: 0, worktrees: [] };
@@ -412,6 +423,43 @@ export function commitSessionWork(
   return { committed: true, ...(entry ? { commit: entry } : {}) };
 }
 
+/** The base-ref picker's menu can only be so long before it stops being a
+ *  menu; newest-first means what falls off is what nobody was reaching for. */
+const MAX_REFS = 200;
+
+/**
+ * Every branch a worktree could be cut from: local heads and remote-tracking
+ * refs, newest commit first.
+ *
+ * ONE `for-each-ref`, NO NETWORK. Remote entries are whatever the last fetch
+ * saw — the engine's git surface is read-only by construction and a listing
+ * must never become the thing that talks to a server. `origin/HEAD` is a
+ * pointer, not a branch, and is dropped.
+ */
+export function listGitRefs(git: GitRunner, projectRoot: string): GitRefEntry[] {
+  /**
+   * TWO CALLS, ONE PER NAMESPACE, so the kind is known by which call answered
+   * — never guessed from the shape of the name, where a local branch called
+   * `origin/anything` (legal, if perverse) would misfile. This listing rides
+   * the composer foot's 15-second poll, so it must stay two subprocesses, not
+   * one per ref.
+   */
+  const half = (namespace: string, kind: GitRefEntry["kind"]): GitRefEntry[] => {
+    const listed = git(projectRoot, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", namespace]);
+    if (listed.status !== 0) return [];
+    const refs: GitRefEntry[] = [];
+    for (const line of listed.stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const [name = "", headMark = ""] = line.split("\t");
+      if (!name || name.endsWith("/HEAD")) continue;
+      refs.push({ name, kind, ...(headMark.trim() === "*" ? { head: true } : {}) });
+      if (refs.length >= MAX_REFS) break;
+    }
+    return refs;
+  };
+  return [...half("refs/heads", "local"), ...half("refs/remotes", "remote")].slice(0, MAX_REFS);
+}
+
 export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const inside = git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
   if (inside.status !== 0 || inside.stdout.trim() !== "true") return EMPTY;
@@ -438,5 +486,6 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
     dirtyFiles,
     ...(divergence ?? {}),
     worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [],
+    refs: listGitRefs(git, projectRoot),
   };
 }

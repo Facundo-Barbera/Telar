@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDownIcon, FolderGit2Icon, FolderGitIcon, GitBranchIcon, GitCommitHorizontalIcon } from "lucide-react";
-import type { GitOverview, Session } from "@telar/engine-client";
+import { ChevronDownIcon, FolderGit2Icon, FolderGitIcon, GitBranchIcon, GitBranchPlusIcon, GitCommitHorizontalIcon } from "lucide-react";
+import type { GitOverview, GitRefEntry, Session } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -47,12 +47,128 @@ function StripRule() {
   return <span aria-hidden className="h-3.5 w-px shrink-0 bg-border/60" />;
 }
 
+/**
+ * The base-ref picker — the branch control's interactive form, while the
+ * session does not exist yet.
+ *
+ * WHAT PICKING MEANS: the new worktree is cut FROM the chosen ref. Local and
+ * remote branches are both offered because a remote-tracking ref is a
+ * perfectly good base — reviewing a colleague's `origin/feature-x` in its own
+ * worktree is the whole use — and the engine resolves the name to a sha at
+ * creation, so staleness is bounded by the last fetch. "New branch" names the
+ * branch the worktree will be ON (the engine refuses, never resets, a
+ * collision); without a name the engine derives one under `telar/`.
+ */
+function BaseRefPicker({
+  refs,
+  currentBranch,
+  pending,
+  onBase,
+}: {
+  refs: GitRefEntry[];
+  currentBranch?: string;
+  pending: { baseRef?: string; branchName?: string };
+  onBase: (next: { baseRef?: string; branchName?: string }) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [name, setName] = useState(pending.branchName ?? "");
+
+  const filtered = query.trim() ? refs.filter((ref) => ref.name.toLowerCase().includes(query.trim().toLowerCase())) : refs;
+  const locals = filtered.filter((ref) => ref.kind === "local").slice(0, 25);
+  const remotes = filtered.filter((ref) => ref.kind === "remote").slice(0, 25);
+
+  const label = pending.branchName
+    ? pending.branchName
+    : pending.baseRef
+      ? `from ${pending.baseRef}`
+      : (currentBranch ?? "no branch");
+
+  const pick = (baseRef?: string) => {
+    onBase({ ...(baseRef ? { baseRef } : {}), ...(name.trim() ? { branchName: name.trim() } : {}) });
+    setOpen(false);
+  };
+
+  const row = (ref: GitRefEntry) => (
+    <button
+      key={ref.name}
+      type="button"
+      onClick={() => pick(ref.name)}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
+        pending.baseRef === ref.name && "bg-accent",
+      )}
+    >
+      <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate font-mono text-xs">{ref.name}</span>
+      {ref.head && <span className="shrink-0 text-[10px] text-muted-foreground">current</span>}
+    </button>
+  );
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger render={<button type="button" aria-label="Branch" title="What the worktree starts from" className={CONTROL} />}>
+        {pending.branchName ? <GitBranchPlusIcon className="size-3.5 shrink-0" /> : <GitBranchIcon className="size-3.5 shrink-0" />}
+        <span className="min-w-0 truncate font-mono">{label}</span>
+        <ChevronDownIcon className="size-3 shrink-0" />
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" sideOffset={8} className="w-72 gap-0 rounded-xl p-1.5">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search refs…"
+          className="mb-1 w-full rounded-md border border-border/60 bg-transparent px-2 py-1 text-xs outline-none placeholder:text-muted-foreground focus:border-ring"
+        />
+        <div className="max-h-64 overflow-y-auto">
+          {/* HEAD is the default and stays offerable after picking something else. */}
+          <button
+            type="button"
+            onClick={() => pick(undefined)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
+              !pending.baseRef && "bg-accent",
+            )}
+          >
+            <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs">Current HEAD</span>
+          </button>
+          {locals.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Local</p>}
+          {locals.map(row)}
+          {remotes.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Origin</p>}
+          {remotes.map(row)}
+          {filtered.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No matching refs.</p>}
+        </div>
+        {/* The new-branch name rides WITH whichever base is chosen; empty
+            means the engine derives a telar/ name as before. */}
+        <div className="mt-1 flex items-center gap-1.5 border-t border-border/60 pt-1.5">
+          <GitBranchPlusIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onBase({ ...(pending.baseRef ? { baseRef: pending.baseRef } : {}), ...(name.trim() ? { branchName: name.trim() } : {}) });
+                setOpen(false);
+              }
+            }}
+            placeholder="New branch name (optional)"
+            className="w-full rounded-md border border-border/60 bg-transparent px-2 py-1 font-mono text-xs outline-none placeholder:font-sans placeholder:text-muted-foreground focus:border-ring"
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function WorkspaceEnvironment({
   projectId,
   projectName,
   session,
   envMode,
   onEnvMode,
+  pendingBase,
+  onBase,
   onOpenChanges,
 }: {
   projectId: string;
@@ -71,6 +187,15 @@ export function WorkspaceEnvironment({
    */
   envMode?: "local" | "worktree";
   onEnvMode?: (mode: "local" | "worktree") => void;
+  /**
+   * The base-ref choice, while there is no session yet: what the worktree is
+   * cut from (`baseRef`, any name in `GitOverview.refs`) and optionally the
+   * human's own name for the new branch. Picking either implies a worktree —
+   * the cockpit flips the mode, because a base for the SHARED checkout would
+   * mean switching its branch, which the engine's read-only git refuses.
+   */
+  pendingBase?: { baseRef?: string; branchName?: string };
+  onBase?: (next: { baseRef?: string; branchName?: string }) => void;
   onOpenChanges?: () => void;
 }) {
   const [git, setGit] = useState<GitOverview>();
@@ -173,7 +298,17 @@ export function WorkspaceEnvironment({
 
         <StripRule />
 
-        {/* THE BRANCH — live git state, with the detail one click deep. */}
+        {/* THE BRANCH. Interactive while the session does not exist — the
+            base-ref picker — and a read-only readout with the detail one
+            click deep once it does. */}
+        {choosing && onBase ? (
+          <BaseRefPicker
+            refs={git?.refs ?? []}
+            {...(git?.branch ? { currentBranch: git.branch } : {})}
+            pending={pendingBase ?? {}}
+            onBase={onBase}
+          />
+        ) : (
         <Popover>
           <PopoverTrigger render={<button type="button" aria-label="Branch" title="Where this session's work lands" className={CONTROL} />}>
             <GitBranchIcon className="size-3.5 shrink-0" />
@@ -230,6 +365,7 @@ export function WorkspaceEnvironment({
             )}
           </PopoverContent>
         </Popover>
+        )}
 
         {/* --warning, the app's "a person has to move" colour: uncommitted
             work is not a failure, it is something you may want to deal with. */}
