@@ -287,6 +287,17 @@ export function isActiveTurn(state: TurnState): boolean {
 }
 
 /**
+ * Whether the provider is squeezing its context RIGHT NOW: an open
+ * `context_compaction` item on the turn. One fold shared by the working
+ * indicator, the compact button and the queue's send-now gate, so the three
+ * cannot disagree about whether a compaction is in flight — and the same
+ * definition on both providers, because both open the item and close it.
+ */
+export function isCompacting(turn?: JournalTurn): boolean {
+  return Boolean(turn?.items.some((item) => item.detail.type === "context_compaction" && item.status === "inProgress"));
+}
+
+/**
  * The text a rendered item should show.
  *
  * Streamed deltas WIN over the stored detail while a turn is live, because the

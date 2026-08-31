@@ -1,7 +1,7 @@
 "use client";
 
 import { forwardRef, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
 import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
@@ -1096,20 +1096,41 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 /**
  * How full the context is — the donor's 32px donut and its popover card.
  *
- * IT RENDERS EVEN WHEN THE FIGURE IS UNKNOWN, showing an em dash. `UsageSnapshot`
- * carries `contextUsed`/`contextMax` and today only the Codex driver populates
- * them (apps/engine/src/codex/items.ts), so on a Claude session this reads `—`
- * for the whole conversation. That is the donor's own behaviour after a
- * compaction it could not measure, and it is the honest shape: a gauge that
- * disappears makes the row jump, and one that prints `0%` measures nothing while
- * looking like a reading.
+ * IT RENDERS EVEN WHEN THE FIGURE IS UNKNOWN, showing an em dash. Both drivers
+ * populate `contextUsed`/`contextMax` now (Codex from tokenUsage updates,
+ * Claude per assistant envelope plus `modelUsage.contextWindow`), so an em
+ * dash means the turn has not reported yet — the honest shape either way: a
+ * gauge that disappears makes the row jump, and one that prints `0%` measures
+ * nothing while looking like a reading.
+ *
+ * `onCompact` puts a Compact button in the popover — the caller decides which
+ * provider gets one, because the gesture is a `/compact` prompt only Claude
+ * executes.
  */
-export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?: ProviderDriverKind }) {
+export function ContextPill({
+  usage,
+  driver,
+  onCompact,
+  compactDisabled,
+  compactReason,
+}: {
+  usage?: UsageSnapshot;
+  driver?: ProviderDriverKind;
+  onCompact?: () => void;
+  compactDisabled?: boolean;
+  /** Why the button is disabled, shown as its tooltip — "a turn is running",
+   *  "already compacting". */
+  compactReason?: string;
+}) {
   const [open, setOpen] = useState(false);
   const used = usage?.contextUsed;
   const max = usage?.contextMax;
   const unknown = used === undefined;
   const usedPct = used === undefined || max === undefined || max <= 0 ? null : Math.min(100, Math.max(0, (used / max) * 100));
+  /** Past 90% the next long tool result can overflow the window — the ring
+   *  turns to the app's danger colour so the state is visible without opening
+   *  the popover. */
+  const critical = usedPct !== null && usedPct > 90;
 
   const readout = unknown
     ? max
@@ -1144,7 +1165,7 @@ export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?:
             strokeLinecap="round"
             strokeDasharray={RING_CIRCUMFERENCE}
             strokeDashoffset={RING_CIRCUMFERENCE * (1 - (usedPct ?? 0) / 100)}
-            className="text-primary"
+            className={critical ? "text-destructive" : "text-primary"}
           />
         </svg>
         <span>{unknown ? "—" : usedPct === null ? compactTokens(used) : `${Math.round(usedPct)}%`}</span>
@@ -1168,6 +1189,21 @@ export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?:
             </p>
           )}
           <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">{harness} automatically compacts its context when needed.</p>
+          {onCompact && (
+            <button
+              type="button"
+              disabled={compactDisabled}
+              title={compactDisabled ? compactReason : "Summarise the conversation so far to free the window"}
+              onClick={() => {
+                setOpen(false);
+                onCompact();
+              }}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Minimize2Icon className="size-3.5" />
+              Compact now
+            </button>
+          )}
         </div>
       </PopoverContent>
     </Popover>

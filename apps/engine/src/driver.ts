@@ -834,6 +834,41 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
 }
 
 /**
+ * How full the window is, from ONE message's usage.
+ *
+ * Claude reports each assistant envelope's usage as the API call behind it saw
+ * the conversation, so `input + cache reads + cache writes + output` of the
+ * NEWEST message IS the window's occupancy — the same argument
+ * `codex/items.ts` makes for reading `last` rather than `total`. The result
+ * message's `usage` is the TURN'S total across calls, which overstates
+ * occupancy, so this is never computed from it.
+ */
+function contextUsedFrom(value: unknown): number | undefined {
+  const usage = asRecord(value);
+  if (typeof usage.input_tokens !== "number" && typeof usage.output_tokens !== "number") return undefined;
+  const n = (candidate: unknown): number => (typeof candidate === "number" && candidate >= 0 ? candidate : 0);
+  return n(usage.input_tokens) + n(usage.cache_read_input_tokens) + n(usage.cache_creation_input_tokens) + n(usage.output_tokens);
+}
+
+/**
+ * The window's size, from the result message's `modelUsage` table.
+ *
+ * The table is keyed per model and the record may name several (main loop plus
+ * a smaller sidechain model); the MAX is the main loop's window, which is the
+ * one the meter is about. Tokens are deliberately NOT read from this table —
+ * in streaming-input sessions it is cumulative across turns, so only the
+ * per-model constant is safe to take.
+ */
+function contextMaxFrom(value: unknown): number | undefined {
+  let max: number | undefined;
+  for (const entry of Object.values(asRecord(value))) {
+    const window = asRecord(entry).contextWindow;
+    if (typeof window === "number" && window > 0) max = Math.max(max ?? 0, window);
+  }
+  return max;
+}
+
+/**
  * The user's own Claude Code, or a refusal naming what to install.
  *
  * `requireCli` throws a plain Error carrying the actionable message; it becomes
@@ -916,6 +951,24 @@ export function createClaudeDriver(
       let reportedSessionId: string | undefined;
       let usage: UsageSnapshot | undefined;
       let completed = false;
+      /**
+       * The context meter's two halves, tracked run-scoped: `contextUsed` from
+       * the newest assistant message (see `contextUsedFrom`), `contextMax`
+       * from each result's `modelUsage` — a constant per model, carried
+       * forward because a slash-command result can arrive with an empty table.
+       */
+      let contextUsed: number | undefined;
+      let contextMax: number | undefined;
+      const decorateUsage = (snapshot: UsageSnapshot | undefined): UsageSnapshot | undefined =>
+        snapshot === undefined
+          ? undefined
+          : {
+              ...snapshot,
+              ...(contextUsed === undefined ? {} : { contextUsed }),
+              ...(contextMax === undefined ? {} : { contextMax }),
+            };
+      /** The open "Compacting context" row, when the provider announced one. */
+      let compactionItemId: string | undefined;
 
       /**
        * Streaming blocks keyed by the provider's content-block index.
@@ -1342,6 +1395,11 @@ export function createClaudeDriver(
             session_id?: string;
             total_cost_usd?: number;
             usage?: unknown;
+            /** Result messages only: per-model usage, where `contextWindow`
+             *  lives. Tokens in it are cumulative — see `contextMaxFrom`. */
+            modelUsage?: unknown;
+            compact_result?: string;
+            compact_metadata?: unknown;
             message?: { content?: unknown[]; usage?: unknown };
             /** The tool's full structured Output — where `structuredPatch` lives. */
             tool_use_result?: unknown;
@@ -1385,6 +1443,59 @@ export function createClaudeDriver(
            */
           const parentToolUseId = str(item.parent_tool_use_id ?? undefined);
           const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
+
+          // ── compaction, announced then bounded ────────────────────────
+          if (item.type === "system" && item.subtype === "status") {
+            /**
+             * `status: "compacting"` opens the row; a later status carrying
+             * `compact_result` closes it. Measured against CLI 2.1.246: a
+             * `/compact` prompt produces exactly this pair (then a fresh
+             * `init`). These messages were silently discarded before, which
+             * is why compaction looked like the agent hanging and then
+             * forgetting things.
+             */
+            if (str(item.status) === "compacting" && !compactionItemId) {
+              compactionItemId = itemId();
+              emit({
+                kind: "item.started",
+                item: { id: compactionItemId, detail: { type: "context_compaction" }, title: "Compacting context" },
+              });
+              await flush();
+            } else if (item.compact_result !== undefined && compactionItemId) {
+              emit({
+                kind: "item.completed",
+                itemId: compactionItemId,
+                status: item.compact_result === "success" ? "completed" : "failed",
+              });
+              compactionItemId = undefined;
+              await flush();
+            }
+            continue;
+          }
+          if (item.type === "system" && item.subtype === "compact_boundary") {
+            /**
+             * The boundary carries the numbers: trigger and window occupancy
+             * either side. An AUTO compaction may produce a boundary with no
+             * `status` announcement first, so the row is opened here when
+             * needed — a boundary alone still deserves a transcript row.
+             */
+            const metadata = asRecord(item.compact_metadata);
+            const detail: ItemDetail = {
+              type: "context_compaction",
+              ...(str(metadata.trigger) ? { reason: str(metadata.trigger)! } : {}),
+              ...(typeof metadata.pre_tokens === "number" ? { preTokens: metadata.pre_tokens } : {}),
+              ...(typeof metadata.post_tokens === "number" ? { postTokens: metadata.post_tokens } : {}),
+            };
+            if (compactionItemId) {
+              emit({ kind: "item.updated", item: { id: compactionItemId, detail, title: "Compacting context" } });
+            } else {
+              const id = itemId();
+              emit({ kind: "item.started", item: { id, detail, title: "Compacted context" } });
+              emit({ kind: "item.completed", itemId: id, status: "completed", detail });
+            }
+            await flush();
+            continue;
+          }
 
           // ── sub-agents and background work ────────────────────────────
           if (item.type === "system" && item.subtype === "task_started") {
@@ -1472,7 +1583,8 @@ export function createClaudeDriver(
           }
 
           if (item.type === "result") {
-            usage = usageFrom(item.usage, item.total_cost_usd) ?? usage;
+            contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
+            usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
@@ -1555,7 +1667,21 @@ export function createClaudeDriver(
             // A sub-agent's usage is reported on its own task, not folded into
             // the parent's running total, or the turn would double-count it
             // against the `result` message's authoritative figure.
-            if (!ownerTaskId) usage = usageFrom(item.message?.usage, undefined) ?? usage;
+            if (!ownerTaskId) {
+              const snapshot = usageFrom(item.message?.usage, undefined);
+              if (snapshot) {
+                contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
+                usage = decorateUsage(snapshot);
+                /**
+                 * EMITTED PER ENVELOPE, not held until the result — this is
+                 * what makes the context ring move DURING a Claude turn, the
+                 * way `thread/tokenUsage/updated` already moves it on Codex.
+                 * Before this the local variable updated and nothing left the
+                 * driver until the turn ended.
+                 */
+                emit({ kind: "usage", usage: usage! });
+              }
+            }
             for (const raw of item.message?.content ?? []) {
               const block = asRecord(raw);
               if (block.type === "tool_use") {
@@ -1674,6 +1800,8 @@ export function createClaudeDriver(
         for (const [, open] of openBlocks) emit(closeBlock(open));
         // The plan is turn-scoped and has no tool_result to close it.
         if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
+        // A compaction the stream ended inside is over, and it did not finish.
+        if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: "failed" });
         /**
          * A task left running when the turn ended is closed as failed.
          *

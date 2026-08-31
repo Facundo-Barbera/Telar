@@ -265,6 +265,94 @@ test("usage and cost are reported from the result message", async () => {
   expect(sink.observations.some((o) => o.kind === "usage")).toBeTrue();
 });
 
+test("the meter moves DURING a turn: each assistant envelope emits usage, with context occupancy", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 3 } },
+      };
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "b" }], usage: { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 200, cache_creation_input_tokens: 3 } },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        usage: { input_tokens: 22, output_tokens: 6 },
+        modelUsage: {
+          "claude-sonnet-5": { contextWindow: 200_000, inputTokens: 22 },
+          "claude-haiku-4-5": { contextWindow: 100_000, inputTokens: 4 },
+        },
+      };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const usages = sink.observations.filter((o) => o.kind === "usage");
+  // One per envelope plus the result — this is what lets the ring move mid-turn.
+  expect(usages).toHaveLength(3);
+  // Occupancy is the NEWEST message's input+cacheRead+cacheCreate+output.
+  expect(usages[0]?.kind === "usage" && usages[0].usage.contextUsed).toBe(115);
+  expect(usages[1]?.kind === "usage" && usages[1].usage.contextUsed).toBe(219);
+  // The window is the LARGEST model's — the main loop's, not a sidechain's —
+  // and it lands on the final snapshot from the result's modelUsage table.
+  const last = usages[2];
+  expect(last?.kind === "usage" && last.usage.contextMax).toBe(200_000);
+  expect(last?.kind === "usage" && last.usage.contextUsed).toBe(219);
+  // Tokens still come from the result's own usage, never from modelUsage.
+  expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
+});
+
+test("compaction is a timeline row, not a dropped message", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "status", status: "compacting" };
+      yield { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 150_000, post_tokens: 12_000 } };
+      yield { type: "system", subtype: "status", status: null, compact_result: "success" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const started = sink.observations.filter((o) => o.kind === "item.started");
+  expect(started).toHaveLength(1);
+  const updated = sink.observations.find((o) => o.kind === "item.updated");
+  expect(
+    updated?.kind === "item.updated" && updated.item.detail.type === "context_compaction" && updated.item.detail,
+  ).toMatchObject({ reason: "auto", preTokens: 150_000, postTokens: 12_000 });
+  const completed = sink.observations.find((o) => o.kind === "item.completed");
+  expect(completed?.kind === "item.completed" && completed.status).toBe("completed");
+});
+
+test("a boundary with no announcement still produces a row, and an unfinished compaction closes failed", async () => {
+  // Auto-compaction may emit only the boundary; and a stream that ends inside
+  // a compaction must not leave the row spinning forever.
+  const boundaryOnly = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 9, post_tokens: 3 } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const first = run(boundaryOnly);
+  await first.result;
+  const row = first.sink.observations.find((o) => o.kind === "item.started");
+  expect(row?.kind === "item.started" && row.item.detail.type).toBe("context_compaction");
+  const closed = first.sink.observations.find((o) => o.kind === "item.completed");
+  expect(closed?.kind === "item.completed" && closed.status).toBe("completed");
+
+  const unfinished = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "status", status: "compacting" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const second = run(unfinished);
+  await second.result;
+  const swept = second.sink.observations.find((o) => o.kind === "item.completed");
+  expect(swept?.kind === "item.completed" && swept.status).toBe("failed");
+});
+
 test("the Claude seam never turns an unsuccessful result into a completed turn", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {

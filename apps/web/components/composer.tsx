@@ -304,6 +304,8 @@ export function Composer({
   placeholder,
   onModelChange,
   onOpenChanges,
+  onCompact,
+  compacting,
 }: {
   draft: string;
   ready: boolean;
@@ -351,6 +353,12 @@ export function Composer({
   usage?: UsageSnapshot;
   /** Work that outlives the turn that started it. */
   backgroundTasks: number;
+  /** Submit a `/compact` turn. The cockpit passes it on Claude sessions only —
+   *  the slash command is that provider's. */
+  onCompact?: () => void;
+  /** The provider is squeezing its context RIGHT NOW — an open
+   *  context_compaction row on the live turn. Gates the compact button. */
+  compacting?: boolean;
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -866,7 +874,13 @@ export function Composer({
               )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
-            <ContextPill {...(usage ? { usage } : {})} {...(session ? { driver: session.driver } : {})} />
+            <ContextPill
+              {...(usage ? { usage } : {})}
+              {...(session ? { driver: session.driver } : {})}
+              {...(onCompact ? { onCompact } : {})}
+              compactDisabled={busy || sending || Boolean(compacting)}
+              compactReason={compacting ? "Already compacting." : "Wait for the running turn to finish."}
+            />
             {/* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
                 oversight: `InputGroup` carries `has-disabled:opacity-50`, so a
                 disabled descendant greys the ENTIRE composer — box, pills,

@@ -17,7 +17,7 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { appendJournalEvents, isActiveTurn, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
+import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
 import { canvasHref } from "@/lib/session-list";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
@@ -894,6 +894,10 @@ export function SessionCockpit({
   const active =
     transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state));
   const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
+  /** The provider is squeezing its context right now — an open
+   *  context_compaction row on the live turn. Gates the compact button (and,
+   *  soon, send-now) so the client tells the same story the engine enforces. */
+  const compacting = isCompacting(active);
   /** Everything typed but not yet started, oldest first — the pending strip. */
   const queued = useMemo(
     () => transcript.filter((turn) => turn.state === "queued").map((turn) => ({ runId: turn.runId, text: turn.prompt })),
@@ -922,6 +926,25 @@ export function SessionCockpit({
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the turn."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /**
+   * A `/compact` turn: the slash command rides the ordinary submit path, so it
+   * queues, journals and reports compaction like any other turn — measured
+   * live against CLI 2.1.246. Offered on Claude sessions only; Codex has no
+   * out-of-turn compaction door (its app-server lives exactly one run).
+   */
+  const compact = async () => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await api.submitTurn(sessionId, { runId: newRunId(), input: "/compact" });
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not start the compaction."));
     } finally {
       setSending(false);
     }
@@ -1302,6 +1325,8 @@ export function SessionCockpit({
           {...(session ? { session } : {})}
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}
+          {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
+          compacting={compacting}
           onDraftChange={(nextDraft) => {
             setDraft(nextDraft);
             setDraftRunId(undefined);
