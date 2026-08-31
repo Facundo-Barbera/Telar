@@ -322,6 +322,34 @@ async function playTurn() {
       return;
     }
 
+    // The app-server's own question-to-the-human — `item/tool/requestUserInput`,
+    // shape per the rust-v0.149.1 protocol source (ToolRequestUserInputParams /
+    // ToolRequestUserInputResponse). The reply maps question id → {answers: []}.
+    case "request-user-input": {
+      const reply = ask("item/tool/requestUserInput", {
+        threadId,
+        turnId,
+        itemId: "item-question",
+        isBlocking: true,
+        questions: [
+          {
+            id: "q-color",
+            header: "Color",
+            question: "Which color should the button be?",
+            isOther: true,
+            isSecret: false,
+            options: [
+              { label: "Red", description: "The warning color." },
+              { label: "Blue", description: "The calm color." },
+            ],
+          },
+        ],
+      });
+      const answers = (await reply).result?.answers ?? {};
+      finish(`answered=${JSON.stringify(answers)}`);
+      return;
+    }
+
     case "approval-file": {
       const reply = ask("item/fileChange/requestApproval", {
         threadId,

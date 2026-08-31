@@ -19,6 +19,7 @@ import {
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
 import { canvasHref } from "@/lib/session-list";
+import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
@@ -916,6 +917,17 @@ export function SessionCockpit({
   // Only OPEN requests are actionable; resolved ones are history and live in the
   // journal rather than as a card demanding a second answer.
   const openRequests = useMemo(() => requests.filter((request) => request.state === "open"), [requests]);
+  /**
+   * The question the COMPOSER answers — the first open all-choice `user_input`
+   * request. It leaves the turn's approval cards and meets the person at the
+   * box instead (see composer-question-drawer.tsx). Only while the composer
+   * exists: an observed session keeps the card, because there is no composer
+   * to host the drawer and the question must still be visible.
+   */
+  const composerQuestion = useMemo(
+    () => (observe ? undefined : openRequests.find((request) => questionFields(request).length > 0)),
+    [openRequests, observe],
+  );
 
   const stop = async () => {
     if (!active || !sessionId) return;
@@ -1278,7 +1290,7 @@ export function SessionCockpit({
                 turn={turn}
                 live={turn.runId === active?.runId}
                 now={now}
-                requests={openRequests.filter((request) => request.runId === turn.runId)}
+                requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
                 onOpenAgent={showAgent}
                 onOpenTab={showPanelTab}
@@ -1327,6 +1339,13 @@ export function SessionCockpit({
           backgroundTasks={backgroundTasks}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
+          {...(composerQuestion
+            ? {
+                question: composerQuestion,
+                onAnswerQuestion: (requestId: string, answers: Record<string, string>) => void decideRequest(requestId, "accept", { answers }),
+                onCancelQuestion: (requestId: string) => void decideRequest(requestId, "cancel"),
+              }
+            : {})}
           onDraftChange={(nextDraft) => {
             setDraft(nextDraft);
             setDraftRunId(undefined);

@@ -63,7 +63,7 @@ type RunOptions = {
   prompt?: string;
   cwd?: string;
   providerSessionId?: string;
-  onRequest?: (request: DriverRequest) => Promise<RequestDecision>;
+  onRequest?: (request: DriverRequest) => Promise<RequestDecision | { decision: RequestDecision; answers?: Record<string, unknown> }>;
   controller?: AbortController;
   options?: CodexDriverOptions;
   mcpServers?: McpServer[];
@@ -704,6 +704,30 @@ test("a declined MCP approval answers in the elicitation's vocabulary, not the a
 
   expect(seen.map((request) => request.kind)).toEqual(["tool_call"]);
   expect(replies()[0]?.result).toEqual({ action: "decline" });
+});
+
+test("the app-server's requestUserInput becomes a user_input request, and the answers ride back by question id", async () => {
+  // The SAME contract shape the Claude driver's AskUserQuestion arm opens, so
+  // the cockpit's question drawer serves both providers. The wire reply maps
+  // question id → {answers: string[]} (ToolRequestUserInputResponse).
+  const seen: DriverRequest[] = [];
+  const { result } = runTurn("request-user-input", {
+    onRequest: async (request) => {
+      seen.push(request);
+      return { decision: "accept", answers: { "q-color": "Blue" } };
+    },
+  });
+  await expect(result).resolves.toMatchObject({ text: 'answered={"q-color":{"answers":["Blue"]}}' });
+  expect(seen).toHaveLength(1);
+  const detail = seen[0]!.detail;
+  expect(detail.kind === "user_input" && detail.fields).toEqual([
+    { key: "q-color", label: "Which color should the button be?", kind: "choice", choices: ["Red", "Blue"], required: true },
+  ]);
+});
+
+test("a declined requestUserInput answers an EMPTY map — the tool's own no-answer arm, not a hang", async () => {
+  const { result } = runTurn("request-user-input", { onRequest: async () => "decline" });
+  await expect(result).resolves.toMatchObject({ text: "answered={}" });
 });
 
 test("an accepted MCP approval carries the content field the protocol requires", async () => {
