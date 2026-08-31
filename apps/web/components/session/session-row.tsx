@@ -34,11 +34,11 @@ import {
   CircleDashedIcon,
   CircleDotIcon,
   ClockIcon,
-  FolderIcon,
   GitBranchIcon,
   PinIcon,
   UndoIcon,
 } from "lucide-react";
+import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
@@ -380,7 +380,15 @@ export function SessionRow({
         {pinMark}
         {showProject && session.projectName ? (
           <>
-            <FolderIcon className="size-3 shrink-0 text-sidebar-foreground/40" />
+            {/* The project's OWN mark when its checkout carries one — a
+                favicon, an app icon — else a tinted initial. The generic
+                folder is the final fallback, inside ProjectAvatar. */}
+            <ProjectAvatar
+              name={session.projectName}
+              {...(session.projectId ? { projectId: session.projectId } : {})}
+              {...(session.projectIcon ? { icon: session.projectIcon } : {})}
+              size={12}
+            />
             <span className="min-w-0 flex-1 truncate text-[11px] text-sidebar-foreground/50">{session.projectName}</span>
           </>
         ) : (
