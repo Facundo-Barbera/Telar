@@ -333,6 +333,45 @@ export type InboxPolicy = z.infer<typeof InboxPolicy>;
 export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterDays: DEFAULT_AUTO_SETTLE_DAYS };
 
 /**
+ * WHO WRITES THE WORDS THE HUMAN DIDN'T — t3 code's TextGeneration idea, on
+ * Telar's shapes. A session's title starts as the first message truncated, and
+ * its worktree branch is a slug of that truncation; both are placeholders a
+ * small model can do better than. This policy says whether it gets to, and
+ * through which harness.
+ *
+ * A DRIVER, NOT AN INSTANCE. Generation runs as the driver's BUILT-IN slot: it
+ * is a background nicety, and pointing it at a custom instance would let a
+ * settings page quietly spend somebody's metered account on titles. The model
+ * is optional because "the harness's own default" is a fine answer — the
+ * engine only pins a cheaper one where it knows the alias (`haiku`).
+ *
+ * ONE POLICY FOR THE ENVIRONMENT, like `InboxPolicy` above and for the same
+ * reason: the same sessions are read from the desktop shell and a browser tab,
+ * and a title that regenerates from one window but not the other would look
+ * like a sync bug, not a preference.
+ */
+export const TextGenPolicy = z.object({
+  /** Whether a session's first turn also asks a small model for a real title. */
+  titles: z.boolean(),
+  /** Whether a generated title also renames the engine-cut `telar/…` branch.
+   *  Never touches a branch a human named — those live outside `telar/`. */
+  renameBranches: z.boolean(),
+  driver: ProviderDriverKind,
+  /** Model id or alias for the generating call; absent = the driver's default. */
+  model: z.string().min(1).max(120).optional(),
+});
+export type TextGenPolicy = z.infer<typeof TextGenPolicy>;
+
+export const DEFAULT_TEXT_GEN_POLICY: TextGenPolicy = {
+  titles: true,
+  renameBranches: true,
+  driver: "claude",
+  // The alias, not a wire id: it keeps meaning "the current cheap model" as
+  // the provider moves it, exactly why `ProviderModel.resolves` exists.
+  model: "haiku",
+};
+
+/**
  * The live process. Not user-owned state — the engine's handle on something it
  * supervises, and safe to lose: everything durable is on the session and the
  * journal.

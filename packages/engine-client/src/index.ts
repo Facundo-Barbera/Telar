@@ -24,6 +24,7 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type TextGenPolicy,
   type SpoolAperture,
   type SpoolApertureView,
   type SpoolArea,
@@ -250,6 +251,21 @@ export class EngineClient {
 
   setInboxPolicy(patch: { autoSettleAfterDays?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  /** Who writes generated titles and branch names — see `TextGenPolicy`. */
+  textGenPolicy(): Promise<{ textGen: TextGenPolicy }> {
+    return this.request("GET", "/v2/textgen");
+  }
+
+  setTextGenPolicy(patch: {
+    titles?: boolean;
+    renameBranches?: boolean;
+    driver?: ProviderDriverKind;
+    /** `null` returns to the driver's default model; absent leaves it alone. */
+    model?: string | null;
+  }): Promise<{ textGen: TextGenPolicy }> {
+    return this.request("PATCH", "/v2/textgen", patch);
   }
 
   // ── Spool ─────────────────────────────────────────────────────────────────
