@@ -9,7 +9,6 @@ import {
   FolderTreeIcon,
   GitPullRequestIcon,
   FileIcon,
-  GaugeIcon,
   GlobeIcon,
   LayersIcon,
   Maximize2Icon,
@@ -29,7 +28,6 @@ import type {
   Item,
   Task,
   TaskState,
-  Turn,
   TurnState,
 } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -106,7 +104,6 @@ const SURFACES = [
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues. Drag one into the message." },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests, and this session's own." },
-  { id: "usage", label: "Usage", icon: GaugeIcon, blurb: "Tokens this conversation has spent." },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -313,33 +310,6 @@ export function latestBrowserState(events: readonly EngineEvent[]): BrowserState
     if (event.type === "browser.state.changed") state = { provider: event.provider, tabs: event.tabs };
   }
   return state;
-}
-
-export type SessionUsage = {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheCreate?: number;
-  /** How many turns reported a figure, out of how many exist. An em dash means
-   *  a figure is MISSING, and this is what lets the surface say so. */
-  reported: number;
-  turns: number;
-};
-
-/** NO `costUsd` FOLD. `UsageSnapshot` still carries the provider's own price and
- *  nothing here reads it — see `UsageSurface` for why money left this cockpit. */
-export function sessionUsage(turns: readonly Turn[]): SessionUsage {
-  const total = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
-  let reported = 0;
-  for (const turn of turns) {
-    if (!turn.usage) continue;
-    reported += 1;
-    total.input += turn.usage.tokens.input;
-    total.output += turn.usage.tokens.output;
-    total.cacheRead += turn.usage.tokens.cacheRead;
-    total.cacheCreate += turn.usage.tokens.cacheCreate;
-  }
-  return { ...(reported > 0 ? total : {}), reported, turns: turns.length };
 }
 
 const LIVE_TASK_STATES = new Set<TaskState>(["pending", "running", "waiting"]);
@@ -765,50 +735,11 @@ function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focu
   );
 }
 
-/**
- * TOKENS, AND NO PRICE. The engine still carries the provider's `costUsd` and
- * this surface deliberately does not read it: only some providers report one, a
- * subscription seat has no per-turn price to report, and the total that results
- * is a number a human cannot act on. Tokens are reported by everything, are
- * what actually runs out, and are the same unit the context gauge speaks.
- */
-function UsageSurface({ usage }: { usage: SessionUsage }) {
-  const total =
-    usage.input === undefined
-      ? undefined
-      : usage.input + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheCreate ?? 0);
-  const rows: Array<[string, string]> = [
-    ["Input", figure(usage.input)],
-    ["Output", figure(usage.output)],
-    ["Cache read", figure(usage.cacheRead)],
-    ["Cache write", figure(usage.cacheCreate)],
-    ["Total", figure(total)],
-  ];
-  return (
-    <div className="flex flex-col">
-      <dl className="flex flex-col">
-        {rows.map(([label, value]) => (
-          <div key={label} className="flex items-baseline justify-between gap-2 px-4 py-1.5 text-xs">
-            <dt className="text-muted-foreground">{label}</dt>
-            <dd className="font-mono tabular-nums">{value}</dd>
-          </div>
-        ))}
-      </dl>
-      <p className="px-4 py-2 text-[11px] text-muted-foreground">
-        {usage.reported === 0
-          ? "No turn has reported usage yet. Every figure above is missing, not zero."
-          : `Totalled across ${usage.reported} of ${usage.turns} turns. A turn the provider gave no figures for contributes nothing rather than a zero.`}
-      </p>
-    </div>
-  );
-}
-
 export function PanelSurface({
   tab,
   writes,
   tasks,
   focusedTask,
-  turns,
   browser,
   sessionId,
   sessionTitle,
@@ -827,7 +758,6 @@ export function PanelSurface({
   tasks: readonly JournalTask[];
   /** The sub-agent a transcript chip just asked for. */
   focusedTask?: TaskFocus;
-  turns: readonly Turn[];
   browser?: BrowserState;
   /** Absent on a session that does not exist yet. Every surface that needs a
    *  checkout falls back to the project's own, which is the same directory until
@@ -850,7 +780,6 @@ export function PanelSurface({
   onOpenTab: (tab: PanelTab) => void;
   active?: TurnState;
 }) {
-  const usage = useMemo(() => sessionUsage(turns), [turns]);
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (
@@ -901,7 +830,10 @@ export function PanelSurface({
       />
     );
   if (tab === "agents") return <AgentsSurface tasks={tasks} {...(focusedTask ? { focused: focusedTask } : {})} />;
-  return <UsageSurface usage={usage} />;
+  // Every tab kind is handled above. This used to be the Usage surface's arm;
+  // as a fallthrough it would render some OTHER pane for an unknown tab id, so
+  // an unknown tab now renders nothing rather than the wrong thing.
+  return null;
 }
 
 /**
@@ -1138,7 +1070,6 @@ export function RightPanel({
   items = [],
   tasks = [],
   focusedTask,
-  turns = [],
   events = [],
   tabs,
   tab,
@@ -1162,7 +1093,6 @@ export function RightPanel({
   /** The sub-agent a transcript chip just asked for. Owned by the cockpit
    *  because the chip that names one lives over there. */
   focusedTask?: TaskFocus;
-  turns?: readonly Turn[];
   events?: readonly EngineEvent[];
   /** Owned by the cockpit, not by the panel: the pinned summary's rows and the
    *  composer's foot are "go there" gestures, and they have to be able to say
@@ -1382,7 +1312,6 @@ export function RightPanel({
               tab={tab}
               writes={writes}
               tasks={tasks}
-              turns={turns}
               {...(focusedTask ? { focusedTask } : {})}
               openPaths={openPaths}
               openIssueNumbers={openIssueNumbers}

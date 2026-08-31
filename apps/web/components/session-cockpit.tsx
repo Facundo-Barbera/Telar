@@ -1294,7 +1294,6 @@ export function SessionCockpit({
           items={items}
           tasks={roster}
           {...(focusedTask ? { focusedTask } : {})}
-          turns={turns}
           events={events}
           tabs={panel.tabs}
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}

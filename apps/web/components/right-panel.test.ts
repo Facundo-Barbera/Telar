@@ -6,7 +6,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { EngineEvent, Item, Task, Turn } from "@telar/engine-client";
+import type { EngineEvent, Item, Task } from "@telar/engine-client";
 import {
   groupWarps,
   isLiveTask,
@@ -19,7 +19,6 @@ import {
   openForgeNumbers,
   pullPanelNumber,
   pullPanelTab,
-  sessionUsage,
 } from "./right-panel";
 
 function fileChange(overrides: {
@@ -45,16 +44,6 @@ function fileChange(overrides: {
       },
     },
   } as Item;
-}
-
-function turnWithUsage(input: number, output: number, costUsd?: number): Turn {
-  return {
-    runId: `run_${input}`,
-    usage: {
-      tokens: { input, output, cacheRead: 0, cacheCreate: 0 },
-      ...(costUsd === undefined ? {} : { costUsd }),
-    },
-  } as Turn;
 }
 
 describe("journalWrites", () => {
@@ -134,26 +123,13 @@ describe("issue and pull-request tabs", () => {
   });
 });
 
-describe("sessionUsage", () => {
-  test("distinguishes 'reported nothing' from 'spent nothing'", () => {
-    // The surface renders an em dash for `undefined` and a number for 0. A fold
-    // that returned 0 here would state a figure the provider never gave.
-    const none = sessionUsage([{ runId: "run_1" } as Turn]);
-    expect(none.input).toBeUndefined();
-    expect(none.output).toBeUndefined();
-    expect(none.reported).toBe(0);
-    expect(none.turns).toBe(1);
-  });
-
-  test("totals only the turns that reported, and says how many that was", () => {
-    const usage = sessionUsage([turnWithUsage(10, 5, 0.01), { runId: "bare" } as Turn, turnWithUsage(20, 1)]);
-    expect(usage.input).toBe(30);
-    expect(usage.output).toBe(6);
-    // The provider's price is still on the contract and is NOT folded here:
-    // money is not a unit this cockpit reports. See lib/format.ts.
-    expect(usage).not.toHaveProperty("costUsd");
-    expect(usage.reported).toBe(2);
-    expect(usage.turns).toBe(3);
+describe("the retired Usage surface", () => {
+  test("a stored 'usage' tab id restores as nothing", () => {
+    // The surface was removed; a panel persisted before the removal may still
+    // hold its id. The validator refusing it is what makes the restore drop the
+    // tab instead of rendering a blank pane.
+    expect(isPanelTab("usage")).toBe(false);
+    expect(isPanelTab("agents")).toBe(true);
   });
 });
 
