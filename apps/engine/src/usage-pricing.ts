@@ -131,18 +131,29 @@ export function resetRatesMemo(): void {
   memo = undefined;
 }
 
-/** The cost of one record's tokens at the table's base tier, or undefined
- *  when the model is unknown or unpriceable. Missing cache rates fall back to
- *  the plain input rate — cached tokens were never free. */
-export function priceTokens(rates: RatesTable, model: string, tokens: TokenUsage): number | undefined {
+/**
+ * The cost of one record's tokens at the table's base tier, or undefined
+ * when the model is unknown or unpriceable. Missing cache rates fall back to
+ * the plain input rate — cached tokens were never free.
+ *
+ * `cacheCreate1h` is the slice of `tokens.cacheCreate` written with the
+ * ONE-HOUR TTL, which Anthropic bills at 2× input — the table's
+ * `cache_creation_input_token_cost` is the 5-minute tier only. Measured on
+ * this machine: two thirds of all cache writes are 1h (Claude Code's default
+ * for agent sessions), so pricing them at the 5m rate under-reported every
+ * Claude figure.
+ */
+export function priceTokens(rates: RatesTable, model: string, tokens: TokenUsage, options: { cacheCreate1h?: number } = {}): number | undefined {
   const name = normalizeModelName(model);
   if (UNPRICEABLE.has(name)) return undefined;
   const rate = rates.rates.get(name);
   if (!rate) return undefined;
+  const oneHour = Math.min(tokens.cacheCreate, Math.max(0, options.cacheCreate1h ?? 0));
   return (
     tokens.input * rate.inputPerTok +
     tokens.output * rate.outputPerTok +
     tokens.cacheRead * (rate.cacheReadPerTok ?? rate.inputPerTok) +
-    tokens.cacheCreate * (rate.cacheCreatePerTok ?? rate.inputPerTok)
+    (tokens.cacheCreate - oneHour) * (rate.cacheCreatePerTok ?? rate.inputPerTok) +
+    oneHour * 2 * rate.inputPerTok
   );
 }

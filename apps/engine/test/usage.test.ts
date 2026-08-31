@@ -163,6 +163,16 @@ test("an appended transcript is re-read on the next report", async () => {
 });
 
 describe("pricing", () => {
+  test("one-hour cache writes cost double input, not the 5-minute rate", () => {
+    const tokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 1_000_000 };
+    // All 5m: the table's own cache-creation rate.
+    expect(priceTokens(RATES, "claude-opus-5", tokens)).toBeCloseTo(1_000_000 * 1.25e-5);
+    // All 1h: 2× the input rate.
+    expect(priceTokens(RATES, "claude-opus-5", tokens, { cacheCreate1h: 1_000_000 })).toBeCloseTo(1_000_000 * 2 * 1e-5);
+    // Split prices each slice at its own tier.
+    expect(priceTokens(RATES, "claude-opus-5", tokens, { cacheCreate1h: 400_000 })).toBeCloseTo(600_000 * 1.25e-5 + 400_000 * 2e-5);
+  });
+
   test("a prefixed duplicate row without cache rates cannot shadow the complete one", async () => {
     const { loadRates } = await import("../src/usage-pricing");
     const cachePath = path.join(tmp(), "rates.json");

@@ -42,6 +42,9 @@ export type UsageRecord = {
   sessionId: string;
   /** Cross-file dedupe key; undefined means "trust the file order dedupe". */
   dedupe?: string;
+  /** The 1-hour-TTL slice of `tokens.cacheCreate` — billed at 2× input, so
+   *  pricing needs the split (see usage-pricing.ts). Claude only. */
+  cacheCreate1h?: number;
 };
 
 /**
@@ -89,7 +92,13 @@ function parseClaudeFile(text: string, fallbackSession: string): UsageRecord[] {
     const model = typeof m["model"] === "string" && m["model"] ? m["model"] : "unknown";
     const messageId = typeof m["id"] === "string" ? m["id"] : undefined;
     const requestId = typeof entry["requestId"] === "string" ? entry["requestId"] : undefined;
+    const creation = u["cache_creation"];
+    const oneHour =
+      typeof creation === "object" && creation !== null && typeof (creation as Record<string, unknown>)["ephemeral_1h_input_tokens"] === "number"
+        ? ((creation as Record<string, unknown>)["ephemeral_1h_input_tokens"] as number)
+        : 0;
     records.push({
+      ...(oneHour > 0 ? { cacheCreate1h: Math.floor(oneHour) } : {}),
       at,
       model,
       tokens: tokensOf(n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), n("cache_creation_input_tokens")),
@@ -198,6 +207,7 @@ function* walkJsonl(root: string): Generator<string> {
 export type UsageScanRoots = {
   claude: string;
   codex: string;
+  codexArchive?: string;
 };
 
 /** Where each CLI keeps its transcripts, honouring the same env vars the
@@ -206,7 +216,13 @@ export function defaultScanRoots(env: NodeJS.ProcessEnv = process.env): UsageSca
   const home = os.homedir();
   const claudeHome = env.CLAUDE_CONFIG_DIR?.trim() || path.join(home, ".claude");
   const codexHome = env.CODEX_HOME?.trim() || path.join(home, ".codex");
-  return { claude: path.join(claudeHome, "projects"), codex: path.join(codexHome, "sessions") };
+  // `archived_sessions` is where `codex` moves rollouts a user archives from
+  // its picker — archived, not deleted, and still spend.
+  return {
+    claude: path.join(claudeHome, "projects"),
+    codex: path.join(codexHome, "sessions"),
+    codexArchive: path.join(codexHome, "archived_sessions"),
+  };
 }
 
 /** `YYYY-MM-DD` in the requested zone. `en-CA` is the locale whose short date
@@ -239,16 +255,22 @@ export async function readUsageReport(
   const seen = new Set<string>();
   const sources: UsageSource[] = [];
 
-  for (const provider of ["claude", "codex"] as const) {
-    const root = roots[provider];
-    if (!fs.existsSync(root)) {
-      sources.push({ provider, status: "missing", path: root, files: 0, sessions: 0 });
+  const providerRoots: [ProviderDriverKind, string[]][] = [
+    ["claude", [roots.claude]],
+    ["codex", [roots.codex, ...(roots.codexArchive ? [roots.codexArchive] : [])]],
+  ];
+  for (const [provider, candidates] of providerRoots) {
+    // The archive is an extra shelf of the same store, not a second source —
+    // one row reports the primary path, and a missing archive is ordinary.
+    const present = candidates.filter((candidate) => fs.existsSync(candidate));
+    if (!present.includes(candidates[0]!)) {
+      sources.push({ provider, status: "missing", path: candidates[0]!, files: 0, sessions: 0 });
       continue;
     }
     let files = 0;
     let failed = false;
     const providerSessions = new Set<string>();
-    for (const file of walkJsonl(root)) {
+    for (const file of present.flatMap((candidate) => [...walkJsonl(candidate)])) {
       const records = scanFile(file, provider, input.sinceMs);
       if (records === undefined) {
         failed = true;
@@ -284,14 +306,16 @@ export async function readUsageReport(
         if (record.tokens.reasoning !== undefined) {
           bucket.tokens.reasoning = (bucket.tokens.reasoning ?? 0) + record.tokens.reasoning;
         }
-        const cost = record.costUsd ?? priceTokens(rates, record.model, record.tokens);
+        const cost =
+          record.costUsd ??
+          priceTokens(rates, record.model, record.tokens, record.cacheCreate1h !== undefined ? { cacheCreate1h: record.cacheCreate1h } : {});
         bucket.costUsd += cost ?? 0;
         bucket.allPriced = bucket.allPriced && cost !== undefined;
         bucket.turns += 1;
         buckets.set(key, bucket);
       }
     }
-    sources.push({ provider, status: failed ? "failed" : "ok", path: root, files, sessions: providerSessions.size });
+    sources.push({ provider, status: failed ? "failed" : "ok", path: candidates[0]!, files, sessions: providerSessions.size });
   }
 
   return {
