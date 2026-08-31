@@ -1454,6 +1454,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * The project's icon, as bytes. The ONE binary GET this daemon serves:
+       * `Project.icon` on the list is the cache key, this is the image behind
+       * it. Immutable because the key changes whenever the file does — the
+       * `?v=` a client appends is never read here, it exists to bust the
+       * browser cache.
+       */
+      const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
+      if (request.method === "GET" && projectIcon) {
+        const icon = store.projectIconFile(decodeURIComponent(projectIcon[1]));
+        const bytes = await fs.promises.readFile(icon.path);
+        response.writeHead(200, {
+          "content-type": icon.contentType,
+          "content-length": bytes.byteLength,
+          "cache-control": "public, max-age=31536000, immutable",
+          etag: `"${icon.etag}"`,
+        });
+        response.end(bytes);
+        return;
+      }
+      /**
        * A project's issues and pull requests.
        *
        * `?refresh=1` IS THE ONLY WAY PAST THE CACHE, and the surface sends it

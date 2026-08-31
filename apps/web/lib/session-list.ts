@@ -54,6 +54,9 @@ export type SidebarSession = {
   projectId?: string;
   /** Resolved display name. Absent while the project list is still loading. */
   projectName?: string;
+  /** `Project.icon` — the content-derived key behind the engine's icon route.
+   *  Absent when the checkout carries no icon file. */
+  projectIcon?: string;
   createdAt: number;
   updatedAt: number;
   archived: boolean;
@@ -96,13 +99,14 @@ export type SidebarSession = {
 };
 
 /** The engine record, flattened into what the rail actually reads. */
-export function toSidebarSession(session: Session, projectName?: string, projectBranch?: string): SidebarSession {
+export function toSidebarSession(session: Session, projectName?: string, projectBranch?: string, projectIcon?: string): SidebarSession {
   return {
     id: session.id,
     title: session.title,
     projectId: session.projectId,
     ...(projectName ? { projectName } : {}),
     ...(projectBranch ? { projectBranch } : {}),
+    ...(projectIcon ? { projectIcon } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     archived: session.state === "archived",

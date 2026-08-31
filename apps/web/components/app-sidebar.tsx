@@ -84,6 +84,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
+import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -393,6 +394,7 @@ function SidebarBody() {
       // The checkout's current branch, for the local sessions that share it —
       // they have no branch of their own. Derived per project by the engine.
       const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
+      const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
       setProjects(result.projects);
       setUnavailable(false);
       // One request per project, in parallel, because the engine lists sessions
@@ -413,6 +415,7 @@ function SidebarBody() {
                   session,
                   session.projectId ? names.get(session.projectId) : undefined,
                   session.projectId ? branches.get(session.projectId) : undefined,
+                  session.projectId ? icons.get(session.projectId) : undefined,
                 ),
               )
             : [],
@@ -650,7 +653,16 @@ function SidebarBody() {
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="sm" className="h-8 min-w-0 flex-1 justify-start px-2 text-sm font-normal" />}
               >
-                <FolderGit2Icon />
+                {selectedProject ? (
+                  <ProjectAvatar
+                    name={selectedProject.name}
+                    projectId={selectedProject.id}
+                    {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
+                    size={14}
+                  />
+                ) : (
+                  <FolderGit2Icon />
+                )}
                 <span className="truncate">{selectedProject?.name ?? "All projects"}</span>
                 <ChevronDownIcon className="ml-auto" />
               </DropdownMenuTrigger>
@@ -666,6 +678,12 @@ function SidebarBody() {
                     <div key={project.id} className="flex items-center">
                       <DropdownMenuItem className="min-w-0 flex-1" onClick={() => selectScope(project.id)}>
                         <span className="w-4">{selectedScope === project.id ? <CheckIcon /> : null}</span>
+                        <ProjectAvatar
+                          name={project.name}
+                          projectId={project.id}
+                          {...(project.icon ? { icon: project.icon } : {})}
+                          size={14}
+                        />
                         <span className="truncate">{project.name}</span>
                       </DropdownMenuItem>
                       {/* THIS project's settings. It went to the retired

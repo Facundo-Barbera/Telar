@@ -108,6 +108,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { findProjectIcon, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import {
   addSubtask as addSpoolSubtask,
@@ -2983,6 +2984,34 @@ export class EngineStore {
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
   }
 
+  /**
+   * The project's icon, found in its checkout and cached for a minute.
+   *
+   * A TTL CACHE because `listProjects` is on the sidebar's poll path and the
+   * find is a dozen stats per project. In memory like the caches above: it
+   * describes files in somebody's working tree, which change without telling
+   * the engine — sixty seconds is the stated staleness bound.
+   */
+  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; at: number }>();
+
+  private projectIcon(project: Pick<Project, "id" | "root">): ProjectIcon | undefined {
+    const cached = this.projectIconCache.get(project.id);
+    const at = this.now();
+    if (cached && at - cached.at < 60_000) return cached.icon;
+    const icon = findProjectIcon(project.root);
+    this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at });
+    return icon;
+  }
+
+  /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
+   *  project has none rather than guessing. */
+  projectIconFile(projectId: string): ProjectIcon {
+    const project = this.getProject(projectId);
+    const icon = this.projectIcon(project);
+    if (!icon) throw new EngineStateError("not_found", "this project has no icon");
+    return icon;
+  }
+
   listProjects(): Project[] {
     const registry = readJson(this.paths.projects);
     if (registry === undefined) return [];
@@ -2999,7 +3028,12 @@ export class EngineStore {
        */
       const head = this.git(project.root, ["rev-parse", "--abbrev-ref", "HEAD"]);
       const branch = head.status === 0 ? head.stdout.trim() : "";
-      return branch && branch !== "HEAD" ? { ...project, branch } : project;
+      const icon = this.projectIcon(project);
+      return {
+        ...project,
+        ...(branch && branch !== "HEAD" ? { branch } : {}),
+        ...(icon ? { icon: icon.etag } : {}),
+      };
     });
   }
 
@@ -3035,6 +3069,9 @@ export class EngineStore {
     };
     parsed.projects.push(project);
     atomicWrite(this.paths.projects, parsed);
+    // A fresh registration must not inherit a stale "no icon" answer cached
+    // for a project that briefly shared this id.
+    this.projectIconCache.delete(id);
     return structuredClone(project);
   }
 
