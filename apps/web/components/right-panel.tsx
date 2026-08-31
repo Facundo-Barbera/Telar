@@ -923,7 +923,18 @@ export function PanelSurface({
  * one line of description on a single line that truncates, at any width the
  * panel can be dragged to.
  */
-function PanelEmptyState({ onOpen, browser }: { onOpen: (tab: PanelTab) => void; browser?: BrowserState }) {
+function PanelEmptyState({
+  onOpen,
+  browser,
+  onOpenBrowser,
+}: {
+  onOpen: (tab: PanelTab) => void;
+  browser?: BrowserState;
+  /** Absent when the engine cannot start a browser here — the affordance
+   *  hides rather than offering a launch that would land beside the worker's
+   *  own browser (see BrowserSnapshot.canStart). */
+  onOpenBrowser?: () => void;
+}) {
   const pages = browser?.tabs ?? [];
   return (
     <div className="flex h-full flex-col justify-center p-4">
@@ -947,6 +958,22 @@ function PanelEmptyState({ onOpen, browser }: { onOpen: (tab: PanelTab) => void;
             </button>
           ))}
         </div>
+        {/* Launch, not navigate: pages the agent already opened are listed
+            below; this row exists for the session where nobody has browsed
+            yet and a human wants to. */}
+        {onOpenBrowser && pages.length === 0 && (
+          <button
+            type="button"
+            onClick={onOpenBrowser}
+            className="mt-1 flex w-full items-center gap-2.5 rounded-lg border border-dashed border-border px-2.5 py-2 text-left transition-colors hover:bg-muted/60"
+          >
+            <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs font-medium text-foreground">Open a browser</span>
+              <span className="block truncate text-[11px] text-muted-foreground">Start this session’s browser and watch it here.</span>
+            </span>
+          </button>
+        )}
         {/* ONE ROW PER PAGE, not one row for "Browser". Opening a page opens
             that page's tab, which is the whole point of the change. */}
         {pages.length > 0 && (
@@ -1136,6 +1163,7 @@ export function RightPanel({
   items = [],
   tasks = [],
   focusedTask,
+  onOpenBrowser,
   events = [],
   tabs,
   tab,
@@ -1159,6 +1187,9 @@ export function RightPanel({
   /** The sub-agent a transcript chip just asked for. Owned by the cockpit
    *  because the chip that names one lives over there. */
   focusedTask?: TaskFocus;
+  /** Launch the session's browser by hand. Absent when the engine cannot
+   *  start one here, and the affordances hide with it. */
+  onOpenBrowser?: () => void;
   events?: readonly EngineEvent[];
   /** Owned by the cockpit, not by the panel: the pinned summary's rows and the
    *  composer's foot are "go there" gestures, and they have to be able to say
@@ -1346,6 +1377,14 @@ export function RightPanel({
                     <span className="truncate">{candidate.label}</span>
                   </DropdownMenuItem>
                 ))}
+                {/* A LAUNCH, not a tab: once pages exist they are listed above
+                    by id, so this only appears while there is nothing to open. */}
+                {onOpenBrowser && (browser?.tabs.length ?? 0) === 0 && (
+                  <DropdownMenuItem onClick={onOpenBrowser}>
+                    <GlobeIcon />
+                    <span className="truncate">Open a browser</span>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -1407,7 +1446,7 @@ export function RightPanel({
             />
           </>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} {...(browser ? { browser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
       </div>
     </aside>

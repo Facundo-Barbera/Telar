@@ -684,6 +684,28 @@ export function SessionCockpit({
   const browser = useMemo(() => latestBrowserState(events), [events]);
 
   /**
+   * Whether pressing "open a browser" could work HERE, asked once per session.
+   * False when the engine's worker owns the browser out-of-process — offering
+   * the button there would start a second browser beside the agent's own, so
+   * the affordance hides instead (see BrowserSnapshot.canStart).
+   */
+  const [browserCanStart, setBrowserCanStart] = useState(false);
+  useEffect(() => {
+    setBrowserCanStart(false);
+    if (!sessionId) return;
+    let cancelled = false;
+    api.browserState(sessionId).then(
+      (result) => {
+        if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  /**
    * THREE COLUMNS DO NOT FIT A LAPTOP. Opening the panel on a narrow window
    * collapses the session rail.
    *
@@ -715,6 +737,24 @@ export function SessionCockpit({
     },
     [makeRoomForPanel, updatePanel],
   );
+
+  /**
+   * Launch the session's browser by hand. The engine journals what it opened,
+   * so the tab ALSO arrives through the ordinary event fold — the direct
+   * `showPanelTab` here is only what makes the gesture feel immediate instead
+   * of waiting one sync cycle.
+   */
+  const openBrowser = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const result = await api.browserState(sessionId, { start: true });
+      const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
+      if (active) showPanelTab(browserPanelTab(active.id));
+    } catch {
+      // The engine said no — the panel's own copy already explains when a
+      // browser cannot be started here.
+    }
+  }, [sessionId, showPanelTab]);
 
   /**
    * A PAGE THE ENGINE JUST OPENED GETS A TAB, the way it would in a browser.
@@ -1294,6 +1334,7 @@ export function SessionCockpit({
           items={items}
           tasks={roster}
           {...(focusedTask ? { focusedTask } : {})}
+          {...(browserCanStart ? { onOpenBrowser: openBrowser } : {})}
           events={events}
           tabs={panel.tabs}
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}
