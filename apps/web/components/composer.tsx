@@ -28,7 +28,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { EngineRequest, ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import {
+  advance as advanceQuestion,
+  buildAnswers,
+  canAdvance,
+  emptyQuestionDraft,
+  isLastQuestion,
+  questionFields,
+  setCustomAnswer,
+  type QuestionDraft,
+} from "@/lib/question-drawer";
+import { ComposerQuestionDrawer } from "./composer-question-drawer";
 import type { ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
@@ -306,6 +317,9 @@ export function Composer({
   onOpenChanges,
   onCompact,
   compacting,
+  question,
+  onAnswerQuestion,
+  onCancelQuestion,
 }: {
   draft: string;
   ready: boolean;
@@ -356,6 +370,16 @@ export function Composer({
   /** Submit a `/compact` turn. The cockpit passes it on Claude sessions only —
    *  the slash command is that provider's. */
   onCompact?: () => void;
+  /**
+   * The question the drawer answers — an open all-choice `user_input` request.
+   * While present, THE COMPOSER CHANGES MODE: the editor's text is the active
+   * question's custom answer (the real draft is untouched underneath and
+   * returns when the question resolves), Enter advances or submits, and the
+   * send button relabels. See composer-question-drawer.tsx.
+   */
+  question?: EngineRequest;
+  onAnswerQuestion?: (requestId: string, answers: Record<string, string>) => void;
+  onCancelQuestion?: (requestId: string) => void;
   /** The provider is squeezing its context RIGHT NOW — an open
    *  context_compaction row on the live turn. Gates the compact button. */
   compacting?: boolean;
@@ -388,6 +412,32 @@ export function Composer({
    * armed paint survive one render past the turn it belonged to.
    */
   const escArmed = armedRaw && busy;
+
+  /* ---------------------------------------------------------------- *
+   * QUESTION MODE — the drawer above, the editor as the custom answer.
+   * ---------------------------------------------------------------- */
+
+  const qFields = useMemo(() => (question ? questionFields(question) : []), [question]);
+  const questionActive = qFields.length > 0 && Boolean(onAnswerQuestion);
+  /**
+   * KEYED BY REQUEST ID rather than reset in an effect: a new question simply
+   * fails the id check and reads as a fresh empty draft, so one request's
+   * half-typed answer can never leak into the next request's form.
+   */
+  const [qState, setQState] = useState<{ requestId: string; draft: QuestionDraft }>();
+  const qd = questionActive && question && qState?.requestId === question.id ? qState.draft : emptyQuestionDraft();
+  const setQd = (next: QuestionDraft) => question && setQState({ requestId: question.id, draft: next });
+  const qActiveKey = qFields[qd.index]?.key;
+
+  const advanceOrSubmitQuestion = () => {
+    if (!question || !onAnswerQuestion || !canAdvance(qFields, qd)) return;
+    if (!isLastQuestion(qFields, qd)) {
+      setQd(advanceQuestion(qd));
+      return;
+    }
+    const answers = buildAnswers(qFields, qd);
+    if (answers) onAnswerQuestion(question.id, answers);
+  };
 
   useEffect(() => {
     if (!escArmed) return;
@@ -482,7 +532,9 @@ export function Composer({
     );
   }, [trigger, dismissed, paths, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
 
-  const menuOpen = trigger !== null && !dismissed && (completions.length > 0 || (trigger.kind === "path" && reading));
+  // No completions while a question is active: the editor's text is an ANSWER,
+  // and an `@` in "I'd prefer @latest" is punctuation, not a mention.
+  const menuOpen = !questionActive && trigger !== null && !dismissed && (completions.length > 0 || (trigger.kind === "path" && reading));
 
   /** Recompute the trigger from the live caret. Called after every edit and
    *  every caret move, because moving out of a `@word` must close the menu. */
@@ -552,6 +604,18 @@ export function Composer({
           return;
         }
       }
+      /**
+       * QUESTION MODE HIJACKS ENTER: it advances or submits the form, the way
+       * the send button does. Everything below — recall, escape-to-stop — is
+       * about the DRAFT, which is parked while a question is on screen.
+       */
+      if (questionActive) {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          advanceOrSubmitQuestion();
+        }
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         if (draft.trim() && ready) onSubmit();
@@ -596,7 +660,8 @@ export function Composer({
       // Any other key disarms — the human moved on.
       if (escArmed) setEscArmed(false);
     },
-    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop, menuOpen, completions, active, apply],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- advanceOrSubmitQuestion is rebuilt per render by design; questionActive covers its liveness
+    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop, menuOpen, completions, active, apply, questionActive, qd, question],
   );
 
   /**
@@ -656,6 +721,11 @@ export function Composer({
     event.dataTransfer.types.includes("text/uri-list");
 
   const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
+  const questionSubmitLabel = isLastQuestion(qFields, qd)
+    ? qFields.length === 1
+      ? "Submit answer"
+      : "Submit answers"
+    : "Next question";
   /**
    * ONE VALUE FOR EVERY PROVIDER KNOB, passed whole to every control.
    *
@@ -724,9 +794,25 @@ export function Composer({
           tray read as a second card floating below. Grouping them makes the
           gap apply around the pair, never inside it. */}
       <div>
+      {/* The question drawer fuses onto the composer's TOP edge — same width
+          inset as the foot below, rounded top corners, its bottom tucked under
+          the box so the two read as one object. */}
+      {questionActive && question && (
+        <ComposerQuestionDrawer
+          fields={qFields}
+          draft={qd}
+          onDraft={setQd}
+          sending={sending}
+          onCancelTurn={() => onCancelQuestion?.(question.id)}
+        />
+      )}
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          if (questionActive) {
+            advanceOrSubmitQuestion();
+            return;
+          }
           if (draft.trim() && ready) onSubmit();
         }}
       >
@@ -779,14 +865,28 @@ export function Composer({
           <label className="sr-only" htmlFor="turn-prompt">
             Message
           </label>
+          {/* IN QUESTION MODE THE EDITOR IS THE CUSTOM-ANSWER FIELD: its value
+              is the active question's free text, and edits land in the drawer
+              state instead of the draft — which sits untouched underneath and
+              returns the moment the question resolves. Losing a half-typed
+              message to an incoming question would be the sin the recall path
+              already refuses. */}
           <ComposerEditor
             ref={editor}
             id="turn-prompt"
-            value={draft}
-            placeholder={placeholderFor(ready, busy, placeholder)}
+            value={questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft}
+            placeholder={
+              questionActive
+                ? "Type your own answer, or leave this blank to use the selected option"
+                : placeholderFor(ready, busy, placeholder)
+            }
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
             onChange={(text) => {
+              if (questionActive && qActiveKey !== undefined) {
+                setQd(setCustomAnswer(qd, qActiveKey, text));
+                return;
+              }
               onDraftChange(text);
               // Synchronous, and BEFORE the state round-trip: `retrigger` reads
               // the caret out of the live DOM, so it has to run while the DOM
@@ -795,7 +895,7 @@ export function Composer({
               setActive(0);
               setDismissed(false);
             }}
-            onSelectionChange={() => retrigger(draft)}
+            onSelectionChange={() => !questionActive && retrigger(draft)}
             onKeyDown={onKeyDown}
             onPasteFiles={addFiles}
           />
@@ -889,17 +989,28 @@ export function Composer({
                 broken. The donor never disables it either; submitting an empty
                 draft is simply a no-op. */}
             <InputGroupButton
-              type={busy ? "button" : "submit"}
+              // In question mode the button SUBMITS THE FORM — the turn is
+              // running (busy), but the gesture on offer is answering, not
+              // stopping; the drawer keeps its own "Cancel the turn".
+              type={busy && !questionActive ? "button" : "submit"}
               variant="default"
               size="icon-sm"
-              aria-label={submitLabel}
-              onClick={busy ? onStop : undefined}
+              aria-label={questionActive ? questionSubmitLabel : submitLabel}
+              title={questionActive ? questionSubmitLabel : undefined}
+              onClick={busy && !questionActive ? onStop : undefined}
               className={cn(
-                escArmed && "bg-destructive text-background hover:bg-destructive",
+                escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
                 !busy && !draft.trim() && "opacity-60",
+                questionActive && !canAdvance(qFields, qd) && "opacity-60",
               )}
             >
-              {escArmed ? (
+              {questionActive ? (
+                sending ? (
+                  <Spinner />
+                ) : (
+                  <CornerDownLeftIcon className="size-4" />
+                )
+              ) : escArmed ? (
                 // The WORD, not a glyph. "ESC" names the key the user just
                 // pressed and the key that will finish the job, which no icon
                 // can say.
