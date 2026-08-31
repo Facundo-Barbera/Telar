@@ -691,17 +691,22 @@ export function SessionCockpit({
    */
   const [browserCanStart, setBrowserCanStart] = useState(false);
   useEffect(() => {
-    setBrowserCanStart(false);
-    if (!sessionId) return;
     let cancelled = false;
-    api.browserState(sessionId).then(
-      (result) => {
-        if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
-      },
-      () => undefined,
-    );
+    // Deferred to a task, same rule as the panel restore above: a synchronous
+    // setState in an effect body is a cascading render.
+    const task = window.setTimeout(() => {
+      setBrowserCanStart(false);
+      if (!sessionId) return;
+      api.browserState(sessionId).then(
+        (result) => {
+          if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
+        },
+        () => undefined,
+      );
+    }, 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(task);
     };
   }, [sessionId]);
 
