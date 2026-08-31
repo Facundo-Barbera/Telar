@@ -139,16 +139,19 @@ export class EngineWorker {
    */
   private readonly awaiting = new Map<string, (outcome: DriverRequestOutcome) => void>();
   /**
-   * Each running turn's steer mailbox, keyed by claim token like `active`.
+   * Each running turn's steer mailbox plus its unacked deliveries, keyed by
+   * claim token like `active`.
    *
-   * PUSH THEN ACK, deliberately. Ack-first loses the message if this process
-   * dies between ack and push; push-first can deliver it twice if the ack is
-   * lost and the heartbeat re-carries it. Losing a typed message is the worse
-   * failure everywhere in this codebase, so duplication is the accepted side —
-   * `pushedSteers` narrows the window to an actually-lost ack rather than
-   * every heartbeat until one lands.
+   * ACK ON DRAIN, NOT ON PUSH. A pushed message can still be lost — the turn
+   * can settle before the driver's next boundary drains it — and an ack at
+   * push time would mark that lost message `steered`. A DRAINED message is
+   * one the driver holds, so the mailbox's drain hook is where the ack fires;
+   * an undrained one leaves the turn `steering`, and the engine's settlement
+   * sweep requeues it. A lost ACK still re-carries and re-pushes on a later
+   * heartbeat — duplication over loss, the codebase's stated side of that
+   * trade; `pushedSteers` narrows it to actually-lost acks.
    */
-  private readonly steering = new Map<string, SteerMailbox>();
+  private readonly steering = new Map<string, { mailbox: SteerMailbox; pendingAck: Array<{ sessionId: string; steerRunId: string; claimToken: string }> }>();
   private readonly pushedSteers = new Set<string>();
 
   constructor(private readonly options: EngineWorkerOptions) {
@@ -188,25 +191,16 @@ export class EngineWorker {
         // driver as a bare decision.
         settle({ decision: resolution.decision, ...(resolution.answers ? { answers: resolution.answers } : {}) });
       }
-      // Deliver send-now messages into their running turns' mailboxes.
+      // Deliver send-now messages into their running turns' mailboxes. The
+      // ack fires later, from the mailbox's drain hook — see `steering`.
       for (const delivery of status.steer ?? []) {
-        if (!this.pushedSteers.has(delivery.steerRunId)) {
-          const mailbox = this.steering.get(delivery.claimToken);
-          // No mailbox (or closed): this worker cannot deliver — leave the
-          // turn `steering`; the engine's settlement sweep requeues it.
-          if (!mailbox?.push(delivery.text)) continue;
-          this.pushedSteers.add(delivery.steerRunId);
-        }
-        try {
-          await this.options.client.ackSteer(delivery.sessionId, delivery.steerRunId, delivery.claimToken);
-          this.pushedSteers.delete(delivery.steerRunId);
-        } catch (error) {
-          // A conflict means the engine already settled the running turn and
-          // requeued the message; the (possibly duplicate) delivery is the
-          // documented side of push-then-ack. Anything else retries next beat.
-          if (error instanceof EngineClientError && error.code === "conflict") this.pushedSteers.delete(delivery.steerRunId);
-          else if (isConnectivityLoss(error)) throw error;
-        }
+        if (this.pushedSteers.has(delivery.steerRunId)) continue;
+        const entry = this.steering.get(delivery.claimToken);
+        // No mailbox (or closed): this worker cannot deliver — leave the
+        // turn `steering`; the engine's settlement sweep requeues it.
+        if (!entry?.mailbox.push(delivery.text)) continue;
+        this.pushedSteers.add(delivery.steerRunId);
+        entry.pendingAck.push({ sessionId: delivery.sessionId, steerRunId: delivery.steerRunId, claimToken: delivery.claimToken });
       }
       // Claim until the cap or the queue runs dry. One claim per call is the
       // engine's shape (`claimNextTurn` hands out the oldest claimable turn),
@@ -245,7 +239,19 @@ export class EngineWorker {
     // could carry a delivery. Closed with the turn — a push after close is
     // refused and the engine's sweep requeues the message instead.
     const steer = new SteerMailbox();
-    this.steering.set(claimToken, steer);
+    const steerEntry = { mailbox: steer, pendingAck: [] as Array<{ sessionId: string; steerRunId: string; claimToken: string }> };
+    this.steering.set(claimToken, steerEntry);
+    steer.onDrain(() => {
+      // The driver holds the text now; tell the engine, one ack per delivery.
+      // A failed ack leaves `pushedSteers` cleared so a later heartbeat
+      // re-carries and re-pushes — the accepted duplicate, never a loss.
+      for (const ack of steerEntry.pendingAck.splice(0)) {
+        void this.options.client
+          .ackSteer(ack.sessionId, ack.steerRunId, ack.claimToken)
+          .catch(() => undefined)
+          .finally(() => this.pushedSteers.delete(ack.steerRunId));
+      }
+    });
     /**
      * ONE park/heartbeat implementation for both doors into the engine's gate:
      * the driver's own `onRequest`, and the browser socket's per-call gate.
@@ -503,6 +509,10 @@ export class EngineWorker {
       // run holds a token that now answers 401, which is the revocation.
       lease?.release();
       steer.close();
+      // An undrained delivery was never delivered: forget it here so the
+      // heartbeat's re-carry (after the engine's sweep requeues it) is not
+      // skipped by the pushed-set.
+      for (const ack of steerEntry.pendingAck.splice(0)) this.pushedSteers.delete(ack.steerRunId);
       this.steering.delete(claimToken);
       this.active.delete(claimToken);
     }

@@ -84,11 +84,28 @@ export class SteerMailbox {
   drain(): string[] {
     const queued = this.queue;
     this.queue = [];
+    // Fired AFTER the take: a listener acking delivery must only hear about
+    // text the consumer actually holds.
+    if (queued.length > 0) for (const listener of this.drainListeners) listener();
     return queued;
   }
 
+  /** Hear every non-empty drain. The worker acks send-now deliveries here —
+   *  a drained message is one the driver holds, which is the earliest moment
+   *  "delivered" is true rather than hoped. */
+  onDrain(listener: () => void): void {
+    this.drainListeners.push(listener);
+  }
+  private drainListeners: Array<() => void> = [];
+
   get pending(): number {
     return this.queue.length;
+  }
+
+  /** True once the turn is over — how a consumer loop knows an empty drain
+   *  after a wake means "stop", not "spin". */
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   /** Resolves on the next push, or immediately when something is already
