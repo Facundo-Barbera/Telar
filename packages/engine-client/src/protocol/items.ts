@@ -187,7 +187,16 @@ export const ItemDetail = z.discriminatedUnion("type", [
   z.object({ type: z.literal("web_search"), query: z.string(), resultCount: z.number().int().nonnegative().optional() }),
   z.object({ type: z.literal("browser_action"), call: ToolCallDetail, url: z.string().optional() }),
   z.object({ type: z.literal("task"), taskId: Id }),
-  z.object({ type: z.literal("context_compaction"), reason: z.string().optional() }),
+  z.object({
+    type: z.literal("context_compaction"),
+    /** What triggered it, when the provider says — Claude reports "auto" or
+     *  "manual" on its compact boundary. */
+    reason: z.string().optional(),
+    /** Window occupancy either side of the squeeze, when reported. The pair is
+     *  the row's whole story: what it reclaimed. */
+    preTokens: z.number().int().nonnegative().optional(),
+    postTokens: z.number().int().nonnegative().optional(),
+  }),
   z.object({ type: z.literal("error"), error: ErrorDetail }),
   z.object({ type: z.literal("unknown"), label: z.string().optional(), payload: z.unknown().optional() }),
 ]);
