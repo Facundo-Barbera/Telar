@@ -95,11 +95,11 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
         ))}
 
       {active === "project" && (
-        <SettingsGroup title="Identity" description="Registered facts. Changing where a project lives means registering it again.">
+        <SettingsGroup title="Identity" description="Registered facts — moving a project means registering it again.">
           <Row label="Name" control={<span className="text-xs">{project?.name ?? "—"}</span>} />
           <Row
             label="Checkout"
-            hint="Every session on this project runs here, or in a worktree cut from it."
+            hint="Sessions run here, or in a worktree cut from it."
             control={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{project?.root ?? "—"}</code>}
           />
           <Row label="Id" hint="What sessions and MCP servers store." control={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">{projectId}</code>} />

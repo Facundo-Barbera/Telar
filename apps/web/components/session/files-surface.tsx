@@ -306,7 +306,7 @@ export function FilesSurface({
   if (!sessionId && !projectId) {
     return (
       <PanelEmpty icon={<FolderTreeIcon />} title="No project">
-        This surface lists a checkout, and there is not one to name yet.
+        No checkout to list yet.
       </PanelEmpty>
     );
   }
@@ -374,7 +374,7 @@ export function FilesSurface({
           {searching
             ? `No path in this checkout contains “${query.trim()}”.`
             : listing.repository
-              ? "git lists no files here — every path is either ignored or uncommitted-and-ignored."
+              ? "git lists no files here — every path is ignored."
               : "There are no files in this directory."}
         </PanelEmpty>
       ) : (

@@ -84,7 +84,7 @@ const api = createEngineApi();
  * record itself. A browser PAGE is not one of these — see `PanelTab` below.
  */
 const SURFACES = [
-  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents, and Warp runs holding their own." },
+  { id: "agents", label: "Agents", icon: BotIcon, blurb: "Sub-agents and Warp runs" },
   /**
    * BACKGROUND WORK IS NOT A SUB-AGENT. A watch loop and a five-minute build
    * share a surface with nothing: an agent has a transcript and a conclusion, a
@@ -92,7 +92,7 @@ const SURFACES = [
    * "Agents" made every background shell read as a delegate that never reports.
    * The split is `Task.kind`, which the engine already decides.
    */
-  { id: "processes", label: "Processes", icon: TerminalIcon, blurb: "Background shells, watch loops and long-running work." },
+  { id: "processes", label: "Processes", icon: TerminalIcon, blurb: "Background shells, watch loops" },
   /**
    * DIFF AND FILES, WHICH USED TO BE CHANGES AND GIT — and the old pair was a
    * duplicate wearing two names. "Changes" folded the journal and "Git" read the
@@ -103,15 +103,15 @@ const SURFACES = [
    * So: one tab for what moved, backed by the disk and annotated by the journal
    * (session/diff-surface.tsx), and one for what is there (session/files-surface.tsx).
    */
-  { id: "diff", label: "Diff", icon: FileDiffIcon, blurb: "What this conversation changed, and what it did not mention." },
-  { id: "files", label: "Files", icon: FolderTreeIcon, blurb: "The checkout, as a tree. Drag a file into the message." },
+  { id: "diff", label: "Diff", icon: FileDiffIcon, blurb: "What this session changed" },
+  { id: "files", label: "Files", icon: FolderTreeIcon, blurb: "The checkout, as a tree" },
   /**
    * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
    * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
    * they never poll and they always say how old their answer is.
    */
-  { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues. Drag one into the message." },
-  { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests, and this session's own." },
+  { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues" },
+  { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
@@ -432,7 +432,7 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
   if (!page) {
     return (
       <PanelEmpty icon={<GlobeIcon />} title="This page is no longer open">
-        The engine closed it, or the session ended. Close this tab when you are done with it.
+        The engine closed it, or the session ended.
       </PanelEmpty>
     );
   }
@@ -468,7 +468,7 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
             <p className="mt-4 text-sm font-medium">{browserTabLabel(page)}</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               {!page.active
-                ? "The engine photographs whichever page has focus. This one is in the background, so its address is all there is to show until the agent brings it forward."
+                ? "Only the page with focus can be photographed."
                 : snapshot?.error
                   ? snapshot.error
                   : snapshot && !snapshot.running
@@ -725,8 +725,7 @@ function AgentsSurface({ tasks, focused }: { tasks: readonly JournalTask[]; focu
   if (groups.length === 0 && loose.length === 0) {
     return (
       <PanelEmpty icon={<BotIcon />} title="Sub-agents appear here as they work">
-        A task carries its own title, state and result. A Warp run is one row holding its own agents. Background work — a watch
-        loop, a long shell — lives on the Processes tab.
+        Background work lives on the Processes tab.
       </PanelEmpty>
     );
   }
@@ -778,8 +777,7 @@ function ProcessesSurface({ tasks, focused }: { tasks: readonly JournalTask[]; f
   if (processes.length === 0) {
     return (
       <PanelEmpty icon={<TerminalIcon />} title="Background work appears here">
-        A shell run in the background, a monitor, a watch loop — anything the agent leaves running. A process can outlive the turn
-        that started it. Codex sessions never file anything here: that provider reports every child as an agent.
+        Anything the agent leaves running. Codex sessions never file anything here: that provider reports every child as an agent.
       </PanelEmpty>
     );
   }
@@ -970,7 +968,7 @@ function PanelEmptyState({
             <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-xs font-medium text-foreground">Open a browser</span>
-              <span className="block truncate text-[11px] text-muted-foreground">Start this session’s browser and watch it here.</span>
+              <span className="block truncate text-[11px] text-muted-foreground">Start this session’s browser</span>
             </span>
           </button>
         )}

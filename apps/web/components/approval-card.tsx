@@ -49,17 +49,17 @@ const KIND_ICON = {
 export function describeRequest(detail: EngineRequest["detail"]): { eyebrow: string; verb: string; argument?: string } {
   switch (detail.kind) {
     case "command_execution":
-      return { eyebrow: "command — awaiting your approval", verb: "Run", argument: detail.command.command };
+      return { eyebrow: "command", verb: "Run", argument: detail.command.command };
     case "file_change":
-      return { eyebrow: "file change — awaiting your approval", verb: capitalise(detail.change.kind), argument: detail.change.path };
+      return { eyebrow: "file change", verb: capitalise(detail.change.kind), argument: detail.change.path };
     case "file_read":
-      return { eyebrow: "file read — awaiting your approval", verb: "Read", argument: detail.read.path };
+      return { eyebrow: "file read", verb: "Read", argument: detail.read.path };
     case "tool_call":
       // `browser_click`, not `mcp__telar__browser_click`. The qualified name is
       // addressing; a human being asked to permit something reads the verb.
-      return { eyebrow: "tool call — awaiting your approval", verb: displayToolName(detail.call.name) };
+      return { eyebrow: "tool call", verb: displayToolName(detail.call.name) };
     case "user_input":
-      return { eyebrow: "question — awaiting your answer", verb: detail.prompt };
+      return { eyebrow: "question", verb: detail.prompt };
   }
 }
 
@@ -137,7 +137,7 @@ function QuestionCard({
         if (!missing) onDecide(request.id, "accept", { answers });
       }}
     >
-      <p className={EYEBROW}>question — awaiting your answer</p>
+      <p className={EYEBROW}>question</p>
       <p className="flex items-start gap-1.5 text-sm">
         <MessageCircleQuestionIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
         <span className="whitespace-pre-wrap">{prompt}</span>
@@ -200,7 +200,7 @@ export function ApprovalCard({
       {/* A request that parked with nobody watching is the case a detached
           session most needs surfaced — it is why this line is still here. */}
       {request.notified === false && (
-        <p className="text-xs text-muted-foreground">This parked while nothing was watching, and no notification was sent.</p>
+        <p className="text-xs text-muted-foreground">Parked with nobody watching — no notification was sent.</p>
       )}
 
       <div className="flex flex-wrap items-stretch gap-2">

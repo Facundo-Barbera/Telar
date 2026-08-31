@@ -65,7 +65,7 @@ export function ComposerMenu({
     >
       <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{heading}</div>
       {completions.length === 0 ? (
-        <p className="px-3 pb-3 text-xs text-muted-foreground">{loading ? "Reading the workspace…" : emptyText}</p>
+        <p className="px-3 pb-3 text-xs text-muted-foreground">{loading ? "Reading…" : emptyText}</p>
       ) : (
         <div className="max-h-72 overflow-y-auto p-1">
           {completions.map((completion, index) => (

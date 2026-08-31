@@ -239,7 +239,7 @@ function SessionMasthead({
             variant="ghost"
             size="icon-sm"
             aria-label="Spin into loom"
-            title="Spin into loom — the weaver reads this conversation and proposes threads"
+            title="Spin into loom"
             render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
           >
             <WorkflowIcon />
@@ -1329,7 +1329,7 @@ export function SessionCockpit({
         {observe ? (
           <div className="mx-auto mb-4 flex w-full max-w-[50rem] items-center gap-2 rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground">
             <EyeIcon className="size-3.5 shrink-0" />
-            Observing — this thread is driven by its loom. To steer it, talk to the conductor; questions it asks you still appear above.
+            Observing — this thread is driven by its loom. Talk to the conductor to steer it.
           </div>
         ) : (
         <Composer

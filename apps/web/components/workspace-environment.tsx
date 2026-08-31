@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { ChevronDownIcon, FolderGit2Icon, GitBranchIcon, GitCommitHorizontalIcon, LaptopIcon } from "lucide-react";
+import { ChevronDownIcon, FolderGit2Icon, FolderGitIcon, GitBranchIcon, GitCommitHorizontalIcon } from "lucide-react";
 import type { GitOverview, Session } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -111,7 +111,9 @@ export function WorkspaceEnvironment({
 
   const modeBody = (
     <>
-      {isWorktree ? <GitBranchIcon className="size-3.5 shrink-0" /> : <LaptopIcon className="size-3.5 shrink-0" />}
+      {/* Git-flavoured on BOTH arms: a checkout is a git fact, and a laptop
+          said "machine" — the one concept this strip deliberately dropped. */}
+      {isWorktree ? <GitBranchIcon className="size-3.5 shrink-0" /> : <FolderGitIcon className="size-3.5 shrink-0" />}
       <span className="hidden truncate @xl/composer:inline">{modeLabel}</span>
     </>
   );
@@ -138,40 +140,29 @@ export function WorkspaceEnvironment({
               {modeBody}
               <ChevronDownIcon className="size-3 shrink-0" />
             </PopoverTrigger>
-            <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
-              <p className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Workspace</p>
-              <div className="rounded-xl bg-muted/35 p-1">
-                {/* Two rows rather than a switch: they are two different places
-                    the work lands, and each one gets to say what that means. */}
-                {(["local", "worktree"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => onEnvMode?.(mode)}
-                    className={cn(
-                      "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
-                      (mode === "worktree") === willBeWorktree ? "bg-accent" : "hover:bg-accent/60",
-                    )}
-                  >
-                    {mode === "worktree" ? (
-                      <GitBranchIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <LaptopIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm">{mode === "worktree" ? "Own worktree" : "Project checkout"}</span>
-                      <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-                        {mode === "worktree"
-                          ? "Cut a branch and a checkout of its own, so this session cannot collide with another."
-                          : "Work directly in the project, alongside anything else running on it."}
-                      </span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <p className="px-2 pt-2 text-[11px] text-muted-foreground">
-                Chosen when the first message creates the session, and fixed afterwards — a worktree is cut once.
-              </p>
+            {/* TWO LABELS, NOTHING ELSE. This menu carried a header, a
+                description per row and a footer paragraph — a form's worth of
+                prose for a two-way choice whose labels already say everything.
+                The names are the menu. */}
+            <PopoverContent side="top" align="start" sideOffset={8} className="w-52 gap-0 rounded-xl p-1">
+              {(["local", "worktree"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => onEnvMode?.(mode)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+                    (mode === "worktree") === willBeWorktree ? "bg-accent" : "hover:bg-accent/60",
+                  )}
+                >
+                  {mode === "worktree" ? (
+                    <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  {mode === "worktree" ? "Own worktree" : "Project checkout"}
+                </button>
+              ))}
             </PopoverContent>
           </Popover>
         ) : (
@@ -207,7 +198,7 @@ export function WorkspaceEnvironment({
               )}
               {git?.repository && (
                 <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-                  <LaptopIcon className="size-4 shrink-0 text-muted-foreground" />
+                  <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1 truncate text-sm">{modeLabel}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
@@ -215,15 +206,13 @@ export function WorkspaceEnvironment({
                 </div>
               )}
             </div>
-            <p className="px-2 pt-2 text-[11px] text-muted-foreground">
-              {!reachable
-                ? "The engine did not answer, so this may be out of date."
-                : git && !git.repository
-                  ? "This project is not a git repository. Sessions still run; there is simply no branch to report."
-                  : worktreeBranch
-                    ? "This session has a checkout of its own, so its work cannot collide with another session on this project."
-                    : "This session shares the project checkout with anything else running on it."}
-            </p>
+            {/* Prose only when something is WRONG. The ordinary cases were a
+                paragraph restating what the rows above already show. */}
+            {(!reachable || (git && !git.repository)) && (
+              <p className="px-2 pt-2 text-[11px] text-muted-foreground">
+                {!reachable ? "The engine did not answer — this may be out of date." : "Not a git repository."}
+              </p>
+            )}
             {/* The donor's footer, pointing at the same place: the surface that
                 lists what this session actually wrote. It opens the panel rather
                 than a git pane, because the engine's git read is read-only and

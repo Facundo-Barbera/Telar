@@ -212,7 +212,7 @@ function ReviewFileRow({
             <Spinner className="size-3" /> reading the diff…
           </p>
         ) : patch === "" ? (
-          <p className="px-4 pb-2 text-[11px] text-muted-foreground">Binary file — changed, with no textual diff to show.</p>
+          <p className="px-4 pb-2 text-[11px] text-muted-foreground">Binary file — no textual diff.</p>
         ) : (
           <Patch patch={patch} />
         ))}
@@ -239,7 +239,7 @@ function ReconciliationBand({ review }: { review: SessionReview }) {
             <span className="font-medium">
               {review.unreported.length} {review.unreported.length === 1 ? "file" : "files"} the transcript never mentioned
             </span>{" "}
-            — an install, a build, or a formatter. They are in the diff either way.
+            — an install, a build, or a formatter.
           </span>
         </p>
       )}
@@ -388,8 +388,8 @@ function CommitBox({
           go looking for it. A cockpit that half-implements staging and branch
           switching is worse than one that names the tool that does them well. */}
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-        Staging, branch switching and discarding are deliberately absent — they are irreversible next to a running agent. This session&rsquo;s
-        checkout is <span className="break-all font-mono">{workspacePath}</span>, and a terminal there does all three properly.
+        Staging, branch switching and discarding are absent — irreversible next to a running agent. Use a terminal in{" "}
+        <span className="break-all font-mono">{workspacePath}</span>.
       </p>
     </div>
   );
@@ -463,7 +463,7 @@ export function DiffSurface({
   if (!sessionId && !projectId) {
     return (
       <PanelEmpty icon={<GitBranchIcon />} title="No project">
-        This surface reviews a checkout, and there is not one to name yet.
+        Nothing to review yet.
       </PanelEmpty>
     );
   }
@@ -484,7 +484,7 @@ export function DiffSurface({
   if (!diff.repository) {
     return (
       <PanelEmpty icon={<GitBranchIcon />} title="Not a git repository">
-        This session works in a directory that is not versioned. Sessions run there on purpose — there is simply no diff to review.
+        No diff to review.
       </PanelEmpty>
     );
   }
@@ -527,7 +527,7 @@ export function DiffSurface({
             ? "Everything uncommitted in this project right now."
             : diff.base
               ? "Everything this session changed, committed and uncommitted."
-              : "This session recorded no starting commit, so this is only what is uncommitted right now — anything it committed is not counted."}
+              : "No starting commit was recorded, so this counts only what is uncommitted."}
           {diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
           {diff.truncated ? " The list below is capped; the figures above are not." : ""}
         </p>
@@ -585,8 +585,7 @@ export function DiffSurface({
              work from a canvas would be snapshotting somebody else's work under
              a conversation that has not started. */
           <p className="border-t border-border p-3 text-[11px] leading-snug text-muted-foreground">
-            This is the project&rsquo;s own uncommitted work, before this conversation starts. Send a message and this becomes a review of
-            what the session itself changed.
+            The project&rsquo;s own uncommitted work, before this conversation starts.
           </p>
         )}
       </div>

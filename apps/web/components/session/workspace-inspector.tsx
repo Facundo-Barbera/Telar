@@ -238,7 +238,7 @@ export function WorkspaceInspector({
                 icon={GitBranchIcon}
                 label={branch}
                 {...(divergence ? { detail: divergence } : {})}
-                title={worktreeBranch ? "This session works on a checkout of its own" : "The project's current checkout"}
+                title={worktreeBranch ? "This session's own checkout" : "The project's checkout"}
               />
             ) : (
               <InspectorRow icon={GitBranchIcon} label="Not a git repository" />
@@ -306,9 +306,7 @@ export function WorkspaceInspector({
           )}
 
           {!activityRunning && browserTabs.length === 0 && (
-            <p className="px-2 pb-1 pt-2 text-[11px] text-muted-foreground">
-              Nothing else is running. Sub-agents, background commands and open pages appear here while they are live.
-            </p>
+            <p className="px-2 pb-1 pt-2 text-[11px] text-muted-foreground">Nothing else is running.</p>
           )}
         </PopoverContent>
       </Popover>

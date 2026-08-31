@@ -504,7 +504,7 @@ function CheckRow({
               </pre>
               {log.truncated && (
                 <p className="mt-0.5 text-[10px] text-muted-foreground">
-                  The last {log.lines.length} lines. Drag this check into the message to send them.
+                  The last {log.lines.length} lines.
                 </p>
               )}
             </>
@@ -657,7 +657,7 @@ function MergeFooter({
   if (!pull.headRefOid) {
     return (
       <div className="shrink-0 border-t border-border px-3 py-2 text-[11px] leading-snug text-muted-foreground">
-        gh did not report this branch&apos;s head commit, so there is nothing to pin a merge to. Merging without that check is not offered.
+        gh did not report this branch&apos;s head commit, so merging is not offered.
       </div>
     );
   }
@@ -740,7 +740,7 @@ function MergeFooter({
           )}
           {methods.length === 0 ? (
             <p className="text-[11px] leading-snug text-muted-foreground">
-              This repository has every merge method turned off, so nothing here can merge it.
+              This repository has every merge method turned off.
             </p>
           ) : (
             <div className="flex items-center gap-1">
@@ -845,7 +845,7 @@ export function ForgeDetailSurface({
   if (!projectId) {
     return (
       <PanelEmpty icon={<Icon />} title="No project">
-        Issues and pull requests belong to a repository, and there is not one to name yet.
+        No repository to ask about yet.
       </PanelEmpty>
     );
   }
