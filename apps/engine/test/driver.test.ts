@@ -14,6 +14,7 @@ import {
   taskStateForStatus,
   titleForToolCall,
 } from "../src/driver";
+import { SteerMailbox } from "../src/steering";
 
 /**
  * EVERY TEST BELOW RUNS AGAINST A FAKE SDK, so none of them should care whether
@@ -1149,4 +1150,53 @@ describe("the Spool's reads are reads", () => {
     expect(requestKindForTool("mcp__notmine__spool_list_items")).toBe("tool_call");
     expect(requestKindForTool("spool_list_items")).toBe("tool_call");
   });
+});
+
+test("a steered message becomes a second user turn, journalled as a user_message row", async () => {
+  // The fake SDK CONSUMES the prompt stream the way the real one does in
+  // streaming-input mode: one result per user message. The mailbox is filled
+  // before the first boundary, so the generator drains it and yields a second
+  // turn; an empty mailbox at the next boundary ends the stream.
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      for await (const message of prompt) {
+        heard.push(message.message.content);
+        yield { type: "assistant", message: { content: [{ type: "text", text: `answer:${heard.length} ` }] } };
+        yield { type: "result", subtype: "success" };
+      }
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  steer.push("also do this");
+  const { sink, result } = run(driver, { steer });
+  const resolved = await result;
+  expect(heard).toEqual(["prompt", "also do this"]);
+  // Both answers accumulate into the turn's final text.
+  expect(resolved.text).toBe("answer:1 answer:2 ");
+  // The injected sentence is a transcript row — without it, the agent's
+  // change of direction would have no visible cause.
+  const userRows = sink.observations.filter(
+    (o) => o.kind === "item.started" && o.item.detail.type === "user_message" && o.item.detail.text === "also do this",
+  );
+  expect(userRows).toHaveLength(1);
+});
+
+test("TELAR_CLAUDE_STREAMING_INPUT=0 restores the plain-string prompt — the field kill switch", async () => {
+  const previous = process.env.TELAR_CLAUDE_STREAMING_INPUT;
+  process.env.TELAR_CLAUDE_STREAMING_INPUT = "0";
+  try {
+    let seenPrompt: unknown;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: unknown }) {
+        seenPrompt = prompt;
+        yield { type: "result", subtype: "success" };
+      },
+    }) as never);
+    await run(driver, { steer: new SteerMailbox() }).result;
+    expect(seenPrompt).toBe("prompt");
+  } finally {
+    if (previous === undefined) delete process.env.TELAR_CLAUDE_STREAMING_INPUT;
+    else process.env.TELAR_CLAUDE_STREAMING_INPUT = previous;
+  }
 });

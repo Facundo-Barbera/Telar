@@ -215,10 +215,10 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
-type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard";
+type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard)$/.exec(pathname);
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|promote|steer-ack)$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
 }
@@ -1955,6 +1955,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             heartbeatAt: worker.heartbeatAt,
             cancel: store.cancellationsForWorker(workerId),
             resolved: store.resolutionsForWorker(workerId),
+            steer: store.steerForWorker(workerId),
           };
           writeJson(response, 200, status);
         } else {
@@ -1975,10 +1976,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { turn: store.discardAmbiguousTurn(turn.sessionId, turn.runId) });
           return;
         }
+        // A HUMAN gesture like discard, so no claim token: send this queued
+        // message into the running turn.
+        if (turn.action === "promote") {
+          await body(request);
+          writeJson(response, 200, { turn: store.promoteTurn(turn.sessionId, turn.runId) });
+          return;
+        }
         const input = await body(request);
         const claimToken = stringValue(input.claimToken, "claim token")!;
         if (turn.action === "running") {
           writeJson(response, 200, { turn: store.markRunning(turn.sessionId, turn.runId, claimToken) });
+        } else if (turn.action === "steer-ack") {
+          // The runId in the path is the PROMOTED turn; the claim token proves
+          // the worker holds the running turn it was steered into.
+          writeJson(response, 200, { turn: store.ackSteer(turn.sessionId, turn.runId, claimToken) });
         } else if (turn.action === "request") {
           const parsed = RequestOpenInput.safeParse(input);
           if (!parsed.success) throw new HttpError(400, "invalid_request", "request payload is invalid");

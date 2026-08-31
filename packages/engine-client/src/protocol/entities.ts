@@ -378,6 +378,16 @@ export const TurnState = z.enum([
   "stopped",
   "ambiguous",
   "discarded",
+  /**
+   * SEND NOW, IN TWO STATES — promoted into the RUNNING turn, and delivered.
+   *
+   * Two rather than one because the sweep on turn settlement must tell them
+   * apart: a `steering` turn's message has NOT reached the provider and goes
+   * back to `queued` (the message must never vanish), where a `steered` turn
+   * is terminal — its words are part of the run named in `steer.intoRunId`.
+   */
+  "steering",
+  "steered",
 ]);
 export type TurnState = z.infer<typeof TurnState>;
 
@@ -444,6 +454,16 @@ export const Turn = z.object({
 
   /** Provider continuity produced BY this turn, and the input to the next. */
   providerSessionId: z.string().min(1).optional(),
+
+  /** Present once this queued turn was promoted into a running one — see the
+   *  `steering`/`steered` states above. `deliveredAt` lands with `steered`. */
+  steer: z
+    .object({
+      intoRunId: Id,
+      requestedAt: Timestamp,
+      deliveredAt: Timestamp.optional(),
+    })
+    .optional(),
 });
 export type Turn = z.infer<typeof Turn>;
 

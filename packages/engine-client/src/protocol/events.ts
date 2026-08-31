@@ -84,6 +84,10 @@ const TurnStopped = event("turn.stopped", { reason: z.string().optional() });
 const TurnAmbiguous = event("turn.ambiguous", { reason: z.string().optional() });
 const TurnDiscarded = event("turn.discarded", {});
 const TurnRequeued = event("turn.requeued", { reason: z.string().optional() });
+/** A queued turn was promoted into the running one (send now). */
+const TurnSteering = event("turn.steering", { intoRunId: Id });
+/** ...and its text reached the provider inside that run. Terminal. */
+const TurnSteered = event("turn.steered", { intoRunId: Id });
 /** The agent's plan changed. Carried on the turn rather than as an item update
  *  because the plan is turn-scoped and replaces itself wholesale. */
 const TurnPlanUpdated = event("turn.plan.updated", { item: Item });
@@ -164,6 +168,8 @@ export const EngineEvent = z.discriminatedUnion("type", [
   TurnAmbiguous,
   TurnDiscarded,
   TurnRequeued,
+  TurnSteering,
+  TurnSteered,
   TurnPlanUpdated,
   ItemStarted,
   ItemUpdated,

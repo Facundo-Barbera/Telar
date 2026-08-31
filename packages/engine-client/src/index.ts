@@ -1408,6 +1408,20 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
   }
 
+  /** SEND NOW: promote a queued turn into the running one. A promise of
+   *  not-losing, never of delivery — see the engine's `promoteTurn`. */
+  promoteTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {});
+  }
+
+  /** The worker confirming a steered message reached its driver's mailbox.
+   *  `runId` is the PROMOTED turn; the token proves the running claim. */
+  ackSteer(sessionId: string, steerRunId: string, claimToken: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(steerRunId)}/steer-ack`, {
+      claimToken,
+    });
+  }
+
   registerWorker(workerId: string): Promise<{ worker: { workerId: string } }> {
     return this.request("POST", "/v2/workers/register", { workerId });
   }

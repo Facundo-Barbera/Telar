@@ -278,6 +278,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       browserSocket,
       onObservations,
       onRequest,
+      steer,
     }: DriverRun): Promise<DriverResult> {
       /**
        * PER-TURN FIRST, then the driver's construction default, then Codex's.
@@ -711,6 +712,46 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         });
         rootTurnId = str(turn.turn?.id) ?? "";
+
+        /**
+         * SEND NOW, MID-TURN. Codex has a first-class door — `turn/steer`
+         * (`{threadId, expectedTurnId, input}` per the rust-v0.149.1 protocol
+         * source) — so a steered message goes in the moment it lands rather
+         * than at a boundary. Detached like every other side task here; it
+         * parks on `wake()`, and the mailbox's close (the worker's finally)
+         * releases it. A refusal ("no active turn", a race with completion)
+         * is journalled as an error row, never a turn failure: the drain
+         * already acked delivery, so silence would be the one wrong answer.
+         */
+        const steerPump = steer
+          ? (async () => {
+              for (;;) {
+                await steer.wake();
+                const queued = steer.drain();
+                if (queued.length === 0) {
+                  if (steer.isClosed) return;
+                  continue;
+                }
+                const text = queued.join("\n\n");
+                const rowId = itemIdFor(`steer-${crypto.randomUUID().slice(0, 8)}`);
+                emit({ kind: "item.started", item: { id: rowId, detail: { type: "user_message", text }, title: "Sent now" } });
+                emit({ kind: "item.completed", itemId: rowId, status: "completed" });
+                try {
+                  await client.request("turn/steer", {
+                    threadId: rootThreadId,
+                    expectedTurnId: rootTurnId,
+                    input: codexTurnInput(text),
+                  });
+                } catch (error) {
+                  const errorId = itemIdFor(`steer-error-${crypto.randomUUID().slice(0, 8)}`);
+                  const message = `The sent-now message could not reach the running turn: ${error instanceof Error ? error.message : String(error)}`;
+                  emit({ kind: "item.started", item: { id: errorId, detail: { type: "error", error: { message } } } });
+                  emit({ kind: "item.completed", itemId: errorId, status: "failed" });
+                }
+              }
+            })()
+          : Promise.resolve();
+        void steerPump;
 
         for (;;) {
           const { value: notification, done } = await client.notifications.next();

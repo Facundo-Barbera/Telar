@@ -19,6 +19,7 @@ import type { McpServer, RequestDecision, TurnObservation } from "@telar/engine-
 import { codexMcpServers, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
 import { codexApprovalRequest, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
+import { SteerMailbox } from "../src/steering";
 
 const FAKE_BIN = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
@@ -68,6 +69,7 @@ type RunOptions = {
   options?: CodexDriverOptions;
   mcpServers?: McpServer[];
   browserSocket?: { url: string; token: string };
+  steer?: SteerMailbox;
 };
 
 function runTurn(scenario: string, run: RunOptions = {}) {
@@ -86,6 +88,7 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.onRequest ? { onRequest: run.onRequest } : {}),
     ...(run.mcpServers ? { mcpServers: run.mcpServers } : {}),
     ...(run.browserSocket ? { browserSocket: run.browserSocket } : {}),
+    ...(run.steer ? { steer: run.steer } : {}),
   });
   return { result, observations, controller };
 }
@@ -704,6 +707,26 @@ test("a declined MCP approval answers in the elicitation's vocabulary, not the a
 
   expect(seen.map((request) => request.kind)).toEqual(["tool_call"]);
   expect(replies()[0]?.result).toEqual({ action: "decline" });
+});
+
+test("a steered message rides turn/steer with the expected turn id, and is journalled where it landed", async () => {
+  // The fixture's turn finishes only once a turn/steer arrives, so the test
+  // is deterministic: push → pump wakes → wire carries it → turn ends.
+  const steer = new SteerMailbox();
+  const { result, observations } = runTurn("steer", { steer });
+  steer.push("change course");
+  await expect(result).resolves.toMatchObject({ text: "steered" });
+  // The protocol's own params: threadId, the REQUIRED active-turn
+  // precondition, and the same input shape turn/start sends.
+  expect(sent("turn/steer")).toMatchObject({
+    threadId: "fake-thread",
+    expectedTurnId: "fake-turn-1",
+    input: [{ type: "text", text: "change course" }],
+  });
+  // The injected sentence is a transcript row — the agent's change of
+  // direction must have a visible cause.
+  const row = started(observations).find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item.detail.type === "user_message" && row.item.detail.text).toBe("change course");
 });
 
 test("the app-server's requestUserInput becomes a user_input request, and the answers ride back by question id", async () => {

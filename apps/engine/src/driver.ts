@@ -45,6 +45,7 @@ import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
+import { TurnBoundary, type SteerMailbox } from "./steering";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 
 export type { SpoolCapability, SessionsCapability };
@@ -83,6 +84,15 @@ export type DriverRun = {
   prompt: string;
   cwd: string;
   signal: AbortSignal;
+  /**
+   * SEND NOW: text a human pushed into this running turn. The worker fills
+   * it from the heartbeat; how a driver injects it is the driver's own
+   * affair — Claude yields it at the next turn boundary of its streaming
+   * prompt, Codex sends `turn/steer` the moment it lands. Absent means the
+   * deployment (or test) has no send-now channel, and the driver behaves
+   * exactly as before it existed.
+   */
+  steer?: SteerMailbox;
   /**
    * The session's door to the user's item store.
    *
@@ -221,10 +231,15 @@ type SdkMcpServer = unknown;
  * One user message with content blocks, which is the only way to hand this SDK
  * an image.
  *
- * A PLAIN STRING PROMPT STAYS A PLAIN STRING when there is nothing attached —
- * see `claudePrompt`. Switching every turn to the async-iterable form would
- * change how the SDK reads input for the 99% of turns that carry no file, for
- * no gain.
+ * EVERY TURN NOW SENDS THE ASYNC-ITERABLE FORM — a reversal of the old "a
+ * plain string stays a plain string" rule, and the reversal has a buyer:
+ * SEND NOW. A steered message can only be injected if the input stream is
+ * still open when the first response settles, which is exactly what
+ * streaming-input mode is. The cost is that the SDK treats the session as
+ * multi-turn (`result.usage` stays per-turn; `modelUsage` becomes cumulative
+ * — `contextMaxFrom` already reads only the window constant for this
+ * reason). `TELAR_CLAUDE_STREAMING_INPUT=0` is the field kill switch back to
+ * the plain-string form, at the cost of send-now on Claude.
  */
 type SdkUserMessage = {
   type: "user";
@@ -262,7 +277,7 @@ const CLAUDE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "ima
  * silently dropped. "Look at this" with nothing attached is a worse failure than
  * a line saying the attachment could not be read.
  */
-function claudePrompt(prompt: string, attachments: TurnAttachment[]): string | AsyncIterable<SdkUserMessage> {
+function claudeInitialContent(prompt: string, attachments: TurnAttachment[]): string | Array<Record<string, unknown>> {
   if (attachments.length === 0) return prompt;
   const blocks: Array<Record<string, unknown>> = [];
   const notes: string[] = [];
@@ -283,11 +298,44 @@ function claudePrompt(prompt: string, attachments: TurnAttachment[]): string | A
     notes.push(`- ${attachment.name} (${attachment.mediaType}) at ${attachment.path}`);
   }
   blocks.push({ type: "text", text: `${prompt}\n\nAttached files:\n${notes.join("\n")}` });
-  return {
-    async *[Symbol.asyncIterator]() {
-      yield { type: "user", message: { role: "user", content: blocks }, parent_tool_use_id: null } satisfies SdkUserMessage;
-    },
-  };
+  return blocks;
+}
+
+/** The field kill switch: `TELAR_CLAUDE_STREAMING_INPUT=0` restores the
+ *  plain-string prompt (and with it, no send-now on Claude). */
+export function claudeStreamingInputEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.TELAR_CLAUDE_STREAMING_INPUT?.trim() !== "0";
+}
+
+/**
+ * The turn's input stream: the initial message, then anything a human sends
+ * now, at each turn boundary — warp's `steeredPrompt`, one level up. A turn
+ * nobody steers waits at one boundary, finds the mailbox empty, and returns:
+ * the SDK sees a one-message stream that closed, which ends the session
+ * exactly as the plain string did.
+ *
+ * `onSteered` fires per injected message so the run loop can journal it as a
+ * `user_message` row — without that, a steered sentence would change the
+ * agent's behaviour with nothing in the transcript to explain why.
+ */
+async function* claudePrompt(
+  prompt: string,
+  attachments: TurnAttachment[],
+  steer: SteerMailbox | undefined,
+  boundary: TurnBoundary,
+  onSteered: (text: string) => void,
+): AsyncGenerator<SdkUserMessage> {
+  yield { type: "user", message: { role: "user", content: claudeInitialContent(prompt, attachments) }, parent_tool_use_id: null };
+  if (!steer) return;
+  while (await boundary.next()) {
+    const queued = steer.drain();
+    if (queued.length === 0) return;
+    // Joined rather than yielded one at a time: they arrived while a single
+    // turn was running, so they are one interruption with several sentences.
+    const text = queued.join("\n\n");
+    onSteered(text);
+    yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+  }
 }
 
 /**
@@ -930,6 +978,7 @@ export function createClaudeDriver(
       browserSocket,
       spool,
       sessions,
+      steer,
     }) {
       let sdk: ClaudeSdk;
       try {
@@ -1355,9 +1404,27 @@ export function createClaudeDriver(
           ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarServer ?? {}) }
           : undefined;
 
+      /**
+       * The input stream's plumbing. `boundary.mark()` fires at each result
+       * message; the generator then drains the mailbox — empty ends the
+       * stream (the unsteered common case), text becomes another user turn.
+       * The kill switch restores the plain string, at the cost of send-now.
+       */
+      const boundary = new TurnBoundary();
+      const onSteered = (text: string) => {
+        const id = itemId();
+        emit({ kind: "item.started", item: { id, detail: { type: "user_message", text }, title: "Sent now" } });
+        emit({ kind: "item.completed", itemId: id, status: "completed" });
+      };
+      const streaming = claudeStreamingInputEnabled();
+      const promptInput =
+        streaming || (attachments?.length ?? 0) > 0
+          ? claudePrompt(prompt, attachments ?? [], streaming ? steer : undefined, boundary, onSteered)
+          : prompt;
+
       try {
         for await (const message of sdk.query({
-          prompt: claudePrompt(prompt, attachments ?? []),
+          prompt: promptInput,
           options: {
             cwd,
             permissionMode: "default",
@@ -1590,6 +1657,15 @@ export function createClaudeDriver(
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             completed = true;
+            /**
+             * A RESULT IS A BOUNDARY, NOT THE END. The prompt generator wakes
+             * here, drains the mailbox, and either ends the stream (nothing
+             * steered — the loop then falls out on stream close as always) or
+             * yields a steered message and a further result arrives later,
+             * overwriting `usage` with the newer figures. Either way
+             * `completed` stays true.
+             */
+            boundary.mark();
             await flush();
             continue;
           }
@@ -1825,6 +1901,9 @@ export function createClaudeDriver(
           ...(usage ? { usage } : {}),
         };
       } finally {
+        // A generator parked at `boundary.next()` when the stream dies (abort,
+        // SDK error) must be released or it leaks with the closure.
+        boundary.close();
         signal.removeEventListener("abort", abort);
       }
     },
