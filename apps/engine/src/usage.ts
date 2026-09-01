@@ -115,6 +115,10 @@ function parseCodexFile(text: string, fallbackSession: string): UsageRecord[] {
   let model = "unknown";
   let sessionId = fallbackSession;
   let lastSignature = "";
+  // token_count events can precede the first turn_context; those records
+  // land as "unknown" and are never priced. The session's first NAMED model
+  // owns them — backfilled after the walk.
+  let firstNamedModel: string | undefined;
   for (const line of text.split("\n")) {
     if (!line.includes("token_count") && !line.includes("turn_context") && !line.includes("session_meta")) continue;
     let entry: Record<string, unknown>;
@@ -131,7 +135,10 @@ function parseCodexFile(text: string, fallbackSession: string): UsageRecord[] {
       continue;
     }
     if (entry["type"] === "turn_context") {
-      if (typeof p["model"] === "string" && p["model"]) model = p["model"];
+      if (typeof p["model"] === "string" && p["model"]) {
+        model = p["model"];
+        firstNamedModel ??= model;
+      }
       continue;
     }
     if (p["type"] !== "token_count") continue;
@@ -160,6 +167,11 @@ function parseCodexFile(text: string, fallbackSession: string): UsageRecord[] {
       ),
       sessionId,
     });
+  }
+  if (firstNamedModel) {
+    for (const record of records) {
+      if (record.model === "unknown") record.model = firstNamedModel;
+    }
   }
   return records;
 }
@@ -237,6 +249,13 @@ function dayOf(at: number, timeZone: string): string {
 
 const HOUR_MS = 3_600_000;
 
+/** Whole-report memo: the UI's window buttons re-request with a fresh
+ *  untilMs every click, so the raw args never repeat — rounded to the
+ *  minute they do, and a minute-old report of a 90-day window is the same
+ *  report. Bounds the walk+parse to once a minute per window shape. */
+const reportMemo = new Map<string, { at: number; report: UsageReport }>();
+const REPORT_MEMO_TTL_MS = 60_000;
+
 export async function readUsageReport(
   input: { sinceMs: number; untilMs: number; resolution: UsageResolution; timeZone: string },
   options: {
@@ -245,8 +264,20 @@ export async function readUsageReport(
     ratesCachePath: string;
     /** Test seam; the default fetches LiteLLM's table. */
     loadRatesTable?: () => Promise<RatesTable>;
+    /** Test seam: memoization off so fixtures don't bleed between tests. */
+    memo?: boolean;
   },
 ): Promise<UsageReport> {
+  const memoKey = [
+    input.resolution,
+    input.timeZone,
+    Math.round(input.sinceMs / 60_000),
+    Math.round(input.untilMs / 60_000),
+  ].join("\0");
+  if (options.memo !== false) {
+    const memo = reportMemo.get(memoKey);
+    if (memo && Date.now() - memo.at < REPORT_MEMO_TTL_MS) return memo.report;
+  }
   const roots = options.roots ?? defaultScanRoots();
   const rates = await (options.loadRatesTable ?? (() => loadRates(options.ratesCachePath)))();
 
@@ -318,7 +349,7 @@ export async function readUsageReport(
     sources.push({ provider, status: failed ? "failed" : "ok", path: candidates[0]!, files, sessions: providerSessions.size });
   }
 
-  return {
+  const report: UsageReport = {
     sinceMs: input.sinceMs,
     untilMs: input.untilMs,
     resolution: input.resolution,
@@ -331,4 +362,13 @@ export async function readUsageReport(
     sessions: sessions.size,
     readAt: Date.now(),
   };
+  if (options.memo !== false) {
+    reportMemo.set(memoKey, { at: Date.now(), report });
+    // Four window buttons × two resolutions is the whole working set.
+    if (reportMemo.size > 8) {
+      const oldest = [...reportMemo.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+      if (oldest) reportMemo.delete(oldest[0]);
+    }
+  }
+  return report;
 }

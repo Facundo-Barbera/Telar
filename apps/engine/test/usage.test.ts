@@ -80,7 +80,8 @@ const RATES: RatesTable = {
 const WINDOW = { sinceMs: AT - 86_400_000, untilMs: AT + 86_400_000, resolution: "day" as const, timeZone: "UTC" };
 
 async function read(scan: UsageScanRoots, window = WINDOW, rates: RatesTable = RATES) {
-  return readUsageReport(window, { roots: scan, ratesCachePath: path.join(tmp(), "rates.json"), loadRatesTable: () => Promise.resolve(rates) });
+  // memo off: every test reuses WINDOW with different fixture roots.
+  return readUsageReport(window, { roots: scan, ratesCachePath: path.join(tmp(), "rates.json"), loadRatesTable: () => Promise.resolve(rates), memo: false });
 }
 
 test("both transcripts land with their REAL model names, priced from the table when unreported", async () => {
@@ -101,6 +102,23 @@ test("both transcripts land with their REAL model names, priced from the table w
   expect(codex!.costUsd).toBeCloseTo(50 * 1e-6 + 200 * 2e-6 + 1000 * 1e-7 + 50 * 1e-6);
   expect(report.sessions).toBe(2);
   expect(report.sources.map((source) => `${source.provider}:${source.status}`)).toEqual(["claude:ok", "codex:ok"]);
+});
+
+test("token_count before the first turn_context is owned by the session's first named model", async () => {
+  const scan = scanRoots();
+  const lines = codexLines({ input: 1100, cached: 1000, write: 0, output: 200 });
+  // Real rollouts can emit a token_count before any turn_context; without
+  // backfill those tokens land as "unknown" and are never priced.
+  const reordered = [lines[0]!, lines[2]!, lines[1]!, JSON.stringify({
+    timestamp: iso(AT + 1000),
+    type: "event_msg",
+    payload: { type: "token_count", info: { last_token_usage: { input_tokens: 500, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 10 } } },
+  })];
+  fs.writeFileSync(path.join(scan.codex, "2026", "08", "30", "rollout-a.jsonl"), reordered.join("\n") + "\n");
+  const report = await read(scan);
+  expect(report.buckets.map((bucket) => bucket.model)).toEqual(["gpt-5.6-sol"]);
+  expect(report.buckets[0]!.turns).toBe(2);
+  expect(report.buckets[0]!.priced).toBe(true);
 });
 
 test("a provider-reported cost beats the rate table", async () => {

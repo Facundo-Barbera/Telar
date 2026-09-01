@@ -19,7 +19,7 @@
  * lightness band on this surface.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCwIcon } from "lucide-react";
 import type { UsageReport } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
@@ -71,11 +71,17 @@ export function UsagePage() {
   const [report, setReport] = useState<UsageReport>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // Stale-while-revalidate per window: switching filters shows the last
+  // report for that window INSTANTLY and refreshes behind it — the engine's
+  // transcript rescan must never gate a button press.
+  const cache = useRef(new Map<WindowKey, UsageReport>());
 
   const load = useCallback(async () => {
     const window = WINDOWS.find((entry) => entry.key === windowKey)!;
+    const cached = cache.current.get(windowKey);
+    if (cached) setReport(cached);
     const untilMs = Date.now();
-    setLoading(true);
+    setLoading(!cached);
     setError(undefined);
     try {
       const { usage } = await api.usage({
@@ -84,6 +90,7 @@ export function UsagePage() {
         resolution: window.resolution,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
+      cache.current.set(windowKey, usage);
       setReport(usage);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The engine did not answer.");
