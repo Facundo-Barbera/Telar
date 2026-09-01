@@ -215,8 +215,8 @@ struct ConnectView: View {
                 base: parsed.base, token: parsed.token,
                 deviceName: UIDevice.current.name
             )
-            settings.deviceToken = token
-            settings.baseURLString = parsed.base.absoluteString
+            // ADDS a host (or refreshes a known one) — never evicts others.
+            settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
             pairingLink = ""
             host = parsed.base.host() ?? host
             port = parsed.base.port.map(String.init) ?? (parsed.base.scheme == "https" ? "443" : port)

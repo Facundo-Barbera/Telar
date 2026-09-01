@@ -129,8 +129,8 @@ struct WelcomeView: View {
                 base: parsed.base, token: parsed.token,
                 deviceName: UIDevice.current.name
             )
-            settings.deviceToken = token
-            settings.baseURLString = parsed.base.absoluteString
+            // ADDS a host (or refreshes a known one) — never evicts others.
+            settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
             error = nil
         } catch let apiError as EngineAPIError {
             error = apiError.errorDescription ?? "Pairing failed."
