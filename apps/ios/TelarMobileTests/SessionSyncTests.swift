@@ -36,6 +36,7 @@ actor RecordingEngineAPI: EngineAPI {
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {}
     func promoteTurn(_ id: EngineID, runId: String) async throws {}
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session { fatalError("unused") }
+    func inboxPolicy() async throws -> InboxPolicy { InboxPolicy(autoSettleAfterHours: 72) }
 }
 
 private func page(_ json: String) -> EventPage {

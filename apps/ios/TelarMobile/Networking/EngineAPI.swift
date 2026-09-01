@@ -20,6 +20,14 @@ protocol EngineAPI: Sendable {
     /// hears it without stopping. The engine validates queued-into-running.
     func promoteTurn(_ id: EngineID, runId: String) async throws
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session
+    /// The auto-settle window — engine-scoped, one answer per machine, so the
+    /// phone bands its inbox the same way the Mac's sidebar does.
+    func inboxPolicy() async throws -> InboxPolicy
+}
+
+struct InboxPolicy: Decodable, Equatable {
+    /// `nil` = the clock is off: nothing settles by neglect, only by decision.
+    var autoSettleAfterHours: Double?
 }
 
 /// Mirror of `createSession`'s input in apps/web/lib/engine/client.ts. The
@@ -165,6 +173,12 @@ struct HTTPEngineAPI: EngineAPI {
         struct Created: Decodable { var session: Session }
         let created: Created = try await send("POST", "api/projects/\(escape(projectId))/sessions", body: input)
         return created.session
+    }
+
+    func inboxPolicy() async throws -> InboxPolicy {
+        struct Wrapped: Decodable { var inbox: InboxPolicy }
+        let wrapped: Wrapped = try await get("api/inbox")
+        return wrapped.inbox
     }
 
     // MARK: transport

@@ -17,14 +17,14 @@ struct InboxSections: Equatable {
     }
 }
 
-func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
+func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Double?) -> InboxSections {
     var sections = InboxSections()
     for session in sessions {
-        let snoozed = (session.snoozedUntil ?? 0) > now
-        let settled = session.settledOverride == "settled"
-        if snoozed {
+        // The full three-layer rule (Settling.swift), not just the pin —
+        // most settled sessions are settled by the inactivity clock.
+        if Settling.isSnoozed(session, now: now) {
             sections.snoozed.append(session)
-        } else if settled {
+        } else if Settling.isSettled(session, now: now, autoSettleAfterHours: autoSettleAfterHours) {
             sections.settled.append(session)
         } else if session.activity == .blocked || session.lastTurnFailed == true {
             sections.needsYou.append(session)
@@ -55,6 +55,9 @@ func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
     private let api: any EngineAPI
     private var loop: Task<Void, Never>?
     private var anythingLive = false
+    /// The engine's default (3 days) until the real policy arrives; a policy
+    /// fetch failure keeps the last known answer rather than rebanding.
+    private var autoSettleAfterHours: Double? = 72
 
     init(api: any EngineAPI) {
         self.api = api
@@ -91,8 +94,15 @@ func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
     func refresh() async {
         do {
             let live = try await api.liveSessions()
+            if let policy = try? await api.inboxPolicy() {
+                autoSettleAfterHours = policy.autoSettleAfterHours
+            }
             projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
-            sections = groupInbox(live.sessions, now: Timestamp(Date().timeIntervalSince1970 * 1000))
+            sections = groupInbox(
+                live.sessions,
+                now: Timestamp(Date().timeIntervalSince1970 * 1000),
+                autoSettleAfterHours: autoSettleAfterHours
+            )
             anythingLive = live.sessions.contains {
                 $0.activity == .blocked || $0.activity == .working || $0.activity == .queued
             }
