@@ -588,6 +588,10 @@ extension View {
     /// would clip its own shadow).
     @ViewBuilder func composerGlass(cornerRadius: CGFloat) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        // `#available` guards the RUNTIME; the compiler gate guards the SDK —
+        // a CI runner on an older Xcode has no `glassEffect` symbol at all,
+        // and its builds fall to the opaque surface everywhere.
+        #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             self.glassEffect(.regular.interactive(), in: shape)
         } else {
@@ -595,5 +599,10 @@ extension View {
                 .clipShape(shape)
                 .overlay(shape.strokeBorder(Theme.border, lineWidth: 1))
         }
+        #else
+        self.background(Theme.composerSurface)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(Theme.border, lineWidth: 1))
+        #endif
     }
 }

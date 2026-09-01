@@ -35,6 +35,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Newest RELEASE Xcode on the image — betas are excluded because App
+      # Store Connect refuses beta-built uploads (the reason the nightly
+      # ships from CI at all), and the default selection can lag versions
+      # behind what the image carries.
+      - name: Select the newest release Xcode
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          PICK=$(ls -d /Applications/Xcode_*.app 2>/dev/null | grep -Ev -i 'beta|rc' | sort -V | tail -1)
+          if [ -n "$PICK" ]; then sudo xcode-select -s "$PICK/Contents/Developer"; fi
+          xcodebuild -version
+
       - name: Materialize the App Store Connect API key
         env:
           APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
