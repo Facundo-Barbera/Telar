@@ -49,10 +49,12 @@ import Observation
         sync.turns.contains { $0.state == .running || $0.state == .claimed || $0.state == .steering }
     }
 
-    /// Messages waiting behind the running turn, oldest first — the strip
-    /// above the composer.
+    /// The strip above the composer: messages waiting behind the running
+    /// turn, plus a `steering` one mid-flight to the worker — it is not in
+    /// the transcript yet and must not silently vanish for the seconds the
+    /// injection waits for a safe boundary. (The web strip's exact rule.)
     var queuedTurns: [JournalTurn] {
-        sync.turns.filter { $0.state == .queued }
+        sync.turns.filter { $0.state == .queued || $0.state == .steering }
     }
 
     /// Withdraw a queued message — `stop` with its runId, the same call the

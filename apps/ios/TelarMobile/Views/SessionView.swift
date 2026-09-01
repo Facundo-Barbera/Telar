@@ -24,7 +24,13 @@ struct SessionView: View {
                 ScrollView {
                     // Queued messages live below the composer (t3's queue
                     // line), not in the transcript.
-                    TranscriptView(turns: store.sync.turns.filter { $0.state != .queued })
+                    // Queued and steering messages live in the strip under
+                    // the composer; a STEERED one's content already appears
+                    // inside the host turn as a user_message item — rendering
+                    // the turn too is the double bubble. (Web rule, 1:1.)
+                    TranscriptView(turns: store.sync.turns.filter {
+                        $0.state != .queued && $0.state != .steering && $0.state != .steered
+                    })
                         .padding(.vertical, 12)
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -442,43 +448,61 @@ struct ComposerView: View {
     // MARK: the queue
 
     private var queueLine: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let steering = queued.filter { $0.state == .steering }
+        let waiting = queued.filter { $0.state == .queued }
+        return VStack(alignment: .leading, spacing: 6) {
             Button {
                 managingQueue.toggle()
             } label: {
-                Text("\(queued.count) queued message\(queued.count == 1 ? "" : "s") will send automatically.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Theme.textMuted2)
+                HStack(spacing: 6) {
+                    if !steering.isEmpty { SteppedPulseDot(color: Theme.statusSky) }
+                    // Steering is NOT silent: the injection waits for a safe
+                    // boundary in the provider stream, which can take a
+                    // while — a vanished message reads as a dropped one.
+                    Text(steering.isEmpty
+                         ? "\(waiting.count) queued message\(waiting.count == 1 ? "" : "s") will send automatically."
+                         : "Sending into the running turn…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.textMuted2)
+                }
             }
             .buttonStyle(.plain)
             if managingQueue {
                 ForEach(queued) { turn in
+                    let sending = turn.state == .steering
                     HStack(spacing: 10) {
                         Text(turn.prompt)
                             .font(.system(size: 13))
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
                         Spacer(minLength: 0)
-                        if isRunning {
+                        if sending {
+                            Text("sending")
+                                .font(.system(size: 10, weight: .medium))
+                                .textCase(.uppercase)
+                                .foregroundStyle(Theme.statusSky)
+                        } else {
+                            if isRunning {
+                                Button {
+                                    Task { await store.promote(turn.runId) }
+                                } label: {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Theme.text)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Send now — the running turn hears it without stopping")
+                            }
                             Button {
-                                Task { await store.promote(turn.runId) }
+                                Task { await store.withdraw(turn.runId) }
                             } label: {
-                                Image(systemName: "bolt.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Theme.text)
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Theme.textMuted2)
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Send now — the running turn hears it without stopping")
+                            .accessibilityLabel("Remove this queued message")
                         }
-                        Button {
-                            Task { await store.withdraw(turn.runId) }
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Theme.textMuted2)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Remove this queued message")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
