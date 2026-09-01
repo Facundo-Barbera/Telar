@@ -1,11 +1,11 @@
 import Foundation
 import Observation
 
-/// Connection settings. A full URL string rather than host/port parts, so the
-/// eventual `tailscale serve` HTTPS upgrade is a settings edit, not a code
-/// change. UserDefaults, not Keychain — there is no secret in it; the tailnet
-/// ACL is the auth boundary. If /api ever grows a token, that moves here AND
-/// into Keychain together.
+/// Connection settings. The base URL is a full URL string (so the ts.net
+/// HTTPS upgrade is a settings edit) and stays in UserDefaults — it is an
+/// address, not a secret. The DEVICE TOKEN is the secret, and it lives in the
+/// Keychain via KeychainStore, exactly as this file promised it would the day
+/// /api grew auth.
 @MainActor @Observable final class AppSettings {
     private static let key = "telar.baseURL"
 
@@ -13,8 +13,16 @@ import Observation
         didSet { UserDefaults.standard.set(baseURLString, forKey: Self.key) }
     }
 
+    /// The pairing credential. Nil against an open cockpit.
+    var deviceToken: String? {
+        didSet {
+            if let deviceToken { KeychainStore.write(deviceToken) } else { KeychainStore.delete() }
+        }
+    }
+
     init() {
         baseURLString = UserDefaults.standard.string(forKey: Self.key) ?? ""
+        deviceToken = KeychainStore.read()
     }
 
     var baseURL: URL? {
@@ -23,9 +31,10 @@ import Observation
         return url
     }
 
-    /// One shared client, rebuilt when the URL changes. Nil until configured.
+    /// One shared client, rebuilt when the URL or credential changes. Nil
+    /// until configured.
     var api: HTTPEngineAPI? {
-        baseURL.map { HTTPEngineAPI(baseURL: $0) }
+        baseURL.map { HTTPEngineAPI(baseURL: $0, deviceToken: deviceToken) }
     }
 
     static func normalize(host: String, port: String) -> String {

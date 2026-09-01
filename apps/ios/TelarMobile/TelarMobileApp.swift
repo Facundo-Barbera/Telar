@@ -24,8 +24,9 @@ struct RootView: View {
         NavigationStack(path: $path) {
             if let api = settings.api {
                 InboxView(api: api)
-                    // Rebuild the whole surface when the cockpit changes.
-                    .id(settings.baseURLString)
+                    // Rebuild the whole surface when the cockpit or the
+                    // pairing credential changes.
+                    .id(settings.baseURLString + (settings.deviceToken ?? ""))
                     .navigationTitle("Telar")
                     .navigationDestination(for: EngineID.self) { sessionId in
                         SessionView(api: api, sessionId: sessionId)

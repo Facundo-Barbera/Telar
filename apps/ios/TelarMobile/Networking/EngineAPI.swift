@@ -50,6 +50,7 @@ enum EngineAPIError: Error, LocalizedError {
         switch self {
         case .engine(let code, let message, _):
             switch code {
+            case "cockpit_unauthorized": "This phone is not paired with the cockpit — get a pairing code from Settings → Remote access."
             case "engine_unavailable": "The Mac's engine is down — the cockpit is up but can't reach it."
             case "worker_unavailable": "No worker is running on the Mac to take the turn."
             case "not_found": "That no longer exists on the engine."
@@ -62,6 +63,13 @@ enum EngineAPIError: Error, LocalizedError {
 
     var isNotFound: Bool {
         if case .engine(let code, _, _) = self { return code == "not_found" }
+        return false
+    }
+
+    /// The cockpit's pairing gate said no — this phone holds no valid device
+    /// token. The fix is a fresh pairing code, not a retry.
+    var isUnauthorized: Bool {
+        if case .engine(let code, _, _) = self { return code == "cockpit_unauthorized" }
         return false
     }
 }
@@ -77,10 +85,14 @@ enum RunID {
 
 struct HTTPEngineAPI: EngineAPI {
     let baseURL: URL
+    /// The pairing credential, attached to every request when present. Lives
+    /// in the Keychain (KeychainStore); nil against an open cockpit.
+    let deviceToken: String?
     let session: URLSession
 
-    init(baseURL: URL, session: URLSession? = nil) {
+    init(baseURL: URL, deviceToken: String? = nil, session: URLSession? = nil) {
         self.baseURL = baseURL
+        self.deviceToken = deviceToken
         if let session {
             self.session = session
         } else {
@@ -145,8 +157,25 @@ struct HTTPEngineAPI: EngineAPI {
         return components.url!
     }
 
+    /// EVERY request funnels through here, so no endpoint can forget the
+    /// pairing credential.
+    private func makeRequest(_ url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        if let deviceToken {
+            request.setValue("Bearer \(deviceToken)", forHTTPHeaderField: "Authorization")
+        }
+        return request
+    }
+
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
-        try await perform(URLRequest(url: url(path, query: query)))
+        try await perform(makeRequest(url(path, query: query)))
+    }
+
+    /// Pre-pairing reachability: the one route that answers strangers.
+    func ping() async throws -> Bool {
+        struct Pong: Decodable { var ok: Bool }
+        let pong: Pong = try await perform(makeRequest(url("api/ping")))
+        return pong.ok
     }
 
     private func post<T: Decodable>(_ path: String, body: [String: AnyEncodable]) async throws -> T {
@@ -154,7 +183,7 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     private func send<T: Decodable, B: Encodable>(_ method: String, _ path: String, body: B) async throws -> T {
-        var request = URLRequest(url: url(path))
+        var request = makeRequest(url(path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = try JSONEncoder().encode(body)
