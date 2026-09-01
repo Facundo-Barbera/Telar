@@ -16,6 +16,7 @@ struct NewSessionView: View {
     @State private var loadError: String?
     /// `-newSessionProject <id>` launch arg — jumps straight to the draft.
     @State private var autoProject: ProjectRef?
+    @State private var addingProject = false
 
     var body: some View {
         ScrollView {
@@ -82,6 +83,30 @@ struct NewSessionView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    addingProject = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .accessibilityLabel("Add project")
+            }
+        }
+        .sheet(isPresented: $addingProject) {
+            NavigationStack {
+                AddProjectView(api: api) { project in
+                    addingProject = false
+                    if !projects.contains(project) { projects.append(project) }
+                    projects.sort { $0.name < $1.name }
+                    // Straight into the draft for the folder just added.
+                    autoProject = project
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { addingProject = false }
+                    }
+                }
             }
         }
         .task {
@@ -226,7 +251,7 @@ struct NewSessionDraftView: View {
                 projectId: project.id,
                 input: NewSessionInput(title: nil, driver: driver, envMode: envMode)
             )
-            _ = try await api.submitTurn(session.id, runId: RunID.newRunId(), input: prompt)
+            _ = try await api.submitTurn(session.id, runId: RunID.newRunId(), input: prompt, attachments: nil)
             // The caller closes the sheet and replaces it with the live
             // conversation — no back-stack detour (t3's replace()).
             onCreated(session.id)

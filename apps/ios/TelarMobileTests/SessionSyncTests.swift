@@ -30,13 +30,20 @@ actor RecordingEngineAPI: EngineAPI {
         return eventPages.removeFirst()
     }
 
-    func submitTurn(_ id: EngineID, runId: String, input: String) async throws -> TurnSubmissionResult { fatalError("unused") }
+    func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }
     func stop(_ id: EngineID, runId: String?) async throws {}
     func resolveRequest(_ id: EngineID, requestId: EngineID, decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?) async throws {}
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {}
     func promoteTurn(_ id: EngineID, runId: String) async throws {}
     func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session { fatalError("unused") }
     func inboxPolicy() async throws -> InboxPolicy { InboxPolicy(autoSettleAfterHours: 72) }
+    func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment { fatalError("unused") }
+    func models(driver: String) async throws -> ModelCatalogue { fatalError("unused") }
+    func providerInstances() async throws -> [ProviderInstance] { [] }
+    func sessionDiff(_ id: EngineID) async throws -> SessionDiff { fatalError("unused") }
+    func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch { fatalError("unused") }
+    func listDirectories(path: String?) async throws -> DirectoryListing { fatalError("unused") }
+    func registerProject(name: String, root: String) async throws -> ProjectRef { fatalError("unused") }
 }
 
 private func page(_ json: String) -> EventPage {

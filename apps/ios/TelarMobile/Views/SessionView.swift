@@ -1,14 +1,20 @@
 import SwiftUI
+import PhotosUI
 
 struct SessionView: View {
     @State private var store: SessionStore
     @State private var draft = ""
     @State private var renaming = false
     @State private var renameDraft = ""
+    @State private var showChanges = false
+    private let api: any EngineAPI
+    private let sessionId: EngineID
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
     init(api: any EngineAPI, sessionId: EngineID) {
+        self.api = api
+        self.sessionId = sessionId
         _store = State(initialValue: SessionStore(api: api, sessionId: sessionId))
     }
 
@@ -41,6 +47,9 @@ struct SessionView: View {
         }
         .onChange(of: store.sync.connection) { _, connection in
             if connection == .gone { dismiss() }
+        }
+        .navigationDestination(isPresented: $showChanges) {
+            DiffView(api: api, sessionId: sessionId)
         }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $renameDraft)
@@ -87,17 +96,7 @@ struct SessionView: View {
                     }
                 }
             }
-            ComposerView(
-                draft: $draft,
-                isRunning: store.hasRunningTurn,
-                queued: store.queuedTurns,
-                runtimeMode: store.sync.session?.runtimeMode ?? "approval-required",
-                send: { text in Task { await store.send(text) } },
-                stop: { Task { await store.stopActiveTurn() } },
-                setRuntimeMode: { mode in Task { await store.setRuntimeMode(mode) } },
-                sendNow: { runId in Task { await store.promote(runId) } },
-                withdraw: { runId in Task { await store.withdraw(runId) } }
-            )
+            ComposerView(draft: $draft, store: store)
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -125,6 +124,9 @@ struct SessionView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                Button("Changes", systemImage: "plus.forwardslash.minus") {
+                    showChanges = true
+                }
                 Button("Rename", systemImage: "pencil") {
                     renameDraft = store.sync.session?.title ?? ""
                     renaming = true
@@ -209,21 +211,19 @@ struct StatusCard<Content: View>: View {
 /// toolbar row appearing under the card and the queue line under that.
 struct ComposerView: View {
     @Binding var draft: String
-    let isRunning: Bool
-    let queued: [JournalTurn]
-    let runtimeMode: String
-    let send: (String) -> Void
-    let stop: () -> Void
-    let setRuntimeMode: (String) -> Void
-    let sendNow: (EngineID) -> Void
-    let withdraw: (EngineID) -> Void
+    let store: SessionStore
 
     @FocusState private var focused: Bool
     @State private var managingQueue = false
+    @State private var pickedPhotos: [PhotosPickerItem] = []
     @Environment(\.colorScheme) private var scheme
+
+    private var isRunning: Bool { store.hasRunningTurn }
+    private var queued: [JournalTurn] { store.queuedTurns }
 
     private var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !store.pendingAttachments.isEmpty
     }
 
     var body: some View {
@@ -234,25 +234,54 @@ struct ComposerView: View {
         }
         .animation(.linear(duration: 0.22), value: focused)
         .animation(.linear(duration: 0.18), value: queued.count)
+        .onChange(of: pickedPhotos) { _, items in
+            guard !items.isEmpty else { return }
+            pickedPhotos = []
+            Task {
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        await store.attach(
+                            data: data,
+                            name: (item.itemIdentifier ?? "photo") + ".jpg",
+                            mediaType: item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
+                        )
+                    }
+                }
+            }
+        }
     }
 
     // MARK: the surface
 
     private var surface: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField("Ask the agent, or run a command…", text: $draft, axis: .vertical)
-                .font(.system(size: 16))
-                .foregroundStyle(Theme.text)
-                .lineLimit(focused ? 7 : 1)
-                .frame(minHeight: focused ? 80 : 36, alignment: focused ? .topLeading : .center)
-                .padding(.vertical, focused ? 8 : 0)
-                .focused($focused)
-                .onSubmit { submit() }
-            if !focused {
-                ControlPillButton(
-                    isRunning: isRunning, canSend: canSend,
-                    action: { isRunning ? stop() : submit() }
-                )
+        VStack(alignment: .leading, spacing: 0) {
+            if focused && !store.pendingAttachments.isEmpty {
+                attachmentStrip.padding(.bottom, 10)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                TextField("Ask the agent, or run a command…", text: $draft, axis: .vertical)
+                    .font(.system(size: 16))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(focused ? 7 : 1)
+                    .frame(minHeight: focused ? 80 : 36, alignment: focused ? .topLeading : .center)
+                    .padding(.vertical, focused ? 8 : 0)
+                    .focused($focused)
+                    .onSubmit { submit() }
+                if !focused {
+                    if !store.pendingAttachments.isEmpty {
+                        Text("+\(store.pendingAttachments.count)")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Theme.textMuted2)
+                            .frame(width: 30, height: 30)
+                            .background(Theme.subtleStrong)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .padding(.bottom, 7)
+                    }
+                    ControlPillButton(
+                        isRunning: isRunning, canSend: canSend,
+                        action: { isRunning ? stop() : submit() }
+                    )
+                }
             }
         }
         .padding(.leading, focused ? 14 : 18)
@@ -263,12 +292,65 @@ struct ComposerView: View {
         .onTapGesture { focused = true }
     }
 
+    /// 72×72 radius-16 thumbs with a 22pt dark remove circle — the expanded
+    /// card's strip. Files aren't previewable images here; the name carries.
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(store.pendingAttachments) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        VStack(spacing: 6) {
+                            Image(systemName: attachment.mediaType.hasPrefix("image/") ? "photo" : "doc")
+                                .font(.system(size: 20))
+                                .foregroundStyle(Theme.textMuted2)
+                            Text(attachment.name)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textMuted2)
+                                .lineLimit(1)
+                        }
+                        .frame(width: 72, height: 72)
+                        .background(Theme.subtle)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        Button {
+                            store.removeAttachment(attachment.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 22, height: 22)
+                                .background(Color.black.opacity(0.55))
+                                .clipShape(Circle())
+                        }
+                        .padding(4)
+                        .accessibilityLabel("Remove \(attachment.name)")
+                    }
+                }
+                if store.uploading {
+                    ProgressView()
+                        .frame(width: 72, height: 72)
+                        .background(Theme.subtle)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+        }
+    }
+
     // MARK: the toolbar (expanded only)
 
     private var toolbar: some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
+                    PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 44, height: 44)
+                            .background(Theme.subtle)
+                            .clipShape(Circle())
+                            .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+                    }
+                    .accessibilityLabel("Attach photos")
                     if isRunning {
                         ToolbarPill(variant: .danger) {
                             stop()
@@ -277,32 +359,16 @@ struct ComposerView: View {
                         }
                         .accessibilityLabel("Stop the running turn")
                     }
-                    Menu {
+                    modelPill
+                    labeledPill(icon: "slider.horizontal.3",
+                                label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
                         ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
                             Button {
-                                setRuntimeMode(mode)
+                                Task { await store.setRuntimeMode(mode) }
                             } label: {
-                                if mode == runtimeMode {
-                                    Label(label, systemImage: "checkmark")
-                                } else {
-                                    Text(label)
-                                }
+                                menuRow(label, selected: mode == runtimeMode)
                             }
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "slider.horizontal.3").font(.system(size: 14))
-                            Text(ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration")
-                                .font(.system(size: 14, weight: .semibold))
-                                .lineLimit(1)
-                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
-                        }
-                        .foregroundStyle(Theme.text)
-                        .padding(.horizontal, 14)
-                        .frame(height: 44)
-                        .background(Theme.subtle)
-                        .clipShape(Capsule())
-                        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
                     }
                 }
             }
@@ -321,6 +387,62 @@ struct ComposerView: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 2)
+    }
+
+    private var runtimeMode: String {
+        store.sync.session?.runtimeMode ?? "approval-required"
+    }
+
+    /// The Model pill: the provider's own list, checkmark on the session's
+    /// current model (matched by id or alias resolution).
+    private var modelPill: some View {
+        let current = store.sync.session?.model?.model
+        let models = (store.catalogue?.models ?? []).filter { !$0.hidden }
+        let currentLabel = models.first {
+            $0.id == current || ($0.resolves != nil && $0.resolves == current)
+        }?.label ?? models.first { current == nil && $0.isDefault }?.label
+        return labeledPill(icon: "sparkle", label: currentLabel ?? "Model") {
+            if models.isEmpty {
+                Button("Loading models…") {}.disabled(true)
+            }
+            ForEach(models) { model in
+                Button {
+                    Task { await store.setModel(model.id) }
+                } label: {
+                    menuRow(model.label, selected: model.id == current || model.resolves == current || (current == nil && model.isDefault))
+                }
+            }
+        }
+        .task { await store.loadModels() }
+    }
+
+    @ViewBuilder private func menuRow(_ label: String, selected: Bool) -> some View {
+        if selected {
+            Label(label, systemImage: "checkmark")
+        } else {
+            Text(label)
+        }
+    }
+
+    private func labeledPill<Items: View>(icon: String, label: String, @ViewBuilder items: () -> Items) -> some View {
+        Menu {
+            items()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.system(size: 14))
+                Text(label)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .frame(maxWidth: 172)
+            .background(Theme.subtle)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+        }
     }
 
     // MARK: the queue
@@ -345,7 +467,7 @@ struct ComposerView: View {
                         Spacer(minLength: 0)
                         if isRunning {
                             Button {
-                                sendNow(turn.runId)
+                                Task { await store.promote(turn.runId) }
                             } label: {
                                 Image(systemName: "bolt.fill")
                                     .font(.system(size: 12))
@@ -355,7 +477,7 @@ struct ComposerView: View {
                             .accessibilityLabel("Send now — the running turn hears it without stopping")
                         }
                         Button {
-                            withdraw(turn.runId)
+                            Task { await store.withdraw(turn.runId) }
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 11, weight: .medium))
@@ -380,7 +502,11 @@ struct ComposerView: View {
         let text = draft
         draft = ""
         focused = false
-        send(text)
+        Task { await store.send(text) }
+    }
+
+    private func stop() {
+        Task { await store.stopActiveTurn() }
     }
 
     static let runtimeModes: [(String, String)] = [

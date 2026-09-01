@@ -9,7 +9,7 @@ protocol EngineAPI: Sendable {
     func liveSessions() async throws -> LiveSessions
     func session(_ id: EngineID) async throws -> SessionSnapshot
     func events(_ id: EngineID, after: Int) async throws -> EventPage
-    func submitTurn(_ id: EngineID, runId: String, input: String) async throws -> TurnSubmissionResult
+    func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
     func stop(_ id: EngineID, runId: String?) async throws
     func resolveRequest(
         _ id: EngineID, requestId: EngineID,
@@ -23,6 +23,19 @@ protocol EngineAPI: Sendable {
     /// The auto-settle window — engine-scoped, one answer per machine, so the
     /// phone bands its inbox the same way the Mac's sidebar does.
     func inboxPolicy() async throws -> InboxPolicy
+    /// One file's bytes, uploaded BEFORE the message that refers to it.
+    func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment
+    /// The provider's own model list for a driver.
+    func models(driver: String) async throws -> ModelCatalogue
+    /// Provider instances — a model change must name the instance that runs it.
+    func providerInstances() async throws -> [ProviderInstance]
+    /// What the session has done to the repository since it started.
+    func sessionDiff(_ id: EngineID) async throws -> SessionDiff
+    /// One file's patch, opened on demand.
+    func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch
+    /// Directories on the Mac — the phone's folder picker.
+    func listDirectories(path: String?) async throws -> DirectoryListing
+    func registerProject(name: String, root: String) async throws -> ProjectRef
 }
 
 struct InboxPolicy: Decodable, Equatable {
@@ -60,6 +73,9 @@ struct SessionPatch: Encodable {
     /// "approval-required" | "auto-accept-edits" | "auto" | "full-access" —
     /// engine-validated; the composer's Configuration pill.
     var runtimeMode: String?
+    /// Must belong to the session's provider instance — the engine rejects
+    /// anything else. The composer's Model pill.
+    var model: ModelSelection?
 }
 
 enum EngineAPIError: Error, LocalizedError {
@@ -143,9 +159,11 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/sessions/\(escape(id))/events", query: [URLQueryItem(name: "after", value: String(after))])
     }
 
-    func submitTurn(_ id: EngineID, runId: String, input: String) async throws -> TurnSubmissionResult {
+    func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]? = nil) async throws -> TurnSubmissionResult {
         // 202 fresh and 200 replayed are BOTH success — the idempotent retry.
-        try await post("api/sessions/\(escape(id))/turns", body: ["runId": AnyEncodable(runId), "input": AnyEncodable(input)])
+        var body: [String: AnyEncodable] = ["runId": AnyEncodable(runId), "input": AnyEncodable(input)]
+        if let attachments, !attachments.isEmpty { body["attachments"] = AnyEncodable(attachments) }
+        return try await post("api/sessions/\(escape(id))/turns", body: body)
     }
 
     func stop(_ id: EngineID, runId: String?) async throws {
@@ -182,6 +200,60 @@ struct HTTPEngineAPI: EngineAPI {
         struct Wrapped: Decodable { var inbox: InboxPolicy }
         let wrapped: Wrapped = try await get("api/inbox")
         return wrapped.inbox
+    }
+
+    /// Raw bytes, one file per request — a failed upload loses one file, not
+    /// the whole selection. The filename travels percent-encoded in a header.
+    func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment {
+        var request = makeRequest(url("api/sessions/\(escape(id))/attachments"))
+        request.httpMethod = "POST"
+        request.setValue(mediaType, forHTTPHeaderField: "content-type")
+        request.setValue(
+            name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "attachment",
+            forHTTPHeaderField: "x-telar-attachment-name"
+        )
+        request.httpBody = data
+        struct Wrapped: Decodable { var attachment: TurnAttachment }
+        let wrapped: Wrapped = try await perform(request)
+        return wrapped.attachment
+    }
+
+    func models(driver: String) async throws -> ModelCatalogue {
+        struct Wrapped: Decodable { var catalogue: ModelCatalogue }
+        let wrapped: Wrapped = try await get("api/models", query: [URLQueryItem(name: "driver", value: driver)])
+        return wrapped.catalogue
+    }
+
+    func providerInstances() async throws -> [ProviderInstance] {
+        struct Wrapped: Decodable { var providerInstances: [ProviderInstance] }
+        let wrapped: Wrapped = try await get("api/provider-instances")
+        return wrapped.providerInstances
+    }
+
+    func sessionDiff(_ id: EngineID) async throws -> SessionDiff {
+        struct Wrapped: Decodable { var diff: SessionDiff }
+        let wrapped: Wrapped = try await get("api/sessions/\(escape(id))/diff")
+        return wrapped.diff
+    }
+
+    func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch {
+        var query = [URLQueryItem(name: "path", value: path)]
+        if untracked { query.append(URLQueryItem(name: "untracked", value: "1")) }
+        struct Wrapped: Decodable { var file: FilePatch }
+        let wrapped: Wrapped = try await get("api/sessions/\(escape(id))/diff", query: query)
+        return wrapped.file
+    }
+
+    func listDirectories(path: String?) async throws -> DirectoryListing {
+        var query: [URLQueryItem] = []
+        if let path { query.append(URLQueryItem(name: "path", value: path)) }
+        return try await get("api/fs", query: query)
+    }
+
+    func registerProject(name: String, root: String) async throws -> ProjectRef {
+        struct Wrapped: Decodable { var project: ProjectRef }
+        let wrapped: Wrapped = try await send("POST", "api/projects", body: ["name": AnyEncodable(name), "root": AnyEncodable(root)])
+        return wrapped.project
     }
 
     // MARK: transport

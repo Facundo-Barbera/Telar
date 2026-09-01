@@ -11,12 +11,20 @@ import Observation
     struct PendingSend: Codable, Equatable {
         var runId: String
         var text: String
+        /// Stored attachment ids — already on the engine, so a retry re-sends
+        /// the same handles. Optional for decoding pre-attachment drafts.
+        var attachments: [EngineID]?
     }
 
     let sync: SessionSyncEngine
     private(set) var pendingSend: PendingSend?
     private(set) var sendError: String?
     private(set) var actionError: String?
+    /// Uploaded-but-not-yet-sent files — thumbnails in the expanded composer.
+    private(set) var pendingAttachments: [TurnAttachment] = []
+    private(set) var uploading = false
+    /// Loaded lazily when the Model pill first opens.
+    private(set) var catalogue: ModelCatalogue?
 
     private let api: any EngineAPI
     private let sessionId: EngineID
@@ -60,14 +68,63 @@ import Observation
 
     func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty || !pendingAttachments.isEmpty else { return }
         // A still-unsent earlier message keeps its runId; a new message after a
         // success mints a fresh one.
         let pending = pendingSend?.text == trimmed
             ? pendingSend!
-            : PendingSend(runId: RunID.newRunId(), text: trimmed)
+            : PendingSend(
+                runId: RunID.newRunId(), text: trimmed,
+                attachments: pendingAttachments.isEmpty ? nil : pendingAttachments.map(\.id)
+            )
         persist(pending)
         await deliver(pending)
+    }
+
+    /// Upload one picked file; it joins the next send. Upload failures land in
+    /// actionError — the draft is untouched.
+    func attach(data: Data, name: String, mediaType: String) async {
+        uploading = true
+        defer { uploading = false }
+        do {
+            let attachment = try await api.uploadAttachment(sessionId, name: name, mediaType: mediaType, data: data)
+            pendingAttachments.append(attachment)
+            actionError = nil
+        } catch {
+            actionError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func removeAttachment(_ id: EngineID) {
+        pendingAttachments.removeAll { $0.id == id }
+    }
+
+    /// The Model pill's list — fetched once per open session.
+    func loadModels() async {
+        guard catalogue == nil, let driver = sync.session?.driver else { return }
+        catalogue = try? await api.models(driver: driver)
+    }
+
+    /// Change the session's model. The instance is the session's own when it
+    /// has one, else the first enabled instance for its driver — the engine
+    /// validates the pair either way.
+    func setModel(_ modelId: String) async {
+        await perform {
+            var instanceId = self.sync.session?.model?.instanceId
+            if instanceId == nil {
+                let instances = try await self.api.providerInstances()
+                instanceId = instances.first {
+                    $0.enabled && $0.driver == self.sync.session?.driver
+                }?.id
+            }
+            guard let instanceId else {
+                throw EngineAPIError.engine(code: "invalid_request", message: "No provider instance for this driver.", status: 400)
+            }
+            try await self.api.patchSession(
+                self.sessionId,
+                patch: SessionPatch(model: ModelSelection(instanceId: instanceId, model: modelId))
+            )
+        }
     }
 
     func retryPending() async {
@@ -83,8 +140,9 @@ import Observation
 
     private func deliver(_ pending: PendingSend) async {
         do {
-            _ = try await api.submitTurn(sessionId, runId: pending.runId, input: pending.text)
+            _ = try await api.submitTurn(sessionId, runId: pending.runId, input: pending.text, attachments: pending.attachments)
             discardPending()
+            pendingAttachments = []
             await sync.refresh()
         } catch {
             sendError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
