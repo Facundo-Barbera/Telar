@@ -20,14 +20,26 @@ struct TranscriptView: View {
 struct TurnView: View {
     let turn: JournalTurn
 
+    /// The web cockpit's split (session-cockpit.tsx): a settled turn shows
+    /// its ANSWER and folds everything that produced it, so history reads as
+    /// conclusions. The split point is the LAST assistant message —
+    /// narration in the middle folds with the work it narrates.
+    private var split: (activity: [JournalItem], closing: [JournalItem]) {
+        let lastProse = turn.items.lastIndex { item in
+            if case .assistantMessage = item.detail { return true }
+            return false
+        }
+        guard let lastProse else { return (turn.items, []) }
+        return (Array(turn.items[..<lastProse]), Array(turn.items[lastProse...]))
+    }
+
     var body: some View {
+        let (activity, closing) = split
         VStack(alignment: .leading, spacing: 10) {
             UserBubble(text: turn.prompt)
-            ForEach(turn.items) { item in
+            ActivityGroupView(items: activity, tasks: turn.tasks, live: turn.state.isActive)
+            ForEach(closing) { item in
                 ItemRowView(item: item)
-            }
-            ForEach(turn.tasks) { task in
-                TaskRowView(task: task)
             }
             switch turn.state {
             case .failed:
@@ -45,6 +57,158 @@ struct TurnView: View {
             default:
                 EmptyView()
             }
+        }
+    }
+}
+
+/// A run of activity rows: a rolling window while live, a tally once
+/// settled — the web's ActivityGroup. Both are the same sentence at two
+/// scales, so the grammar is learned once.
+struct ActivityGroupView: View {
+    let items: [JournalItem]
+    let tasks: [JournalTask]
+    let live: Bool
+    @State private var expanded = false
+
+    /// Rows that will actually PAINT: a reasoning block the provider opened
+    /// and never filled renders nothing, and a `task` item is the spawn
+    /// itself — the agent it started is already on screen as its own chip.
+    /// Counting either makes the tally a visible lie.
+    private var rows: [JournalItem] {
+        items.filter { item in
+            switch item.detail {
+            case .task: false
+            case .reasoning: !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            default: true
+            }
+        }
+    }
+
+    /// A step that failed inside the fold must not be swallowed by the very
+    /// mechanism that hid it.
+    private var anyFailed: Bool {
+        rows.contains { $0.status == .failed } || tasks.contains { $0.task.state == .failed }
+    }
+
+    var body: some View {
+        if !rows.isEmpty || !tasks.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                if live {
+                    liveWindow
+                } else if !rows.isEmpty {
+                    settledFold
+                }
+                // Sub-agents are never hidden by the fold: THAT a fan-out
+                // happened is part of the conversation.
+                ForEach(tasks) { task in
+                    TaskRowView(task: task)
+                }
+            }
+        }
+    }
+
+    /// Live: the last step, with "+N earlier steps" above it.
+    @ViewBuilder private var liveWindow: some View {
+        let hidden = max(0, rows.count - 1)
+        if hidden > 0 {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    chevron
+                    if !expanded && anyFailed { failureGlyph }
+                    Text(expanded ? "Show fewer steps" : "+\(hidden) earlier step\(hidden == 1 ? "" : "s")")
+                        .font(Theme.meta)
+                        .foregroundStyle(!expanded && anyFailed ? Theme.statusRed : Theme.textMuted)
+                }
+                .frame(minHeight: 24)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        ForEach(expanded ? rows : Array(rows.suffix(1))) { item in
+            ItemRowView(item: item)
+        }
+    }
+
+    /// Settled: one summary row — "18 steps · Ran command ×12 · Read file ×4"
+    /// — expanding to the full list behind the left hairline.
+    @ViewBuilder private var settledFold: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                chevron
+                if !expanded && anyFailed { failureGlyph }
+                Text("\(rows.count) step\(rows.count == 1 ? "" : "s")")
+                    .font(Theme.meta)
+                    .foregroundStyle(!expanded && anyFailed ? Theme.statusRed : Theme.textMuted)
+                    .tabularNumbers()
+                Text("·").foregroundStyle(Theme.textMuted.opacity(0.5))
+                Text(tally)
+                    .font(Theme.meta)
+                    .foregroundStyle(Theme.textMuted.opacity(0.8))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if expanded {
+            NestedDetail {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(rows) { item in
+                        ItemRowView(item: item)
+                    }
+                }
+            }
+        }
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(Theme.textMuted.opacity(0.6))
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+    }
+
+    private var failureGlyph: some View {
+        Image(systemName: "exclamationmark.triangle")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(Theme.statusRed)
+    }
+
+    /// "Ran command ×12 · Read file ×4", in first-appearance order.
+    private var tally: String {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for item in rows {
+            let label = tallyLabel(item)
+            if counts[label] == nil { order.append(label) }
+            counts[label, default: 0] += 1
+        }
+        return order.map { label in
+            let count = counts[label]!
+            return count > 1 ? "\(label) ×\(count)" : label
+        }.joined(separator: " · ")
+    }
+
+    private func tallyLabel(_ item: JournalItem) -> String {
+        switch item.detail {
+        case .assistantMessage: "Narrated"
+        case .commandExecution: "Ran command"
+        case .fileChange: "Edited file"
+        case .fileRead: "Read file"
+        case .webSearch: "Searched"
+        case .browserAction: "Browser"
+        case .reasoning: "Thought"
+        case .userMessage: "You steered"
+        case .error: "Error"
+        case .plan: "Planned"
+        case .contextCompaction: "Compacted context"
+        case .mcpToolCall(let call), .dynamicToolCall(let call): displayToolName(call.name)
+        default: item.label
         }
     }
 }
