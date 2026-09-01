@@ -87,6 +87,24 @@ private func stubAPI() -> HTTPEngineAPI {
         }
     }
 
+    @Test func versionSkewIsNamedNotBlamedOnTheURL() async {
+        // A 200 that doesn't decode proves the URL IS a cockpit — the two
+        // ends are just on different versions.
+        StubURLProtocol.handler = { _ in (200, Data("{}".utf8)) }
+        do {
+            _ = try await stubAPI().liveSessions()
+            Issue.record("expected throw")
+        } catch let error as EngineAPIError {
+            guard case .incompatible = error else {
+                Issue.record("wrong case"); return
+            }
+            #expect(error.errorDescription?.contains("versions") == true)
+            #expect(error.errorDescription?.contains("base URL") != true)
+        } catch {
+            Issue.record("unexpected error type")
+        }
+    }
+
     @Test func resolveRequestEncodesAnswers() async throws {
         StubURLProtocol.handler = { request in
             #expect(request.url?.path() == "/api/sessions/s/requests/req_9")
