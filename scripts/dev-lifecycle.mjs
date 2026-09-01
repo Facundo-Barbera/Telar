@@ -79,6 +79,23 @@ export function describeWebExposure(host, port) {
   return `The cockpit is listening on ${host}:${port}, reachable by ${reach}. It has no login, and sessions run tools without asking by default — treat this port as a shell on this machine.`;
 }
 
+/**
+ * The louder sibling of `describeWebExposure`, aware of the two facts that
+ * change the story: TAILSCALE SERVE COUNTS AS REACHABILITY EVEN ON A LOOPBACK
+ * BIND (serve proxies the tailnet straight to 127.0.0.1 — inferring posture
+ * from the bind host alone is the mistake t3code ships), and pairing auth is
+ * what retires the warning. Returned, not printed, like its sibling.
+ */
+export function describeRemotePosture({ host, port, serveRequested = false, requireAuth = false }) {
+  const remotelyReachable = !isLoopbackHost(host) || serveRequested;
+  if (!remotelyReachable) return null;
+  if (requireAuth) return null;
+  const via = isLoopbackHost(host)
+    ? `via Tailscale Serve (the bind is loopback, but the tailnet is proxied to it)`
+    : `on ${host}:${port}`;
+  return `The cockpit is remotely reachable ${via} with pairing OFF. Enable "Require pairing" in Settings → Remote access, or treat this port as a shell on this machine.`;
+}
+
 export function cockpitUrl(port, host = DEFAULT_WEB_HOST) {
   // A bare IPv6 address needs brackets to be a URL authority at all.
   const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
