@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, ShieldCheckIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
+import { InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -40,42 +40,48 @@ import { useSectionFromUrl } from "./use-section-from-url";
 
 const api = createEngineApi();
 
+/**
+ * SIX PANES, DOWN FROM NINE. The nav split stays what it was — "Cockpit" is
+ * decisions about this window, "Runtime" is decisions about the machine that
+ * runs turns — but panes that held two rows each merged with their nearest
+ * neighbour, because a side-nav where most destinations are one group deep
+ * makes every setting harder to find, not easier:
+ *
+ *   - Sessions = the old Inbox + Text generation. Both decide how a session
+ *     presents itself — when it leaves the list, what names it wears.
+ *   - Agent tools = the old MCP servers + Permissions. Both decide what a
+ *     session's agent can reach beyond the repo.
+ *   - Application = the old Updates + About. Both are facts about THIS
+ *     INSTALL — its version, its channel, where its state lives.
+ */
 const SECTIONS: SettingsSection[] = [
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
-  /**
-   * UNDER "COCKPIT" RATHER THAN "RUNTIME", because settling changes what you
-   * are shown and nothing about what runs. It sits beside Appearance for that
-   * reason and not because they are alike — the split in this nav is between
-   * decisions about the surface and decisions about the machine.
-   */
-  { id: "inbox", label: "Inbox", icon: InboxIcon, group: "Cockpit" },
+  { id: "sessions", label: "Sessions", icon: InboxIcon, group: "Cockpit" },
   /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
-   * a fact about the install, like Updates, not about the machine that runs
-   * turns (the engine stays loopback either way).
+   * a fact about the install, not about the machine that runs turns (the
+   * engine stays loopback either way).
    */
   { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "Cockpit" },
+  { id: "application", label: "Application", icon: InfoIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
-  /**
-   * UNDER "RUNTIME": it decides which harness process runs and spends tokens,
-   * which is a fact about the machine, not about what this window shows.
-   */
-  { id: "textgen", label: "Text generation", icon: SparklesIcon, group: "Runtime" },
-  { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
-  /**
-   * UNDER "RUNTIME": the macOS grants agent capabilities stand on — computer
-   * use today — are facts about the machine that runs turns, not about what
-   * this window shows.
-   */
-  { id: "permissions", label: "Permissions", icon: ShieldCheckIcon, group: "Runtime" },
-  /**
-   * UNDER "COCKPIT", beside About, because an update is a fact about THIS
-   * INSTALL — its channel, its version, its feed — and nothing about the
-   * machine the sessions run on.
-   */
-  { id: "updates", label: "Updates", icon: DownloadIcon, group: "Cockpit" },
-  { id: "about", label: "About", icon: InfoIcon, group: "Cockpit" },
+  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
 ];
+
+/**
+ * The retired pane ids keep answering. `section=mcp` is baked into the OAuth
+ * callback's redirect (app/api/mcp/oauth/callback/route.ts), and the rest may
+ * live in bookmarks; an alias costs one map entry and never strands a link on
+ * the default pane.
+ */
+const SECTION_ALIASES: Record<string, string> = {
+  inbox: "sessions",
+  textgen: "sessions",
+  mcp: "tools",
+  permissions: "tools",
+  updates: "application",
+  about: "application",
+};
 
 /** A figure the engine reported, in the register the rest of the app uses for
  *  machine-supplied values. */
@@ -128,7 +134,7 @@ const SECTION_IDS = SECTIONS.map((section) => section.id);
 export function SettingsPage() {
   // `?section=mcp` is how a sign-in gets the user back to the pane they left —
   // see use-section-from-url.ts for the failure that made this necessary.
-  const [active, setActive] = useSectionFromUrl("appearance", SECTION_IDS);
+  const [active, setActive] = useSectionFromUrl("appearance", SECTION_IDS, SECTION_ALIASES);
   const [about, setAbout] = useState<{ appVersion: string; stateRoot?: string }>();
   const [health, setHealth] = useState<EngineHealth>();
   const [unreachable, setUnreachable] = useState(false);
@@ -161,21 +167,30 @@ export function SettingsPage() {
         </SettingsGroup>
       )}
 
-      {active === "inbox" && <InboxSection />}
+      {active === "sessions" && (
+        <>
+          <InboxSection />
+          <TextGenSection />
+        </>
+      )}
 
       {active === "remote" && <RemoteSection />}
 
       {active === "providers" && <ProvidersSection />}
 
-      {active === "textgen" && <TextGenSection />}
+      {active === "tools" && (
+        <>
+          <McpSection />
+          <PermissionsSection />
+        </>
+      )}
 
-      {active === "mcp" && <McpSection />}
-
-      {active === "permissions" && <PermissionsSection />}
-
-      {active === "updates" && <UpdatesSection />}
-
-      {active === "about" && <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />}
+      {active === "application" && (
+        <>
+          <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
+          <UpdatesSection />
+        </>
+      )}
     </SettingsShell>
   );
 }

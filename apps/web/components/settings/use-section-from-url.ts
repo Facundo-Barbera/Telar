@@ -21,17 +21,21 @@
  */
 import { useEffect, useState } from "react";
 
-export function useSectionFromUrl(fallback: string, allowed: readonly string[]): [string, (next: string) => void] {
+export function useSectionFromUrl(fallback: string, allowed: readonly string[], aliases?: Readonly<Record<string, string>>): [string, (next: string) => void] {
   const [active, setActive] = useState(fallback);
   useEffect(() => {
     const task = window.setTimeout(() => {
-      const named = new URLSearchParams(window.location.search).get("section");
+      const raw = new URLSearchParams(window.location.search).get("section");
+      // Aliases keep RETIRED ids working: `section=mcp` is baked into the OAuth
+      // callback's redirect and into muscle memory, and panes that merged must
+      // not turn those links into an empty shell.
+      const named = raw ? (aliases?.[raw] ?? raw) : null;
       // Checked against the real list: a section that does not exist would
       // render an empty shell with nothing selected.
       if (named && allowed.includes(named)) setActive(named);
     }, 0);
     return () => window.clearTimeout(task);
-    // `allowed` is a module-level constant at every call site.
+    // `allowed` and `aliases` are module-level constants at every call site.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return [active, setActive];
