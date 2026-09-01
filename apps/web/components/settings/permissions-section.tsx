@@ -116,10 +116,10 @@ export function PermissionsSection() {
             label="Automation permission"
             hint={
               status.permission === "denied"
-                ? "macOS refused Apple events (-1743). System Settings → Privacy & Security → Automation: allow “Codex Computer Use” under the app that hosts the Telar engine, then test again."
+                ? "macOS refused Apple events (-1743). System Settings → Privacy & Security → Automation: enable “Codex Computer Use” under Telar (the packaged app) — or, in a dev build, under the terminal that launched the engine — then test again."
                 : status.permission === "granted"
-                  ? "One real read-only call succeeded. Sessions can use the Mac."
-                  : "Testing runs one read-only call — if macOS has not decided yet, it shows its own prompt naming the app to allow."
+                  ? "One real read-only call succeeded. Claude and Codex sessions can drive the Mac."
+                  : "Testing sends one real read-only call. The first time, macOS shows its own “Telar wants to control Codex Computer Use” prompt — allow it and one grant covers every session. (In a dev build the prompt names the terminal, not Telar.)"
             }
             control={
               <div className="flex items-center gap-2">

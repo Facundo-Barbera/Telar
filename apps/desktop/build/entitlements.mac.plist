@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened-runtime baseline for an Electron app: a JIT'd JS engine needs
+	  these three to run at all under a hardened signature.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<!--
+	  COMPUTER USE. Telar drives Mac apps through Codex's Sky client, which is
+	  reached over Apple events; under a hardened runtime a process may send
+	  them only with this entitlement. Sending the first one is what makes
+	  macOS show "Telar wants to control Codex Computer Use" — the native grant.
+	  The engine is a CHILD of this app (main.js forks it), so its events are
+	  attributed to Telar, and the inherit entitlement below carries the same
+	  permission down to it.
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
