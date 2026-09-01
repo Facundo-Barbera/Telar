@@ -131,6 +131,61 @@ test("the callback server checks the bearer, answers fast, dedupes, and injects 
   server.close();
 });
 
+test("a short-lived session mirrors its opening prompt and its final reply", async () => {
+  // The bug this pins, found live: a session that starts and finishes within
+  // a couple of passes showed a chip with an EMPTY chat — the bootstrap
+  // skipped the prompt as "history", and the reply landed after the session
+  // left the live set.
+  const log: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const stub = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+    request.on("end", () => {
+      log.push({ path: request.url ?? "", body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {} });
+      response.writeHead(200).end("{}");
+    });
+  });
+  const port = await new Promise<number>((resolve) => {
+    stub.listen(0, "127.0.0.1", () => resolve((stub.address() as { port: number }).port));
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lintel-short-"));
+  const tokenPath = path.join(dir, "api-token");
+  fs.writeFileSync(tokenPath, "tok");
+
+  let passCount = 0;
+  const sync = startLintelSync(
+    {
+      liveSessions: () => {
+        passCount += 1;
+        // Pass 1: working. Pass 2+: the turn already finished.
+        return { sessions: [session("s_quick", passCount === 1 ? "working" : "idle")], projects: [] };
+      },
+      readEvents: (_id, after) => {
+        const all = [
+          { id: 1, at: 1, sessionId: "s_quick", type: "turn.accepted", replayed: false, turn: { runId: "run_q", sessionId: "s_quick", sequence: 1, state: "queued", input: "Test", acceptedAt: 1, updatedAt: 1 } },
+          { id: 2, at: 2, sessionId: "s_quick", type: "item.completed", item: { id: "item_r", sessionId: "s_quick", runId: "run_q", openedBy: 1, startedAt: 2, status: "completed", detail: { type: "assistant_message", text: "Test received." } } },
+        ] as unknown as EngineEvent[];
+        // Pass 1 sees only the prompt; the reply arrives before pass 2.
+        const visible = passCount === 1 ? all.slice(0, 1) : all;
+        return visible.filter((event) => event.id > after);
+      },
+      submitTurn: () => {},
+    },
+    { intervalMs: 40, tokenPath, port },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 110));
+  sync.stop();
+  stub.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  const mirrored = log.filter((entry) => entry.path === "/v1/agents/s_quick/messages").map((entry) => entry.body);
+  expect(mirrored.map((body) => body.text)).toEqual(["Test", "Test received."]);
+  expect(mirrored.map((body) => body.role)).toEqual(["user", "assistant"]);
+  // And the terminal chip still posted.
+  const statuses = log.filter((entry) => entry.path === "/v1/agents").map((entry) => entry.body.status);
+  expect(statuses).toContain("done");
+});
+
 test("a 404 on /messages re-registers in full and retries once — the self-heal", async () => {
   // A stub Lintel that FORGOT the agent (restart or TTL expiry): /messages
   // 404s until a registration arrives, then accepts. The bridge must re-POST

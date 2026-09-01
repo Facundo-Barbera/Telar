@@ -29,6 +29,10 @@ export const LINTEL_PORT = Number(process.env.LINTEL_PORT) || 45814;
 export const LINTEL_SYNC_MS = 5_000;
 /** Lintel truncates chat messages at 4000 chars; cut before sending. */
 export const LINTEL_MESSAGE_MAX = 4_000;
+/** On first sight of a session, mirror at most this many recent messages —
+ *  a fresh session's opening prompt makes it in (it IS the recent tail), a
+ *  months-old transcript doesn't dump. */
+export const LINTEL_BOOTSTRAP_MESSAGES = 20;
 /** Clicking a Lintel banner launches the app with this bundle id. */
 const TELAR_BUNDLE_ID = "ai.ozom.telar.desktop";
 
@@ -303,14 +307,23 @@ export function startLintelSync(
         await remove(id, token, port);
         cursors.delete(id);
       }
-      // Mirror the transcript of every LIVE session from its cursor forward.
-      for (const id of next.keys()) {
+      // Mirror every session with a chip this pass: the live ones, AND the
+      // ones that just ended — a fast turn's reply lands between passes, and
+      // skipping ended sessions dropped it (found live: a chip with an empty
+      // chat beside a finished session).
+      const mirrorIds = new Set<string>([...next.keys(), ...plan.agents.map((agent) => agent.id)]);
+      for (const id of mirrorIds) {
         const first = !cursors.has(id);
         const events = hooks.readEvents(id, cursors.get(id) ?? 0);
         const tail = events.at(-1)?.id;
         if (tail !== undefined) cursors.set(id, tail);
-        if (first) continue; // joined mid-conversation: mirror from now on
-        for (const message of mirrorMessages(events, { runIds: injectedRuns, texts: injectedTexts })) {
+        let messages = mirrorMessages(events, { runIds: injectedRuns, texts: injectedTexts });
+        // First sight: a capped recent slice, not silence — a NEW session's
+        // whole story is its opening prompt, and skipping it left short
+        // sessions with an empty chat forever. The cap keeps an old
+        // transcript from dumping.
+        if (first) messages = messages.slice(-LINTEL_BOOTSTRAP_MESSAGES);
+        for (const message of messages) {
           const status = await post(`/v1/agents/${encodeURIComponent(id)}/messages`, message, token, port);
           if (status === 404) {
             // Lintel restarted or the agent expired between upsert and
@@ -324,7 +337,7 @@ export function startLintelSync(
           }
         }
       }
-      for (const id of [...cursors.keys()]) if (!next.has(id)) cursors.delete(id);
+      for (const id of [...cursors.keys()]) if (!mirrorIds.has(id)) cursors.delete(id);
     } catch {
       // Reading state failed this pass; the next one will try again.
     } finally {
