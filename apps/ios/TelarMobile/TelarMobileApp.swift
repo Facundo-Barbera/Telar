@@ -67,7 +67,7 @@ struct RootView: View {
                     }
                     .sheet(isPresented: $showSettings) {
                         NavigationStack {
-                            ConnectView(settings: settings)
+                            SettingsView(settings: settings)
                                 .toolbar {
                                     ToolbarItem(placement: .confirmationAction) {
                                         Button("Done") { showSettings = false }

@@ -66,6 +66,7 @@ final class PairingStubURLProtocol: URLProtocol {
             let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: String]
             #expect(body?["token"] == "tlr_pairing")
             #expect(body?["deviceName"] == "Test iPhone")
+            #expect(body?["platform"] == "ios")
             return (200, Data(#"{"deviceToken":"tlr_device","deviceId":"dev_1","deviceName":"Test iPhone"}"#.utf8))
         }
         let config = URLSessionConfiguration.ephemeral

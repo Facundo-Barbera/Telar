@@ -38,7 +38,8 @@ enum Pairing {
         var request = URLRequest(url: base.appending(path: "api/pair"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONEncoder().encode(["token": token, "deviceName": deviceName])
+        // Platform is self-declared, never sniffed server-side.
+        request.httpBody = try JSONEncoder().encode(["token": token, "deviceName": deviceName, "platform": "ios"])
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {

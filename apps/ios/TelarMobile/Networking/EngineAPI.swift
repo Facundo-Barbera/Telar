@@ -38,6 +38,13 @@ protocol EngineAPI: Sendable {
     func registerProject(name: String, root: String) async throws -> ProjectRef
     /// Branches for the draft's base-ref picker.
     func projectGit(_ projectId: EngineID) async throws -> GitOverview
+    /// The cockpit's paired-device panel — who may reach the Mac, from here.
+    func remoteStatus() async throws -> RemoteStatus
+    func renameDevice(_ id: String, name: String) async throws -> RemoteDevice
+    func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice
+    func revokeDevice(_ id: String) async throws
+    /// Revoke every device except this one (the server keeps the caller).
+    func revokeOtherDevices() async throws -> Int
 }
 
 struct InboxPolicy: Decodable, Equatable {
@@ -94,6 +101,7 @@ enum EngineAPIError: Error, LocalizedError {
         case .engine(let code, let message, _):
             switch code {
             case "cockpit_unauthorized": "This phone is not paired with the cockpit — get a pairing code from Settings → Remote access."
+            case "cockpit_forbidden": "This phone is paired for viewing only — give it full access from Remote access on the Mac."
             case "engine_unavailable": "The Mac's engine is down — the cockpit is up but can't reach it."
             case "worker_unavailable": "No worker is running on the Mac to take the turn."
             case "not_found": "That no longer exists on the engine."
@@ -113,6 +121,12 @@ enum EngineAPIError: Error, LocalizedError {
     /// token. The fix is a fresh pairing code, not a retry.
     var isUnauthorized: Bool {
         if case .engine(let code, _, _) = self { return code == "cockpit_unauthorized" }
+        return false
+    }
+
+    /// Paired, but view-only: the gate admits reads and refuses writes.
+    var isForbidden: Bool {
+        if case .engine(let code, _, _) = self { return code == "cockpit_forbidden" }
         return false
     }
 }
@@ -267,6 +281,40 @@ struct HTTPEngineAPI: EngineAPI {
         struct Wrapped: Decodable { var git: GitOverview }
         let wrapped: Wrapped = try await get("api/projects/\(escape(projectId))/git")
         return wrapped.git
+    }
+
+    func remoteStatus() async throws -> RemoteStatus {
+        try await get("api/remote")
+    }
+
+    private struct WrappedDevice: Decodable { var device: RemoteDevice }
+
+    func renameDevice(_ id: String, name: String) async throws -> RemoteDevice {
+        let wrapped: WrappedDevice = try await send(
+            "PATCH", "api/remote/devices/\(escape(id))", body: ["name": AnyEncodable(name)]
+        )
+        return wrapped.device
+    }
+
+    func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice {
+        let wrapped: WrappedDevice = try await send(
+            "PATCH", "api/remote/devices/\(escape(id))", body: ["role": AnyEncodable(role)]
+        )
+        return wrapped.device
+    }
+
+    func revokeDevice(_ id: String) async throws {
+        var request = makeRequest(url("api/remote/devices/\(escape(id))"))
+        request.httpMethod = "DELETE"
+        let _: IgnoredBody = try await perform(request)
+    }
+
+    func revokeOtherDevices() async throws -> Int {
+        var request = makeRequest(url("api/remote/devices"))
+        request.httpMethod = "DELETE"
+        struct Wrapped: Decodable { var revoked: Int }
+        let wrapped: Wrapped = try await perform(request)
+        return wrapped.revoked
     }
 
     // MARK: transport
