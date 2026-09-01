@@ -188,7 +188,7 @@ struct ConnectView: View {
             if error.isUnauthorized {
                 // The gate said no. Reachability is still worth confirming so
                 // "wrong network" and "needs pairing" read differently.
-                probeResult = (try? await api.ping()) == true
+                probeResult = (try? await api.ping())?.ok == true
                     ? .unpaired
                     : .failed("No answer. Is this phone on the tailnet?")
                 return

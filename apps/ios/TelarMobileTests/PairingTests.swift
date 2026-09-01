@@ -78,6 +78,20 @@ final class PairingStubURLProtocol: URLProtocol {
         #expect(token == "tlr_device")
     }
 
+    @Test func exchangeNeedsOnlyTheTokenFromAnOlderOrNewerCockpit() async throws {
+        PairingStubURLProtocol.handler = { _ in
+            // No deviceId/deviceName, plus a field this build doesn't know.
+            (200, Data(#"{"deviceToken":"tlr_minimal","futureField":42}"#.utf8))
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PairingStubURLProtocol.self]
+        let token = try await Pairing.exchange(
+            base: URL(string: "http://stub.test:3000")!, token: "tlr_pairing",
+            deviceName: "Phone", session: URLSession(configuration: config)
+        )
+        #expect(token == "tlr_minimal")
+    }
+
     @Test func expiredPairingSurfacesTheGateError() async {
         PairingStubURLProtocol.handler = { _ in
             (401, Data(#"{"error":{"code":"cockpit_unauthorized","message":"That pairing code has expired or was already used."}}"#.utf8))
@@ -109,7 +123,7 @@ final class PairingStubURLProtocol: URLProtocol {
             deviceToken: "tlr_device",
             session: URLSession(configuration: config)
         )
-        #expect(try await paired.ping())
+        #expect(try await paired.ping().ok)
 
         PairingStubURLProtocol.handler = { request in
             #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
@@ -119,7 +133,10 @@ final class PairingStubURLProtocol: URLProtocol {
             baseURL: URL(string: "http://stub.test:3000")!,
             session: URLSession(configuration: config)
         )
-        #expect(try await open.ping())
+        // An old cockpit's bare {ok:true}: proto reads as nil (treat as 1).
+        let pong = try await open.ping()
+        #expect(pong.ok)
+        #expect(pong.proto == nil)
     }
 
     @Test func aGatedApiCallMapsToUnauthorized() async {

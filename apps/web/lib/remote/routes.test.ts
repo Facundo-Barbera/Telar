@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { GET as pingGet } from "@/app/api/ping/route";
 import { POST as pairPost } from "@/app/api/pair/route";
 import { GET as remoteGet, PATCH as remotePatch } from "@/app/api/remote/route";
 import { POST as pairingMint } from "@/app/api/remote/pairing/route";
@@ -60,6 +61,16 @@ function patchDeviceRequest(deviceId: string, body: Record<string, unknown>) {
 }
 
 describe("pairing routes", () => {
+  test("ping answers strangers with the version signature, even while the gate is on", async () => {
+    freshHome();
+    const { EXEMPT_API_PATHS } = await import("./gate");
+    expect(EXEMPT_API_PATHS.has("/api/ping")).toBe(true);
+    const body = (await pingGet().json()) as { ok: boolean; proto: number; appVersion: string };
+    expect(body.ok).toBe(true);
+    expect(body.proto).toBe(1);
+    expect(typeof body.appVersion).toBe("string");
+  });
+
   test("mint → exchange yields a device token and a lax http cookie", async () => {
     freshHome();
     const response = await pairPost(pairRequest(await mintToken()));
