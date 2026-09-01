@@ -25,7 +25,7 @@ struct RootView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            if let first = settings.hosts.first, let api = settings.api(for: first.id) {
+            if !settings.hosts.isEmpty {
                 InboxView(settings: settings)
                     .navigationTitle("Telar")
                     .navigationDestination(for: ScopedSessionID.self) { ref in
@@ -58,13 +58,12 @@ struct RootView: View {
                     }
                     .sheet(isPresented: $showNewSession) {
                         NavigationStack {
-                            NewSessionView(api: api) { sessionId in
+                            NewSessionView(settings: settings) { ref in
                                 showNewSession = false
                                 // Pushing while the sheet's dismissal is still
                                 // animating gets the push dropped on device —
                                 // land in the inbox instead of the session.
                                 // Let the dismissal finish first.
-                                let ref = ScopedSessionID(hostId: first.id, sessionId: sessionId)
                                 Task {
                                     try? await Task.sleep(for: .milliseconds(600))
                                     path.append(ref)
