@@ -92,6 +92,16 @@ struct RootView: View {
             path.removeAll { !living.contains($0.hostId) }
         }
         .task {
+            // `-addHostLink <pairing url>` — the two-stack automation
+            // affordance: -pairingLink only fires on an EMPTY phone (by
+            // design), this one pairs an ADDITIONAL Mac. Inert in normal use.
+            if let link = UserDefaults.standard.string(forKey: "addHostLink"),
+               let parsed = Pairing.parsePairingURL(link),
+               let token = try? await Pairing.exchange(
+                   base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name
+               ) {
+                settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+            }
             // `simctl launch … -openSession <id> [-openSessionHost <hint>]`.
             guard path.isEmpty, let sessionId = UserDefaults.standard.string(forKey: "openSession") else { return }
             let hint = UserDefaults.standard.string(forKey: "openSessionHost")

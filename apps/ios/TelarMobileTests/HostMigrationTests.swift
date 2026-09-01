@@ -16,7 +16,7 @@ import Testing
             now: Date(timeIntervalSince1970: 500), id: id
         )
         #expect(plan?.host?.baseURLString == "http://100.1.1.1:3000")
-        #expect(plan?.host?.name == "100.1.1.1")
+        #expect(plan?.host?.name == "100.1.1.1:3000")
         #expect(plan?.host?.migratedFromSingle == true)
         #expect(plan?.pendingSendRenames == [
             .init(old: "telar.pendingSend.session_a", new: "telar.pendingSend.\(id.uuidString).session_a"),

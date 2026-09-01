@@ -32,7 +32,7 @@ enum HostMigration {
         guard let legacyBaseURL, !legacyBaseURL.isEmpty else { return nil }
         let host = Host(
             id: id,
-            name: URL(string: legacyBaseURL)?.host() ?? legacyBaseURL,
+            name: HostBook.defaultName(for: legacyBaseURL),
             baseURLString: legacyBaseURL,
             addedAt: now,
             migratedFromSingle: true

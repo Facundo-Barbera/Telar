@@ -26,10 +26,16 @@ import Testing
         #expect(book.hosts.count == 2)
     }
 
+    @Test func defaultNameCarriesANonStandardPort() {
+        #expect(HostBook.defaultName(for: "http://127.0.0.1:3100") == "127.0.0.1:3100")
+        #expect(HostBook.defaultName(for: "http://mini.tail:80") == "mini.tail")
+        #expect(HostBook.defaultName(for: "https://mini.ts.net") == "mini.ts.net")
+    }
+
     @Test func defaultNameIsTheHostAndRenameFloorsToIt() {
         var book = HostBook()
         guard case .added(let id) = book.upsert(baseURLString: "http://mini.tail:3000") else { return }
-        #expect(book.host(id)?.name == "mini.tail")
+        #expect(book.host(id)?.name == "mini.tail:3000")
         book.rename(id, to: "  Office Mac  ")
         #expect(book.host(id)?.name == "Office Mac")
         book.rename(id, to: "   ")

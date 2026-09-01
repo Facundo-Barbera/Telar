@@ -56,6 +56,17 @@ struct HostBook: Equatable {
         case replaced(HostID)
     }
 
+    /// The label when the human hasn't named it: host, plus the port when
+    /// it isn't the scheme default — two stacks on one machine must not
+    /// both read "127.0.0.1".
+    static func defaultName(for urlString: String) -> String {
+        guard let url = URL(string: urlString), let host = url.host() else { return urlString }
+        if let port = url.port, port != (url.scheme == "https" ? 443 : 80) {
+            return "\(host):\(port)"
+        }
+        return host
+    }
+
     /// Same Mac, spelled differently: lowercased scheme+host, explicit
     /// default port, no trailing slash.
     static func normalize(_ urlString: String) -> String {
@@ -85,7 +96,7 @@ struct HostBook: Equatable {
             if let name { hosts[index].name = name }
             return .replaced(hosts[index].id)
         }
-        let fallbackName = URL(string: baseURLString)?.host() ?? baseURLString
+        let fallbackName = Self.defaultName(for: baseURLString)
         let host = Host(
             id: id(), name: name ?? fallbackName, baseURLString: baseURLString,
             daemonId: daemonId, addedAt: now
