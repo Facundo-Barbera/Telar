@@ -10,13 +10,30 @@ import SwiftUI
 /// app's front door (the root view before a cockpit is configured), so it
 /// wears the same clothes as the rest of the app, not a stock Form.
 struct ConnectView: View {
+    /// Which Mac this screen configures: a NEW one (fields empty, pairing
+    /// adds a host) or an EXISTING one (fields seeded, forget scoped to it).
+    enum Target: Hashable {
+        case new
+        case existing(HostID)
+    }
+
     let settings: AppSettings
+    var target: Target = .new
     @State private var host = ""
     @State private var port = "3000"
     @State private var pairingLink = ""
     @State private var probing = false
     @State private var probeResult: ProbeResult?
     @State private var scanning = false
+
+    private var targetHost: Host? {
+        if case .existing(let id) = target { return settings.host(id) }
+        return nil
+    }
+
+    private var targetToken: String? {
+        targetHost.flatMap { settings.token(for: $0.id) }
+    }
 
     enum ProbeResult: Equatable {
         case ok(daemonId: String, workerRegistered: Bool)
@@ -41,10 +58,10 @@ struct ConnectView: View {
                 VStack(spacing: 0) {
                     SettingsSectionLabel("Pairing")
                     SettingsCard {
-                        if settings.deviceToken != nil {
+                        if targetToken != nil {
                             StatusBanner(
                                 icon: "checkmark.seal.fill", color: Theme.statusEmerald,
-                                title: "This phone is paired.",
+                                title: "This phone is paired with \(targetHost?.name ?? "this Mac").",
                                 detail: "Pasting a new link replaces the credential."
                             )
                             CardDivider()
@@ -76,13 +93,13 @@ struct ConnectView: View {
                             .buttonStyle(.plain)
                             .disabled(probing)
                         }
-                        if settings.deviceToken != nil {
+                        if let hostRecord = targetHost, targetToken != nil {
                             CardDivider()
                             // The other half of pairing: without this, the
                             // only way to shed a credential was revoking it
-                            // from the Mac.
+                            // from the Mac. Scoped to THIS Mac only.
                             Button {
-                                settings.deviceToken = nil
+                                settings.setToken(nil, for: hostRecord.id)
                                 probeResult = nil
                             } label: {
                                 CardRow(icon: "xmark.seal", iconColor: Theme.statusRed, title: "Forget pairing", titleColor: Theme.statusRed) { EmptyView() }
@@ -91,7 +108,7 @@ struct ConnectView: View {
                             .disabled(probing)
                         }
                     }
-                    SettingsFootnote(settings.deviceToken == nil
+                    SettingsFootnote(targetToken == nil
                         ? "When the cockpit requires pairing: Settings → Remote access → show the code, then copy the link under the QR."
                         : "Forget removes the credential from this phone only — revoke the device on the Mac to kill it everywhere.")
                 }
@@ -115,7 +132,9 @@ struct ConnectView: View {
                             )
                             CardDivider()
                             Button {
-                                settings.baseURLString = AppSettings.normalize(host: host, port: port)
+                                // ADDS (or updates) a host — open cockpits
+                                // need no credential.
+                                settings.upsert(baseURLString: AppSettings.normalize(host: host, port: port), token: nil)
                             } label: {
                                 CardRow(icon: "arrow.right.circle.fill", iconColor: Theme.accent, title: "Use this cockpit", titleColor: Theme.accent) { EmptyView() }
                             }
@@ -151,7 +170,8 @@ struct ConnectView: View {
             }
         }
         .onAppear {
-            if let url = settings.baseURL {
+            // Seed the fields from the TARGET Mac; a .new screen starts blank.
+            if let url = targetHost?.baseURL {
                 host = url.host() ?? ""
                 port = url.port.map(String.init) ?? (url.scheme == "https" ? "443" : "3000")
             }
@@ -164,7 +184,7 @@ struct ConnectView: View {
             // Already-paired guard: the seeded link is one-time; re-running it
             // on every appearance would paint an "already used" error on a
             // phone that is in fact paired.
-            if pairingLink.isEmpty, settings.deviceToken == nil,
+            if pairingLink.isEmpty, settings.hosts.isEmpty,
                let seeded = UserDefaults.standard.string(forKey: "pairingLink") {
                 pairingLink = seeded
                 await pair()
@@ -180,7 +200,7 @@ struct ConnectView: View {
             probeResult = .failed("That doesn't look like a host.")
             return
         }
-        let api = HTTPEngineAPI(baseURL: url, deviceToken: settings.deviceToken)
+        let api = HTTPEngineAPI(baseURL: url, deviceToken: targetToken)
         do {
             let health = try await api.health()
             probeResult = .ok(daemonId: health.daemonId, workerRegistered: health.worker.registered)
