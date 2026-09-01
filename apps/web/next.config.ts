@@ -47,6 +47,20 @@ const allowedDevOrigins = [
   ...interfaceAddresses,
   ...extraOrigins,
 ];
+/**
+ * LOOPBACK IS NOT IMPLICIT. Next's default only covers "the hostname the
+ * server was initialized with (`localhost` by default)" — so once the stack
+ * binds a non-loopback host, a browser at `127.0.0.1` presents an origin the
+ * allowlist has never heard of and every dev asset it requests is 403'd: the
+ * page server-renders and then hydrates DEAD — views that render but hold no
+ * data and answer no clicks. The loopback names are always reachable on the
+ * machine the dev server runs on, so they are always allowed.
+ */
+if (allowedDevOrigins.length > 0) {
+  for (const loopback of ["127.0.0.1", "localhost"]) {
+    if (!allowedDevOrigins.includes(loopback)) allowedDevOrigins.push(loopback);
+  }
+}
 
 const nextConfig: NextConfig = {
   // The browser-facing app talks to the engine only through its own route
