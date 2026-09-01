@@ -2,15 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- destination `upload` makes xcodebuild itself push the build to App
-	     Store Connect — no Transporter, no fastlane. Auth comes from the ASC
-	     API key flags nightly.sh passes. -->
+	<!-- destination `export` + a separate altool upload, NOT `upload`:
+	     measured on 2026-09-01, destination upload shipped the archive's
+	     DEVELOPMENT-signed binary (Apple 90035) while the same options with
+	     `export` re-signed to Apple Distribution correctly. Two steps, both
+	     verifiable. -->
 	<key>method</key>
 	<string>app-store-connect</string>
 	<key>destination</key>
-	<string>upload</string>
+	<string>export</string>
 	<key>signingStyle</key>
 	<string>automatic</string>
+	<!-- Explicit, or the export keeps the archive's DEVELOPMENT signature and
+	     Apple's validator refuses the build: the re-sign to Apple Distribution
+	     is what this step is FOR. -->
+	<key>teamID</key>
+	<string>MM74W7WGAM</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
 	<key>uploadSymbols</key>
 	<true/>
 </dict>

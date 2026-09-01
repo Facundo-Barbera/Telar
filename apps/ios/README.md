@@ -54,18 +54,11 @@ build with no project-file edit.
 
 ## Installing on a phone
 
-Headless, via `apps/ios/phone.sh` (no Xcode GUI):
-
-```
-apps/ios/phone.sh nightly   # "Telar" — com.telar.mobile, Release
-apps/ios/phone.sh dev       # "Telar Dev" — com.telar.mobile.dev, Debug
-```
-
-Two bundle ids make the nightly and the moving dev build UNRELATED APPS to
-iOS, so both live on the phone at once — the dev build wears an amber icon
-and its own name. Each keeps its own pairing (Keychain is per-app): pair
-each once and it survives reinstalls of that flavor. Cutting a nightly is
-`git tag nightly-YYYYMMDD && apps/ios/phone.sh nightly` from that tag.
+Headless, via `apps/ios/phone.sh` (no Xcode GUI) — installs "Telar Dev"
+(`com.telar.mobile.dev`, Debug, amber icon), the cable-fed build that lives
+beside the TestFlight nightly. Two bundle ids make them UNRELATED APPS to
+iOS; each keeps its own pairing (Keychain is per-app), so pair each once
+and it survives reinstalls of that flavor.
 
 A paid developer account's profile lasts a year; no TestFlight required.
 The simulator needs no signing at all and shares the Mac's network stack,
@@ -73,19 +66,22 @@ so it reaches the cockpit on either the tailnet IP or localhost.
 
 ## Nightlies over TestFlight
 
-`apps/ios/nightly.sh` tags, archives and uploads in one go — the phone then
-updates itself through the TestFlight app (internal testing: no review,
-live minutes after processing, builds expire after 90 days). One-time
-setup, all in the browser:
+Cutting a nightly is pushing a tag:
 
-1. Register the bundle id (developer.apple.com → Identifiers) and create
-   the app record in App Store Connect with it.
-2. Create an App Store Connect API key (Users & Access → Integrations,
-   App Manager role); export `TELAR_ASC_KEY_ID`, `TELAR_ASC_ISSUER_ID`,
-   `TELAR_ASC_KEY_PATH` (the downloaded .p8).
-3. Add yourself as an internal tester on the app's TestFlight tab and
-   install the build from the TestFlight app.
+```
+git tag ios-nightly-YYYYMMDD && git push origin ios-nightly-YYYYMMDD
+```
 
-`--no-upload` archives without credentials. The build number is a minute
-stamp, so every upload is unique. Keep `phone.sh dev` for the cable-fed
-"Telar Dev" beside the TestFlight nightly.
+The Actions workflow (.github/workflows/nightly-ios.yml) runs
+`apps/ios/nightly.sh` on a macOS runner: archive, export (the re-sign to
+Apple Distribution — `destination: upload` ships a dev-signed binary Apple
+refuses), altool upload. The phone then updates itself through the
+TestFlight app (internal testing: no review, live minutes after
+processing, builds expire after 90 days).
+
+Credentials are the repo secrets `APPLE_API_KEY_P8_BASE64` /
+`APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — an ADMIN App Store Connect API
+key (cloud signing refuses less), shared with desktop notarization. The
+nightly does not ship from a dev Mac: a beta-Xcode build is refused by App
+Store Connect, and this Mac only has the beta. `nightly.sh --no-upload`
+still archives locally for debugging.
