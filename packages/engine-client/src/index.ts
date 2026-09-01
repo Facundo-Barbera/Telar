@@ -23,6 +23,8 @@ import {
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
+  type ComputerUseBackend,
+  type ComputerUseStatus,
   type InboxPolicy,
   type TextGenPolicy,
   type UsageReport,
@@ -253,6 +255,27 @@ export class EngineClient {
 
   setInboxPolicy(patch: { autoSettleAfterHours?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  /**
+   * Computer use, MEASURED: the Codex plugin's presence, its Sky host app, and
+   * the macOS Automation grant — the last one answered by a real read-only
+   * call, which is also what makes macOS raise its granting prompt when the
+   * decision is still open. Slow by design (one subprocess round trip).
+   */
+  computerUseStatus(): Promise<{ computerUse: ComputerUseStatus }> {
+    return this.request("GET", "/v2/computer-use");
+  }
+
+  /** Wake the Sky host app in the background. Idempotent. */
+  wakeComputerUseHost(): Promise<{ ok: boolean }> {
+    return this.request("POST", "/v2/computer-use/host", {});
+  }
+
+  /** Run cua's native granting flow (CuaDriver.app requests Accessibility +
+   *  Screen Recording, attributed to itself). A no-op for the Sky backend. */
+  grantComputerUseAccess(): Promise<{ started: boolean; backend?: ComputerUseBackend }> {
+    return this.request("POST", "/v2/computer-use/grant", {});
   }
 
   /** Spend over time, folded from the engine's journals — see `UsageReport`. */

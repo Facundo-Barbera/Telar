@@ -15,11 +15,11 @@ export const runtime = "nodejs";
  * echoes them.
  */
 export async function POST(request: Request) {
-  let body: { token?: unknown; deviceName?: unknown };
+  let body: { token?: unknown; deviceName?: unknown; platform?: unknown };
   try {
     const text = await request.text();
     if (text.length > 1024) throw new Error("too large");
-    body = JSON.parse(text) as { token?: unknown; deviceName?: unknown };
+    body = JSON.parse(text) as { token?: unknown; deviceName?: unknown; platform?: unknown };
   } catch {
     return Response.json(
       { error: { code: "invalid_request", message: "Request body must be a small JSON object." } },
@@ -28,6 +28,8 @@ export async function POST(request: Request) {
   }
   const token = typeof body.token === "string" ? body.token : "";
   const deviceName = typeof body.deviceName === "string" ? body.deviceName : "";
+  // Self-declared, never sniffed from User-Agent; anything else stays unknown.
+  const platform = body.platform === "ios" || body.platform === "browser" ? body.platform : undefined;
   try {
     if (!token || !consumePairing(token)) {
       return Response.json(
@@ -36,7 +38,7 @@ export async function POST(request: Request) {
       );
     }
     const deviceToken = mintDeviceToken();
-    const device = addDevice(deviceName || "Unnamed device", deviceToken);
+    const device = addDevice(deviceName || "Unnamed device", deviceToken, { platform });
     return Response.json(
       { deviceToken, deviceId: device.id, deviceName: device.name },
       {

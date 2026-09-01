@@ -581,6 +581,28 @@ test("only enabled MCP servers ride the claim, and disabling one keeps its confi
   expect(() => store.saveMcpServer({ id: "bad", spec: { transport: "carrier-pigeon" } })).toThrow(EngineStateError);
 });
 
+test("a daemon-injected computer-use resolver reaches a claim", () => {
+  // The resolver is an OPTION, not a default — a store built without one (every
+  // other test in this file) never reads the machine's installs.
+  const stateRoot = root();
+  const resolved = {
+    backend: "cua" as const,
+    server: {
+      id: "mac",
+      label: "Computer Use (Mac)",
+      enabled: true,
+      spec: { transport: "stdio" as const, command: "/fake/cua-driver", args: ["mcp"] },
+      createdAt: 0,
+      updatedAt: 0,
+    },
+  };
+  const store = new EngineStore(stateRoot, () => 100, { computerUse: () => resolved });
+  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  expect(store.claimNextTurn("worker_one")?.mcpServers?.map((server) => server.id)).toEqual(["mac"]);
+});
+
 test("a store with no browser attached reports none rather than failing", async () => {
   const { store } = readyStore();
   // The ordinary answer for a session that has never browsed, and the same one
@@ -1135,11 +1157,42 @@ test("a turn that ends takes its sub-agents with it, however it ended", () => {
   store.stopTurn("session_one", "run_one");
 
   const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
-  expect(byId.get("task_a")).toMatchObject({ state: "failed", failure: "the turn was stopped before this agent reported back" });
-  expect(byId.get("task_b")).toMatchObject({ state: "running" });
+  expect(byId.get("task_a")).toMatchObject({ state: "failed" });
+  // THE BACKGROUND TASK DIES TOO — outliving its TURN is the definition of
+  // background, but stopping a LIVE turn kills the provider process, and
+  // every shell it hosted dies with it. Leaving it at `running` made the
+  // session claim "monitoring" forever, with a Stop button that no-opped.
+  expect(byId.get("task_b")).toMatchObject({ state: "failed" });
   // The journal carries the closure, so a live client is not left rendering a
   // sub-agent the store has already given up on.
   expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
+});
+
+test("stop with nothing running settles lingering background work", () => {
+  /**
+   * THE RETROACTIVE CURE. A background task orphaned before the process-death
+   * sweeps existed sits at `running` forever — the session reads "monitoring",
+   * and Stop used to no-op because no turn was live. Now the press means the
+   * only thing it can mean: settle whatever still claims to be working.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Started the watcher" });
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+
+  const result = store.stopTurn("session_one");
+  expect(result.stopped).toBe(true);
+  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  expect(byId.get("task_b")).toMatchObject({ state: "stopped", failure: "stopped from the cockpit" });
+  expect(store.getSession("session_one").activity).toBe("idle");
+  // A second press has nothing left to stop.
+  expect(store.stopTurn("session_one").stopped).toBe(false);
 });
 
 test("a session with live background work is not idle, and says which kind", () => {

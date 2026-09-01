@@ -25,6 +25,16 @@ import path from "node:path";
 
 export class RemoteStoreError extends Error {}
 
+/**
+ * The whole capability model: full may do anything, observer may only read
+ * (GET/HEAD — enforced in gate.ts). Deliberately an enum, not a capability
+ * set: since an observer cannot PATCH the device routes, it cannot escalate
+ * itself, and no per-route rules are needed.
+ */
+export type DeviceRole = "full" | "observer";
+
+export type DevicePlatform = "ios" | "browser";
+
 export interface PairedDevice {
   id: string;
   name: string;
@@ -32,6 +42,10 @@ export interface PairedDevice {
   tokenHash: string;
   createdAt: number;
   lastSeenAt?: number;
+  /** Normalized on read: a file written before roles existed reads as "full". */
+  role: DeviceRole;
+  /** Unknown for devices paired before this field existed. Never inferred. */
+  platform?: DevicePlatform;
 }
 
 export interface PendingPairing {
@@ -102,6 +116,9 @@ export function readRemote(): RemoteFile {
   if (!fs.existsSync(file)) return { ...EMPTY, devices: [] };
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as RemoteFile;
   if (parsed.version !== 1) return { ...EMPTY, devices: [] };
+  for (const device of parsed.devices) {
+    device.role = device.role === "observer" ? "observer" : "full";
+  }
   return parsed;
 }
 
@@ -138,16 +155,60 @@ export function matchDevice(file: RemoteFile, raw: string): PairedDevice | undef
   return matched;
 }
 
+const NAME_MAX = 64;
+
+function cleanName(name: string): string {
+  return name.trim().slice(0, NAME_MAX) || "Unnamed device";
+}
+
 /** Registers a device for a freshly minted raw token; returns the device. */
-export function addDevice(name: string, raw: string): PairedDevice {
+export function addDevice(
+  name: string,
+  raw: string,
+  options?: { platform?: DevicePlatform; role?: DeviceRole },
+): PairedDevice {
   const file = readRemote();
   const device: PairedDevice = {
     id: "dev_" + crypto.randomBytes(6).toString("hex"),
-    name: name.trim() || "Unnamed device",
+    name: cleanName(name),
     tokenHash: hashToken(raw),
     createdAt: Date.now(),
+    role: options?.role ?? "full",
+    ...(options?.platform ? { platform: options.platform } : {}),
   };
   file.devices.push(device);
+  writeRemote(file);
+  return device;
+}
+
+export function renameDevice(id: string, name: string): PairedDevice | undefined {
+  const file = readRemote();
+  const device = file.devices.find((candidate) => candidate.id === id);
+  if (!device) return undefined;
+  device.name = cleanName(name);
+  writeRemote(file);
+  return device;
+}
+
+/**
+ * Demoting the LAST full device while the gate is on is refused: a silent
+ * demotion still answers every GET, so it looks like control you no longer
+ * have. Revoking the last device stays permitted — that failure is loud, and
+ * `rm remote/remote.json` is the documented recovery either way.
+ */
+export function setDeviceRole(id: string, role: DeviceRole): PairedDevice | undefined {
+  const file = readRemote();
+  const device = file.devices.find((candidate) => candidate.id === id);
+  if (!device) return undefined;
+  if (
+    role === "observer" &&
+    file.requireAuth &&
+    device.role === "full" &&
+    !file.devices.some((other) => other.id !== id && other.role === "full")
+  ) {
+    throw new RemoteStoreError("Keep at least one device with full access.");
+  }
+  device.role = role;
   writeRemote(file);
   return device;
 }
@@ -159,6 +220,16 @@ export function revokeDevice(id: string): boolean {
   if (file.devices.length === before) return false;
   writeRemote(file);
   return true;
+}
+
+/** The lost-phone button. Returns how many were revoked. */
+export function revokeOtherDevices(keepId: string): number {
+  const file = readRemote();
+  const before = file.devices.length;
+  file.devices = file.devices.filter((device) => device.id === keepId);
+  const revoked = before - file.devices.length;
+  if (revoked > 0) writeRemote(file);
+  return revoked;
 }
 
 /**

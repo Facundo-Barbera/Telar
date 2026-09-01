@@ -1,5 +1,6 @@
 import { listEndpoints } from "@/lib/remote/endpoints";
-import { deviceCookieHeader } from "@/lib/remote/cookie";
+import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
+import { identifyCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
 import { addDevice, mintDeviceToken, readRemote, setRequireAuth } from "@/lib/remote/store";
 
@@ -11,13 +12,28 @@ function webPort(): number {
   return Number.isInteger(raw) && raw > 0 ? raw : 3000;
 }
 
-/** The Remote access panel's whole state. Hashes never leave the store. */
-export function GET() {
+/** The Remote access panel's whole state. Hashes never leave the store.
+ *  callerDeviceId lets both surfaces badge "This device" without any client
+ *  ever needing to remember its own id. */
+export function GET(request: Request) {
   try {
     const file = readRemote();
+    const caller = identifyCaller(
+      { authorization: request.headers.get("authorization"), deviceCookie: readDeviceCookie(request) },
+      file,
+    );
     return Response.json({
       requireAuth: file.requireAuth,
-      devices: file.devices.map(({ id, name, createdAt, lastSeenAt }) => ({ id, name, createdAt, lastSeenAt })),
+      devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform }) => ({
+        id,
+        name,
+        createdAt,
+        lastSeenAt,
+        role,
+        platform,
+      })),
+      callerDeviceId: caller?.id,
+      callerRole: caller?.role,
       pairing: file.pairing ? { expiresAt: file.pairing.expiresAt } : undefined,
       endpoints: listEndpoints(webPort()),
     });
@@ -45,7 +61,7 @@ export async function PATCH(request: Request) {
       return Response.json({ requireAuth: false });
     }
     const deviceToken = mintDeviceToken();
-    const device = addDevice("This browser", deviceToken);
+    const device = addDevice("This browser", deviceToken, { platform: "browser" });
     setRequireAuth(true);
     return Response.json(
       { requireAuth: true, device: { id: device.id, name: device.name } },

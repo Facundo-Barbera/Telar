@@ -27,6 +27,9 @@ describe("modelVersion", () => {
     // Anthropic separates with a dash where OpenAI uses a dot.
     expect(modelVersion("claude-opus-4-8")).toBeCloseTo(4.08, 5);
     expect(modelVersion("claude-opus-5")).toBe(5);
+    // A point release outranks its base and stays level with the generation.
+    expect(modelVersion("claude-fable-5-1")).toBeCloseTo(5.01, 5);
+    expect(modelVersion("claude-fable-5-1")!).toBeGreaterThan(modelVersion("claude-fable-5")!);
     // A third component is a patch level and does not change the generation.
     expect(modelVersion("gpt-5.4-mini")).toBeCloseTo(5.04, 5);
   });

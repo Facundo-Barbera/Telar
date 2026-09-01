@@ -5,9 +5,11 @@ import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport } from "@
  * once here so the page renders figures and never arithmetic. Pure and
  * exported for tests.
  *
- * COST IS ONLY EVER THE PROVIDER'S OWN FIGURE. Claude reports one per turn;
- * Codex reports none, so its cost cells render as absent (`priced: false`)
- * rather than as $0.00 — a zero would claim the work was free.
+ * COST: the provider's own figure when it reports one, else the engine
+ * prices tokens from the LiteLLM rate table (usage-pricing.ts) — cache reads
+ * at the API's 0.1× rate, cache writes at 1.25× (2× for 1h TTL). A model
+ * with no known rate renders as absent (`priced: false`) rather than $0.00
+ * — a zero would claim the work was free.
  */
 
 export type UsageTotals = {

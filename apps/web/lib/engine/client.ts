@@ -12,6 +12,8 @@ import type {
   GitHubSnapshot,
   GitignoreResult,
   GitOverview,
+  ComputerUseBackend,
+  ComputerUseStatus,
   InboxPolicy,
   TextGenPolicy,
   UsageReport,
@@ -211,8 +213,25 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
      *  and the provider owns the resume cursor. */
     updateSession: (
       sessionId: string,
-      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
+      patch: {
+        title?: string;
+        runtimeMode?: RuntimeMode;
+        detached?: boolean;
+        model?: ModelSelection | null;
+        /** Shelve or pin this session in the sidebar. `null` hands it back to
+         *  the inactivity rule — see `Session.settledOverride`. */
+        settledOverride?: "settled" | "active" | null;
+        snoozedUntil?: number | null;
+      },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /** Computer use, measured — slow by design (one subprocess round trip in
+     *  the engine), and the probe doubles as the macOS granting flow. */
+    computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
+    /** Wake the Sky host app in the background. Idempotent. */
+    wakeComputerUseHost: () => request<{ ok: boolean }>(fetcher, "POST", "/api/computer-use/host", {}),
+    /** cua's native granting flow — CuaDriver.app requests the grants. No-op for Sky. */
+    grantComputerUseAccess: () =>
+      request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),

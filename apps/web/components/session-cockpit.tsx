@@ -19,6 +19,8 @@ import {
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
 import { canvasHref } from "@/lib/session-list";
+import { isSettled } from "@/lib/session-settling";
+import { useInboxPolicy } from "@/lib/inbox-policy";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
@@ -52,6 +54,10 @@ const api = createEngineApi();
  *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
  *  floor (24rem) + panel floor (20rem), rounded up. */
 const NARROW_WINDOW = 1280;
+/** The masthead's "Spin into loom" entrance — off until the flow is ready to
+ *  live in every session's header. See the render site for why off means
+ *  absent rather than greyed. */
+const SPIN_ENTRANCE_ENABLED = false;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
@@ -232,8 +238,14 @@ function SessionMasthead({
         {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
             produced enough shape, hand it to the weaver. The session becomes
             the loom's origin and detaches — it leaves this surface and lives
-            in the loom's room from then on. */}
-        {session && !readOnly && (
+            in the loom's room from then on.
+
+            PARKED, NOT SHIPPED. The flow behind this glyph needs more work
+            before it earns a place in every session's header, and a disabled
+            button would be chrome apologising for itself — so nothing renders
+            until the flag flips. The Looms place stays reachable through the
+            place switcher; only this entrance is closed. */}
+        {SPIN_ENTRANCE_ENABLED && session && !readOnly && (
           <Button
             type="button"
             variant="ghost"
@@ -641,6 +653,16 @@ export function SessionCockpit({
         if (update.events.length === 0) return;
         cursor.current = update.cursor;
         setEvents((current) => appendJournalEvents(current, update.events));
+        // A PATCH FROM ANOTHER SURFACE — the sidebar settling this session,
+        // the phone renaming it — journals a `session.updated` carrying the
+        // whole record, and that event is not in the snapshot-earning set
+        // (it cannot storm, and it already has everything a snapshot would
+        // fetch). Read the record off the event itself; a snapshot below,
+        // fetched later, still wins.
+        const patched = [...update.events]
+          .reverse()
+          .find((event): event is Extract<EngineEvent, { type: "session.updated" }> => event.type === "session.updated");
+        if (patched) setSession(patched.session);
         if (update.snapshot) {
           setSession(update.snapshot.session);
           setTurns(update.snapshot.turns);
@@ -1242,6 +1264,52 @@ export function SessionCockpit({
     }
   };
 
+  /**
+   * IS THIS CONVERSATION ON THE SETTLED SHELF RIGHT NOW? Same rule, same
+   * inputs as the sidebar (`bandOf` folds the identical fields), so the
+   * banner over the composer and the shelf in the rail can never disagree.
+   * The shelf no longer springs open to show you the row you are inside —
+   * this banner is what says "you are reading settled history" instead.
+   *
+   * Archived is excluded: it reports settled too, but there is no un-settle
+   * for it, and a banner whose one button cannot work is worse than none.
+   */
+  const { policy: inboxPolicy } = useInboxPolicy();
+  const settled = Boolean(
+    session &&
+      session.state !== "archived" &&
+      isSettled(
+        {
+          archived: false,
+          updatedAt: session.updatedAt,
+          ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
+          ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+          ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+          ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+        },
+        {
+          working: session.activity === "working" || session.activity === "queued",
+          waitingOnYou: session.activity === "blocked",
+        },
+        { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
+      ),
+  );
+  const unsettle = async () => {
+    if (!sessionId) return;
+    try {
+      // A drift-settled session has no override to clear, and clearing nothing
+      // writes nothing. Setting an override first makes the clearing patch a
+      // real change, and a real change stamps `updatedAt`, which is what
+      // actually restarts the inactivity clock. Same two-step as the row's.
+      if (session?.settledOverride !== "settled") await api.updateSession(sessionId, { settledOverride: "active" });
+      const next = await api.updateSession(sessionId, { settledOverride: null });
+      setSession(next.session);
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not return the session to the list."));
+    }
+  };
+
   // Queued and mid-flight turns live in the composer's strip; a STEERED turn
   // is terminal but renders nowhere as a turn — its words are a user_message
   // row inside the run they joined, and a second copy here would double them.
@@ -1375,6 +1443,8 @@ export function SessionCockpit({
           {...(session ? { session } : {})}
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}
+          settled={settled}
+          onUnsettle={() => void unsettle()}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
           {...(composerQuestion

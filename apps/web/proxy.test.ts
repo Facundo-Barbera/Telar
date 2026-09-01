@@ -7,7 +7,7 @@ import { NextRequest } from "next/server";
 // Named for the deprecated convention; it is the matcher-testing util Next 16 ships.
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { config, proxy } from "./proxy";
-import { addDevice, mintDeviceToken, setRequireAuth } from "@/lib/remote/store";
+import { addDevice, mintDeviceToken, setDeviceRole, setRequireAuth } from "@/lib/remote/store";
 
 const savedTelarHome = process.env.TELAR_HOME;
 const savedTelarCockpit = process.env.TELAR_COCKPIT;
@@ -78,6 +78,30 @@ describe("pairing proxy", () => {
     // The write above moved remote.json's mtime; the next call re-reads.
     setRequireAuth(true); // rewrites the file with the device intact
     expect(proxy(authed)).toBeUndefined();
+  });
+
+  test("an observer reads freely, is 403'd on writes, and is never bounced to /pair", async () => {
+    freshHome();
+    const raw = mintDeviceToken();
+    const full = mintDeviceToken();
+    const phone = addDevice("Phone", raw);
+    addDevice("Mac", full); // keeps a full device so the demotion is legal
+    setRequireAuth(true);
+    setDeviceRole(phone.id, "observer");
+
+    const read = new NextRequest("http://cockpit.test/api/health", { headers: { authorization: `Bearer ${raw}` } });
+    expect(proxy(read)).toBeUndefined();
+
+    const write = new NextRequest("http://cockpit.test/api/sessions/x/turns", {
+      method: "POST",
+      headers: { authorization: `Bearer ${raw}` },
+    });
+    const denied = proxy(write);
+    expect(denied?.status).toBe(403);
+    expect(((await denied?.json()) as { error: { code: string } }).error.code).toBe("cockpit_forbidden");
+
+    // A paired observer loading a page is a GET — allowed, no redirect.
+    expect(proxy(new NextRequest("http://cockpit.test/settings", { headers: { authorization: `Bearer ${raw}` } }))).toBeUndefined();
   });
 
   test("fails open outside the launcher (ordinary web mode)", () => {

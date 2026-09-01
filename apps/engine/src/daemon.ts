@@ -24,6 +24,7 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
@@ -325,6 +326,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
+    // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
+    // installing or removing a driver applies to the next turn. Injected here,
+    // not defaulted in the store, so tests never read the real machine. The
+    // first claim that resolves also wakes the Sky host app if that is the
+    // backend — cua self-launches — once per daemon, in the background.
+    computerUse: () => {
+      const resolved = resolveComputerUse();
+      if (resolved) launchComputerUseHost();
+      return resolved;
+    },
   });
   const lock = acquireDaemonLock(statePaths(root));
   const daemonId = crypto.randomUUID();
@@ -576,6 +587,30 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
           }),
         });
+        return;
+      }
+      /**
+       * COMPUTER USE, MEASURED. The GET runs one real read-only call through
+       * the Sky client, because that is the only honest answer to "is the
+       * Automation grant in place" — and when the grant is still undecided,
+       * that same call is what makes macOS show its own prompt, which names
+       * the responsible app better than this daemon can from the inside.
+       * The POST wakes the host app the client drives.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/computer-use") {
+        writeJson(response, 200, { computerUse: await computerUseStatus() });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/host") {
+        openComputerUseHost();
+        writeJson(response, 200, { ok: true });
+        return;
+      }
+      // cua's native granting flow — CuaDriver.app requests Accessibility +
+      // Screen Recording, attributed to itself. Sky has no such command (its
+      // probe is the grant), so this reports what it did.
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
+        writeJson(response, 200, grantComputerUseAccess());
         return;
       }
       /**

@@ -12,8 +12,11 @@ import {
   mintPairing,
   readRemote,
   remoteHome,
+  renameDevice,
   revokeDevice,
+  revokeOtherDevices,
   RemoteStoreError,
+  setDeviceRole,
   setRequireAuth,
   storePath,
   touchDevice,
@@ -123,6 +126,62 @@ describe("remote store", () => {
 
     process.env.TELAR_HOME = path.join(os.homedir(), ".telar-dev");
     expect(() => remoteHome()).toThrow("legacy");
+  });
+
+  test("a file written before roles existed reads every device as full", () => {
+    freshHome();
+    fs.mkdirSync(path.dirname(storePath()), { recursive: true });
+    fs.writeFileSync(
+      storePath(),
+      JSON.stringify({
+        version: 1,
+        requireAuth: true,
+        devices: [{ id: "dev_old", name: "Old phone", tokenHash: "ab".repeat(32), createdAt: 1 }],
+      }),
+    );
+    const device = readRemote().devices[0];
+    expect(device.role).toBe("full");
+    expect(device.platform).toBeUndefined();
+  });
+
+  test("addDevice records platform and defaults to full", () => {
+    freshHome();
+    const device = addDevice("Phone", mintDeviceToken(), { platform: "ios" });
+    expect(device.role).toBe("full");
+    expect(device.platform).toBe("ios");
+    expect(readRemote().devices[0].platform).toBe("ios");
+  });
+
+  test("renameDevice trims, floors and caps the name", () => {
+    freshHome();
+    const device = addDevice("Phone", mintDeviceToken());
+    expect(renameDevice(device.id, "  Facundo's iPhone  ")?.name).toBe("Facundo's iPhone");
+    expect(renameDevice(device.id, "   ")?.name).toBe("Unnamed device");
+    expect(renameDevice(device.id, "x".repeat(100))?.name).toBe("x".repeat(64));
+    expect(renameDevice("dev_missing", "Ghost")).toBeUndefined();
+  });
+
+  test("setDeviceRole round-trips, and refuses to demote the last full device while the gate is on", () => {
+    freshHome();
+    const phone = addDevice("Phone", mintDeviceToken());
+    const browser = addDevice("Browser", mintDeviceToken());
+    setRequireAuth(true);
+    expect(setDeviceRole(browser.id, "observer")?.role).toBe("observer");
+    expect(() => setDeviceRole(phone.id, "observer")).toThrow(RemoteStoreError);
+    // With the gate off the demotion is harmless and allowed.
+    setRequireAuth(false);
+    expect(setDeviceRole(phone.id, "observer")?.role).toBe("observer");
+    expect(setDeviceRole(phone.id, "full")?.role).toBe("full");
+  });
+
+  test("revokeOtherDevices keeps exactly the named device", () => {
+    freshHome();
+    const keep = addDevice("Phone", mintDeviceToken());
+    addDevice("Browser", mintDeviceToken());
+    addDevice("Old laptop", mintDeviceToken());
+    expect(revokeOtherDevices(keep.id)).toBe(2);
+    expect(readRemote().devices.map((device) => device.id)).toEqual([keep.id]);
+    expect(revokeOtherDevices(keep.id)).toBe(0);
   });
 
   test("an unknown version reads as the open default rather than crashing", () => {

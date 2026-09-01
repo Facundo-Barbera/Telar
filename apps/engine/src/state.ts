@@ -111,6 +111,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { findProjectIcon, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import {
@@ -894,6 +895,8 @@ export type EngineNotifier = (input: {
 export class EngineStore {
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
+  /** See the constructor: daemon-injected, absent means no computer use. */
+  private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
   private readonly git: GitRunner;
   private readonly gh: GhRunner;
   /**
@@ -3062,9 +3065,19 @@ export class EngineStore {
   constructor(
     root: string,
     private readonly now: () => number = Date.now,
-    options: { notifier?: EngineNotifier; git?: GitRunner; gh?: GhRunner; sessionsBudget?: number } = {},
+    options: {
+      notifier?: EngineNotifier;
+      git?: GitRunner;
+      gh?: GhRunner;
+      sessionsBudget?: number;
+      /** Resolves Telar's computer-use backend (cua-driver, or Sky). INJECTED
+       *  BY THE DAEMON, absent by default — so tests never read the real
+       *  machine's installs, and a store without it simply has no computer use. */
+      computerUse?: () => ResolvedComputerUse | undefined;
+    } = {},
   ) {
     this.notifier = options.notifier;
+    this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.gh = options.gh ?? defaultGhRunner;
     this.sessionsBudget = Math.max(0, Math.floor(options.sessionsBudget ?? DEFAULT_SESSIONS_BUDGET));
@@ -4224,7 +4237,22 @@ export class EngineStore {
        * ones, or to work out which scope wins, would be a second copy of a
        * decision that has to be identical every time.
        */
-      const mcpServers = resolveMcpServers(this.listMcpServers(), session.projectId).filter((server) => server.enabled);
+      const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
+      /**
+       * TELAR'S OWN COMPUTER USE (cua-driver, or Sky as a fallback). Injected
+       * at claim time like everything else here, and re-resolved per claim so
+       * installing or removing the driver applies to the next turn rather than
+       * the next daemon. Goes to both providers when the backend is cua, Claude
+       * only when it is Sky — see `withComputerUse`. Absent installs inject
+       * nothing, silently, and the unfiltered `registered` list means a user's
+       * own entry (even a DISABLED one) is a decision this must not overrule.
+       */
+      const mcpServers = withComputerUse(
+        registered.filter((server) => server.enabled),
+        registered,
+        session.driver,
+        this.computerUse?.(),
+      );
       /**
        * Resolved at CLAIM TIME like everything else here, and never omitted:
        * a session whose instance was deleted still has to run, so this falls
@@ -4371,7 +4399,9 @@ export class EngineStore {
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn failed before this agent reported back");
+    // A failed turn means the provider process died — background shells died
+    // with it, whichever turn started them.
+    this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -4383,16 +4413,30 @@ export class EngineStore {
     const turn = requestedRunId
       ? queue.turns.find((candidate) => candidate.runId === requestedRunId)
       : queue.turns.find((candidate) => candidate.state === "queued" || candidate.state === "claimed" || candidate.state === "running");
-    if (!turn) return { stopped: false };
-    if (turn.state === "stopped" || turn.state === "ambiguous") return { turn: structuredClone(turn), stopped: false };
-    if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running") return { turn: structuredClone(turn), stopped: false };
+    if (!turn || turn.state === "stopped" || turn.state === "ambiguous" || (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running")) {
+      // NOTHING RUNNING, but Stop was pressed: the only thing left to stop is
+      // lingering background work. Settle it — this is also the retroactive
+      // cure for tasks orphaned before the sweeps below existed, which
+      // otherwise report "monitoring" forever with a Stop that no-ops.
+      const at = this.now();
+      const swept = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", { includeBackground: true, state: "stopped" });
+      if (swept > 0) this.touchSession(sessionId, at);
+      return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
+    }
     const at = this.now();
+    const wasLive = turn.state === "running" || turn.state === "claimed";
     turn.state = "stopped";
     turn.completedAt = at;
     turn.updatedAt = at;
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+    if (wasLive) {
+      // Stopping a live turn kills the provider process — and every
+      // background shell it hosted dies with it, whichever turn started them.
+      this.closeLiveTasks(sessionId, at, "the agent's process was stopped before this task finished", { includeBackground: true });
+    } else {
+      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+    }
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -5064,20 +5108,45 @@ export class EngineStore {
    * rather than a second event.
    */
   private closeOrphanedTasks(sessionId: string, runId: string, at: number, failure: string): void {
+    this.closeLiveTasks(sessionId, at, failure, { runId, includeBackground: false });
+  }
+
+  /**
+   * A BACKGROUND TASK CANNOT OUTLIVE THE PROVIDER PROCESS. Outliving its TURN
+   * is the definition of background — but when the process that hosts it dies
+   * (a stop, a failure, a vanished worker), there is nothing left running,
+   * and a task left at `running` makes the session claim "monitoring" forever
+   * with nothing for a human to stop. Found in real data: a stopped turn's
+   * background shell sat live for two days, and the Stop button no-opped
+   * because no turn was running.
+   *
+   * Returns how many tasks it closed, so a stop with no stoppable turn can
+   * still report that it did something.
+   */
+  private closeLiveTasks(
+    sessionId: string,
+    at: number,
+    failure: string,
+    options: { runId?: string; includeBackground: boolean; state?: "failed" | "stopped" },
+  ): number {
     const tasks = this.readTasks(sessionId);
-    let changed = false;
+    let changed = 0;
     for (const [id, task] of tasks) {
-      if (task.runId !== runId || task.kind === "background") continue;
+      if (options.runId !== undefined && task.runId !== options.runId) continue;
+      if (!options.includeBackground && task.kind === "background") continue;
       if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
-      const closed: Task = { ...task, state: "failed", failure, updatedAt: at, completedAt: at };
+      // `failed` RATHER THAN `stopped` by default, matching the driver's own
+      // choice for the same situation: two spellings for one cause would
+      // render as two different colours in the roster depending on which
+      // path got there. A human-initiated sweep passes `stopped` — there the
+      // cause IS a stop.
+      const closed: Task = { ...task, state: options.state ?? "failed", failure, updatedAt: at, completedAt: at };
       tasks.set(id, closed);
-      // `failed` RATHER THAN `stopped`, matching the driver's own choice for
-      // the same situation: two spellings for one cause would render as two
-      // different colours in the roster depending on which path got there.
-      this.appendEvent(sessionId, { type: "task.completed", task: closed }, runId);
-      changed = true;
+      this.appendEvent(sessionId, { type: "task.completed", task: closed }, task.runId);
+      changed += 1;
     }
-    if (changed) this.writeTasks(sessionId, tasks);
+    if (changed > 0) this.writeTasks(sessionId, tasks);
+    return changed;
   }
 
   private readRequests(sessionId: string): Map<string, EngineRequest> {

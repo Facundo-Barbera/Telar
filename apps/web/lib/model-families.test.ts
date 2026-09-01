@@ -70,6 +70,35 @@ describe("familyKey", () => {
     // Every Codex row. Nothing to strip, nothing to resolve.
     expect(familyKey(model("gpt-5.6-sol"))).toBe("gpt-5.6-sol");
   });
+
+  test("a point release is its OWN family, not a build of the last one", () => {
+    // Fable 5.1: `-5-1` is a version, not an 8-digit dated build — the strip
+    // must not eat it, or 5.1 and 5 fold into one row and the picker can't
+    // say which you'd run.
+    expect(familyKey(model("claude-fable-5-1[1m]", { resolves: "claude-fable-5-1[1m]" }))).toBe("claude-fable-5-1");
+    expect(familyKey(model("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]" }))).toBe("claude-fable-5");
+  });
+});
+
+describe("a new point release arrives (Fable 5.1)", () => {
+  const withFable51 = [
+    ...CLAUDE,
+    model("claude-fable-5-1[1m]", {
+      label: "Fable",
+      efforts: ["low", "medium", "high", "xhigh", "max"],
+      resolves: "claude-fable-5-1[1m]",
+    }),
+  ];
+
+  test("it lists beside Fable 5 with its own versioned label, filed as current", () => {
+    const families = groupFamilies(withFable51);
+    const labels = new Map(families.map((family) => [family.id, family.label]));
+    expect(labels.get("claude-fable-5")).toBe("Fable 5");
+    expect(labels.get("claude-fable-5-1")).toBe("Fable 5.1");
+    const { current, legacy } = splitGenerations(families);
+    expect(current.map((family) => family.id)).toContain("claude-fable-5-1");
+    expect(legacy.map((family) => family.id)).not.toContain("claude-fable-5-1");
+  });
 });
 
 describe("contextWindowOf", () => {

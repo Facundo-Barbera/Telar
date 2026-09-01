@@ -339,6 +339,37 @@ export type InboxPolicy = z.infer<typeof InboxPolicy>;
 export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS };
 
 /**
+ * COMPUTER USE, MEASURED — the settings page's permission readout.
+ *
+ * Three facts with three different fixes, which is why they are not one enum:
+ * the Codex plugin being absent is an install task, the Sky host app being
+ * down is one button, and the Automation grant is a macOS decision keyed on a
+ * responsible process the engine cannot reliably name from the inside. The
+ * `permission` answer comes from ONE REAL read-only call — which is also the
+ * granting flow, because an undecided grant makes macOS raise its own prompt.
+ */
+export const ComputerUsePermission = z.enum(["granted", "denied", "host-not-running", "unknown"]);
+export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
+
+/** Which engine is supplying the desktop: `cua` is Telar's own open-source
+ *  driver (trycua/cua, MIT); `sky` is Codex's proprietary bundled client, the
+ *  fallback. The pane names it so the reader knows what holds the grants. */
+export const ComputerUseBackend = z.enum(["cua", "sky"]);
+export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
+
+export const ComputerUseStatus = z.object({
+  installed: z.boolean(),
+  hostRunning: z.boolean(),
+  /** Absent when not installed. */
+  backend: ComputerUseBackend.optional(),
+  /** Absent when not installed: there is nothing to measure. */
+  permission: ComputerUsePermission.optional(),
+  /** The backend's own words, when there were any. */
+  message: z.string().optional(),
+});
+export type ComputerUseStatus = z.infer<typeof ComputerUseStatus>;
+
+/**
  * WHO WRITES THE WORDS THE HUMAN DIDN'T — t3 code's TextGeneration idea, on
  * Telar's shapes. A session's title starts as the first message truncated, and
  * its worktree branch is a slug of that truncation; both are placeholders a

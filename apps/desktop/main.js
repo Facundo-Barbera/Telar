@@ -206,14 +206,21 @@ function readBuildInfo() {
 }
 
 function windowTitle() {
+  if (!app.isPackaged) return "Telar Dev";
   const info = readBuildInfo();
   return info && info.shortSha ? `Telar ${info.shortSha}` : "Telar";
 }
 
 function developmentIconPath() {
   if (app.isPackaged) return undefined;
-  const icon = path.join(__dirname, "build", "icon.png");
-  return fs.existsSync(icon) ? icon : undefined;
+  // The AMBER loom, not the blue one: a dev shell wearing the production
+  // icon is indistinguishable in the dock from the installed app — the same
+  // rule as iOS's AppIconDev.
+  for (const name of ["icon-dev.png", "icon.png"]) {
+    const icon = path.join(__dirname, "build", name);
+    if (fs.existsSync(icon)) return icon;
+  }
+  return undefined;
 }
 
 function applyDevelopmentAppIcon() {

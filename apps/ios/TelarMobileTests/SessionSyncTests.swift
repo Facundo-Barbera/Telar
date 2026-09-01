@@ -45,6 +45,11 @@ actor RecordingEngineAPI: EngineAPI {
     func listDirectories(path: String?) async throws -> DirectoryListing { fatalError("unused") }
     func registerProject(name: String, root: String) async throws -> ProjectRef { fatalError("unused") }
     func projectGit(_ projectId: EngineID) async throws -> GitOverview { fatalError("unused") }
+    func remoteStatus() async throws -> RemoteStatus { fatalError("unused") }
+    func renameDevice(_ id: String, name: String) async throws -> RemoteDevice { fatalError("unused") }
+    func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice { fatalError("unused") }
+    func revokeDevice(_ id: String) async throws {}
+    func revokeOtherDevices() async throws -> Int { 0 }
 }
 
 private func page(_ json: String) -> EventPage {

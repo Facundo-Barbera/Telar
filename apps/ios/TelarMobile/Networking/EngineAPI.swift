@@ -38,6 +38,13 @@ protocol EngineAPI: Sendable {
     func registerProject(name: String, root: String) async throws -> ProjectRef
     /// Branches for the draft's base-ref picker.
     func projectGit(_ projectId: EngineID) async throws -> GitOverview
+    /// The cockpit's paired-device panel — who may reach the Mac, from here.
+    func remoteStatus() async throws -> RemoteStatus
+    func renameDevice(_ id: String, name: String) async throws -> RemoteDevice
+    func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice
+    func revokeDevice(_ id: String) async throws
+    /// Revoke every device except this one (the server keeps the caller).
+    func revokeOtherDevices() async throws -> Int
 }
 
 struct InboxPolicy: Decodable, Equatable {
@@ -53,6 +60,8 @@ struct NewSessionInput: Encodable {
     var envMode: String?
     /// Worktree base — any name from `GitOverview.refs`. Absent = HEAD.
     var baseRef: String?
+    /// The worktree's own branch name. Absent = the engine invents one.
+    var branchName: String?
 }
 
 /// The only two shapes a `user_input` answer takes (`UserInputField.kind`
@@ -87,6 +96,10 @@ enum EngineAPIError: Error, LocalizedError {
     case engine(code: String, message: String, status: Int)
     /// The cockpit answered, but not with the contract's error body.
     case badResponse(status: Int)
+    /// A 2xx whose body didn't decode: the URL IS a cockpit — the two ends
+    /// are just on very different versions. Distinct from badResponse so
+    /// skew is never misdiagnosed as a wrong address.
+    case incompatible(status: Int)
     case transport(Error)
 
     var errorDescription: String? {
@@ -94,12 +107,14 @@ enum EngineAPIError: Error, LocalizedError {
         case .engine(let code, let message, _):
             switch code {
             case "cockpit_unauthorized": "This phone is not paired with the cockpit — get a pairing code from Settings → Remote access."
+            case "cockpit_forbidden": "This phone is paired for viewing only — give it full access from Remote access on the Mac."
             case "engine_unavailable": "The Mac's engine is down — the cockpit is up but can't reach it."
             case "worker_unavailable": "No worker is running on the Mac to take the turn."
             case "not_found": "That no longer exists on the engine."
             default: message
             }
         case .badResponse(let status): "Unexpected response (\(status)) — is the base URL a Telar cockpit?"
+        case .incompatible: "The Mac and this app are on very different versions — update whichever is older."
         case .transport(let error): error.localizedDescription
         }
     }
@@ -113,6 +128,12 @@ enum EngineAPIError: Error, LocalizedError {
     /// token. The fix is a fresh pairing code, not a retry.
     var isUnauthorized: Bool {
         if case .engine(let code, _, _) = self { return code == "cockpit_unauthorized" }
+        return false
+    }
+
+    /// Paired, but view-only: the gate admits reads and refuses writes.
+    var isForbidden: Bool {
+        if case .engine(let code, _, _) = self { return code == "cockpit_forbidden" }
         return false
     }
 }
@@ -269,6 +290,40 @@ struct HTTPEngineAPI: EngineAPI {
         return wrapped.git
     }
 
+    func remoteStatus() async throws -> RemoteStatus {
+        try await get("api/remote")
+    }
+
+    private struct WrappedDevice: Decodable { var device: RemoteDevice }
+
+    func renameDevice(_ id: String, name: String) async throws -> RemoteDevice {
+        let wrapped: WrappedDevice = try await send(
+            "PATCH", "api/remote/devices/\(escape(id))", body: ["name": AnyEncodable(name)]
+        )
+        return wrapped.device
+    }
+
+    func setDeviceRole(_ id: String, role: String) async throws -> RemoteDevice {
+        let wrapped: WrappedDevice = try await send(
+            "PATCH", "api/remote/devices/\(escape(id))", body: ["role": AnyEncodable(role)]
+        )
+        return wrapped.device
+    }
+
+    func revokeDevice(_ id: String) async throws {
+        var request = makeRequest(url("api/remote/devices/\(escape(id))"))
+        request.httpMethod = "DELETE"
+        let _: IgnoredBody = try await perform(request)
+    }
+
+    func revokeOtherDevices() async throws -> Int {
+        var request = makeRequest(url("api/remote/devices"))
+        request.httpMethod = "DELETE"
+        struct Wrapped: Decodable { var revoked: Int }
+        let wrapped: Wrapped = try await perform(request)
+        return wrapped.revoked
+    }
+
     // MARK: transport
 
     private func escape(_ id: String) -> String {
@@ -295,11 +350,11 @@ struct HTTPEngineAPI: EngineAPI {
         try await perform(makeRequest(url(path, query: query)))
     }
 
-    /// Pre-pairing reachability: the one route that answers strangers.
-    func ping() async throws -> Bool {
-        struct Pong: Decodable { var ok: Bool }
-        let pong: Pong = try await perform(makeRequest(url("api/ping")))
-        return pong.ok
+    /// Pre-pairing reachability: the one route that answers strangers. Also
+    /// the version signature — `proto`/`appVersion` are absent on cockpits
+    /// older than the field (treat missing proto as 1).
+    func ping() async throws -> Pong {
+        try await perform(makeRequest(url("api/ping")))
     }
 
     private func post<T: Decodable>(_ path: String, body: [String: AnyEncodable]) async throws -> T {
@@ -332,9 +387,17 @@ struct HTTPEngineAPI: EngineAPI {
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
-            throw EngineAPIError.badResponse(status: status)
+            throw EngineAPIError.incompatible(status: status)
         }
     }
+}
+
+/// GET /api/ping — reachability plus the cockpit's version signature.
+struct Pong: Decodable {
+    var ok: Bool
+    /// Pairing-protocol number; nil on cockpits older than the field = 1.
+    var proto: Int?
+    var appVersion: String?
 }
 
 /// Some calls only care that the server said yes.

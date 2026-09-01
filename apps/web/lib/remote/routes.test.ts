@@ -3,10 +3,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { GET as pingGet } from "@/app/api/ping/route";
 import { POST as pairPost } from "@/app/api/pair/route";
 import { GET as remoteGet, PATCH as remotePatch } from "@/app/api/remote/route";
 import { POST as pairingMint } from "@/app/api/remote/pairing/route";
-import { DELETE as deviceDelete } from "@/app/api/remote/devices/[deviceId]/route";
+import { DELETE as deviceDelete, PATCH as devicePatch } from "@/app/api/remote/devices/[deviceId]/route";
+import { DELETE as devicesDeleteOthers } from "@/app/api/remote/devices/route";
 import { decideApiAccess } from "./gate";
 import { isTailnetIpv4, listEndpoints } from "./endpoints";
 import { readRemote } from "./store";
@@ -35,15 +37,40 @@ async function mintToken(): Promise<string> {
   return minted.token;
 }
 
-function pairRequest(token: string, headers: Record<string, string> = {}): Request {
+function pairRequest(token: string, headers: Record<string, string> = {}, extra: Record<string, unknown> = {}): Request {
   return new Request("http://cockpit.test/api/pair", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify({ token, deviceName: "Test phone" }),
+    body: JSON.stringify({ token, deviceName: "Test phone", ...extra }),
   });
 }
 
+function statusRequest(headers: Record<string, string> = {}): Request {
+  return new Request("http://cockpit.test/api/remote", { headers });
+}
+
+function patchDeviceRequest(deviceId: string, body: Record<string, unknown>) {
+  return devicePatch(
+    new Request("http://x/api/remote/devices/" + deviceId, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ deviceId }) },
+  );
+}
+
 describe("pairing routes", () => {
+  test("ping answers strangers with the version signature, even while the gate is on", async () => {
+    freshHome();
+    const { EXEMPT_API_PATHS } = await import("./gate");
+    expect(EXEMPT_API_PATHS.has("/api/ping")).toBe(true);
+    const body = (await pingGet().json()) as { ok: boolean; proto: number; appVersion: string };
+    expect(body.ok).toBe(true);
+    expect(body.proto).toBe(1);
+    expect(typeof body.appVersion).toBe("string");
+  });
+
   test("mint → exchange yields a device token and a lax http cookie", async () => {
     freshHome();
     const response = await pairPost(pairRequest(await mintToken()));
@@ -57,9 +84,9 @@ describe("pairing routes", () => {
     expect(cookie.includes("Secure")).toBe(false);
     // And the minted device actually admits requests.
     expect(decideApiAccess(
-      { pathname: "/api/health", authorization: `Bearer ${body.deviceToken}`, deviceCookie: null },
+      { pathname: "/api/health", method: "GET", authorization: `Bearer ${body.deviceToken}`, deviceCookie: null },
       { ...readRemote(), requireAuth: true },
-    )).toEqual({ allow: true, deviceId: body.deviceId });
+    )).toEqual({ allow: true, deviceId: body.deviceId, role: "full" });
   });
 
   test("an https-forwarded exchange marks the cookie Secure", async () => {
@@ -81,9 +108,85 @@ describe("pairing routes", () => {
     freshHome();
     await mintToken();
     await pairPost(pairRequest(await mintToken()));
-    const serialized = JSON.stringify(await remoteGet().json());
+    const serialized = JSON.stringify(await remoteGet(statusRequest()).json());
     expect(serialized.includes("tokenHash")).toBe(false);
     expect(serialized.includes("tlr_")).toBe(false);
+  });
+
+  test("the status names the calling device, by bearer or by cookie, and strangers get nothing", async () => {
+    freshHome();
+    const paired = (await (await pairPost(pairRequest(await mintToken(), {}, { platform: "ios" }))).json()) as {
+      deviceToken: string;
+      deviceId: string;
+    };
+    const byBearer = (await remoteGet(statusRequest({ authorization: `Bearer ${paired.deviceToken}` })).json()) as {
+      callerDeviceId?: string;
+      callerRole?: string;
+      devices: { id: string; platform?: string }[];
+    };
+    expect(byBearer.callerDeviceId).toBe(paired.deviceId);
+    expect(byBearer.callerRole).toBe("full");
+    expect(byBearer.devices[0].platform).toBe("ios");
+
+    const byCookie = (await remoteGet(statusRequest({ cookie: `telar_device=${paired.deviceToken}` })).json()) as {
+      callerDeviceId?: string;
+    };
+    expect(byCookie.callerDeviceId).toBe(paired.deviceId);
+
+    const stranger = (await remoteGet(statusRequest()).json()) as { callerDeviceId?: string };
+    expect(stranger.callerDeviceId).toBeUndefined();
+  });
+
+  test("PATCH renames and re-roles a device; demoting the last full one is 409", async () => {
+    freshHome();
+    const paired = (await (await pairPost(pairRequest(await mintToken()))).json()) as { deviceId: string };
+    const renamed = await patchDeviceRequest(paired.deviceId, { name: "  The phone  " });
+    expect(((await renamed.json()) as { device: { name: string } }).device.name).toBe("The phone");
+
+    const other = (await (await pairPost(pairRequest(await mintToken()))).json()) as { deviceId: string };
+    await remotePatch(new Request("http://x/api/remote", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requireAuth: true }),
+    }));
+    // Three full devices now (two paired + the self-paired browser); demote two.
+    expect((await patchDeviceRequest(other.deviceId, { role: "observer" })).status).toBe(200);
+    const browserDevice = readRemote().devices.find((device) => device.name === "This browser")!;
+    expect((await patchDeviceRequest(browserDevice.id, { role: "observer" })).status).toBe(200);
+    const last = await patchDeviceRequest(paired.deviceId, { role: "observer" });
+    expect(last.status).toBe(409);
+    expect(((await last.json()) as { error: { code: string } }).error.code).toBe("cockpit_last_full_device");
+
+    expect((await patchDeviceRequest(paired.deviceId, {})).status).toBe(400);
+    expect((await patchDeviceRequest("dev_missing", { name: "Ghost" })).status).toBe(404);
+  });
+
+  test("DELETE /api/remote/devices keeps the caller and revokes the rest", async () => {
+    freshHome();
+    const keeper = (await (await pairPost(pairRequest(await mintToken()))).json()) as { deviceToken: string; deviceId: string };
+    await pairPost(pairRequest(await mintToken()));
+    await pairPost(pairRequest(await mintToken()));
+    const anonymous = devicesDeleteOthers(new Request("http://x/api/remote/devices", { method: "DELETE" }));
+    expect(anonymous.status).toBe(401);
+    const response = devicesDeleteOthers(
+      new Request("http://x/api/remote/devices", {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${keeper.deviceToken}` },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { revoked: number }).revoked).toBe(2);
+    expect(readRemote().devices.map((device) => device.id)).toEqual([keeper.deviceId]);
+  });
+
+  test("the self-paired browser is stamped as a browser", async () => {
+    freshHome();
+    await remotePatch(new Request("http://x/api/remote", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ requireAuth: true }),
+    }));
+    expect(readRemote().devices[0].platform).toBe("browser");
   });
 
   test("enabling requireAuth pairs the calling browser in the same response", async () => {
@@ -110,9 +213,9 @@ describe("pairing routes", () => {
     });
     expect(gone.status).toBe(200);
     expect(decideApiAccess(
-      { pathname: "/api/health", authorization: `Bearer ${paired.deviceToken}`, deviceCookie: null },
+      { pathname: "/api/health", method: "GET", authorization: `Bearer ${paired.deviceToken}`, deviceCookie: null },
       { ...readRemote(), requireAuth: true },
-    )).toEqual({ allow: false });
+    )).toEqual({ allow: false, code: "cockpit_unauthorized" });
   });
 
   test("an oversized pair body is refused before parsing", async () => {

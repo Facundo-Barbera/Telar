@@ -13,25 +13,31 @@ struct TelarMobileApp: App {
 
 struct RootView: View {
     let settings: AppSettings
-    @State private var showSettings = false
+    /// `-openSettings 1` launch arg — automation affordance like -openSession.
+    @State private var showSettings = UserDefaults.standard.bool(forKey: "openSettings")
     // `-newSession 1` launch arg — automation affordance like -openSession.
     @State private var showNewSession = UserDefaults.standard.bool(forKey: "newSession")
-    // `simctl launch booted com.telar.mobile -openSession <id>` — launch
-    // arguments land in UserDefaults, which is what makes the session view
-    // reachable from automation. Inert in normal use.
-    @State private var path: [EngineID] =
-        UserDefaults.standard.string(forKey: "openSession").map { [$0] } ?? []
+    /// Navigation is HOST-SCOPED: a session id means nothing without the Mac
+    /// that minted it. `-openSession <id>` resolves against the first host
+    /// (identical to the single-host world); `-openSessionHost <name-or-host>`
+    /// disambiguates in two-stack automation.
+    @State private var path: [ScopedSessionID] = []
 
     var body: some View {
         NavigationStack(path: $path) {
-            if let api = settings.api {
-                InboxView(api: api)
-                    // Rebuild the whole surface when the cockpit or the
-                    // pairing credential changes.
-                    .id(settings.baseURLString + (settings.deviceToken ?? ""))
+            if !settings.hosts.isEmpty {
+                InboxView(settings: settings)
                     .navigationTitle("Telar")
-                    .navigationDestination(for: EngineID.self) { sessionId in
-                        SessionView(api: api, sessionId: sessionId)
+                    .navigationDestination(for: ScopedSessionID.self) { ref in
+                        if let hostApi = settings.api(for: ref.hostId) {
+                            SessionView(api: hostApi, sessionId: ref.sessionId, hostId: ref.hostId)
+                                .id(settings.apiFingerprint(ref.hostId))
+                        } else {
+                            ContentUnavailableView(
+                                "That Mac was removed",
+                                systemImage: "desktopcomputer.trianglebadge.exclamationmark"
+                            )
+                        }
                     }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -52,7 +58,7 @@ struct RootView: View {
                     }
                     .sheet(isPresented: $showNewSession) {
                         NavigationStack {
-                            NewSessionView(api: api) { sessionId in
+                            NewSessionView(settings: settings) { ref in
                                 showNewSession = false
                                 // Pushing while the sheet's dismissal is still
                                 // animating gets the push dropped on device —
@@ -60,14 +66,14 @@ struct RootView: View {
                                 // Let the dismissal finish first.
                                 Task {
                                     try? await Task.sleep(for: .milliseconds(600))
-                                    path.append(sessionId)
+                                    path.append(ref)
                                 }
                             }
                         }
                     }
                     .sheet(isPresented: $showSettings) {
                         NavigationStack {
-                            ConnectView(settings: settings)
+                            SettingsView(settings: settings)
                                 .toolbar {
                                     ToolbarItem(placement: .confirmationAction) {
                                         Button("Done") { showSettings = false }
@@ -76,8 +82,49 @@ struct RootView: View {
                         }
                     }
             } else {
-                ConnectView(settings: settings)
+                // The front door welcomes; ConnectView is where it guides you.
+                WelcomeView(settings: settings)
             }
         }
+        // A removed Mac's pushes must not survive it — prune, don't trap.
+        .onChange(of: settings.book.membershipFingerprint) {
+            let living = Set(settings.hosts.map(\.id))
+            path.removeAll { !living.contains($0.hostId) }
+        }
+        .task {
+            // `-addHostLink <pairing url>` — the two-stack automation
+            // affordance: -pairingLink only fires on an EMPTY phone (by
+            // design), this one pairs an ADDITIONAL Mac. Inert in normal use.
+            if let link = UserDefaults.standard.string(forKey: "addHostLink"),
+               let parsed = Pairing.parsePairingURL(link),
+               let token = try? await Pairing.exchange(
+                   base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name
+               ) {
+                settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
+            }
+            // `simctl launch … -openSession <id> [-openSessionHost <hint>]`.
+            guard path.isEmpty, let sessionId = UserDefaults.standard.string(forKey: "openSession") else { return }
+            let hint = UserDefaults.standard.string(forKey: "openSessionHost")
+            if let ref = ScopedSessionID.resolveLaunchArg(sessionId: sessionId, hostHint: hint, hosts: settings.hosts) {
+                path = [ref]
+            }
+        }
+    }
+}
+
+extension ScopedSessionID {
+    /// Launch-arg resolution, pure for tests: no hint = first host (the
+    /// single-host behavior); a hint matches the host's name, then its URL
+    /// host, case-insensitively.
+    static func resolveLaunchArg(sessionId: String, hostHint: String?, hosts: [Host]) -> ScopedSessionID? {
+        let host: Host?
+        if let hint = hostHint?.lowercased(), !hint.isEmpty {
+            host = hosts.first { $0.name.lowercased() == hint }
+                ?? hosts.first { $0.baseURL?.host()?.lowercased() == hint }
+        } else {
+            host = hosts.first
+        }
+        guard let host else { return nil }
+        return ScopedSessionID(hostId: host.id, sessionId: sessionId)
     }
 }

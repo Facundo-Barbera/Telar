@@ -28,11 +28,19 @@ import Observation
 
     private let api: any EngineAPI
     private let sessionId: EngineID
-    private var pendingKey: String { "telar.pendingSend.\(sessionId)" }
+    private let hostId: HostID?
+    /// HOST-SCOPED: two Macs can mint the same session id, and a pending
+    /// (runId, text) from one must never replay into the other's session.
+    /// nil hostId (previews/tests) keeps the legacy key shape.
+    private var pendingKey: String {
+        if let hostId { return "telar.pendingSend.\(hostId.uuidString).\(sessionId)" }
+        return "telar.pendingSend.\(sessionId)"
+    }
 
-    init(api: any EngineAPI, sessionId: EngineID) {
+    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil) {
         self.api = api
         self.sessionId = sessionId
+        self.hostId = hostId
         sync = SessionSyncEngine(api: api, sessionId: sessionId)
         if let data = UserDefaults.standard.data(forKey: pendingKey) {
             pendingSend = try? JSONDecoder().decode(PendingSend.self, from: data)

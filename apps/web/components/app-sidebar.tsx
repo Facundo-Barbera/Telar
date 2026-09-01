@@ -67,6 +67,7 @@ import {
   canvasHref,
   deriveSessionList,
   SESSION_PAGE_SIZE,
+  SETTLED_PAGE_SIZE,
   sessionHref,
   toSidebarSession,
   type SidebarSession,
@@ -377,7 +378,7 @@ function SidebarBody() {
   // point of snoozing is not to see these until they come back on their own.
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [sessionLimit, setSessionLimit] = useState(SESSION_PAGE_SIZE);
-  const [settledLimit, setSettledLimit] = useState(SESSION_PAGE_SIZE);
+  const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
@@ -513,7 +514,7 @@ function SidebarBody() {
 
   const resetPaging = () => {
     setSessionLimit(SESSION_PAGE_SIZE);
-    setSettledLimit(SESSION_PAGE_SIZE);
+    setSettledLimit(SETTLED_PAGE_SIZE);
   };
 
   const selectScope = (next?: string) => {
@@ -837,14 +838,17 @@ function SidebarBody() {
               label="Settled"
               count={list.settledCount}
               rows={list.settled}
-              // FORCED OPEN WHILE IT HOLDS THE SESSION YOU ARE READING. The
-              // settled survivor stays on its shelf now (see session-list.ts),
-              // and a shelf that hides the row you are inside would look like
-              // the session vanished from the rail entirely.
-              open={settledOpen || (activeSessionId !== undefined && list.settled.some((row) => row.id === activeSessionId))}
+              // NOT forced open while it holds the session you are reading.
+              // It used to be, so the open row stayed visible in the rail —
+              // but that meant settling the conversation you were in sprang
+              // the shelf open, which read as the settle bouncing back. The
+              // cockpit's own settled banner (see composer.tsx) is what says
+              // "you are inside settled history" now; the shelf opens only
+              // when asked.
+              open={settledOpen}
               onToggle={() => setSettledOpen((open) => !open)}
               hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
-              onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
+              onShowMore={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)}
               limit={settledLimit}
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}

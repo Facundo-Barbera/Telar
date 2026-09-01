@@ -18,20 +18,35 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { SmartphoneIcon, XIcon } from "lucide-react";
+import { CircleHelpIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { QrMatrix } from "@/lib/remote/qr";
 import { fmtAgo } from "@/lib/format";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "./copy-command";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
+interface RemoteDevice {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt?: number;
+  role: "full" | "observer";
+  platform?: "ios" | "browser";
+}
+
 interface RemoteStatus {
   requireAuth: boolean;
-  devices: Array<{ id: string; name: string; createdAt: number; lastSeenAt?: number }>;
+  devices: RemoteDevice[];
+  callerDeviceId?: string;
+  callerRole?: "full" | "observer";
   pairing?: { expiresAt: number };
   endpoints: Array<{ kind: string; label: string; url: string; qrSafe: boolean }>;
 }
+
+const PLATFORM_ICONS = { ios: SmartphoneIcon, browser: MonitorIcon } as const;
 
 interface MintedPairing {
   token: string;
@@ -128,6 +143,43 @@ export function RemoteSection() {
     [load],
   );
 
+  const patchDevice = useCallback(
+    async (deviceId: string, body: { name?: string; role?: "full" | "observer" }) => {
+      try {
+        const response = await fetch(`/api/remote/devices/${deviceId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (response.status === 409) {
+          setError("Keep at least one device with full access.");
+        } else if (!response.ok) {
+          setError("Could not update the device.");
+        } else {
+          setError(null);
+        }
+      } catch {
+        setError("Could not update the device.");
+      }
+      await load();
+    },
+    [load],
+  );
+
+  const revokeOthers = useCallback(async () => {
+    await fetch("/api/remote/devices", { method: "DELETE" }).catch(() => undefined);
+    await load();
+  }, [load]);
+
+  // Last seen ages while the tab is hidden; refresh on return.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [load]);
+
   if (!status) {
     return (
       <SettingsGroup title="Pairing" description="Who may reach this cockpit from other devices.">
@@ -200,27 +252,144 @@ export function RemoteSection() {
         </SettingsGroup>
       )}
 
-      {status.requireAuth && (
-        <SettingsGroup title="Paired devices" description="Revoking logs the device out on its next request.">
-          {status.devices.length === 0 && <Row label="None yet" hint="Devices appear here as they pair." control={null} />}
-          {status.devices.map((device) => (
-            <Row
-              key={device.id}
-              label={device.name}
-              hint={
-                device.lastSeenAt
-                  ? `Last seen ${fmtAgo(device.lastSeenAt)}`
-                  : `Paired ${fmtAgo(device.createdAt)}`
-              }
-              control={
-                <Button variant="ghost" size="icon-sm" aria-label={`Revoke ${device.name}`} onClick={() => void revoke(device.id)}>
-                  <XIcon className="size-3.5" />
-                </Button>
-              }
-            />
-          ))}
-        </SettingsGroup>
-      )}
+      <SettingsGroup
+        title="Paired devices"
+        description={
+          status.requireAuth
+            ? "Rename by clicking the name. View-only devices may read everything and change nothing. Revoking logs the device out on its next request."
+            : "Pairing is off — anything that can reach this address has full control. These credentials matter again when you turn it on."
+        }
+      >
+        {status.devices.length === 0 && <Row label="None yet" hint="Devices appear here as they pair." control={null} />}
+        {status.devices.map((device) => (
+          <DeviceRow
+            key={device.id}
+            device={device}
+            isSelf={device.id === status.callerDeviceId}
+            busy={busy}
+            onRename={(name) => void patchDevice(device.id, { name })}
+            onRole={(role) => void patchDevice(device.id, { role })}
+            onRevoke={() => void revoke(device.id)}
+          />
+        ))}
+        {status.devices.length > 1 && status.callerDeviceId && (
+          <RevokeOthersRow count={status.devices.length - 1} onConfirm={() => void revokeOthers()} />
+        )}
+      </SettingsGroup>
     </>
+  );
+}
+
+function DeviceRow({
+  device,
+  isSelf,
+  busy,
+  onRename,
+  onRole,
+  onRevoke,
+}: {
+  device: RemoteDevice;
+  isSelf: boolean;
+  busy: boolean;
+  onRename: (name: string) => void;
+  onRole: (role: "full" | "observer") => void;
+  onRevoke: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(device.name);
+  const Icon = device.platform ? PLATFORM_ICONS[device.platform] : CircleHelpIcon;
+
+  const commit = () => {
+    setEditing(false);
+    if (draft.trim() && draft.trim() !== device.name) onRename(draft);
+  };
+
+  return (
+    <Row
+      icon={Icon}
+      label={
+        editing ? (
+          <Input
+            autoFocus
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") commit();
+              if (event.key === "Escape") {
+                setDraft(device.name);
+                setEditing(false);
+              }
+            }}
+            className="h-6 w-48 px-1.5 text-sm"
+          />
+        ) : (
+          <span className="inline-flex items-center gap-2">
+            <button
+              type="button"
+              className="cursor-text hover:underline decoration-dotted underline-offset-2"
+              title="Rename"
+              onClick={() => {
+                setDraft(device.name);
+                setEditing(true);
+              }}
+            >
+              {device.name}
+            </button>
+            {isSelf && <Badge variant="outline">This device</Badge>}
+          </span>
+        )
+      }
+      hint={device.lastSeenAt ? `Last seen ${fmtAgo(device.lastSeenAt)}` : `Paired ${fmtAgo(device.createdAt)}`}
+      control={
+        <div className="flex items-center gap-2">
+          <Segmented
+            value={device.role}
+            onChange={(role) => {
+              if (!busy && role !== device.role) onRole(role);
+            }}
+            options={[
+              { value: "full", label: "Full" },
+              { value: "observer", label: "View only" },
+            ]}
+          />
+          <Button variant="ghost" size="icon-sm" aria-label={`Revoke ${device.name}`} onClick={onRevoke}>
+            <XIcon className="size-3.5" />
+          </Button>
+        </div>
+      }
+    />
+  );
+}
+
+// Two taps, no dialog: the destructive arm disarms itself after a beat.
+function RevokeOthersRow({ count, onConfirm }: { count: number; onConfirm: () => void }) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const task = window.setTimeout(() => setArmed(false), 4000);
+    return () => window.clearTimeout(task);
+  }, [armed]);
+  return (
+    <Row
+      label="Revoke all other devices"
+      hint="Keeps this one. The lost-phone button."
+      control={
+        <Button
+          variant={armed ? "destructive" : "outline"}
+          size="sm"
+          onClick={() => {
+            if (armed) {
+              setArmed(false);
+              onConfirm();
+            } else {
+              setArmed(true);
+            }
+          }}
+        >
+          {armed ? `Revoke ${count} device${count === 1 ? "" : "s"}` : "Revoke others"}
+        </Button>
+      }
+    />
   );
 }

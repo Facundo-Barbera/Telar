@@ -47,6 +47,7 @@
 import crypto from "node:crypto";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
+import { claimHasComputerUse } from "./computer-use";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
 import { normalizeOutcome, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./driver";
@@ -659,6 +660,23 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
           : undefined;
         const mcpServers = userTable || telarTable ? { ...(userTable ?? {}), ...(telarTable ?? {}) } : undefined;
+        /**
+         * TELAR OWNS COMPUTER USE WHEN IT SUPPLIES IT. When the claim carries
+         * Telar's `mac` server (cua-driver), Codex's own bundled computer use
+         * is turned off FOR THIS THREAD ONLY — a `features` overlay on
+         * `thread/start`'s config, never written to `~/.codex/config.toml`, so
+         * the user's ChatGPT/Codex desktop and their `codex` CLI keep their
+         * native computer use untouched. Without this the model would see two
+         * desktops (`mac` and Codex's native `computer_use`) under two names.
+         */
+        const disableNativeComputerUse = claimHasComputerUse(userMcpServers);
+        const configOverlay =
+          mcpServers || disableNativeComputerUse
+            ? {
+                ...(mcpServers ? { mcp_servers: mcpServers } : {}),
+                ...(disableNativeComputerUse ? { features: { computer_use: false } } : {}),
+              }
+            : undefined;
         const threadParams = {
           cwd,
           approvalPolicy: threadConfig.approvalPolicy,
@@ -670,7 +688,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           // keeps the servers they configured for the CLI and gains the ones
           // Telar knows about. A shared id means Telar's wins for this thread,
           // which is the same shadowing rule the two Telar scopes already use.
-          ...(mcpServers ? { config: { mcp_servers: mcpServers } } : {}),
+          ...(configOverlay ? { config: configOverlay } : {}),
         };
         const thread = providerSessionId
           ? await client.request<{ thread?: { id?: string } }>("thread/resume", {
