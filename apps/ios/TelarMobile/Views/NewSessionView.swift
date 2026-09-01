@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// t3 mobile's creation flow, ported: two steps, both in the sheet's stack.
@@ -165,18 +166,38 @@ struct NewSessionDraftView: View {
     let project: ProjectRef
     let onCreated: (EngineID) -> Void
 
+    /// A photo held locally until the session exists — uploads need a
+    /// session id, and the draft has none yet.
+    struct DraftAttachment: Identifiable, Equatable {
+        let id = UUID()
+        let data: Data
+        let name: String
+        let mediaType: String
+    }
+
     @Environment(\.dismiss) private var dismiss
     @State private var prompt = ""
+    /// Optional subject line; empty = derived from the message (web's rule).
+    @State private var title = ""
     @State private var choice = ModelChoice(driver: "claude")
     @State private var envMode = "worktree"
     /// nil = the checkout's HEAD, which is also what absent always meant.
     @State private var baseRef: String?
+    /// The worktree's own branch name; empty = the engine invents one.
+    @State private var branchName = ""
+    @State private var namingBranch = false
+    @State private var branchDraft = ""
     @State private var runtimeMode: String?
     @State private var catalogues: [String: ModelCatalogue] = [:]
     @State private var git: GitOverview?
+    @State private var draftAttachments: [DraftAttachment] = []
+    @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var submitting = false
     @State private var pickingBranch = false
     @State private var error: String?
+    /// Set the moment the create succeeds: a retry after a failed upload or
+    /// turn must resume this session, never create a second one.
+    @State private var createdSessionId: EngineID?
     @FocusState private var focused: Bool
 
     private var canStart: Bool {
@@ -185,6 +206,15 @@ struct NewSessionDraftView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // A subject line, not a rival composer: one quiet row above the
+            // prompt. Left empty, the message's first line becomes the title.
+            TextField("Title — optional, taken from your message", text: $title)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.text)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+            Rectangle().fill(Theme.borderSubtle).frame(height: 1)
+                .padding(.horizontal, 20)
             TextField("Describe a coding task in \(project.name)", text: $prompt, axis: .vertical)
                 .font(.system(size: 18))
                 .foregroundStyle(Theme.text)
@@ -205,9 +235,24 @@ struct NewSessionDraftView: View {
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                 }
+                if !draftAttachments.isEmpty {
+                    attachmentStrip
+                        .padding(.horizontal, 20)
+                        .padding(.top, 8)
+                }
                 HStack(spacing: 8) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(Theme.text)
+                                    .frame(width: 44, height: 44)
+                                    .background(Theme.subtle)
+                                    .clipShape(Circle())
+                                    .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+                            }
+                            .accessibilityLabel("Attach photos")
                             ModelPillView(
                                 catalogues: catalogues,
                                 choice: choice,
@@ -276,11 +321,74 @@ struct NewSessionDraftView: View {
                 baseRef = picked
             }
         }
+        .alert("Name the branch", isPresented: $namingBranch) {
+            TextField("branch-name", text: $branchDraft)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button("Use it") { branchName = branchDraft.trimmingCharacters(in: .whitespaces) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The worktree's own branch. Leave the field empty to let the engine invent one.")
+        }
+        .onChange(of: pickedPhotos) { _, items in
+            guard !items.isEmpty else { return }
+            pickedPhotos = []
+            Task {
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        draftAttachments.append(DraftAttachment(
+                            data: data,
+                            name: (item.itemIdentifier ?? "photo") + ".jpg",
+                            mediaType: item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    /// The composer's 72×72 strip, held locally: uploads need the session id,
+    /// which doesn't exist until the arrow is pressed.
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(draftAttachments) { attachment in
+                    ZStack(alignment: .topTrailing) {
+                        VStack(spacing: 6) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 20))
+                                .foregroundStyle(Theme.textMuted2)
+                            Text(attachment.name)
+                                .font(.system(size: 10))
+                                .foregroundStyle(Theme.textMuted2)
+                                .lineLimit(1)
+                        }
+                        .frame(width: 72, height: 72)
+                        .background(Theme.subtle)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        Button {
+                            draftAttachments.removeAll { $0.id == attachment.id }
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 22, height: 22)
+                                .background(Color.black.opacity(0.55))
+                                .clipShape(Circle())
+                        }
+                        .padding(4)
+                        .accessibilityLabel("Remove \(attachment.name)")
+                    }
+                }
+            }
+        }
     }
 
     /// t3's workspace label: "New worktree · main" / "Current checkout".
+    /// A named branch outranks the base ref, mirroring the web draft chip.
     private var workspaceLabel: String {
         let mode = envMode == "worktree" ? "New worktree" : "Current"
+        if envMode == "worktree", !branchName.isEmpty { return "\(mode) · \(branchName)" }
         if let baseRef { return "\(mode) · \(shortRef(baseRef))" }
         return envMode == "worktree" ? "New worktree" : "Current checkout"
     }
@@ -302,6 +410,12 @@ struct NewSessionDraftView: View {
                     pickingBranch = true
                 } label: {
                     Label(baseRef.map { "Start from: \(shortRef($0))" } ?? "Start from…", systemImage: "arrow.triangle.branch")
+                }
+                Button {
+                    branchDraft = branchName
+                    namingBranch = true
+                } label: {
+                    Label(branchName.isEmpty ? "Name the branch…" : "Branch: \(branchName)", systemImage: "signature")
                 }
             }
         }
@@ -343,36 +457,66 @@ struct NewSessionDraftView: View {
     }
 
     /// Create the session, then send the prompt as its FIRST TURN — the
-    /// arrow means "start the work", not "make an empty room".
+    /// arrow means "start the work", not "make an empty room". The created
+    /// id is remembered the moment it exists: a retry after a failed upload
+    /// or turn RESUMES that session rather than minting a duplicate.
     private func start() async {
         submitting = true
         defer { submitting = false }
         do {
-            let session = try await api.createSession(
-                projectId: project.id,
-                input: NewSessionInput(
-                    title: nil, driver: choice.driver, envMode: envMode,
-                    baseRef: envMode == "worktree" ? baseRef : nil
-                )
-            )
-            // createSession takes neither a model nor a runtime mode — they
-            // are session PATCHes, applied before the first turn runs.
-            let modelTouched = choice.model != nil || choice.effort != nil || choice.fastMode != nil
-            if modelTouched || runtimeMode != nil {
-                var patch = SessionPatch()
-                if let runtimeMode { patch.runtimeMode = runtimeMode }
-                if modelTouched, let instanceId = session.providerInstanceId ?? session.model?.instanceId {
-                    patch.model = ModelSelection(
-                        instanceId: instanceId, model: choice.model,
-                        effort: choice.effort, fastMode: choice.fastMode
+            let sessionId: EngineID
+            if let createdSessionId {
+                sessionId = createdSessionId
+            } else {
+                let session = try await api.createSession(
+                    projectId: project.id,
+                    input: NewSessionInput(
+                        title: SessionDraft.title(explicit: title, prompt: prompt),
+                        driver: choice.driver, envMode: envMode,
+                        baseRef: envMode == "worktree" ? baseRef : nil,
+                        branchName: envMode == "worktree" && !branchName.isEmpty ? branchName : nil
                     )
+                )
+                sessionId = session.id
+                createdSessionId = session.id
+                // createSession takes neither a model nor a runtime mode —
+                // they are session PATCHes, applied before the first turn runs.
+                let modelTouched = choice.model != nil || choice.effort != nil || choice.fastMode != nil
+                if modelTouched || runtimeMode != nil {
+                    var patch = SessionPatch()
+                    if let runtimeMode { patch.runtimeMode = runtimeMode }
+                    if modelTouched, let instanceId = session.providerInstanceId ?? session.model?.instanceId {
+                        patch.model = ModelSelection(
+                            instanceId: instanceId, model: choice.model,
+                            effort: choice.effort, fastMode: choice.fastMode
+                        )
+                    }
+                    try? await api.patchSession(session.id, patch: patch)
                 }
-                try? await api.patchSession(session.id, patch: patch)
             }
-            _ = try await api.submitTurn(session.id, runId: RunID.newRunId(), input: prompt, attachments: nil)
+            // Every photo lands before the message that refers to it; a
+            // failed upload stops the send and NAMES the file — silently
+            // dropping something the human picked is the worst outcome.
+            var attachmentIds: [EngineID] = []
+            for attachment in draftAttachments {
+                do {
+                    let uploaded = try await api.uploadAttachment(
+                        sessionId, name: attachment.name,
+                        mediaType: attachment.mediaType, data: attachment.data
+                    )
+                    attachmentIds.append(uploaded.id)
+                } catch {
+                    self.error = "Couldn't upload \(attachment.name) — nothing was sent. Try again."
+                    return
+                }
+            }
+            _ = try await api.submitTurn(
+                sessionId, runId: RunID.newRunId(), input: prompt,
+                attachments: attachmentIds.isEmpty ? nil : attachmentIds
+            )
             // The caller closes the sheet and replaces it with the live
             // conversation — no back-stack detour (t3's replace()).
-            onCreated(session.id)
+            onCreated(sessionId)
         } catch {
             self.error = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
         }

@@ -60,6 +60,8 @@ struct NewSessionInput: Encodable {
     var envMode: String?
     /// Worktree base — any name from `GitOverview.refs`. Absent = HEAD.
     var baseRef: String?
+    /// The worktree's own branch name. Absent = the engine invents one.
+    var branchName: String?
 }
 
 /// The only two shapes a `user_input` answer takes (`UserInputField.kind`
