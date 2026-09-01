@@ -581,17 +581,20 @@ test("only enabled MCP servers ride the claim, and disabling one keeps its confi
   expect(() => store.saveMcpServer({ id: "bad", spec: { transport: "carrier-pigeon" } })).toThrow(EngineStateError);
 });
 
-test("a daemon-injected computer-use resolver reaches a Claude claim", () => {
+test("a daemon-injected computer-use resolver reaches a claim", () => {
   // The resolver is an OPTION, not a default — a store built without one (every
-  // other test in this file) never reads the machine's Codex install.
+  // other test in this file) never reads the machine's installs.
   const stateRoot = root();
   const resolved = {
-    id: "mac",
-    label: "Computer Use (Mac)",
-    enabled: true,
-    spec: { transport: "stdio" as const, command: "/fake/launcher", args: ["mcp"] },
-    createdAt: 0,
-    updatedAt: 0,
+    backend: "cua" as const,
+    server: {
+      id: "mac",
+      label: "Computer Use (Mac)",
+      enabled: true,
+      spec: { transport: "stdio" as const, command: "/fake/cua-driver", args: ["mcp"] },
+      createdAt: 0,
+      updatedAt: 0,
+    },
   };
   const store = new EngineStore(stateRoot, () => 100, { computerUse: () => resolved });
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });

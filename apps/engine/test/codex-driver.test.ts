@@ -229,6 +229,31 @@ test("the user's MCP servers ride thread/start's config overlay", async () => {
   });
 });
 
+test("Telar's own computer use turns off Codex's native one — for this thread only", async () => {
+  // The claim carries Telar's `mac` server (cua-driver). Codex's bundled
+  // computer_use is disabled in the SAME per-thread config overlay, never
+  // written to config.toml — so the user's own ChatGPT/Codex keeps its native
+  // computer use. Without this the model sees two desktops under two names.
+  await runTurn("plain", {
+    mcpServers: [mcp("mac", { transport: "stdio", command: "/usr/local/bin/cua-driver", args: ["mcp"] })],
+  }).result;
+
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: { mac: { command: "/usr/local/bin/cua-driver", args: ["mcp"] } },
+    features: { computer_use: false },
+  });
+});
+
+test("a claim WITHOUT the mac server leaves Codex's native computer use alone", async () => {
+  // No `features` overlay at all — an absent overlay says nothing, which is not
+  // the same sentence as `computer_use: true`.
+  await runTurn("plain", {
+    mcpServers: [mcp("linear", { transport: "http", url: "https://mcp.linear.app/mcp" })],
+  }).result;
+  const config = sent("thread/start").config as { features?: unknown };
+  expect(config.features).toBeUndefined();
+});
+
 test("the browser socket rides the SAME overlay, Telar last, and the token never touches argv", async () => {
   const lease = { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_secret_abc" };
   await runTurn("plain", {

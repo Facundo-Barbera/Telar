@@ -351,12 +351,20 @@ export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterHours: DEFAULT
 export const ComputerUsePermission = z.enum(["granted", "denied", "host-not-running", "unknown"]);
 export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
 
+/** Which engine is supplying the desktop: `cua` is Telar's own open-source
+ *  driver (trycua/cua, MIT); `sky` is Codex's proprietary bundled client, the
+ *  fallback. The pane names it so the reader knows what holds the grants. */
+export const ComputerUseBackend = z.enum(["cua", "sky"]);
+export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
+
 export const ComputerUseStatus = z.object({
   installed: z.boolean(),
   hostRunning: z.boolean(),
+  /** Absent when not installed. */
+  backend: ComputerUseBackend.optional(),
   /** Absent when not installed: there is nothing to measure. */
   permission: ComputerUsePermission.optional(),
-  /** The provider's own words, when there were any. */
+  /** The backend's own words, when there were any. */
   message: z.string().optional(),
 });
 export type ComputerUseStatus = z.infer<typeof ComputerUseStatus>;

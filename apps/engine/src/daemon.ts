@@ -24,7 +24,7 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-import { computerUseStatus, launchComputerUseHost, openComputerUseHost, resolveComputerUseServer } from "./computer-use";
+import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
@@ -327,15 +327,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
-    // Codex's computer-use client, for Claude claims — resolved per claim so
-    // installing or removing the plugin applies to the next turn. Injected
-    // here, not defaulted in the store, so tests never read the real machine.
-    // The first claim that resolves also wakes the Sky host app the client
-    // drives — once per daemon, in the background, silently.
+    // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
+    // installing or removing a driver applies to the next turn. Injected here,
+    // not defaulted in the store, so tests never read the real machine. The
+    // first claim that resolves also wakes the Sky host app if that is the
+    // backend — cua self-launches — once per daemon, in the background.
     computerUse: () => {
-      const server = resolveComputerUseServer();
-      if (server) launchComputerUseHost();
-      return server;
+      const resolved = resolveComputerUse();
+      if (resolved) launchComputerUseHost();
+      return resolved;
     },
   });
   const lock = acquireDaemonLock(statePaths(root));
@@ -613,6 +613,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "POST" && url.pathname === "/v2/computer-use/host") {
         openComputerUseHost();
         writeJson(response, 200, { ok: true });
+        return;
+      }
+      // cua's native granting flow — CuaDriver.app requests Accessibility +
+      // Screen Recording, attributed to itself. Sky has no such command (its
+      // probe is the grant), so this reports what it did.
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
+        writeJson(response, 200, grantComputerUseAccess());
         return;
       }
       /**

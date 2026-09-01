@@ -4,19 +4,19 @@
  * PERMISSIONS — the macOS grants agent capabilities stand on.
  *
  * Computer use is the first resident: Claude and Codex sessions drive Mac apps
- * through Codex's Sky client, and that path crosses THREE separately-fixable
- * facts — the plugin being installed (an install task), the host app running
- * (one button here), and the macOS Automation grant (a decision macOS keys on
- * a responsible process the engine cannot reliably name from the inside; the
- * dev chain ends at an orphaned process and `launchctl procinfo` needs root).
+ * through a desktop engine Telar owns. Two backends can supply it, and the pane
+ * says which is in play, because the fix differs:
  *
- * SO THE TEST IS THE GRANTING FLOW. "Test access" runs one real read-only call
- * (`list_apps`) through the actual client: granted answers granted, denied
- * answers with the exact code (-1743), and an UNDECIDED grant makes macOS put
- * up its own prompt — which names the responsible app better than this page
- * ever could. That is also how Codex handles it; its `doctor` additionally
- * reads the unified security log for enforcement history, which needs access
- * this process does not have.
+ *   - cua-driver (trycua/cua, MIT) — Telar's own. CuaDriver.app holds the
+ *     Accessibility + Screen Recording grants, and "Grant access" runs cua's
+ *     native flow, which launches the app through LaunchServices so the dialogs
+ *     attribute to it. Clean, and the app can be bundled.
+ *   - Codex's Sky client — the proprietary fallback, reached over Apple events.
+ *     Its grant is an Automation permission on whatever process macOS holds
+ *     responsible, and "Test access" is the flow that raises that prompt.
+ *
+ * Either way the answer is MEASURED — one real read-only call — never
+ * remembered, so a stale grant can't lie to the reader.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -29,10 +29,14 @@ import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
 
-/** macOS's own deep link to the Automation pane. Works from the desktop
- *  shell; in a browser tab it is inert, which is why the prose beside it also
- *  spells the path out. */
+/** macOS's own deep link to the Automation pane — the Sky-backend fix. Inert
+ *  in a browser tab, which is why the prose spells the path out too. */
 const AUTOMATION_PANE = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation";
+
+function backendLabel(status: ComputerUseStatus): string {
+  if (!status.installed) return "Not installed";
+  return status.backend === "cua" ? "cua-driver (open source)" : "Codex Computer Use (Sky)";
+}
 
 function PermissionBadge({ status }: { status: ComputerUseStatus }) {
   if (!status.installed) return <Badge variant="outline">Not installed</Badge>;
@@ -40,9 +44,9 @@ function PermissionBadge({ status }: { status: ComputerUseStatus }) {
     case "granted":
       return <Badge variant="secondary">Granted</Badge>;
     case "denied":
-      return <Badge variant="destructive">Denied</Badge>;
+      return <Badge variant="destructive">Not granted</Badge>;
     case "host-not-running":
-      return <Badge variant="outline">Host app not running</Badge>;
+      return <Badge variant="outline">Host not running</Badge>;
     default:
       return <Badge variant="outline">Unknown</Badge>;
   }
@@ -72,10 +76,21 @@ export function PermissionsSection() {
     return () => window.clearTimeout(task);
   }, [check]);
 
+  const isCua = status?.backend === "cua";
+
+  const grant = async () => {
+    try {
+      await api.grantComputerUseAccess();
+      // The grant dialogs take a moment; re-measure after they've had one.
+      window.setTimeout(() => void check(), 2_500);
+    } catch {
+      setError("The engine did not answer.");
+    }
+  };
+
   const wake = async () => {
     try {
       await api.wakeComputerUseHost();
-      // The app takes a moment to come up; re-measure after it has had one.
       window.setTimeout(() => void check(), 1_500);
     } catch {
       setError("The engine did not answer.");
@@ -83,63 +98,76 @@ export function PermissionsSection() {
   };
 
   return (
-    <>
-      <SettingsGroup
-        title="Computer use"
-        description="Sessions can drive Mac apps — screenshots, clicks, typing — through Codex's Computer Use client. Claude and Codex sessions share the same engine and the same grants."
-      >
+    <SettingsGroup
+      title="Computer use"
+      description="Claude and Codex sessions can drive Mac apps — screenshots, clicks, typing — through a desktop engine Telar owns. When Telar supplies it, Codex's own computer use is turned off for Telar's sessions only."
+    >
+      <Row
+        label="Engine"
+        hint={
+          status && !status.installed
+            ? "Install the open-source cua-driver (github.com/trycua/cua) — or Codex, whose bundled Computer Use works as a fallback — and Telar picks it up."
+            : isCua
+              ? "The open-source trycua/cua driver. Telar drives it and holds the grants through CuaDriver.app."
+              : "Codex's bundled Computer Use client (proprietary). Install cua-driver to switch to the open-source engine."
+        }
+        control={checking && !status ? <Spinner className="size-4" /> : <Badge variant={status?.installed ? "secondary" : "outline"}>{backendLabel(status ?? { installed: false, hostRunning: false })}</Badge>}
+      />
+      {status?.installed && (
         <Row
-          label="Codex plugin"
-          hint={status && !status.installed ? "Install Codex and enable Computer Use in its settings; Telar picks it up from there." : "Discovered from the Codex install. Nothing to configure here."}
+          label={isCua ? "Driver daemon" : "Host app"}
+          hint={
+            isCua
+              ? "CuaDriver.app runs the actions in the background; it launches automatically when a session first needs it."
+              : "The background app that performs the actions. Woken automatically when a session first needs it."
+          }
           control={
-            checking && !status ? <Spinner className="size-4" /> : status?.installed ? <Badge variant="secondary">Installed</Badge> : <Badge variant="outline">Not installed</Badge>
+            <div className="flex items-center gap-2">
+              {status.hostRunning ? <Badge variant="secondary">Running</Badge> : <Badge variant="outline">Stopped</Badge>}
+              {!status.hostRunning && !isCua && (
+                <Button size="sm" variant="outline" onClick={() => void wake()}>
+                  Wake
+                </Button>
+              )}
+            </div>
           }
         />
-        {status?.installed && (
-          <Row
-            label="Host app"
-            hint="The background app that performs the actions. Woken automatically when a session first needs it."
-            control={
-              <div className="flex items-center gap-2">
-                {status.hostRunning ? <Badge variant="secondary">Running</Badge> : <Badge variant="outline">Stopped</Badge>}
-                {!status.hostRunning && (
-                  <Button size="sm" variant="outline" onClick={() => void wake()}>
-                    Wake
-                  </Button>
-                )}
-              </div>
-            }
-          />
-        )}
-        {status?.installed && (
-          <Row
-            label="Automation permission"
-            hint={
-              status.permission === "denied"
-                ? "macOS refused Apple events (-1743). System Settings → Privacy & Security → Automation: enable “Codex Computer Use” under Telar (the packaged app) — or, in a dev build, under the terminal that launched the engine — then test again."
-                : status.permission === "granted"
-                  ? "One real read-only call succeeded. Claude and Codex sessions can drive the Mac."
-                  : "Testing sends one real read-only call. The first time, macOS shows its own “Telar wants to control Codex Computer Use” prompt — allow it and one grant covers every session. (In a dev build the prompt names the terminal, not Telar.)"
-            }
-            control={
-              <div className="flex items-center gap-2">
-                {checking ? <Spinner className="size-4" /> : <PermissionBadge status={status} />}
-                <Button size="sm" variant="outline" disabled={checking} onClick={() => void check()}>
-                  Test access
+      )}
+      {status?.installed && (
+        <Row
+          label="Access"
+          hint={
+            status.permission === "granted"
+              ? "One real read-only call succeeded. Claude and Codex sessions can drive the Mac."
+              : isCua
+                ? "cua-driver needs Accessibility + Screen Recording. “Grant access” launches CuaDriver.app so macOS attributes the prompts to it."
+                : status.permission === "denied"
+                  ? "macOS refused Apple events. System Settings → Privacy & Security → Automation: enable the target under Telar (packaged) or the terminal (dev), then test again."
+                  : "“Test access” sends one real read-only call; the first time, macOS shows its own consent prompt."
+          }
+          control={
+            <div className="flex items-center gap-2">
+              {checking ? <Spinner className="size-4" /> : <PermissionBadge status={status} />}
+              {isCua && status.permission !== "granted" && (
+                <Button size="sm" variant="outline" disabled={checking} onClick={() => void grant()}>
+                  Grant access
                 </Button>
-                {status.permission === "denied" && (
-                  <Button size="sm" variant="ghost" onClick={() => window.open(AUTOMATION_PANE)}>
-                    Open System Settings
-                  </Button>
-                )}
-              </div>
-            }
-          />
-        )}
-        {(error || status?.message) && (
-          <Row label="Last answer" hint="The provider's own words, verbatim." control={<code className="max-w-96 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{error ?? status?.message}</code>} />
-        )}
-      </SettingsGroup>
-    </>
+              )}
+              <Button size="sm" variant={isCua ? "ghost" : "outline"} disabled={checking} onClick={() => void check()}>
+                Test access
+              </Button>
+              {!isCua && status.permission === "denied" && (
+                <Button size="sm" variant="ghost" onClick={() => window.open(AUTOMATION_PANE)}>
+                  Open System Settings
+                </Button>
+              )}
+            </div>
+          }
+        />
+      )}
+      {(error || status?.message) && (
+        <Row label="Last answer" hint="The backend's own words, verbatim." control={<code className="max-w-96 truncate rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{error ?? status?.message}</code>} />
+      )}
+    </SettingsGroup>
   );
 }

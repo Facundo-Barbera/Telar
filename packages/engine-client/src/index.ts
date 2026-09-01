@@ -23,6 +23,7 @@ import {
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
+  type ComputerUseBackend,
   type ComputerUseStatus,
   type InboxPolicy,
   type TextGenPolicy,
@@ -269,6 +270,12 @@ export class EngineClient {
   /** Wake the Sky host app in the background. Idempotent. */
   wakeComputerUseHost(): Promise<{ ok: boolean }> {
     return this.request("POST", "/v2/computer-use/host", {});
+  }
+
+  /** Run cua's native granting flow (CuaDriver.app requests Accessibility +
+   *  Screen Recording, attributed to itself). A no-op for the Sky backend. */
+  grantComputerUseAccess(): Promise<{ started: boolean; backend?: ComputerUseBackend }> {
+    return this.request("POST", "/v2/computer-use/grant", {});
   }
 
   /** Spend over time, folded from the engine's journals — see `UsageReport`. */

@@ -12,6 +12,7 @@ import type {
   GitHubSnapshot,
   GitignoreResult,
   GitOverview,
+  ComputerUseBackend,
   ComputerUseStatus,
   InboxPolicy,
   TextGenPolicy,
@@ -228,6 +229,9 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
     /** Wake the Sky host app in the background. Idempotent. */
     wakeComputerUseHost: () => request<{ ok: boolean }>(fetcher, "POST", "/api/computer-use/host", {}),
+    /** cua's native granting flow — CuaDriver.app requests the grants. No-op for Sky. */
+    grantComputerUseAccess: () =>
+      request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),
