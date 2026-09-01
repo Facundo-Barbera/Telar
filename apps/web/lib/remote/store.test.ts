@@ -17,7 +17,6 @@ import {
   setRequireAuth,
   storePath,
   touchDevice,
-  writeRemote,
 } from "./store";
 
 const savedTelarHome = process.env.TELAR_HOME;

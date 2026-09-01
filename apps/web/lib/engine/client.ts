@@ -51,8 +51,12 @@ import { forgeQuery } from "@telar/engine-client";
  * hand-written literals that had to be kept in step with the engine's own
  * `EngineErrorCode` by hand — and when v2 added `protocol_mismatch`, the copy
  * here was the thing that went stale. An alias cannot.
+ *
+ * `cockpit_unauthorized` is the one cockpit-minted addition: the pairing gate
+ * (proxy.ts) answers 401 with it. It is NOT in the engine contract because
+ * the engine never sees an unpaired request — the cockpit refuses it first.
  */
-export type EngineApiErrorCode = EngineErrorCode;
+export type EngineApiErrorCode = EngineErrorCode | "cockpit_unauthorized";
 
 export class EngineApiError extends Error {
   constructor(readonly code: EngineApiErrorCode, message: string, readonly status?: number) {
