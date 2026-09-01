@@ -87,6 +87,29 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(try await stubAPI().revokeOtherDevices() == 2)
     }
 
+    @Test func olderCockpitPayloadsDecodeLeniently() throws {
+        // No role (pre-roles cockpit), no callerDeviceId, one garbage row:
+        // the page renders, the alien row is skipped, roles default to full.
+        let json = """
+        {"requireAuth":true,
+         "devices":[
+          {"id":"dev_1","name":"Phone","createdAt":1000},
+          {"unexpected":"shape"},
+          {"id":"dev_2","name":"Browser","createdAt":1000,"role":"observer"}]}
+        """
+        let status = try JSONDecoder().decode(RemoteStatus.self, from: Data(json.utf8))
+        #expect(status.devices.count == 2)
+        #expect(status.devices[0].role == "full")
+        #expect(status.devices[1].role == "observer")
+        #expect(status.callerDeviceId == nil)
+    }
+
+    @Test func evenEmptierPayloadFailsClosed() throws {
+        let status = try JSONDecoder().decode(RemoteStatus.self, from: Data("{}".utf8))
+        #expect(status.requireAuth)
+        #expect(status.devices.isEmpty)
+    }
+
     @Test func forbiddenSurfacesAsViewOnly() async {
         RemoteStubURLProtocol.handler = { _ in
             (403, Data(#"{"error":{"code":"cockpit_forbidden","message":"view only"}}"#.utf8))

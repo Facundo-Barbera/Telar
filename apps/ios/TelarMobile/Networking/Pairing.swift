@@ -26,10 +26,12 @@ enum Pairing {
         return (baseURL, token)
     }
 
+    /// Only the token is load-bearing; requiring more would make the exchange
+    /// fail against a cockpit that trims or renames the courtesy fields.
     struct ExchangeResponse: Decodable {
         var deviceToken: String
-        var deviceId: String
-        var deviceName: String
+        var deviceId: String?
+        var deviceName: String?
     }
 
     static func exchange(
