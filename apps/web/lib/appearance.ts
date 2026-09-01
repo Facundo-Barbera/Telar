@@ -44,16 +44,29 @@ export type Appearance = {
    *  The shell keeps its own copy too (ui-prefs.json) because the WINDOW is
    *  created before this page runs. */
   translucent: boolean;
-  /** How much desktop shows through, as percent transparency of the canvas —
-   *  the CSS reads it as `--translucency` and subtracts it from full opacity.
-   *  Clamped so the floor never approaches illegible. */
+  /** How much desktop shows through, on the slider's 0–100 display scale —
+   *  translucencyCss maps it onto the real alpha range before the CSS sees
+   *  it, so 100 means "as transparent as stays legible", not alpha zero. */
   translucencyLevel: number;
 };
 
-export const MIN_TRANSLUCENCY = 15;
-export const MAX_TRANSLUCENCY = 75;
+/**
+ * THE SLIDER'S SCALE IS THE FEELING, NOT THE ALPHA. It reads 0–100 because
+ * "100%" is what a person means by "as transparent as it goes"; the stored
+ * number is that display value, and translucencyCss maps it onto the real
+ * range — 100 lands at 90% canvas transparency, a floor that keeps text
+ * legible, and what remains at the top is macOS's own vibrancy material,
+ * frosted by the OS and never clear glass.
+ */
+export const MIN_TRANSLUCENCY = 0;
+export const MAX_TRANSLUCENCY = 100;
 
-export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false, translucencyLevel: 40 };
+/** Display value → the percentage the CSS actually subtracts from opacity. */
+export function translucencyCss(level: number): string {
+  return `${Math.round(level * 0.9)}%`;
+}
+
+export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false, translucencyLevel: 50 };
 
 const STORAGE_KEY = "telar-appearance";
 
@@ -63,7 +76,7 @@ const STORAGE_KEY = "telar-appearance";
  * default values are OMITTED rather than written, so the base tokens in
  * globals.css stay the single source of the default look.
  */
-export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});if(a.translucent===true){d.setAttribute('data-translucent','');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};d.style.setProperty('--translucency',l+'%');}else{d.removeAttribute('data-translucent');d.style.removeProperty('--translucency');}}catch(e){}})();`;
+export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});if(a.translucent===true){d.setAttribute('data-translucent','');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};d.style.setProperty('--translucency',Math.round(l*0.9)+'%');}else{d.removeAttribute('data-translucent');d.style.removeProperty('--translucency');}}catch(e){}})();`;
 
 const listeners = new Set<() => void>();
 
@@ -148,6 +161,6 @@ export function applyAppearance(appearance: Appearance): void {
   set("data-font-sans", appearance.fontSans, appearance.fontSans === DEFAULT_APPEARANCE.fontSans);
   set("data-font-mono", appearance.fontMono, appearance.fontMono === DEFAULT_APPEARANCE.fontMono);
   set("data-translucent", "", !appearance.translucent);
-  if (appearance.translucent) root.style.setProperty("--translucency", `${appearance.translucencyLevel}%`);
+  if (appearance.translucent) root.style.setProperty("--translucency", translucencyCss(appearance.translucencyLevel));
   else root.style.removeProperty("--translucency");
 }
