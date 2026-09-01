@@ -362,9 +362,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
   workerPruner.unref();
 
-  // Sessions as chips in the notch — a display-only bridge that no-ops
-  // silently unless Lintel's token file exists (see lintel.ts).
-  const lintelSync = startLintelSync(() => store.liveSessions());
+  // Sessions as chips in the notch, chat mirrored both ways — a bridge that
+  // no-ops silently unless Lintel's token file exists (see lintel.ts).
+  const lintelSync = startLintelSync({
+    liveSessions: () => store.liveSessions(),
+    readEvents: (sessionId, after) => store.readEvents(sessionId, after),
+    submitTurn: (sessionId, input) => void store.submitTurn(sessionId, input),
+  });
 
   const health = (): EngineHealth => ({
     version: ENGINE_PROTOCOL_VERSION,

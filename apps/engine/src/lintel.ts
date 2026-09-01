@@ -1,7 +1,9 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import type { Session, SessionActivity } from "@telar/engine-client";
+import type { EngineEvent, Session, SessionActivity } from "@telar/engine-client";
 
 /**
  * THE LINTEL BRIDGE — Telar sessions as chips in the notch.
@@ -22,7 +24,11 @@ import type { Session, SessionActivity } from "@telar/engine-client";
  */
 
 export const LINTEL_PORT = Number(process.env.LINTEL_PORT) || 45814;
-export const LINTEL_SYNC_MS = 30_000;
+/** 5s: fast enough that a mirrored chat reads live, and every pass re-upserts
+ *  the agents, which is the heartbeat Lintel's 120s TTL wants. */
+export const LINTEL_SYNC_MS = 5_000;
+/** Lintel truncates chat messages at 4000 chars; cut before sending. */
+export const LINTEL_MESSAGE_MAX = 4_000;
 /** Clicking a Lintel banner launches the app with this bundle id. */
 const TELAR_BUNDLE_ID = "ai.ozom.telar.desktop";
 
@@ -109,6 +115,90 @@ export function lintelPlan(
   return { plan, next };
 }
 
+/**
+ * PURE: the chat lines a batch of journal events mirrors out to Lintel.
+ *
+ * `turn.accepted` carries the human's prompt; a completed `assistant_message`
+ * item carries the reply; a completed `user_message` item is a steered prompt
+ * landing inside a run. `skipRunIds`/`skipTexts` are the NO-ECHO rule: a
+ * message that arrived FROM Lintel's chat window is already on its screen,
+ * and mirroring it back would double it.
+ */
+export function mirrorMessages(
+  events: EngineEvent[],
+  skip: { runIds: ReadonlySet<string>; texts: ReadonlySet<string> },
+): Array<{ role: "user" | "assistant"; text: string }> {
+  const messages: Array<{ role: "user" | "assistant"; text: string }> = [];
+  const clip = (text: string): string => (text.length > LINTEL_MESSAGE_MAX ? text.slice(0, LINTEL_MESSAGE_MAX) : text);
+  for (const event of events) {
+    if (event.type === "turn.accepted") {
+      if (event.replayed || skip.runIds.has(event.turn.runId) || skip.texts.has(event.turn.input)) continue;
+      if (event.turn.input.trim().length > 0) messages.push({ role: "user", text: clip(event.turn.input) });
+      continue;
+    }
+    if (event.type !== "item.completed") continue;
+    const detail = event.item.detail;
+    if (detail.type === "assistant_message" && detail.text.trim().length > 0) {
+      messages.push({ role: "assistant", text: clip(detail.text) });
+    } else if (detail.type === "user_message" && detail.text.trim().length > 0 && !skip.texts.has(detail.text)) {
+      messages.push({ role: "user", text: clip(detail.text) });
+    }
+  }
+  return messages;
+}
+
+/**
+ * The inbound half: a loopback listener Lintel calls when the human types in
+ * its floating chat window. Bearer-checked with a per-boot secret, answers
+ * 2xx IMMEDIATELY and processes async, dedupes on messageId (retries reuse
+ * it) — all per the contract.
+ */
+export function startLintelCallbackServer(
+  onMessage: (agentId: string, text: string) => void,
+): Promise<{ url: string; token: string; close: () => void }> {
+  const token = crypto.randomBytes(32).toString("hex");
+  const seen = new Set<string>();
+  const server = http.createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.writeHead(405).end();
+      return;
+    }
+    if (request.headers.authorization !== `Bearer ${token}`) {
+      response.writeHead(401).end();
+      return;
+    }
+    let body = "";
+    request.on("data", (chunk: Buffer) => {
+      body += chunk.toString("utf8");
+      if (body.length > 64_000) request.destroy();
+    });
+    request.on("end", () => {
+      // 2xx first, work after — Lintel must never wait on the injection.
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      try {
+        const payload = JSON.parse(body) as { type?: unknown; agentId?: unknown; messageId?: unknown; text?: unknown };
+        if (payload.type !== "user_message") return;
+        if (typeof payload.agentId !== "string" || typeof payload.text !== "string" || payload.text.trim().length === 0) return;
+        const messageId = typeof payload.messageId === "string" ? payload.messageId : crypto.randomUUID();
+        if (seen.has(messageId)) return;
+        seen.add(messageId);
+        if (seen.size > 1_000) seen.delete(seen.values().next().value!);
+        queueMicrotask(() => onMessage(payload.agentId as string, payload.text as string));
+      } catch {
+        // A malformed body is Lintel's bug, not a reason to crash the engine.
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.unref();
+      resolve({ url: `http://127.0.0.1:${port}/lintel`, token, close: () => server.close() });
+    });
+  });
+}
+
 async function post(pathname: string, body: unknown, token: string): Promise<void> {
   try {
     await fetch(`http://127.0.0.1:${LINTEL_PORT}${pathname}`, {
@@ -134,32 +224,88 @@ async function remove(id: string, token: string): Promise<void> {
   }
 }
 
+export type LintelHooks = {
+  liveSessions: () => { sessions: Session[]; projects: Array<{ id: string; name: string }> };
+  /** The session's journal after an event id — the mirroring source. */
+  readEvents: (sessionId: string, after: number) => EngineEvent[];
+  /** Inject a prompt exactly as the cockpit's composer would. */
+  submitTurn: (sessionId: string, input: { runId: string; input: string }) => void;
+};
+
 /**
- * The sync loop. `TELAR_LINTEL=0` is the kill switch; otherwise presence of
+ * The adapter. `TELAR_LINTEL=0` is the kill switch; otherwise presence of
  * the token file IS the opt-in — Lintel is a personal tool, and installing
- * it is the gesture that asks for this.
+ * it is the gesture that asks for this. Everything here is fire-and-forget
+ * per the contract: Telar behaves identically with Lintel absent.
  */
-export function startLintelSync(
-  read: () => { sessions: Session[]; projects: Array<{ id: string; name: string }> },
-  options: { intervalMs?: number; tokenPath?: string } = {},
-): { stop: () => void } {
+export function startLintelSync(hooks: LintelHooks, options: { intervalMs?: number; tokenPath?: string } = {}): { stop: () => void } {
   if (process.env.TELAR_LINTEL === "0") return { stop: () => {} };
   let previous = new Map<string, SessionActivity>();
+  /** Journal cursor per session, set to the CURRENT tail when a session first
+   *  goes live — "send as they happen", not a history dump. */
+  const cursors = new Map<string, number>();
+  /** The no-echo ledger: turns this adapter injected from Lintel's window. */
+  const injectedRuns = new Set<string>();
+  const injectedTexts = new Set<string>();
+  let callback: { url: string; token: string; close: () => void } | undefined;
+  let callbackStarting = false;
+  let stopped = false;
   let inFlight = false;
 
+  const inject = (sessionId: string, text: string): void => {
+    try {
+      const runId = "run_" + crypto.randomUUID().replaceAll("-", "");
+      injectedRuns.add(runId);
+      injectedTexts.add(text);
+      if (injectedTexts.size > 200) injectedTexts.delete(injectedTexts.values().next().value!);
+      hooks.submitTurn(sessionId, { runId, input: text });
+    } catch {
+      // A vanished session or a refused turn is not Lintel's problem — and
+      // the contract forbids surfacing it there.
+    }
+  };
+
   const pass = async (): Promise<void> => {
-    if (inFlight) return;
+    if (inFlight || stopped) return;
     const token = readLintelToken(options.tokenPath ?? lintelTokenPath());
     if (!token) return;
+    if (!callback && !callbackStarting) {
+      // Lazily, once: the listener only exists so Lintel can call back, so
+      // it starts the first time Lintel is actually there.
+      callbackStarting = true;
+      callback = await startLintelCallbackServer(inject);
+      if (stopped) callback.close();
+    }
     inFlight = true;
     try {
-      const { sessions, projects } = read();
+      const { sessions, projects } = hooks.liveSessions();
       const projectNames = new Map(projects.map((project) => [project.id, project.name]));
       const { plan, next } = lintelPlan(sessions, projectNames, previous);
       previous = next;
-      for (const agent of plan.agents) await post("/v1/agents", agent, token);
+      for (const agent of plan.agents) {
+        await post(
+          "/v1/agents",
+          callback ? { ...agent, callbackURL: callback.url, callbackToken: callback.token } : agent,
+          token,
+        );
+      }
       for (const banner of plan.banners) await post("/v1/banner", banner, token);
-      for (const id of plan.removals) await remove(id, token);
+      for (const id of plan.removals) {
+        await remove(id, token);
+        cursors.delete(id);
+      }
+      // Mirror the transcript of every LIVE session from its cursor forward.
+      for (const id of next.keys()) {
+        const first = !cursors.has(id);
+        const events = hooks.readEvents(id, cursors.get(id) ?? 0);
+        const tail = events.at(-1)?.id;
+        if (tail !== undefined) cursors.set(id, tail);
+        if (first) continue; // joined mid-conversation: mirror from now on
+        for (const message of mirrorMessages(events, { runIds: injectedRuns, texts: injectedTexts })) {
+          await post(`/v1/agents/${encodeURIComponent(id)}/messages`, message, token);
+        }
+      }
+      for (const id of [...cursors.keys()]) if (!next.has(id)) cursors.delete(id);
     } catch {
       // Reading state failed this pass; the next one will try again.
     } finally {
@@ -170,5 +316,11 @@ export function startLintelSync(
   const timer = setInterval(() => void pass(), options.intervalMs ?? LINTEL_SYNC_MS);
   timer.unref();
   void pass();
-  return { stop: () => clearInterval(timer) };
+  return {
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+      callback?.close();
+    },
+  };
 }
