@@ -37,6 +37,11 @@ struct NewSessionView: View {
                     .padding(.vertical, 32)
                     .background(Theme.card)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    if loadError != nil {
+                        VStack(spacing: 0) { addProjectRow }
+                            .background(Theme.card)
+                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    }
                 } else {
                     VStack(spacing: 0) {
                         ForEach(Array(projects.enumerated()), id: \.element.id) { index, project in
@@ -64,6 +69,8 @@ struct NewSessionView: View {
                                 Rectangle().fill(Theme.borderSubtle).frame(height: 1)
                             }
                         }
+                        Rectangle().fill(Theme.borderSubtle).frame(height: 1)
+                        addProjectRow
                     }
                     .background(Theme.card)
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -122,6 +129,32 @@ struct NewSessionView: View {
             }
         }
     }
+
+    /// The registration entry INSIDE the card, not only the nav-bar `+` —
+    /// a control at the end of the list you are already reading.
+    private var addProjectRow: some View {
+        Button {
+            addingProject = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 17))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 27, height: 27)
+                Text("Add project…")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(Theme.text)
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.chevron)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
 
 /// Step 2: the composer-first draft. Prompt fills the sheet at 18pt; the
@@ -136,6 +169,12 @@ struct NewSessionDraftView: View {
     @State private var prompt = ""
     @State private var driver = "claude"
     @State private var envMode = "worktree"
+    /// nil = the checkout's HEAD, which is also what absent always meant.
+    @State private var baseRef: String?
+    @State private var modelId: String?
+    @State private var runtimeMode: String?
+    @State private var catalogues: [String: ModelCatalogue] = [:]
+    @State private var git: GitOverview?
     @State private var submitting = false
     @State private var error: String?
     @FocusState private var focused: Bool
@@ -171,14 +210,17 @@ struct NewSessionDraftView: View {
                         HStack(spacing: 8) {
                             chip(icon: driver == "claude" ? "sparkle" : "terminal",
                                  label: driver == "claude" ? "Claude" : "Codex") {
-                                Button { driver = "claude" } label: { menuRow("Claude", selected: driver == "claude") }
-                                Button { driver = "codex" } label: { menuRow("Codex", selected: driver == "codex") }
+                                Button { switchDriver("claude") } label: { menuRow("Claude", selected: driver == "claude") }
+                                Button { switchDriver("codex") } label: { menuRow("Codex", selected: driver == "codex") }
                             }
-                            chip(icon: "point.topleft.down.curvedto.point.bottomright.up",
-                                 label: envMode == "worktree" ? "New worktree" : "Current checkout") {
-                                Button { envMode = "worktree" } label: { menuRow("New worktree", selected: envMode == "worktree") }
-                                Button { envMode = "local" } label: { menuRow("Current checkout", selected: envMode == "local") }
+                            modelChip
+                            chip(icon: "slider.horizontal.3",
+                                 label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
+                                ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
+                                    Button { runtimeMode = mode } label: { menuRow(label, selected: mode == runtimeMode) }
+                                }
                             }
+                            workspaceChip
                         }
                         .padding(.horizontal, 6)
                     }
@@ -225,6 +267,83 @@ struct NewSessionDraftView: View {
             try? await Task.sleep(for: .milliseconds(500))
             focused = true
         }
+        .task {
+            await loadCatalogue()
+            git = try? await api.projectGit(project.id)
+        }
+    }
+
+    /// t3's workspace label: "New worktree · main" / "Current checkout".
+    private var workspaceLabel: String {
+        let mode = envMode == "worktree" ? "New worktree" : "Current"
+        if let baseRef { return "\(mode) · \(shortRef(baseRef))" }
+        return envMode == "worktree" ? "New worktree" : "Current checkout"
+    }
+
+    private func shortRef(_ ref: String) -> String {
+        ref.hasPrefix("origin/") ? String(ref.dropFirst("origin/".count)) : ref
+    }
+
+    private var workspaceChip: some View {
+        chip(icon: "point.topleft.down.curvedto.point.bottomright.up", label: workspaceLabel) {
+            Section("Mode") {
+                Button { envMode = "worktree" } label: { menuRow("New worktree", selected: envMode == "worktree") }
+                Button { envMode = "local"; baseRef = nil } label: { menuRow("Current checkout", selected: envMode == "local") }
+            }
+            if envMode == "worktree" {
+                Section("Branch") {
+                    Button { baseRef = nil } label: { menuRow("Checkout HEAD", selected: baseRef == nil) }
+                    if let refs = git?.refs {
+                        ForEach(refs.prefix(12)) { ref in
+                            Button { baseRef = ref.name } label: {
+                                if baseRef == ref.name {
+                                    Label(ref.name, systemImage: "checkmark")
+                                } else if ref.head == true {
+                                    Label(ref.name, systemImage: "smallcircle.filled.circle")
+                                } else {
+                                    Text(ref.name)
+                                }
+                            }
+                        }
+                    } else {
+                        Button("Loading branches…") {}.disabled(true)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The provider's own list for the picked driver; picking a model applies
+    /// after create (createSession doesn't take one).
+    private var modelChip: some View {
+        let models = (catalogues[driver]?.models ?? []).filter { !$0.hidden }
+        let label = models.first { $0.id == modelId }?.label
+            ?? (modelId == nil ? models.first { $0.isDefault }?.label : modelId)
+        return chip(icon: "cpu", label: label ?? "Model") {
+            if models.isEmpty {
+                Button("Loading models…") {}.disabled(true)
+            }
+            ForEach(models) { model in
+                Button { modelId = model.id } label: {
+                    menuRow(model.label, selected: model.id == modelId || (modelId == nil && model.isDefault))
+                }
+            }
+        }
+    }
+
+    private func switchDriver(_ next: String) {
+        guard next != driver else { return }
+        driver = next
+        // A model belongs to a driver; carrying one across is a 404 at the
+        // provider.
+        modelId = nil
+        Task { await loadCatalogue() }
+    }
+
+    private func loadCatalogue() async {
+        if catalogues[driver] == nil {
+            catalogues[driver] = try? await api.models(driver: driver)
+        }
     }
 
     @ViewBuilder private func menuRow(_ label: String, selected: Bool) -> some View {
@@ -263,8 +382,21 @@ struct NewSessionDraftView: View {
         do {
             let session = try await api.createSession(
                 projectId: project.id,
-                input: NewSessionInput(title: nil, driver: driver, envMode: envMode)
+                input: NewSessionInput(
+                    title: nil, driver: driver, envMode: envMode,
+                    baseRef: envMode == "worktree" ? baseRef : nil
+                )
             )
+            // createSession takes neither a model nor a runtime mode — they
+            // are session PATCHes, applied before the first turn runs.
+            if modelId != nil || runtimeMode != nil {
+                var patch = SessionPatch()
+                if let runtimeMode { patch.runtimeMode = runtimeMode }
+                if let modelId, let instanceId = session.providerInstanceId ?? session.model?.instanceId {
+                    patch.model = ModelSelection(instanceId: instanceId, model: modelId)
+                }
+                try? await api.patchSession(session.id, patch: patch)
+            }
             _ = try await api.submitTurn(session.id, runId: RunID.newRunId(), input: prompt, attachments: nil)
             // The caller closes the sheet and replaces it with the live
             // conversation — no back-stack detour (t3's replace()).

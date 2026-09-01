@@ -44,6 +44,7 @@ actor RecordingEngineAPI: EngineAPI {
     func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch { fatalError("unused") }
     func listDirectories(path: String?) async throws -> DirectoryListing { fatalError("unused") }
     func registerProject(name: String, root: String) async throws -> ProjectRef { fatalError("unused") }
+    func projectGit(_ projectId: EngineID) async throws -> GitOverview { fatalError("unused") }
 }
 
 private func page(_ json: String) -> EventPage {

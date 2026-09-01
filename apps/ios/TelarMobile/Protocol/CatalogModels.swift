@@ -86,6 +86,28 @@ struct FilePatch: Decodable {
     var binary: Bool
 }
 
+// MARK: - the base-ref picker (`/api/projects/:id/git`)
+
+struct GitRefEntry: Decodable, Identifiable, Equatable {
+    var name: String
+    /// local | remote
+    var kind: String
+    /// The checkout's current branch — the picker marks it. Local only.
+    var head: Bool?
+
+    var id: String { name }
+}
+
+struct GitOverview: Decodable {
+    var repository: Bool
+    var branch: String?
+    /// Newest commit first, capped — the base-ref picker's menu. Absent
+    /// (never empty) on a non-repository.
+    var refs: [GitRefEntry]?
+    /// What a fresh worktree is cut from unless the person picks otherwise.
+    var defaultRemoteRef: String?
+}
+
 // MARK: - the Mac's folders (`/api/fs`)
 
 struct DirectoryEntry: Decodable, Identifiable, Equatable, Hashable {

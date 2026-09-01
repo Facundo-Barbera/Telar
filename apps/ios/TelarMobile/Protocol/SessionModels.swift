@@ -61,6 +61,9 @@ struct Session: Codable, Identifiable, Equatable {
     var updatedAt: Timestamp
 
     var driver: String
+    /// The instance that routes this session's turns — what a model change
+    /// must name when `model` is still nil (a fresh session).
+    var providerInstanceId: String?
     var model: ModelSelection?
     var workspace: SessionWorkspace
     var runtimeMode: String
@@ -80,7 +83,7 @@ struct Session: Codable, Identifiable, Equatable {
     var snoozedAt: Timestamp?
 
     private enum CodingKeys: String, CodingKey {
-        case id, projectId, title, state, createdAt, updatedAt, driver, model
+        case id, projectId, title, state, createdAt, updatedAt, driver, model, providerInstanceId
         case workspace, runtimeMode, detached, usage, activity, activityAt
         case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt
         case snoozedUntil, snoozedAt
@@ -95,6 +98,7 @@ struct Session: Codable, Identifiable, Equatable {
         createdAt = try c.decode(Timestamp.self, forKey: .createdAt)
         updatedAt = try c.decode(Timestamp.self, forKey: .updatedAt)
         driver = try c.decode(String.self, forKey: .driver)
+        providerInstanceId = try c.decodeIfPresent(String.self, forKey: .providerInstanceId)
         model = try? c.decodeIfPresent(ModelSelection.self, forKey: .model)
         workspace = try c.decode(SessionWorkspace.self, forKey: .workspace)
         runtimeMode = try c.decodeIfPresent(String.self, forKey: .runtimeMode) ?? "approval-required"

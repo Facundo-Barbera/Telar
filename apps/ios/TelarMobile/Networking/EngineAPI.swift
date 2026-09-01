@@ -36,6 +36,8 @@ protocol EngineAPI: Sendable {
     /// Directories on the Mac — the phone's folder picker.
     func listDirectories(path: String?) async throws -> DirectoryListing
     func registerProject(name: String, root: String) async throws -> ProjectRef
+    /// Branches for the draft's base-ref picker.
+    func projectGit(_ projectId: EngineID) async throws -> GitOverview
 }
 
 struct InboxPolicy: Decodable, Equatable {
@@ -49,6 +51,8 @@ struct NewSessionInput: Encodable {
     var title: String?
     var driver: String?
     var envMode: String?
+    /// Worktree base — any name from `GitOverview.refs`. Absent = HEAD.
+    var baseRef: String?
 }
 
 /// The only two shapes a `user_input` answer takes (`UserInputField.kind`
@@ -257,6 +261,12 @@ struct HTTPEngineAPI: EngineAPI {
         struct Wrapped: Decodable { var project: ProjectRef }
         let wrapped: Wrapped = try await send("POST", "api/projects", body: ["name": AnyEncodable(name), "root": AnyEncodable(root)])
         return wrapped.project
+    }
+
+    func projectGit(_ projectId: EngineID) async throws -> GitOverview {
+        struct Wrapped: Decodable { var git: GitOverview }
+        let wrapped: Wrapped = try await get("api/projects/\(escape(projectId))/git")
+        return wrapped.git
     }
 
     // MARK: transport
