@@ -35,6 +35,20 @@ import Testing
         #expect(ModelFamilies.familyKey(models[0]) == "claude-haiku-4-5")
     }
 
+    @Test func aPointReleaseIsItsOwnFamily() {
+        // Fable 5.1: `-5-1` is a version, not an 8-digit dated build — the
+        // strip must not eat it, and the label restores the dotted version.
+        let models = [
+            model("claude-fable-5[1m]", label: "Fable", resolves: "claude-fable-5[1m]"),
+            model("claude-fable-5-1[1m]", label: "Fable", resolves: "claude-fable-5-1[1m]"),
+        ]
+        let families = ModelFamilies.group(models)
+        #expect(families.count == 2)
+        #expect(families[0].label == "Fable 5")
+        #expect(families[1].label == "Fable 5.1")
+        #expect(ModelFamilies.familyKey(models[1]) == "claude-fable-5-1")
+    }
+
     @Test func labelsWithDigitsAreNotDoubled() {
         let models = [model("gpt-5.6-sol", label: "GPT-5.6-Sol")]
         #expect(ModelFamilies.group(models)[0].label == "GPT-5.6-Sol")
