@@ -31,13 +31,14 @@ struct InboxView: View {
                 section("Working", store.sections.working)
                 section("Quiet", store.sections.quiet)
                 if showHidden {
-                    section("Snoozed & settled", store.sections.hidden, slim: true)
+                    section("Snoozed", store.sections.snoozed, slim: true)
+                    section("Settled", store.sections.settled, slim: true)
                 }
-                if !store.sections.hidden.isEmpty {
+                if store.sections.hiddenCount > 0 {
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) { showHidden.toggle() }
                     } label: {
-                        Text(showHidden ? "Hide snoozed & settled" : "Show all (\(store.sections.hidden.count) hidden)")
+                        Text(showHidden ? "Hide snoozed & settled" : "Show snoozed & settled (\(store.sections.hiddenCount))")
                             .font(Theme.metaSmall)
                             .foregroundStyle(Theme.textMuted)
                             .padding(.horizontal, 10)
@@ -87,6 +88,19 @@ struct InboxView: View {
                     }
                 }
                 .buttonStyle(RowButtonStyle())
+                // ScrollView rows have no swipe actions — long-press is the
+                // row-level control surface.
+                .contextMenu {
+                    if session.settledOverride == "settled" {
+                        Button("Unsettle", systemImage: "tray.and.arrow.up") {
+                            Task { await store.setSettled(session.id, false) }
+                        }
+                    } else {
+                        Button("Settle", systemImage: "tray.and.arrow.down") {
+                            Task { await store.setSettled(session.id, true) }
+                        }
+                    }
+                }
             }
         }
     }

@@ -7,10 +7,14 @@ struct InboxSections: Equatable {
     var needsYou: [Session] = []
     var working: [Session] = []
     var quiet: [Session] = []
-    /// Snoozed or settled — behind "Show all".
-    var hidden: [Session] = []
+    /// Behind "Show all", in their own labeled sections.
+    var snoozed: [Session] = []
+    var settled: [Session] = []
 
-    var isEmpty: Bool { needsYou.isEmpty && working.isEmpty && quiet.isEmpty && hidden.isEmpty }
+    var hiddenCount: Int { snoozed.count + settled.count }
+    var isEmpty: Bool {
+        needsYou.isEmpty && working.isEmpty && quiet.isEmpty && snoozed.isEmpty && settled.isEmpty
+    }
 }
 
 func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
@@ -18,8 +22,10 @@ func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
     for session in sessions {
         let snoozed = (session.snoozedUntil ?? 0) > now
         let settled = session.settledOverride == "settled"
-        if snoozed || settled {
-            sections.hidden.append(session)
+        if snoozed {
+            sections.snoozed.append(session)
+        } else if settled {
+            sections.settled.append(session)
         } else if session.activity == .blocked || session.lastTurnFailed == true {
             sections.needsYou.append(session)
         } else if session.activity == .working || session.activity == .queued || session.activity == .monitoring {
@@ -35,7 +41,8 @@ func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
     sections.needsYou.sort(by: byActivityThenRecency)
     sections.working.sort(by: byActivityThenRecency)
     sections.quiet.sort { $0.updatedAt > $1.updatedAt }
-    sections.hidden.sort { $0.updatedAt > $1.updatedAt }
+    sections.snoozed.sort { $0.updatedAt > $1.updatedAt }
+    sections.settled.sort { $0.updatedAt > $1.updatedAt }
     return sections
 }
 
@@ -68,6 +75,17 @@ func groupInbox(_ sessions: [Session], now: Timestamp) -> InboxSections {
     func stop() {
         loop?.cancel()
         loop = nil
+    }
+
+    /// Settle or unsettle straight off a row — a context-menu action, so the
+    /// refresh must be immediate rather than waiting for the next poll.
+    func setSettled(_ id: EngineID, _ settled: Bool) async {
+        do {
+            try await api.patchSession(id, patch: SessionPatch(settledOverride: settled ? "settled" : "active"))
+            await refresh()
+        } catch {
+            lastError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+        }
     }
 
     func refresh() async {
