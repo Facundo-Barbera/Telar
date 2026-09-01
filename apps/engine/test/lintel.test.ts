@@ -186,6 +186,51 @@ test("a short-lived session mirrors its opening prompt and its final reply", asy
   expect(statuses).toContain("done");
 });
 
+test("an adapter restart does not re-mirror a chat Lintel already holds", async () => {
+  // The duplication bug, pinned: the engine restarts, cursors reset, and the
+  // still-registered agent must NOT receive its bootstrap slice again.
+  const log: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
+  const stub = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+    request.on("end", () => {
+      log.push({ method: request.method ?? "", path: request.url ?? "", body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {} });
+      if (request.method === "GET" && request.url === "/v1/agents") {
+        // Lintel survived the engine restart: it still knows this agent.
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ agents: [{ id: "s_kept" }] }));
+        return;
+      }
+      response.writeHead(200).end("{}");
+    });
+  });
+  const port = await new Promise<number>((resolve) => {
+    stub.listen(0, "127.0.0.1", () => resolve((stub.address() as { port: number }).port));
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lintel-dedupe-"));
+  const tokenPath = path.join(dir, "api-token");
+  fs.writeFileSync(tokenPath, "tok");
+
+  const sync = startLintelSync(
+    {
+      liveSessions: () => ({ sessions: [session("s_kept", "working")], projects: [] }),
+      readEvents: (_id, after) =>
+        ([{ id: 1, at: 1, sessionId: "s_kept", type: "turn.accepted", replayed: false, turn: { runId: "run_k", sessionId: "s_kept", sequence: 1, state: "queued", input: "old prompt", acceptedAt: 1, updatedAt: 1 } }] as unknown as EngineEvent[]).filter(
+          (event) => event.id > after,
+        ),
+      submitTurn: () => {},
+    },
+    { intervalMs: 40, tokenPath, port },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  sync.stop();
+  stub.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  // The heartbeat still upserts; the OLD prompt is never re-sent.
+  expect(log.some((entry) => entry.method === "POST" && entry.path === "/v1/agents")).toBe(true);
+  expect(log.filter((entry) => entry.path === "/v1/agents/s_kept/messages")).toHaveLength(0);
+});
+
 test("a 404 on /messages re-registers in full and retries once — the self-heal", async () => {
   // A stub Lintel that FORGOT the agent (restart or TTL expiry): /messages
   // 404s until a registration arrives, then accepts. The bridge must re-POST

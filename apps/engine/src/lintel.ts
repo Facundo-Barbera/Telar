@@ -221,6 +221,22 @@ async function post(pathname: string, body: unknown, token: string, port: number
   }
 }
 
+/** Which agents Lintel already knows — the anti-duplication check: a
+ *  bootstrap slice is only for an agent Lintel has never seen. Failure reads
+ *  as "none known", which is also the state where posting fails anyway. */
+async function knownAgents(token: string, port: number): Promise<Set<string>> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/agents`, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(1_000),
+    });
+    const body = (await response.json()) as { agents?: Array<{ id?: unknown }> };
+    return new Set((body.agents ?? []).map((agent) => agent.id).filter((id): id is string => typeof id === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
 async function remove(id: string, token: string, port: number): Promise<void> {
   try {
     await fetch(`http://127.0.0.1:${port}/v1/agents/${encodeURIComponent(id)}`, {
@@ -295,6 +311,12 @@ export function startLintelSync(
       const projectNames = new Map(projects.map((project) => [project.id, project.name]));
       const { plan, next } = lintelPlan(sessions, projectNames, previous);
       previous = next;
+      // Which chips Lintel already holds — read BEFORE this pass's upserts,
+      // and only when a first-sight session makes the answer matter. An
+      // adapter restart must not re-mirror a chat Lintel kept (its TTL
+      // outlives an engine restart; that duplication shipped once).
+      const anyFirstSight = [...next.keys(), ...plan.agents.map((agent) => agent.id)].some((id) => !cursors.has(id));
+      const alreadyKnown = anyFirstSight ? await knownAgents(token, port) : new Set<string>();
       /** The full registration per agent id — what a 404 re-POSTs. */
       const registrations = new Map<string, unknown>();
       for (const agent of plan.agents) {
@@ -321,8 +343,10 @@ export function startLintelSync(
         // First sight: a capped recent slice, not silence — a NEW session's
         // whole story is its opening prompt, and skipping it left short
         // sessions with an empty chat forever. The cap keeps an old
-        // transcript from dumping.
-        if (first) messages = messages.slice(-LINTEL_BOOTSTRAP_MESSAGES);
+        // transcript from dumping — and an agent Lintel ALREADY knows gets
+        // no slice at all: its chat has the story, and re-sending it is the
+        // duplication an adapter restart once caused.
+        if (first) messages = alreadyKnown.has(id) ? [] : messages.slice(-LINTEL_BOOTSTRAP_MESSAGES);
         for (const message of messages) {
           const status = await post(`/v1/agents/${encodeURIComponent(id)}/messages`, message, token, port);
           if (status === 404) {
