@@ -48,14 +48,31 @@ struct QRScannerView: UIViewRepresentable {
         private var accepted = false
         /// Rejected payloads, so one bad code doesn't re-fire per frame.
         private var refused: Set<String> = []
+        private var camera: AVCaptureDevice?
+        private var pinchStartZoom: CGFloat = 1
 
         init(onScan: @escaping (String) -> Bool) {
             self.onScan = onScan
         }
 
+        /// Pinch-to-zoom, straight on the capture device — scanning a code
+        /// across the room beats walking to the Mac.
+        @objc func pinched(_ gesture: UIPinchGestureRecognizer) {
+            guard let camera else { return }
+            if gesture.state == .began { pinchStartZoom = camera.videoZoomFactor }
+            guard gesture.state == .began || gesture.state == .changed else { return }
+            let ceiling = min(camera.activeFormat.videoMaxZoomFactor, 8)
+            let zoom = max(1, min(pinchStartZoom * gesture.scale, ceiling))
+            if (try? camera.lockForConfiguration()) != nil {
+                camera.videoZoomFactor = zoom
+                camera.unlockForConfiguration()
+            }
+        }
+
         func start(in view: ScannerPreviewView) {
             view.previewLayer.session = session
             view.previewLayer.videoGravity = .resizeAspectFill
+            view.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(pinched)))
             // First use prompts (NSCameraUsageDescription); a denial leaves a
             // black preview and the paste path still works.
             AVCaptureDevice.requestAccess(for: .video) { granted in
@@ -69,6 +86,7 @@ struct QRScannerView: UIViewRepresentable {
                 guard let camera = AVCaptureDevice.default(for: .video),
                       let input = try? AVCaptureDeviceInput(device: camera)
                 else { return }
+                self.camera = camera
                 session.beginConfiguration()
                 // 720p is plenty for a QR filling half the frame, and keeps
                 // the pipeline light; the default preset is much larger.
@@ -141,6 +159,9 @@ struct QRScannerSheet: View {
                         .font(Theme.meta)
                         .foregroundStyle(Theme.statusAmber)
                 }
+                Text("Pinch to zoom")
+                    .font(Theme.metaSmall)
+                    .foregroundStyle(Theme.textTertiary)
                 Button("Cancel") { dismiss() }
                     .font(Theme.bodyMedium)
                     .padding(.vertical, 8)
