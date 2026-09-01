@@ -52,6 +52,7 @@ export function proxy(request: NextRequest): Response | undefined {
   const decision = decideApiAccess(
     {
       pathname: request.nextUrl.pathname,
+      method: request.method,
       authorization: request.headers.get("authorization"),
       deviceCookie: request.cookies.get("telar_device")?.value ?? null,
     },
@@ -62,12 +63,19 @@ export function proxy(request: NextRequest): Response | undefined {
     return undefined;
   }
   // An unpaired API caller gets the typed 401; an unpaired PERSON gets the
-  // pairing page, which explains itself.
-  if (!request.nextUrl.pathname.startsWith("/api/")) {
+  // pairing page, which explains itself. A FORBIDDEN caller is paired — never
+  // bounce it to /pair (only cockpit_unauthorized redirects; pages are GETs,
+  // so an observer is never forbidden a page anyway).
+  if (decision.code === "cockpit_unauthorized" && !request.nextUrl.pathname.startsWith("/api/")) {
     return NextResponse.redirect(new URL("/pair", request.url));
   }
+  const forbidden = decision.code === "cockpit_forbidden";
   return Response.json(
-    { error: { code: "cockpit_unauthorized", message: "Pair this device with the Telar cockpit to use it." } },
-    { status: 401, headers: { "cache-control": "no-store" } },
+    {
+      error: forbidden
+        ? { code: "cockpit_forbidden", message: "This device is paired for viewing only. Give it full access from Remote access on the Mac." }
+        : { code: "cockpit_unauthorized", message: "Pair this device with the Telar cockpit to use it." },
+    },
+    { status: forbidden ? 403 : 401, headers: { "cache-control": "no-store" } },
   );
 }

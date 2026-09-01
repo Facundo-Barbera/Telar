@@ -30,7 +30,7 @@ export function PairClient() {
         const response = await fetch("/api/pair", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ token, deviceName: "Browser" }),
+          body: JSON.stringify({ token, deviceName: "Browser", platform: "browser" }),
         });
         if (!response.ok) {
           const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
