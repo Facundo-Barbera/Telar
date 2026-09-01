@@ -54,6 +54,10 @@ const api = createEngineApi();
  *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
  *  floor (24rem) + panel floor (20rem), rounded up. */
 const NARROW_WINDOW = 1280;
+/** The masthead's "Spin into loom" entrance — off until the flow is ready to
+ *  live in every session's header. See the render site for why off means
+ *  absent rather than greyed. */
+const SPIN_ENTRANCE_ENABLED = false;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
@@ -234,8 +238,14 @@ function SessionMasthead({
         {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
             produced enough shape, hand it to the weaver. The session becomes
             the loom's origin and detaches — it leaves this surface and lives
-            in the loom's room from then on. */}
-        {session && !readOnly && (
+            in the loom's room from then on.
+
+            PARKED, NOT SHIPPED. The flow behind this glyph needs more work
+            before it earns a place in every session's header, and a disabled
+            button would be chrome apologising for itself — so nothing renders
+            until the flag flips. The Looms place stays reachable through the
+            place switcher; only this entrance is closed. */}
+        {SPIN_ENTRANCE_ENABLED && session && !readOnly && (
           <Button
             type="button"
             variant="ghost"
