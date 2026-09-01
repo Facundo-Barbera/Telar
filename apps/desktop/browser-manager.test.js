@@ -360,7 +360,10 @@ describe("desktop shell development contracts", () => {
   test("uses the Telar icon in an unpackaged Electron run", () => {
     const source = readFileSync(path.join(__dirname, "main.js"), "utf8");
 
-    expect(source).toContain('path.join(__dirname, "build", "icon.png")');
+    // The dev shell PREFERS the amber loom (icon-dev.png) and falls back to
+    // the production icon — see developmentIconPath in main.js.
+    expect(source).toContain('["icon-dev.png", "icon.png"]');
+    expect(source).toContain('path.join(__dirname, "build", name)');
     expect(source).toContain("app.dock.setIcon(icon)");
     expect(source).toContain("...(icon ? { icon } : {})");
     expect(existsSync(path.join(__dirname, "build", "icon.png"))).toBe(true);
