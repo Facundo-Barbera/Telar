@@ -54,8 +54,19 @@ build with no project-file edit.
 
 ## Installing on a phone
 
-Open the project in Xcode once, select your team under Signing &
-Capabilities (automatic signing), and run to the connected iPhone. A paid
-developer account's profile lasts a year; no TestFlight required. The
-simulator needs no signing at all and shares the Mac's network stack, so it
-reaches the cockpit on either the tailnet IP or localhost.
+Headless, via `apps/ios/phone.sh` (no Xcode GUI):
+
+```
+apps/ios/phone.sh nightly   # "Telar" — com.telar.mobile, Release
+apps/ios/phone.sh dev       # "Telar Dev" — com.telar.mobile.dev, Debug
+```
+
+Two bundle ids make the nightly and the moving dev build UNRELATED APPS to
+iOS, so both live on the phone at once — the dev build wears an amber icon
+and its own name. Each keeps its own pairing (Keychain is per-app): pair
+each once and it survives reinstalls of that flavor. Cutting a nightly is
+`git tag nightly-YYYYMMDD && apps/ios/phone.sh nightly` from that tag.
+
+A paid developer account's profile lasts a year; no TestFlight required.
+The simulator needs no signing at all and shares the Mac's network stack,
+so it reaches the cockpit on either the tailnet IP or localhost.
