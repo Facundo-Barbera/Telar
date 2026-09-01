@@ -161,7 +161,11 @@ struct ConnectView: View {
             // same shape as -openSession: seeds the field and runs the
             // exchange, so the whole pairing path is drivable headlessly.
             // Inert in normal use.
-            if pairingLink.isEmpty, let seeded = UserDefaults.standard.string(forKey: "pairingLink") {
+            // Already-paired guard: the seeded link is one-time; re-running it
+            // on every appearance would paint an "already used" error on a
+            // phone that is in fact paired.
+            if pairingLink.isEmpty, settings.deviceToken == nil,
+               let seeded = UserDefaults.standard.string(forKey: "pairingLink") {
                 pairingLink = seeded
                 await pair()
             }
