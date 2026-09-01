@@ -601,10 +601,15 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
 function createWindow(url) {
   const title = windowTitle();
   const icon = developmentIconPath();
+  // Vibrancy at construction when the preference asks for it — see the
+  // appearance-preference block above. `followWindow` keeps the blur honest
+  // when the app is in the background instead of freezing a stale frame.
+  const translucent = supportsTranslucency() && readUiPrefs().translucent;
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    backgroundColor: "#0a0a0a",
+    backgroundColor: translucent ? "#00000000" : "#0a0a0a",
+    ...(translucent ? { vibrancy: "under-window", visualEffectState: "followWindow" } : {}),
     show: false,
     title,
     ...macWindowChrome(),
@@ -881,6 +886,61 @@ function writeUpdatePrefs(prefs) {
   }
 }
 
+// --- Window appearance preference (userData, same idiom as updates) ----------
+//
+// TRANSLUCENCY IS A WINDOW-CREATION FACT. The renderer owns the look —
+// globals.css keys alpha surfaces off `data-translucent`, and the settings
+// pane owns the toggle — but a vibrancy layer has to exist UNDER the page for
+// that alpha to reveal anything, and Electron attaches it most reliably at
+// construction. So the preference is persisted here, read when the window is
+// built, and applied live to open windows when it changes.
+//
+// macOS only: vibrancy is NSVisualEffectView. Everywhere else `supported` is
+// false and the cockpit hides the control.
+const DEFAULT_UI_PREFS = { translucent: false };
+
+function uiPrefsPath() {
+  return path.join(app.getPath("userData"), "ui-prefs.json");
+}
+
+function readUiPrefs() {
+  const fs = require("node:fs");
+  try {
+    const raw = JSON.parse(fs.readFileSync(uiPrefsPath(), "utf8"));
+    return { translucent: raw.translucent === true };
+  } catch {
+    // Missing / corrupt / unreadable — first run, never a crash.
+    return { ...DEFAULT_UI_PREFS };
+  }
+}
+
+function writeUiPrefs(prefs) {
+  const fs = require("node:fs");
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(uiPrefsPath(), JSON.stringify(prefs), "utf8");
+  } catch (err) {
+    console.error("[telar-desktop] failed to persist ui prefs:", err.message);
+  }
+}
+
+function supportsTranslucency() {
+  return process.platform === "darwin";
+}
+
+// The opaque colour is the app's darkest canvas, matching createWindow's — a
+// translucent window turned opaque again must not flash white first.
+function applyTranslucency(on) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      win.setVibrancy(on ? "under-window" : null);
+      win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
+    } catch (err) {
+      console.error("[telar-desktop] failed to retint a window:", err.message);
+    }
+  }
+}
+
 let updaterWindow = null;
 function broadcastUpdateStatus(status, extra = {}) {
   const win = updaterWindow || BrowserWindow.getAllWindows()[0];
@@ -1037,6 +1097,21 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
   // check is what turns the choice into a visible answer.
   if (next.channel !== current.channel && updatesConfigured()) void checkForUpdates();
   return next;
+});
+
+// The window-appearance half of Settings → Appearance. `get` answers whether
+// this platform can do it at all, so the cockpit hides rather than disables
+// the control where it would be a lie.
+ipcMain.handle("telar:appearance:get", () => ({ ...readUiPrefs(), supported: supportsTranslucency() }));
+
+ipcMain.handle("telar:appearance:set", (_event, patch) => {
+  const current = readUiPrefs();
+  const next = { translucent: typeof patch?.translucent === "boolean" ? patch.translucent : current.translucent };
+  writeUiPrefs(next);
+  // Applied to the OPEN windows too: a preference that only takes effect on
+  // the next launch reads as a broken toggle.
+  if (supportsTranslucency()) applyTranslucency(next.translucent);
+  return { ...next, supported: supportsTranslucency() };
 });
 
 // --- (f) Teardown ------------------------------------------------------------

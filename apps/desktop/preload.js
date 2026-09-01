@@ -54,6 +54,12 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   dialog: {
     chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
   },
+  // Window translucency — the one piece of appearance the renderer cannot do
+  // alone, because the vibrancy layer lives under the page (main.js).
+  appearance: {
+    get: () => ipcRenderer.invoke("telar:appearance:get"),
+    set: (patch) => ipcRenderer.invoke("telar:appearance:set", patch),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     install: () => ipcRenderer.invoke("telar:updates:install"),
