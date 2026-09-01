@@ -135,7 +135,11 @@ struct WelcomeView: View {
         } catch let apiError as EngineAPIError {
             error = apiError.errorDescription ?? "Pairing failed."
         } catch {
-            self.error = "Pairing failed. Is this phone on the same tailnet as the Mac?"
+            // Name the address — "couldn't reach 192.168.x" and "couldn't
+            // reach 100.x" point at different fixes (Local Network permission
+            // / same wifi vs. the Tailscale VPN toggle).
+            let where_ = parsed.base.host() ?? "the cockpit"
+            self.error = "Couldn't reach \(where_). If that's a local address, check this phone is on the same wifi and Telar may use the local network; if it's a 100.x address, check Tailscale is connected on this phone."
         }
     }
 }
