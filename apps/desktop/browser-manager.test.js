@@ -381,7 +381,9 @@ describe("desktop shell development contracts", () => {
     const source = readFileSync(path.join(__dirname, "main.js"), "utf8");
 
     expect(source).toContain('win.webContents.on("did-start-loading"');
-    expect(source).toContain("browserManager?.hideVisibleScope()");
+    // Per-window manager, captured in createWindow's closure — the global
+    // would point at the WRONG manager during a translucency window rebuild.
+    expect(source).toContain("manager.hideVisibleScope()");
   });
 
   test("isolates E2E Electron state without disabling production's instance lock", () => {

@@ -604,6 +604,7 @@ function createWindow(url) {
   // Vibrancy at construction when the preference asks for it — see the
   // appearance-preference block above. `followWindow` keeps the blur honest
   // when the app is in the background instead of freezing a stale frame.
+  lastWindowUrl = url;
   const translucent = supportsTranslucency() && readUiPrefs().translucent;
   const win = new BrowserWindow({
     width: 1280,
@@ -621,7 +622,14 @@ function createWindow(url) {
       preload: path.join(__dirname, "preload.js"),
     },
   });
-  browserManager = new DesktopBrowserManager(win);
+  // Whether THIS window's compositor can blend alpha — decided above, at
+  // construction, which is why applyTranslucency has a rebuild path at all.
+  win.telarTranslucentCapable = translucent;
+  // Captured, not read from the global at close time: during a translucency
+  // rebuild the OLD window closes after the NEW one exists, and destroying
+  // whatever the global points to then would kill the replacement's manager.
+  const manager = new DesktopBrowserManager(win);
+  browserManager = manager;
   // The window's own URL is what "the app's own UI" means — it is the same
   // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
   // has to guess a port or a hostname. An unusable one throws, and createWindow
@@ -631,11 +639,11 @@ function createWindow(url) {
   // cleanup pass in that path. Hide it before the document is replaced; the
   // remounted Browser surface will publish fresh bounds and make it visible.
   win.webContents.on("did-start-loading", () => {
-    browserManager?.hideVisibleScope();
+    manager.hideVisibleScope();
   });
   win.on("closed", () => {
-    browserManager?.destroy();
-    browserManager = null;
+    manager.destroy();
+    if (browserManager === manager) browserManager = null;
   });
   // Keep the build stamp in the title bar — don't let the loaded page's <title>
   // overwrite it (that's how you answer "which build am I running?").
@@ -928,18 +936,52 @@ function supportsTranslucency() {
   return process.platform === "darwin";
 }
 
-// The opaque colour is the app's darkest canvas, matching createWindow's — a
-// translucent window turned opaque again must not flash white first.
+/**
+ * TRANSPARENCY IS A CREATION-TIME FACT IN CHROMIUM. `setBackgroundColor
+ * ("#00000000")` on a window born opaque does not re-plumb the compositor: the
+ * page starts painting alpha into a buffer that is never cleared, and every
+ * previously-shown frame ghosts through — navigate Settings → session and the
+ * settings pane stays visible behind the transcript. So turning translucency ON
+ * over an opaque window REBUILDS the window (same URL, same bounds; the new one
+ * is shown before the old is destroyed, or `window-all-closed` would quit the
+ * app in the gap). Turning it OFF is safe live — an opaque page repaints every
+ * pixel — and a window BUILT translucent can toggle both ways live.
+ */
 function applyTranslucency(on) {
-  for (const win of BrowserWindow.getAllWindows()) {
+  const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
+  if (on && wins.some((win) => !win.telarTranslucentCapable)) {
+    recreateWindowTranslucent(wins[0]);
+    return;
+  }
+  for (const win of wins) {
     try {
       win.setVibrancy(on ? "under-window" : null);
+      // The opaque colour is the app's darkest canvas, matching createWindow's
+      // — a translucent window turned opaque again must not flash white first.
       win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
     } catch (err) {
       console.error("[telar-desktop] failed to retint a window:", err.message);
     }
   }
 }
+
+function recreateWindowTranslucent(old) {
+  const target = old?.webContents.getURL() || lastWindowUrl;
+  if (!target) return;
+  const bounds = old?.getBounds();
+  // createWindow reads the just-written pref, so the replacement is BORN
+  // translucent — the one thing the live path cannot do.
+  const win = createWindow(target);
+  if (bounds) win.setBounds(bounds);
+  updaterWindow = win;
+  win.once("ready-to-show", () => {
+    if (old && !old.isDestroyed()) old.destroy();
+  });
+}
+
+// So a rebuilt window knows where to point itself if the old one's webContents
+// is already gone.
+let lastWindowUrl = null;
 
 let updaterWindow = null;
 function broadcastUpdateStatus(status, extra = {}) {
