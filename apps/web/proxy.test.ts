@@ -33,12 +33,22 @@ function matches(url: string): boolean {
 }
 
 describe("pairing proxy", () => {
-  test("the matcher covers /api and nothing else", () => {
+  test("the matcher covers /api and pages, sparing /pair and static assets", () => {
     expect(matches("/api/health")).toBe(true);
     expect(matches("/api/sessions/live")).toBe(true);
-    expect(matches("/")).toBe(false);
-    expect(matches("/settings")).toBe(false);
+    expect(matches("/")).toBe(true);
+    expect(matches("/settings")).toBe(true);
+    expect(matches("/pair")).toBe(false);
     expect(matches("/_next/static/x.js")).toBe(false);
+    expect(matches("/_next/image")).toBe(false);
+  });
+
+  test("an unpaired person is redirected to /pair, not shown a 401", () => {
+    freshHome();
+    setRequireAuth(true);
+    const response = proxy(new NextRequest("http://cockpit.test/settings"));
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toBe("http://cockpit.test/pair");
   });
 
   test("no-op while requireAuth is off", () => {
