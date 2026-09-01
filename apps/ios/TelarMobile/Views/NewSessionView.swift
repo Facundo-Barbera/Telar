@@ -175,6 +175,7 @@ struct NewSessionDraftView: View {
     @State private var catalogues: [String: ModelCatalogue] = [:]
     @State private var git: GitOverview?
     @State private var submitting = false
+    @State private var pickingBranch = false
     @State private var error: String?
     @FocusState private var focused: Bool
 
@@ -270,6 +271,11 @@ struct NewSessionDraftView: View {
             await loadCatalogues()
             git = try? await api.projectGit(project.id)
         }
+        .sheet(isPresented: $pickingBranch) {
+            BranchPickerSheet(git: git, selected: baseRef) { picked in
+                baseRef = picked
+            }
+        }
     }
 
     /// t3's workspace label: "New worktree · main" / "Current checkout".
@@ -290,23 +296,12 @@ struct NewSessionDraftView: View {
                 Button { envMode = "local"; baseRef = nil } label: { menuRow("Current checkout", selected: envMode == "local") }
             }
             if envMode == "worktree" {
-                Section("Branch") {
-                    Button { baseRef = nil } label: { menuRow("Checkout HEAD", selected: baseRef == nil) }
-                    if let refs = git?.refs {
-                        ForEach(refs.prefix(12)) { ref in
-                            Button { baseRef = ref.name } label: {
-                                if baseRef == ref.name {
-                                    Label(ref.name, systemImage: "checkmark")
-                                } else if ref.head == true {
-                                    Label(ref.name, systemImage: "smallcircle.filled.circle")
-                                } else {
-                                    Text(ref.name)
-                                }
-                            }
-                        }
-                    } else {
-                        Button("Loading branches…") {}.disabled(true)
-                    }
+                // The branch list is a SHEET, not a submenu — a menu cannot
+                // search, and a real repo has too many branches to scroll.
+                Button {
+                    pickingBranch = true
+                } label: {
+                    Label(baseRef.map { "Start from: \(shortRef($0))" } ?? "Start from…", systemImage: "arrow.triangle.branch")
                 }
             }
         }

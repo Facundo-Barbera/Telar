@@ -105,7 +105,7 @@ struct GitOverview: Decodable {
     /// (never empty) on a non-repository.
     var refs: [GitRefEntry]?
     /// What a fresh worktree is cut from unless the person picks otherwise.
-    var defaultRemoteRef: String?
+    var defaultBase: String?
 }
 
 // MARK: - the Mac's folders (`/api/fs`)
