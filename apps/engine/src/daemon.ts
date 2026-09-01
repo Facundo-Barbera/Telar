@@ -24,6 +24,7 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+import { launchComputerUseHost, resolveComputerUseServer } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
@@ -326,6 +327,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
+    // Codex's computer-use client, for Claude claims — resolved per claim so
+    // installing or removing the plugin applies to the next turn. Injected
+    // here, not defaulted in the store, so tests never read the real machine.
+    // The first claim that resolves also wakes the Sky host app the client
+    // drives — once per daemon, in the background, silently.
+    computerUse: () => {
+      const server = resolveComputerUseServer();
+      if (server) launchComputerUseHost();
+      return server;
+    },
   });
   const lock = acquireDaemonLock(statePaths(root));
   const daemonId = crypto.randomUUID();

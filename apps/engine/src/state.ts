@@ -111,6 +111,7 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { withComputerUse } from "./computer-use";
 import { findProjectIcon, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import {
@@ -894,6 +895,8 @@ export type EngineNotifier = (input: {
 export class EngineStore {
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
+  /** See the constructor: daemon-injected, absent means no computer use. */
+  private readonly computerUse?: (() => McpServer | undefined) | undefined;
   private readonly git: GitRunner;
   private readonly gh: GhRunner;
   /**
@@ -3062,9 +3065,19 @@ export class EngineStore {
   constructor(
     root: string,
     private readonly now: () => number = Date.now,
-    options: { notifier?: EngineNotifier; git?: GitRunner; gh?: GhRunner; sessionsBudget?: number } = {},
+    options: {
+      notifier?: EngineNotifier;
+      git?: GitRunner;
+      gh?: GhRunner;
+      sessionsBudget?: number;
+      /** Resolves Codex's computer-use client for Claude claims. INJECTED BY
+       *  THE DAEMON, absent by default — so tests never read the real machine's
+       *  Codex install, and a store without it simply has no computer use. */
+      computerUse?: () => McpServer | undefined;
+    } = {},
   ) {
     this.notifier = options.notifier;
+    this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.gh = options.gh ?? defaultGhRunner;
     this.sessionsBudget = Math.max(0, Math.floor(options.sessionsBudget ?? DEFAULT_SESSIONS_BUDGET));
@@ -4224,7 +4237,22 @@ export class EngineStore {
        * ones, or to work out which scope wins, would be a second copy of a
        * decision that has to be identical every time.
        */
-      const mcpServers = resolveMcpServers(this.listMcpServers(), session.projectId).filter((server) => server.enabled);
+      const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
+      /**
+       * CODEX'S COMPUTER-USE CLIENT, FOR CLAUDE TOO. Injected at claim time
+       * like everything else here, and re-resolved per claim so installing or
+       * removing the Codex plugin applies to the next turn rather than the
+       * next daemon. Absent installs inject nothing, silently — see
+       * `computer-use.ts` for the independence rule, and note the unfiltered
+       * `registered` list: a user's own entry (even a DISABLED one) is a
+       * decision this must not overrule.
+       */
+      const mcpServers = withComputerUse(
+        registered.filter((server) => server.enabled),
+        registered,
+        session.driver,
+        this.computerUse?.(),
+      );
       /**
        * Resolved at CLAIM TIME like everything else here, and never omitted:
        * a session whose instance was deleted still has to run, so this falls
