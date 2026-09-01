@@ -20,11 +20,14 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  /* next/font emits these variables in layout.tsx. Reading the variable rather
-     than the family name means a missing font degrades to the stack instead of
-     to whatever the browser picks. */
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* One indirection so the TYPEFACE is a setting: --app-font-* carry the
+     chosen stack (defaults in :root, alternatives keyed off data-font-*
+     below), and next/font emits the webfont variables (--font-geist-sans,
+     --font-inter, --font-jetbrains, …) in layout.tsx. Reading variables
+     rather than family names means a missing font degrades to the stack
+     instead of to whatever the browser picks. */
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -76,6 +79,11 @@
 }
 
 :root {
+  /* The default typefaces. Alternatives live in the data-font-* blocks after
+     the palette; the settings pane writes those attributes on <html>. */
+  --app-font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --app-font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
   /* The canvas sits a half-step off white so a card can BE white and actually
      read as raised. Telar once shipped --background and --card both at
      oklch(1 0 0), which is why light mode had no elevation anywhere. The
@@ -331,6 +339,73 @@
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
+}
+
+/* ─── ACCENTS — the anchor hue as a setting ──────────────────────────────────
+
+   `--primary` means A PERSON (see :root), and these blocks move only WHERE it
+   sits on the wheel, never what it means: everything deriving from it (--ring,
+   --sidebar-primary, every bg-primary/15 chip) follows by reference. Lightness
+   is pinned at the base palette's 0.488/0.68 so every accent keeps the same
+   contrast maths; CHROMA IS PER-HUE because sRGB's gamut is not round — sea
+   and moss run out of room long before rose does, and pushing them to 0.16
+   would clip. The dark `--primary-foreground` re-tints with the hue the same
+   way the base palette's does.
+
+   Selectors: `[data-accent=…]` is <html> (set pre-paint by
+   APPEARANCE_INIT_SCRIPT in lib/appearance.ts), and `.dark [data-accent=…]`
+   (descendant) lets the settings pane's swatches retint a single span with the
+   same attribute — one source for every value.
+
+   `indigo` is the default and has no block: the base tokens ARE indigo. */
+[data-accent="sky"] { --primary: oklch(0.488 0.15 240); }
+.dark[data-accent="sky"], .dark [data-accent="sky"] { --primary: oklch(0.68 0.15 240); --primary-foreground: oklch(0.17 0.04 240); }
+[data-accent="sea"] { --primary: oklch(0.488 0.1 205); }
+.dark[data-accent="sea"], .dark [data-accent="sea"] { --primary: oklch(0.68 0.11 205); --primary-foreground: oklch(0.17 0.04 205); }
+[data-accent="moss"] { --primary: oklch(0.488 0.11 140); }
+.dark[data-accent="moss"], .dark [data-accent="moss"] { --primary: oklch(0.68 0.13 140); --primary-foreground: oklch(0.17 0.04 140); }
+[data-accent="amber"] { --primary: oklch(0.488 0.12 70); }
+.dark[data-accent="amber"], .dark [data-accent="amber"] { --primary: oklch(0.68 0.14 70); --primary-foreground: oklch(0.17 0.04 70); }
+[data-accent="rose"] { --primary: oklch(0.488 0.17 15); }
+.dark[data-accent="rose"], .dark [data-accent="rose"] { --primary: oklch(0.68 0.17 15); --primary-foreground: oklch(0.17 0.04 15); }
+[data-accent="plum"] { --primary: oklch(0.488 0.16 325); }
+.dark[data-accent="plum"], .dark [data-accent="plum"] { --primary: oklch(0.68 0.15 325); --primary-foreground: oklch(0.17 0.04 325); }
+[data-accent="violet"] { --primary: oklch(0.488 0.17 293); }
+.dark[data-accent="violet"], .dark [data-accent="violet"] { --primary: oklch(0.68 0.16 293); --primary-foreground: oklch(0.17 0.04 293); }
+/* The swatch row needs indigo to be paintable on a SPAN too — the base value,
+   restated for the descendant case only (on <html> it is simply the default). */
+[data-accent="indigo"] { --primary: oklch(0.488 0.16 264); }
+.dark [data-accent="indigo"] { --primary: oklch(0.68 0.16 264); }
+
+/* ─── TYPEFACES AS A SETTING ────────────────────────────────────────────────
+
+   The stacks the data attributes swap in. `geist` is the default and has no
+   block; the system stacks name no webfont at all, which is the point of
+   choosing them. */
+[data-font-sans="inter"] { --app-font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="system"] { --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+[data-font-mono="jetbrains"] { --app-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="system"] { --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ─── WINDOW TRANSLUCENCY (macOS desktop shell only) ────────────────────────
+
+   The shell creates its window with an `under-window` vibrancy layer when the
+   preference is on (apps/desktop/main.js), and these rules are the other half:
+   the desktop shows through exactly where the page paints ALPHA, so the canvas
+   and the rail — the two "ground" surfaces — go translucent while cards,
+   popovers and every raised surface stay opaque and legible.
+
+   GATED ON BOTH ATTRIBUTES on purpose: `data-translucent` alone is a stored
+   preference any browser tab reproduces, and a translucent canvas in a browser
+   tab is a bug (there is no vibrancy behind it — the page behind is white).
+   `data-telar-shell` is set by the shell's preload before any page script. */
+[data-telar-shell][data-translucent] {
+  --background: oklch(0.992 0 0 / 65%);
+  --sidebar: oklch(0.972 0.001 286 / 55%);
+}
+.dark[data-telar-shell][data-translucent] {
+  --background: oklch(0.145 0 0 / 60%);
+  --sidebar: oklch(0.175 0 0 / 50%);
 }
 
 @layer base {

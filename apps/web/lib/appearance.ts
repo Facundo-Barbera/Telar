@@ -1,0 +1,140 @@
+"use client";
+
+/**
+ * APPEARANCE BEYOND LIGHT/DARK — accent, typefaces, window translucency.
+ *
+ * The colour scheme keeps its own store (components/theme-provider.tsx): it
+ * predates this file, its key is in the wild, and folding it in would buy one
+ * fewer file at the cost of a migration. Everything ELSE the reader can retint
+ * lives here, as one JSON value under one key.
+ *
+ * THE MECHANISM IS ATTRIBUTES ON <html>, exactly like `.dark`: CSS in
+ * globals.css keys accent off `data-accent`, typefaces off `data-font-sans` /
+ * `data-font-mono`, and translucency off `data-translucent` (which is inert
+ * outside the desktop shell — the rule also requires `data-telar-shell`).
+ * Components never read this store to colour themselves; the tokens move and
+ * everything wearing them follows.
+ *
+ * APPEARANCE_INIT_SCRIPT mirrors THEME_INIT_SCRIPT for the same reason it
+ * exists: an accent applied one render late is a violet app that flashes
+ * indigo on every launch. Keep the script in sync with the parsing here.
+ */
+
+import { useCallback, useMemo, useSyncExternalStore } from "react";
+
+/** Accent names double as `data-accent` values; the hues live in globals.css
+ *  (one block per name) and in the swatch spans the settings pane renders —
+ *  which reuse the same attribute, so there is no second copy of any value. */
+export const ACCENTS = ["indigo", "sky", "sea", "moss", "amber", "rose", "plum", "violet"] as const;
+export type Accent = (typeof ACCENTS)[number];
+
+export const SANS_FONTS = ["geist", "inter", "system"] as const;
+export type SansFont = (typeof SANS_FONTS)[number];
+
+export const MONO_FONTS = ["geist", "jetbrains", "system"] as const;
+export type MonoFont = (typeof MONO_FONTS)[number];
+
+export type Appearance = {
+  accent: Accent;
+  fontSans: SansFont;
+  fontMono: MonoFont;
+  /** Only means anything inside the desktop shell, but it is stored here —
+   *  with the rest of appearance — rather than in the shell, so the same
+   *  toggle round-trips through the same store as everything on the pane.
+   *  The shell keeps its own copy too (ui-prefs.json) because the WINDOW is
+   *  created before this page runs. */
+  translucent: boolean;
+};
+
+export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false };
+
+const STORAGE_KEY = "telar-appearance";
+
+/**
+ * Pre-paint application, mirrored from THEME_INIT_SCRIPT: dependency-free,
+ * inlined in <head>, and failing to the defaults on ANY error. Attributes for
+ * default values are OMITTED rather than written, so the base tokens in
+ * globals.css stay the single source of the default look.
+ */
+export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
+
+const listeners = new Set<() => void>();
+
+function subscribe(onChange: () => void): () => void {
+  listeners.add(onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    listeners.delete(onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  return allowed.includes(value as T) ? (value as T) : undefined;
+}
+
+/** Parsing is total: any missing or unrecognised member falls to the default,
+ *  so an old value (or a hand-edited one) can never wedge the store. */
+export function parseAppearance(raw: string | null): Appearance {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? "{}");
+    const record = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
+    return {
+      accent: oneOf(record.accent, ACCENTS) ?? DEFAULT_APPEARANCE.accent,
+      fontSans: oneOf(record.fontSans, SANS_FONTS) ?? DEFAULT_APPEARANCE.fontSans,
+      fontMono: oneOf(record.fontMono, MONO_FONTS) ?? DEFAULT_APPEARANCE.fontMono,
+      translucent: record.translucent === true,
+    };
+  } catch {
+    return DEFAULT_APPEARANCE;
+  }
+}
+
+/**
+ * The snapshot is CACHED BY RAW STRING, because useSyncExternalStore compares
+ * snapshots by identity and a fresh object every read is an infinite render
+ * loop — the exact failure the hook's docs warn about.
+ */
+let cache: { raw: string | null; value: Appearance } | undefined;
+
+function readAppearance(): Appearance {
+  let raw: string | null = null;
+  try {
+    raw = window.localStorage.getItem(STORAGE_KEY);
+  } catch {
+    // Private browsing: the default look, not an error.
+  }
+  if (!cache || cache.raw !== raw) cache = { raw, value: parseAppearance(raw) };
+  return cache.value;
+}
+
+function writeAppearance(patch: Partial<Appearance>): void {
+  const next = { ...readAppearance(), ...patch };
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Persistence lost, this session keeps the choice via the listeners.
+    cache = { raw: null, value: next };
+  }
+  for (const listener of listeners) listener();
+}
+
+export function useAppearance(): { appearance: Appearance; setAppearance: (patch: Partial<Appearance>) => void } {
+  const appearance = useSyncExternalStore(subscribe, readAppearance, () => DEFAULT_APPEARANCE);
+  const setAppearance = useCallback((patch: Partial<Appearance>) => writeAppearance(patch), []);
+  return useMemo(() => ({ appearance, setAppearance }), [appearance, setAppearance]);
+}
+
+/** Keeps <html>'s attributes tracking the store after the init script's one
+ *  shot — the same division of labour as ThemeProvider. */
+export function applyAppearance(appearance: Appearance): void {
+  const root = document.documentElement;
+  const set = (name: string, value: string, isDefault: boolean) => {
+    if (isDefault) root.removeAttribute(name);
+    else root.setAttribute(name, value);
+  };
+  set("data-accent", appearance.accent, appearance.accent === DEFAULT_APPEARANCE.accent);
+  set("data-font-sans", appearance.fontSans, appearance.fontSans === DEFAULT_APPEARANCE.fontSans);
+  set("data-font-mono", appearance.fontMono, appearance.fontMono === DEFAULT_APPEARANCE.fontMono);
+  set("data-translucent", "", !appearance.translucent);
+}

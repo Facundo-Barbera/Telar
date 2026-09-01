@@ -1,14 +1,21 @@
 import type { Metadata } from "next";
 import Script from "next/script";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Inter, JetBrains_Mono } from "next/font/google";
 // Streamdown FIRST, so the cockpit's own tokens win where the two overlap.
 import "streamdown/styles.css";
 import "./globals.css";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/theme-provider";
+import { AppearanceProvider } from "@/components/appearance-provider";
+import { APPEARANCE_INIT_SCRIPT } from "@/lib/appearance";
 import { AppShell } from "@/components/app-shell";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+// The selectable alternatives (Settings → Appearance). Loaded unconditionally:
+// next/font self-hosts them at build time and preloads nothing that is not
+// used on the page, so the cost of offering them is bytes on disk, not paint.
+const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
+const jetbrainsMono = JetBrains_Mono({ variable: "--font-jetbrains", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Telar",
@@ -20,7 +27,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     /* `suppressHydrationWarning` because THEME_INIT_SCRIPT mutates this exact
        element's class list before React hydrates — the mismatch is the design,
        not a bug, and it is confined to <html>. */
-    <html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}>
       <head>
         {/**
          * `next/script`, NOT a bare `<script>`, and the difference is a warning
@@ -37,10 +44,15 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
          * The `id` is required for an inline script — Next tracks it by id.
          */}
         <Script id="telar-theme-init" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        {/* Accent, typefaces and translucency, applied the same pre-paint way
+            and for the same reason — see lib/appearance.ts. */}
+        <Script id="telar-appearance-init" strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: APPEARANCE_INIT_SCRIPT }} />
       </head>
       <body className="min-h-full">
         <ThemeProvider>
-          <AppShell>{children}</AppShell>
+          <AppearanceProvider>
+            <AppShell>{children}</AppShell>
+          </AppearanceProvider>
         </ThemeProvider>
       </body>
     </html>

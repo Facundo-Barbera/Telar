@@ -27,7 +27,7 @@ import { InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SmartphoneIcon, WrenchIcon 
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
-import { ThemeControl } from "@/components/theme-control";
+import { AppearanceSection } from "./appearance-section";
 import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
 import { PermissionsSection } from "./permissions-section";
@@ -161,11 +161,7 @@ export function SettingsPage() {
 
   return (
     <SettingsShell title="Settings" subtitle="cockpit" sections={SECTIONS} active={active} onSelect={setActive} backHref="/">
-      {active === "appearance" && (
-        <SettingsGroup title="Theme" description="Applied before first paint.">
-          <Row label="Colour scheme" hint="System follows the OS setting." control={<ThemeControl />} />
-        </SettingsGroup>
-      )}
+      {active === "appearance" && <AppearanceSection />}
 
       {active === "sessions" && (
         <>
