@@ -77,7 +77,8 @@ struct RootView: View {
                         }
                     }
             } else {
-                ConnectView(settings: settings)
+                // The front door welcomes; ConnectView is where it guides you.
+                WelcomeView(settings: settings)
             }
         }
     }
