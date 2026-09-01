@@ -12,6 +12,7 @@ struct ConnectView: View {
     @State private var pairingLink = ""
     @State private var probing = false
     @State private var probeResult: ProbeResult?
+    @State private var scanning = false
 
     enum ProbeResult: Equatable {
         case ok(daemonId: String, workerRegistered: Bool)
@@ -36,6 +37,16 @@ struct ConnectView: View {
             }
 
             Section {
+                // Camera scanning needs the Neural Engine — real hardware.
+                // The paste field below is the simulator (and automation) path.
+                if QRScannerView.isUsable {
+                    Button {
+                        scanning = true
+                    } label: {
+                        Label("Scan pairing code", systemImage: "qrcode.viewfinder")
+                    }
+                    .disabled(probing)
+                }
                 TextField("Paste the pairing link", text: $pairingLink)
                     .keyboardType(.URL)
                     .autocorrectionDisabled()
@@ -100,6 +111,12 @@ struct ConnectView: View {
             }
         }
         .navigationTitle("Connect to Telar")
+        .sheet(isPresented: $scanning) {
+            QRScannerSheet { payload in
+                pairingLink = payload
+                Task { await pair() }
+            }
+        }
         .onAppear {
             if let url = settings.baseURL {
                 host = url.host() ?? ""

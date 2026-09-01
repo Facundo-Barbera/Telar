@@ -14,15 +14,24 @@ TELAR_WEB_HOST=<tailnet IP> bun scripts/dev.mjs     # or the desktop app equival
 ```
 
 The phone (with Tailscale installed, same tailnet) points at
-`http://<tailnet IP>:3000`. **`/api` has no auth** — the tailnet ACL is the
-entire security boundary, and anything on the tailnet can start turns and
-approve tool calls. If `/api` ever grows a token, the app's stored base URL
-moves from UserDefaults to Keychain with it.
+`http://<tailnet IP>:3000` — or at the `https://*.ts.net` endpoint when the
+stack runs with `TELAR_TAILSCALE_SERVE=1` (requires HTTPS certificates
+enabled for the tailnet at login.tailscale.com/admin/dns).
 
-HTTPS upgrade path: `tailscale serve` publishes an `https://*.ts.net`
-endpoint with a real certificate; point the app at that URL and delete the
-ATS exception in `Config/Info.plist`. Nothing else changes — the app stores
-a full URL, not host/port parts.
+## Pairing
+
+When the cockpit has "Require pairing" on (Settings → Remote access), every
+`/api` call needs a device token. Pairing from the phone: scan the QR off
+the Mac's Remote access panel (real hardware), or copy the link under the QR
+and paste it into the Connect screen (simulator). The exchanged device token
+lives in the Keychain; the base URL stays in UserDefaults — an address, not
+a secret. A revoked or reset cockpit surfaces as a "requires pairing" state,
+fixed by a fresh code. Lockout recovery on the Mac:
+`rm <TELAR_HOME>/remote/remote.json`.
+
+The ATS exception in `Config/Info.plist` stays until the ts.net HTTPS
+endpoint is the only supported address — ATS cannot whitelist a bare 100.x
+IP via NSExceptionDomains.
 
 ## Building
 
