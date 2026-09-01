@@ -1,42 +1,50 @@
+import AVFoundation
 import SwiftUI
-import VisionKit
+import UIKit
 
 /// The camera path for pairing: scan the QR off the Mac's Remote access
-/// panel. `DataScannerViewController.isSupported` is FALSE on the simulator
-/// (it needs the Neural Engine), which is why the paste field exists and is
-/// the automation path — this view only ever appears on hardware.
-struct QRScannerView: UIViewControllerRepresentable {
+/// panel. AVFoundation's metadata output, NOT VisionKit's DataScanner — the
+/// scanner ran a per-frame ML pipeline for a job the capture hardware does
+/// natively, and the preview stuttered for it (worst in Debug builds, which
+/// is what the dev flavor always is). The preview layer here is fed straight
+/// by the capture session; no frame ever crosses into Swift.
+struct QRScannerView: UIViewRepresentable {
     /// Return true to ACCEPT (scanning stops); false keeps the camera live
     /// so a wrong code — someone's wifi QR — doesn't freeze the preview.
     let onScan: (String) -> Bool
 
+    /// False on the simulator (no camera), which is why the paste field
+    /// exists and is the automation path.
     static var isUsable: Bool {
-        DataScannerViewController.isSupported && DataScannerViewController.isAvailable
+        AVCaptureDevice.default(for: .video) != nil
     }
 
-    func makeUIViewController(context: Context) -> DataScannerViewController {
-        // `.fast` + no highlighting: a pairing QR is large and high-contrast
-        // on a Mac screen, so the low-res pipeline reads it instantly, and
-        // the live tracking overlay was pure frame-rate cost — we accept the
-        // first valid code, nothing is ever highlighted long enough to see.
-        let scanner = DataScannerViewController(
-            recognizedDataTypes: [.barcode(symbologies: [.qr])],
-            qualityLevel: .fast,
-            isHighlightingEnabled: false
-        )
-        scanner.delegate = context.coordinator
-        try? scanner.startScanning()
-        return scanner
+    func makeUIView(context: Context) -> ScannerPreviewView {
+        let view = ScannerPreviewView()
+        context.coordinator.start(in: view)
+        return view
     }
 
-    func updateUIViewController(_ controller: DataScannerViewController, context: Context) {}
+    func updateUIView(_ view: ScannerPreviewView, context: Context) {}
+
+    static func dismantleUIView(_ view: ScannerPreviewView, coordinator: Coordinator) {
+        coordinator.stop()
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onScan: onScan)
     }
 
-    final class Coordinator: NSObject, DataScannerViewControllerDelegate {
-        let onScan: (String) -> Bool
+    final class ScannerPreviewView: UIView {
+        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+        var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    }
+
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+        private let onScan: (String) -> Bool
+        private let session = AVCaptureSession()
+        /// Session start/stop block; never on the main thread.
+        private let sessionQueue = DispatchQueue(label: "telar.qr.session")
         private var accepted = false
         /// Rejected payloads, so one bad code doesn't re-fire per frame.
         private var refused: Set<String> = []
@@ -45,15 +53,61 @@ struct QRScannerView: UIViewControllerRepresentable {
             self.onScan = onScan
         }
 
-        func dataScanner(_ scanner: DataScannerViewController, didAdd added: [RecognizedItem], allItems: [RecognizedItem]) {
+        func start(in view: ScannerPreviewView) {
+            view.previewLayer.session = session
+            view.previewLayer.videoGravity = .resizeAspectFill
+            // First use prompts (NSCameraUsageDescription); a denial leaves a
+            // black preview and the paste path still works.
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                guard granted else { return }
+                self.configureAndRun()
+            }
+        }
+
+        private func configureAndRun() {
+            sessionQueue.async { [session, self] in
+                guard let camera = AVCaptureDevice.default(for: .video),
+                      let input = try? AVCaptureDeviceInput(device: camera)
+                else { return }
+                session.beginConfiguration()
+                // 720p is plenty for a QR filling half the frame, and keeps
+                // the pipeline light; the default preset is much larger.
+                if session.canSetSessionPreset(.hd1280x720) {
+                    session.sessionPreset = .hd1280x720
+                }
+                if session.canAddInput(input) { session.addInput(input) }
+                let output = AVCaptureMetadataOutput()
+                if session.canAddOutput(output) {
+                    session.addOutput(output)
+                    // Type must be set AFTER the output joins the session.
+                    output.setMetadataObjectsDelegate(self, queue: .main)
+                    output.metadataObjectTypes = [.qr]
+                }
+                session.commitConfiguration()
+                session.startRunning()
+            }
+        }
+
+        func stop() {
+            sessionQueue.async { [session] in
+                if session.isRunning { session.stopRunning() }
+            }
+        }
+
+        func metadataOutput(
+            _ output: AVCaptureMetadataOutput,
+            didOutput metadataObjects: [AVMetadataObject],
+            from connection: AVCaptureConnection
+        ) {
             guard !accepted else { return }
-            for item in added {
-                guard case .barcode(let barcode) = item, let payload = barcode.payloadStringValue,
+            for object in metadataObjects {
+                guard let code = object as? AVMetadataMachineReadableCodeObject,
+                      let payload = code.stringValue,
                       !refused.contains(payload)
                 else { continue }
                 if onScan(payload) {
                     accepted = true
-                    scanner.stopScanning()
+                    stop()
                     return
                 }
                 refused.insert(payload)
