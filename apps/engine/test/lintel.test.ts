@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
+import http from "node:http";
 import type { EngineEvent, Session, SessionActivity } from "@telar/engine-client";
-import { lintelPlan, mirrorMessages, readLintelToken, startLintelCallbackServer, LINTEL_MESSAGE_MAX } from "../src/lintel";
+import { lintelPlan, mirrorMessages, readLintelToken, startLintelCallbackServer, startLintelSync, LINTEL_MESSAGE_MAX } from "../src/lintel";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -128,6 +129,78 @@ test("the callback server checks the bearer, answers fast, dedupes, and injects 
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(received).toEqual([["session_1", "hello from the notch"]]);
   server.close();
+});
+
+test("a 404 on /messages re-registers in full and retries once — the self-heal", async () => {
+  // A stub Lintel that FORGOT the agent (restart or TTL expiry): /messages
+  // 404s until a registration arrives, then accepts. The bridge must re-POST
+  // the FULL registration (callback fields included) and retry the message.
+  const log: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const known = new Set<string>();
+  const stub = http.createServer((request, response) => {
+    let raw = "";
+    request.on("data", (chunk: Buffer) => (raw += chunk.toString("utf8")));
+    request.on("end", () => {
+      const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      log.push({ path: request.url ?? "", body });
+      if (request.url === "/v1/agents") {
+        known.add(String(body.id));
+        response.writeHead(200).end("{}");
+        return;
+      }
+      const match = /^\/v1\/agents\/([^/]+)\/messages$/.exec(request.url ?? "");
+      if (match) {
+        response.writeHead(known.has(decodeURIComponent(match[1]!)) ? 200 : 404).end("{}");
+        return;
+      }
+      response.writeHead(200).end("{}");
+    });
+  });
+  const port = await new Promise<number>((resolve) => {
+    stub.listen(0, "127.0.0.1", () => resolve((stub.address() as { port: number }).port));
+  });
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lintel-heal-"));
+  const tokenPath = path.join(dir, "api-token");
+  fs.writeFileSync(tokenPath, "tok");
+  const live = session("s_live", "working");
+  let eventsServed = 0;
+  const sync = startLintelSync(
+    {
+      liveSessions: () => ({ sessions: [live], projects: [] }),
+      readEvents: () => {
+        // Pass 1: cursor bootstrap (id 1). Pass 2: one new prompt to mirror.
+        eventsServed += 1;
+        if (eventsServed === 1) return [{ id: 1, at: 1, sessionId: "s_live", type: "turn.accepted", replayed: false, turn: { runId: "run_m", sessionId: "s_live", sequence: 1, state: "queued", input: "seed", acceptedAt: 1, updatedAt: 1 } } as unknown as EngineEvent];
+        return [{ id: 2, at: 2, sessionId: "s_live", type: "turn.accepted", replayed: false, turn: { runId: "run_n", sessionId: "s_live", sequence: 2, state: "queued", input: "mirror me", acceptedAt: 2, updatedAt: 2 } } as unknown as EngineEvent];
+      },
+      submitTurn: () => {},
+    },
+    { intervalMs: 40, tokenPath, port },
+  );
+
+  // Pass 1 registers the agent; simulate Lintel restarting (it forgets), then
+  // pass 2 tries to mirror and hits the 404.
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  known.clear();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  sync.stop();
+  stub.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+
+  const paths = log.map((entry) => entry.path);
+  const messageIndex = paths.indexOf("/v1/agents/s_live/messages");
+  expect(messageIndex).toBeGreaterThan(-1);
+  // After the 404: a FULL re-registration (with callback fields), then the retry.
+  const after = log.slice(messageIndex + 1);
+  const reregistration = after.find((entry) => entry.path === "/v1/agents");
+  expect(reregistration).toBeDefined();
+  expect(reregistration!.body.id).toBe("s_live");
+  expect(typeof reregistration!.body.callbackURL).toBe("string");
+  expect(typeof reregistration!.body.callbackToken).toBe("string");
+  const retried = after.filter((entry) => entry.path === "/v1/agents/s_live/messages");
+  expect(retried.length).toBeGreaterThanOrEqual(1);
+  expect(retried[0]!.body.text).toBe("mirror me");
 });
 
 test("the token file is the opt-in, and absence is silence", () => {

@@ -199,22 +199,27 @@ export function startLintelCallbackServer(
   });
 }
 
-async function post(pathname: string, body: unknown, token: string): Promise<void> {
+/** Returns the HTTP status, or undefined when Lintel isn't here — the one
+ *  status the sync inspects is the /messages 404 (agent expired or Lintel
+ *  restarted), which triggers a re-registration. */
+async function post(pathname: string, body: unknown, token: string, port: number): Promise<number | undefined> {
   try {
-    await fetch(`http://127.0.0.1:${LINTEL_PORT}${pathname}`, {
+    const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(1_000),
     });
+    return response.status;
   } catch {
     // Lintel isn't here. The contract: silently do nothing.
+    return undefined;
   }
 }
 
-async function remove(id: string, token: string): Promise<void> {
+async function remove(id: string, token: string, port: number): Promise<void> {
   try {
-    await fetch(`http://127.0.0.1:${LINTEL_PORT}/v1/agents/${encodeURIComponent(id)}`, {
+    await fetch(`http://127.0.0.1:${port}/v1/agents/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(1_000),
@@ -238,8 +243,12 @@ export type LintelHooks = {
  * it is the gesture that asks for this. Everything here is fire-and-forget
  * per the contract: Telar behaves identically with Lintel absent.
  */
-export function startLintelSync(hooks: LintelHooks, options: { intervalMs?: number; tokenPath?: string } = {}): { stop: () => void } {
+export function startLintelSync(
+  hooks: LintelHooks,
+  options: { intervalMs?: number; tokenPath?: string; port?: number } = {},
+): { stop: () => void } {
   if (process.env.TELAR_LINTEL === "0") return { stop: () => {} };
+  const port = options.port ?? LINTEL_PORT;
   let previous = new Map<string, SessionActivity>();
   /** Journal cursor per session, set to the CURRENT tail when a session first
    *  goes live — "send as they happen", not a history dump. */
@@ -282,16 +291,16 @@ export function startLintelSync(hooks: LintelHooks, options: { intervalMs?: numb
       const projectNames = new Map(projects.map((project) => [project.id, project.name]));
       const { plan, next } = lintelPlan(sessions, projectNames, previous);
       previous = next;
+      /** The full registration per agent id — what a 404 re-POSTs. */
+      const registrations = new Map<string, unknown>();
       for (const agent of plan.agents) {
-        await post(
-          "/v1/agents",
-          callback ? { ...agent, callbackURL: callback.url, callbackToken: callback.token } : agent,
-          token,
-        );
+        const registration = callback ? { ...agent, callbackURL: callback.url, callbackToken: callback.token } : agent;
+        registrations.set(agent.id, registration);
+        await post("/v1/agents", registration, token, port);
       }
-      for (const banner of plan.banners) await post("/v1/banner", banner, token);
+      for (const banner of plan.banners) await post("/v1/banner", banner, token, port);
       for (const id of plan.removals) {
-        await remove(id, token);
+        await remove(id, token, port);
         cursors.delete(id);
       }
       // Mirror the transcript of every LIVE session from its cursor forward.
@@ -302,7 +311,17 @@ export function startLintelSync(hooks: LintelHooks, options: { intervalMs?: numb
         if (tail !== undefined) cursors.set(id, tail);
         if (first) continue; // joined mid-conversation: mirror from now on
         for (const message of mirrorMessages(events, { runIds: injectedRuns, texts: injectedTexts })) {
-          await post(`/v1/agents/${encodeURIComponent(id)}/messages`, message, token);
+          const status = await post(`/v1/agents/${encodeURIComponent(id)}/messages`, message, token, port);
+          if (status === 404) {
+            // Lintel restarted or the agent expired between upsert and
+            // message: re-register in full and retry ONCE — the contract's
+            // self-heal, never a loop.
+            const registration = registrations.get(id);
+            if (registration !== undefined) {
+              await post("/v1/agents", registration, token, port);
+              await post(`/v1/agents/${encodeURIComponent(id)}/messages`, message, token, port);
+            }
+          }
         }
       }
       for (const id of [...cursors.keys()]) if (!next.has(id)) cursors.delete(id);
