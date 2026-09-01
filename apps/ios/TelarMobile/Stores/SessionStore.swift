@@ -105,12 +105,12 @@ import Observation
         catalogue = try? await api.models(driver: driver)
     }
 
-    /// Change the session's model. The instance is the session's own when it
-    /// has one, else the first enabled instance for its driver — the engine
-    /// validates the pair either way.
-    func setModel(_ modelId: String) async {
+    /// Change what runs the next turn — model, effort, fast mode, whole. The
+    /// instance is the session's own when it has one, else the first enabled
+    /// instance for its driver — the engine validates the pair either way.
+    func setModelChoice(_ choice: ModelChoice) async {
         await perform {
-            var instanceId = self.sync.session?.model?.instanceId
+            var instanceId = self.sync.session?.model?.instanceId ?? self.sync.session?.providerInstanceId
             if instanceId == nil {
                 let instances = try await self.api.providerInstances()
                 instanceId = instances.first {
@@ -122,7 +122,10 @@ import Observation
             }
             try await self.api.patchSession(
                 self.sessionId,
-                patch: SessionPatch(model: ModelSelection(instanceId: instanceId, model: modelId))
+                patch: SessionPatch(model: ModelSelection(
+                    instanceId: instanceId, model: choice.model,
+                    effort: choice.effort, fastMode: choice.fastMode
+                ))
             )
         }
     }

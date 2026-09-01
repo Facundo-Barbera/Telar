@@ -167,11 +167,10 @@ struct NewSessionDraftView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var prompt = ""
-    @State private var driver = "claude"
+    @State private var choice = ModelChoice(driver: "claude")
     @State private var envMode = "worktree"
     /// nil = the checkout's HEAD, which is also what absent always meant.
     @State private var baseRef: String?
-    @State private var modelId: String?
     @State private var runtimeMode: String?
     @State private var catalogues: [String: ModelCatalogue] = [:]
     @State private var git: GitOverview?
@@ -208,12 +207,12 @@ struct NewSessionDraftView: View {
                 HStack(spacing: 8) {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            chip(icon: driver == "claude" ? "sparkle" : "terminal",
-                                 label: driver == "claude" ? "Claude" : "Codex") {
-                                Button { switchDriver("claude") } label: { menuRow("Claude", selected: driver == "claude") }
-                                Button { switchDriver("codex") } label: { menuRow("Codex", selected: driver == "codex") }
-                            }
-                            modelChip
+                            ModelPillView(
+                                catalogues: catalogues,
+                                choice: choice,
+                                driversSwitchable: true,
+                                onChange: { choice = $0 }
+                            )
                             chip(icon: "slider.horizontal.3",
                                  label: ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
                                 ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
@@ -268,7 +267,7 @@ struct NewSessionDraftView: View {
             focused = true
         }
         .task {
-            await loadCatalogue()
+            await loadCatalogues()
             git = try? await api.projectGit(project.id)
         }
     }
@@ -313,35 +312,9 @@ struct NewSessionDraftView: View {
         }
     }
 
-    /// The provider's own list for the picked driver; picking a model applies
-    /// after create (createSession doesn't take one).
-    private var modelChip: some View {
-        let models = (catalogues[driver]?.models ?? []).filter { !$0.hidden }
-        let label = models.first { $0.id == modelId }?.label
-            ?? (modelId == nil ? models.first { $0.isDefault }?.label : modelId)
-        return chip(icon: "cpu", label: label ?? "Model") {
-            if models.isEmpty {
-                Button("Loading models…") {}.disabled(true)
-            }
-            ForEach(models) { model in
-                Button { modelId = model.id } label: {
-                    menuRow(model.label, selected: model.id == modelId || (modelId == nil && model.isDefault))
-                }
-            }
-        }
-    }
-
-    private func switchDriver(_ next: String) {
-        guard next != driver else { return }
-        driver = next
-        // A model belongs to a driver; carrying one across is a 404 at the
-        // provider.
-        modelId = nil
-        Task { await loadCatalogue() }
-    }
-
-    private func loadCatalogue() async {
-        if catalogues[driver] == nil {
+    /// Both drivers' catalogues — the fused pill lists them side by side.
+    private func loadCatalogues() async {
+        for driver in ["claude", "codex"] where catalogues[driver] == nil {
             catalogues[driver] = try? await api.models(driver: driver)
         }
     }
@@ -383,17 +356,21 @@ struct NewSessionDraftView: View {
             let session = try await api.createSession(
                 projectId: project.id,
                 input: NewSessionInput(
-                    title: nil, driver: driver, envMode: envMode,
+                    title: nil, driver: choice.driver, envMode: envMode,
                     baseRef: envMode == "worktree" ? baseRef : nil
                 )
             )
             // createSession takes neither a model nor a runtime mode — they
             // are session PATCHes, applied before the first turn runs.
-            if modelId != nil || runtimeMode != nil {
+            let modelTouched = choice.model != nil || choice.effort != nil || choice.fastMode != nil
+            if modelTouched || runtimeMode != nil {
                 var patch = SessionPatch()
                 if let runtimeMode { patch.runtimeMode = runtimeMode }
-                if let modelId, let instanceId = session.providerInstanceId ?? session.model?.instanceId {
-                    patch.model = ModelSelection(instanceId: instanceId, model: modelId)
+                if modelTouched, let instanceId = session.providerInstanceId ?? session.model?.instanceId {
+                    patch.model = ModelSelection(
+                        instanceId: instanceId, model: choice.model,
+                        effort: choice.effort, fastMode: choice.fastMode
+                    )
                 }
                 try? await api.patchSession(session.id, patch: patch)
             }

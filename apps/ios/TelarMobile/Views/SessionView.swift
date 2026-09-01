@@ -393,26 +393,20 @@ struct ComposerView: View {
         store.sync.session?.runtimeMode ?? "approval-required"
     }
 
-    /// The Model pill: the provider's own list, checkmark on the session's
-    /// current model (matched by id or alias resolution).
+    /// The fused provider+model pill — driver fixed (a session belongs to
+    /// its provider), everything else changeable per turn.
     private var modelPill: some View {
-        let current = store.sync.session?.model?.model
-        let models = (store.catalogue?.models ?? []).filter { !$0.hidden }
-        let currentLabel = models.first {
-            $0.id == current || ($0.resolves != nil && $0.resolves == current)
-        }?.label ?? models.first { current == nil && $0.isDefault }?.label
-        return labeledPill(icon: "sparkle", label: currentLabel ?? "Model") {
-            if models.isEmpty {
-                Button("Loading models…") {}.disabled(true)
-            }
-            ForEach(models) { model in
-                Button {
-                    Task { await store.setModel(model.id) }
-                } label: {
-                    menuRow(model.label, selected: model.id == current || model.resolves == current || (current == nil && model.isDefault))
-                }
-            }
-        }
+        let driver = store.sync.session?.driver ?? "claude"
+        let selection = store.sync.session?.model
+        return ModelPillView(
+            catalogues: store.catalogue.map { [driver: $0] } ?? [:],
+            choice: ModelChoice(
+                driver: driver, model: selection?.model,
+                effort: selection?.effort, fastMode: selection?.fastMode
+            ),
+            driversSwitchable: false,
+            onChange: { next in Task { await store.setModelChoice(next) } }
+        )
         .task { await store.loadModels() }
     }
 
