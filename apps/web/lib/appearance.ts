@@ -44,9 +44,16 @@ export type Appearance = {
    *  The shell keeps its own copy too (ui-prefs.json) because the WINDOW is
    *  created before this page runs. */
   translucent: boolean;
+  /** How much desktop shows through, as percent transparency of the canvas —
+   *  the CSS reads it as `--translucency` and subtracts it from full opacity.
+   *  Clamped so the floor never approaches illegible. */
+  translucencyLevel: number;
 };
 
-export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false };
+export const MIN_TRANSLUCENCY = 15;
+export const MAX_TRANSLUCENCY = 75;
+
+export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false, translucencyLevel: 40 };
 
 const STORAGE_KEY = "telar-appearance";
 
@@ -56,7 +63,7 @@ const STORAGE_KEY = "telar-appearance";
  * default values are OMITTED rather than written, so the base tokens in
  * globals.css stay the single source of the default look.
  */
-export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
+export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});if(a.translucent===true){d.setAttribute('data-translucent','');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};d.style.setProperty('--translucency',l+'%');}else{d.removeAttribute('data-translucent');d.style.removeProperty('--translucency');}}catch(e){}})();`;
 
 const listeners = new Set<() => void>();
 
@@ -84,6 +91,10 @@ export function parseAppearance(raw: string | null): Appearance {
       fontSans: oneOf(record.fontSans, SANS_FONTS) ?? DEFAULT_APPEARANCE.fontSans,
       fontMono: oneOf(record.fontMono, MONO_FONTS) ?? DEFAULT_APPEARANCE.fontMono,
       translucent: record.translucent === true,
+      translucencyLevel:
+        typeof record.translucencyLevel === "number" && record.translucencyLevel >= MIN_TRANSLUCENCY && record.translucencyLevel <= MAX_TRANSLUCENCY
+          ? Math.round(record.translucencyLevel)
+          : DEFAULT_APPEARANCE.translucencyLevel,
     };
   } catch {
     return DEFAULT_APPEARANCE;
@@ -137,4 +148,6 @@ export function applyAppearance(appearance: Appearance): void {
   set("data-font-sans", appearance.fontSans, appearance.fontSans === DEFAULT_APPEARANCE.fontSans);
   set("data-font-mono", appearance.fontMono, appearance.fontMono === DEFAULT_APPEARANCE.fontMono);
   set("data-translucent", "", !appearance.translucent);
+  if (appearance.translucent) root.style.setProperty("--translucency", `${appearance.translucencyLevel}%`);
+  else root.style.removeProperty("--translucency");
 }

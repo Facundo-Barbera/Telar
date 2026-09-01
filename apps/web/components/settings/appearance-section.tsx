@@ -17,7 +17,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CheckIcon } from "lucide-react";
-import { ACCENTS, MONO_FONTS, SANS_FONTS, useAppearance, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
+import { ACCENTS, MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, useAppearance, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { ThemeControl } from "@/components/theme-control";
 import { cn } from "@/lib/utils";
@@ -180,6 +180,27 @@ export function AppearanceSection() {
             checked={appearance.translucent}
             onCheckedChange={setTranslucent}
           />
+          {appearance.translucent && (
+            <Row
+              label="Strength"
+              hint="How much desktop shows through. Applies live."
+              control={
+                <div className="flex items-center gap-2.5">
+                  <input
+                    type="range"
+                    min={MIN_TRANSLUCENCY}
+                    max={MAX_TRANSLUCENCY}
+                    step={5}
+                    value={appearance.translucencyLevel}
+                    onChange={(event) => setAppearance({ translucencyLevel: Number(event.target.value) })}
+                    className="w-36 accent-primary"
+                    aria-label="Translucency strength"
+                  />
+                  <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{appearance.translucencyLevel}%</span>
+                </div>
+              }
+            />
+          )}
         </SettingsGroup>
       )}
     </>
