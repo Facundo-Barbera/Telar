@@ -54,7 +54,14 @@ struct RootView: View {
                         NavigationStack {
                             NewSessionView(api: api) { sessionId in
                                 showNewSession = false
-                                path.append(sessionId)
+                                // Pushing while the sheet's dismissal is still
+                                // animating gets the push dropped on device —
+                                // land in the inbox instead of the session.
+                                // Let the dismissal finish first.
+                                Task {
+                                    try? await Task.sleep(for: .milliseconds(600))
+                                    path.append(sessionId)
+                                }
                             }
                         }
                     }

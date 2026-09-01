@@ -210,7 +210,21 @@ struct NewSessionDraftView: View {
         .background(Theme.sheet)
         .navigationTitle(project.name)
         .navigationBarTitleDisplayMode(.inline)
-        .task { focused = true }
+        .task {
+            // `-newSessionPrompt <text>` — automation affordance like
+            // -openSession: seeds the draft and starts it, so the whole
+            // create-and-enter path is drivable headlessly. Inert in normal use.
+            if prompt.isEmpty, let seeded = UserDefaults.standard.string(forKey: "newSessionPrompt") {
+                prompt = seeded
+                await start()
+                return
+            }
+            // FocusState set at push time fires before the field is installed
+            // on real devices and silently does nothing — the keyboard never
+            // appears and the screen reads as dead. Wait out the push.
+            try? await Task.sleep(for: .milliseconds(500))
+            focused = true
+        }
     }
 
     @ViewBuilder private func menuRow(_ label: String, selected: Bool) -> some View {

@@ -136,7 +136,10 @@ struct HTTPEngineAPI: EngineAPI {
             self.session = session
         } else {
             let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 15
+            // 30, not 15: creating a worktree session checks out the whole
+            // repo, and a big one blows a 15s window — the create "fails" on
+            // the phone while succeeding on the Mac.
+            config.timeoutIntervalForRequest = 30
             // Fail fast when off the tailnet instead of queueing silently.
             config.waitsForConnectivity = false
             self.session = URLSession(configuration: config)
