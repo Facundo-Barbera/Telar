@@ -54,6 +54,28 @@ jobs:
           set -euo pipefail
           echo -n "$APPLE_API_KEY_P8_BASE64" | base64 --decode -o "$RUNNER_TEMP/apple_api_key.p8"
 
+      # A REAL Apple Distribution certificate, not cloud signing: Apple's
+      # upload validator refuses cloud-managed signatures outright (90035,
+      # measured twice on 2026-09-01 — beta and release Xcode alike — while
+      # the same archive re-signed from a keychain cert validated clean).
+      # Same temp-keychain dance as nightly-desktop.yml.
+      - name: Import the distribution certificate into a temporary keychain
+        env:
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo -n "$IOS_DIST_CERT_P12_BASE64" | base64 --decode -o "$RUNNER_TEMP/dist.p12"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          security import "$RUNNER_TEMP/dist.p12" -k "$KEYCHAIN" -P "$IOS_DIST_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k ci "$KEYCHAIN" >/dev/null
+          IFS=$'\n' read -rd '' -a EXISTING < <(security list-keychains -d user | sed 's/[" ]//g') || true
+          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          rm -f "$RUNNER_TEMP/dist.p12"
+
       # nightly.sh is the whole pipeline (archive → export → upload); the
       # workflow only supplies credentials and the runner's Xcode. The
       # minute-stamp build number is minted inside the script, so a re-run
@@ -65,6 +87,8 @@ jobs:
           TELAR_ASC_KEY_PATH: ${{ runner.temp }}/apple_api_key.p8
         run: apps/ios/nightly.sh
 
-      - name: Clean up the API key
+      - name: Clean up the API key and keychain
         if: always()
-        run: rm -f "$RUNNER_TEMP/apple_api_key.p8"
+        run: |
+          rm -f "$RUNNER_TEMP/apple_api_key.p8"
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true

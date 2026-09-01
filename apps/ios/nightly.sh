@@ -73,8 +73,15 @@ cp "$TELAR_ASC_KEY_PATH" "$KEYS_DIR/AuthKey_$TELAR_ASC_KEY_ID.p8"
 trap 'rm -rf "$(dirname "$KEYS_DIR")"' EXIT
 export API_PRIVATE_KEYS_DIR="$KEYS_DIR"
 
+# altool can print a validation ERROR and still exit 0 (measured: run
+# 33480175173 went green on a refused build) — the OUTPUT is the verdict.
+UPLOAD_LOG=$(mktemp)
 xcrun altool --upload-app \
   -f "$EXPORT_DIR/TelarMobile.ipa" -t ios \
-  --apiKey "$TELAR_ASC_KEY_ID" --apiIssuer "$TELAR_ASC_ISSUER_ID"
+  --apiKey "$TELAR_ASC_KEY_ID" --apiIssuer "$TELAR_ASC_ISSUER_ID" 2>&1 | tee "$UPLOAD_LOG"
+if grep -q "ERROR" "$UPLOAD_LOG" || ! grep -q "UPLOAD SUCCEEDED" "$UPLOAD_LOG"; then
+  echo "upload FAILED — see altool output above" >&2
+  exit 1
+fi
 
 echo "uploaded build $BUILD_NUMBER — it appears in TestFlight after processing (minutes)"
