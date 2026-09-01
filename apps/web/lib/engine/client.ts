@@ -12,6 +12,7 @@ import type {
   GitHubSnapshot,
   GitignoreResult,
   GitOverview,
+  ComputerUseStatus,
   InboxPolicy,
   TextGenPolicy,
   UsageReport,
@@ -222,6 +223,11 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
         snoozedUntil?: number | null;
       },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /** Computer use, measured — slow by design (one subprocess round trip in
+     *  the engine), and the probe doubles as the macOS granting flow. */
+    computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
+    /** Wake the Sky host app in the background. Idempotent. */
+    wakeComputerUseHost: () => request<{ ok: boolean }>(fetcher, "POST", "/api/computer-use/host", {}),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),

@@ -24,7 +24,7 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-import { launchComputerUseHost, resolveComputerUseServer } from "./computer-use";
+import { computerUseStatus, launchComputerUseHost, openComputerUseHost, resolveComputerUseServer } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
@@ -596,6 +596,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
           }),
         });
+        return;
+      }
+      /**
+       * COMPUTER USE, MEASURED. The GET runs one real read-only call through
+       * the Sky client, because that is the only honest answer to "is the
+       * Automation grant in place" — and when the grant is still undecided,
+       * that same call is what makes macOS show its own prompt, which names
+       * the responsible app better than this daemon can from the inside.
+       * The POST wakes the host app the client drives.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/computer-use") {
+        writeJson(response, 200, { computerUse: await computerUseStatus() });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/host") {
+        openComputerUseHost();
+        writeJson(response, 200, { ok: true });
         return;
       }
       /**

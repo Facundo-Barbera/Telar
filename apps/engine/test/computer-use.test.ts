@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import type { McpServer } from "@telar/engine-client";
-import { COMPUTER_USE_SERVER_ID, newestVersion, resolveComputerUseServer, withComputerUse } from "../src/computer-use";
+import { classifyProbeError, COMPUTER_USE_SERVER_ID, newestVersion, resolveComputerUseServer, withComputerUse } from "../src/computer-use";
 
 const HOME = "/Users/tester";
 const CODEX = `${HOME}/.codex`;
@@ -68,6 +68,19 @@ describe("newestVersion", () => {
     expect(newestVersion(["1.0.9", "1.0.10"])).toBe("1.0.10");
     expect(newestVersion(["1.0.1000919", "1.0.999999"])).toBe("1.0.1000919");
     expect(newestVersion([])).toBeUndefined();
+  });
+});
+
+describe("classifyProbeError", () => {
+  test("the three measured codes map to their fixes", () => {
+    // -1743 errAEEventNotPermitted: the Automation grant is missing.
+    expect(classifyProbeError("Computer Use server error -1743 (unknown error)")).toBe("denied");
+    // -1712 errAETimeout and -609 connectionInvalid: the host app is down.
+    expect(classifyProbeError("error -1712 timed out")).toBe("host-not-running");
+    expect(classifyProbeError("connection invalid (-609)")).toBe("host-not-running");
+    expect(classifyProbeError("something else entirely")).toBe("unknown");
+    // The digits must be a code, not a substring of a longer number.
+    expect(classifyProbeError("id 17435 failed")).toBe("unknown");
   });
 });
 

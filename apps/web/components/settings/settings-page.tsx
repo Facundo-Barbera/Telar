@@ -23,13 +23,14 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
+import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, ShieldCheckIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { ThemeControl } from "@/components/theme-control";
 import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
+import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
 import { TextGenSection } from "./textgen-section";
@@ -61,6 +62,12 @@ const SECTIONS: SettingsSection[] = [
    */
   { id: "textgen", label: "Text generation", icon: SparklesIcon, group: "Runtime" },
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
+  /**
+   * UNDER "RUNTIME": the macOS grants agent capabilities stand on — computer
+   * use today — are facts about the machine that runs turns, not about what
+   * this window shows.
+   */
+  { id: "permissions", label: "Permissions", icon: ShieldCheckIcon, group: "Runtime" },
   /**
    * UNDER "COCKPIT", beside About, because an update is a fact about THIS
    * INSTALL — its channel, its version, its feed — and nothing about the
@@ -163,6 +170,8 @@ export function SettingsPage() {
       {active === "textgen" && <TextGenSection />}
 
       {active === "mcp" && <McpSection />}
+
+      {active === "permissions" && <PermissionsSection />}
 
       {active === "updates" && <UpdatesSection />}
 
