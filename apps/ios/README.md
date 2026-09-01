@@ -70,3 +70,22 @@ each once and it survives reinstalls of that flavor. Cutting a nightly is
 A paid developer account's profile lasts a year; no TestFlight required.
 The simulator needs no signing at all and shares the Mac's network stack,
 so it reaches the cockpit on either the tailnet IP or localhost.
+
+## Nightlies over TestFlight
+
+`apps/ios/nightly.sh` tags, archives and uploads in one go — the phone then
+updates itself through the TestFlight app (internal testing: no review,
+live minutes after processing, builds expire after 90 days). One-time
+setup, all in the browser:
+
+1. Register the bundle id (developer.apple.com → Identifiers) and create
+   the app record in App Store Connect with it.
+2. Create an App Store Connect API key (Users & Access → Integrations,
+   App Manager role); export `TELAR_ASC_KEY_ID`, `TELAR_ASC_ISSUER_ID`,
+   `TELAR_ASC_KEY_PATH` (the downloaded .p8).
+3. Add yourself as an internal tester on the app's TestFlight tab and
+   install the build from the TestFlight app.
+
+`--no-upload` archives without credentials. The build number is a minute
+stamp, so every upload is unique. Keep `phone.sh dev` for the cable-fed
+"Telar Dev" beside the TestFlight nightly.
