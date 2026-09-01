@@ -26,13 +26,13 @@
  * "search flattens every band", the same survivor rule that keeps the session
  * you are LOOKING AT visible after it drops into a shelf.
  */
-import { DEFAULT_AUTO_SETTLE_DAYS, type Session, type SessionActivity } from "@telar/engine-client";
+import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity } from "@telar/engine-client";
 import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
 
 export const SESSION_PAGE_SIZE = 20;
 /** Kept for the callers that describe the window in prose. The rule itself
  *  takes the window as a parameter — see `bandOf`. */
-export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_DAYS * 24 * 60 * 60 * 1000;
+export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_HOURS * 60 * 60 * 1000;
 
 /**
  * What a row needs to render. A projection of the engine's `Session` plus the
@@ -170,7 +170,7 @@ export type SessionListInput = {
   now?: number;
   /** `null` turns the inactivity clock off. Comes from the engine — one answer
    *  per machine, not per browser. See `InboxPolicy`. */
-  autoSettleAfterDays?: number | null;
+  autoSettleAfterHours?: number | null;
   limit?: number;
   settledLimit?: number;
 };
@@ -231,11 +231,11 @@ export function deriveSessionList({
   query = "",
   activeSessionId,
   now = Date.now(),
-  autoSettleAfterDays = DEFAULT_AUTO_SETTLE_DAYS,
+  autoSettleAfterHours = DEFAULT_AUTO_SETTLE_HOURS,
   limit = SESSION_PAGE_SIZE,
   settledLimit = limit,
 }: SessionListInput): SessionListResult {
-  const options: SettlingOptions = { now, autoSettleAfterDays };
+  const options: SettlingOptions = { now, autoSettleAfterHours };
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const eligible = sessions
     .filter((session) => !projectId || session.projectId === projectId)
@@ -330,13 +330,13 @@ export function recentSessionsForCommandKeys(
   sessions: readonly SidebarSession[],
   activeSessionId?: string,
   now = Date.now(),
-  autoSettleAfterDays: number | null = DEFAULT_AUTO_SETTLE_DAYS,
+  autoSettleAfterHours: number | null = DEFAULT_AUTO_SETTLE_HOURS,
 ): SidebarSession[] {
   const list = deriveSessionList({
     sessions,
     ...(activeSessionId ? { activeSessionId } : {}),
     now,
-    autoSettleAfterDays,
+    autoSettleAfterHours,
     limit: 9,
   });
   return [...list.pinned, ...list.sessions].slice(0, 9);

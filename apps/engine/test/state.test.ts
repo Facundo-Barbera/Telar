@@ -1198,22 +1198,30 @@ test("the inbox policy is one document, defaulted rather than absent", () => {
   // says how long anything stays in the list at all — and it is on the engine
   // so the desktop shell and a browser tab band the same sessions the same way.
   const { store } = readyStore();
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
 
-  expect(store.setInboxPolicy({ autoSettleAfterDays: 14 })).toEqual({ autoSettleAfterDays: 14 });
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 14 });
+  expect(store.setInboxPolicy({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 14 });
 
   // `null` IS THE OFF SWITCH, and it is a value rather than an omission:
   // "never" is an answer, not a very large duration.
-  expect(store.setInboxPolicy({ autoSettleAfterDays: null })).toEqual({ autoSettleAfterDays: null });
+  expect(store.setInboxPolicy({ autoSettleAfterHours: null })).toEqual({ autoSettleAfterHours: null });
   // An empty patch changes nothing rather than resetting anything.
-  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterDays: null });
+  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterHours: null });
 
-  for (const bad of [0, 91, 3.5, "7", Number.NaN]) {
-    expect(() => store.setInboxPolicy({ autoSettleAfterDays: bad })).toThrow(EngineStateError);
+  for (const bad of [0, 90 * 24 + 1, 3.5, "7", Number.NaN]) {
+    expect(() => store.setInboxPolicy({ autoSettleAfterHours: bad })).toThrow(EngineStateError);
   }
   // …and the refusal left the stored answer alone.
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: null });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
+});
+
+test("a days-shaped inbox document from before the hours move still means what it said", () => {
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":2}');
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 48 });
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":null}');
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
 });
 
 test("a malformed inbox document costs the preference, never the sidebar", () => {
@@ -1222,9 +1230,9 @@ test("a malformed inbox document costs the preference, never the sidebar", () =>
   // preference, and the worst it can do is band a list wrongly.
   const { store, root: stateRoot } = readyStore();
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":1,"autoSettleAfterDays":"soon"}');
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), "not json at all");
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
 });
 
 test("deleting a session removes everything it owns, and refuses mid-turn", () => {

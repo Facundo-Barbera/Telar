@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SparklesIcon, WrenchIcon } from "lucide-react";
+import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SmartphoneIcon, SparklesIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import { ThemeControl } from "@/components/theme-control";
 import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
 import { ProvidersSection } from "./providers-section";
+import { RemoteSection } from "./remote-section";
 import { TextGenSection } from "./textgen-section";
 import { UpdatesSection } from "./updates-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
@@ -47,6 +48,12 @@ const SECTIONS: SettingsSection[] = [
    * decisions about the surface and decisions about the machine.
    */
   { id: "inbox", label: "Inbox", icon: InboxIcon, group: "Cockpit" },
+  /**
+   * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
+   * a fact about the install, like Updates, not about the machine that runs
+   * turns (the engine stays loopback either way).
+   */
+  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
   /**
    * UNDER "RUNTIME": it decides which harness process runs and spends tokens,
@@ -148,6 +155,8 @@ export function SettingsPage() {
       )}
 
       {active === "inbox" && <InboxSection />}
+
+      {active === "remote" && <RemoteSection />}
 
       {active === "providers" && <ProvidersSection />}
 

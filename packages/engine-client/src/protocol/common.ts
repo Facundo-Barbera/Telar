@@ -209,6 +209,72 @@ export const UsageSnapshot = z.object({
 export type UsageSnapshot = z.infer<typeof UsageSnapshot>;
 
 /**
+ * THE USAGE PAGE'S WIRE SHAPE — spend over time, bucketed.
+ *
+ * Derived by SCANNING THE PROVIDER CLIS' OWN TRANSCRIPTS (`~/.claude/
+ * projects`, `~/.codex/sessions`) — t3 code's architecture, adopted after the
+ * journal-fold version shipped and immediately showed its two limits: a turn
+ * that rode the provider default bucketed as literal `default` (the journals
+ * never learn which model that was), and nothing run OUTSIDE Telar counted at
+ * all, though it is the same machine spending against the same plans. The
+ * transcripts name the real model on every record and cover every harness
+ * run, Telar's included — Telar's own turns land in those directories too, so
+ * one source counts everything exactly once.
+ *
+ * Cost is the provider's figure where the transcript carries one, and the
+ * LiteLLM rate table's base tier where it does not (Codex never reports cost;
+ * Claude omits it on subscription plans). A model neither knows stays
+ * unpriced: tokens count, cost reads as absent — never $0.00.
+ */
+export const UsageResolution = z.enum(["day", "hour"]);
+export type UsageResolution = z.infer<typeof UsageResolution>;
+
+export const UsageBucket = z.object({
+  /** `YYYY-MM-DD` in the requested zone for days; the hour-start epoch ms as
+   *  a decimal string for hours — a shape a client can sort lexically or
+   *  parse, without this contract committing to a locale. */
+  period: z.string().min(1),
+  driver: ProviderDriverKind,
+  /** The model the transcript names for these records. */
+  model: z.string().min(1),
+  tokens: TokenUsage,
+  costUsd: z.number().nonnegative(),
+  /** Whether every record here has a cost — provider-reported or rate-priced. */
+  priced: z.boolean(),
+  /** Records, not turns: one Claude assistant message or one Codex token
+   *  count. The page says "requests" for this reason. */
+  turns: z.number().int().nonnegative(),
+});
+export type UsageBucket = z.infer<typeof UsageBucket>;
+
+/** One transcript directory's scan outcome, so the page can say what was and
+ *  was not counted rather than letting a missing install read as zero use. */
+export const UsageSource = z.object({
+  provider: ProviderDriverKind,
+  status: z.enum(["ok", "missing", "failed"]),
+  path: z.string().min(1),
+  files: z.number().int().nonnegative(),
+  sessions: z.number().int().nonnegative(),
+});
+export type UsageSource = z.infer<typeof UsageSource>;
+
+export const UsageReport = z.object({
+  sinceMs: Timestamp,
+  untilMs: Timestamp,
+  resolution: UsageResolution,
+  timeZone: z.string().min(1),
+  buckets: z.array(UsageBucket),
+  sources: z.array(UsageSource),
+  /** Where rate-priced costs came from: a fetch this read, a disk snapshot,
+   *  or nowhere — in which case unreported costs are absent, not guessed. */
+  pricing: z.enum(["fresh", "cached", "unavailable"]),
+  /** Distinct transcript sessions that spent anything in the window. */
+  sessions: z.number().int().nonnegative(),
+  readAt: Timestamp,
+});
+export type UsageReport = z.infer<typeof UsageReport>;
+
+/**
  * The untranslated provider payload behind a normalized event.
  *
  * KEEP IT, KEEP IT OPTIONAL, AND NEVER DEPEND ON IT. It is how a normalization

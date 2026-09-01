@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { GET as projectsGet, POST as projectsPost } from "@/app/api/projects/route";
 import { GET as eventsGet } from "@/app/api/sessions/[sessionId]/events/route";
+import { GET as liveGet } from "@/app/api/sessions/live/route";
 import { POST as discardPost } from "@/app/api/sessions/[sessionId]/turns/[runId]/discard/route";
+import { saveLoom } from "@/lib/looms/store";
 import { EngineClient } from "@telar/engine-client";
 import { engineRootFromWebEnv } from "@/lib/engine/engine-server";
 import { startEngine, type EngineDaemon } from "../../../engine/src/daemon";
@@ -58,6 +60,30 @@ describe("engine route adapters", () => {
     const response = await eventsGet(new Request("http://telar.local/api/sessions/session_a/events?after=not-a-cursor"), { params: Promise.resolve({ sessionId: "session_a" }) });
     expect(response.status).toBe(400);
     expect((await response.json()).error.code).toBe("invalid_request");
+  });
+
+  test("the live list carries every project's sessions minus the ones a loom owns", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
+    roots.push(home);
+    process.env.TELAR_HOME = home;
+    process.env.TELAR_COCKPIT = "1";
+    const daemon = await startEngine({ engineRoot: path.join(home, "engine") });
+    daemons.push(daemon);
+    const client = new EngineClient(daemon.discovery);
+    for (const name of ["one", "two"]) fs.mkdirSync(path.join(home, name));
+    await client.registerProject({ id: "project_one", name: "One", root: path.join(home, "one") });
+    await client.registerProject({ id: "project_two", name: "Two", root: path.join(home, "two") });
+    await client.createSession({ id: "session_plain", projectId: "project_one" });
+    await client.createSession({ id: "session_owned", projectId: "project_two" });
+    // DETACHMENT: a loom-owned session must not appear on this surface any
+    // more than on the per-project list — the phone reads this route.
+    saveLoom({ id: "loom_x", slug: "x", title: "X", objective: "", projectId: "project_two", threads: [{ slug: "t", title: "T", brief: "", sessionId: "session_owned" }], createdAt: Date.now() });
+
+    const response = await liveGet();
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.sessions.map((s: { id: string }) => s.id)).toEqual(["session_plain"]);
+    expect(body.projects.map((p: { id: string }) => p.id).sort()).toEqual(["project_one", "project_two"]);
   });
 
   test("proxies an explicit discard decision to the authenticated engine without submitting a replay", async () => {

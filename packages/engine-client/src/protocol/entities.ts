@@ -300,10 +300,16 @@ export const Session = z.object({
 });
 export type Session = z.infer<typeof Session>;
 
-/** Ported verbatim from t3 code's `MIN/MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS`. */
-export const MIN_AUTO_SETTLE_DAYS = 1;
-export const MAX_AUTO_SETTLE_DAYS = 90;
-export const DEFAULT_AUTO_SETTLE_DAYS = 3;
+/**
+ * HOURS, NOT DAYS — the window moved to hour granularity when a reader with
+ * twenty quiet-but-recent conversations had no number that would take them:
+ * a day was the old minimum, and "settle after a few hours" is the ordinary
+ * want for a fast-moving dogfooding week. The bounds are the old 1..90 days
+ * expressed in the new unit; the default is still three days.
+ */
+export const MIN_AUTO_SETTLE_HOURS = 1;
+export const MAX_AUTO_SETTLE_HOURS = 90 * 24;
+export const DEFAULT_AUTO_SETTLE_HOURS = 3 * 24;
 
 /**
  * HOW THE READER WANTS THEIR LIST BANDED — the POLICY half of settling.
@@ -326,11 +332,11 @@ export const DEFAULT_AUTO_SETTLE_DAYS = 3;
  * also decides what the inbox shows.
  */
 export const InboxPolicy = z.object({
-  autoSettleAfterDays: z.number().int().min(MIN_AUTO_SETTLE_DAYS).max(MAX_AUTO_SETTLE_DAYS).nullable(),
+  autoSettleAfterHours: z.number().int().min(MIN_AUTO_SETTLE_HOURS).max(MAX_AUTO_SETTLE_HOURS).nullable(),
 });
 export type InboxPolicy = z.infer<typeof InboxPolicy>;
 
-export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterDays: DEFAULT_AUTO_SETTLE_DAYS };
+export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS };
 
 /**
  * WHO WRITES THE WORDS THE HUMAN DIDN'T — t3 code's TextGeneration idea, on

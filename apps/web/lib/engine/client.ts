@@ -14,6 +14,8 @@ import type {
   GitOverview,
   InboxPolicy,
   TextGenPolicy,
+  UsageReport,
+  UsageResolution,
   ModelCatalogue,
   SessionDiff,
   EngineErrorCode,
@@ -49,8 +51,12 @@ import { forgeQuery } from "@telar/engine-client";
  * hand-written literals that had to be kept in step with the engine's own
  * `EngineErrorCode` by hand — and when v2 added `protocol_mismatch`, the copy
  * here was the thing that went stale. An alias cannot.
+ *
+ * `cockpit_unauthorized` is the one cockpit-minted addition: the pairing gate
+ * (proxy.ts) answers 401 with it. It is NOT in the engine contract because
+ * the engine never sees an unpaired request — the cockpit refuses it first.
  */
-export type EngineApiErrorCode = EngineErrorCode;
+export type EngineApiErrorCode = EngineErrorCode | "cockpit_unauthorized";
 
 export class EngineApiError extends Error {
   constructor(readonly code: EngineApiErrorCode, message: string, readonly status?: number) {
@@ -98,8 +104,15 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
-    setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
+    setInbox: (patch: { autoSettleAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** Spend over time, folded from the engine's journals. */
+    usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {
+      const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
+      if (input.resolution) query.set("resolution", input.resolution);
+      if (input.timeZone) query.set("tz", input.timeZone);
+      return request<{ usage: UsageReport }>(fetcher, "GET", `/api/usage?${query.toString()}`);
+    },
     /** Who writes generated titles and branch names — see `TextGenPolicy`. */
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>

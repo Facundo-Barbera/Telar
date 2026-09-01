@@ -29,6 +29,7 @@ import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, prob
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { maybeRetitleSession } from "./textgen";
+import { readUsageReport } from "./usage";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
 import type { SpoolCapability } from "./spool/tools";
@@ -572,8 +573,29 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // PRESENT-BUT-NULL IS THE OFF SWITCH, so `in` rather than a
             // truthiness test: `null` and "not mentioned" are different
             // requests and JSON can only tell them apart by the key.
-            ...("autoSettleAfterDays" in input ? { autoSettleAfterDays: input.autoSettleAfterDays } : {}),
+            ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
           }),
+        });
+        return;
+      }
+      /**
+       * Spend over time, folded from the journals on demand. The window is the
+       * client's (epoch ms), the zone names how days are cut; both validated
+       * here because a NaN window would silently bucket nothing.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/usage") {
+        const sinceMs = Number(url.searchParams.get("since"));
+        const untilMs = Number(url.searchParams.get("until"));
+        if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || sinceMs >= untilMs) {
+          throw new HttpError(400, "invalid_request", "usage needs a since/until window in epoch milliseconds");
+        }
+        const resolution = url.searchParams.get("resolution") === "hour" ? "hour" : "day";
+        const timeZone = url.searchParams.get("tz")?.trim() || "UTC";
+        writeJson(response, 200, {
+          usage: await readUsageReport(
+            { sinceMs, untilMs, resolution, timeZone },
+            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json") },
+          ),
         });
         return;
       }

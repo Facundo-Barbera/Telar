@@ -17,8 +17,8 @@ import {
   InboxPolicy as InboxPolicySchema,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
-  MAX_AUTO_SETTLE_DAYS,
-  MIN_AUTO_SETTLE_DAYS,
+  MAX_AUTO_SETTLE_HOURS,
+  MIN_AUTO_SETTLE_HOURS,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
@@ -1085,8 +1085,22 @@ export class EngineStore {
    */
   getInboxPolicy(): InboxPolicy {
     try {
-      const parsed = InboxPolicySchema.safeParse(readJson(this.paths.inbox));
-      return parsed.success ? parsed.data : { ...DEFAULT_INBOX_POLICY };
+      const stored = readJson(this.paths.inbox);
+      const parsed = InboxPolicySchema.safeParse(stored);
+      if (parsed.success) return parsed.data;
+      /**
+       * THE DAYS-SHAPED DOCUMENT STILL MEANS WHAT IT SAID. The window moved
+       * to hour granularity; a file written before that carries
+       * `autoSettleAfterDays`, and dropping it to the default would silently
+       * change which sessions somebody's sidebar shows. Converted on read,
+       * rewritten in the new shape on the next save.
+       */
+      const days = (stored as { autoSettleAfterDays?: unknown } | undefined)?.autoSettleAfterDays;
+      if (days === null) return { autoSettleAfterHours: null };
+      if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 90) {
+        return { autoSettleAfterHours: days * 24 };
+      }
+      return { ...DEFAULT_INBOX_POLICY };
     } catch {
       return { ...DEFAULT_INBOX_POLICY };
     }
@@ -1100,20 +1114,20 @@ export class EngineStore {
    * the bound belongs next to the schema that states it, not spelled a second
    * time in the route that happens to be the way in today.
    */
-  setInboxPolicy(patch: { autoSettleAfterDays?: unknown }): InboxPolicy {
+  setInboxPolicy(patch: { autoSettleAfterHours?: unknown }): InboxPolicy {
     const next: InboxPolicy = { ...this.getInboxPolicy() };
-    if (patch.autoSettleAfterDays !== undefined) {
-      if (patch.autoSettleAfterDays === null) {
-        next.autoSettleAfterDays = null;
+    if (patch.autoSettleAfterHours !== undefined) {
+      if (patch.autoSettleAfterHours === null) {
+        next.autoSettleAfterHours = null;
       } else {
-        const parsed = InboxPolicySchema.shape.autoSettleAfterDays.safeParse(patch.autoSettleAfterDays);
+        const parsed = InboxPolicySchema.shape.autoSettleAfterHours.safeParse(patch.autoSettleAfterHours);
         if (!parsed.success) {
           throw new EngineStateError(
             "invalid_request",
-            `auto-settle window must be a whole number of days between ${MIN_AUTO_SETTLE_DAYS} and ${MAX_AUTO_SETTLE_DAYS}, or null`,
+            `auto-settle window must be a whole number of hours between ${MIN_AUTO_SETTLE_HOURS} and ${MAX_AUTO_SETTLE_HOURS}, or null`,
           );
         }
-        next.autoSettleAfterDays = parsed.data;
+        next.autoSettleAfterHours = parsed.data;
       }
     }
     atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });

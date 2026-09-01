@@ -25,6 +25,8 @@ import {
   type GitignoreResult,
   type InboxPolicy,
   type TextGenPolicy,
+  type UsageReport,
+  type UsageResolution,
   type SpoolAperture,
   type SpoolApertureView,
   type SpoolArea,
@@ -249,8 +251,16 @@ export class EngineClient {
     return this.request("GET", "/v2/inbox");
   }
 
-  setInboxPolicy(patch: { autoSettleAfterDays?: number | null }): Promise<{ inbox: InboxPolicy }> {
+  setInboxPolicy(patch: { autoSettleAfterHours?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  /** Spend over time, folded from the engine's journals — see `UsageReport`. */
+  usageReport(input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }): Promise<{ usage: UsageReport }> {
+    const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
+    if (input.resolution) query.set("resolution", input.resolution);
+    if (input.timeZone) query.set("tz", input.timeZone);
+    return this.request("GET", `/v2/usage?${query.toString()}`);
   }
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */

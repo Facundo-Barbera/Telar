@@ -59,13 +59,21 @@ function StripRule() {
  * branch the worktree will be ON (the engine refuses, never resets, a
  * collision); without a name the engine derives one under `telar/`.
  */
+/** `origin/feature-x` → `feature-x`, for the local-shadow dedupe below. */
+function shortName(ref: GitRefEntry): string {
+  return ref.kind === "remote" ? ref.name.replace(/^[^/]+\//, "") : ref.name;
+}
+
 function BaseRefPicker({
   refs,
+  defaultBase,
   currentBranch,
   pending,
   onBase,
 }: {
   refs: GitRefEntry[];
+  /** The remote's default branch (`origin/main`) — pinned to the top. */
+  defaultBase?: string;
   currentBranch?: string;
   pending: { baseRef?: string; branchName?: string };
   onBase: (next: { baseRef?: string; branchName?: string }) => void;
@@ -74,9 +82,26 @@ function BaseRefPicker({
   const [query, setQuery] = useState("");
   const [name, setName] = useState(pending.branchName ?? "");
 
-  const filtered = query.trim() ? refs.filter((ref) => ref.name.toLowerCase().includes(query.trim().toLowerCase())) : refs;
-  const locals = filtered.filter((ref) => ref.kind === "local").slice(0, 25);
-  const remotes = filtered.filter((ref) => ref.kind === "remote").slice(0, 25);
+  const trimmed = query.trim().toLowerCase();
+  const filtered = trimmed ? refs.filter((ref) => ref.name.toLowerCase().includes(trimmed)) : refs;
+  /**
+   * WHY THE BROWSE LIST IS SMALLER THAN THE REPOSITORY. Unfiltered, every
+   * `origin/x` whose local `x` also exists is noise doubling the list — main
+   * and origin/main are the same choice to a person picking a base — so
+   * remote refs shadowed by a same-named local are folded away, and the two
+   * pinned rows (default base, current branch) are not repeated below.
+   * SEARCHING SUSPENDS ALL OF IT: a typed query means "show me everything
+   * that matches", including the shadowed remote that may be ahead.
+   */
+  const pinned = new Set([defaultBase, currentBranch].filter(Boolean) as string[]);
+  const localNames = new Set(refs.filter((ref) => ref.kind === "local").map((ref) => ref.name));
+  const browsing = !trimmed;
+  const visible = browsing
+    ? filtered.filter((ref) => !pinned.has(ref.name) && !(ref.kind === "remote" && localNames.has(shortName(ref))))
+    : filtered;
+  const locals = visible.filter((ref) => ref.kind === "local").slice(0, 25);
+  const remotes = visible.filter((ref) => ref.kind === "remote").slice(0, 25);
+  const hiddenCount = browsing ? refs.length - pinned.size - locals.length - remotes.length : 0;
 
   // `HEAD` is the EXPLICIT "current checkout" choice (see the row below), so
   // it reads as the branch it means, not as a literal "from HEAD".
@@ -91,19 +116,20 @@ function BaseRefPicker({
     setOpen(false);
   };
 
-  const row = (ref: GitRefEntry) => (
+  /** The donor's row anatomy: mono name, one tiny muted badge at most. */
+  const row = (refName: string, badge?: string) => (
     <button
-      key={ref.name}
+      key={refName}
       type="button"
-      onClick={() => pick(ref.name)}
+      onClick={() => pick(refName)}
       className={cn(
         "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
-        pending.baseRef === ref.name && "bg-accent",
+        pending.baseRef === refName && "bg-accent",
       )}
     >
       <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate font-mono text-xs">{ref.name}</span>
-      {ref.head && <span className="shrink-0 text-[10px] text-muted-foreground">current</span>}
+      <span className="min-w-0 flex-1 truncate font-mono text-xs">{refName}</span>
+      {badge && <span className="shrink-0 text-[10px] text-muted-foreground/60">{badge}</span>}
     </button>
   );
 
@@ -118,29 +144,52 @@ function BaseRefPicker({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search refs…"
+          onKeyDown={(event) => {
+            // Enter takes the first visible match — typing three letters and
+            // hitting Enter is the whole gesture on a hundred-branch repo.
+            if (event.key === "Enter" && trimmed) {
+              event.preventDefault();
+              const first = locals[0] ?? remotes[0];
+              if (first) pick(first.name);
+            }
+          }}
+          placeholder="Search branches…"
+          autoFocus
           className="mb-1 w-full rounded-md border border-border/60 bg-transparent px-2 py-1 text-xs outline-none placeholder:text-muted-foreground focus:border-ring"
         />
         <div className="max-h-64 overflow-y-auto">
-          {/* AN EXPLICIT CHOICE, SENT AS `HEAD` — not an empty pending. Empty
-              means "nobody chose yet", which the foot fills with the remote's
-              default branch; this row must be able to override that. */}
-          <button
-            type="button"
-            onClick={() => pick("HEAD")}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
-              (!pending.baseRef || pending.baseRef === "HEAD") && "bg-accent",
-            )}
-          >
-            <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-xs">Current HEAD</span>
-          </button>
+          {browsing && (
+            <>
+              {/* THE THREE ANSWERS MOST PICKS WANT, pinned above the pile:
+                  the checkout as it stands, the remote's default, and the
+                  branch you are on. AN EXPLICIT HEAD IS SENT AS `HEAD` — not
+                  an empty pending, which means "nobody chose yet" and gets
+                  filled with the default base by the foot. */}
+              <button
+                type="button"
+                onClick={() => pick("HEAD")}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-sm transition-colors hover:bg-accent/60",
+                  (!pending.baseRef || pending.baseRef === "HEAD") && "bg-accent",
+                )}
+              >
+                <GitBranchIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-xs">Current HEAD</span>
+              </button>
+              {defaultBase && row(defaultBase, "default")}
+              {currentBranch && currentBranch !== defaultBase && row(currentBranch, "current")}
+            </>
+          )}
           {locals.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Local</p>}
-          {locals.map(row)}
+          {locals.map((ref) => row(ref.name, ref.head ? "current" : undefined))}
           {remotes.length > 0 && <p className="px-2 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Origin</p>}
-          {remotes.map(row)}
+          {remotes.map((ref) => row(ref.name, "remote"))}
           {filtered.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No matching refs.</p>}
+          {hiddenCount > 0 && (
+            <p className="px-2 py-1.5 text-[10px] text-muted-foreground">
+              {hiddenCount} more — search to find them.
+            </p>
+          )}
         </div>
         {/* The new-branch name rides WITH whichever base is chosen; empty
             means the engine derives a telar/ name as before. */}
@@ -325,6 +374,7 @@ export function WorkspaceEnvironment({
         {choosing && onBase ? (
           <BaseRefPicker
             refs={git?.refs ?? []}
+            {...(git?.defaultBase ? { defaultBase: git.defaultBase } : {})}
             {...(git?.branch ? { currentBranch: git.branch } : {})}
             pending={pendingBase ?? {}}
             onBase={onBase}
