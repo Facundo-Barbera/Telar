@@ -441,55 +441,100 @@ struct NestedDetail<Content: View>: View {
     }
 }
 
-/// Sub-agents: a tool-chip header, expandable to their nested rows.
+/// A sub-agent in the conversation is a CHIP, not a process: THAT a fan-out
+/// happened belongs in the chat; what it did belongs on its own surface.
+/// Tapping opens the agent's sheet — the phone's Agents panel.
 struct TaskRowView: View {
     let task: JournalTask
-    @State private var expanded = false
+    @State private var showDetail = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: task.task.kind == .background ? "terminal" : "person.2")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.textMuted)
-                        .opacity(0.7)
-                        .frame(width: 24, height: 24)
-                    Text(task.task.title ?? (task.task.kind == .background ? "Background job" : "Sub-agent"))
-                        .font(Theme.body)
-                        .foregroundStyle(Theme.textMuted)
-                        .lineLimit(1)
-                    if task.task.state.isLive {
-                        SteppedPulseDot(color: Theme.statusSky)
-                    } else if task.task.state == .failed {
-                        Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.statusRed)
-                    }
-                    Text("\(task.items.count)")
-                        .font(Theme.metaSmall)
-                        .foregroundStyle(Theme.textMuted.opacity(0.7))
-                        .tabularNumbers()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.textMuted.opacity(0.5))
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                    Spacer(minLength: 0)
+        Button {
+            showDetail = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: task.task.kind == .background ? "terminal" : "person.2")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Theme.textMuted)
+                    .opacity(0.7)
+                    .frame(width: 24, height: 24)
+                Text(task.task.title ?? (task.task.kind == .background ? "Background job" : "Sub-agent"))
+                    .font(Theme.body)
+                    .foregroundStyle(Theme.textMuted)
+                    .lineLimit(1)
+                if task.task.state.isLive {
+                    SteppedPulseDot(color: Theme.statusSky)
+                } else if task.task.state == .failed {
+                    Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.statusRed)
                 }
-                .frame(minHeight: 24)
-                .contentShape(Rectangle())
+                Text("\(task.items.count) step\(task.items.count == 1 ? "" : "s")")
+                    .font(Theme.metaSmall)
+                    .foregroundStyle(Theme.textMuted.opacity(0.7))
+                    .tabularNumbers()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Theme.textMuted.opacity(0.5))
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            if expanded {
-                NestedDetail {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(task.items) { item in
-                            ItemRowView(item: item)
+            .frame(minHeight: 24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .sheet(isPresented: $showDetail) {
+            AgentDetailSheet(task: task)
+        }
+    }
+}
+
+/// The phone's Agents surface: one sub-agent's whole run — its rows and its
+/// conclusion — off the conversation, where a fan-out of five can be read
+/// one agent at a time.
+struct AgentDetailSheet: View {
+    let task: JournalTask
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        if task.task.state.isLive {
+                            SteppedPulseDot(color: Theme.statusSky)
+                            Text("Working")
+                                .font(Theme.meta)
+                                .foregroundStyle(Theme.statusSky)
+                        } else if task.task.state == .failed {
+                            Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.statusRed)
+                            Text("Failed").font(Theme.meta).foregroundStyle(Theme.statusRed)
+                        } else {
+                            Image(systemName: "checkmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.statusEmerald)
+                            Text("Done").font(Theme.meta).foregroundStyle(Theme.textMuted)
                         }
-                        if let result = task.task.resultText, !result.isEmpty {
-                            MarkdownText(text: result)
-                        }
+                        Spacer(minLength: 0)
                     }
+                    ForEach(task.items) { item in
+                        ItemRowView(item: item)
+                    }
+                    if task.items.isEmpty {
+                        Text(task.task.kind == .background
+                             ? "A background process — its output streams to the turn that started it."
+                             : "No steps recorded yet.")
+                            .font(Theme.meta)
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                    if let result = task.task.resultText, !result.isEmpty {
+                        Rectangle().fill(Theme.border).frame(height: 1).padding(.vertical, 4)
+                        MarkdownText(text: result)
+                    }
+                }
+                .padding()
+            }
+            .background(Theme.canvas)
+            .navigationTitle(task.task.title ?? (task.task.kind == .background ? "Background job" : "Sub-agent"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
                 }
             }
         }
