@@ -20,7 +20,11 @@ BUNDLE="${TELAR_BUNDLE_ID:-com.telar.mobile}"
 BUILD_NUMBER="$(date +%Y%m%d%H%M)"
 TAG="nightly-$(date +%Y%m%d)"
 ARCHIVE="$DIR/DerivedData-nightly/Telar-$BUILD_NUMBER.xcarchive"
-export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
+# The Mac's Xcode beta when present; whatever xcode-select says otherwise
+# (the CI runner's image Xcode).
+if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode-beta.app ]]; then
+  export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
+fi
 
 git tag "$TAG" 2>/dev/null && echo "tagged $TAG" || echo "tag $TAG already exists — rebuilding it"
 
@@ -31,6 +35,9 @@ xcodebuild \
   -derivedDataPath "$DIR/DerivedData-nightly" \
   -archivePath "$ARCHIVE" \
   -allowProvisioningUpdates \
+  ${TELAR_ASC_KEY_ID:+-authenticationKeyID "$TELAR_ASC_KEY_ID"} \
+  ${TELAR_ASC_ISSUER_ID:+-authenticationKeyIssuerID "$TELAR_ASC_ISSUER_ID"} \
+  ${TELAR_ASC_KEY_PATH:+-authenticationKeyPath "$TELAR_ASC_KEY_PATH"} \
   DEVELOPMENT_TEAM="$TEAM" \
   PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE" \
   INFOPLIST_KEY_CFBundleDisplayName="Telar" \
