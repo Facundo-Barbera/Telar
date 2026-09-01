@@ -5,6 +5,10 @@ import SwiftUI
 /// When the cockpit requires pairing, the probe says so and the pairing-link
 /// field (Settings → Remote access → copy the link under the QR) completes
 /// the exchange; the device token lands in the Keychain.
+///
+/// Styled with the SettingsKit card idiom — this screen doubles as the
+/// app's front door (the root view before a cockpit is configured), so it
+/// wears the same clothes as the rest of the app, not a stock Form.
 struct ConnectView: View {
     let settings: AppSettings
     @State private var host = ""
@@ -22,103 +26,123 @@ struct ConnectView: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                TextField("Tailscale IP or hostname", text: $host)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                TextField("Port", text: $port)
-                    .keyboardType(.numberPad)
-            } header: {
-                Text("Cockpit address")
-            } footer: {
-                Text("The Mac must run the cockpit bound to its tailnet address (TELAR_WEB_HOST), and this phone must be on the same tailnet.")
-            }
-
-            Section {
-                // Camera scanning needs the Neural Engine — real hardware.
-                // The paste field below is the simulator (and automation) path.
-                if QRScannerView.isUsable {
-                    Button {
-                        scanning = true
-                    } label: {
-                        Label("Scan pairing code", systemImage: "qrcode.viewfinder")
+        ScrollView {
+            VStack(spacing: 24) {
+                VStack(spacing: 0) {
+                    SettingsSectionLabel("Cockpit address")
+                    SettingsCard {
+                        CardField(label: "Host", placeholder: "Tailscale IP or hostname", text: $host, keyboard: .URL)
+                        CardDivider()
+                        CardField(label: "Port", placeholder: "3000", text: $port, keyboard: .numberPad)
                     }
-                    .disabled(probing)
+                    SettingsFootnote("The Mac must run the cockpit bound to its tailnet address (TELAR_WEB_HOST), and this phone must be on the same tailnet.")
                 }
-                TextField("Paste the pairing link", text: $pairingLink)
-                    .keyboardType(.URL)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .font(Theme.mono)
-                Button("Pair") {
-                    Task { await pair() }
-                }
-                .disabled(Pairing.parsePairingURL(pairingLink) == nil || probing)
-                if settings.deviceToken != nil {
-                    // The other half of pairing: without this, the only way
-                    // to shed a credential was revoking it from the Mac.
-                    Button("Forget pairing", role: .destructive) {
-                        settings.deviceToken = nil
-                        probeResult = nil
-                    }
-                    .disabled(probing)
-                }
-            } header: {
-                Text("Pairing")
-            } footer: {
-                Text(settings.deviceToken == nil
-                     ? "When the cockpit requires pairing: Settings → Remote access → show the code, then copy the link under the QR."
-                     : "This phone is paired. Pasting a new link replaces the credential; Forget removes it from this phone (revoke it on the Mac to kill it everywhere).")
-            }
 
-            Section {
-                Button {
-                    Task { await probe() }
-                } label: {
-                    if probing {
-                        ProgressView()
-                    } else {
-                        Text("Test connection")
-                    }
-                }
-                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || probing)
-
-                switch probeResult {
-                case .ok(let daemonId, let workerRegistered):
-                    Label {
-                        VStack(alignment: .leading) {
-                            Text("Connected — engine \(daemonId.prefix(14))…")
-                            if !workerRegistered {
-                                Text("No worker registered: turns will queue but not run.")
-                                    .font(Theme.metaSmall)
-                                    .foregroundStyle(Theme.statusAmber)
-                            }
+                VStack(spacing: 0) {
+                    SettingsSectionLabel("Pairing")
+                    SettingsCard {
+                        if settings.deviceToken != nil {
+                            StatusBanner(
+                                icon: "checkmark.seal.fill", color: Theme.statusEmerald,
+                                title: "This phone is paired.",
+                                detail: "Pasting a new link replaces the credential."
+                            )
+                            CardDivider()
                         }
-                    } icon: {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.statusEmerald)
+                        // Camera scanning needs the Neural Engine — real
+                        // hardware. The paste field below is the simulator
+                        // (and automation) path.
+                        if QRScannerView.isUsable {
+                            Button {
+                                scanning = true
+                            } label: {
+                                CardRow(
+                                    icon: "qrcode.viewfinder", iconColor: Theme.accent,
+                                    title: "Scan pairing code", titleColor: Theme.accent
+                                ) { EmptyView() }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(probing)
+                            CardDivider()
+                        }
+                        CardField(label: "Or paste the pairing link", placeholder: "http://…/pair#token=tlr_…", text: $pairingLink, mono: true, keyboard: .URL)
+                        if Pairing.parsePairingURL(pairingLink) != nil {
+                            CardDivider()
+                            Button {
+                                Task { await pair() }
+                            } label: {
+                                CardRow(icon: "link", iconColor: Theme.accent, title: "Pair", titleColor: Theme.accent) { EmptyView() }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(probing)
+                        }
+                        if settings.deviceToken != nil {
+                            CardDivider()
+                            // The other half of pairing: without this, the
+                            // only way to shed a credential was revoking it
+                            // from the Mac.
+                            Button {
+                                settings.deviceToken = nil
+                                probeResult = nil
+                            } label: {
+                                CardRow(icon: "xmark.seal", iconColor: Theme.statusRed, title: "Forget pairing", titleColor: Theme.statusRed) { EmptyView() }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(probing)
+                        }
                     }
-                    Button("Use this cockpit") {
-                        settings.baseURLString = AppSettings.normalize(host: host, port: port)
+                    SettingsFootnote(settings.deviceToken == nil
+                        ? "When the cockpit requires pairing: Settings → Remote access → show the code, then copy the link under the QR."
+                        : "Forget removes the credential from this phone only — revoke the device on the Mac to kill it everywhere.")
+                }
+
+                VStack(spacing: 12) {
+                    PrimaryActionButton(
+                        title: "Test connection",
+                        busy: probing,
+                        enabled: !host.trimmingCharacters(in: .whitespaces).isEmpty
+                    ) {
+                        Task { await probe() }
                     }
-                    .buttonStyle(.borderedProminent)
-                case .unpaired:
-                    Label {
-                        Text("Reachable, but this cockpit requires pairing. Paste a pairing link above.")
-                    } icon: {
-                        Image(systemName: "lock.circle").foregroundStyle(Theme.statusAmber)
+
+                    switch probeResult {
+                    case .ok(let daemonId, let workerRegistered):
+                        SettingsCard {
+                            StatusBanner(
+                                icon: "checkmark.circle.fill", color: Theme.statusEmerald,
+                                title: "Connected — engine \(daemonId.prefix(14))…",
+                                detail: workerRegistered ? nil : "No worker registered: turns will queue but not run."
+                            )
+                            CardDivider()
+                            Button {
+                                settings.baseURLString = AppSettings.normalize(host: host, port: port)
+                            } label: {
+                                CardRow(icon: "arrow.right.circle.fill", iconColor: Theme.accent, title: "Use this cockpit", titleColor: Theme.accent) { EmptyView() }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    case .unpaired:
+                        SettingsCard {
+                            StatusBanner(
+                                icon: "lock.circle", color: Theme.statusAmber,
+                                title: "Reachable, but this cockpit requires pairing.",
+                                detail: "Scan or paste a pairing link above."
+                            )
+                        }
+                    case .failed(let message):
+                        SettingsCard {
+                            StatusBanner(icon: "xmark.circle", color: Theme.statusRed, title: message)
+                        }
+                    case nil:
+                        EmptyView()
                     }
-                    .font(Theme.meta)
-                case .failed(let message):
-                    Label(message, systemImage: "xmark.circle")
-                        .foregroundStyle(Theme.statusRed)
-                        .font(Theme.meta)
-                case nil:
-                    EmptyView()
                 }
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 32)
         }
+        .background(Theme.sheet)
         .navigationTitle("Connect to Telar")
         .sheet(isPresented: $scanning) {
             QRScannerSheet { payload in

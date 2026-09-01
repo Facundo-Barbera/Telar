@@ -13,7 +13,8 @@ struct TelarMobileApp: App {
 
 struct RootView: View {
     let settings: AppSettings
-    @State private var showSettings = false
+    /// `-openSettings 1` launch arg — automation affordance like -openSession.
+    @State private var showSettings = UserDefaults.standard.bool(forKey: "openSettings")
     // `-newSession 1` launch arg — automation affordance like -openSession.
     @State private var showNewSession = UserDefaults.standard.bool(forKey: "newSession")
     // `simctl launch booted com.telar.mobile -openSession <id>` — launch

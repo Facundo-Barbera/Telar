@@ -5,6 +5,10 @@ import SwiftUI
 /// via callerDeviceId — the server names the caller from its credential, so
 /// the app never stores its own device id. A view-only phone sees the list
 /// read-only; management is a write like any other.
+///
+/// SettingsKit cards, not a Form: each device is a row with a platform
+/// glyph, a role chip that opens the management menu, and the lost-phone
+/// button under its own card.
 struct DevicesView: View {
     let api: EngineAPI
     @State private var status: RemoteStatus?
@@ -12,71 +16,105 @@ struct DevicesView: View {
     @State private var renaming: RemoteDevice?
     @State private var renameDraft = ""
     @State private var confirmRevokeAll = false
+    @State private var confirmRevoke: RemoteDevice?
 
     private var canManage: Bool { status?.callerRole != "observer" }
 
     var body: some View {
-        Form {
-            if let status {
-                if !status.requireAuth {
-                    Section {
-                        Label {
-                            Text("Pairing is off on the Mac — anything that can reach the cockpit has full control. These credentials matter again when it's turned on.")
-                        } icon: {
-                            Image(systemName: "lock.open").foregroundStyle(Theme.statusAmber)
+        ScrollView {
+            VStack(spacing: 24) {
+                if let status {
+                    if !status.requireAuth {
+                        SettingsCard {
+                            StatusBanner(
+                                icon: "lock.open", color: Theme.statusAmber,
+                                title: "Pairing is off on the Mac.",
+                                detail: "Anything that can reach the cockpit has full control. These credentials matter again when it's turned on."
+                            )
                         }
-                        .font(Theme.meta)
                     }
-                }
-                if status.callerRole == "observer" {
-                    Section {
-                        Label {
-                            Text("This phone is view-only — it can see the devices but not change them.")
-                        } icon: {
-                            Image(systemName: "eye").foregroundStyle(Theme.statusAmber)
+                    if status.callerRole == "observer" {
+                        SettingsCard {
+                            StatusBanner(
+                                icon: "eye", color: Theme.statusAmber,
+                                title: "This phone is view-only.",
+                                detail: "It can see the devices but not change them."
+                            )
                         }
-                        .font(Theme.meta)
                     }
+
+                    let mine = status.devices.filter { $0.id == status.callerDeviceId }
+                    let others = status.devices.filter { $0.id != status.callerDeviceId }
+
+                    if !mine.isEmpty {
+                        VStack(spacing: 0) {
+                            SettingsSectionLabel("This device")
+                            SettingsCard {
+                                ForEach(Array(mine.enumerated()), id: \.element.id) { index, device in
+                                    if index > 0 { CardDivider() }
+                                    deviceRow(device, isSelf: true)
+                                }
+                            }
+                        }
+                    }
+
+                    VStack(spacing: 0) {
+                        SettingsSectionLabel(mine.isEmpty ? "Devices" : "Other devices")
+                        SettingsCard {
+                            if others.isEmpty {
+                                StatusBanner(
+                                    icon: "antenna.radiowaves.left.and.right", color: Theme.textMuted2,
+                                    title: mine.isEmpty ? "No devices are paired." : "No other devices are paired.",
+                                    detail: "Devices appear here as they pair from the Mac's Remote access panel."
+                                )
+                            }
+                            ForEach(Array(others.enumerated()), id: \.element.id) { index, device in
+                                if index > 0 { CardDivider() }
+                                deviceRow(device, isSelf: false)
+                            }
+                        }
+                        if canManage {
+                            SettingsFootnote("Tap the role chip to rename, change access, or revoke. Revoking logs the device out on its next request.")
+                        }
+                    }
+
+                    if canManage, !others.isEmpty, status.callerDeviceId != nil {
+                        VStack(spacing: 0) {
+                            SettingsCard {
+                                Button {
+                                    confirmRevokeAll = true
+                                } label: {
+                                    CardRow(
+                                        icon: "person.crop.circle.badge.xmark", iconColor: Theme.statusRed,
+                                        title: "Revoke all other devices", titleColor: Theme.statusRed
+                                    ) { EmptyView() }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            SettingsFootnote("The lost-phone button: everything except this phone is logged out on its next request.")
+                        }
+                    }
+                } else if let error {
+                    SettingsCard {
+                        StatusBanner(icon: "xmark.circle", color: Theme.statusRed, title: error)
+                    }
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 48)
                 }
 
-                let mine = status.devices.filter { $0.id == status.callerDeviceId }
-                let others = status.devices.filter { $0.id != status.callerDeviceId }
-
-                if !mine.isEmpty {
-                    Section("This device") {
-                        ForEach(mine) { device in
-                            deviceRow(device, isSelf: true)
-                        }
+                if status != nil, let error {
+                    SettingsCard {
+                        StatusBanner(icon: "exclamationmark.triangle", color: Theme.statusAmber, title: error)
                     }
                 }
-                Section(others.isEmpty ? "" : "Other devices") {
-                    if others.isEmpty {
-                        Text(mine.isEmpty ? "No devices are paired." : "No other devices are paired.")
-                            .font(Theme.meta)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(others) { device in
-                        deviceRow(device, isSelf: false)
-                    }
-                }
-
-                if canManage, !others.isEmpty, status.callerDeviceId != nil {
-                    Section {
-                        Button("Revoke all other devices", role: .destructive) {
-                            confirmRevokeAll = true
-                        }
-                    } footer: {
-                        Text("The lost-phone button: everything except this phone is logged out on its next request.")
-                    }
-                }
-            } else if let error {
-                Label(error, systemImage: "xmark.circle")
-                    .foregroundStyle(Theme.statusRed)
-                    .font(Theme.meta)
-            } else {
-                ProgressView()
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .padding(.bottom, 32)
         }
+        .background(Theme.sheet)
         .navigationTitle("Devices")
         .task { await load() }
         .refreshable { await load() }
@@ -89,6 +127,20 @@ struct DevicesView: View {
                 renaming = nil
             }
             Button("Cancel", role: .cancel) { renaming = nil }
+        }
+        .confirmationDialog(
+            "Revoke \(confirmRevoke?.name ?? "device")?",
+            isPresented: Binding(get: { confirmRevoke != nil }, set: { if !$0 { confirmRevoke = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Revoke", role: .destructive) {
+                if let device = confirmRevoke {
+                    Task { await run { try await api.revokeDevice(device.id) } }
+                }
+                confirmRevoke = nil
+            }
+        } message: {
+            Text("It is logged out on its next request and can pair again with a fresh code.")
         }
         .confirmationDialog("Revoke all other devices?", isPresented: $confirmRevokeAll, titleVisibility: .visible) {
             Button("Revoke them", role: .destructive) {
@@ -103,61 +155,85 @@ struct DevicesView: View {
     private func deviceRow(_ device: RemoteDevice, isSelf: Bool) -> some View {
         HStack(spacing: 12) {
             Image(systemName: platformSymbol(device.platform))
-                .foregroundStyle(.secondary)
-                .frame(width: 24)
+                .font(.system(size: 17))
+                .foregroundStyle(Theme.textMuted2)
+                .frame(width: 27, height: 27)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(device.name)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(1)
                     if isSelf {
                         Text("This iPhone")
-                            .font(Theme.metaSmall)
-                            .padding(.horizontal, 6)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.accent)
+                            .padding(.horizontal, 7)
                             .padding(.vertical, 2)
-                            .background(Capsule().fill(.quaternary))
+                            .background(Capsule().fill(Theme.accent.opacity(0.12)))
                     }
                 }
                 Text(subtitle(device))
-                    .font(Theme.metaSmall)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textMuted2)
+                    .tabularNumbers()
             }
-            Spacer()
+            Spacer(minLength: 8)
             if canManage {
                 Menu {
-                    Button {
-                        Task { await run { _ = try await api.setDeviceRole(device.id, role: "full") } }
-                    } label: {
-                        Label("Full access", systemImage: device.role == "full" ? "checkmark" : "hand.raised")
+                    Section("Access") {
+                        Button {
+                            Task { await run { _ = try await api.setDeviceRole(device.id, role: "full") } }
+                        } label: {
+                            Label("Full access", systemImage: device.role == "full" ? "checkmark" : "hand.raised")
+                        }
+                        Button {
+                            Task { await run { _ = try await api.setDeviceRole(device.id, role: "observer") } }
+                        } label: {
+                            Label("View only", systemImage: device.role == "observer" ? "checkmark" : "eye")
+                        }
                     }
-                    Button {
-                        Task { await run { _ = try await api.setDeviceRole(device.id, role: "observer") } }
-                    } label: {
-                        Label("View only", systemImage: device.role == "observer" ? "checkmark" : "eye")
-                    }
-                    Divider()
                     Button {
                         renameDraft = device.name
                         renaming = device
                     } label: {
                         Label("Rename…", systemImage: "pencil")
                     }
+                    if !isSelf {
+                        Button(role: .destructive) {
+                            confirmRevoke = device
+                        } label: {
+                            Label("Revoke", systemImage: "xmark.circle")
+                        }
+                    }
                 } label: {
-                    Text(device.role == "observer" ? "View only" : "Full")
-                        .font(Theme.metaSmall)
-                        .foregroundStyle(device.role == "observer" ? Theme.statusAmber : .secondary)
+                    roleChip(device.role)
                 }
             } else {
-                Text(device.role == "observer" ? "View only" : "Full")
-                    .font(Theme.metaSmall)
-                    .foregroundStyle(.secondary)
+                roleChip(device.role)
             }
         }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if canManage && !isSelf {
-                Button("Revoke", role: .destructive) {
-                    Task { await run { try await api.revokeDevice(device.id) } }
-                }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    /// The role as a chip — the same capsule idiom as the composer's pills.
+    private func roleChip(_ role: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: role == "observer" ? "eye" : "checkmark.shield")
+                .font(.system(size: 11, weight: .medium))
+            Text(role == "observer" ? "View only" : "Full")
+                .font(.system(size: 13, weight: .semibold))
+            if canManage {
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .medium))
             }
         }
+        .foregroundStyle(role == "observer" ? Theme.statusAmber : Theme.text)
+        .padding(.horizontal, 12)
+        .frame(height: 32)
+        .background(Theme.subtle)
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
     }
 
     private func subtitle(_ device: RemoteDevice) -> String {
