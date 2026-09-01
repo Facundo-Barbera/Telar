@@ -56,12 +56,21 @@ struct ConnectView: View {
                     Task { await pair() }
                 }
                 .disabled(Pairing.parsePairingURL(pairingLink) == nil || probing)
+                if settings.deviceToken != nil {
+                    // The other half of pairing: without this, the only way
+                    // to shed a credential was revoking it from the Mac.
+                    Button("Forget pairing", role: .destructive) {
+                        settings.deviceToken = nil
+                        probeResult = nil
+                    }
+                    .disabled(probing)
+                }
             } header: {
                 Text("Pairing")
             } footer: {
                 Text(settings.deviceToken == nil
                      ? "When the cockpit requires pairing: Settings → Remote access → show the code, then copy the link under the QR."
-                     : "This phone is paired. Pasting a new link replaces the credential.")
+                     : "This phone is paired. Pasting a new link replaces the credential; Forget removes it from this phone (revoke it on the Mac to kill it everywhere).")
             }
 
             Section {
