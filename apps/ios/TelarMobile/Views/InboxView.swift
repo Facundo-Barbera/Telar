@@ -6,42 +6,54 @@ import SwiftUI
 /// Activity never reorders the active block. A List so rows get swipe
 /// actions: full-swipe always commits the lifecycle verb, never delete.
 struct InboxView: View {
-    let api: any EngineAPI
-    let hostId: HostID
-    @State private var store: InboxStore
+    let settings: AppSettings
+    /// One store per Mac, merged; a host filter narrows without stopping
+    /// the other Macs' polls.
+    @State private var inbox = MergedInbox()
     /// t3's pagination: 10 settled built initially, +25 per "Show more".
     @State private var settledLimit = 10
     @Environment(\.scenePhase) private var scenePhase
 
-    init(api: any EngineAPI, hostId: HostID) {
-        self.api = api
-        self.hostId = hostId
-        _store = State(initialValue: InboxStore(api: api))
+    private var multiHost: Bool { settings.hosts.count > 1 }
+
+    /// Changes when any host's address/credential/membership changes — the
+    /// store-reconcile trigger.
+    private var fleetFingerprint: String {
+        settings.hosts.map { settings.apiFingerprint($0.id) }.joined(separator: "\n")
     }
 
     var body: some View {
         List {
-            if let error = store.lastError {
+            // One quiet row per unreachable Mac; the healthy ones keep
+            // rendering underneath. Unauthorized escalates to red and taps
+            // through — a retry can't fix a credential.
+            ForEach(inbox.failures) { failure in
                 HStack(spacing: 6) {
-                    Image(systemName: "wifi.exclamationmark").font(.system(size: 11))
-                    Text(error).font(.system(size: 13))
+                    Image(systemName: failure.needsPairing ? "lock.circle" : "wifi.exclamationmark")
+                        .font(.system(size: 11))
+                    Text(multiHost ? "\(hostName(failure.hostId)) — \(failure.message)" : failure.message)
+                        .font(.system(size: 13))
                 }
-                .foregroundStyle(Theme.statusAmber)
+                .foregroundStyle(failure.needsPairing ? Theme.statusRed : Theme.statusAmber)
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
             }
 
-            ForEach(store.sections.active) { session in
-                ThreadCardRow(session: session, projectName: projectName(session))
+            ForEach(inbox.sections.active) { hosted in
+                ThreadCardRow(
+                    session: hosted.session,
+                    projectName: inbox.projectName(hosted),
+                    hostLabel: multiHost ? hostName(hosted.hostId) : nil
+                )
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparatorTint(Theme.borderSubtle)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 20 }
-                    .overlay { NavigationLink(value: ScopedSessionID(hostId: hostId, sessionId: session.id)) { EmptyView() }.opacity(0) }
+                    .overlay { NavigationLink(value: hosted.id) { EmptyView() }.opacity(0) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button {
-                            Task { await store.setSettled(session.id, true) }
+                            Task { await inbox.setSettled(hosted.id, true) }
                         } label: {
                             Label("Settle", systemImage: "checkmark")
                         }
@@ -49,31 +61,31 @@ struct InboxView: View {
                     }
             }
 
-            if !store.sections.tail.isEmpty {
+            if !inbox.sections.tail.isEmpty {
                 SettledDivider()
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets())
-                ForEach(store.sections.tail.prefix(settledLimit)) { session in
-                    SlimThreadRow(session: session, snoozed: store.sections.snoozed.contains { $0.id == session.id })
+                ForEach(inbox.sections.tail.prefix(settledLimit)) { hosted in
+                    SlimThreadRow(session: hosted.session, snoozed: inbox.sections.snoozed.contains { $0.id == hosted.id })
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets())
-                        .overlay { NavigationLink(value: ScopedSessionID(hostId: hostId, sessionId: session.id)) { EmptyView() }.opacity(0) }
+                        .overlay { NavigationLink(value: hosted.id) { EmptyView() }.opacity(0) }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button {
-                                Task { await store.setSettled(session.id, false) }
+                                Task { await inbox.setSettled(hosted.id, false) }
                             } label: {
                                 Label("Un-settle", systemImage: "arrow.uturn.backward")
                             }
                             .tint(Theme.textTertiary)
                         }
                 }
-                if store.sections.tail.count > settledLimit {
+                if inbox.sections.tail.count > settledLimit {
                     Button {
                         settledLimit += 25
                     } label: {
-                        Text("Show more (\(store.sections.tail.count - settledLimit) settled hidden)")
+                        Text("Show more (\(inbox.sections.tail.count - settledLimit) settled hidden)")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Theme.textMuted2)
                             .frame(maxWidth: .infinity)
@@ -90,7 +102,7 @@ struct InboxView: View {
                 }
             }
 
-            if store.loaded && store.sections.isEmpty {
+            if inbox.loaded && inbox.sections.isEmpty {
                 ContentUnavailableView(
                     "No sessions",
                     systemImage: "tray",
@@ -104,16 +116,52 @@ struct InboxView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Theme.canvas)
-        .refreshable { await store.refresh() }
-        .task { store.start() }
-        .onDisappear { store.stop() }
+        .toolbar {
+            if multiHost {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Button {
+                            inbox.filter = nil
+                        } label: {
+                            row("All Macs", selected: inbox.filter == nil)
+                        }
+                        ForEach(settings.hosts) { host in
+                            Button {
+                                inbox.filter = host.id
+                            } label: {
+                                row(host.name, selected: inbox.filter == host.id)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "desktopcomputer")
+                            if let filter = inbox.filter {
+                                Text(hostName(filter)).font(.system(size: 13, weight: .medium))
+                            }
+                        }
+                    }
+                    .accessibilityLabel("Filter by Mac")
+                }
+            }
+        }
+        .refreshable { await inbox.refresh() }
+        .task(id: fleetFingerprint) { inbox.sync(hosts: settings.hosts, settings: settings) }
+        .onDisappear { inbox.stop() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.start() } else { store.stop() }
+            if phase == .active { inbox.start() } else { inbox.stop() }
         }
     }
 
-    private func projectName(_ session: Session) -> String? {
-        session.projectId.flatMap { store.projectNames[$0] }
+    private func hostName(_ id: HostID) -> String {
+        settings.host(id)?.name ?? "Mac"
+    }
+
+    @ViewBuilder private func row(_ label: String, selected: Bool) -> some View {
+        if selected {
+            Label(label, systemImage: "checkmark")
+        } else {
+            Text(label)
+        }
     }
 }
 
@@ -138,6 +186,8 @@ struct SettledDivider: View {
 struct ThreadCardRow: View {
     let session: Session
     let projectName: String?
+    /// Which Mac, when more than one is paired; nil renders nothing.
+    var hostLabel: String?
 
     private var status: (label: String, color: Color)? {
         if session.lastTurnFailed == true && session.activity == .idle {
@@ -162,6 +212,15 @@ struct ThreadCardRow: View {
                     .font(.system(size: 14, weight: .medium))
                     .foregroundStyle(Theme.textMuted2)
                     .lineLimit(1)
+                if let hostLabel {
+                    Text(hostLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textTertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Theme.subtle))
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 8)
                 if let status {
                     HStack(spacing: 5) {

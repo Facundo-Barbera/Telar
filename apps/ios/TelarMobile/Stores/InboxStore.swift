@@ -40,8 +40,12 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     private(set) var sections = InboxSections()
     private(set) var projectNames: [EngineID: String] = [:]
     private(set) var lastError: String?
+    /// A retry can't fix a credential — the merged view escalates this one.
+    private(set) var unauthorized = false
     private(set) var loaded = false
 
+    /// Which Mac this store polls; the merged inbox keys by it.
+    let hostId: HostID
     private let api: any EngineAPI
     private var loop: Task<Void, Never>?
     private var anythingLive = false
@@ -49,8 +53,9 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     /// fetch failure keeps the last known answer rather than rebanding.
     private var autoSettleAfterHours: Double? = 72
 
-    init(api: any EngineAPI) {
+    init(api: any EngineAPI, hostId: HostID = HostID()) {
         self.api = api
+        self.hostId = hostId
     }
 
     func start() {
@@ -97,9 +102,11 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
                 $0.activity == .blocked || $0.activity == .working || $0.activity == .queued
             }
             lastError = nil
+            unauthorized = false
             loaded = true
         } catch {
             lastError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+            unauthorized = (error as? EngineAPIError)?.isUnauthorized == true
         }
     }
 }

@@ -26,9 +26,7 @@ struct RootView: View {
     var body: some View {
         NavigationStack(path: $path) {
             if let first = settings.hosts.first, let api = settings.api(for: first.id) {
-                InboxView(api: api, hostId: first.id)
-                    // Rebuild when THIS host's address or credential changes.
-                    .id(settings.apiFingerprint(first.id))
+                InboxView(settings: settings)
                     .navigationTitle("Telar")
                     .navigationDestination(for: ScopedSessionID.self) { ref in
                         if let hostApi = settings.api(for: ref.hostId) {
