@@ -16,6 +16,18 @@ protocol EngineAPI: Sendable {
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
     ) async throws
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws
+    /// SEND NOW: a queued turn is promoted into the RUNNING turn — the model
+    /// hears it without stopping. The engine validates queued-into-running.
+    func promoteTurn(_ id: EngineID, runId: String) async throws
+    func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session
+}
+
+/// Mirror of `createSession`'s input in apps/web/lib/engine/client.ts. The
+/// engine validates driver/envMode against the contract's own lists.
+struct NewSessionInput: Encodable {
+    var title: String?
+    var driver: String?
+    var envMode: String?
 }
 
 /// The only two shapes a `user_input` answer takes (`UserInputField.kind`
@@ -143,6 +155,16 @@ struct HTTPEngineAPI: EngineAPI {
 
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {
         let _: IgnoredBody = try await send("PATCH", "api/sessions/\(escape(id))", body: patch)
+    }
+
+    func promoteTurn(_ id: EngineID, runId: String) async throws {
+        let _: IgnoredBody = try await post("api/sessions/\(escape(id))/turns/\(escape(runId))/promote", body: [:])
+    }
+
+    func createSession(projectId: EngineID, input: NewSessionInput) async throws -> Session {
+        struct Created: Decodable { var session: Session }
+        let created: Created = try await send("POST", "api/projects/\(escape(projectId))/sessions", body: input)
+        return created.session
     }
 
     // MARK: transport

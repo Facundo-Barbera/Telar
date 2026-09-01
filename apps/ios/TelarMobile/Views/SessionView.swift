@@ -16,7 +16,9 @@ struct SessionView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    TranscriptView(turns: store.sync.turns)
+                    // Queued messages live in the strip above the composer
+                    // (like the web cockpit), not in the transcript.
+                    TranscriptView(turns: store.sync.turns.filter { $0.state != .queued })
                         .padding(.vertical, 12)
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -86,9 +88,19 @@ struct SessionView: View {
                     }
                 }
             }
+            if !store.queuedTurns.isEmpty {
+                ComposerDrawer(tint: Theme.accent) {
+                    QueuedStrip(
+                        queued: store.queuedTurns,
+                        canSendNow: store.hasRunningTurn,
+                        sendNow: { runId in Task { await store.promote(runId) } },
+                        withdraw: { runId in Task { await store.withdraw(runId) } }
+                    )
+                }
+            }
             ComposerView(
                 draft: $draft,
-                isRunning: store.hasActiveTurn,
+                isRunning: store.hasRunningTurn,
                 send: { text in Task { await store.send(text) } },
                 stop: { Task { await store.stopActiveTurn() } }
             )
@@ -179,6 +191,59 @@ struct ComposerDrawer<Content: View>: View {
     }
 }
 
+/// The waiting line: messages queued behind the running turn. Each row can be
+/// promoted into the running turn ("Send now") or withdrawn — the web
+/// composer's queued strip, phone-sized.
+struct QueuedStrip: View {
+    let queued: [JournalTurn]
+    let canSendNow: Bool
+    let sendNow: (EngineID) -> Void
+    let withdraw: (EngineID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if queued.count > 1 {
+                Text("\(queued.count) waiting")
+                    .font(.system(size: 10, weight: .medium))
+                    .textCase(.uppercase)
+                    .foregroundStyle(Theme.textMuted)
+            }
+            ForEach(queued) { turn in
+                HStack(spacing: 8) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.textMuted)
+                    Text(turn.prompt)
+                        .font(Theme.metaSmall)
+                        .foregroundStyle(Theme.text)
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    if canSendNow {
+                        Button {
+                            sendNow(turn.runId)
+                        } label: {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Theme.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Send now — the running turn hears it without stopping")
+                    }
+                    Button {
+                        withdraw(turn.runId)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Theme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove this queued message")
+                }
+            }
+        }
+    }
+}
+
 /// t3code's composer: a 22pt glass shell, hairline outline, multiline field,
 /// and a 32pt circular accent-filled send button.
 struct ComposerView: View {
@@ -189,7 +254,9 @@ struct ComposerView: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Ask anything…", text: $draft, axis: .vertical)
+            // The ONLY place the app mentions that queueing exists — the
+            // web composer's rule.
+            TextField(isRunning ? "Send queues a message…" : "Ask anything…", text: $draft, axis: .vertical)
                 .font(Theme.body)
                 .lineLimit(1...6)
                 .padding(.vertical, 10)

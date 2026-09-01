@@ -35,6 +35,29 @@ import Observation
         sync.turns.contains { $0.state.isActive }
     }
 
+    /// A turn the model is executing right now (queued doesn't count) — what
+    /// makes "Send now" meaningful and the stop button honest.
+    var hasRunningTurn: Bool {
+        sync.turns.contains { $0.state == .running || $0.state == .claimed || $0.state == .steering }
+    }
+
+    /// Messages waiting behind the running turn, oldest first — the strip
+    /// above the composer.
+    var queuedTurns: [JournalTurn] {
+        sync.turns.filter { $0.state == .queued }
+    }
+
+    /// Withdraw a queued message — `stop` with its runId, the same call the
+    /// web composer makes.
+    func withdraw(_ runId: String) async {
+        await perform { try await self.api.stop(self.sessionId, runId: runId) }
+    }
+
+    /// SEND NOW — the running turn hears it without stopping.
+    func promote(_ runId: String) async {
+        await perform { try await self.api.promoteTurn(self.sessionId, runId: runId) }
+    }
+
     func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
