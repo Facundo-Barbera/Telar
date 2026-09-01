@@ -112,7 +112,7 @@ struct Session: Codable, Identifiable, Equatable {
     }
 }
 
-struct ProjectRef: Codable, Identifiable, Equatable {
+struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     var id: EngineID
     var name: String
 }

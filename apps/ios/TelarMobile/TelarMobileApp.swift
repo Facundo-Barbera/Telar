@@ -14,7 +14,8 @@ struct TelarMobileApp: App {
 struct RootView: View {
     let settings: AppSettings
     @State private var showSettings = false
-    @State private var showNewSession = false
+    // `-newSession 1` launch arg — automation affordance like -openSession.
+    @State private var showNewSession = UserDefaults.standard.bool(forKey: "newSession")
     // `simctl launch booted com.telar.mobile -openSession <id>` — launch
     // arguments land in UserDefaults, which is what makes the session view
     // reachable from automation. Inert in normal use.
@@ -52,6 +53,7 @@ struct RootView: View {
                     .sheet(isPresented: $showNewSession) {
                         NavigationStack {
                             NewSessionView(api: api) { sessionId in
+                                showNewSession = false
                                 path.append(sessionId)
                             }
                         }

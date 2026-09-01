@@ -1,20 +1,20 @@
 import Foundation
 import Observation
 
-/// The inbox sections, in the order a reader scans: what needs me, what is
-/// moving, what is quiet. Grouping is a pure function so it is testable.
+/// t3 mobile's thread-list model: ONE flat list, two blocks. The active block
+/// is sorted by createdAt descending and ACTIVITY NEVER REORDERS IT — a row
+/// holds its position from open until settled, because a list that reorders
+/// itself while you read it is not a list. Status is carried per row as a
+/// colored label, not as sections. The settled tail (snoozed rides with it)
+/// recedes into slim rows below a "Settled" divider.
 struct InboxSections: Equatable {
-    var needsYou: [Session] = []
-    var working: [Session] = []
-    var quiet: [Session] = []
-    /// Behind "Show all", in their own labeled sections.
+    var active: [Session] = []
+    /// Snoozed first (they come back), then settled — both slim.
     var snoozed: [Session] = []
     var settled: [Session] = []
 
-    var hiddenCount: Int { snoozed.count + settled.count }
-    var isEmpty: Bool {
-        needsYou.isEmpty && working.isEmpty && quiet.isEmpty && snoozed.isEmpty && settled.isEmpty
-    }
+    var tail: [Session] { snoozed + settled }
+    var isEmpty: Bool { active.isEmpty && snoozed.isEmpty && settled.isEmpty }
 }
 
 func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Double?) -> InboxSections {
@@ -26,21 +26,11 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
             sections.snoozed.append(session)
         } else if Settling.isSettled(session, now: now, autoSettleAfterHours: autoSettleAfterHours) {
             sections.settled.append(session)
-        } else if session.activity == .blocked || session.lastTurnFailed == true {
-            sections.needsYou.append(session)
-        } else if session.activity == .working || session.activity == .queued || session.activity == .monitoring {
-            sections.working.append(session)
         } else {
-            sections.quiet.append(session)
+            sections.active.append(session)
         }
     }
-    // Within a band: most actionable first (server-derived rank), then recency.
-    let byActivityThenRecency: (Session, Session) -> Bool = {
-        ($0.activity, -$0.updatedAt) < ($1.activity, -$1.updatedAt)
-    }
-    sections.needsYou.sort(by: byActivityThenRecency)
-    sections.working.sort(by: byActivityThenRecency)
-    sections.quiet.sort { $0.updatedAt > $1.updatedAt }
+    sections.active.sort { $0.createdAt > $1.createdAt }
     sections.snoozed.sort { $0.updatedAt > $1.updatedAt }
     sections.settled.sort { $0.updatedAt > $1.updatedAt }
     return sections

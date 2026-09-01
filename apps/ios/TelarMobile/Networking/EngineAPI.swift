@@ -57,6 +57,9 @@ struct SessionPatch: Encodable {
     var title: String?
     var settledOverride: String?
     var snoozedUntil: Timestamp?
+    /// "approval-required" | "auto-accept-edits" | "auto" | "full-access" —
+    /// engine-validated; the composer's Configuration pill.
+    var runtimeMode: String?
 }
 
 enum EngineAPIError: Error, LocalizedError {

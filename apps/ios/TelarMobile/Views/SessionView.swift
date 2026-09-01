@@ -16,8 +16,8 @@ struct SessionView: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    // Queued messages live in the strip above the composer
-                    // (like the web cockpit), not in the transcript.
+                    // Queued messages live below the composer (t3's queue
+                    // line), not in the transcript.
                     TranscriptView(turns: store.sync.turns.filter { $0.state != .queued })
                         .padding(.vertical, 12)
                     Color.clear.frame(height: 1).id("bottom")
@@ -49,65 +49,60 @@ struct SessionView: View {
         }
     }
 
-    /// The composer region: approvals and errors render as drawers FUSED to
-    /// the composer's top edge (t3code's `.chat-composer-top-drawer`), the
-    /// composer itself is a 22pt glass shell with a hairline.
+    /// t3's sticky overlay: pending cards above, then the composer on a
+    /// bottom gradient scrim.
     @ViewBuilder private var footer: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 12) {
             if case .retrying(let message) = store.sync.connection {
-                ComposerDrawer(tint: Theme.statusAmber) {
+                StatusCard(tint: Theme.statusAmber) {
                     HStack(spacing: 6) {
                         Image(systemName: "wifi.exclamationmark").font(.system(size: 11))
-                        Text(message).font(Theme.metaSmall).lineLimit(2)
+                        Text(message).font(.system(size: 13)).lineLimit(2)
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(Theme.statusAmber)
                 }
             }
             ForEach(store.sync.openRequests) { request in
-                ComposerDrawer(tint: Theme.statusAmber) {
+                StatusCard(tint: Theme.statusAmber) {
                     RequestCardView(request: request, store: store)
                 }
             }
             if let error = store.sendError, store.pendingSend != nil {
-                ComposerDrawer(tint: Theme.statusRed) {
+                StatusCard(tint: Theme.statusRed) {
                     HStack(spacing: 8) {
                         Text("Not sent — \(error)")
-                            .font(Theme.metaSmall)
+                            .font(.system(size: 13))
                             .foregroundStyle(Theme.statusRed)
                             .lineLimit(2)
                         Spacer(minLength: 0)
                         Button("Retry") { Task { await store.retryPending() } }
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Theme.text)
                             .buttonStyle(.plain)
                         Button("Discard") { store.discardPending() }
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(Theme.statusRed)
                             .buttonStyle(.plain)
                     }
                 }
             }
-            if !store.queuedTurns.isEmpty {
-                ComposerDrawer(tint: Theme.accent) {
-                    QueuedStrip(
-                        queued: store.queuedTurns,
-                        canSendNow: store.hasRunningTurn,
-                        sendNow: { runId in Task { await store.promote(runId) } },
-                        withdraw: { runId in Task { await store.withdraw(runId) } }
-                    )
-                }
-            }
             ComposerView(
                 draft: $draft,
                 isRunning: store.hasRunningTurn,
+                queued: store.queuedTurns,
+                runtimeMode: store.sync.session?.runtimeMode ?? "approval-required",
                 send: { text in Task { await store.send(text) } },
-                stop: { Task { await store.stopActiveTurn() } }
+                stop: { Task { await store.stopActiveTurn() } },
+                setRuntimeMode: { mode in Task { await store.setRuntimeMode(mode) } },
+                sendNow: { runId in Task { await store.promote(runId) } },
+                withdraw: { runId in Task { await store.withdraw(runId) } }
             )
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
         .padding(.bottom, 8)
-        .padding(.top, 6)
+        .background(alignment: .bottom) { ComposerScrim() }
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
@@ -135,11 +130,11 @@ struct SessionView: View {
                     renaming = true
                 }
                 if store.sync.session?.settledOverride == "settled" {
-                    Button("Unsettle", systemImage: "tray.and.arrow.up") {
+                    Button("Un-settle", systemImage: "arrow.uturn.backward") {
                         Task { await store.setSettled(false) }
                     }
                 } else {
-                    Button("Settle", systemImage: "tray.and.arrow.down") {
+                    Button("Settle", systemImage: "checkmark") {
                         Task { await store.setSettled(true) }
                     }
                 }
@@ -167,137 +162,294 @@ struct SessionView: View {
     }
 }
 
-/// A drawer that attaches above the composer and fuses with it: rounded top
-/// corners only, hairline, and no gap — t3code's approval/info drawers.
-struct ComposerDrawer<Content: View>: View {
+/// t3's bottom wash: the composer floats on a vertical gradient toward the
+/// canvas, not on a solid bar.
+struct ComposerScrim: View {
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let base: Color = scheme == .dark ? .black : .white
+        LinearGradient(
+            stops: [
+                .init(color: base.opacity(0), location: 0),
+                .init(color: base.opacity(0.6), location: 0.55),
+                .init(color: base.opacity(0.9), location: 1),
+            ],
+            startPoint: .top, endPoint: .bottom
+        )
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+    }
+}
+
+/// A pending card above the composer — rounded 16, card fill washed with the
+/// status tint, hairline. (t3 renders approvals as standalone cards in the
+/// sticky overlay, not fused drawers.)
+struct StatusCard<Content: View>: View {
     let tint: Color
     @ViewBuilder let content: Content
 
     var body: some View {
         content
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 14)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(tint.opacity(0.06))
-            .background(.ultraThinMaterial)
-            .clipShape(UnevenRoundedRectangle(topLeadingRadius: Theme.radiusDrawer, topTrailingRadius: Theme.radiusDrawer))
+            .background(Theme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .overlay(
-                UnevenRoundedRectangle(topLeadingRadius: Theme.radiusDrawer, topTrailingRadius: Theme.radiusDrawer)
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(Theme.border, lineWidth: 1)
             )
-            .padding(.bottom, -6)
-            .zIndex(0)
     }
 }
 
-/// The waiting line: messages queued behind the running turn. Each row can be
-/// promoted into the running turn ("Send now") or withdrawn — the web
-/// composer's queued strip, phone-sized.
-struct QueuedStrip: View {
-    let queued: [JournalTurn]
-    let canSendNow: Bool
-    let sendNow: (EngineID) -> Void
-    let withdraw: (EngineID) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if queued.count > 1 {
-                Text("\(queued.count) waiting")
-                    .font(.system(size: 10, weight: .medium))
-                    .textCase(.uppercase)
-                    .foregroundStyle(Theme.textMuted)
-            }
-            ForEach(queued) { turn in
-                HStack(spacing: 8) {
-                    Image(systemName: "clock")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.textMuted)
-                    Text(turn.prompt)
-                        .font(Theme.metaSmall)
-                        .foregroundStyle(Theme.text)
-                        .lineLimit(2)
-                    Spacer(minLength: 0)
-                    if canSendNow {
-                        Button {
-                            sendNow(turn.runId)
-                        } label: {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Theme.accent)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Send now — the running turn hears it without stopping")
-                    }
-                    Button {
-                        withdraw(turn.runId)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Theme.textMuted)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remove this queued message")
-                }
-            }
-        }
-    }
-}
-
-/// t3code's composer: a 22pt glass shell, hairline outline, multiline field,
-/// and a 32pt circular accent-filled send button.
+/// t3 mobile's composer, ported: a capsule pill at rest that morphs into a
+/// radius-20 card on focus (220ms linear, focus is the ONLY driver), with the
+/// toolbar row appearing under the card and the queue line under that.
 struct ComposerView: View {
     @Binding var draft: String
     let isRunning: Bool
+    let queued: [JournalTurn]
+    let runtimeMode: String
     let send: (String) -> Void
     let stop: () -> Void
+    let setRuntimeMode: (String) -> Void
+    let sendNow: (EngineID) -> Void
+    let withdraw: (EngineID) -> Void
+
+    @FocusState private var focused: Bool
+    @State private var managingQueue = false
+    @Environment(\.colorScheme) private var scheme
+
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
+        VStack(spacing: 0) {
+            surface
+            if focused { toolbar }
+            if !queued.isEmpty { queueLine }
+        }
+        .animation(.linear(duration: 0.22), value: focused)
+        .animation(.linear(duration: 0.18), value: queued.count)
+    }
+
+    // MARK: the surface
+
+    private var surface: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            // The ONLY place the app mentions that queueing exists — the
-            // web composer's rule.
-            TextField(isRunning ? "Send queues a message…" : "Ask anything…", text: $draft, axis: .vertical)
-                .font(Theme.body)
-                .lineLimit(1...6)
-                .padding(.vertical, 10)
-                .padding(.leading, 14)
-            if isRunning {
-                Button {
-                    stop()
-                } label: {
-                    Image(systemName: "square.fill")
-                        .font(.system(size: 11, weight: .bold))
+            TextField("Ask the agent, or run a command…", text: $draft, axis: .vertical)
+                .font(.system(size: 16))
+                .foregroundStyle(Theme.text)
+                .lineLimit(focused ? 7 : 1)
+                .frame(minHeight: focused ? 80 : 36, alignment: focused ? .topLeading : .center)
+                .padding(.vertical, focused ? 8 : 0)
+                .focused($focused)
+                .onSubmit { submit() }
+            if !focused {
+                ControlPillButton(
+                    isRunning: isRunning, canSend: canSend,
+                    action: { isRunning ? stop() : submit() }
+                )
+            }
+        }
+        .padding(.leading, focused ? 14 : 18)
+        .padding(.trailing, focused ? 14 : 5)
+        .padding(.vertical, focused ? 12 : 5)
+        .composerGlass(cornerRadius: focused ? 20 : 27)
+        .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
+        .onTapGesture { focused = true }
+    }
+
+    // MARK: the toolbar (expanded only)
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if isRunning {
+                        ToolbarPill(variant: .danger) {
+                            stop()
+                        } label: {
+                            Image(systemName: "stop.fill").font(.system(size: 14))
+                        }
+                        .accessibilityLabel("Stop the running turn")
+                    }
+                    Menu {
+                        ForEach(ComposerView.runtimeModes, id: \.0) { mode, label in
+                            Button {
+                                setRuntimeMode(mode)
+                            } label: {
+                                if mode == runtimeMode {
+                                    Label(label, systemImage: "checkmark")
+                                } else {
+                                    Text(label)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "slider.horizontal.3").font(.system(size: 14))
+                            Text(ComposerView.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration")
+                                .font(.system(size: 14, weight: .semibold))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .medium))
+                        }
                         .foregroundStyle(Theme.text)
-                        .frame(width: 32, height: 32)
-                        .background(Theme.messageSurface)
-                        .clipShape(Circle())
+                        .padding(.horizontal, 14)
+                        .frame(height: 44)
+                        .background(Theme.subtle)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+                    }
                 }
-                .accessibilityLabel("Stop the running turn")
-                .padding(.bottom, 4)
             }
             Button {
-                let text = draft
-                draft = ""
-                send(text)
+                submit()
             } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
-                    .background(Theme.accent)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted2)
+                    .frame(width: 44, height: 44)
+                    .background(canSend ? Theme.primaryFill : Theme.subtleStrong)
                     .clipShape(Circle())
             }
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .opacity(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.3 : 1)
-            .accessibilityLabel("Send")
-            .padding(.bottom, 4)
-            .padding(.trailing, 4)
+            .disabled(!canSend)
+            .accessibilityLabel(isRunning || !queued.isEmpty ? "Queue" : "Send")
         }
-        .background(.ultraThinMaterial)
-        .background(Theme.surface.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: Theme.radiusComposer))
-        .hairline(Theme.radiusComposer)
-        .shadow(color: .black.opacity(0.12), radius: 14, y: 8)
-        .zIndex(1)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+    }
+
+    // MARK: the queue
+
+    private var queueLine: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                managingQueue.toggle()
+            } label: {
+                Text("\(queued.count) queued message\(queued.count == 1 ? "" : "s") will send automatically.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.textMuted2)
+            }
+            .buttonStyle(.plain)
+            if managingQueue {
+                ForEach(queued) { turn in
+                    HStack(spacing: 10) {
+                        Text(turn.prompt)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        if isRunning {
+                            Button {
+                                sendNow(turn.runId)
+                            } label: {
+                                Image(systemName: "bolt.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Theme.text)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Send now — the running turn hears it without stopping")
+                        }
+                        Button {
+                            withdraw(turn.runId)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Theme.textMuted2)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Remove this queued message")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Theme.subtle)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
+    }
+
+    private func submit() {
+        guard canSend else { return }
+        let text = draft
+        draft = ""
+        focused = false
+        send(text)
+    }
+
+    static let runtimeModes: [(String, String)] = [
+        ("approval-required", "Supervised"),
+        ("auto-accept-edits", "Auto-accept edits"),
+        ("auto", "Auto"),
+        ("full-access", "Full access"),
+    ]
+}
+
+/// The collapsed pill's 44pt circular control: primary send at rest, danger
+/// stop while running — the stop REPLACES send in the pill (t3's ControlPill).
+struct ControlPillButton: View {
+    let isRunning: Bool
+    let canSend: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isRunning ? "stop.fill" : "arrow.up")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted2))
+                .frame(width: 44, height: 44)
+                .background(isRunning ? Theme.dangerFill : (canSend ? Theme.primaryFill : Theme.subtleStrong))
+                .clipShape(Circle())
+        }
+        .disabled(!isRunning && !canSend)
+        .accessibilityLabel(isRunning ? "Stop the running turn" : "Send")
+    }
+}
+
+/// A 44pt toolbar pill (t3's ComposerToolbarButton): subtle fill, hairline,
+/// full radius; danger variant for stop.
+struct ToolbarPill<Label: View>: View {
+    enum Variant { case normal, danger }
+    let variant: Variant
+    let action: () -> Void
+    @ViewBuilder let label: Label
+
+    init(variant: Variant = .normal, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
+        self.variant = variant
+        self.action = action
+        self.label = label()
+    }
+
+    var body: some View {
+        Button(action: action) {
+            label
+                .foregroundStyle(variant == .danger ? Theme.dangerGlyph : Theme.text)
+                .frame(width: 44, height: 44)
+                .background(variant == .danger ? Theme.dangerFill : Theme.subtle)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+        }
+    }
+}
+
+extension View {
+    /// t3's ComposerSurface: liquid glass on iOS 26+, an opaque near-material
+    /// fallback elsewhere. Shadow belongs to the CALLER (a clipped surface
+    /// would clip its own shadow).
+    @ViewBuilder func composerGlass(cornerRadius: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular.interactive(), in: shape)
+        } else {
+            self.background(Theme.composerSurface)
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(Theme.border, lineWidth: 1))
+        }
     }
 }

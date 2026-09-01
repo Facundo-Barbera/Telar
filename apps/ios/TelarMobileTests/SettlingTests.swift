@@ -60,7 +60,7 @@ import Testing
             [session(""), session(#""settledOverride":"settled""#), session(#""snoozedUntil":9000000000,"snoozedAt":900"#)],
             now: now, autoSettleAfterHours: nil
         )
-        #expect(sections.quiet.count == 1)
+        #expect(sections.active.count == 1)
         #expect(sections.settled.count == 1)
         #expect(sections.snoozed.count == 1)
     }

@@ -118,6 +118,10 @@ import Observation
         await perform { try await self.api.patchSession(self.sessionId, patch: SessionPatch(title: title)) }
     }
 
+    func setRuntimeMode(_ mode: String) async {
+        await perform { try await self.api.patchSession(self.sessionId, patch: SessionPatch(runtimeMode: mode)) }
+    }
+
     func setSettled(_ settled: Bool) async {
         await perform {
             try await self.api.patchSession(self.sessionId, patch: SessionPatch(settledOverride: settled ? "settled" : "active"))

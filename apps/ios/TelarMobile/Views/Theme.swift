@@ -77,6 +77,58 @@ enum Theme {
     /// Failed / destructive text. red-700 / red-400.
     static let statusRed = adaptive(light: 0xB91C1C, dark: 0xF87171)
 
+    // MARK: t3 mobile tokens (apps/mobile global.css, dark/light resolved)
+
+    /// Grouped-sheet background. rgba(14,14,14,.98) / rgba(242,242,247,.98).
+    static let sheet = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(rgb: 0x0E0E0E).withAlphaComponent(0.98)
+            : UIColor(rgb: 0xF2F2F7).withAlphaComponent(0.98)
+    })
+    /// Inset card on a sheet. #171717 / #FFFFFF.
+    static let card = adaptive(light: 0xFFFFFF, dark: 0x171717)
+    /// foreground-muted — project names, receded titles.
+    static let textMuted2 = adaptive(light: 0x737373, dark: 0x8E8E93)
+    /// foreground-tertiary — timestamps, section labels.
+    static let textTertiary = adaptive(light: 0x8E8E93, dark: 0x636366)
+    /// subtle fill — chip idle background. white 4% / black 4%.
+    static let subtle = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1, alpha: 0.04) : UIColor(white: 0, alpha: 0.04)
+    })
+    /// subtle-strong — pressed/disabled fills. white 8% / black 8%.
+    static let subtleStrong = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1, alpha: 0.08) : UIColor(white: 0, alpha: 0.08)
+    })
+    /// border-subtle — row hairlines inside cards. white 4% / black 6%.
+    static let borderSubtle = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1, alpha: 0.04) : UIColor(white: 0, alpha: 0.06)
+    })
+    /// The primary control fill — near-white in dark, near-black in light —
+    /// with its inverted glyph. t3's send button is NOT accent-colored.
+    static let primaryFill = adaptive(light: 0x262626, dark: 0xF5F5F5)
+    static let primaryGlyph = adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
+    /// danger — the stop pill. red at 14% fill, red-300 glyph.
+    static let dangerFill = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(rgb: 0xEF4444).withAlphaComponent(0.14)
+            : UIColor(rgb: 0xFEF2F2)
+    })
+    static let dangerGlyph = adaptive(light: 0xDC2626, dark: 0xFCA5A5)
+    /// Disclosure chevrons in list rows. white 20% / black 20%.
+    static let chevron = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 1, alpha: 0.2) : UIColor(white: 0, alpha: 0.2)
+    })
+    /// The opaque composer-surface fallback (no liquid glass).
+    static let composerSurface = Color(UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(rgb: 0x2C2C2E).withAlphaComponent(0.96)
+            : UIColor(white: 1, alpha: 0.96)
+    })
+
     // MARK: shape — one knob, five stops (6/8/10/14/18) + the specials
 
     static let radiusControl: CGFloat = 8
