@@ -211,7 +211,16 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
      *  and the provider owns the resume cursor. */
     updateSession: (
       sessionId: string,
-      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
+      patch: {
+        title?: string;
+        runtimeMode?: RuntimeMode;
+        detached?: boolean;
+        model?: ModelSelection | null;
+        /** Shelve or pin this session in the sidebar. `null` hands it back to
+         *  the inactivity rule — see `Session.settledOverride`. */
+        settledOverride?: "settled" | "active" | null;
+        snoozedUntil?: number | null;
+      },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>

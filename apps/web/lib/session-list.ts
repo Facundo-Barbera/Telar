@@ -30,6 +30,11 @@ import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity } from "@
 import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
 
 export const SESSION_PAGE_SIZE = 20;
+/** The settled shelf's own page. Smaller than the live list's, because the
+ *  shelf is history: months of it accumulate, and opening the shelf should
+ *  answer "what did I just finish" without burying the two live rows below
+ *  a hundred dead ones. "Show more" walks the rest. */
+export const SETTLED_PAGE_SIZE = 10;
 /** Kept for the callers that describe the window in prose. The rule itself
  *  takes the window as a parameter — see `bandOf`. */
 export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_HOURS * 60 * 60 * 1000;

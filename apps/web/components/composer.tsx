@@ -26,7 +26,19 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SendHorizontalIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  CircleCheckIcon,
+  CornerDownLeftIcon,
+  FoldVerticalIcon,
+  ImageIcon,
+  MonitorIcon,
+  PaperclipIcon,
+  PencilIcon,
+  PlusIcon,
+  SendHorizontalIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { EngineRequest, ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import {
@@ -59,6 +71,7 @@ import { ComposerMenu } from "./composer-menu";
 import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
+import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
 import { WorkspaceEnvironment } from "./workspace-environment";
@@ -321,6 +334,62 @@ function QueueChip({
   );
 }
 
+/**
+ * ONE CARD IN THE STACK OVER THE COMPOSER'S TOP EDGE — the question drawer's
+ * grammar (`mx-3 -mb-1`, rounded top, no bottom border, bottom edge tucked
+ * under whatever comes next), generalised so more than one can stack: each
+ * card's bottom corners disappear under the card below it, and the last one's
+ * under the composer itself. That is t3's banner stack — the settled notice
+ * and the context notice read as sheets of paper behind the input, not as
+ * rows of chrome above it.
+ */
+function ComposerBanner({
+  icon,
+  title,
+  detail,
+  action,
+  actionLabel,
+  onDismiss,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+  action?: () => void;
+  actionLabel?: string;
+  onDismiss?: () => void;
+}) {
+  return (
+    <div className="mx-3 -mb-1">
+      <div className="flex items-center gap-2.5 rounded-t-xl border border-b-0 border-border/60 bg-muted/40 px-3 pb-3.5 pt-2 backdrop-blur-sm">
+        {icon}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium">{title}</p>
+          <p className="truncate text-[11px] text-muted-foreground">{detail}</p>
+        </div>
+        {action && actionLabel && (
+          <button
+            type="button"
+            onClick={action}
+            className="shrink-0 rounded-md border border-border bg-background/80 px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-accent"
+          >
+            {actionLabel}
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={onDismiss}
+            className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Composer({
   draft,
   ready,
@@ -344,6 +413,8 @@ export function Composer({
   greeting,
   usage,
   backgroundTasks,
+  settled,
+  onUnsettle,
   onDraftChange,
   onSubmit,
   onStop,
@@ -411,6 +482,12 @@ export function Composer({
   usage?: UsageSnapshot;
   /** Work that outlives the turn that started it. */
   backgroundTasks: number;
+  /** This conversation is on the sidebar's settled shelf. The banner it turns
+   *  on is what tells the reader they are inside history — the shelf itself no
+   *  longer springs open to say so. */
+  settled?: boolean;
+  /** Return it to the list. Absent hides the button, never the banner. */
+  onUnsettle?: () => void;
   /** Submit a `/compact` turn. The cockpit passes it on Claude sessions only —
    *  the slash command is that provider's. */
   onCompact?: () => void;
@@ -464,6 +541,23 @@ export function Composer({
    * armed paint survive one render past the turn it belonged to.
    */
   const escArmed = armedRaw && busy;
+
+  /* ---------------------------------------------------------------- *
+   * THE BANNER STACK — the notices tucked behind the composer's top edge.
+   * ---------------------------------------------------------------- */
+
+  /** Dismissal is per SESSION, not a boolean: keyed on the id, it survives
+   *  nothing and resets by construction when the composer shows another
+   *  conversation — no effect clearing state behind the render. */
+  const [contextNoticeDismissedFor, setContextNoticeDismissedFor] = useState<string>();
+  const contextShare = usage?.contextUsed && usage.contextMax ? usage.contextUsed / usage.contextMax : 0;
+  /** Three quarters full is when compaction stops being trivia and starts
+   *  being the next thing worth doing — late enough to never nag a short
+   *  conversation, early enough that the squeeze still has room to run. */
+  const contextNotice = Boolean(
+    !fresh && session && onCompact && !compacting && contextShare >= 0.75 && contextNoticeDismissedFor !== session.id,
+  );
+  const settledNotice = Boolean(!fresh && session && settled);
 
   /* ---------------------------------------------------------------- *
    * QUESTION MODE — the drawer above, the editor as the custom answer.
@@ -849,6 +943,29 @@ export function Composer({
           tray read as a second card floating below. Grouping them makes the
           gap apply around the pair, never inside it. */}
       <div>
+      {/* THE BANNER STACK, back to front: settled first (furthest from the
+          input — it is about the whole conversation), then the context notice,
+          then the question drawer, then the box. Later siblings paint over
+          earlier ones in normal flow, which is the entire stacking mechanism —
+          no z-index anywhere. */}
+      {settledNotice && (
+        <ComposerBanner
+          icon={<CircleCheckIcon className="size-4 shrink-0 text-muted-foreground" />}
+          title="This conversation is settled"
+          detail="Sending a message returns it to the list in the sidebar."
+          {...(onUnsettle ? { action: onUnsettle, actionLabel: "Un-settle" } : {})}
+        />
+      )}
+      {contextNotice && session && onCompact && (
+        <ComposerBanner
+          icon={<FoldVerticalIcon className="size-4 shrink-0 text-muted-foreground" />}
+          title="The context is getting heavy"
+          detail={`${fmtTokens(usage?.contextUsed ?? 0)} of ${fmtTokens(usage?.contextMax ?? 0)} tokens in the provider's window.`}
+          action={onCompact}
+          actionLabel="Compact"
+          onDismiss={() => setContextNoticeDismissedFor(session.id)}
+        />
+      )}
       {/* The question drawer fuses onto the composer's TOP edge — same width
           inset as the foot below, rounded top corners, its bottom tucked under
           the box so the two read as one object. */}
