@@ -7,13 +7,15 @@ import SwiftUI
 /// actions: full-swipe always commits the lifecycle verb, never delete.
 struct InboxView: View {
     let api: any EngineAPI
+    let hostId: HostID
     @State private var store: InboxStore
     /// t3's pagination: 10 settled built initially, +25 per "Show more".
     @State private var settledLimit = 10
     @Environment(\.scenePhase) private var scenePhase
 
-    init(api: any EngineAPI) {
+    init(api: any EngineAPI, hostId: HostID) {
         self.api = api
+        self.hostId = hostId
         _store = State(initialValue: InboxStore(api: api))
     }
 
@@ -36,7 +38,7 @@ struct InboxView: View {
                     .listRowInsets(EdgeInsets())
                     .listRowSeparatorTint(Theme.borderSubtle)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 20 }
-                    .overlay { NavigationLink(value: session.id) { EmptyView() }.opacity(0) }
+                    .overlay { NavigationLink(value: ScopedSessionID(hostId: hostId, sessionId: session.id)) { EmptyView() }.opacity(0) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button {
                             Task { await store.setSettled(session.id, true) }
@@ -57,7 +59,7 @@ struct InboxView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets())
-                        .overlay { NavigationLink(value: session.id) { EmptyView() }.opacity(0) }
+                        .overlay { NavigationLink(value: ScopedSessionID(hostId: hostId, sessionId: session.id)) { EmptyView() }.opacity(0) }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button {
                                 Task { await store.setSettled(session.id, false) }

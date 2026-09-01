@@ -12,10 +12,10 @@ struct SessionView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
-    init(api: any EngineAPI, sessionId: EngineID) {
+    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil) {
         self.api = api
         self.sessionId = sessionId
-        _store = State(initialValue: SessionStore(api: api, sessionId: sessionId))
+        _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId))
     }
 
     var body: some View {

@@ -17,22 +17,29 @@ struct RootView: View {
     @State private var showSettings = UserDefaults.standard.bool(forKey: "openSettings")
     // `-newSession 1` launch arg — automation affordance like -openSession.
     @State private var showNewSession = UserDefaults.standard.bool(forKey: "newSession")
-    // `simctl launch booted com.telar.mobile -openSession <id>` — launch
-    // arguments land in UserDefaults, which is what makes the session view
-    // reachable from automation. Inert in normal use.
-    @State private var path: [EngineID] =
-        UserDefaults.standard.string(forKey: "openSession").map { [$0] } ?? []
+    /// Navigation is HOST-SCOPED: a session id means nothing without the Mac
+    /// that minted it. `-openSession <id>` resolves against the first host
+    /// (identical to the single-host world); `-openSessionHost <name-or-host>`
+    /// disambiguates in two-stack automation.
+    @State private var path: [ScopedSessionID] = []
 
     var body: some View {
         NavigationStack(path: $path) {
-            if let api = settings.api {
-                InboxView(api: api)
-                    // Rebuild the whole surface when the cockpit or the
-                    // pairing credential changes.
-                    .id(settings.baseURLString + (settings.deviceToken ?? ""))
+            if let first = settings.hosts.first, let api = settings.api(for: first.id) {
+                InboxView(api: api, hostId: first.id)
+                    // Rebuild when THIS host's address or credential changes.
+                    .id(settings.apiFingerprint(first.id))
                     .navigationTitle("Telar")
-                    .navigationDestination(for: EngineID.self) { sessionId in
-                        SessionView(api: api, sessionId: sessionId)
+                    .navigationDestination(for: ScopedSessionID.self) { ref in
+                        if let hostApi = settings.api(for: ref.hostId) {
+                            SessionView(api: hostApi, sessionId: ref.sessionId, hostId: ref.hostId)
+                                .id(settings.apiFingerprint(ref.hostId))
+                        } else {
+                            ContentUnavailableView(
+                                "That Mac was removed",
+                                systemImage: "desktopcomputer.trianglebadge.exclamationmark"
+                            )
+                        }
                     }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -59,9 +66,10 @@ struct RootView: View {
                                 // animating gets the push dropped on device —
                                 // land in the inbox instead of the session.
                                 // Let the dismissal finish first.
+                                let ref = ScopedSessionID(hostId: first.id, sessionId: sessionId)
                                 Task {
                                     try? await Task.sleep(for: .milliseconds(600))
-                                    path.append(sessionId)
+                                    path.append(ref)
                                 }
                             }
                         }
@@ -81,5 +89,35 @@ struct RootView: View {
                 WelcomeView(settings: settings)
             }
         }
+        // A removed Mac's pushes must not survive it — prune, don't trap.
+        .onChange(of: settings.book.membershipFingerprint) {
+            let living = Set(settings.hosts.map(\.id))
+            path.removeAll { !living.contains($0.hostId) }
+        }
+        .task {
+            // `simctl launch … -openSession <id> [-openSessionHost <hint>]`.
+            guard path.isEmpty, let sessionId = UserDefaults.standard.string(forKey: "openSession") else { return }
+            let hint = UserDefaults.standard.string(forKey: "openSessionHost")
+            if let ref = ScopedSessionID.resolveLaunchArg(sessionId: sessionId, hostHint: hint, hosts: settings.hosts) {
+                path = [ref]
+            }
+        }
+    }
+}
+
+extension ScopedSessionID {
+    /// Launch-arg resolution, pure for tests: no hint = first host (the
+    /// single-host behavior); a hint matches the host's name, then its URL
+    /// host, case-insensitively.
+    static func resolveLaunchArg(sessionId: String, hostHint: String?, hosts: [Host]) -> ScopedSessionID? {
+        let host: Host?
+        if let hint = hostHint?.lowercased(), !hint.isEmpty {
+            host = hosts.first { $0.name.lowercased() == hint }
+                ?? hosts.first { $0.baseURL?.host()?.lowercased() == hint }
+        } else {
+            host = hosts.first
+        }
+        guard let host else { return nil }
+        return ScopedSessionID(hostId: host.id, sessionId: sessionId)
     }
 }
