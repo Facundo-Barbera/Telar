@@ -32,27 +32,15 @@
  */
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@telar/engine-client";
 
-/** The themable surface tokens, in the order the editor shows them. */
-export const THEME_TOKENS = [
-  "background",
-  "foreground",
-  "card",
-  "card-foreground",
-  "popover",
-  "popover-foreground",
-  "secondary",
-  "secondary-foreground",
-  "muted",
-  "muted-foreground",
-  "accent",
-  "accent-foreground",
-  "border",
-  "input",
-  "sidebar",
-  "sidebar-accent",
-] as const;
-export type ThemeToken = (typeof THEME_TOKENS)[number];
+/**
+ * THE TOKENS AND THE BASE HALVES MOVED to @telar/engine-client: a `Look` on the
+ * wire embeds two concrete halves, and the parser that reads one fills the gaps
+ * from exactly these values. They are plain data — the COMPILER, the cache and
+ * the library store all stayed here. Re-exported so no importer changed.
+ */
+export { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeHalf, type ThemeToken } from "@telar/engine-client";
 
 export const THEME_TOKEN_LABELS: Record<ThemeToken, string> = {
   background: "Canvas",
@@ -73,7 +61,6 @@ export const THEME_TOKEN_LABELS: Record<ThemeToken, string> = {
   "sidebar-accent": "Rail hover",
 };
 
-export type ThemeHalf = Record<ThemeToken, string>;
 export type ThemeDefinition = {
   id: string;
   label: string;
@@ -276,46 +263,6 @@ export function parseThemeFile(raw: string): Omit<ThemeDefinition, "id"> | undef
     return undefined;
   }
 }
-
-/** What the "telar" identity theme's cards and editor seeds show: the real
- *  base values from globals.css, restated once. */
-export const TELAR_LIGHT: ThemeHalf = {
-  background: "oklch(0.992 0 0)",
-  foreground: "oklch(0.274 0.006 286)",
-  card: "oklch(1 0 0)",
-  "card-foreground": "oklch(0.274 0.006 286)",
-  popover: "oklch(1 0 0)",
-  "popover-foreground": "oklch(0.274 0.006 286)",
-  secondary: "oklch(0.96 0.002 286)",
-  "secondary-foreground": "oklch(0.274 0.006 286)",
-  muted: "oklch(0.967 0.001 286)",
-  "muted-foreground": "oklch(0.525 0.016 286)",
-  accent: "oklch(0.955 0.002 286)",
-  "accent-foreground": "oklch(0.21 0.006 286)",
-  border: "oklch(0.92 0.004 286)",
-  input: "oklch(0.66 0.008 286)",
-  sidebar: "oklch(0.972 0.001 286)",
-  "sidebar-accent": "oklch(0.945 0.003 286)",
-};
-
-export const TELAR_DARK: ThemeHalf = {
-  background: "oklch(0.145 0 0)",
-  foreground: "oklch(0.97 0 0)",
-  card: "oklch(0.2 0 0)",
-  "card-foreground": "oklch(0.97 0 0)",
-  popover: "oklch(0.225 0 0)",
-  "popover-foreground": "oklch(0.97 0 0)",
-  secondary: "oklch(0.265 0 0)",
-  "secondary-foreground": "oklch(0.97 0 0)",
-  muted: "oklch(0.265 0 0)",
-  "muted-foreground": "oklch(0.708 0 0)",
-  accent: "oklch(0.305 0 0)",
-  "accent-foreground": "oklch(0.97 0 0)",
-  border: "oklch(1 0 0 / 10%)",
-  input: "oklch(0.53 0 0)",
-  sidebar: "oklch(0.175 0 0)",
-  "sidebar-accent": "oklch(0.265 0 0)",
-};
 
 /** A half with every token filled — the editor and preview need concrete
  *  values, and the identity theme's halves are deliberately empty. */

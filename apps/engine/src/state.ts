@@ -479,12 +479,20 @@ export function statePaths(root: string): EngineStatePaths {
 }
 
 /**
- * The published appearance blob's only limit — see `setAppearance`. Two
- * concrete theme halves plus every scalar the cockpit publishes is under 4 KB,
- * so this leaves room for a decade of additive growth while still refusing the
- * one thing that would blow the file up: an inlined wallpaper data URL.
+ * The published appearance blob's only limit — see `setAppearance`.
+ *
+ * 8 MiB, AND THE WALLPAPER IS WHY. The first cut capped this at 64 KB
+ * explicitly to forbid an inlined image, on the reasoning that two theme halves
+ * and a handful of scalars fit in 4 KB. That reasoning was right about the
+ * SIZE and wrong about the CONTENT: what the cockpit publishes now is a whole
+ * `Look`, and a Look legitimately carries its backdrop's pixels — the picker
+ * compresses to at most 3.5 MB, and a composed scene stacks up to six smaller
+ * layers plus their un-faded originals. A cap that refused those would publish
+ * a look with a hole in it, which is precisely the divergence the shared format
+ * exists to end. 8 MiB is comfortably above what the cockpit's own compression
+ * ladders can produce and still far below anything worth streaming.
  */
-const MAX_APPEARANCE_BYTES = 64 * 1024;
+const MAX_APPEARANCE_BYTES = 8 * 1024 * 1024;
 
 /** A JSON object and not an array — the shape a blob-shaped payload must have
  *  for additive readers to be able to key into it at all. */
@@ -1225,14 +1233,27 @@ export class EngineStore {
   // expected to ignore what they do not recognise (the repo's additive rule).
   // The only thing enforced is that it IS a JSON object and that it is small.
 
-  /** The host's published look, or `null` when nothing has published yet — the
-   *  same never-throws rule as the policies above: an unreadable file costs the
-   *  decoration, never the request that asked for it. */
-  getAppearance(): Record<string, unknown> | null {
+  /**
+   * WHEN IT LANDED, STORED BESIDE IT — because a mailbox with no timestamp
+   * cannot be cached. The blob is now megabytes rather than kilobytes (a Look
+   * carries its wallpaper), and a phone that polls it on every foreground would
+   * re-download the whole thing to discover nothing changed. `updatedAt` is
+   * what the HTTP edge cuts an ETag from, so the second ask is a 304.
+   *
+   * THE ENGINE'S CLOCK, NOT THE PUBLISHER'S. The blob carries the publisher's
+   * own `updatedAtHint`, and it is advisory: two browsers with disagreeing
+   * clocks would make a hint-derived ETag go backwards. The stamp that matters
+   * is when THIS engine accepted the write.
+   */
+  getAppearance(): { updatedAt: number; blob: Record<string, unknown> } | null {
     try {
-      const stored = readJson(this.paths.appearance) as { appearance?: unknown } | undefined;
+      const stored = readJson(this.paths.appearance) as { appearance?: unknown; updatedAt?: unknown } | undefined;
       const blob = stored?.appearance;
-      return isPlainJsonObject(blob) ? blob : null;
+      if (!isPlainJsonObject(blob)) return null;
+      // A file written before the stamp existed reads as epoch 0 rather than
+      // as absent: it is a real published look, and a stable ETag is better
+      // than none. The next publish gives it a real time.
+      return { updatedAt: typeof stored?.updatedAt === "number" && Number.isFinite(stored.updatedAt) ? stored.updatedAt : 0, blob };
     } catch {
       return null;
     }
@@ -1243,13 +1264,11 @@ export class EngineStore {
    * state, not a patch, and merging two publishers' halves would produce a look
    * neither of them wears.
    *
-   * THE CAP IS THE ONLY POLICY. 64 KB is far above any plausible palette (two
-   * halves of sixteen colour tokens is under 2 KB) and far below anything that
-   * would make this file expensive to read on every pairing handshake. It also
-   * quietly forbids the one abuse the opacity invites: pasting a wallpaper's
-   * data URL in here instead of serving it as an image.
+   * THE CAP IS THE ONLY POLICY, and it is enforced HERE as well as at the
+   * socket: an in-process caller must not be able to walk past a check that
+   * only ever ran on an HTTP request.
    */
-  setAppearance(blob: unknown): Record<string, unknown> {
+  setAppearance(blob: unknown): { updatedAt: number; blob: Record<string, unknown> } {
     if (!isPlainJsonObject(blob)) {
       throw new EngineStateError("invalid_request", "appearance must be a JSON object");
     }
@@ -1262,8 +1281,24 @@ export class EngineStore {
     if (Buffer.byteLength(serialized, "utf8") > MAX_APPEARANCE_BYTES) {
       throw new EngineStateError("invalid_request", `appearance must be under ${MAX_APPEARANCE_BYTES} bytes when serialized`);
     }
-    atomicWrite(this.paths.appearance, { version: STATE_VERSION, appearance: blob });
-    return blob;
+    const updatedAt = Date.now();
+    atomicWrite(this.paths.appearance, { version: STATE_VERSION, updatedAt, appearance: blob });
+    return { updatedAt, blob };
+  }
+
+  /**
+   * Forget the published look. IDEMPOTENT — clearing an empty mailbox is not an
+   * error, because "there is nothing published" is the state the caller asked
+   * for and it is already true. Removing the FILE rather than writing an empty
+   * blob keeps `getAppearance`'s null the one meaning of "nobody has published".
+   */
+  clearAppearance(): void {
+    try {
+      fs.rmSync(this.paths.appearance, { force: true });
+    } catch {
+      // A file we cannot delete is a look that stays published — worth no
+      // failure on a route whose whole subject is decoration.
+    }
   }
 
   // ── Spool ─────────────────────────────────────────────────────────────────

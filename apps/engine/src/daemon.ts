@@ -123,6 +123,15 @@ class HttpError extends Error {
     readonly status: number,
     readonly code: EngineErrorCode,
     message: string,
+    /**
+     * ANSWER, THEN HANG UP. Set by a refusal that did NOT read the request
+     * body — the oversize guard, which is the whole point of refusing early.
+     * Keep-alive assumes the socket is clean between messages; one still
+     * carrying megabytes the server never drained is not, and the client's
+     * NEXT request on it waits for a reply that can never arrive. So the
+     * refusal that skipped the body also ends the connection that held it.
+     */
+    readonly endConnection = false,
   ) {
     super(message);
     this.name = "HttpError";
@@ -137,8 +146,8 @@ function errorFor(error: unknown): HttpError {
   return new HttpError(500, "internal_error", "engine encountered an internal error");
 }
 
-function writeJson(response: http.ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+function writeJson(response: http.ServerResponse, status: number, body: unknown, headers: http.OutgoingHttpHeaders = {}): void {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
   response.end(JSON.stringify(body));
 }
 
@@ -187,6 +196,79 @@ async function rawBody(request: http.IncomingMessage, limit: number): Promise<Bu
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * The appearance route's body — JSON like `body()`, but with the cap the
+ * published look actually needs.
+ *
+ * ITS OWN READER RATHER THAN A BIGGER `body()`, for the reason stated above
+ * `rawBody`: the 1 MB JSON ceiling is worth keeping tight on every other route,
+ * and one shared reader with a size argument is exactly how such a guard drifts.
+ * A published look carries its backdrop's pixels — the cockpit's picker
+ * compresses to at most 3.5 MB — so this one route reads up to 8 MiB and no
+ * other route can accidentally inherit that.
+ *
+ * REFUSED BEFORE IT IS BUFFERED, twice over: a declared `content-length` past
+ * the cap is answered without reading a byte, and a body that lies about (or
+ * omits) its length still stops at the limit mid-stream. Buffering eight
+ * megabytes only to measure them is the denial of service the cap exists to
+ * prevent.
+ */
+const MAX_APPEARANCE_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+async function appearanceBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const tooLarge = () => new HttpError(413, "invalid_request", `appearance must be under ${MAX_APPEARANCE_UPLOAD_BYTES} bytes`, true);
+  const declared = Number(request.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_APPEARANCE_UPLOAD_BYTES) throw tooLarge();
+  // The bounded read, inline rather than through `rawBody`: this one refuses
+  // with a connection-ending error, and `rawBody`'s caller (attachments) reads
+  // its body to the end and must keep its socket.
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > MAX_APPEARANCE_UPLOAD_BYTES) throw tooLarge();
+    chunks.push(buffer);
+  }
+  const bytes = Buffer.concat(chunks);
+  if (bytes.length === 0) throw new HttpError(400, "invalid_request", "request body must be an object");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "invalid_request", "request body is invalid JSON");
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new HttpError(400, "invalid_request", "request body must be an object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * The published look's validator, as one string.
+ *
+ * CUT FROM THE ENGINE'S OWN STAMP, not from a hash of the blob. Hashing would
+ * mean walking megabytes on every GET to answer a question the mailbox already
+ * knows: there is exactly one published look, it is replaced wholesale, and
+ * `updatedAt` is when this engine accepted that replacement. A republish of
+ * byte-identical content does mint a new tag and cost one re-download; that is
+ * the honest trade against hashing every read forever.
+ */
+function appearanceEtag(updatedAt: number): string {
+  return `"a${updatedAt.toString(36)}"`;
+}
+
+/** `If-None-Match` as clients actually send it: a list, possibly weak-tagged,
+ *  possibly `*`. Only equality against our own strong tag matters here. */
+function matchesEtag(header: string | string[] | undefined, etag: string): boolean {
+  const raw = Array.isArray(header) ? header.join(",") : header;
+  if (!raw) return false;
+  return raw
+    .split(",")
+    .map((candidate) => candidate.trim().replace(/^W\//, ""))
+    .some((candidate) => candidate === "*" || candidate === etag);
 }
 
 function stringValue(value: unknown, label: string, optional = false): string | undefined {
@@ -726,8 +808,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        *
        * OPAQUE ON PURPOSE. The daemon does not know what an accent or a theme
        * half is and must not learn — the store's only rules are "a JSON object"
-       * and "under 64 KB", which is what keeps the vocabulary additive across
-       * an engine and an app that ship on different days.
+       * and "under the cap", which is what keeps the vocabulary additive across
+       * an engine and an app that ship on different days. The SHAPE is a real
+       * type now (`PublishedAppearance` in @telar/engine-client) and the client
+       * parses it on the way out; the engine still does not read a key of it.
+       *
+       * CACHEABLE, BECAUSE IT GOT BIG. A published look carries its backdrop's
+       * pixels, so a phone polling this on every foreground would re-download
+       * megabytes to learn nothing changed. GET answers with `updatedAt` and an
+       * `ETag`; a matching `If-None-Match` gets a bodyless 304.
+       *
+       * DELETE IS A REAL OPERATION, not the absence of one. "I do not want my
+       * look published any more" had no expression at all, and the closest
+       * available move — PUTting an empty object — publishes a look that
+       * describes nothing rather than withdrawing the one on file.
        *
        * PAIRED-ONLY, like everything else under `/v2`: this is a description of
        * one person's machine, and the bearer check upstream is the whole access
@@ -735,17 +829,48 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       if (url.pathname === "/v2/appearance") {
         if (request.method === "GET") {
-          writeJson(response, 200, { appearance: store.getAppearance() });
+          const stored = store.getAppearance();
+          // No look published: no ETag either. There is nothing to revalidate,
+          // and a tag for "nothing" would let a client cache an empty mailbox
+          // past the moment somebody fills it.
+          if (!stored) {
+            writeJson(response, 200, { appearance: null, updatedAt: null });
+            return;
+          }
+          const etag = appearanceEtag(stored.updatedAt);
+          if (matchesEtag(request.headers["if-none-match"], etag)) {
+            response.writeHead(304, { etag, "cache-control": "no-store" });
+            response.end();
+            return;
+          }
+          writeJson(response, 200, { appearance: stored.blob, updatedAt: stored.updatedAt }, { etag });
           return;
         }
         if (request.method === "PUT") {
           // THE BODY IS THE BLOB ITSELF, not a wrapper around it. A snapshot of
           // a browser's whole resolved look has no partial form worth
           // expressing, so there is nothing for an envelope to carry.
-          store.setAppearance(await body(request));
+          const written = store.setAppearance(await appearanceBody(request));
+          writeJson(response, 200, { ok: true, updatedAt: written.updatedAt, etag: appearanceEtag(written.updatedAt) }, { etag: appearanceEtag(written.updatedAt) });
+          return;
+        }
+        if (request.method === "DELETE") {
+          store.clearAppearance();
           writeJson(response, 200, { ok: true });
           return;
         }
+        // 405, NOT 404. Falling through to the catch-all told a client that
+        // POSTs here that the route does not exist — sending it looking for a
+        // typo in the path rather than at the verb it chose. Written here
+        // rather than thrown so `Allow` can say what would have worked, which
+        // is the whole point of answering 405 instead of 404.
+        writeJson(
+          response,
+          405,
+          { error: { code: "invalid_request", message: "appearance accepts GET, PUT and DELETE" } },
+          { allow: "GET, PUT, DELETE" },
+        );
+        return;
       }
       /**
        * THE SPOOL — the item store behind SPEC-organization-workspace.
@@ -2411,7 +2536,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       throw new HttpError(404, "not_found", "engine endpoint does not exist");
     } catch (error) {
       const normalized = errorFor(error);
-      writeJson(response, normalized.status, { error: { code: normalized.code, message: normalized.message } });
+      writeJson(
+        response,
+        normalized.status,
+        { error: { code: normalized.code, message: normalized.message } },
+        normalized.endConnection ? { connection: "close" } : {},
+      );
     }
   });
 

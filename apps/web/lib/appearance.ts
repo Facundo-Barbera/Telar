@@ -21,30 +21,49 @@
  */
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import {
+  ACCENTS,
+  MONO_FONTS,
+  SANS_FONTS,
+  DEFAULT_ACCENT,
+  DEFAULT_FONT_SIZE,
+  DEFAULT_MONO_FONT,
+  DEFAULT_SANS_FONT,
+  DEFAULT_TRANSLUCENCY_LEVEL,
+  MAX_FONT_SIZE,
+  MAX_TRANSLUCENCY,
+  MIN_FONT_SIZE,
+  MIN_TRANSLUCENCY,
+  type Accent,
+  type MonoFont,
+  type SansFont,
+} from "@telar/engine-client";
 
-/** Accent names double as `data-accent` values; the hues live in globals.css
- *  (one block per name) and in the swatch spans the settings pane renders —
- *  which reuse the same attribute, so there is no second copy of any value. */
-export const ACCENTS = ["indigo", "sky", "sea", "moss", "amber", "rose", "plum", "violet"] as const;
-export type Accent = (typeof ACCENTS)[number];
-
-/** "custom" is the escape hatch: it has no CSS block in globals.css, so the
- *  inline `--app-font-*` written below is what makes it mean anything. */
-export const SANS_FONTS = ["geist", "inter", "system", "custom"] as const;
-export type SansFont = (typeof SANS_FONTS)[number];
-
-export const MONO_FONTS = ["geist", "jetbrains", "system", "custom"] as const;
-export type MonoFont = (typeof MONO_FONTS)[number];
+/**
+ * THE NAMES AND THEIR BOUNDS MOVED to @telar/engine-client, because a `Look`
+ * on the wire carries an accent name, two typeface names, a text size and a
+ * strength — and the parser that reads one has to know the same eight accents
+ * and the same 13–18px range this store does. The MECHANISM stayed: the hues
+ * live in globals.css keyed by `data-accent`, and everything below writes
+ * attributes on <html>. Re-exported so no importer changed.
+ */
+export {
+  ACCENTS,
+  MAX_FONT_SIZE,
+  MAX_TRANSLUCENCY,
+  MIN_FONT_SIZE,
+  MIN_TRANSLUCENCY,
+  MONO_FONTS,
+  SANS_FONTS,
+  type Accent,
+  type MonoFont,
+  type SansFont,
+} from "@telar/engine-client";
 
 /** Fallbacks appended after a custom family, so glyph coverage never regresses
  *  below what the default stacks in globals.css already guarantee. */
 const CUSTOM_SANS_FALLBACK = "ui-sans-serif, system-ui, sans-serif";
 const CUSTOM_MONO_FALLBACK = "ui-monospace, SFMono-Regular, Menlo, monospace";
-
-/** The root px the whole interface is measured in — every rem-based dimension
- *  scales with it, which is the point: this is a zoom, not a text-only tweak. */
-export const MIN_FONT_SIZE = 13;
-export const MAX_FONT_SIZE = 18;
 
 function quoteFontFamilyName(name: string): string {
   const bare = name.trim();
@@ -104,25 +123,27 @@ export type Frost = (typeof FROSTS)[number];
  * number is that display value, and translucencyCss maps it onto the real
  * range — 100 lands at 90% canvas transparency, a floor that keeps text
  * legible, and what remains at the top is macOS's own vibrancy material,
- * frosted by the OS and never clear glass.
+ * frosted by the OS and never clear glass. The bounds themselves are in the
+ * shared look vocabulary, re-exported above.
  */
-export const MIN_TRANSLUCENCY = 0;
-export const MAX_TRANSLUCENCY = 100;
 
 /** Display value → the percentage the CSS actually subtracts from opacity. */
 export function translucencyCss(level: number): string {
   return `${Math.round(level * 0.9)}%`;
 }
 
+/** The taste members come from the shared vocabulary so a Look parsed off the
+ *  wire and a store read here fall back to the same values; `translucent` and
+ *  `frost` are properties of the MACHINE and belong only to this store. */
 export const DEFAULT_APPEARANCE: Appearance = {
-  accent: "indigo",
-  fontSans: "geist",
-  fontMono: "geist",
+  accent: DEFAULT_ACCENT,
+  fontSans: DEFAULT_SANS_FONT,
+  fontMono: DEFAULT_MONO_FONT,
   fontSansCustom: "",
   fontMonoCustom: "",
-  fontSize: 16,
+  fontSize: DEFAULT_FONT_SIZE,
   translucent: false,
-  translucencyLevel: 50,
+  translucencyLevel: DEFAULT_TRANSLUCENCY_LEVEL,
   frost: "blur",
 };
 

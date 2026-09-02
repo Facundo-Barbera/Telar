@@ -42,56 +42,38 @@
  * PARSING IS TOTAL, like every store this file touches: an unreadable member
  * degrades to a default rather than throwing, and a backdrop whose embedded
  * CSS does not pass the store's own gates degrades to no backdrop at all.
+ *
+ * THE SHAPE AND ITS PARSERS NOW LIVE IN @telar/engine-client, because a Look is
+ * no longer only a file: the cockpit PUBLISHES one to the engine so a paired
+ * client can wear the host's look, and the reader on the other end needs the
+ * same types and the same total, gated parse. What stayed here is everything
+ * that needs a browser — capture from the live stores, apply back into them,
+ * the shelf and its quota. The moved names are re-exported, so nothing that
+ * imports from "@/lib/looks" changed.
  */
 
 import { useSyncExternalStore } from "react";
 import {
-  DEFAULT_APPEARANCE,
-  MAX_FONT_SIZE,
-  MAX_TRANSLUCENCY,
-  MIN_FONT_SIZE,
-  MIN_TRANSLUCENCY,
-  parseAppearance,
-  ACCENTS,
-  MONO_FONTS,
-  SANS_FONTS,
-  type Accent,
-  type Appearance,
-  type MonoFont,
-  type SansFont,
-} from "./appearance";
+  parseLook as parseLookValue,
+  parseLookBackdrop as parseLookBackdropValue,
+  type Look,
+  type LookBackdrop,
+} from "@telar/engine-client";
+import { parseAppearance, type Appearance } from "./appearance";
 import {
-  BACKDROP_FITS,
   BACKDROP_KEY,
   isGradientValue,
   isSceneValue,
   parseBackdrop,
   readBackdropLayers,
   setBackdrop,
-  type BackdropFit,
   type BackdropLayers,
 } from "./backdrop";
 import { readBackdropImage, storeBackdropImage } from "./image-backdrop";
-import {
-  parseScene,
-  parseSceneImages,
-  readScene,
-  readSceneImages,
-  writeScene,
-  writeSceneImages,
-  type Scene,
-} from "./scene-composer";
-import {
-  BUILT_IN_THEMES,
-  concreteHalf,
-  parseActivePair,
-  parseCustomThemes,
-  TELAR_DARK,
-  TELAR_LIGHT,
-  THEME_TOKENS,
-  type ThemeDefinition,
-  type ThemeHalf,
-} from "./theme-palettes";
+import { readScene, readSceneImages, SCENE_PRESETS, writeScene, writeSceneImages } from "./scene-composer";
+import { BUILT_IN_THEMES, concreteHalf, parseActivePair, parseCustomThemes, type ThemeDefinition, type ThemeHalf } from "./theme-palettes";
+
+export { parseThemeHalf, type Look, type LookBackdrop } from "@telar/engine-client";
 
 /* ------------------------------------------------------------- the keys */
 
@@ -119,38 +101,6 @@ export const MAX_LOOKS = 12;
 
 /* ------------------------------------------------------------- the shape */
 
-/**
- * The backdrop as a Look carries it: the CHOICE, its RESOLVED CSS, and — for
- * the kinds whose pixels live outside the choice — the payloads themselves.
- * A composed scene keeps its editable source too, so wearing a Look leaves the
- * scene composer populated rather than showing an arrangement it cannot edit.
- */
-export type LookBackdrop =
-  | { kind: "none" }
-  | { kind: "gradient"; id: string; dim?: number; resolved: BackdropLayers }
-  | { kind: "custom-gradient"; light: string; dark: string; dim?: number; resolved: BackdropLayers }
-  | { kind: "image"; fit: BackdropFit; blur: number; dim: number; image: string }
-  | { kind: "scene"; scene: Scene; images: Record<string, string>; dim?: number; resolved: BackdropLayers };
-
-export type Look = {
-  /** Bumped only for a change no total parser could absorb; the parser accepts
-   *  a missing version as 1, so files from this build's own lifetime keep
-   *  opening after a bump that only adds members. */
-  version: 1;
-  id: string;
-  label: string;
-  /** Both halves concrete — see the header. */
-  theme: { light: ThemeHalf; dark: ThemeHalf };
-  backdrop: LookBackdrop;
-  accent: Accent;
-  fontSans: SansFont;
-  fontMono: MonoFont;
-  fontSansCustom: string;
-  fontMonoCustom: string;
-  fontSize: number;
-  translucencyLevel: number;
-};
-
 /** What a Look sets on the appearance store — every taste member, and
  *  pointedly not `translucent` or `frost` (see the header). */
 export type LookAppearance = Pick<
@@ -164,43 +114,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/**
- * A colour value is going into a COMPILED STYLESHEET (compilePair joins the
- * declarations with `;` and wraps them in `{ }`), so a value carrying either
- * character would close the block and let whatever follows it become new
- * rules. Custom themes typed in the editor cannot contain them; a Look arrives
- * from a FILE, so its values are held to the shape a declaration value has.
- */
-function isSafeColour(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 128 && !/[;{}<>]/.test(value);
+/** The shared parsers, wearing THIS build's gradient preset table — the moved
+ *  parsers are deliberately ignorant of which presets exist (see scene-composer
+ *  for why), and this is the one place the cockpit supplies them. */
+export function parseLookBackdrop(value: unknown): LookBackdrop {
+  return parseLookBackdropValue(value, SCENE_PRESETS);
 }
 
-/** A half, filled from the Telar base for anything missing or unsafe — the
- *  same "concrete or default" contract concreteHalf gives the editor, so a
- *  partial file paints a complete theme rather than a half-styled app. */
-export function parseThemeHalf(value: unknown, mode: "light" | "dark"): ThemeHalf {
-  const base = mode === "light" ? TELAR_LIGHT : TELAR_DARK;
-  if (!isRecord(value)) return { ...base };
-  const half: ThemeHalf = { ...base };
-  for (const token of THEME_TOKENS) {
-    const candidate = value[token];
-    if (isSafeColour(candidate)) half[token] = candidate;
-  }
-  return half;
-}
-
-function clampInt(value: unknown, min: number, max: number, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
-  return (allowed as readonly string[]).includes(value as string) ? (value as T) : fallback;
+export function parseLook(value: unknown): Look | undefined {
+  return parseLookValue(value, SCENE_PRESETS);
 }
 
 /** The resolved layers, held to the store's OWN gate: `check` is
  *  isGradientValue for the gradient kinds and isSceneValue for a scene, so a
- *  Look can never write something applyBackdrop would silently drop. */
+ *  captured Look can never carry something applyBackdrop would silently drop. */
 function parseLayers(value: unknown, check: (candidate: unknown) => candidate is string): BackdropLayers | undefined {
   if (!isRecord(value) || !check(value.light)) return undefined;
   const list = (candidate: unknown) =>
@@ -214,77 +141,6 @@ function parseLayers(value: unknown, check: (candidate: unknown) => candidate is
     ...(size ? { size } : {}),
     ...(position ? { position } : {}),
     ...(repeat ? { repeat } : {}),
-  };
-}
-
-/**
- * The backdrop half of a Look. Anything that does not survive its kind's gate
- * becomes "none" — a Look that paints nothing is a legible outcome; a Look
- * that sets `data-backdrop` with no layers behind it is a frosted wash hanging
- * over a bare canvas.
- */
-export function parseLookBackdrop(value: unknown): LookBackdrop {
-  if (!isRecord(value)) return { kind: "none" };
-  // Absent stays absent — a missing dim must not round-trip into `dim: 0`.
-  const dim = (raw: unknown): { dim?: number } => {
-    const clamped = clampInt(raw, 0, 80, 0);
-    return clamped > 0 ? { dim: clamped } : {};
-  };
-  if (value.kind === "gradient" && typeof value.id === "string" && value.id.length > 0) {
-    const resolved = parseLayers(value.resolved, isGradientValue);
-    return resolved ? { kind: "gradient", id: value.id, ...dim(value.dim), resolved } : { kind: "none" };
-  }
-  if (value.kind === "custom-gradient") {
-    const resolved = parseLayers(value.resolved, isGradientValue);
-    if (!resolved || !isGradientValue(value.light)) return { kind: "none" };
-    return { kind: "custom-gradient", light: value.light, dark: isGradientValue(value.dark) ? value.dark : value.light, ...dim(value.dim), resolved };
-  }
-  if (value.kind === "image") {
-    // An image choice resolves through the image key, not through layers, so
-    // the data URL IS the payload — and without it there is nothing to paint.
-    if (typeof value.image !== "string" || !value.image.startsWith("data:image/")) return { kind: "none" };
-    return {
-      kind: "image",
-      fit: oneOf<BackdropFit>(value.fit, BACKDROP_FITS, "cover"),
-      blur: clampInt(value.blur, 0, 40, 0),
-      dim: clampInt(value.dim, 0, 80, 0),
-      image: value.image,
-    };
-  }
-  if (value.kind === "scene") {
-    const resolved = parseLayers(value.resolved, isSceneValue);
-    if (!resolved) return { kind: "none" };
-    // Round-tripped through the composer's own parsers: the same clamping and
-    // the same "only real image data URLs" filter the composer applies.
-    const scene = parseScene(JSON.stringify(value.scene ?? null));
-    const images = parseSceneImages(JSON.stringify(value.images ?? null));
-    return { kind: "scene", scene, images, ...dim(value.dim), resolved };
-  }
-  return { kind: "none" };
-}
-
-/** One Look, or undefined when there is not even an id and a label to show —
- *  the only two members a card cannot be drawn without. */
-export function parseLook(value: unknown): Look | undefined {
-  if (!isRecord(value)) return undefined;
-  if (typeof value.id !== "string" || value.id.length === 0) return undefined;
-  if (typeof value.label !== "string") return undefined;
-  // Version is advisory: a FUTURE version is still read on a best effort,
-  // because every member below already falls back on its own.
-  const theme = isRecord(value.theme) ? value.theme : {};
-  return {
-    version: 1,
-    id: value.id,
-    label: value.label,
-    theme: { light: parseThemeHalf(theme.light, "light"), dark: parseThemeHalf(theme.dark, "dark") },
-    backdrop: parseLookBackdrop(value.backdrop),
-    accent: oneOf<Accent>(value.accent, ACCENTS, DEFAULT_APPEARANCE.accent),
-    fontSans: oneOf<SansFont>(value.fontSans, SANS_FONTS, DEFAULT_APPEARANCE.fontSans),
-    fontMono: oneOf<MonoFont>(value.fontMono, MONO_FONTS, DEFAULT_APPEARANCE.fontMono),
-    fontSansCustom: typeof value.fontSansCustom === "string" ? value.fontSansCustom : "",
-    fontMonoCustom: typeof value.fontMonoCustom === "string" ? value.fontMonoCustom : "",
-    fontSize: clampInt(value.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE, DEFAULT_APPEARANCE.fontSize),
-    translucencyLevel: clampInt(value.translucencyLevel, MIN_TRANSLUCENCY, MAX_TRANSLUCENCY, DEFAULT_APPEARANCE.translucencyLevel),
   };
 }
 

@@ -63,88 +63,70 @@
  * tested; the canvas code below does nothing but draw.
  */
 
-import { isSceneValue, type BackdropLayers } from "./backdrop";
+import {
+  DEFAULT_LAYER,
+  isSceneValue,
+  MAX_SCENE_GRADIENT_LAYERS,
+  MAX_SCENE_LAYERS,
+  parseScene as parseSceneJson,
+  parseSceneImages,
+  parseSceneLayer as parseSceneLayerValue,
+  SCENE_LIMITS,
+  type BackdropLayers,
+  type Scene,
+  type SceneGradientLayer,
+  type SceneLayer,
+  type ScenePresets,
+} from "@telar/engine-client";
 import { backdropPresetById, BACKDROP_PRESETS, type BackdropPreset } from "./backdrop-presets";
 import { compressImageFile, dataUrlBytes, fitWithin, ImageBackdropError, stepDown, type CompressionStep } from "./image-backdrop";
 
 /* -------------------------------------------------------------- the model */
 
-/** One image in the stack. Positions are `background-position` percentages,
- *  `scale` is the `background-size` WIDTH percentage (height stays `auto`, so
- *  the picture never distorts), and `opacity` is baked into the pixels. */
-export type SceneImageLayer = {
-  type: "image";
-  id: string;
-  /** 0-100, `background-position` X. */
-  x: number;
-  /** 0-100, `background-position` Y. */
-  y: number;
-  /** 10-200, `background-size` width percentage. */
-  scale: number;
-  /** 10-100; baked into the layer's own alpha, not applied in CSS. */
-  opacity: number;
-  tiled: boolean;
-};
-
-/** One preset gradient in the stack, painted full-bleed (cover/center/no-
- *  repeat). `opacity` is applied in CSS by rewriting the gradient's own colour
- *  alphas — see withGradientAlpha — so it costs nothing to drag. */
-export type SceneGradientLayer = {
-  type: "gradient";
-  /** A BACKDROP_PRESETS id. */
-  presetId: string;
-  /** 10-100, written into the gradient's colours. */
-  opacity: number;
-};
-
-export type SceneLayer = SceneImageLayer | SceneGradientLayer;
-
-/** The composition: the stack, top layer first. Nothing is implied under it —
- *  a stack that does not end in a full-bleed gradient ends in transparency. */
-export type Scene = { layers: SceneLayer[] };
+/**
+ * THE MODEL AND ITS PARSERS MOVED to @telar/engine-client: a composed scene
+ * travels inside a `Look`, so the engine and any client that reads a published
+ * look need the same total parse this composer does. What stayed here is
+ * everything that needs THIS app — the preset table, the compiler, the canvas,
+ * localStorage — and the moved names are re-exported so no importer changed.
+ */
+export {
+  DEFAULT_LAYER,
+  MAX_SCENE_GRADIENT_LAYERS,
+  MAX_SCENE_LAYERS,
+  parseSceneImages,
+  SCENE_LIMITS,
+  type Scene,
+  type SceneGradientLayer,
+  type SceneImageLayer,
+  type SceneLayer,
+} from "@telar/engine-client";
 
 /** The Scene JSON. */
 export const SCENE_KEY = "telar-backdrop-scene";
 /** layerId → data URL, plus `orig:${layerId}` → the un-faded original. */
 export const SCENE_IMAGES_KEY = "telar-backdrop-scene-images";
 
-/** Six is where a scene stops being a composition and starts being a collage
- *  nobody can see through — and six 1024px WebPs is already most of what a
- *  localStorage origin will hold. Images only: this cap is about the quota. */
-export const MAX_SCENE_LAYERS = 6;
-
-/** Gradient layers cost a few hundred bytes each, so their cap is about
- *  legibility rather than storage — past four full-bleed washes the stack is
- *  mud whatever the opacities say. */
-export const MAX_SCENE_GRADIENT_LAYERS = 4;
-
 /** Layer images are compressed HARDER than the single-image backdrop: several
  *  of them share one quota, and each is drawn at a fraction of the window. */
 export const SCENE_LAYER_EDGE = 1024;
 export const MAX_SCENE_IMAGE_BYTES = 700 * 1024;
 
-export const SCENE_LIMITS = {
-  x: { min: 0, max: 100 },
-  y: { min: 0, max: 100 },
-  scale: { min: 10, max: 200 },
-  opacity: { min: 10, max: 100 },
-} as const;
-
 export const DEFAULT_SCENE_BASE: string = BACKDROP_PRESETS[0]?.id ?? "aurora";
 
-/** A fresh image layer sits centred at a size that reads as "an object on the
- *  backdrop" rather than as a replacement for it. */
-export const DEFAULT_LAYER: Omit<SceneImageLayer, "id"> = { type: "image", x: 50, y: 50, scale: 60, opacity: 100, tiled: false };
+/**
+ * THE PRESET TABLE, HANDED TO THE SHARED PARSER. The moved parsers are
+ * deliberately ignorant of which gradients exist (see `ScenePresets` there);
+ * this is where that knowledge is supplied, so a scene naming a preset this
+ * build dropped still degrades to the default base exactly as it always did.
+ * Every parse in the cockpit goes through the two wrappers below, so the
+ * cockpit's forgiveness is stated once.
+ */
+export const SCENE_PRESETS: ScenePresets = { known: (id) => backdropPresetById(id) !== undefined, fallback: DEFAULT_SCENE_BASE };
 
 /** A fresh scene is one gradient and nothing over it — the picture the old
  *  `baseId`-only model started from. */
 export const DEFAULT_SCENE: Scene = { layers: [{ type: "gradient", presetId: DEFAULT_SCENE_BASE, opacity: 100 }] };
-
-/** Ids are generated, never typed — but they are also JSON keys sharing a map
- *  with the `orig:` prefix, so the parser holds them to this shape and drops
- *  anything else rather than letting a hand-edited `orig:x` shadow a real
- *  original. */
-const ID_SHAPE = /^[A-Za-z0-9_-]{1,40}$/;
 
 let idCounter = 0;
 
@@ -160,95 +142,12 @@ function clampTo(value: unknown, range: { min: number; max: number }, fallback: 
 
 /* ------------------------------------------------------------ total parsing */
 
-/** A known preset id, or the default — the same forgiveness the old `baseId`
- *  had: a scene naming a preset this build dropped should change colour, not
- *  stop composing. */
-function presetIdOr(value: unknown): string {
-  return typeof value === "string" && backdropPresetById(value) ? value : DEFAULT_SCENE_BASE;
-}
-
-/** One layer, or undefined. Every field is clamped into range rather than
- *  refused: a stale scale from an older build should move the slider, not
- *  delete someone's arrangement. Only a missing/malformed id is fatal — and
- *  only for image layers, which is also the DEFAULT reading: scenes written
- *  before gradient layers existed have no `type` member at all. */
 export function parseSceneLayer(value: unknown): SceneLayer | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const record = value as Record<string, unknown>;
-  if (record.type === "gradient") {
-    return { type: "gradient", presetId: presetIdOr(record.presetId), opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
-  }
-  if (typeof record.id !== "string" || !ID_SHAPE.test(record.id)) return undefined;
-  return {
-    type: "image",
-    id: record.id,
-    x: clampTo(record.x, SCENE_LIMITS.x, DEFAULT_LAYER.x),
-    y: clampTo(record.y, SCENE_LIMITS.y, DEFAULT_LAYER.y),
-    scale: clampTo(record.scale, SCENE_LIMITS.scale, DEFAULT_LAYER.scale),
-    opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, DEFAULT_LAYER.opacity),
-    tiled: record.tiled === true,
-  };
+  return parseSceneLayerValue(value, SCENE_PRESETS);
 }
 
-/**
- * Total, like parseBackdrop: anything unrecognised is the default, so a
- * truncated or hand-edited value can never wedge the composer.
- *
- * MIGRATION. A stored `baseId` is the old mandatory base; it becomes the
- * BOTTOM gradient layer at full opacity, which is the same picture. Its
- * absence is meaningful in the new model — an explicit "nothing underneath" —
- * so it is only supplied when the value has neither a `layers` array nor a
- * `baseId` at all, i.e. when there is no scene here to read.
- */
 export function parseScene(raw: string | null): Scene {
-  try {
-    const parsed: unknown = JSON.parse(raw ?? "null");
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return DEFAULT_SCENE;
-    const record = parsed as Record<string, unknown>;
-    const stored = record.layers;
-    const hasBase = typeof record.baseId === "string";
-    if (!Array.isArray(stored) && !hasBase) return DEFAULT_SCENE;
-    const layers: SceneLayer[] = [];
-    const seen = new Set<string>();
-    let images = 0;
-    let gradients = 0;
-    if (Array.isArray(stored)) {
-      for (const entry of stored) {
-        const layer = parseSceneLayer(entry);
-        if (!layer) continue;
-        if (layer.type === "image") {
-          if (seen.has(layer.id) || images >= MAX_SCENE_LAYERS) continue;
-          seen.add(layer.id);
-          images += 1;
-        } else {
-          if (gradients >= MAX_SCENE_GRADIENT_LAYERS) continue;
-          gradients += 1;
-        }
-        layers.push(layer);
-      }
-    }
-    if (hasBase && gradients < MAX_SCENE_GRADIENT_LAYERS) {
-      layers.push({ type: "gradient", presetId: presetIdOr(record.baseId), opacity: SCENE_LIMITS.opacity.max });
-    }
-    return { layers };
-  } catch {
-    return DEFAULT_SCENE;
-  }
-}
-
-/** The image map, keeping only entries that are actually image data URLs. */
-export function parseSceneImages(raw: string | null): Record<string, string> {
-  const images: Record<string, string> = {};
-  try {
-    const parsed: unknown = JSON.parse(raw ?? "null");
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return images;
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === "string" && value.startsWith("data:image/")) images[key] = value;
-    }
-  } catch {
-    // Corrupt map: no layer images, which composes to just the base.
-  }
-  return images;
+  return parseSceneJson(raw, SCENE_PRESETS);
 }
 
 /* ----------------------------------------------------------- pure editing */

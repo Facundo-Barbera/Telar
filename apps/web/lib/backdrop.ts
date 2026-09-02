@@ -27,8 +27,23 @@
 
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
-export type BackdropFit = "cover" | "fill" | "tile";
-export const BACKDROP_FITS = ["cover", "fill", "tile"] as const;
+/**
+ * THE VOCABULARY MOVED; THE STORE DID NOT. The fit names, the resolved-layer
+ * shape and the two value gates are pure string logic that a `Look` on the wire
+ * needs as much as this store does, so they live in @telar/engine-client and
+ * are re-exported here — every importer keeps its path, and there is one
+ * definition of what counts as a paintable gradient.
+ */
+export {
+  BACKDROP_FITS,
+  isGradientValue,
+  isSceneValue,
+  MAX_BACKDROP_BLUR,
+  MAX_BACKDROP_DIM,
+  type BackdropFit,
+  type BackdropLayers,
+} from "@telar/engine-client";
+import { BACKDROP_FITS, isGradientValue, MAX_BACKDROP_BLUR, MAX_BACKDROP_DIM, type BackdropFit, type BackdropLayers } from "@telar/engine-client";
 
 /**
  * HOW FAR THE SCENE IS PUSHED BACK, in percent toward the canvas colour.
@@ -59,42 +74,11 @@ export type Backdrop =
    *  changes but the choice otherwise wouldn't. */
   | ({ kind: "scene"; stamp: number } & BackdropDim);
 
-/** Resolved CSS values, one `background-image` per colour scheme. Presets and
- *  custom gradients both resolve to this shape; the dark half falls back to
- *  the light one in CSS if a source only has one. A composed scene ALSO
- *  carries the per-layer lists (`background-size/position/repeat` accept one
- *  comma-separated entry per image layer), which single-source kinds leave to
- *  the stylesheet's defaults. */
-export type BackdropLayers = { light: string; dark: string; size?: string; position?: string; repeat?: string };
-
 export const BACKDROP_KEY = "telar-backdrop";
 export const BACKDROP_CSS_KEY = "telar-backdrop-css";
 export const BACKDROP_IMAGE_KEY = "telar-backdrop-image";
 
-export const MAX_BACKDROP_BLUR = 40; // px
-export const MAX_BACKDROP_DIM = 80; // %
-
 export const DEFAULT_BACKDROP: Backdrop = { kind: "none" };
-
-/**
- * A custom gradient string becomes a CSS variable via CSSOM setProperty —
- * which cannot escape the declaration — but a nonsense value silently paints
- * nothing, so writes are gated on looking like an actual gradient list.
- */
-export function isGradientValue(value: unknown): value is string {
-  return typeof value === "string" && /gradient\(/.test(value) && !value.includes(";") && !value.includes("}") && !/url\s*\(/i.test(value);
-}
-
-/** A composed scene's background-image list: any mix of gradients and
- *  `url("data:image/…")` layers — data URLs ONLY, so a stored scene can never
- *  make the page fetch anything — and still no way out of the declaration. */
-export function isSceneValue(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.includes(";") || value.includes("}")) return false;
-  return value
-    .split(/url\(/i)
-    .slice(1)
-    .every((segment) => segment.startsWith('"data:image/'));
-}
 
 function clamp(value: unknown, max: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(0, Math.round(value))) : 0;

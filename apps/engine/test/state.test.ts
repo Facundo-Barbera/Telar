@@ -1336,27 +1336,44 @@ test("the published appearance is an opaque blob, capped, and survives a restart
     somethingInventedLater: { nested: [1, 2, 3] },
     theme: { light: { background: "oklch(1 0 0)" }, dark: { background: "oklch(0.145 0 0)" } },
   };
-  expect(store.setAppearance(blob)).toEqual(blob);
-  expect(store.getAppearance()).toEqual(blob);
+  const written = store.setAppearance(blob);
+  expect(written.blob).toEqual(blob);
+  // STAMPED BY THE ENGINE, not by the publisher: the blob's own `updatedAtHint`
+  // is advisory, and an ETag cut from two browsers' disagreeing clocks could
+  // go backwards. What is recorded is when THIS engine accepted the write.
+  expect(written.updatedAt).toBeGreaterThan(0);
+  expect(store.getAppearance()).toEqual({ updatedAt: written.updatedAt, blob });
 
   // A SNAPSHOT, NOT A PATCH: the second publish replaces the first outright,
   // because two merged halves would describe a look nobody is wearing.
   store.setAppearance({ accent: "rose" });
-  expect(store.getAppearance()).toEqual({ accent: "rose" });
+  expect(store.getAppearance()?.blob).toEqual({ accent: "rose" });
 
   // Not an object is not a look.
   expect(() => store.setAppearance([1, 2, 3])).toThrow(EngineStateError);
   expect(() => store.setAppearance("indigo")).toThrow(EngineStateError);
   expect(() => store.setAppearance(null)).toThrow(EngineStateError);
 
-  // The cap, which exists to forbid one specific abuse — an inlined wallpaper
-  // data URL riding in as "appearance".
-  expect(() => store.setAppearance({ wallpaper: "x".repeat(64 * 1024) })).toThrow(EngineStateError);
+  // THE CAP MOVED UP AND CHANGED ITS MEANING. It used to forbid an inlined
+  // wallpaper at 64 KB; a published look now IS a whole Look and legitimately
+  // carries its backdrop's pixels, so a megabyte of image rides through and
+  // only the absurd is refused.
+  const wallpaper = { look: { backdrop: { image: `data:image/webp;base64,${"A".repeat(2 * 1024 * 1024)}` } } };
+  expect(store.setAppearance(wallpaper).blob).toEqual(wallpaper);
+  expect(() => store.setAppearance({ wallpaper: "x".repeat(9 * 1024 * 1024) })).toThrow(EngineStateError);
   // …and the refusal left the last good publish alone.
-  expect(store.getAppearance()).toEqual({ accent: "rose" });
+  expect(store.getAppearance()?.blob).toEqual(wallpaper);
+
+  // Cleared is `null` again, and clearing twice is not an error: "nothing is
+  // published" is the state the caller asked for either way.
+  store.clearAppearance();
+  expect(store.getAppearance()).toBeNull();
+  store.clearAppearance();
+  expect(store.getAppearance()).toBeNull();
 
   // On disk, so a restarted engine still answers a phone that pairs tomorrow.
-  expect(new EngineStore(stateRoot, () => 100).getAppearance()).toEqual({ accent: "rose" });
+  store.setAppearance({ accent: "rose" });
+  expect(new EngineStore(stateRoot, () => 100).getAppearance()?.blob).toEqual({ accent: "rose" });
 
   // Same never-throws rule as the policies: a corrupt file costs the
   // decoration, never the request that asked for it.

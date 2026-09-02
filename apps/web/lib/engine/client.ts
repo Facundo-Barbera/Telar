@@ -35,6 +35,7 @@ import type {
   ProviderInstanceEnvVar,
   ProviderProbe,
   ProviderUpdateRun,
+  PublishedAppearance,
   EngineRequest,
   RequestDecision,
   RuntimeMode,
@@ -132,12 +133,16 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
       options: { signal?: AbortSignal } = {},
     ) => request<{ result: Record<string, unknown> }>(fetcher, "POST", "/api/textgen/complete", input, options.signal),
-    /** The host cockpit's published look, for clients that want to match it —
-     *  an OPAQUE blob, and readers must ignore keys they do not know. `null`
-     *  means nothing has published yet. */
-    appearance: () => request<{ appearance: Record<string, unknown> | null }>(fetcher, "GET", "/api/appearance"),
+    /** The host cockpit's published look, for windows that want to wear it.
+     *  Already parsed by the shared total parser on the engine adapter's side,
+     *  so `null` covers both "nothing published" and "nothing readable" — the
+     *  same instruction to a reader either way. */
+    appearance: () => request<{ appearance: PublishedAppearance | null; updatedAt: number | null }>(fetcher, "GET", "/api/appearance"),
     /** Replaces the published look wholesale — a snapshot, never a patch. */
-    setAppearance: (blob: Record<string, unknown>) => request<{ ok: boolean }>(fetcher, "PUT", "/api/appearance", blob),
+    setAppearance: (blob: PublishedAppearance) => request<{ ok: boolean; updatedAt: number; etag: string }>(fetcher, "PUT", "/api/appearance", blob),
+    /** Withdraw the published look. Idempotent — there is nothing to publish
+     *  and nothing to fail. */
+    clearAppearance: () => request<{ ok: boolean }>(fetcher, "DELETE", "/api/appearance"),
     /** Which models a provider says it has — asked of the provider where it can
      *  answer, and this cockpit's own short list where it cannot. */
     modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {

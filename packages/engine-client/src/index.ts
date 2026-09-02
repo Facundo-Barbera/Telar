@@ -7,6 +7,7 @@
  * three layers in. The routes moved with the version deliberately, so the break
  * is visible at the URL.
  */
+import { parsePublishedAppearance, type PublishedAppearance } from "./look";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
@@ -105,6 +106,15 @@ import {
 } from "./protocol";
 
 export * from "./protocol";
+
+/**
+ * THE LOOK FORMAT — the appearance vocabulary the cockpit publishes and every
+ * other client reads. Kept out of `protocol/` because it is not part of the
+ * engine's own model: the engine stores this blob without understanding a word
+ * of it (see `/v2/appearance`), and the shape belongs to the clients that both
+ * write and wear it. Pure data and total parsers; no DOM, no framework.
+ */
+export * from "./look";
 
 export class EngineClientError extends Error {
   readonly code: EngineErrorCode;
@@ -322,21 +332,36 @@ export class EngineClient {
   }
 
   /**
-   * The host cockpit's resolved look, republished for paired clients — accent,
-   * typefaces, translucency, backdrop, both halves of the active theme pair.
+   * The host cockpit's published look — the whole `Look` (both theme halves,
+   * the backdrop with its pixels, accent, type, strength) plus the few facts
+   * about the publishing WINDOW a Look deliberately does not carry.
    *
-   * AN OPAQUE BLOB, and every reader must be additive-tolerant: the cockpit
-   * grows this vocabulary on its own release schedule, and a client that does
-   * not recognise a key ignores it rather than failing. `null` means nothing
-   * has published yet — wear your own defaults.
+   * PARSED HERE, NOT HANDED THROUGH RAW. The engine stores this blob without
+   * understanding a word of it, and any paired device may have written it — so
+   * the shared total parser runs on the way out, colour gates included. A
+   * `null` appearance means "nothing published, or nothing readable"; both are
+   * the same instruction to a reader: wear your own defaults.
    */
-  appearance(): Promise<{ appearance: Record<string, unknown> | null }> {
-    return this.request("GET", "/v2/appearance");
+  async appearance(): Promise<{ appearance: PublishedAppearance | null; updatedAt: number | null }> {
+    const raw = await this.request<{ appearance?: unknown; updatedAt?: unknown }>("GET", "/v2/appearance");
+    return {
+      appearance: parsePublishedAppearance(raw.appearance) ?? null,
+      updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null,
+    };
   }
 
-  /** Replaces the published look wholesale — a snapshot, never a patch. */
-  setAppearance(blob: Record<string, unknown>): Promise<{ ok: boolean }> {
+  /** Replaces the published look wholesale — a snapshot, never a patch, because
+   *  two publishers' merged halves would describe a look neither of them wears.
+   *  `updatedAt` and `etag` come back so a publisher can tell its own write
+   *  apart from somebody else's. */
+  setAppearance(blob: PublishedAppearance): Promise<{ ok: boolean; updatedAt: number; etag: string }> {
     return this.request("PUT", "/v2/appearance", blob);
+  }
+
+  /** Forget the published look. Idempotent: clearing an empty mailbox is a
+   *  200, because "there is no published look" is the state either way. */
+  clearAppearance(): Promise<{ ok: boolean }> {
+    return this.request("DELETE", "/v2/appearance");
   }
 
   // ── Spool ─────────────────────────────────────────────────────────────────
