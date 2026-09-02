@@ -313,7 +313,7 @@ export function AppearanceSection() {
    *  stores — which now hold exactly what the preview was showing. */
   const apply = () => {
     if (!draft) return;
-    const worn = applyLook(draft, { saveCustom, setActive }, setAppearance);
+    const worn = applyLook(draft, { saveCustom, setActive, themes }, setAppearance);
     history.current = [];
     setUndoDepth(0);
     setDraft(undefined);
@@ -354,12 +354,12 @@ export function AppearanceSection() {
       if (history.current.length > MAX_UNDO) history.current.shift();
       setUndoDepth(history.current.length);
       lastEditAt.current = 0;
-      const worn = applyLook(look, { saveCustom, setActive }, setAppearance);
+      const worn = applyLook(look, { saveCustom, setActive, themes }, setAppearance);
       setDraft(undefined);
       writeStudioDraft(undefined);
       setNotice(worn);
     },
-    [draft, saveCustom, setActive, setAppearance],
+    [draft, saveCustom, setActive, setAppearance, themes],
   );
 
   /** A palette worn over the look you already have on — everything else about

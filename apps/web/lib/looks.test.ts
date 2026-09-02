@@ -1,6 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  applyLook,
   lookAppearance,
   lookFilename,
   lookThemeId,
@@ -284,5 +285,59 @@ describe("wearing", () => {
       fontMonoSize: 12,
       translucencyLevel: 70,
     });
+  });
+});
+
+describe("wearing something that already exists", () => {
+  const themes = [
+    { id: "ember", label: "Ember", builtIn: true, light: { ...TELAR_LIGHT }, dark: { ...TELAR_DARK } },
+  ];
+
+  function writer() {
+    const saved: unknown[] = [];
+    let activeId: string | undefined;
+    return {
+      saved,
+      get activeId() {
+        return activeId;
+      },
+      writer: {
+        saveCustom: (theme: unknown) => void saved.push(theme),
+        setActive: (id: string) => void (activeId = id),
+        themes,
+      },
+    };
+  }
+
+  test("a look whose palette is already a theme wears that theme and mints nothing", () => {
+    const spy = writer();
+    // Same halves as the one library entry, under a different name and id.
+    applyLook(look({ id: "fresh-capture", label: "Dusk" }), spy.writer, () => {});
+    expect(spy.saved).toEqual([]);
+    expect(spy.activeId).toBe("ember");
+  });
+
+  test("applying the same capture twice still leaves one entry", () => {
+    const spy = writer();
+    applyLook(look({ id: "capture-1" }), spy.writer, () => {});
+    applyLook(look({ id: "capture-2" }), spy.writer, () => {});
+    expect(spy.saved).toEqual([]);
+  });
+
+  test("genuinely new colours do become a new entry, keyed by the look", () => {
+    const spy = writer();
+    const edited = look({ id: "mine", label: "Mine" });
+    edited.theme.dark = { ...edited.theme.dark, background: "#123456" };
+    applyLook(edited, spy.writer, () => {});
+    expect(spy.saved).toHaveLength(1);
+    expect(spy.activeId).toBe("look-mine");
+  });
+
+  test("one half matching is not enough — a mixed pair is its own theme", () => {
+    const spy = writer();
+    const mixed = look({ id: "mixed" });
+    mixed.theme.light = { ...mixed.theme.light, background: "#fefefe" };
+    applyLook(mixed, spy.writer, () => {});
+    expect(spy.saved).toHaveLength(1);
   });
 });

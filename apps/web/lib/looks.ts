@@ -71,7 +71,7 @@ import {
 } from "./backdrop";
 import { readBackdropImage, storeBackdropImage } from "./image-backdrop";
 import { readScene, readSceneImages, SCENE_PRESETS, writeScene, writeSceneImages } from "./scene-composer";
-import { BUILT_IN_THEMES, concreteHalf, parseActivePair, parseCustomThemes, type ThemeDefinition, type ThemeHalf } from "./theme-palettes";
+import { BUILT_IN_THEMES, concreteHalf, matchThemeHalf, parseActivePair, parseCustomThemes, type ThemeDefinition, type ThemeHalf } from "./theme-palettes";
 
 export { parseThemeHalf, type Look, type LookBackdrop } from "@telar/engine-client";
 
@@ -276,6 +276,9 @@ export function captureLook(label: string): Look {
 export type ThemeWriter = {
   saveCustom: (theme: ThemeDefinition) => void;
   setActive: (id: string) => void;
+  /** The library as it stands, so wearing a look that is already a theme can
+   *  wear THAT theme instead of minting a copy of it. */
+  themes: readonly ThemeDefinition[];
 };
 
 /** The custom theme a worn Look installs. Stable per Look, so wearing the same
@@ -308,6 +311,28 @@ export function lookAppearance(look: Look): LookAppearance {
  * without its wallpaper.
  */
 export function applyLook(look: Look, theme: ThemeWriter, setAppearance: (patch: LookAppearance) => void): string | undefined {
+  /**
+   * WEARING SOMETHING THAT ALREADY EXISTS CREATES NOTHING.
+   *
+   * This used to mint a custom theme on every apply, keyed by the LOOK's id —
+   * and a draft captured from the live stores gets a fresh id each time it is
+   * captured, so pressing Apply twice left two library entries with the same
+   * name and the same sixteen colours. Wearing the starters a few times was
+   * enough to produce three separate themes called Dusk.
+   *
+   * So the palette is matched against the library first. An exact match is
+   * worn directly; only genuinely new colours become a new entry. The id is
+   * still the Look's when one is minted, which keeps the old promise that
+   * re-applying the SAME look updates its entry rather than breeding.
+   */
+  const existing = matchThemeHalf(look.theme.light, theme.themes, "light");
+  const sameDark = existing && matchThemeHalf(look.theme.dark, theme.themes, "dark")?.id === existing.id;
+  if (existing && sameDark) {
+    theme.setActive(existing.id);
+    setAppearance(lookAppearance(look));
+    return applyLookBackdrop(look.backdrop);
+  }
+
   // The embedded halves become a real library theme, so the Look is editable
   // afterwards and the theme grid shows what is being worn.
   const id = lookThemeId(look);

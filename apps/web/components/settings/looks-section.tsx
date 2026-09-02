@@ -50,7 +50,7 @@ import {
   type Look,
 } from "@/lib/looks";
 import { STARTER_LOOKS } from "@/lib/starter-looks";
-import { useThemeLibrary } from "@/lib/theme-palettes";
+import { matchThemeHalf, useThemeLibrary } from "@/lib/theme-palettes";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader, PanelRow } from "@/components/ui/panel";
@@ -300,7 +300,26 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
   // Defaults to "this IS the host" on the server, so the row never renders into
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
-  const { activeId } = useThemeLibrary();
+  const { activeId, active, themes } = useThemeLibrary();
+  /**
+   * WORN IS ABOUT COLOURS, NOT ABOUT AN ID. Wearing a look whose palette is
+   * already in the library now wears THAT theme rather than minting a copy
+   * (applyLook), so the id this card would have installed may never exist. The
+   * honest test is whether the window is wearing these two halves.
+   */
+  const worn = useCallback(
+    (look: Look) => {
+      if (activeId === lookThemeId(look)) return true;
+      const lightTheme = themes.find((theme) => theme.id === active.light);
+      const darkTheme = themes.find((theme) => theme.id === active.dark);
+      if (!lightTheme || !darkTheme) return false;
+      return (
+        matchThemeHalf(look.theme.light, [lightTheme], "light") !== undefined &&
+        matchThemeHalf(look.theme.dark, [darkTheme], "dark") !== undefined
+      );
+    },
+    [activeId, active, themes],
+  );
   const looks = useLooks();
   // The MESSAGE, not a flag: "full", "will not fit", and "not a look file" are
   // three different things to do about it (theme-library.tsx's idiom).
@@ -368,8 +387,7 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
             <LookCard
               key={look.id}
               look={look}
-              // Worn = the library is wearing the theme this Look installs.
-              active={activeId === lookThemeId(look)}
+              active={worn(look)}
               selected={openId === look.id}
               onOpen={() => onOpen(look)}
               onWear={() => onWear(look)}
@@ -382,7 +400,7 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
             <LookCard
               key={look.id}
               look={look}
-              active={activeId === lookThemeId(look)}
+              active={worn(look)}
               selected={openId === look.id}
               onWear={() => onWear(look)}
               // The starter's OWN id rides into the draft. It is stable, so
