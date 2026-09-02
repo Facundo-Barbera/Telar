@@ -638,6 +638,42 @@
   background-color: color-mix(in oklab, var(--background) var(--backdrop-dim, 0%), transparent);
 }
 
+/* ─── A SCENE AND THE DESKTOP, TOGETHER ─────────────────────────────────────
+
+   THE BUG THIS FIXES: a Look that carried a backdrop silently cancelled the
+   translucent window. Two rules above paint an OPAQUE canvas colour — the root
+   (to stop body's background propagating under the scene) and the scene div
+   itself (so a gradient with transparent stops has something to sit on). In a
+   plain window both are free: there is nothing behind the page to lose. Under
+   macOS vibrancy there is, and two opaque layers covered every pixel of it. So
+   "turn on translucency" did nothing at all for any look with a wallpaper —
+   which is most looks worth having, including five of the six starters.
+
+   THE SCENE BECOMES THE GLASS. Under vibrancy the backdrop layer stops
+   painting a canvas and takes the show-through slider as its own alpha, so the
+   stack finally reads the way the pane describes it:
+
+       desktop  →  the scene, thinned  →  body's wash  →  the app
+
+   One slider, one meaning: how much of what is behind the window comes
+   through. At 0% the scene is a wallpaper and the desktop is hidden, exactly
+   as before; at 50% the desktop arrives through a half-strength gradient,
+   which is the thing the feature was always for.
+
+   `background-image` ON THE ROOT WITH NOTHING IN IT is not a trick for its own
+   sake: propagation is specified to happen only when the root has BOTH a
+   transparent background-color and `background-image: none`, so a gradient of
+   two transparents is the one way to decline the propagation without painting
+   over the desktop we are trying to reveal. */
+[data-telar-shell][data-translucent][data-backdrop] {
+  background-color: transparent;
+  background-image: linear-gradient(transparent, transparent);
+}
+[data-telar-shell][data-translucent][data-backdrop] #app-backdrop {
+  background-color: transparent;
+  opacity: calc(100% - var(--translucency, 45%));
+}
+
 /* THE HIGHLIGHT TOKENS USED TO FROST HERE — --muted, --accent and
    --sidebar-accent, re-synthesised from --background/--foreground at Telar's
    own deltas and dropped to 72% alpha. Both halves of that were wrong, and the
