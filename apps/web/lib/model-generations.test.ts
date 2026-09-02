@@ -15,6 +15,8 @@ const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel =>
   label: id,
   isDefault: false,
   hidden: false,
+  hiddenByUser: false,
+  source: "provider",
   efforts: [],
   fastMode: false,
   ...extra,

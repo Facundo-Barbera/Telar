@@ -1,5 +1,5 @@
 /**
- * STARRED MODELS.
+ * STARRED MODELS — the ORDERING RULES, plus a read-only door to the old store.
  *
  * A menu of six is a list; a menu of sixteen is a search problem, and the
  * catalogue only grows. Favourites are the reference cockpit's answer and they
@@ -7,10 +7,19 @@
  * on one repository uses two models for weeks, and scrolling past the other
  * fourteen every time is a tax on the thing they do most.
  *
- * PER BROWSER, NOT PER SESSION AND NOT ON THE ENGINE. This is a preference about
- * how a menu is sorted — it changes nothing about what runs — so putting it in
- * engine state would make a display choice durable, replicated and versioned for
- * no gain. `localStorage` is the honest home, and losing it costs one gesture.
+ * THEY USED TO LIVE IN `localStorage` AND NOW LIVE ON THE ENGINE, keyed by row
+ * rather than by family (`ModelOverlay.favorites`). The old argument was sound
+ * while it held: a star changed how a menu sorted and nothing about what ran, so
+ * engine state would have made a display choice durable and replicated for no
+ * gain. What ended it is the Models tab in Settings, where a star now sits in
+ * the same row as a hide and a hand-added id — both engine facts by necessity.
+ * Two stores behind one row is how "I unstarred it and it came back" happens.
+ *
+ * SO THE WRITER IS GONE AND THE READER STAYS. `readFavorites` exists for exactly
+ * one caller — the one-time-per-login import in lib/model-catalogue-cache.ts —
+ * so nobody loses the stars they already had. Nothing writes this key any more,
+ * and nothing should: a second writer would recreate the split this import
+ * exists to close.
  */
 const KEY = "telar:favorite-models:v2";
 
@@ -41,21 +50,6 @@ export function readFavorites(storage: Pick<Storage, "getItem"> | undefined = sa
   } catch {
     return new Set();
   }
-}
-
-export function writeFavorites(next: ReadonlySet<string>, storage: Pick<Storage, "setItem"> | undefined = safeStorage()): void {
-  try {
-    storage?.setItem(KEY, JSON.stringify([...next]));
-  } catch {
-    // Private browsing, or storage disabled. The in-memory set still works for
-    // this page, which is the whole of what the menu needs.
-  }
-}
-
-export function toggleFavorite(current: ReadonlySet<string>, id: string): Set<string> {
-  const next = new Set(current);
-  if (!next.delete(id)) next.add(id);
-  return next;
 }
 
 /**
