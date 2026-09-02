@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, type TextGenPolicy } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { useModelCatalogueGeneration } from "@/lib/model-catalogue-cache";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
@@ -51,18 +52,30 @@ export function TextGenSection() {
    * comparison rather than a token — the closure's driver IS the token.
    */
   const driver = policy.driver;
+  /** Re-reads when the Models tab writes, so curating a login here and looking
+   *  at this select in the same visit cannot disagree. */
+  const epoch = useModelCatalogueGeneration();
   useEffect(() => {
     let live = true;
     void api
       .modelCatalogue(driver)
       .then(({ catalogue: answer }) => {
-        if (live) setCatalogue({ driver: answer.driver, models: answer.models.filter((model) => !model.hidden) });
+        // TWO DIFFERENT HIDES, and this list honours both. `hidden` is the
+        // provider withdrawing a row; `hiddenByUser` is the reader curating it
+        // away in the Models tab — and a model somebody hid from the picker has
+        // no business turning up in the list that names the title-writer.
+        if (live) {
+          setCatalogue({
+            driver: answer.driver,
+            models: answer.models.filter((model) => !model.hidden && !model.hiddenByUser),
+          });
+        }
       })
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [driver]);
+  }, [driver, epoch]);
   const models = catalogue?.driver === driver ? catalogue.models : [];
 
   const save = useCallback(async (patch: Parameters<typeof api.setTextGen>[0]) => {
