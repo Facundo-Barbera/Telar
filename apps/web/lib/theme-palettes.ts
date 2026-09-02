@@ -266,6 +266,31 @@ export function parseThemeFile(raw: string): Omit<ThemeDefinition, "id"> | undef
 
 /** A half with every token filled — the editor and preview need concrete
  *  values, and the identity theme's halves are deliberately empty. */
+/**
+ * WHICH THEME THIS HALF CAME FROM — or nothing, if it came from your hands.
+ *
+ * The studio could never say what you were editing. Loading Ember put its
+ * halves in the draft and renamed the LOOK; the palette itself stayed
+ * anonymous, and the library's rings went on marking the theme you were
+ * WEARING, which after a load is a different theme entirely. So the grid
+ * pointed at Telar while you edited Ember.
+ *
+ * Comparison is by resolved hex rather than by the stored string, so a half
+ * loaded from a theme still matches after a round trip through the colour
+ * input — `oklch(0.16 0.018 235)` and `#0a0e12` are the same decision, and a
+ * reader who has changed nothing should not be told they have.
+ *
+ * Ambiguity resolves to the FIRST match, built-ins before customs, because the
+ * only way two themes tie is that they are the same palette under two names —
+ * and then either answer is true.
+ */
+export function matchThemeHalf(half: ThemeHalf, themes: readonly ThemeDefinition[], mode: "light" | "dark"): ThemeDefinition | undefined {
+  return themes.find((theme) => {
+    const candidate = concreteHalf(theme, mode);
+    return THEME_TOKENS.every((token) => cssColorToHex(candidate[token]) === cssColorToHex(half[token]));
+  });
+}
+
 export function concreteHalf(theme: ThemeDefinition, mode: "light" | "dark"): ThemeHalf {
   const base = mode === "light" ? TELAR_LIGHT : TELAR_DARK;
   return { ...base, ...(theme[mode] ?? {}) };

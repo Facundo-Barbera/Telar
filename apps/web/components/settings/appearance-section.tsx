@@ -52,6 +52,7 @@ import {
   applyLook,
   LOOKS_FULL_MESSAGE,
   LOOKS_QUOTA_MESSAGE,
+  lookThemeId,
   newLookId,
   upsertLook,
   useLooks,
@@ -74,7 +75,7 @@ import {
 } from "@/lib/studio-draft";
 import { isStarterLook } from "@/lib/starter-looks";
 import { clearPreview, previewLook } from "@/lib/studio-preview";
-import { THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
+import { matchThemeHalf, THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -205,6 +206,44 @@ export function AppearanceSection() {
   const current = draft ?? live;
   const dirty = draft !== undefined;
 
+  /** WHAT THE PALETTE IN FRONT OF YOU ACTUALLY IS. Each half is matched back
+   *  against the library, so the pane can name the theme being edited instead
+   *  of leaving the sixteen rows anonymous — and so the grid's rings can mark
+   *  the theme you have OPEN rather than the one you are wearing. Undefined
+   *  means the half matches nothing, which is the whole signal for "this is
+   *  new work". */
+  const holding = useMemo(
+    () => ({
+      light: current ? matchThemeHalf(current.theme.light, themes, "light")?.id : undefined,
+      dark: current ? matchThemeHalf(current.theme.dark, themes, "dark")?.id : undefined,
+    }),
+    [current, themes],
+  );
+
+  /** WHAT APPLY WILL DO TO THE LIBRARY, said before you press it.
+   *
+   *  Apply installs the draft's halves as a real theme keyed by the LOOK's id
+   *  (applyLook), which means it either mints one or overwrites the one a
+   *  previous Apply of this same draft made. Nothing said which — so editing a
+   *  built-in and applying quietly produced a second theme under the same
+   *  name, and the only way to find out was to look at the grid afterwards. */
+  const applyEffect = useMemo(() => {
+    if (!current) return undefined;
+    const id = lookThemeId(current);
+    return themes.some((theme) => theme.id === id) ? { verb: "Updates", label: current.label } : { verb: "New theme", label: current.label };
+  }, [current, themes]);
+
+  /** The palette's provenance in one phrase, for the panel header: one theme,
+   *  a pair mixed from two, or hand-edited work that is not yet a theme. */
+  const paletteSource = useMemo(() => {
+    const name = (id: string | undefined) => themes.find((theme) => theme.id === id)?.label;
+    const lightName = name(holding.light);
+    const darkName = name(holding.dark);
+    const shown = mode === "light" ? lightName : darkName;
+    if (shown) return shown;
+    return lightName || darkName ? "Edited" : "Not a saved theme";
+  }, [holding, themes, mode]);
+
   /** Every draft write funnels here: history, then state. */
   const edit = useCallback(
     (next: StudioDraft) => {
@@ -310,9 +349,19 @@ export function AppearanceSection() {
           onChange={(event) => current && edit(setDraftLabel(current, event.target.value))}
         />
         {dirty ? (
-          <span className="flex shrink-0 items-center gap-1.5 font-mono text-[0.625rem] tracking-[0.08em] text-warning uppercase">
-            <span className="size-1.5 rounded-full bg-warning" />
-            Previewing
+          <span className="flex min-w-0 shrink items-center gap-2 font-mono text-[0.625rem] tracking-[0.08em] uppercase">
+            <span className="flex shrink-0 items-center gap-1.5 text-warning">
+              <span className="size-1.5 rounded-full bg-warning" />
+              Previewing
+            </span>
+            {applyEffect && (
+              <span
+                className="min-w-0 truncate text-muted-foreground"
+                title={`Apply installs these colours as a library theme — ${applyEffect.verb === "New theme" ? "a new one" : "replacing the one this draft made before"}, called “${applyEffect.label}”. Rename it on the left first if you want to keep the original.`}
+              >
+                · {applyEffect.verb} · {applyEffect.label}
+              </span>
+            )}
           </span>
         ) : (
           <span className="shrink-0 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">Worn</span>
@@ -349,7 +398,7 @@ export function AppearanceSection() {
 
       {notice && <p className="text-xs text-warning">{notice}</p>}
 
-      <LooksSection onOpen={openLook} />
+      <LooksSection onOpen={openLook} openId={current?.id} />
 
       {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
           The designer used to be welded to the left half of this pane, which
@@ -373,14 +422,22 @@ export function AppearanceSection() {
         {tab === "colour" && current && (
           <>
             <Panel>
-              <PanelHeader icon={<PaletteIcon />} label={`Palette · ${mode}`} count={THEME_TOKENS.length} />
+              {/* The header NAMES the palette. Sixteen anonymous colour rows
+                  could not say whether you were editing Ember, a mix of two
+                  themes, or something that exists nowhere but this draft. */}
+              <PanelHeader
+                icon={<PaletteIcon />}
+                label={`Palette · ${mode} · ${paletteSource}`}
+                count={THEME_TOKENS.length}
+                tone={holding[mode] ? "none" : "attention"}
+              />
               <PanelBody>
                 <ColourTool draft={current} onDraft={edit} mode={mode} />
               </PanelBody>
             </Panel>
             {/* The library is where a palette comes FROM: a card loads both
                 halves into the draft; an orb loads one. */}
-            <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} />
+            <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} holding={holding} />
           </>
         )}
 

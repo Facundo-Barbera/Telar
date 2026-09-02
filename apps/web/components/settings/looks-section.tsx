@@ -87,12 +87,16 @@ function LookStrip({ look }: { look: Look }) {
 function LookCard({
   look,
   active,
+  selected,
   onOpen,
   onExport,
   onRemove,
 }: {
   look: Look;
+  /** Worn: the library is wearing the theme this Look installs. */
   active: boolean;
+  /** Open in the editor: the draft in front of you came from this card. */
+  selected?: boolean;
   onOpen: () => void;
   onExport?: () => void;
   onRemove?: () => void;
@@ -102,8 +106,12 @@ function LookCard({
       className={cn(
         // A RANK, NOT A GRID: the shelf runs across the top of the editor,
         // where it is a place to start from rather than a section to read.
+        // SELECTED AND WORN ARE DIFFERENT FACTS. Clicking a card loads it into
+        // the editor and previews it; wearing it is Apply. The shelf drew only
+        // one of those, so "the look I am working on" and "the look this window
+        // has on" were the same pixel — and after a click they disagree.
         "group relative w-32 shrink-0 cursor-pointer rounded-lg p-1 ring-1 transition-colors",
-        active ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
+        selected ? "ring-2 ring-primary" : active ? "ring-2 ring-muted-foreground/40" : "ring-foreground/10 hover:bg-accent/50",
       )}
       onClick={onOpen}
       role="button"
@@ -121,7 +129,12 @@ function LookCard({
       <LookThumb look={look} />
       <div className="flex items-center gap-1 px-0.5 pt-1.5 pb-0.5 text-xs">
         <span className="min-w-0 flex-1 truncate font-medium">{look.label}</span>
-        {active && <CheckIcon className="size-3 shrink-0 text-primary" />}
+        {active && (
+          <span className="shrink-0 text-muted-foreground [&_svg]:size-3" title="Worn">
+            <CheckIcon />
+          </span>
+        )}
+        {selected && <span className="shrink-0 font-mono text-[0.5625rem] tracking-[0.08em] text-primary uppercase">Open</span>}
       </div>
       {(onExport || onRemove) && (
         <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -257,7 +270,7 @@ const subscribeToNothing = () => () => {};
 const hostNow = () => isHostWindow();
 const hostOnTheServer = () => true;
 
-export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
+export function LooksSection({ onOpen, openId }: { onOpen: (look: Look) => void; openId?: string }) {
   // Defaults to "this IS the host" on the server, so the row never renders into
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
@@ -331,6 +344,7 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
               look={look}
               // Worn = the library is wearing the theme this Look installs.
               active={activeId === lookThemeId(look)}
+              selected={openId === look.id}
               onOpen={() => onOpen(look)}
               onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
               onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
@@ -342,6 +356,7 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
               key={look.id}
               look={look}
               active={activeId === lookThemeId(look)}
+              selected={openId === look.id}
               // The starter's OWN id rides into the draft. It is stable, so
               // opening Dusk twice and applying both updates one theme instead
               // of breeding a second one called Dusk. The fresh id is minted at

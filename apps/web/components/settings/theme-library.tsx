@@ -12,6 +12,15 @@
  * wears it. The active rings still mark what you are actually WEARING, which
  * is exactly the distinction the rings are for.
  *
+ * THE RINGS MARK WHAT YOU ARE EDITING, NOT WHAT YOU ARE WEARING. They used to
+ * mark the worn pair, which is the one thing a reader can already see by
+ * looking at the app. After loading Ember into the draft the grid went on
+ * pointing at Telar, so the only question the grid could answer — "which of
+ * these am I working on?" — was the one it got wrong. `holding` is the draft's
+ * own provenance (matchThemeHalf); the worn theme keeps a quieter WORN chip,
+ * because "installed" and "open in the editor" are different facts and the
+ * pane now says both.
+ *
  * Editing colours happens in the studio's own palette tool, on the draft —
  * the old inline live editor is gone, because two colour editors with opposite
  * write models was the pane's worst confusion. The library keeps the jobs only
@@ -73,6 +82,7 @@ function downloadFile(filename: string, contents: string): void {
 function ThemeCard({
   theme,
   active,
+  worn,
   lightActive,
   darkActive,
   onUse,
@@ -83,6 +93,7 @@ function ThemeCard({
 }: {
   theme: ThemeDefinition;
   active: boolean;
+  worn: boolean;
   lightActive: boolean;
   darkActive: boolean;
   onUse: () => void;
@@ -117,6 +128,11 @@ function ThemeCard({
       <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm font-medium">
         <span className="truncate">{theme.label}</span>
         {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
+        {worn && (
+          <span className="shrink-0 font-mono text-[0.5625rem] tracking-[0.08em] text-muted-foreground/70 uppercase" title="The theme this window is wearing">
+            Worn
+          </span>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
@@ -140,11 +156,15 @@ function ThemeCard({
 export function ThemeLibrary({
   onPick,
   onPickHalf,
+  holding,
 }: {
   /** Load a whole theme into the draft. */
   onPick: (theme: ThemeDefinition) => void;
   /** Load one half into the draft — the orb click. */
   onPickHalf: (mode: "light" | "dark", theme: ThemeDefinition) => void;
+  /** Which theme each half of the DRAFT currently holds, if any — what the
+   *  rings mark. Undefined halves mean "edited by hand, matching nothing". */
+  holding: { light?: string; dark?: string };
 }) {
   const { active, themes, saveCustom, removeCustom, duplicate, importTheme } = useThemeLibrary();
   // The MESSAGE, not a flag: a VS Code file can fail for a reason worth
@@ -216,9 +236,10 @@ export function ThemeLibrary({
             <ThemeCard
               key={theme.id}
               theme={theme}
-              active={active.light === theme.id && active.dark === theme.id}
-              lightActive={active.light === theme.id}
-              darkActive={active.dark === theme.id}
+              active={holding.light === theme.id && holding.dark === theme.id}
+              worn={active.light === theme.id && active.dark === theme.id}
+              lightActive={holding.light === theme.id}
+              darkActive={holding.dark === theme.id}
               onUse={() => onPick(theme)}
               onUseHalf={(mode) => onPickHalf(mode, theme)}
               onDuplicate={() => {

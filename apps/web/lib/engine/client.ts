@@ -1,3 +1,6 @@
+// Type-only, so the browser bundle never follows it into `node:fs`: the channel
+// is DECIDED server-side (lib/build-identity.ts) and only described here.
+import type { Channel } from "@/lib/build-identity";
 import type {
   BrowserSnapshot,
   GitCommitEntry,
@@ -102,9 +105,16 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
 export function createEngineApi(fetcher: Fetcher = fetch) {
   return {
     health: () => request<EngineHealth>(fetcher, "GET", "/api/health"),
-    /** Which build this is and where its state lives. Deliberately does NOT go
-     *  through the engine: both answers matter most when the engine is down. */
-    about: () => request<{ appVersion: string; stateRoot?: string }>(fetcher, "GET", "/api/about"),
+    /** Which build this is, what it looks like, and where its state lives.
+     *  Deliberately does NOT go through the engine: every answer here matters
+     *  most when the engine is down. `iconUrl` is absent when this layout has no
+     *  icon to serve, so it is never a URL that 404s. */
+    about: () =>
+      request<{ appVersion: string; appName: string; channel: Channel; iconUrl?: string; stateRoot?: string }>(
+        fetcher,
+        "GET",
+        "/api/about",
+      ),
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
