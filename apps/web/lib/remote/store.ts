@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { DeviceIdentity } from "./identity";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -33,6 +34,12 @@ export class RemoteStoreError extends Error {}
  */
 export type DeviceRole = "full" | "observer";
 
+/**
+ * RETIRED, AND KEPT ONLY FOR FILES THAT ALREADY HOLD IT. A two-value enum of
+ * `ios` and `browser` said the only things that pair with a cockpit are a
+ * phone app and a web page, which was never true and is why every row read
+ * "Browser". `DeviceIdentity` replaced it — see lib/remote/identity.ts.
+ */
 export type DevicePlatform = "ios" | "browser";
 
 export interface PairedDevice {
@@ -46,6 +53,9 @@ export interface PairedDevice {
   role: DeviceRole;
   /** Unknown for devices paired before this field existed. Never inferred. */
   platform?: DevicePlatform;
+  /** What it says it is, and what we saw. Absent on devices paired before the
+   *  field existed, which read as an unknown kind rather than as a browser. */
+  identity?: DeviceIdentity;
 }
 
 export interface PendingPairing {
@@ -186,7 +196,7 @@ function cleanName(name: string): string {
 export function addDevice(
   name: string,
   raw: string,
-  options?: { platform?: DevicePlatform; role?: DeviceRole },
+  options?: { platform?: DevicePlatform; role?: DeviceRole; identity?: DeviceIdentity },
 ): PairedDevice {
   const file = readRemote();
   const device: PairedDevice = {
@@ -196,6 +206,7 @@ export function addDevice(
     createdAt: Date.now(),
     role: options?.role ?? "full",
     ...(options?.platform ? { platform: options.platform } : {}),
+    ...(options?.identity ? { identity: options.identity } : {}),
   };
   file.devices.push(device);
   writeRemote(file);
@@ -258,13 +269,18 @@ export function revokeOtherDevices(keepId: string): number {
  * unconditional stamp would rewrite the file per poll. Never throws — a
  * failed stamp must not fail the request it decorates.
  */
-export function touchDevice(id: string, nowMs: number = Date.now()): void {
+export function touchDevice(id: string, nowMs: number = Date.now(), address?: string): void {
   try {
     const file = readRemote();
     const device = file.devices.find((candidate) => candidate.id === id);
     if (!device) return;
-    if (device.lastSeenAt !== undefined && nowMs - device.lastSeenAt < 60_000) return;
+    // A MOVED DEVICE IS WORTH A WRITE even inside the quiet minute: "last seen
+    // from" is only useful if it tracks, and a laptop changing networks is
+    // exactly the moment a reader wants the row to update.
+    const moved = address !== undefined && device.identity?.address !== address;
+    if (!moved && device.lastSeenAt !== undefined && nowMs - device.lastSeenAt < 60_000) return;
     device.lastSeenAt = nowMs;
+    if (moved) device.identity = { kind: device.identity?.kind ?? "unknown", ...device.identity, address };
     writeRemote(file);
   } catch {
     // Advisory metadata only.

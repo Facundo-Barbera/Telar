@@ -25,13 +25,16 @@ export function GET(request: Request) {
     return Response.json({
       requireAuth: file.requireAuth,
       exposure: file.exposure ?? "local-only",
-      devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform }) => ({
+      devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform, identity }) => ({
         id,
         name,
         createdAt,
         lastSeenAt,
         role,
         platform,
+        // The report-back fields. `tokenHash` is the one member that never
+        // leaves the store, which is why this is a pick rather than a spread.
+        identity,
       })),
       callerDeviceId: caller?.id,
       callerRole: caller?.role,

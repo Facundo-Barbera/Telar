@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { GlobeIcon, CircleHelpIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
+import { TerminalIcon, ServerIcon, GlobeIcon, CircleHelpIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,6 +35,7 @@ interface RemoteDevice {
   lastSeenAt?: number;
   role: "full" | "observer";
   platform?: "ios" | "browser";
+  identity?: { kind?: string; client?: string; machine?: string; os?: string; address?: string; origin?: string };
 }
 
 interface RemoteStatus {
@@ -47,7 +48,16 @@ interface RemoteStatus {
   endpoints: Array<{ kind: string; label: string; url: string; qrSafe: boolean }>;
 }
 
-const PLATFORM_ICONS = { ios: SmartphoneIcon, browser: MonitorIcon } as const;
+/** By KIND, not by the retired two-value platform enum — the clients that pair
+ *  with a cockpit are not all phones and browsers. */
+const KIND_ICONS: Record<string, typeof MonitorIcon> = {
+  browser: MonitorIcon,
+  phone: SmartphoneIcon,
+  tablet: SmartphoneIcon,
+  desktop: MonitorIcon,
+  cli: TerminalIcon,
+  service: ServerIcon,
+};
 
 interface MintedPairing {
   token: string;
@@ -100,6 +110,12 @@ export function RemoteSection() {
   }, [load]);
 
   const qrEndpoints = useMemo(() => (status?.endpoints ?? []).filter((endpoint) => endpoint.qrSafe), [status]);
+  /** THIS MACHINE. `qrSafe: false` is right for a QR — scanning 127.0.0.1 with
+   *  a phone reaches the phone — but it is the address a SECOND client on this
+   *  same machine needs, and filtering it out of the panel left that case with
+   *  no pairing path at all. Offered as a link to copy, never as a code to
+   *  scan. */
+  const loopbackEndpoint = useMemo(() => (status?.endpoints ?? []).find((endpoint) => endpoint.kind === "loopback"), [status]);
   // Prefer the most shareable candidate: listEndpoints orders loopback → lan
   // → tailnet → magicdns, so the last qrSafe entry wins.
   const selectedUrl = endpointUrl ?? qrEndpoints.at(-1)?.url ?? null;
@@ -307,6 +323,17 @@ export function RemoteSection() {
               </div>
             </div>
           )}
+          {minted && !expired && loopbackEndpoint && (
+            <Row
+              label="This machine"
+              hint="For another client on this computer — a second browser, a CLI. The same one-time code, at the loopback address."
+              control={
+                <div className="w-full max-w-md">
+                  <CopyCommand command={`${loopbackEndpoint.url}/pair#token=${minted.token}`} />
+                </div>
+              }
+            />
+          )}
         </SettingsGroup>
       )}
 
@@ -355,7 +382,9 @@ function DeviceRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(device.name);
-  const Icon = device.platform ? PLATFORM_ICONS[device.platform] : CircleHelpIcon;
+  // The kind first; the old platform field only for rows written before it.
+  const kind = device.identity?.kind ?? (device.platform === "ios" ? "phone" : device.platform);
+  const Icon = (kind ? KIND_ICONS[kind] : undefined) ?? CircleHelpIcon;
 
   const commit = () => {
     setEditing(false);
@@ -398,7 +427,15 @@ function DeviceRow({
           </span>
         )
       }
-      hint={device.lastSeenAt ? `Last seen ${fmtAgo(device.lastSeenAt)}` : `Paired ${fmtAgo(device.createdAt)}`}
+      hint={[
+        device.lastSeenAt ? `Last seen ${fmtAgo(device.lastSeenAt)}` : `Paired ${fmtAgo(device.createdAt)}`,
+        // WHERE IT IS, which is the whole point of the report-back fields: two
+        // rows reading "Chrome" are told apart by the address they came from.
+        device.identity?.address,
+        device.identity?.origin ? `via ${device.identity.origin}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
       control={
         <div className="flex items-center gap-2">
           <Segmented
