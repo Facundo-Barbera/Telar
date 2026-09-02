@@ -73,7 +73,7 @@ const STOP_TONE: Record<string, string> = {
 
 function Label({ children }: { children: React.ReactNode }) {
   return (
-    <p className="px-3 pt-3 pb-1.5 text-[10px] font-medium tracking-wider text-muted-foreground/70 uppercase">
+    <p className="px-3 pt-3 pb-1.5 text-[0.625rem] font-medium tracking-wider text-muted-foreground/70 uppercase">
       {children}
     </p>
   );
@@ -201,7 +201,7 @@ export function NightSurface({
                       <XIcon className="size-3.5" />
                     </Button>
                   </div>
-                  <p className="mt-1 truncate pl-5.5 font-mono text-[10px] text-muted-foreground">
+                  <p className="mt-1 truncate pl-5.5 font-mono text-[0.625rem] text-muted-foreground">
                     {entry.step ? `${entry.step.n} · ${describeWork(entry)}` : describeWork(entry)}
                     {entry.origin === "night" && <span className="text-muted-foreground/60"> · overnight</span>}
                   </p>
@@ -233,7 +233,7 @@ export function NightSurface({
                   )}
                   <ul className="mt-1.5 space-y-1">
                     {job.openQuestions?.map((question) => (
-                      <li key={question} className="flex items-start gap-2 text-[11px] leading-relaxed text-muted-foreground">
+                      <li key={question} className="flex items-start gap-2 text-[0.6875rem] leading-relaxed text-muted-foreground">
                         <span className="mt-1.5 size-1 shrink-0 rounded-full bg-spool" />
                         {question}
                       </li>
@@ -265,7 +265,7 @@ export function NightSurface({
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-xs text-foreground">{job.title}</span>
                       {job.note && (
-                        <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">{job.note}</span>
+                        <span className="mt-0.5 block text-[0.6875rem] leading-relaxed text-muted-foreground">{job.note}</span>
                       )}
                     </span>
                   </>
@@ -302,7 +302,7 @@ export function NightSurface({
                 A stop reason is never omitted. "It stopped" with no reason is
                 the thing that makes an unattended system untrustworthy. */}
             {night.stop && (
-              <p className={cn("px-3 pt-2 text-[11px] leading-relaxed", STOP_TONE[night.stop.reason] ?? "text-muted-foreground")}>
+              <p className={cn("px-3 pt-2 text-[0.6875rem] leading-relaxed", STOP_TONE[night.stop.reason] ?? "text-muted-foreground")}>
                 {night.stop.note}
               </p>
             )}
@@ -310,7 +310,7 @@ export function NightSurface({
               /* WHAT IT SPENT, stated plainly. An assistant that spends money
                  unattended has to be able to say how much — and this is the
                  only number on the surface, so it cannot read as a score. */
-              <p className="px-3 pt-1 font-mono text-[10px] text-muted-foreground/60 tabular-nums">
+              <p className="px-3 pt-1 font-mono text-[0.625rem] text-muted-foreground/60 tabular-nums">
                 ${night.usage.costUsd.toFixed(2)}
               </p>
             )}
@@ -328,9 +328,9 @@ export function NightSurface({
           Work on this now
         </Button>
         {refusal ? (
-          <p className="rounded-lg bg-muted/60 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground">{refusal}</p>
+          <p className="rounded-lg bg-muted/60 px-2 py-1.5 text-[0.6875rem] leading-relaxed text-muted-foreground">{refusal}</p>
         ) : (
-          <p className="text-[10px] leading-relaxed text-muted-foreground/60">
+          <p className="text-[0.625rem] leading-relaxed text-muted-foreground/60">
             It reads what you dumped and writes briefs and approaches. It starts nothing, ships nothing, and stands down
             the moment you send a message.
           </p>

@@ -34,11 +34,11 @@ import {
   CircleDashedIcon,
   CircleDotIcon,
   ClockIcon,
-  FolderIcon,
   GitBranchIcon,
   PinIcon,
   UndoIcon,
 } from "lucide-react";
+import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
@@ -78,8 +78,8 @@ function TickingDuration({ startedAt }: { startedAt: number }) {
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <span className="shrink-0 text-[11px] text-muted-foreground">{label}</span>
-      <span className="min-w-0 truncate text-right text-[11px] tabular-nums">{value}</span>
+      <span className="shrink-0 text-[0.6875rem] text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate text-right text-[0.6875rem] tabular-nums">{value}</span>
     </div>
   );
 }
@@ -90,7 +90,7 @@ function StatTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col items-center gap-0.5 bg-popover py-2">
       <span className="text-xs font-semibold tabular-nums">{value}</span>
-      <span className="text-[9px] uppercase tracking-wider text-muted-foreground">{label}</span>
+      <span className="text-[0.5625rem] uppercase tracking-wider text-muted-foreground">{label}</span>
     </div>
   );
 }
@@ -119,7 +119,7 @@ function SessionDetails({ session, renderedAt }: { session: SidebarSession; rend
         </span>
         <span className="min-w-0 flex-1">
           <span className="line-clamp-2 text-xs font-semibold leading-snug">{session.title || "Untitled session"}</span>
-          <span className="mt-0.5 flex items-center gap-1 text-[10px]">
+          <span className="mt-0.5 flex items-center gap-1 text-[0.625rem]">
             {session.archived ? (
               <span className="flex items-center gap-0.5 text-muted-foreground">
                 <CircleCheckIcon className="size-2.5" />
@@ -323,12 +323,12 @@ export function SessionRow({
    * and it takes the timestamp's place rather than sitting beside it.
    */
   const statusSlot = snoozing && session.snoozedUntil !== undefined ? (
-    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[0.6875rem] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
       <AlarmClockIcon className="size-3" />
       {wakeLabel(session.snoozedUntil, renderedAt)}
     </span>
   ) : badge ? (
-    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${ACTIVITY_TONE[badge.tone]} ${yieldOnHover}`}>
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[0.6875rem] font-medium ${ACTIVITY_TONE[badge.tone]} ${yieldOnHover}`}>
       {/* A SPINNER FOR "STILL GOING", A DOT FOR "STOPPED AND WAITING". The
           motion is the fastest read in the list — you see that something is
           alive before you read which row it is — and a request that has parked
@@ -344,7 +344,7 @@ export function SessionRow({
       {badge.ticking && session.activityAt !== undefined ? <TickingDuration startedAt={session.activityAt} /> : null}
     </span>
   ) : (
-    <span className={`shrink-0 text-[11px] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
+    <span className={`shrink-0 text-[0.6875rem] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>{time}</span>
   );
 
   /**
@@ -380,8 +380,16 @@ export function SessionRow({
         {pinMark}
         {showProject && session.projectName ? (
           <>
-            <FolderIcon className="size-3 shrink-0 text-sidebar-foreground/40" />
-            <span className="min-w-0 flex-1 truncate text-[11px] text-sidebar-foreground/50">{session.projectName}</span>
+            {/* The project's OWN mark when its checkout carries one — a
+                favicon, an app icon — else a tinted initial. The generic
+                folder is the final fallback, inside ProjectAvatar. */}
+            <ProjectAvatar
+              name={session.projectName}
+              {...(session.projectId ? { projectId: session.projectId } : {})}
+              {...(session.projectIcon ? { icon: session.projectIcon } : {})}
+              size={12}
+            />
+            <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-sidebar-foreground/50">{session.projectName}</span>
           </>
         ) : (
           <span className="flex-1" />
@@ -418,7 +426,7 @@ export function SessionRow({
         space. Nothing else does, and a card with nothing to add is two lines.
       */}
       {subtitle && (
-        <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-sidebar-foreground/45">
+        <span className="flex min-w-0 items-center gap-1.5 text-[0.6875rem] text-sidebar-foreground/45">
           {subtitle.kind === "branch" ? <GitBranchIcon className="size-3 shrink-0" /> : null}
           <span className="min-w-0 flex-1 truncate">{subtitle.text}</span>
           <span className="shrink-0 opacity-60">
@@ -656,7 +664,7 @@ export function SessionRow({
                       onClick={() => void patchSession(session.id, { snoozedUntil: preset.until }).then(onRefresh)}
                     >
                       <span className="flex-1">{preset.label}</span>
-                      <span className="font-mono text-[10px] tabular-nums text-muted-foreground/60">{preset.when}</span>
+                      <span className="font-mono text-[0.625rem] tabular-nums text-muted-foreground/60">{preset.when}</span>
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>

@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { turnActivity } from "./transcript";
+import { transcriptTasks, turnActivity } from "./transcript";
 import { describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
 
 describe("session workspace presentation", () => {
@@ -116,5 +116,51 @@ describe("what a live turn says it is doing", () => {
   test("a running tool is Working; nothing running is Thinking", () => {
     expect(turnActivity(turn({ items: [{ status: "inProgress" }] })).label).toBe("Working");
     expect(turnActivity(turn({ items: [{ status: "completed" }] })).label).toBe("Thinking");
+  });
+
+  test("a backgrounded shell is not a chip in the conversation", () => {
+    /**
+     * THE BUG THIS PINS: `bun run verify` backgrounded came back in the chat as
+     * a bot-icon row titled with the command and "0 steps" — a delegate that
+     * appeared never to report. It reports fine; a background shell has no
+     * journal items, and the tool call that started it is already a row in this
+     * same turn. Its live process belongs on the Processes tab.
+     */
+    const shell = task({ id: "verify", kind: "background", title: "Run full verify" });
+    expect(transcriptTasks([shell, task({ id: "agent" })]).map((t) => t.id)).toEqual(["agent"]);
+    expect(transcriptTasks([shell])).toEqual([]);
+  });
+
+  test("a warp run survives the filter that drops its background siblings", () => {
+    /**
+     * A run's own row is `background` because it outlives its turn, but it is
+     * the row that says a fan-out happened at all — dropping it would leave its
+     * agents as loose chips under no heading. Same rule as `splitRoster`: the
+     * kind split happens AFTER the warp fold, never before.
+     */
+    const run = task({ id: "run", kind: "background", title: "find-flaky-tests", warp: { warpRunId: "run", warpName: "find-flaky-tests" } });
+    const child = task({ id: "child", warp: { warpRunId: "run", warpName: "find-flaky-tests" } });
+    const shell = task({ id: "tail", kind: "background", title: "tail -f dev.log" });
+    expect(transcriptTasks([run, child, shell]).map((t) => t.id)).toEqual(["run", "child"]);
+  });
+
+  test("an unrecognised kind stays a chip, matching the contract's denylist", () => {
+    // The contract is denylist-shaped on purpose: a provider that renames its
+    // agent-flavoured task types must produce an unstyled chip, never an
+    // invisible one. Only `background` is filtered.
+    expect(transcriptTasks([task({ id: "novel", kind: "local_workflow" })]).map((t) => t.id)).toEqual(["novel"]);
+  });
+
+  test("a compaction outranks everything the line could say", () => {
+    // While the provider squeezes its memory it is not working on the task,
+    // and "Thinking" over that long silence is the read this line prevents.
+    expect(
+      turnActivity(
+        turn({
+          items: [{ status: "inProgress", detail: { type: "context_compaction" } }],
+          tasks: [task()],
+        }),
+      ).label,
+    ).toBe("Compacting context");
   });
 });

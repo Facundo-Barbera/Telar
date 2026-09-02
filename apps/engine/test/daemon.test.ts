@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineClient, EngineClientError } from "@telar/engine-client";
+import { EngineClient, EngineClientError, TELAR_DARK, TELAR_LIGHT, type PublishedAppearance } from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 
@@ -140,7 +140,7 @@ test("attachments upload as raw bytes, ride the turn, and the browser answers ev
   // that is a `none` rather than a failure — the same answer a session that has
   // never browsed gets.
   await expect(client.browserState(session.session.id)).resolves.toEqual({
-    browser: { scopeKey: session.session.id, provider: "none", running: false, tabs: [] },
+    browser: { scopeKey: session.session.id, provider: "none", running: false, tabs: [], canStart: false },
   });
 });
 
@@ -203,4 +203,200 @@ test("the provider registry answers with its probe, and never with a secret", as
 
   await expect(client.removeProviderInstance("claude")).rejects.toMatchObject({ status: 409 });
   await expect(client.removeProviderInstance("claude_work")).resolves.toEqual({ removed: true });
+});
+
+/** A minimal but REAL published look — the client parses what it reads, so a
+ *  hand-waved blob would come back as `null` and prove nothing. Only the
+ *  members the parser treats as load-bearing are spelt out; the rest of a Look
+ *  falls back on its own, which is itself part of the contract. */
+function publishedLook(label: string): PublishedAppearance {
+  return {
+    version: 2,
+    updatedAtHint: 1,
+    scheme: "dark",
+    translucent: false,
+    frost: "blur",
+    resolved: {
+      accent: {
+        name: "sea",
+        light: { primary: "oklch(0.488 0.1 205)", primaryForeground: "oklch(1 0 0)" },
+        dark: { primary: "oklch(0.68 0.11 205)", primaryForeground: "oklch(0.17 0.04 205)" },
+      },
+      fontStacks: { sans: '"Geist", sans-serif', mono: '"Geist Mono", monospace' },
+    },
+    look: {
+      version: 1,
+      id: "published",
+      label,
+      theme: { light: TELAR_LIGHT, dark: TELAR_DARK },
+      backdrop: { kind: "none" },
+      accent: "sea",
+      fontSans: "geist",
+      fontMono: "geist",
+      fontSansCustom: "",
+      fontMonoCustom: "",
+      fontSize: 17,
+      fontMonoSize: 13,
+      translucencyLevel: 50,
+    },
+  };
+}
+
+test("the appearance mailbox round-trips a published look, caches it, and answers the right refusals", async () => {
+  // The cockpit's look lives in a browser's localStorage; this route is the
+  // only way a paired phone can learn it. The daemon deliberately understands
+  // nothing about the payload — see EngineStore.setAppearance — while the
+  // CLIENT parses it, because the blob crossed a trust boundary to get here.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const url = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance`;
+  const auth = { authorization: `Bearer ${daemon.discovery.token}` };
+
+  // Nothing published: no look, and no timestamp to revalidate against.
+  await expect(client.appearance()).resolves.toEqual({ appearance: null, updatedAt: null });
+
+  const blob = publishedLook("Sea at night");
+  const written = await client.setAppearance(blob);
+  expect(written.ok).toBe(true);
+  expect(written.updatedAt).toBeGreaterThan(0);
+
+  const read = await client.appearance();
+  expect(read.appearance).toEqual(blob);
+  expect(read.updatedAt).toBe(written.updatedAt);
+
+  // THE ETAG AND ITS 304. A published look carries its backdrop's pixels, so a
+  // client that polls this must be able to ask "still the same?" without
+  // paying for the answer twice.
+  const first = await fetch(url, { headers: auth });
+  const etag = first.headers.get("etag");
+  expect(etag).toBe(written.etag);
+  expect(etag).toBeTruthy();
+  const revalidated = await fetch(url, { headers: { ...auth, "if-none-match": etag! } });
+  expect(revalidated.status).toBe(304);
+  expect(revalidated.headers.get("etag")).toBe(etag);
+  expect(await revalidated.text()).toBe("");
+  // A tag from before somebody else republished is NOT a match.
+  const republished = await client.setAppearance(publishedLook("Sea at noon"));
+  expect(republished.etag).not.toBe(etag);
+  expect((await fetch(url, { headers: { ...auth, "if-none-match": etag! } })).status).toBe(200);
+
+  // A look several megabytes wide, which the old 64 KB cap forbade, lands: the
+  // wallpaper IS part of the look now. (The refusal above it has its own test —
+  // see below for why it cannot share a connection with anything.)
+  const heavy = publishedLook("With a wallpaper");
+  heavy.look.backdrop = { kind: "image", fit: "cover", blur: 0, dim: 0, image: `data:image/webp;base64,${"A".repeat(2 * 1024 * 1024)}` };
+  await expect(client.setAppearance(heavy)).resolves.toMatchObject({ ok: true });
+
+  // 405, NOT 404: the path exists, the verb does not — and `Allow` says which.
+  const wrongVerb = await fetch(url, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" });
+  expect(wrongVerb.status).toBe(405);
+  expect(wrongVerb.headers.get("allow")).toBe("GET, PUT, DELETE");
+
+  // DELETE withdraws the look, and is idempotent — "nothing is published" is
+  // the state the caller asked for whether or not anything was.
+  await expect(client.clearAppearance()).resolves.toEqual({ ok: true });
+  await expect(client.appearance()).resolves.toEqual({ appearance: null, updatedAt: null });
+  await expect(client.clearAppearance()).resolves.toEqual({ ok: true });
+
+  // A blob the shared parser cannot read comes back as `null` rather than as
+  // garbage — but its timestamp still says somebody published something, which
+  // is what lets a reader tell "nobody has" from "I cannot read theirs".
+  daemon.store.setAppearance({ version: 2, look: { id: "x" } });
+  const unreadable = await client.appearance();
+  expect(unreadable.appearance).toBeNull();
+  expect(unreadable.updatedAt).toBeGreaterThan(0);
+
+  // Still paired-only: the bearer check runs before routing, as everywhere.
+  const unauthenticated = await fetch(url);
+  expect(unauthenticated.status).toBe(401);
+});
+
+test("an oversize appearance is refused before the engine buffers it", async () => {
+  // ITS OWN TEST, AND ITS OWN DAEMON, for a reason worth writing down: this
+  // request is answered WITHOUT reading its body, which is the entire point —
+  // buffering eight megabytes to discover they are too many is the denial of
+  // service the cap exists to prevent. The socket is therefore left with an
+  // undelivered upload on it and the response says `connection: close`.
+  // `fetch` pools by origin and will not reuse such a socket, so anything
+  // sharing this daemon after the refusal would wait on a connection that is
+  // never coming back. Nothing follows it here; the engine's own state is
+  // checked in-process instead.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const url = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance`;
+
+  const refused = await fetch(url, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${daemon.discovery.token}`, "content-type": "application/json" },
+    body: JSON.stringify({ wallpaper: "x".repeat(9 * 1024 * 1024) }),
+  });
+  expect(refused.status).toBe(413);
+  expect(refused.headers.get("connection")).toBe("close");
+  expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("invalid_request");
+  // Nothing was written: a refusal is not a publish.
+  expect(daemon.store.getAppearance()).toBeNull();
+});
+
+test("a structured completion validates its request before spending a harness", async () => {
+  // ONLY THE REFUSALS ARE TESTED HERE, and deliberately: a valid request spawns
+  // a real `claude -p` child, so asserting the happy path would make this suite
+  // depend on which CLI is installed and on a network round trip. What belongs
+  // to the daemon is the guard in front of that child, and every case below
+  // fails before anything is spawned.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const schema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] };
+
+  await expect(client.completeStructured({ prompt: "   ", schema })).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+  } satisfies Partial<EngineClientError>);
+  await expect(client.completeStructured({ prompt: "x".repeat(20_001), schema })).rejects.toMatchObject({ status: 400 });
+  await expect(
+    client.completeStructured({ prompt: "hello", schema: [] as unknown as Record<string, unknown> }),
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(client.completeStructured({ prompt: "hello", schema, model: "  " })).rejects.toMatchObject({ status: 400 });
+});
+
+test("the appearance home is served, written and refuses what is not an image", async () => {
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const base = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance/home`;
+  const auth = { authorization: `Bearer ${daemon.discovery.token}` };
+  const json = { ...auth, "content-type": "application/json" };
+
+  // An untouched home is empty rather than an error.
+  const empty = await (await fetch(base, { headers: auth })).json();
+  expect(empty).toEqual({ settings: null, themes: [], looks: [], images: [], skipped: [] });
+
+  await fetch(`${base}/themes/dusk`, { method: "PUT", headers: json, body: JSON.stringify({ label: "Dusk", light: {}, dark: {} }) });
+  await fetch(`${base}/settings`, { method: "PUT", headers: json, body: JSON.stringify({ accent: "sea" }) });
+  const filled = (await (await fetch(base, { headers: auth })).json()) as { themes: { id: string }[]; settings: unknown };
+  expect(filled.themes.map((theme) => theme.id)).toEqual(["dusk"]);
+  expect(filled.settings).toEqual({ accent: "sea" });
+
+  // A PNG round-trips under its content hash and comes back immutable.
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
+  const stored = (await (await fetch(`${base}/images`, { method: "POST", headers: auth, body: png })).json()) as { name: string };
+  expect(stored.name.endsWith(".png")).toBe(true);
+  const served = await fetch(`${base}/images/${stored.name}`, { headers: auth });
+  expect(served.headers.get("content-type")).toBe("image/png");
+  expect(served.headers.get("cache-control")).toContain("immutable");
+  expect(Buffer.from(await served.arrayBuffer())).toEqual(png);
+
+  // A shell script named like a picture is refused where the bytes are read.
+  const refused = await fetch(`${base}/images`, { method: "POST", headers: auth, body: Buffer.from("#!/bin/sh\n") });
+  expect(refused.status).toBe(400);
+
+  // A traversal cannot reach out of images/.
+  expect((await fetch(`${base}/images/${encodeURIComponent("../settings.json")}`, { headers: auth })).status).toBe(404);
+
+  // Deleting is idempotent, and the verb set is stated rather than 404'd.
+  expect((await fetch(`${base}/themes/dusk`, { method: "DELETE", headers: auth })).status).toBe(200);
+  expect((await fetch(`${base}/themes/dusk`, { method: "DELETE", headers: auth })).status).toBe(200);
+  const wrongVerb = await fetch(base, { method: "POST", headers: json, body: "{}" });
+  expect(wrongVerb.status).toBe(405);
+  expect(wrongVerb.headers.get("allow")).toBe("GET");
 });

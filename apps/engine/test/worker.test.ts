@@ -412,3 +412,40 @@ test("a mutating socket call journals browser.state onto the turn that made it",
     await socket.close();
   }
 });
+
+test("a send-now delivery lands in the driver's mailbox and the promoted turn goes steered", async () => {
+  // The driver plays a long turn: it waits for a steered message, drains it,
+  // and answers with what it heard — proof the text crossed heartbeat →
+  // mailbox → driver, and that the ack settled the promoted turn.
+  const driver: TurnDriver = {
+    async run({ steer }) {
+      await steer!.wake();
+      return { text: `heard:${steer!.drain().join("|")}` };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  await client.submitTurn(sessionId, { runId: "run_live", input: "Long task" });
+  await worker.tick();
+  await eventually(async () => {
+    expect((await client.session(sessionId)).turns.find((turn) => turn.runId === "run_live")?.state).toBe("running");
+  });
+
+  await client.submitTurn(sessionId, { runId: "run_next", input: "Also do this" });
+  await client.promoteTurn(sessionId, "run_next");
+  // The next heartbeat carries the delivery; the driver hears it and finishes.
+  await worker.tick();
+  await eventually(async () => {
+    const turns = (await client.session(sessionId)).turns;
+    expect(turns.find((turn) => turn.runId === "run_live")).toMatchObject({ state: "completed", resultText: "heard:Also do this" });
+    expect(turns.find((turn) => turn.runId === "run_next")?.state).toBe("steered");
+  });
+});
+
+test("a heartbeat WITHOUT a steer key still parses — the forward-compat default", async () => {
+  // An older engine sends no steer array; the schema's .default([]) is what
+  // keeps a newer worker from failing every heartbeat against it. Pinned at
+  // the schema, where the guarantee lives.
+  const { WorkerStatus } = await import("@telar/engine-client");
+  const parsed = WorkerStatus.parse({ workerId: "worker_one", heartbeatAt: 1, cancel: [], resolved: [] });
+  expect(parsed.steer).toEqual([]);
+});

@@ -17,8 +17,12 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { appendJournalEvents, isActiveTurn, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
+import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
 import { canvasHref } from "@/lib/session-list";
+import { isSettled } from "@/lib/session-settling";
+import { useInboxPolicy } from "@/lib/inbox-policy";
+import { useSessionDefaults } from "@/lib/session-defaults";
+import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
@@ -51,12 +55,18 @@ const api = createEngineApi();
  *  hold their minimum widths at once. Chosen as rail (16rem) + conversation
  *  floor (24rem) + panel floor (20rem), rounded up. */
 const NARROW_WINDOW = 1280;
+/** The masthead's "Spin into loom" entrance — off until the flow is ready to
+ *  live in every session's header. See the render site for why off means
+ *  absent rather than greyed. */
+const SPIN_ENTRANCE_ENABLED = false;
 const terminal: Record<Exclude<TurnState, "queued" | "claimed" | "running">, string> = {
   completed: "Completed",
   failed: "Failed",
   stopped: "Stopped",
   ambiguous: "Needs recovery decision",
   discarded: "Discarded after recovery decision",
+  steering: "Sending into the running turn",
+  steered: "Sent into the running turn",
 };
 
 export function describeTurnState(state: TurnState): { label: string; tone: "active" | "done" | "attention" | "danger" | "muted" } {
@@ -67,6 +77,8 @@ export function describeTurnState(state: TurnState): { label: string; tone: "act
   if (state === "failed") return { label: terminal.failed, tone: "danger" };
   if (state === "ambiguous") return { label: terminal.ambiguous, tone: "attention" };
   if (state === "stopped") return { label: terminal.stopped, tone: "muted" };
+  if (state === "steering") return { label: terminal.steering, tone: "active" };
+  if (state === "steered") return { label: terminal.steered, tone: "done" };
   return { label: terminal.discarded, tone: "muted" };
 }
 
@@ -157,7 +169,11 @@ function SessionMasthead({
        row at every width. */
     <header
       className={cn(
-        "app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
+        // `app-ground`: the masthead is the top of the canvas, and it used to
+        // go see-through only because the wash rules happened to match the
+        // string `bg-background/65`. The opt-in is a class now, not a class
+        // name — see the translucency note in globals.css.
+        "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
         mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
       )}
     >
@@ -227,14 +243,20 @@ function SessionMasthead({
         {/* SPIN INTO LOOM (docs/loom-model-v1.md): when this conversation has
             produced enough shape, hand it to the weaver. The session becomes
             the loom's origin and detaches — it leaves this surface and lives
-            in the loom's room from then on. */}
-        {session && !readOnly && (
+            in the loom's room from then on.
+
+            PARKED, NOT SHIPPED. The flow behind this glyph needs more work
+            before it earns a place in every session's header, and a disabled
+            button would be chrome apologising for itself — so nothing renders
+            until the flag flips. The Looms place stays reachable through the
+            place switcher; only this entrance is closed. */}
+        {SPIN_ENTRANCE_ENABLED && session && !readOnly && (
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             aria-label="Spin into loom"
-            title="Spin into loom — the weaver reads this conversation and proposes threads"
+            title="Spin into loom"
             render={<Link href={`/looms/new?spin=${encodeURIComponent(session.id)}`} />}
           >
             <WorkflowIcon />
@@ -376,7 +398,7 @@ export function SessionTurn({
                 <li
                   key={attachment.id}
                   title={attachment.path}
-                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[11px] text-muted-foreground"
+                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground"
                 >
                   <PaperclipIcon className="size-3 shrink-0" />
                   <span className="max-w-48 truncate">{attachment.name}</span>
@@ -412,7 +434,7 @@ export function SessionTurn({
             />
           )}
           {!folded && turn.usage && !live && (
-            <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+            <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
             </p>
           )}
@@ -425,7 +447,7 @@ export function SessionTurn({
                 type="button"
                 aria-expanded={workShown}
                 onClick={() => setWorkShown((v) => !v)}
-                className="mt-1 inline-flex items-center gap-1 rounded-md text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+                className="mt-1 inline-flex items-center gap-1 rounded-md text-[0.6875rem] text-muted-foreground/70 transition-colors hover:text-foreground"
               >
                 {workShown ? "hide the work" : "how it did this"}
               </button>
@@ -433,7 +455,7 @@ export function SessionTurn({
                 <div className="mt-2 space-y-2">
                   <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
                   {turn.usage && (
-                    <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+                    <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
                       {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
                     </p>
                   )}
@@ -527,9 +549,36 @@ export function SessionCockpit({
    * patches that instead.
    */
   const [draftDriver, setDraftDriver] = useState<ProviderDriverKind>("claude");
-  /** Where the first message will land. `local` matches the engine's own
-   *  default, so an untouched canvas creates what it says it will. */
+  /**
+   * Where the first message will land.
+   *
+   * SEEDED FROM THE STANDING PREFERENCE (Settings → General → Workspace), which
+   * is the same document the engine reads on the create path — so an untouched
+   * canvas creates what it says it will, whatever that preference says. The
+   * initial `local` is only what shows for the tick before the engine answers;
+   * `touched` is what stops a late answer from overwriting a human's pick.
+   */
   const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
+  const [envModeTouched, setEnvModeTouched] = useState(false);
+  const { defaults: sessionDefaults, loading: sessionDefaultsLoading } = useSessionDefaults();
+  const [seededEnvMode, setSeededEnvMode] = useState<"local" | "worktree">();
+  // A render-phase adjustment, not an effect — this app's lint enforces that
+  // for "adjust state when a value changes", and the value here is the
+  // engine's answer arriving.
+  if (!sessionDefaultsLoading && !envModeTouched && seededEnvMode !== sessionDefaults.envMode) {
+    setSeededEnvMode(sessionDefaults.envMode);
+    setDraftEnvMode(sessionDefaults.envMode);
+  }
+  /** EVERY human pick goes through here, so the seed above can never overwrite
+   *  one — including the implicit pick of choosing a base ref. */
+  const chooseEnvMode = useCallback((next: "local" | "worktree") => {
+    setEnvModeTouched(true);
+    setDraftEnvMode(next);
+  }, []);
+  /** The base-ref picker's create-time choice: what a worktree is cut from,
+   *  and optionally the human's own name for its branch. Only meaningful with
+   *  `envMode: "worktree"` — picking a base is what flips the mode there. */
+  const [draftBase, setDraftBase] = useState<{ baseRef?: string; branchName?: string }>({});
   /**
    * How much rope the session will start with.
    *
@@ -632,6 +681,16 @@ export function SessionCockpit({
         if (update.events.length === 0) return;
         cursor.current = update.cursor;
         setEvents((current) => appendJournalEvents(current, update.events));
+        // A PATCH FROM ANOTHER SURFACE — the sidebar settling this session,
+        // the phone renaming it — journals a `session.updated` carrying the
+        // whole record, and that event is not in the snapshot-earning set
+        // (it cannot storm, and it already has everything a snapshot would
+        // fetch). Read the record off the event itself; a snapshot below,
+        // fetched later, still wins.
+        const patched = [...update.events]
+          .reverse()
+          .find((event): event is Extract<EngineEvent, { type: "session.updated" }> => event.type === "session.updated");
+        if (patched) setSession(patched.session);
         if (update.snapshot) {
           setSession(update.snapshot.session);
           setTurns(update.snapshot.turns);
@@ -684,6 +743,33 @@ export function SessionCockpit({
   const browser = useMemo(() => latestBrowserState(events), [events]);
 
   /**
+   * Whether pressing "open a browser" could work HERE, asked once per session.
+   * False when the engine's worker owns the browser out-of-process — offering
+   * the button there would start a second browser beside the agent's own, so
+   * the affordance hides instead (see BrowserSnapshot.canStart).
+   */
+  const [browserCanStart, setBrowserCanStart] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    // Deferred to a task, same rule as the panel restore above: a synchronous
+    // setState in an effect body is a cascading render.
+    const task = window.setTimeout(() => {
+      setBrowserCanStart(false);
+      if (!sessionId) return;
+      api.browserState(sessionId).then(
+        (result) => {
+          if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
+        },
+        () => undefined,
+      );
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(task);
+    };
+  }, [sessionId]);
+
+  /**
    * THREE COLUMNS DO NOT FIT A LAPTOP. Opening the panel on a narrow window
    * collapses the session rail.
    *
@@ -715,6 +801,24 @@ export function SessionCockpit({
     },
     [makeRoomForPanel, updatePanel],
   );
+
+  /**
+   * Launch the session's browser by hand. The engine journals what it opened,
+   * so the tab ALSO arrives through the ordinary event fold — the direct
+   * `showPanelTab` here is only what makes the gesture feel immediate instead
+   * of waiting one sync cycle.
+   */
+  const openBrowser = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const result = await api.browserState(sessionId, { start: true });
+      const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
+      if (active) showPanelTab(browserPanelTab(active.id));
+    } catch {
+      // The engine said no — the panel's own copy already explains when a
+      // browser cannot be started here.
+    }
+  }, [sessionId, showPanelTab]);
 
   /**
    * A PAGE THE ENGINE JUST OPENED GETS A TAB, the way it would in a browser.
@@ -888,9 +992,18 @@ export function SessionCockpit({
   const active =
     transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state));
   const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
-  /** Everything typed but not yet started, oldest first — the pending strip. */
+  /** The provider is squeezing its context right now — an open
+   *  context_compaction row on the live turn. Gates the compact button (and,
+   *  soon, send-now) so the client tells the same story the engine enforces. */
+  const compacting = isCompacting(active);
+  /** Everything typed but not yet started, oldest first — the pending strip.
+   *  A `steering` turn stays in the strip as a spinner: it is mid-flight to
+   *  the running turn and no longer withdrawable. */
   const queued = useMemo(
-    () => transcript.filter((turn) => turn.state === "queued").map((turn) => ({ runId: turn.runId, text: turn.prompt })),
+    () =>
+      transcript
+        .filter((turn) => turn.state === "queued" || turn.state === "steering")
+        .map((turn) => ({ runId: turn.runId, text: turn.prompt, state: turn.state as "queued" | "steering" })),
     [transcript],
   );
 
@@ -906,6 +1019,17 @@ export function SessionCockpit({
   // Only OPEN requests are actionable; resolved ones are history and live in the
   // journal rather than as a card demanding a second answer.
   const openRequests = useMemo(() => requests.filter((request) => request.state === "open"), [requests]);
+  /**
+   * The question the COMPOSER answers — the first open all-choice `user_input`
+   * request. It leaves the turn's approval cards and meets the person at the
+   * box instead (see composer-question-drawer.tsx). Only while the composer
+   * exists: an observed session keeps the card, because there is no composer
+   * to host the drawer and the question must still be visible.
+   */
+  const composerQuestion = useMemo(
+    () => (observe ? undefined : openRequests.find((request) => questionFields(request).length > 0)),
+    [openRequests, observe],
+  );
 
   const stop = async () => {
     if (!active || !sessionId) return;
@@ -916,6 +1040,37 @@ export function SessionCockpit({
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the turn."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /** SEND NOW: the engine promotes; the strip's chip goes spinner via the
+   *  next hydrate. Failures surface like any other action's. */
+  const promote = async (runId: string) => {
+    if (!sessionId) return;
+    try {
+      await api.promoteTurn(sessionId, runId);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not send the message now."));
+    }
+  };
+  /**
+   * A `/compact` turn: the slash command rides the ordinary submit path, so it
+   * queues, journals and reports compaction like any other turn — measured
+   * live against CLI 2.1.246. Offered on Claude sessions only; Codex has no
+   * out-of-turn compaction door (its app-server lives exactly one run).
+   */
+  const compact = async () => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await api.submitTurn(sessionId, { runId: newRunId(), input: "/compact" });
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not start the compaction."));
     } finally {
       setSending(false);
     }
@@ -1017,6 +1172,8 @@ export function SessionCockpit({
           title: text.replace(/\s+/g, " ").slice(0, 80),
           driver: draftDriver,
           envMode: draftEnvMode,
+          ...(draftEnvMode === "worktree" && draftBase.baseRef ? { baseRef: draftBase.baseRef } : {}),
+          ...(draftEnvMode === "worktree" && draftBase.branchName ? { branchName: draftBase.branchName } : {}),
         });
         target = created.session.id;
         // EITHER HALF ALONE COUNTS. A canvas left on the provider default with
@@ -1197,7 +1354,56 @@ export function SessionCockpit({
     }
   };
 
-  const shown = transcript.filter((turn) => turn.state !== "queued");
+  /**
+   * IS THIS CONVERSATION ON THE SETTLED SHELF RIGHT NOW? Same rule, same
+   * inputs as the sidebar (`bandOf` folds the identical fields), so the
+   * banner over the composer and the shelf in the rail can never disagree.
+   * The shelf no longer springs open to show you the row you are inside —
+   * this banner is what says "you are reading settled history" instead.
+   *
+   * Archived is excluded: it reports settled too, but there is no un-settle
+   * for it, and a banner whose one button cannot work is worse than none.
+   */
+  const { policy: inboxPolicy } = useInboxPolicy();
+  const settled = Boolean(
+    session &&
+      session.state !== "archived" &&
+      isSettled(
+        {
+          archived: false,
+          updatedAt: session.updatedAt,
+          ...(session.settledOverride ? { settledOverride: session.settledOverride } : {}),
+          ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
+          ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
+          ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+        },
+        {
+          working: session.activity === "working" || session.activity === "queued",
+          waitingOnYou: session.activity === "blocked",
+        },
+        { now, autoSettleAfterHours: inboxPolicy.autoSettleAfterHours },
+      ),
+  );
+  const unsettle = async () => {
+    if (!sessionId) return;
+    try {
+      // A drift-settled session has no override to clear, and clearing nothing
+      // writes nothing. Setting an override first makes the clearing patch a
+      // real change, and a real change stamps `updatedAt`, which is what
+      // actually restarts the inactivity clock. Same two-step as the row's.
+      if (session?.settledOverride !== "settled") await api.updateSession(sessionId, { settledOverride: "active" });
+      const next = await api.updateSession(sessionId, { settledOverride: null });
+      setSession(next.session);
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not return the session to the list."));
+    }
+  };
+
+  // Queued and mid-flight turns live in the composer's strip; a STEERED turn
+  // is terminal but renders nowhere as a turn — its words are a user_message
+  // row inside the run they joined, and a second copy here would double them.
+  const shown = transcript.filter((turn) => turn.state !== "queued" && turn.state !== "steering" && turn.state !== "steered");
   /**
    * The NEWEST reported usage, not the active turn's: a running turn has no
    * figures yet, and blanking the context readout the moment work starts is
@@ -1272,7 +1478,7 @@ export function SessionCockpit({
                 turn={turn}
                 live={turn.runId === active?.runId}
                 now={now}
-                requests={openRequests.filter((request) => request.runId === turn.runId)}
+                requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
                 sending={sending}
                 onOpenAgent={showAgent}
                 onOpenTab={showPanelTab}
@@ -1287,7 +1493,7 @@ export function SessionCockpit({
         {observe ? (
           <div className="mx-auto mb-4 flex w-full max-w-[50rem] items-center gap-2 rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground">
             <EyeIcon className="size-3.5 shrink-0" />
-            Observing — this thread is driven by its loom. To steer it, talk to the conductor; questions it asks you still appear above.
+            Observing — this thread is driven by its loom. Talk to the conductor to steer it.
           </div>
         ) : (
         <Composer
@@ -1304,7 +1510,15 @@ export function SessionCockpit({
                 onDriverChange: chooseDriver,
                 pendingModel: draftModel,
                 envMode: draftEnvMode,
-                onEnvMode: setDraftEnvMode,
+                onEnvMode: chooseEnvMode,
+                pendingBase: draftBase,
+                // Picking a base IS choosing a worktree: a base for the
+                // shared checkout would mean switching its branch, which the
+                // engine's read-only git surface refuses by construction.
+                onBase: (next: { baseRef?: string; branchName?: string }) => {
+                  setDraftBase(next);
+                  if (next.baseRef || next.branchName) chooseEnvMode("worktree");
+                },
               }
             : {})}
           busy={Boolean(active)}
@@ -1319,6 +1533,17 @@ export function SessionCockpit({
           {...(session ? { session } : {})}
           {...(newestUsage ? { usage: newestUsage } : {})}
           backgroundTasks={backgroundTasks}
+          settled={settled}
+          onUnsettle={() => void unsettle()}
+          {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
+          compacting={compacting}
+          {...(composerQuestion
+            ? {
+                question: composerQuestion,
+                onAnswerQuestion: (requestId: string, answers: Record<string, string>) => void decideRequest(requestId, "accept", { answers }),
+                onCancelQuestion: (requestId: string) => void decideRequest(requestId, "cancel"),
+              }
+            : {})}
           onDraftChange={(nextDraft) => {
             setDraft(nextDraft);
             setDraftRunId(undefined);
@@ -1326,6 +1551,15 @@ export function SessionCockpit({
           onSubmit={() => void submit()}
           onStop={() => void stop()}
           onWithdraw={(runId) => void withdraw(runId)}
+          {...(running ? { onSendNow: (runId: string) => void promote(runId) } : {})}
+          sendNowDisabled={compacting || openRequests.length > 0}
+          sendNowReason={
+            compacting
+              ? "The provider is compacting its context and cannot take a message right now."
+              : openRequests.length > 0
+                ? "Answer the waiting request first."
+                : undefined
+          }
           /**
            * Recall WITHDRAWS the queued turn and puts its words back in the box.
            *
@@ -1356,7 +1590,7 @@ export function SessionCockpit({
           items={items}
           tasks={roster}
           {...(focusedTask ? { focusedTask } : {})}
-          turns={turns}
+          {...(browserCanStart ? { onOpenBrowser: openBrowser } : {})}
           events={events}
           tabs={panel.tabs}
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}

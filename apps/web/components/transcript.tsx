@@ -38,6 +38,7 @@ import {
   GlobeIcon,
   ListTodoIcon,
   Loader2Icon,
+  Minimize2Icon,
   PencilIcon,
   SearchIcon,
   TerminalIcon,
@@ -46,6 +47,7 @@ import {
 } from "lucide-react";
 import type { Item } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { fmtTokens } from "@/lib/format";
 import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
 import { Badge } from "@/components/ui/badge";
@@ -121,7 +123,7 @@ const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 tex
 
 function DiffBody({ diff }: { diff: string }) {
   return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
+    <pre className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[0.6875rem] leading-relaxed">
       {diff.split("\n").map((line, index) => {
         // `---`/`+++`/`@@` are the file header, not a removed and an added
         // line. Tested first, or every diff opens with one of each.
@@ -174,18 +176,18 @@ function ToolRow({ item }: { item: JournalItem }) {
           <>
             <RowIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
             <span className={cn("shrink-0", isError && "text-destructive")}>{label}</span>
-            <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{preview(item)}</span>
+            <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{preview(item)}</span>
           </>
         )}
         {change && (change.linesAdded || change.linesRemoved) ? (
-          <span className="shrink-0 font-mono text-[10px]">
+          <span className="shrink-0 font-mono text-[0.625rem]">
             {change.linesAdded ? <span className="text-success">+{change.linesAdded}</span> : null}
             {change.linesAdded && change.linesRemoved ? " " : null}
             {change.linesRemoved ? <span className="text-destructive">−{change.linesRemoved}</span> : null}
           </span>
         ) : null}
         {item.status === "declined" && (
-          <Badge variant="destructive" className="shrink-0 px-1 py-0 text-[9px]">
+          <Badge variant="destructive" className="shrink-0 px-1 py-0 text-[0.5625rem]">
             declined
           </Badge>
         )}
@@ -200,7 +202,7 @@ function ToolRow({ item }: { item: JournalItem }) {
           {change?.unifiedDiff ? (
             <DiffBody diff={change.unifiedDiff} />
           ) : (
-            <pre className="max-h-60 overflow-auto font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
+            <pre className="max-h-60 overflow-auto font-mono text-[0.6875rem] break-words whitespace-pre-wrap text-muted-foreground">
               {output}
             </pre>
           )}
@@ -223,7 +225,7 @@ function ReasoningRow({ item }: { item: JournalItem }) {
           <span aria-hidden className="text-xs">
             ✻
           </span>
-          <Shimmer as="span" className="text-[11px] font-medium">
+          <Shimmer as="span" className="text-[0.6875rem] font-medium">
             Thinking
           </Shimmer>
         </div>
@@ -245,7 +247,7 @@ function ReasoningRow({ item }: { item: JournalItem }) {
         <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
       </button>
       {open && (
-        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/30 p-2 text-[11px] whitespace-pre-wrap italic text-muted-foreground">
+        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/30 p-2 text-[0.6875rem] whitespace-pre-wrap italic text-muted-foreground">
           {text}
         </p>
       )}
@@ -264,7 +266,7 @@ function PlanRow({ item }: { item: JournalItem }) {
       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <ListTodoIcon className="size-3.5" />
         To-dos
-        <span className="font-mono text-[10px] text-muted-foreground/70">
+        <span className="font-mono text-[0.625rem] text-muted-foreground/70">
           {done}/{steps.length}
         </span>
       </div>
@@ -343,7 +345,7 @@ function AgentChip({ task, onOpen }: { task: JournalTask; onOpen?: (taskId: stri
       )}
       {/* Counted from the rows this agent PRODUCED, which is the only honest
           number available while it is still working. */}
-      <span className="shrink-0 text-[10px] text-muted-foreground">
+      <span className="shrink-0 text-[0.625rem] text-muted-foreground">
         {task.items.length} step{task.items.length === 1 ? "" : "s"}
       </span>
       <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
@@ -351,10 +353,56 @@ function AgentChip({ task, onOpen }: { task: JournalTask; onOpen?: (taskId: stri
   );
 }
 
+/**
+ * A compaction is a SEAM in the conversation, not a tool call: the provider
+ * squeezed its own memory, and this row is why the agent may suddenly know
+ * less than it did a message ago. Which is exactly why it must render — the
+ * generic fallback drew the bare string "context_compaction", and before that
+ * the Claude driver dropped the message entirely and the seam was invisible.
+ */
+function CompactionRow({ item }: { item: JournalItem }) {
+  const detail = item.detail.type === "context_compaction" ? item.detail : undefined;
+  const label = running(item) ? "Compacting context…" : item.status === "failed" ? "Compaction failed" : "Compacted context";
+  const reclaimed =
+    detail?.preTokens !== undefined && detail?.postTokens !== undefined
+      ? `${fmtTokens(detail.preTokens)} → ${fmtTokens(detail.postTokens)}`
+      : undefined;
+  return (
+    <p className={cn(ROW, item.status === "failed" ? "text-destructive" : "text-muted-foreground")}>
+      <Minimize2Icon className="size-3.5 shrink-0" />
+      {running(item) ? (
+        <Shimmer as="span" className="min-w-0 flex-1 truncate">
+          {label}
+        </Shimmer>
+      ) : (
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+      )}
+      {detail?.reason === "auto" && <span className="shrink-0 text-[0.625rem] opacity-70">automatic</span>}
+      {reclaimed && <span className="shrink-0 font-mono text-[0.625rem] tabular-nums">{reclaimed}</span>}
+    </p>
+  );
+}
+
+/**
+ * A message the human SENT NOW — injected into the running turn rather than
+ * queued behind it. Rendered as a user bubble where it landed, because that is
+ * where the agent heard it; without this row the agent's change of direction
+ * would have no visible cause.
+ */
+function SteeredMessageRow({ item }: { item: JournalItem }) {
+  return (
+    <div className="flex justify-end py-1">
+      <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">{itemText(item)}</p>
+    </div>
+  );
+}
+
 export function TranscriptItem({ item }: { item: JournalItem }) {
   if (item.detail.type === "task") return null;
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
+  if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
+  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
   if (item.detail.type === "error") {
     return (
@@ -404,6 +452,33 @@ function renderable(items: JournalItem[]): JournalItem[] {
 }
 
 /**
+ * The tasks the CONVERSATION shows, which is not every task in the turn.
+ *
+ * A BACKGROUNDED SHELL IS NOT A DELEGATE, and drawing it as one was a hole this
+ * file kept open after `Task.kind` was introduced: the Processes tab took the
+ * split, `turnActivity` below took the split, and the chips did not — so a
+ * `bun run verify` came back as a bot-icon row titled with the command and
+ * "0 steps", which reads as a sub-agent that never reported. It reported fine.
+ * It has no steps because a background shell produces no journal items; its
+ * output streams to the turn that started it.
+ *
+ * DROPPED RATHER THAN RESTYLED, and nothing is lost by dropping it: the tool
+ * call that backgrounded the shell is already an ordinary `Ran command` row in
+ * this same turn. The chip was a second, worse telling of a thing the
+ * transcript had already said, and the live process belongs on the Processes
+ * tab, where it can be watched and stopped.
+ *
+ * A WARP RUN SURVIVES THE FILTER. Its own row is `background` — it outlives its
+ * turn — but it carries warp linkage, and it is the row that says a fan-out
+ * happened at all. Dropping it would leave its agents as loose chips under no
+ * heading. This is the same "kind split happens AFTER the warp fold" rule
+ * `splitRoster` states in right-panel.tsx, applied to a flat list.
+ */
+export function transcriptTasks(tasks: readonly JournalTask[]): JournalTask[] {
+  return tasks.filter((task) => task.kind !== "background" || Boolean(task.warp));
+}
+
+/**
  * A run of activity rows: a rolling window while live, a tally once settled.
  * Both are the same sentence at two scales, so the grammar is learned once.
  */
@@ -418,14 +493,18 @@ export function ActivityGroup({
   tasks: JournalTask[];
   onOpenAgent?: (taskId: string) => void;
 }) {
-  const anyFailed = useMemo(() => items.some(failed) || tasks.some((task) => task.state === "failed"), [items, tasks]);
+  // DERIVED ONCE, and everything below reads the derived list — a background
+  // shell must not colour the fold red or hold an otherwise-empty group open
+  // for a chip that is not going to be drawn.
+  const delegates = useMemo(() => transcriptTasks(tasks), [tasks]);
+  const anyFailed = useMemo(() => items.some(failed) || delegates.some((task) => task.state === "failed"), [items, delegates]);
   const [open, setOpen] = useState(false);
   const rows = renderable(items);
-  if (rows.length === 0 && tasks.length === 0) return null;
+  if (rows.length === 0 && delegates.length === 0) return null;
 
   // Sub-agents are never hidden by the window: THAT a fan-out happened is part
   // of the conversation even when what it did is on another surface.
-  const agents = tasks.map((task) => <AgentChip key={task.id} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />);
+  const agents = delegates.map((task) => <AgentChip key={task.id} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />);
 
   if (live) {
     const hidden = Math.max(0, rows.length - 1);
@@ -507,7 +586,7 @@ export function Marker({ children, attention }: { children: React.ReactNode; att
       <span className="h-px flex-1 bg-border" />
       <span
         className={cn(
-          "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-[9px]",
+          "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-[0.5625rem]",
           attention ? "border-warning/40 text-warning" : "border-border text-muted-foreground",
         )}
       >
@@ -568,12 +647,12 @@ export function WorkingIndicator({
   const silent = !delegated && quiet >= SILENCE_THRESHOLD;
 
   return (
-    <div className={cn("flex items-center gap-2 text-[11px] text-muted-foreground/70", silent && "text-warning/80")}>
+    <div className={cn("flex items-center gap-2 text-[0.6875rem] text-muted-foreground/70", silent && "text-warning/80")}>
       <span
         aria-hidden
         className={cn("size-1.5 shrink-0 rounded-full motion-safe:animate-pulse", silent ? "bg-warning" : "bg-muted-foreground/50")}
       />
-      <Shimmer as="span" className={cn("text-[11px]", silent && "text-warning/80")}>
+      <Shimmer as="span" className={cn("text-[0.6875rem]", silent && "text-warning/80")}>
         {label}
       </Shimmer>
       <span className="shrink-0 font-mono tabular-nums">{formatElapsed(elapsed)}</span>
@@ -593,6 +672,12 @@ export function WorkingIndicator({
  * directly above and could not see in the one line that claimed to summarise it.
  */
 export function turnActivity(turn: Pick<JournalTurn, "items" | "tasks">): { label: string; delegated: boolean } {
+  // A compaction outranks everything: while it runs the provider is not
+  // working on the task, it is squeezing its memory, and "Thinking" over a
+  // long silence is exactly the read this line exists to prevent.
+  if (turn.items.some((item) => item.detail?.type === "context_compaction" && item.status === "inProgress")) {
+    return { label: "Compacting context", delegated: false };
+  }
   const live = turn.tasks.filter((task) => task.state === "running" || task.state === "pending" || task.state === "waiting");
   const agents = live.filter((task) => task.kind !== "background").length;
   if (agents > 0) return { label: `${agents} sub-agent${agents === 1 ? "" : "s"} working`, delegated: true };

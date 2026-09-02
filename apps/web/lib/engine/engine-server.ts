@@ -81,6 +81,9 @@ const statusByCode: Record<EngineErrorCode, number> = {
   worker_unavailable: 503,
   provider_unavailable: 503,
   driver_failed: 502,
+  // 502 like `driver_failed`: this cockpit is fine, the harness behind the
+  // one-shot completion did not answer.
+  textgen_failed: 502,
   internal_error: 500,
 };
 

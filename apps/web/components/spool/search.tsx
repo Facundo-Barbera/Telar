@@ -106,7 +106,7 @@ export function SpoolSearchControl({ onHit }: { onHit: (hit: SpoolSearchHit) => 
             if (group.length === 0) return null;
             return (
               <div key={kind}>
-                <p className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
+                <p className="px-2 pt-1.5 pb-0.5 text-[0.625rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
                   {header}
                 </p>
                 <ul>
@@ -132,14 +132,14 @@ export function SpoolSearchControl({ onHit }: { onHit: (hit: SpoolSearchHit) => 
                           </span>
                           {/* Over, in its own vocabulary, and still findable —
                               a word and a dimming, never a hiding. */}
-                          {hit.closed && <span className="shrink-0 text-[10px] text-muted-foreground/50">· over</span>}
+                          {hit.closed && <span className="shrink-0 text-[0.625rem] text-muted-foreground/50">· over</span>}
                           {hit.subject && (
-                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">{hit.subject}</span>
+                            <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground/60">{hit.subject}</span>
                           )}
                         </span>
                         <span
                           className={cn(
-                            "block min-w-0 truncate text-[11px] leading-relaxed",
+                            "block min-w-0 truncate text-[0.6875rem] leading-relaxed",
                             hit.closed ? "text-muted-foreground/40" : "text-muted-foreground",
                           )}
                         >

@@ -26,13 +26,18 @@
  * "search flattens every band", the same survivor rule that keeps the session
  * you are LOOKING AT visible after it drops into a shelf.
  */
-import { DEFAULT_AUTO_SETTLE_DAYS, type Session, type SessionActivity } from "@telar/engine-client";
+import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity } from "@telar/engine-client";
 import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
 
 export const SESSION_PAGE_SIZE = 20;
+/** The settled shelf's own page. Smaller than the live list's, because the
+ *  shelf is history: months of it accumulate, and opening the shelf should
+ *  answer "what did I just finish" without burying the two live rows below
+ *  a hundred dead ones. "Show more" walks the rest. */
+export const SETTLED_PAGE_SIZE = 10;
 /** Kept for the callers that describe the window in prose. The rule itself
  *  takes the window as a parameter — see `bandOf`. */
-export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_DAYS * 24 * 60 * 60 * 1000;
+export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_HOURS * 60 * 60 * 1000;
 
 /**
  * What a row needs to render. A projection of the engine's `Session` plus the
@@ -54,6 +59,9 @@ export type SidebarSession = {
   projectId?: string;
   /** Resolved display name. Absent while the project list is still loading. */
   projectName?: string;
+  /** `Project.icon` — the content-derived key behind the engine's icon route.
+   *  Absent when the checkout carries no icon file. */
+  projectIcon?: string;
   createdAt: number;
   updatedAt: number;
   archived: boolean;
@@ -96,13 +104,14 @@ export type SidebarSession = {
 };
 
 /** The engine record, flattened into what the rail actually reads. */
-export function toSidebarSession(session: Session, projectName?: string, projectBranch?: string): SidebarSession {
+export function toSidebarSession(session: Session, projectName?: string, projectBranch?: string, projectIcon?: string): SidebarSession {
   return {
     id: session.id,
     title: session.title,
     projectId: session.projectId,
     ...(projectName ? { projectName } : {}),
     ...(projectBranch ? { projectBranch } : {}),
+    ...(projectIcon ? { projectIcon } : {}),
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     archived: session.state === "archived",
@@ -166,7 +175,7 @@ export type SessionListInput = {
   now?: number;
   /** `null` turns the inactivity clock off. Comes from the engine — one answer
    *  per machine, not per browser. See `InboxPolicy`. */
-  autoSettleAfterDays?: number | null;
+  autoSettleAfterHours?: number | null;
   limit?: number;
   settledLimit?: number;
 };
@@ -227,11 +236,11 @@ export function deriveSessionList({
   query = "",
   activeSessionId,
   now = Date.now(),
-  autoSettleAfterDays = DEFAULT_AUTO_SETTLE_DAYS,
+  autoSettleAfterHours = DEFAULT_AUTO_SETTLE_HOURS,
   limit = SESSION_PAGE_SIZE,
   settledLimit = limit,
 }: SessionListInput): SessionListResult {
-  const options: SettlingOptions = { now, autoSettleAfterDays };
+  const options: SettlingOptions = { now, autoSettleAfterHours };
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const eligible = sessions
     .filter((session) => !projectId || session.projectId === projectId)
@@ -326,13 +335,13 @@ export function recentSessionsForCommandKeys(
   sessions: readonly SidebarSession[],
   activeSessionId?: string,
   now = Date.now(),
-  autoSettleAfterDays: number | null = DEFAULT_AUTO_SETTLE_DAYS,
+  autoSettleAfterHours: number | null = DEFAULT_AUTO_SETTLE_HOURS,
 ): SidebarSession[] {
   const list = deriveSessionList({
     sessions,
     ...(activeSessionId ? { activeSessionId } : {}),
     now,
-    autoSettleAfterDays,
+    autoSettleAfterHours,
     limit: 9,
   });
   return [...list.pinned, ...list.sessions].slice(0, 9);

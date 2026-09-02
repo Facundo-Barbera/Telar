@@ -25,10 +25,24 @@ function on(channel, listener) {
  */
 function markShell() {
   const shell = process.platform === "darwin" ? "macos" : "desktop";
-  document.documentElement?.setAttribute("data-telar-shell", shell);
+  // Guarded, not unconditional: the observer below watches this attribute,
+  // and setAttribute fires it even when the value is unchanged — writing
+  // blindly from the callback would be a mutation loop.
+  if (document.documentElement?.getAttribute("data-telar-shell") !== shell) {
+    document.documentElement?.setAttribute("data-telar-shell", shell);
+  }
 }
 markShell();
-document.addEventListener("DOMContentLoaded", markShell, { once: true });
+document.addEventListener("DOMContentLoaded", () => {
+  markShell();
+  // AND KEEP IT SET. React owns <html> in the app router, and its recovery
+  // from a hydration error re-renders the element and strips attributes it
+  // did not put there — seen live: the traffic lights lost their inset until
+  // a manual reload. Every attribute the PAGE sets is re-applied by its own
+  // effects after such a re-render; this is the one attribute only the shell
+  // knows, so the shell is the one who has to put it back.
+  new MutationObserver(markShell).observe(document.documentElement, { attributes: true, attributeFilter: ["data-telar-shell"] });
+}, { once: true });
 
 contextBridge.exposeInMainWorld("telarDesktop", {
   isDesktop: true,
@@ -53,6 +67,15 @@ contextBridge.exposeInMainWorld("telarDesktop", {
    */
   dialog: {
     chooseDirectory: (options) => ipcRenderer.invoke("telar:dialog:choose-directory", options ?? {}),
+  },
+  // Window translucency — the one piece of appearance the renderer cannot do
+  // alone, because the vibrancy layer lives under the page (main.js).
+  appearance: {
+    get: () => ipcRenderer.invoke("telar:appearance:get"),
+    set: (patch) => ipcRenderer.invoke("telar:appearance:set", patch),
+    // Keeps the vibrancy material's light/dark in step with the cockpit's own
+    // scheme — see main.js.
+    setTheme: (theme) => ipcRenderer.invoke("telar:appearance:setTheme", theme),
   },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),

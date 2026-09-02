@@ -581,11 +581,64 @@ test("only enabled MCP servers ride the claim, and disabling one keeps its confi
   expect(() => store.saveMcpServer({ id: "bad", spec: { transport: "carrier-pigeon" } })).toThrow(EngineStateError);
 });
 
+test("a daemon-injected computer-use resolver reaches a claim", () => {
+  // The resolver is an OPTION, not a default — a store built without one (every
+  // other test in this file) never reads the machine's installs.
+  const stateRoot = root();
+  const resolved = {
+    backend: "cua" as const,
+    server: {
+      id: "mac",
+      label: "Computer Use (Mac)",
+      enabled: true,
+      spec: { transport: "stdio" as const, command: "/fake/cua-driver", args: ["mcp"] },
+      createdAt: 0,
+      updatedAt: 0,
+    },
+  };
+  const store = new EngineStore(stateRoot, () => 100, { computerUse: () => resolved });
+  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  expect(store.claimNextTurn("worker_one")?.mcpServers?.map((server) => server.id)).toEqual(["mac"]);
+});
+
 test("a store with no browser attached reports none rather than failing", async () => {
   const { store } = readyStore();
   // The ordinary answer for a session that has never browsed, and the same one
   // a deployment whose worker owns the browser gives. One code path, not two.
-  expect(await store.browserState("session_one")).toEqual({ scopeKey: "session_one", provider: "none", running: false, tabs: [] });
+  // `canStart: false` is what tells a client not to offer an "open a browser"
+  // button that would start one beside the worker's own.
+  expect(await store.browserState("session_one")).toEqual({
+    scopeKey: "session_one",
+    provider: "none",
+    running: false,
+    tabs: [],
+    canStart: false,
+  });
+});
+
+test("a hand-started browser journals its tabs exactly once, so the panel can show them", async () => {
+  const { store } = readyStore();
+  const tabs = [{ id: "0", url: "http://x", title: "X", active: true }];
+  store.attachBrowser({
+    state: async () => ({ provider: "headless" as const, running: true, tabs }),
+    release: async () => undefined,
+  } as never);
+
+  // A plain read journals nothing: asking what the browser shows must never
+  // become history. Only the explicit `start` gesture is an event.
+  await store.browserState("session_one");
+  const before = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  expect(before).toHaveLength(0);
+
+  const started = await store.browserState("session_one", { start: true });
+  expect(started.canStart).toBe(true);
+  // A second press with the same tab set journals nothing new.
+  await store.browserState("session_one", { start: true });
+  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  expect(events).toHaveLength(1);
+  expect((events[0] as { tabs: { url: string }[] }).tabs[0]?.url).toBe("http://x");
 });
 
 test("a local session records the commit it started from, so its review survives the agent committing", () => {
@@ -1104,11 +1157,42 @@ test("a turn that ends takes its sub-agents with it, however it ended", () => {
   store.stopTurn("session_one", "run_one");
 
   const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
-  expect(byId.get("task_a")).toMatchObject({ state: "failed", failure: "the turn was stopped before this agent reported back" });
-  expect(byId.get("task_b")).toMatchObject({ state: "running" });
+  expect(byId.get("task_a")).toMatchObject({ state: "failed" });
+  // THE BACKGROUND TASK DIES TOO — outliving its TURN is the definition of
+  // background, but stopping a LIVE turn kills the provider process, and
+  // every shell it hosted dies with it. Leaving it at `running` made the
+  // session claim "monitoring" forever, with a Stop button that no-opped.
+  expect(byId.get("task_b")).toMatchObject({ state: "failed" });
   // The journal carries the closure, so a live client is not left rendering a
   // sub-agent the store has already given up on.
   expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
+});
+
+test("stop with nothing running settles lingering background work", () => {
+  /**
+   * THE RETROACTIVE CURE. A background task orphaned before the process-death
+   * sweeps existed sits at `running` forever — the session reads "monitoring",
+   * and Stop used to no-op because no turn was live. Now the press means the
+   * only thing it can mean: settle whatever still claims to be working.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Started the watcher" });
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+
+  const result = store.stopTurn("session_one");
+  expect(result.stopped).toBe(true);
+  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  expect(byId.get("task_b")).toMatchObject({ state: "stopped", failure: "stopped from the cockpit" });
+  expect(store.getSession("session_one").activity).toBe("idle");
+  // A second press has nothing left to stop.
+  expect(store.stopTurn("session_one").stopped).toBe(false);
 });
 
 test("a session with live background work is not idle, and says which kind", () => {
@@ -1167,22 +1251,60 @@ test("the inbox policy is one document, defaulted rather than absent", () => {
   // says how long anything stays in the list at all — and it is on the engine
   // so the desktop shell and a browser tab band the same sessions the same way.
   const { store } = readyStore();
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
 
-  expect(store.setInboxPolicy({ autoSettleAfterDays: 14 })).toEqual({ autoSettleAfterDays: 14 });
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 14 });
+  expect(store.setInboxPolicy({ autoSettleAfterHours: 14 })).toEqual({ autoSettleAfterHours: 14 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 14 });
 
   // `null` IS THE OFF SWITCH, and it is a value rather than an omission:
   // "never" is an answer, not a very large duration.
-  expect(store.setInboxPolicy({ autoSettleAfterDays: null })).toEqual({ autoSettleAfterDays: null });
+  expect(store.setInboxPolicy({ autoSettleAfterHours: null })).toEqual({ autoSettleAfterHours: null });
   // An empty patch changes nothing rather than resetting anything.
-  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterDays: null });
+  expect(store.setInboxPolicy({})).toEqual({ autoSettleAfterHours: null });
 
-  for (const bad of [0, 91, 3.5, "7", Number.NaN]) {
-    expect(() => store.setInboxPolicy({ autoSettleAfterDays: bad })).toThrow(EngineStateError);
+  for (const bad of [0, 90 * 24 + 1, 3.5, "7", Number.NaN]) {
+    expect(() => store.setInboxPolicy({ autoSettleAfterHours: bad })).toThrow(EngineStateError);
   }
   // …and the refusal left the stored answer alone.
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: null });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
+});
+
+test("a days-shaped inbox document from before the hours move still means what it said", () => {
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":2}');
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 48 });
+  fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":2,"autoSettleAfterDays":null}');
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
+});
+
+test("the standing session defaults round-trip, and refuse a mode that is not one", () => {
+  // WHAT A SESSION IS BUILT WITH WHEN NOBODY SAID. `local` is what the engine
+  // did before this document existed, so an install that never opens the
+  // settings page behaves exactly as it always has.
+  const { store } = readyStore();
+  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
+
+  expect(store.setSessionDefaults({ envMode: "worktree" })).toEqual({ envMode: "worktree" });
+  expect(store.getSessionDefaults()).toEqual({ envMode: "worktree" });
+  // An empty patch changes nothing rather than resetting anything.
+  expect(store.setSessionDefaults({})).toEqual({ envMode: "worktree" });
+
+  for (const bad of ["", "detached", 1, null]) {
+    expect(() => store.setSessionDefaults({ envMode: bad })).toThrow(EngineStateError);
+  }
+  // …and the refusal left the stored answer alone.
+  expect(store.getSessionDefaults()).toEqual({ envMode: "worktree" });
+});
+
+test("a malformed session-defaults document costs the preference, never the session", () => {
+  // Read on the CREATE path, which is why the never-throws rule matters more
+  // here than anywhere: garbage in this file must not make sessions unopenable.
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "session-defaults.json"), '{"version":1,"envMode":"elsewhere"}');
+  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
+  fs.writeFileSync(path.join(stateRoot, "session-defaults.json"), "not json at all");
+  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
+  expect(() => store.createSession({ id: "session_two", projectId: "project_one" })).not.toThrow();
 });
 
 test("a malformed inbox document costs the preference, never the sidebar", () => {
@@ -1191,9 +1313,9 @@ test("a malformed inbox document costs the preference, never the sidebar", () =>
   // preference, and the worst it can do is band a list wrongly.
   const { store, root: stateRoot } = readyStore();
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), '{"version":1,"autoSettleAfterDays":"soon"}');
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
   fs.writeFileSync(path.join(stateRoot, "inbox.json"), "not json at all");
-  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterDays: 3 });
+  expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: 72 });
 });
 
 test("deleting a session removes everything it owns, and refuses mid-turn", () => {
@@ -1220,4 +1342,71 @@ test("deleting a session removes everything it owns, and refuses mid-turn", () =
   expect(() => store.getSession("session_one")).toThrow(EngineStateError);
   // And it is gone from the list rather than lingering as an unreadable entry.
   expect(store.listSessions("project_one")).toEqual([]);
+});
+
+test("the published appearance is an opaque blob, capped, and survives a restart", () => {
+  // THE STORE'S WHOLE JOB IS TO NOT UNDERSTAND THIS. The cockpit's look lives
+  // in a browser's localStorage and is republished here for paired clients, so
+  // the vocabulary belongs to the cockpit and grows on its release schedule.
+  // What is tested is the mailbox: it holds what it was given, byte for byte,
+  // and it refuses the two things that are not a look.
+  const stateRoot = root();
+  const store = new EngineStore(stateRoot, () => 100);
+
+  // Nothing published yet is `null`, not a default look — a client with no
+  // host to copy wears its own.
+  expect(store.getAppearance()).toBeNull();
+
+  const blob = {
+    version: 1,
+    accent: "sea",
+    fontSize: 17,
+    // A key this engine has never heard of, which is the point: an iOS client
+    // shipping ahead of the engine must not need an engine release.
+    somethingInventedLater: { nested: [1, 2, 3] },
+    theme: { light: { background: "oklch(1 0 0)" }, dark: { background: "oklch(0.145 0 0)" } },
+  };
+  const written = store.setAppearance(blob);
+  expect(written.blob).toEqual(blob);
+  // STAMPED BY THE ENGINE, not by the publisher: the blob's own `updatedAtHint`
+  // is advisory, and an ETag cut from two browsers' disagreeing clocks could
+  // go backwards. What is recorded is when THIS engine accepted the write.
+  expect(written.updatedAt).toBeGreaterThan(0);
+  expect(store.getAppearance()).toEqual({ updatedAt: written.updatedAt, blob });
+
+  // A SNAPSHOT, NOT A PATCH: the second publish replaces the first outright,
+  // because two merged halves would describe a look nobody is wearing.
+  store.setAppearance({ accent: "rose" });
+  expect(store.getAppearance()?.blob).toEqual({ accent: "rose" });
+
+  // Not an object is not a look.
+  expect(() => store.setAppearance([1, 2, 3])).toThrow(EngineStateError);
+  expect(() => store.setAppearance("indigo")).toThrow(EngineStateError);
+  expect(() => store.setAppearance(null)).toThrow(EngineStateError);
+
+  // THE CAP MOVED UP AND CHANGED ITS MEANING. It used to forbid an inlined
+  // wallpaper at 64 KB; a published look now IS a whole Look and legitimately
+  // carries its backdrop's pixels, so a megabyte of image rides through and
+  // only the absurd is refused.
+  const wallpaper = { look: { backdrop: { image: `data:image/webp;base64,${"A".repeat(2 * 1024 * 1024)}` } } };
+  expect(store.setAppearance(wallpaper).blob).toEqual(wallpaper);
+  expect(() => store.setAppearance({ wallpaper: "x".repeat(9 * 1024 * 1024) })).toThrow(EngineStateError);
+  // …and the refusal left the last good publish alone.
+  expect(store.getAppearance()?.blob).toEqual(wallpaper);
+
+  // Cleared is `null` again, and clearing twice is not an error: "nothing is
+  // published" is the state the caller asked for either way.
+  store.clearAppearance();
+  expect(store.getAppearance()).toBeNull();
+  store.clearAppearance();
+  expect(store.getAppearance()).toBeNull();
+
+  // On disk, so a restarted engine still answers a phone that pairs tomorrow.
+  store.setAppearance({ accent: "rose" });
+  expect(new EngineStore(stateRoot, () => 100).getAppearance()?.blob).toEqual({ accent: "rose" });
+
+  // Same never-throws rule as the policies: a corrupt file costs the
+  // decoration, never the request that asked for it.
+  fs.writeFileSync(path.join(stateRoot, "appearance.json"), "not json at all");
+  expect(store.getAppearance()).toBeNull();
 });

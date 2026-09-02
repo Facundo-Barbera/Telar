@@ -22,9 +22,13 @@
  * TWO DEVIATIONS FROM t3, EACH BECAUSE THE ENGINE CANNOT BACK IT:
  *   · No identity line. t3 prints "Authenticated as <email> · Claude Max"; this
  *     engine holds no identity, so the auth line says what was measured.
- *   · No models section. Model choice lives on the composer's own picker here,
- *     fed by asking the harness (apps/engine/src/models.ts) rather than by a
- *     per-instance hidden/favourite list.
+ *   · The identity line is the only one left. There WAS a second — "no models
+ *     section" — and the Models tab is that decision reversed. What has not
+ *     changed is the reason it was written: every row in that tab still comes
+ *     from ASKING the harness (apps/engine/src/models.ts). The tab stores only
+ *     what this login's reader did to that answer — starred, hidden, and the
+ *     ids they typed because the CLI does not publish them yet. t3's tab lists
+ *     a catalogue this app still refuses to keep.
  *
  * THE UPDATE ADVISORY IS A FACT ABOUT THE BINARY, not about this login. Every
  * row for a driver shows the same one and updating from any of them updates all
@@ -40,13 +44,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { Tabs } from "@/components/settings/settings-shell";
+import { ProviderModelsTab } from "@/components/settings/provider-models-tab";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ProviderIcon } from "@/components/session/provider-icon";
 import { CopyCommand } from "@/components/settings/copy-command";
 
-/** What a save may carry. `null` clears, absent leaves alone — the engine's own
- *  three-state rule, mirrored so a form cannot express anything else. */
+type ProviderTab = "configuration" | "models";
+
+/** What a save may carry. */
 export type InstancePatch = {
   displayName?: string | null;
   accentColor?: string | null;
@@ -214,7 +221,7 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
             spellCheck={false}
             autoComplete="off"
           />
-          <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+          <label className="flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">
             <input
               type="checkbox"
               checked={variable.sensitive}
@@ -245,7 +252,7 @@ function EnvEditor({ env, onChange }: { env: ProviderInstanceEnvVar[]; onChange:
       >
         <PlusIcon className="size-3" /> Add variable
       </Button>
-      <p className="text-[11px] leading-snug text-muted-foreground/70">
+      <p className="text-[0.6875rem] leading-snug text-muted-foreground/70">
         Applied to this login&rsquo;s provider process, over the worker&rsquo;s own environment. A configured instance also stops
         inheriting the variables its provider owns — an ambient <code className="font-mono">ANTHROPIC_API_KEY</code> would
         otherwise move a subscription account onto metered billing without saying so.
@@ -286,6 +293,7 @@ export function ProviderInstanceCard({
   onRemove?: () => void;
   error?: string | null;
 }) {
+  const [tab, setTab] = useState<ProviderTab>("configuration");
   const title = displayNameOf(instance);
   const status = probe?.status ?? (instance.enabled ? "warning" : "disabled");
   const summary = providerSummary(probe);
@@ -329,7 +337,7 @@ export function ProviderInstanceCard({
               {/* The routing key, shown when the label is not already it. Every
                   session stores this string; it never changes. */}
               {title !== instance.id && (
-                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[10px] text-muted-foreground">{instance.id}</code>
+                <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-[0.625rem] text-muted-foreground">{instance.id}</code>
               )}
               {version && <code className="text-xs text-muted-foreground">{version}</code>}
               {/* THE MARKER IS A WAY IN, not a decoration: it sits beside the
@@ -349,12 +357,12 @@ export function ProviderInstanceCard({
                 </button>
               )}
               {isDefault && (
-                <Badge variant="outline" className="text-[10px]" title="The provider's base login, detected rather than added">
+                <Badge variant="outline" className="text-[0.625rem]" title="The provider's base login, detected rather than added">
                   built-in
                 </Badge>
               )}
             </div>
-            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[13px] leading-[1.45] text-muted-foreground/80">
+            <p className="flex min-w-0 flex-wrap items-center gap-x-1 text-[0.8125rem] leading-[1.45] text-muted-foreground/80">
               <span>{summary.headline}</span>
               {summary.detail && <span>— {summary.detail}</span>}
             </p>
@@ -397,6 +405,22 @@ export function ProviderInstanceCard({
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-4 px-3 pb-4 pt-1 sm:px-4">
+            {/* CONFIGURATION AND MODELS, the two things there are to say about a
+                login. They are tabs rather than two stacked sections because the
+                model list is long and is read for its own sake — scrolling past
+                a binary path to reach it every time is the tax that made t3
+                split them too. */}
+            <Tabs<ProviderTab>
+              value={tab}
+              onChange={setTab}
+              options={[
+                { value: "configuration", label: "Configuration" },
+                { value: "models", label: "Models" },
+              ]}
+            />
+            {tab === "models" && <ProviderModelsTab instance={instance} />}
+            {tab === "configuration" && (
+            <div className="space-y-4">
             {advisory && (
               <div className="space-y-1.5 rounded-lg border border-border/70 bg-muted/20 p-3">
                 <div className="flex items-center justify-between gap-2">
@@ -411,11 +435,11 @@ export function ProviderInstanceCard({
                     </Button>
                   )}
                 </div>
-                <p className="text-[11px] leading-snug text-muted-foreground">{advisory.detail}</p>
+                <p className="text-[0.6875rem] leading-snug text-muted-foreground">{advisory.detail}</p>
                 {advisory.command && (
                   <>
                     <CopyCommand command={advisory.command} />
-                    <p className="text-[11px] leading-snug text-muted-foreground/70">
+                    <p className="text-[0.6875rem] leading-snug text-muted-foreground/70">
                       Telar picked this from how the CLI was installed, and runs exactly it. Any other login of{" "}
                       {DRIVER_LABEL[instance.driver]} pointing at the same binary moves with it.
                     </p>
@@ -428,7 +452,7 @@ export function ProviderInstanceCard({
               <div className="space-y-1.5">
                 <span className="text-xs font-medium text-foreground">Sign in</span>
                 <CopyCommand command={signInCommand} />
-                <p className="text-[11px] text-muted-foreground/70">
+                <p className="text-[0.6875rem] text-muted-foreground/70">
                   Run this in your terminal. Telar reads the result — it never signs in for you.
                 </p>
               </div>
@@ -442,7 +466,7 @@ export function ProviderInstanceCard({
                 placeholder={title}
                 className="mt-1.5 h-8 text-xs"
               />
-              <span className="mt-1 block text-[11px] text-muted-foreground">
+              <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
                 Shown in the pickers. The routing key ({instance.id}) never changes.
               </span>
             </label>
@@ -452,7 +476,7 @@ export function ProviderInstanceCard({
               <div className="mt-1.5">
                 <AccentPicker {...(instance.accentColor ? { value: instance.accentColor } : {})} onChange={(accentColor) => onPatch({ accentColor })} />
               </div>
-              <span className="mt-1 block text-[11px] text-muted-foreground">Tells this login apart from another on the same provider.</span>
+              <span className="mt-1 block text-[0.6875rem] text-muted-foreground">Tells this login apart from another on the same provider.</span>
             </div>
 
             <label className="block">
@@ -464,7 +488,7 @@ export function ProviderInstanceCard({
                    CLAUDE_CONFIG_DIR at ~/.claude reaches a DIFFERENT, empty
                    Keychain entry and 401s — only an unset variable uses the base
                    login, which is why this slot has to leave it unset. */
-                <p className="mt-1.5 text-[11px] text-muted-foreground">
+                <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
                   Empty — this is the base login. Setting the variable here would reach a different, empty credential store, so Telar
                   leaves it unset.
                 </p>
@@ -478,7 +502,7 @@ export function ProviderInstanceCard({
                     spellCheck={false}
                     autoComplete="off"
                   />
-                  <span className="mt-1 block text-[11px] text-muted-foreground">
+                  <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
                     The folder this login is already signed in with. It must already exist.
                   </span>
                 </>
@@ -500,7 +524,7 @@ export function ProviderInstanceCard({
                   machines, and a full path means one exact build. Offering only
                   the second would make every export of these settings machine-
                   specific for no reason. */}
-              <span className="mt-1 block text-[11px] text-muted-foreground">
+              <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
                 Empty uses <code className="font-mono">{instance.driver}</code> as your shell would resolve it. A bare name looks that
                 name up on PATH; a full path runs exactly that file. Beats{" "}
                 <code className="font-mono">{instance.driver === "codex" ? "CODEX_BIN" : "CLAUDE_CODE_EXECUTABLE"}</code> when both are
@@ -528,6 +552,8 @@ export function ProviderInstanceCard({
             </div>
 
             {error && <p className="text-xs text-destructive">{error}</p>}
+            </div>
+            )}
           </div>
         </CollapsibleContent>
       </Collapsible>

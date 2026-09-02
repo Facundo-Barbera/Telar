@@ -103,12 +103,16 @@ export function GroupHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="sticky top-0 z-10 -mx-px flex items-center gap-2 border-b border-border bg-background/95 px-3 py-1.5 text-foreground backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    /* `app-ground`: a section header is the panel's canvas continuing over the
+       rows it has scrolled past, so over a backdrop it thins with the panel
+       instead of banding across it. Its blur is what keeps the label legible —
+       the same trade the cockpit masthead makes. */
+    <div className="app-ground sticky top-0 z-10 -mx-px flex items-center gap-2 border-b border-border bg-background/95 px-3 py-1.5 text-foreground backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <button type="button" onClick={onToggle} className="flex min-w-0 shrink-0 items-center gap-2 text-left">
         <ChevronRightIcon className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
         {Icon && <Icon className={cn("size-4 shrink-0", tint ?? "text-muted-foreground")} />}
         <span className="truncate text-xs font-semibold tracking-wide text-foreground uppercase">{label}</span>
-        <Badge variant="outline" className="shrink-0 px-1.5 py-0 font-mono text-[10px] text-muted-foreground">
+        <Badge variant="outline" className="shrink-0 px-1.5 py-0 font-mono text-[0.625rem] text-muted-foreground">
           {count}
         </Badge>
       </button>

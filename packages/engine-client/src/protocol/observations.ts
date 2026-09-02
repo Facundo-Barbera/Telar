@@ -222,6 +222,25 @@ export const WorkerStatus = z.object({
       answers: z.record(z.string(), z.unknown()).optional(),
     }),
   ),
+  /**
+   * Send-now deliveries: a queued turn promoted into the RUNNING turn this
+   * worker holds. `runId`/`claimToken` name the running turn; `steerRunId` is
+   * the promoted turn, which the worker acks once the text is in the driver's
+   * mailbox. `.default([])` so a worker built against this schema parses an
+   * OLDER engine's heartbeat — the same forward courtesy the claim's optional
+   * fields extend.
+   */
+  steer: z
+    .array(
+      z.object({
+        sessionId: Id,
+        runId: Id,
+        claimToken: Id,
+        steerRunId: Id,
+        text: z.string().min(1),
+      }),
+    )
+    .default([]),
 });
 export type WorkerStatus = z.infer<typeof WorkerStatus>;
 

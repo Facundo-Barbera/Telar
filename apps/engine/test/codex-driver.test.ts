@@ -19,6 +19,7 @@ import type { McpServer, RequestDecision, TurnObservation } from "@telar/engine-
 import { codexMcpServers, codexSandboxPolicy, codexTurnInput, createCodexDriver, type CodexDriverOptions } from "../src/codex-driver";
 import { codexApprovalRequest, codexUsage } from "../src/codex/items";
 import { ProviderUnavailableError, type DriverRequest } from "../src/driver";
+import { SteerMailbox } from "../src/steering";
 
 const FAKE_BIN = fileURLToPath(new URL("./fixtures/fake-codex-app-server.mjs", import.meta.url));
 
@@ -63,11 +64,12 @@ type RunOptions = {
   prompt?: string;
   cwd?: string;
   providerSessionId?: string;
-  onRequest?: (request: DriverRequest) => Promise<RequestDecision>;
+  onRequest?: (request: DriverRequest) => Promise<RequestDecision | { decision: RequestDecision; answers?: Record<string, unknown> }>;
   controller?: AbortController;
   options?: CodexDriverOptions;
   mcpServers?: McpServer[];
   browserSocket?: { url: string; token: string };
+  steer?: SteerMailbox;
 };
 
 function runTurn(scenario: string, run: RunOptions = {}) {
@@ -86,6 +88,7 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.onRequest ? { onRequest: run.onRequest } : {}),
     ...(run.mcpServers ? { mcpServers: run.mcpServers } : {}),
     ...(run.browserSocket ? { browserSocket: run.browserSocket } : {}),
+    ...(run.steer ? { steer: run.steer } : {}),
   });
   return { result, observations, controller };
 }
@@ -224,6 +227,31 @@ test("the user's MCP servers ride thread/start's config overlay", async () => {
       linear: { url: "https://mcp.linear.app/mcp", http_headers: { Authorization: "Bearer managed" } },
     },
   });
+});
+
+test("Telar's own computer use turns off Codex's native one — for this thread only", async () => {
+  // The claim carries Telar's `mac` server (cua-driver). Codex's bundled
+  // computer_use is disabled in the SAME per-thread config overlay, never
+  // written to config.toml — so the user's own ChatGPT/Codex keeps its native
+  // computer use. Without this the model sees two desktops under two names.
+  await runTurn("plain", {
+    mcpServers: [mcp("mac", { transport: "stdio", command: "/usr/local/bin/cua-driver", args: ["mcp"] })],
+  }).result;
+
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: { mac: { command: "/usr/local/bin/cua-driver", args: ["mcp"] } },
+    features: { computer_use: false },
+  });
+});
+
+test("a claim WITHOUT the mac server leaves Codex's native computer use alone", async () => {
+  // No `features` overlay at all — an absent overlay says nothing, which is not
+  // the same sentence as `computer_use: true`.
+  await runTurn("plain", {
+    mcpServers: [mcp("linear", { transport: "http", url: "https://mcp.linear.app/mcp" })],
+  }).result;
+  const config = sent("thread/start").config as { features?: unknown };
+  expect(config.features).toBeUndefined();
 });
 
 test("the browser socket rides the SAME overlay, Telar last, and the token never touches argv", async () => {
@@ -704,6 +732,50 @@ test("a declined MCP approval answers in the elicitation's vocabulary, not the a
 
   expect(seen.map((request) => request.kind)).toEqual(["tool_call"]);
   expect(replies()[0]?.result).toEqual({ action: "decline" });
+});
+
+test("a steered message rides turn/steer with the expected turn id, and is journalled where it landed", async () => {
+  // The fixture's turn finishes only once a turn/steer arrives, so the test
+  // is deterministic: push → pump wakes → wire carries it → turn ends.
+  const steer = new SteerMailbox();
+  const { result, observations } = runTurn("steer", { steer });
+  steer.push("change course");
+  await expect(result).resolves.toMatchObject({ text: "steered" });
+  // The protocol's own params: threadId, the REQUIRED active-turn
+  // precondition, and the same input shape turn/start sends.
+  expect(sent("turn/steer")).toMatchObject({
+    threadId: "fake-thread",
+    expectedTurnId: "fake-turn-1",
+    input: [{ type: "text", text: "change course" }],
+  });
+  // The injected sentence is a transcript row — the agent's change of
+  // direction must have a visible cause.
+  const row = started(observations).find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item.detail.type === "user_message" && row.item.detail.text).toBe("change course");
+});
+
+test("the app-server's requestUserInput becomes a user_input request, and the answers ride back by question id", async () => {
+  // The SAME contract shape the Claude driver's AskUserQuestion arm opens, so
+  // the cockpit's question drawer serves both providers. The wire reply maps
+  // question id → {answers: string[]} (ToolRequestUserInputResponse).
+  const seen: DriverRequest[] = [];
+  const { result } = runTurn("request-user-input", {
+    onRequest: async (request) => {
+      seen.push(request);
+      return { decision: "accept", answers: { "q-color": "Blue" } };
+    },
+  });
+  await expect(result).resolves.toMatchObject({ text: 'answered={"q-color":{"answers":["Blue"]}}' });
+  expect(seen).toHaveLength(1);
+  const detail = seen[0]!.detail;
+  expect(detail.kind === "user_input" && detail.fields).toEqual([
+    { key: "q-color", label: "Which color should the button be?", kind: "choice", choices: ["Red", "Blue"], required: true },
+  ]);
+});
+
+test("a declined requestUserInput answers an EMPTY map — the tool's own no-answer arm, not a hang", async () => {
+  const { result } = runTurn("request-user-input", { onRequest: async () => "decline" });
+  await expect(result).resolves.toMatchObject({ text: "answered={}" });
 });
 
 test("an accepted MCP approval carries the content field the protocol requires", async () => {

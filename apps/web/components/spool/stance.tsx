@@ -1074,7 +1074,7 @@ function RowVerbs({ pin, onSettle }: { pin?: (day: string) => void; onSettle?: (
             const day = event.currentTarget.value;
             if (day) pin(day);
           }}
-          className="h-6 w-[7.5rem] rounded-md border border-border bg-transparent px-1.5 text-[10px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-6 w-[7.5rem] rounded-md border border-border bg-transparent px-1.5 text-[0.625rem] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
       )}
     </span>
@@ -1670,7 +1670,7 @@ function DoneShelf({
               </li>
             ))}
           </ul>
-          <p className="px-3 pt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
+          <p className="px-3 pt-1.5 text-[0.625rem] leading-relaxed text-muted-foreground/60">
             Closed drains here and never deletes — untick a box to reopen. The count below still holds every one.
           </p>
         </>
@@ -1747,7 +1747,7 @@ function NightCard({
         <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{night.stop.note}</p>
       )}
       {night.usage?.costUsd !== undefined && (
-        <p className="mt-1 font-mono text-[10px] text-muted-foreground/60 tabular-nums">
+        <p className="mt-1 font-mono text-[0.625rem] text-muted-foreground/60 tabular-nums">
           ${night.usage.costUsd.toFixed(2)}
         </p>
       )}
@@ -2022,7 +2022,7 @@ export function ScheduledScope({
           count of days, and the dot stays whatever hue the subject wears. */}
       {scheduled.slipped.length > 0 && (
         <div>
-          <p className="px-3 pt-2 pb-1 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
+          <p className="px-3 pt-2 pb-1 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
             pinned to days that have passed — still here
           </p>
           <ul>
@@ -2044,7 +2044,7 @@ export function ScheduledScope({
           date the user stated ("Tue 18 Aug"), quoted, never computed from. */}
       {scheduled.days.map((group) => (
         <div key={group.day}>
-          <p className="px-3 pt-3 pb-1 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
+          <p className="px-3 pt-3 pb-1 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
             {formatDay(group.day)}
           </p>
           <ul>
@@ -2330,7 +2330,7 @@ export function Stance({
             {groupByArea(lines).map((group) => (
               <div key={group.area ?? "__no-area"}>
                 {group.area && (
-                  <p className="px-3 pt-3 pb-1 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
+                  <p className="px-3 pt-3 pb-1 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
                     {group.area}
                   </p>
                 )}
@@ -2485,7 +2485,7 @@ export function Stance({
           {scope && scopeLook?.hasTerrain && (
             <div className="mb-10">
               <div className="flex min-w-0 items-center gap-2 px-3 pb-1">
-                <span className="shrink-0 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">Since your last look</span>
+                <span className="shrink-0 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">Since your last look</span>
                 <FreshnessLine look={scopeLook} looking={looking.includes(scope)} />
               </div>
               <MovementDigest
@@ -2625,7 +2625,7 @@ export function Stance({
             >
               {prepared.map((group) => (
                 <div key={group.key || "__no-lane"}>
-                  <p className="px-3 pt-3 pb-1 text-[11px] font-medium text-muted-foreground/70">
+                  <p className="px-3 pt-3 pb-1 text-[0.6875rem] font-medium text-muted-foreground/70">
                     {group.header ?? "not filed in any lane"}
                   </p>
                   <ul>
@@ -2793,7 +2793,7 @@ export function SelectionBar({
             const day = event.currentTarget.value;
             if (day) onPin(day);
           }}
-          className="h-6 w-[7.5rem] shrink-0 rounded-md border border-border bg-transparent px-1.5 text-[10px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="h-6 w-[7.5rem] shrink-0 rounded-md border border-border bg-transparent px-1.5 text-[0.625rem] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         />
         {/* Tag… — additive: one more word on each, never a rewrite. */}
         <Input
@@ -3458,8 +3458,12 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
        The layering now comes from real surfaces: the side columns step to the
        rail token (`bg-sidebar`, a legible step in BOTH schemes) behind their
        hairlines, and the stance's content stands on its own card sheet. Hue
-       still stays on icons; the room still says so with a mark. */
-    <div className="relative flex h-dvh flex-col bg-background">
+       still stays on icons; the room still says so with a mark.
+
+       `app-ground` because that canvas is a GROUND: this is the room's own
+       full-height sheet, and a backdrop has to show through it exactly as it
+       shows through the cockpit's. */
+    <div className="app-ground relative flex h-dvh flex-col bg-background">
       <SpoolHeader description="Where you left off, what moved, and what needs you." />
       {/* THE LAYER'S SUMMONING DOOR — §13.6. Rendered outside `SpoolHeader`'s
           own props on purpose: that component has no `actions` slot by

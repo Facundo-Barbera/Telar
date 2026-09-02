@@ -69,6 +69,26 @@ describe("extraResources carries the node_modules its trees need", () => {
     expect(destinations).toContain("engine/node_modules");
   });
 
+  /**
+   * THE ICON, AS A PNG, WHICH A PACKAGED APP OTHERWISE DOES NOT HAVE.
+   * electron-builder CONSUMES build/icon.png to produce Contents/Resources/
+   * icon.icns and copies no PNG of its own, so `/api/about/icon` — which is how
+   * a paired phone draws the instance it is talking to — had nothing to serve
+   * from inside the .app while working perfectly in a dev checkout, where
+   * apps/desktop/build is simply a sibling directory. Exactly the shape of the
+   * window-chrome.js failure above.
+   *
+   * `filter` is part of the invariant: this directory also holds the
+   * entitlements plists, which have no business in Resources.
+   */
+  test("the shell's PNG icons are copied where the web tier can serve them", () => {
+    const branding = entries.find((entry) => entry.to === "branding");
+    expect(branding).toBeDefined();
+    expect(branding.from).toBe("build");
+    expect(branding.filter).toEqual(["*.png"]);
+    expect(fs.existsSync(path.join(__dirname, "build", "icon.png"))).toBe(true);
+  });
+
   test("every companion entry names a real subpath of the tree it repairs", () => {
     // A companion whose `to` does not sit under a tree that is also copied would
     // be a directory nothing looks in — the mistake this rule invites.

@@ -15,9 +15,9 @@ const http = require("node:http");
 const net = require("node:net");
 const fs = require("node:fs");
 const os = require("node:os");
-const { randomUUID } = require("node:crypto");
+const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
@@ -206,14 +206,21 @@ function readBuildInfo() {
 }
 
 function windowTitle() {
+  if (!app.isPackaged) return "Telar Dev";
   const info = readBuildInfo();
   return info && info.shortSha ? `Telar ${info.shortSha}` : "Telar";
 }
 
 function developmentIconPath() {
   if (app.isPackaged) return undefined;
-  const icon = path.join(__dirname, "build", "icon.png");
-  return fs.existsSync(icon) ? icon : undefined;
+  // The AMBER loom, not the blue one: a dev shell wearing the production
+  // icon is indistinguishable in the dock from the installed app — the same
+  // rule as iOS's AppIconDev.
+  for (const name of ["icon-dev.png", "icon.png"]) {
+    const icon = path.join(__dirname, "build", name);
+    if (fs.existsSync(icon)) return icon;
+  }
+  return undefined;
 }
 
 function applyDevelopmentAppIcon() {
@@ -336,6 +343,80 @@ function nodeExecPath() {
 }
 
 /** What both children need to reach the tools this app does not bundle. */
+/**
+ * WHERE THE COCKPIT'S SOCKET LISTENS — the fix for a pairing link that pointed
+ * at an address nothing was bound to.
+ *
+ * This was `"127.0.0.1"`, hardcoded. The Remote access panel meanwhile builds
+ * its QR from the machine's tailnet address, because that is the whole point
+ * of remote access — so the code was correct, the token was valid, and the
+ * browser could not open a TCP connection to it. Pairing appeared broken on
+ * every build at once, which is exactly what one shared constant does.
+ *
+ * TWO MODES, NOT A BOOLEAN, and the second one is opt-in from Settings →
+ * Remote access. `local-only` is unchanged behaviour. `network-accessible`
+ * binds every interface, which is what makes a tailnet URL resolve.
+ *
+ * THE STORE REFUSES TO WIDEN WITHOUT PAIRING ON (apps/web/lib/remote/store.ts),
+ * and this reader re-checks rather than trusting the file: an edited
+ * remote.json must not be able to publish an unauthenticated cockpit onto a
+ * café's wifi. Two checks for one rule, because the cost of the file winning
+ * is the whole machine.
+ */
+/**
+ * THE SHELL DOES NOT PAIR WITH ITSELF.
+ *
+ * Pairing answers "may this OTHER device reach my cockpit". This process
+ * launched the server and owns the state directory; it already has everything
+ * pairing would grant. Treating it as a guest failed in the two ways that hurt
+ * most — the host's own window asking to be paired, and any change of origin
+ * (a bind address, a tailnet URL) silently unpairing the app on the very
+ * machine running it.
+ *
+ * So it carries a per-launch secret: minted here, handed to the web child in
+ * its environment, and set as a cookie on this window's session before the
+ * page loads. Nothing is persisted and nothing is written into remote.json, so
+ * quitting ends it and the next launch mints another.
+ */
+// MINTED HERE ONLY WHEN NOBODY ELSE DID. In dev the web child is spawned by
+// scripts/dev.mjs, not by this file, so the launcher mints the secret and
+// hands it to both halves; minting a second one here would have the shell
+// present a cookie the server had never heard of.
+const HOST_TOKEN = process.env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
+
+/**
+ * Set BEFORE the first load, on the session that will make the request — an
+ * Electron cookie is per-origin, so this is scoped to the URL the shell is
+ * about to open and travels nowhere else.
+ */
+async function seatHostCookie(url) {
+  try {
+    const { protocol, host } = new URL(url);
+    await session.defaultSession.cookies.set({
+      url: `${protocol}//${host}`,
+      name: "telar_device",
+      value: HOST_TOKEN,
+      httpOnly: true,
+      sameSite: "lax",
+    });
+  } catch {
+    // A cookie we cannot seat means the window pairs the old way rather than
+    // failing to open — degraded, not broken.
+  }
+}
+
+function serverBindHost(home) {
+  try {
+    const file = path.join(home, "remote", "remote.json");
+    const remote = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (remote?.exposure === "network-accessible" && remote?.requireAuth === true) return "0.0.0.0";
+  } catch {
+    // No file, unreadable, or not JSON — loopback, which is the safe answer
+    // and the one every install had before this setting existed.
+  }
+  return "127.0.0.1";
+}
+
 function childEnv(home) {
   return {
     ...process.env,
@@ -469,7 +550,13 @@ function startServer(port, home) {
     env: {
       ...childEnv(home),
       PORT: String(port),
-      HOSTNAME: "127.0.0.1",
+      HOSTNAME: serverBindHost(home),
+      // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
+      TELAR_HOST_TOKEN: HOST_TOKEN,
+      // And what the Remote access panel calls the host row. The shell holds a
+      // secret rather than a device record, so this name is the only way the
+      // app hosting the server appears in the list of what is connected.
+      TELAR_HOST_CLIENT: app.getName(),
       NODE_ENV: "production",
       // THE LAUNCHER MARKER. The cockpit's server-side engine discovery refuses
       // to resolve a state root unless it is set (apps/web/lib/engine/
@@ -594,10 +681,37 @@ function applyExternalLinkPolicy(webContents, createPolicy) {
 function createWindow(url) {
   const title = windowTitle();
   const icon = developmentIconPath();
+  // Vibrancy at construction when the preference asks for it — see the
+  // appearance-preference block above. `followWindow` keeps the blur honest
+  // when the app is in the background instead of freezing a stale frame.
+  lastWindowUrl = url;
+  const uiPrefs = readUiPrefs();
+  const translucent = supportsTranslucency() && uiPrefs.translucent;
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    backgroundColor: "#0a0a0a",
+    backgroundColor: translucent ? "#00000000" : "#0a0a0a",
+    // `transparent: true` is what actually marks the NSWindow non-opaque. An
+    // alpha backgroundColor alone leaves the window server believing the layer
+    // is opaque, so it skips clearing it — and every resize or navigation
+    // leaves the previous frame composited under the new one.
+    //
+    // `hasShadow: false` because ACTIVATION REGENERATES THE SHADOW — key and
+    // inactive windows wear different ones — and recomputing a shadow from a
+    // transparent window's alpha is the one native repaint that visibly
+    // blinks on every alt-tab back in. A CDP screencast proved the renderer
+    // paints nothing during the flicker, so it had to be a native layer, and
+    // the shadow is the only one that changes with key status. Translucent
+    // windows barely show a shadow anyway.
+    ...(translucent ? { transparent: true, hasShadow: false } : {}),
+    // "hud" is the most TRANSPARENT of macOS's vibrancy materials —
+    // "under-window" (the obvious choice) is also the milkiest, and buried the
+    // desktop no matter how far the strength slider went.
+    // `active`, NOT `followWindow`: followWindow deactivates the material when
+    // the window loses focus — alt-tab away and the glass turns opaque, come
+    // back and it flickers through the state transition. A window whose look
+    // changes with focus reads as a bug, so the material stays active.
+    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "hud", visualEffectState: "active" } : {}),
     show: false,
     title,
     ...macWindowChrome(),
@@ -607,9 +721,19 @@ function createWindow(url) {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, "preload.js"),
+      // The renderer half of the anti-flicker pair (see Main): a throttled
+      // renderer hands the compositor nothing to show at refocus.
+      ...(translucent ? { backgroundThrottling: false } : {}),
     },
   });
-  browserManager = new DesktopBrowserManager(win);
+  // Whether THIS window's compositor can blend alpha — decided above, at
+  // construction, which is why applyTranslucency has a rebuild path at all.
+  win.telarTranslucentCapable = translucent;
+  // Captured, not read from the global at close time: during a translucency
+  // rebuild the OLD window closes after the NEW one exists, and destroying
+  // whatever the global points to then would kill the replacement's manager.
+  const manager = new DesktopBrowserManager(win);
+  browserManager = manager;
   // The window's own URL is what "the app's own UI" means — it is the same
   // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
   // has to guess a port or a hostname. An unusable one throws, and createWindow
@@ -619,11 +743,11 @@ function createWindow(url) {
   // cleanup pass in that path. Hide it before the document is replaced; the
   // remounted Browser surface will publish fresh bounds and make it visible.
   win.webContents.on("did-start-loading", () => {
-    browserManager?.hideVisibleScope();
+    manager.hideVisibleScope();
   });
   win.on("closed", () => {
-    browserManager?.destroy();
-    browserManager = null;
+    manager.destroy();
+    if (browserManager === manager) browserManager = null;
   });
   // Keep the build stamp in the title bar — don't let the loaded page's <title>
   // overwrite it (that's how you answer "which build am I running?").
@@ -659,7 +783,13 @@ function createWindow(url) {
 
   win.once("ready-to-show", () => win.show());
   win.setTitle(title);
-  win.loadURL(url);
+  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads this cookie on
+  // the opening navigation, so loading first would send the shell's own window
+  // in as an unpaired stranger. `finally` because a cookie we could not set is
+  // a window that pairs the old way, not a window that never opens.
+  seatHostCookie(url).finally(() => {
+    if (!win.isDestroyed()) win.loadURL(url);
+  });
   return win;
 }
 
@@ -874,6 +1004,100 @@ function writeUpdatePrefs(prefs) {
   }
 }
 
+// --- Window appearance preference (userData, same idiom as updates) ----------
+//
+// TRANSLUCENCY IS A WINDOW-CREATION FACT. The renderer owns the look —
+// globals.css keys alpha surfaces off `data-translucent`, and the settings
+// pane owns the toggle — but a vibrancy layer has to exist UNDER the page for
+// that alpha to reveal anything, and Electron attaches it most reliably at
+// construction. So the preference is persisted here, read when the window is
+// built, and applied live to open windows when it changes.
+//
+// macOS only: vibrancy is NSVisualEffectView. Everywhere else `supported` is
+// false and the cockpit hides the control.
+const DEFAULT_UI_PREFS = { translucent: false, frost: "blur" };
+
+function uiPrefsPath() {
+  return path.join(app.getPath("userData"), "ui-prefs.json");
+}
+
+function readUiPrefs() {
+  const fs = require("node:fs");
+  try {
+    const raw = JSON.parse(fs.readFileSync(uiPrefsPath(), "utf8"));
+    // "clear" drops the vibrancy layer: crisp desktop, tinted only by the
+    // page's own wash. "blur" is the frosted NSVisualEffectView.
+    return { translucent: raw.translucent === true, frost: raw.frost === "clear" ? "clear" : "blur" };
+  } catch {
+    // Missing / corrupt / unreadable — first run, never a crash.
+    return { ...DEFAULT_UI_PREFS };
+  }
+}
+
+function writeUiPrefs(prefs) {
+  const fs = require("node:fs");
+  try {
+    fs.mkdirSync(app.getPath("userData"), { recursive: true });
+    fs.writeFileSync(uiPrefsPath(), JSON.stringify(prefs), "utf8");
+  } catch (err) {
+    console.error("[telar-desktop] failed to persist ui prefs:", err.message);
+  }
+}
+
+function supportsTranslucency() {
+  return process.platform === "darwin";
+}
+
+/**
+ * TRANSPARENCY IS A CREATION-TIME FACT IN CHROMIUM. `setBackgroundColor
+ * ("#00000000")` on a window born opaque does not re-plumb the compositor: the
+ * page starts painting alpha into a buffer that is never cleared, and every
+ * previously-shown frame ghosts through — navigate Settings → session and the
+ * settings pane stays visible behind the transcript. So turning translucency ON
+ * over an opaque window REBUILDS the window (same URL, same bounds; the new one
+ * is shown before the old is destroyed, or `window-all-closed` would quit the
+ * app in the gap). Turning it OFF is safe live — an opaque page repaints every
+ * pixel — and a window BUILT translucent can toggle both ways live.
+ */
+function applyTranslucency(on, frost) {
+  const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
+  if (on && wins.some((win) => !win.telarTranslucentCapable)) {
+    recreateWindowTranslucent(wins[0]);
+    return;
+  }
+  for (const win of wins) {
+    try {
+      // Frost changes are safe live in BOTH directions — attaching or removing
+      // the effect view does not re-plumb the compositor the way opacity does.
+      // "hud" over "under-window": the clearest material macOS offers.
+      win.setVibrancy(on && frost !== "clear" ? "hud" : null);
+      // The opaque colour is the app's darkest canvas, matching createWindow's
+      // — a translucent window turned opaque again must not flash white first.
+      win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
+    } catch (err) {
+      console.error("[telar-desktop] failed to retint a window:", err.message);
+    }
+  }
+}
+
+function recreateWindowTranslucent(old) {
+  const target = old?.webContents.getURL() || lastWindowUrl;
+  if (!target) return;
+  const bounds = old?.getBounds();
+  // createWindow reads the just-written pref, so the replacement is BORN
+  // translucent — the one thing the live path cannot do.
+  const win = createWindow(target);
+  if (bounds) win.setBounds(bounds);
+  updaterWindow = win;
+  win.once("ready-to-show", () => {
+    if (old && !old.isDestroyed()) old.destroy();
+  });
+}
+
+// So a rebuilt window knows where to point itself if the old one's webContents
+// is already gone.
+let lastWindowUrl = null;
+
 let updaterWindow = null;
 function broadcastUpdateStatus(status, extra = {}) {
   const win = updaterWindow || BrowserWindow.getAllWindows()[0];
@@ -1032,6 +1256,36 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
   return next;
 });
 
+/**
+ * THE VIBRANCY MATERIAL FOLLOWS TELAR'S THEME, NOT THE OS'S. The blur layer's
+ * tint comes from the window's effective appearance, which Electron takes from
+ * nativeTheme — by default the OS setting. Telar dark on a light Mac (or the
+ * reverse) then composites a dark wash over a bright frost and reads as milk.
+ * The cockpit reports its scheme here (theme-provider.tsx) and the shell keeps
+ * nativeTheme in agreement.
+ */
+ipcMain.handle("telar:appearance:setTheme", (_event, theme) => {
+  if (theme === "light" || theme === "dark" || theme === "system") nativeTheme.themeSource = theme;
+});
+
+// The window-appearance half of Settings → Appearance. `get` answers whether
+// this platform can do it at all, so the cockpit hides rather than disables
+// the control where it would be a lie.
+ipcMain.handle("telar:appearance:get", () => ({ ...readUiPrefs(), supported: supportsTranslucency() }));
+
+ipcMain.handle("telar:appearance:set", (_event, patch) => {
+  const current = readUiPrefs();
+  const next = {
+    translucent: typeof patch?.translucent === "boolean" ? patch.translucent : current.translucent,
+    frost: patch?.frost === "clear" || patch?.frost === "blur" ? patch.frost : current.frost,
+  };
+  writeUiPrefs(next);
+  // Applied to the OPEN windows too: a preference that only takes effect on
+  // the next launch reads as a broken toggle.
+  if (supportsTranslucency()) applyTranslucency(next.translucent, next.frost);
+  return { ...next, supported: supportsTranslucency() };
+});
+
 // --- (f) Teardown ------------------------------------------------------------
 /**
  * BOTH CHILDREN, and the engine LAST.
@@ -1143,6 +1397,21 @@ async function runSmoke() {
 }
 
 // --- Main --------------------------------------------------------------------
+
+/**
+ * TRANSLUCENCY STAYS ON THE GPU. An earlier cut ran it on software
+ * compositing to beat ghosting — but the ghosting's real cause was the window
+ * never being MARKED transparent (`transparent: true` in createWindow), and
+ * once that landed the CPU path only bought a new bug: a large transparent
+ * window redisplaying on focus takes long enough in software that macOS shows
+ * a bad frame first — the activation flicker. What survives of that era is
+ * the occlusion switch: Chromium stops drawing a fully-covered window and
+ * evicts its frame, and a transparent window shows the eviction on refocus.
+ */
+if (supportsTranslucency() && readUiPrefs().translucent) {
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+}
+
 if (SMOKE) {
   // Never take the single-instance lock or create a window in smoke mode.
   app.on("window-all-closed", () => {}); // no-op; there are no windows

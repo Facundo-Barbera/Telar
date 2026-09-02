@@ -2515,7 +2515,7 @@ describe("the sidebar's search field is one component, shared, not two copies of
     // scale, rather than the sentence-case 11px it used before this pass.
     const nav = read("warehouse-nav.tsx");
     const app = read("../app-sidebar.tsx");
-    const captionScale = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+    const captionScale = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
     expect(nav).toContain(`const CAPTION = "${captionScale}"`);
     expect(app).toContain(`const CAPTION = "${captionScale}"`);
   });

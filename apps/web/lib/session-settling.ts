@@ -90,7 +90,7 @@ export type SettlingOptions = {
   now: number;
   /** `null` turns the clock off entirely: nothing settles by neglect, only by
    *  decision. */
-  autoSettleAfterDays: number | null;
+  autoSettleAfterHours: number | null;
 };
 
 /**
@@ -189,8 +189,8 @@ export function isSettled(session: SettleableSession, activity: SettlingActivity
   if (session.settledOverride === "settled") return true;
   if (session.settledOverride === "active") return false;
   // 3. The clock, if the reader wants one.
-  if (options.autoSettleAfterDays === null) return false;
-  return session.updatedAt < options.now - options.autoSettleAfterDays * DAY_MS;
+  if (options.autoSettleAfterHours === null) return false;
+  return session.updatedAt < options.now - options.autoSettleAfterHours * HOUR_MS;
 }
 
 /* ------------------------------------------------------------------ *

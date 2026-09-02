@@ -219,6 +219,15 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       case "turn.requeued":
         if (turn) turn.state = "queued";
         break;
+      // Send now: promoted into the running turn, then delivered. The
+      // delivered turn is TERMINAL — its words render inside the run they
+      // joined (a user_message item), not as a turn of their own.
+      case "turn.steering":
+        if (turn) turn.state = "steering";
+        break;
+      case "turn.steered":
+        if (turn) turn.state = "steered";
+        break;
       case "turn.completed":
         if (turn) {
           turn.state = "completed";
@@ -284,6 +293,17 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
 
 export function isActiveTurn(state: TurnState): boolean {
   return state === "queued" || state === "claimed" || state === "running";
+}
+
+/**
+ * Whether the provider is squeezing its context RIGHT NOW: an open
+ * `context_compaction` item on the turn. One fold shared by the working
+ * indicator, the compact button and the queue's send-now gate, so the three
+ * cannot disagree about whether a compaction is in flight — and the same
+ * definition on both providers, because both open the item and close it.
+ */
+export function isCompacting(turn?: JournalTurn): boolean {
+  return Boolean(turn?.items.some((item) => item.detail.type === "context_compaction" && item.status === "inProgress"));
 }
 
 /**

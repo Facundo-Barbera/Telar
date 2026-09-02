@@ -52,6 +52,12 @@ let threadId = ROOT_THREAD;
 
 let nextRequestId = 1000;
 const waiting = new Map();
+/** The `steer` scenario parks on this until a turn/steer arrives. The flag
+ *  covers the race where the steer lands BEFORE the scenario starts waiting —
+ *  the driver's pump fires the moment turn/start answers, and playTurn runs a
+ *  beat later. */
+let steerReceived;
+let steerArrived = false;
 
 /** A server→client REQUEST. Resolves with the client's raw reply envelope. */
 const ask = (method, params) =>
@@ -98,6 +104,15 @@ rl.on("line", (line) => {
     // The real app-server acks essentially synchronously and the notification
     // sequence follows a beat later.
     setTimeout(() => void playTurn(), 5);
+    return;
+  }
+  // Send now, mid-turn: the client injects a user message into the RUNNING
+  // turn. Real shape per the rust-v0.149.1 protocol source — the response
+  // names the turn the message landed in.
+  if (msg.method === "turn/steer") {
+    write({ jsonrpc: "2.0", id: msg.id, result: { turnId } });
+    steerArrived = true;
+    steerReceived?.();
     return;
   }
   // Anything else is answered so a mistake here reads as a failed request
@@ -319,6 +334,46 @@ async function playTurn() {
           : { error: { message: "user rejected MCP tool call" } }),
       });
       finish(`action=${action}`);
+      return;
+    }
+
+    // A turn long enough to be steered: it finishes only once a turn/steer
+    // has arrived, which is what makes the test deterministic.
+    case "steer": {
+      if (!steerArrived) {
+        await new Promise((resolve) => {
+          steerReceived = resolve;
+        });
+      }
+      finish("steered");
+      return;
+    }
+
+    // The app-server's own question-to-the-human — `item/tool/requestUserInput`,
+    // shape per the rust-v0.149.1 protocol source (ToolRequestUserInputParams /
+    // ToolRequestUserInputResponse). The reply maps question id → {answers: []}.
+    case "request-user-input": {
+      const reply = ask("item/tool/requestUserInput", {
+        threadId,
+        turnId,
+        itemId: "item-question",
+        isBlocking: true,
+        questions: [
+          {
+            id: "q-color",
+            header: "Color",
+            question: "Which color should the button be?",
+            isOther: true,
+            isSecret: false,
+            options: [
+              { label: "Red", description: "The warning color." },
+              { label: "Blue", description: "The calm color." },
+            ],
+          },
+        ],
+      });
+      const answers = (await reply).result?.answers ?? {};
+      finish(`answered=${JSON.stringify(answers)}`);
       return;
     }
 

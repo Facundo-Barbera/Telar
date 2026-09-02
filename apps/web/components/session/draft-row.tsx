@@ -64,8 +64,8 @@ export function DraftRow({
         <span className="sr-only">Draft: </span>
         {showProject && projectName ? (
           <>
-            <span className="shrink-0 truncate text-[11px] text-sidebar-foreground/50">{projectName}</span>
-            <span aria-hidden className="shrink-0 text-[11px] text-sidebar-foreground/25">
+            <span className="shrink-0 truncate text-[0.6875rem] text-sidebar-foreground/50">{projectName}</span>
+            <span aria-hidden className="shrink-0 text-[0.6875rem] text-sidebar-foreground/25">
               ·
             </span>
           </>

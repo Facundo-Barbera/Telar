@@ -41,6 +41,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { configStateRoot, ensureConfigProject } from "@/lib/config-session";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -51,7 +52,9 @@ import {
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MoreHorizontalIcon,
+  ChartNoAxesColumnIcon,
   SettingsIcon,
+  SlidersHorizontalIcon,
   SpoolIcon,
   WorkflowIcon,
   XIcon,
@@ -73,6 +76,7 @@ import {
   canvasProjectFromPathname,
   deriveSessionList,
   SESSION_PAGE_SIZE,
+  SETTLED_PAGE_SIZE,
   sessionHref,
   toSidebarSession,
   type SidebarSession,
@@ -91,6 +95,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
+import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -131,7 +136,7 @@ function TelarSidebarHeader() {
   return (
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
       <div className="flex min-w-0 items-center gap-1">
-        <SidebarTrigger aria-label="Hide main sidebar" title="Hide main sidebar" className="app-no-drag shrink-0" />
+        <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
         <PlaceSwitcher />
       </div>
     </SidebarHeader>
@@ -235,7 +240,7 @@ function SidebarEmpty({
     <div className="px-3 py-6 text-center text-sidebar-foreground/55">
       <Icon className="mx-auto mb-2 size-5" />
       <p className="text-xs font-medium text-sidebar-foreground/75">{title}</p>
-      <p className="mt-1 text-[11px] leading-4">{detail}</p>
+      <p className="mt-1 text-[0.6875rem] leading-4">{detail}</p>
     </div>
   );
 }
@@ -263,7 +268,7 @@ function SidebarEmpty({
  * Everything else about the rule (the rule itself, the chevron, the count)
  * is unchanged — only the label's type scale moved.
  */
-const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (
@@ -276,7 +281,7 @@ function BandRule({ label, count, open, onToggle }: { label: string; count: numb
       <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
       <span className={cn("shrink-0", CAPTION)}>{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-      <span className="shrink-0 tabular-nums text-[11px]">{count}</span>
+      <span className="shrink-0 tabular-nums text-[0.6875rem]">{count}</span>
     </button>
   );
 }
@@ -296,7 +301,7 @@ function SessionShelf({
   activeSessionId,
   showProject,
   renderedAt,
-  autoSettleAfterDays,
+  autoSettleAfterHours,
   onRefresh,
 }: {
   label: string;
@@ -310,7 +315,7 @@ function SessionShelf({
   activeSessionId?: string;
   showProject: boolean;
   renderedAt: number;
-  autoSettleAfterDays: number | null;
+  autoSettleAfterHours: number | null;
   onRefresh: () => void;
 }) {
   if (count === 0) return null;
@@ -329,7 +334,7 @@ function SessionShelf({
               // ahead of you — so its rows give their space back, one dim line
               // each. See session-row.tsx for the two volumes.
               variant="slim"
-              band={bandOf(session, { now: renderedAt, autoSettleAfterDays })}
+              band={bandOf(session, { now: renderedAt, autoSettleAfterHours })}
               renderedAt={renderedAt}
               onRefresh={onRefresh}
             />
@@ -377,7 +382,7 @@ function SidebarBody() {
    * sessions the same way. See lib/inbox-policy.ts.
    */
   const { policy } = useInboxPolicy();
-  const autoSettleAfterDays = policy.autoSettleAfterDays;
+  const autoSettleAfterHours = policy.autoSettleAfterHours;
   // The server and first client render must use the same clock. Reading
   // Date.now() independently on each side crosses minute boundaries often
   // enough to produce a hydration mismatch and force React to regenerate the
@@ -391,7 +396,7 @@ function SidebarBody() {
   // point of snoozing is not to see these until they come back on their own.
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [sessionLimit, setSessionLimit] = useState(SESSION_PAGE_SIZE);
-  const [settledLimit, setSettledLimit] = useState(SESSION_PAGE_SIZE);
+  const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
   const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
@@ -409,6 +414,7 @@ function SidebarBody() {
       // The checkout's current branch, for the local sessions that share it —
       // they have no branch of their own. Derived per project by the engine.
       const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
+      const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
       setProjects(result.projects);
       setUnavailable(false);
       // One request per project, in parallel, because the engine lists sessions
@@ -429,6 +435,7 @@ function SidebarBody() {
                   session,
                   session.projectId ? names.get(session.projectId) : undefined,
                   session.projectId ? branches.get(session.projectId) : undefined,
+                  session.projectId ? icons.get(session.projectId) : undefined,
                 ),
               )
             : [],
@@ -523,14 +530,14 @@ function SidebarBody() {
     query,
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
-    autoSettleAfterDays,
+    autoSettleAfterHours,
     limit: sessionLimit,
     settledLimit,
   });
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
-  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterDays });
+  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterHours });
 
   /**
    * The draft rows, joined to the registry and narrowed the same way the list is.
@@ -566,13 +573,13 @@ function SidebarBody() {
    * The desktop menu has carried these accelerators the whole time; nothing in
    * this cockpit was listening for them, so they did nothing.
    */
-  useCommandKeys(sessions, activeSessionId, autoSettleAfterDays);
+  useCommandKeys(sessions, activeSessionId, autoSettleAfterHours);
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 
   const resetPaging = () => {
     setSessionLimit(SESSION_PAGE_SIZE);
-    setSettledLimit(SESSION_PAGE_SIZE);
+    setSettledLimit(SETTLED_PAGE_SIZE);
   };
 
   const selectScope = (next?: string) => {
@@ -635,6 +642,13 @@ function SidebarBody() {
   return (
     <>
       <TelarSidebarHeader />
+      {/* THE WAY TO A SETTINGS SESSION, at the top where the other "start
+          something" affordances are. It was buried as a tab inside Settings →
+          Appearance, which put the general act — configure this Telar — inside
+          one of the things it configures. */}
+      <div className="px-2 pt-2">
+        <SettingsSessionButton onNavigate={onNavigate} />
+      </div>
       <SidebarContent>
         {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
             §11's warehouse nav is what the rail shows on `/spool` — search,
@@ -691,7 +705,7 @@ function SidebarBody() {
                       <XIcon className="size-3.5" />
                     </button>
                   ) : (
-                    <kbd className="pointer-events-none font-sans text-[10px] text-sidebar-foreground/35">⌘K</kbd>
+                    <kbd className="pointer-events-none font-sans text-[0.625rem] text-sidebar-foreground/35">⌘K</kbd>
                   )
                 }
               />
@@ -713,7 +727,16 @@ function SidebarBody() {
               <DropdownMenuTrigger
                 render={<Button variant="ghost" size="sm" className="h-8 min-w-0 flex-1 justify-start px-2 text-sm font-normal" />}
               >
-                <FolderGit2Icon />
+                {selectedProject ? (
+                  <ProjectAvatar
+                    name={selectedProject.name}
+                    projectId={selectedProject.id}
+                    {...(selectedProject.icon ? { icon: selectedProject.icon } : {})}
+                    size={14}
+                  />
+                ) : (
+                  <FolderGit2Icon />
+                )}
                 <span className="truncate">{selectedProject?.name ?? "All projects"}</span>
                 <ChevronDownIcon className="ml-auto" />
               </DropdownMenuTrigger>
@@ -729,6 +752,12 @@ function SidebarBody() {
                     <div key={project.id} className="flex items-center">
                       <DropdownMenuItem className="min-w-0 flex-1" onClick={() => selectScope(project.id)}>
                         <span className="w-4">{selectedScope === project.id ? <CheckIcon /> : null}</span>
+                        <ProjectAvatar
+                          name={project.name}
+                          projectId={project.id}
+                          {...(project.icon ? { icon: project.icon } : {})}
+                          size={14}
+                        />
                         <span className="truncate">{project.name}</span>
                       </DropdownMenuItem>
                       {/* THIS project's settings. It went to the retired
@@ -858,7 +887,7 @@ function SidebarBody() {
               <SidebarEmpty
                 icon={MessageSquareIcon}
                 title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
-                detail={query ? "Try another title or project name." : "Start a new session from the button above."}
+                detail={query ? "Try another title or project." : "Start one from the button above."}
               />
             ) : (
               list.sessions.map((session, index) => (
@@ -913,26 +942,29 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}
               renderedAt={renderedAt}
-              autoSettleAfterDays={autoSettleAfterDays}
+              autoSettleAfterHours={autoSettleAfterHours}
               onRefresh={() => void loadAll()}
             />
             <SessionShelf
               label="Settled"
               count={list.settledCount}
               rows={list.settled}
-              // FORCED OPEN WHILE IT HOLDS THE SESSION YOU ARE READING. The
-              // settled survivor stays on its shelf now (see session-list.ts),
-              // and a shelf that hides the row you are inside would look like
-              // the session vanished from the rail entirely.
-              open={settledOpen || (activeSessionId !== undefined && list.settled.some((row) => row.id === activeSessionId))}
+              // NOT forced open while it holds the session you are reading.
+              // It used to be, so the open row stayed visible in the rail —
+              // but that meant settling the conversation you were in sprang
+              // the shelf open, which read as the settle bouncing back. The
+              // cockpit's own settled banner (see composer.tsx) is what says
+              // "you are inside settled history" now; the shelf opens only
+              // when asked.
+              open={settledOpen}
               onToggle={() => setSettledOpen((open) => !open)}
               hasMore={list.hasMoreSettled && settledLimit < list.settledCount}
-              onShowMore={() => setSettledLimit((limit) => limit + SESSION_PAGE_SIZE)}
+              onShowMore={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)}
               limit={settledLimit}
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}
               renderedAt={renderedAt}
-              autoSettleAfterDays={autoSettleAfterDays}
+              autoSettleAfterHours={autoSettleAfterHours}
               onRefresh={() => void loadAll()}
             />
           </>
@@ -943,6 +975,7 @@ function SidebarBody() {
 
       <SidebarFooter>
         <div className="p-1">
+          <UsageButton onNavigate={onNavigate} />
           <SettingsButton onNavigate={onNavigate} />
         </div>
       </SidebarFooter>
@@ -956,6 +989,64 @@ function SidebarBody() {
 // rail, where "telar" already was. See that component's docblock for why
 // the switcher is where this button's job — and its "no count on it" law —
 // went.
+
+// The same slot the donor keeps it in: the sidebar's meta row, beside
+// Settings — a place, not a filter over the session list.
+function UsageButton({ onNavigate }: { onNavigate: () => void }) {
+  const pathname = usePathname();
+  const active = pathname.startsWith("/usage");
+  return (
+    <Link
+      href="/usage"
+      title="Usage"
+      onClick={onNavigate}
+      className={`flex items-center gap-2 rounded-md text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground ${
+        active ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground" : ""
+      } w-full p-2`}
+    >
+      <ChartNoAxesColumnIcon className="size-4 shrink-0" />
+      <span>Usage</span>
+    </Link>
+  );
+}
+
+/**
+ * START A SESSION THAT CONFIGURES THIS TELAR.
+ *
+ * A normal session, in the engine's own state directory. The knowledge lives
+ * in an AGENTS.md the engine writes there, so the agent is oriented by the
+ * PLACE rather than by a brief this button would have to keep in sync.
+ */
+function SettingsSessionButton({ onNavigate }: { onNavigate: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const router = useRouter();
+  const start = async () => {
+    setBusy(true);
+    try {
+      const stateRoot = await configStateRoot();
+      if (!stateRoot) return;
+      const projectId = await ensureConfigProject(stateRoot);
+      router.push(`/projects/${encodeURIComponent(projectId)}`);
+      onNavigate();
+    } catch {
+      // No engine, no session; the button simply does not take.
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => void start()}
+      disabled={busy}
+      title="Start a session that configures this Telar"
+      className="flex w-full items-center gap-2 rounded-md p-2 text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-60"
+    >
+      <SlidersHorizontalIcon className="size-4 shrink-0" />
+      <span>{busy ? "Starting…" : "Settings session"}</span>
+    </button>
+  );
+}
 
 function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
   const pathname = usePathname();

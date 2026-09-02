@@ -26,9 +26,32 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  CircleCheckIcon,
+  CornerDownLeftIcon,
+  FoldVerticalIcon,
+  ImageIcon,
+  MonitorIcon,
+  PaperclipIcon,
+  PencilIcon,
+  PlusIcon,
+  SendHorizontalIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import type { ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import type { EngineRequest, ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
+import {
+  advance as advanceQuestion,
+  buildAnswers,
+  canAdvance,
+  emptyQuestionDraft,
+  isLastQuestion,
+  questionFields,
+  setCustomAnswer,
+  type QuestionDraft,
+} from "@/lib/question-drawer";
+import { ComposerQuestionDrawer } from "./composer-question-drawer";
 import type { ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 export { RUNTIME_MODE_HELP, RUNTIME_MODE_LABELS } from "./composer-controls";
@@ -48,6 +71,7 @@ import { ComposerMenu } from "./composer-menu";
 import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
+import { fmtTokens } from "@/lib/format";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
 import { WorkspaceEnvironment } from "./workspace-environment";
@@ -63,7 +87,14 @@ const api = createEngineApi();
  *  end of a submit that also uploaded the first sixteen. */
 const MAX_ATTACHMENTS = 16;
 
-export type QueuedMessage = { runId: string; text: string };
+export type QueuedMessage = {
+  runId: string;
+  text: string;
+  /** `steering` while a send-now is in flight to the worker — the chip shows
+   *  a spinner and withdraws its edit/remove affordances, because a message
+   *  the provider may already hold cannot honestly be recalled. */
+  state?: "queued" | "steering";
+};
 
 /**
  * ONE VALUE FOR EVERY PROVIDER KNOB, and one place that derives it.
@@ -87,12 +118,12 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
 }
 
 function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
-  if (!ready) return "Waiting for the engine-owned session…";
+  if (!ready) return "Waiting for the session…";
   // The ONLY place the cockpit mentions that queueing exists.
   if (busy) return "Enter queues a message…";
   // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
   // which the Spool's front door does not have one of.
-  return placeholder ?? "Ask for changes, explore the project, or continue this conversation…";
+  return placeholder ?? "Ask for changes, or explore the project…";
 }
 
 /** One waiting message. Ported from the donor's QueueChip — the numbered badge
@@ -130,7 +161,7 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
             <button
               type="button"
               aria-label="Add context"
-              title="Attach photos or files"
+              title="Add context"
               className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             />
           }
@@ -149,8 +180,8 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
             <MonitorIcon />
             Take screenshot
           </DropdownMenuItem>
-          <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
-            Images are shown to the model directly. Anything else is written beside the session and named by path, so the agent can open it.
+          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+            Images go to the model; other files land beside the session, named by path.
           </p>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -199,8 +230,8 @@ function AttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }
         )}
       </span>
       <span className="flex min-w-0 flex-col">
-        <span className="max-w-40 truncate text-[11px] font-medium leading-tight">{file.name}</span>
-        <span className="text-[10px] leading-tight text-muted-foreground">{fileSize(file.size)}</span>
+        <span className="max-w-40 truncate text-[0.6875rem] font-medium leading-tight">{file.name}</span>
+        <span className="text-[0.625rem] leading-tight text-muted-foreground">{fileSize(file.size)}</span>
       </span>
       <button
         type="button"
@@ -219,25 +250,39 @@ function QueueChip({
   index,
   onWithdraw,
   onRecall,
+  onSendNow,
+  sendNowDisabled,
+  sendNowReason,
 }: {
   item: QueuedMessage;
   index?: number;
   onWithdraw: (runId: string) => void;
   onRecall?: (item: QueuedMessage) => void;
+  /** SEND NOW — push this message into the RUNNING turn instead of waiting.
+   *  Present only while a turn is running; the engine does the promoting. */
+  onSendNow?: (runId: string) => void;
+  sendNowDisabled?: boolean;
+  sendNowReason?: string;
 }) {
+  const steering = item.state === "steering";
   return (
     <div className="group rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
       <div className="flex items-center gap-2">
-        {index !== undefined && (
-          <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
-            {index}
-          </span>
+        {steering ? (
+          <Spinner className="size-3.5 shrink-0 text-primary" />
+        ) : (
+          index !== undefined && (
+            <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[0.625rem] font-medium text-primary">
+              {index}
+            </span>
+          )
         )}
+        {steering && <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-wide text-primary">sending</span>}
         {/* THE TEXT ITSELF IS THE EDIT TARGET, as in the donor. A queued line is
             a sentence you wrote thirty seconds ago and can still improve;
             clicking it pulls it back into the box rather than making you
             withdraw and retype. */}
-        {onRecall ? (
+        {onRecall && !steering ? (
           <button
             type="button"
             onClick={() => onRecall(item)}
@@ -251,7 +296,20 @@ function QueueChip({
             {item.text}
           </span>
         )}
-        {onRecall && (
+        {onSendNow && !steering && (
+          <button
+            type="button"
+            aria-label="Send this message into the running turn"
+            title={sendNowDisabled ? (sendNowReason ?? "Send now is unavailable.") : "The running turn hears it without stopping"}
+            disabled={sendNowDisabled}
+            onClick={() => onSendNow(item.runId)}
+            className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <SendHorizontalIcon className="size-3" />
+            Send now
+          </button>
+        )}
+        {onRecall && !steering && (
           <button
             type="button"
             aria-label="Edit this queued message"
@@ -261,14 +319,72 @@ function QueueChip({
             <PencilIcon className="size-3.5" />
           </button>
         )}
-        <button
-          type="button"
-          aria-label="Remove this queued message"
-          onClick={() => onWithdraw(item.runId)}
-          className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-        >
-          <XIcon className="size-3.5" />
-        </button>
+        {!steering && (
+          <button
+            type="button"
+            aria-label="Remove this queued message"
+            onClick={() => onWithdraw(item.runId)}
+            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * ONE CARD IN THE STACK OVER THE COMPOSER'S TOP EDGE — the question drawer's
+ * grammar (`mx-3 -mb-1`, rounded top, no bottom border, bottom edge tucked
+ * under whatever comes next), generalised so more than one can stack: each
+ * card's bottom corners disappear under the card below it, and the last one's
+ * under the composer itself. That is t3's banner stack — the settled notice
+ * and the context notice read as sheets of paper behind the input, not as
+ * rows of chrome above it.
+ */
+function ComposerBanner({
+  icon,
+  title,
+  detail,
+  action,
+  actionLabel,
+  onDismiss,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  detail: string;
+  action?: () => void;
+  actionLabel?: string;
+  onDismiss?: () => void;
+}) {
+  return (
+    <div className="mx-3 -mb-1">
+      <div className="flex items-center gap-2.5 rounded-t-xl border border-b-0 border-border/60 bg-muted/40 px-3 pb-3.5 pt-2 backdrop-blur-sm">
+        {icon}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium">{title}</p>
+          <p className="truncate text-[0.6875rem] text-muted-foreground">{detail}</p>
+        </div>
+        {action && actionLabel && (
+          <button
+            type="button"
+            onClick={action}
+            className="shrink-0 rounded-md border border-border bg-background/80 px-2.5 py-1 text-[0.6875rem] font-medium transition-colors hover:bg-accent"
+          >
+            {actionLabel}
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={onDismiss}
+            className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -284,6 +400,8 @@ export function Composer({
   onDriverChange,
   envMode,
   onEnvMode,
+  pendingBase,
+  onBase,
   pendingModel,
   busy,
   sending,
@@ -295,15 +413,25 @@ export function Composer({
   greeting,
   usage,
   backgroundTasks,
+  settled,
+  onUnsettle,
   onDraftChange,
   onSubmit,
   onStop,
   onWithdraw,
   onRecall,
+  onSendNow,
+  sendNowDisabled,
+  sendNowReason,
   onRuntimeMode,
   placeholder,
   onModelChange,
   onOpenChanges,
+  onCompact,
+  compacting,
+  question,
+  onAnswerQuestion,
+  onCancelQuestion,
 }: {
   draft: string;
   ready: boolean;
@@ -320,6 +448,9 @@ export function Composer({
    *  worktree is cut when the session is created. */
   envMode?: "local" | "worktree";
   onEnvMode?: (mode: "local" | "worktree") => void;
+  /** The base-ref picker's create-time choice — worktree only. */
+  pendingBase?: { baseRef?: string; branchName?: string };
+  onBase?: (next: { baseRef?: string; branchName?: string }) => void;
   /** The provider knobs the first message will create the session with, while
    *  fresh. Same shape as `session.model` minus the instance, which the engine
    *  stamps. */
@@ -351,6 +482,28 @@ export function Composer({
   usage?: UsageSnapshot;
   /** Work that outlives the turn that started it. */
   backgroundTasks: number;
+  /** This conversation is on the sidebar's settled shelf. The banner it turns
+   *  on is what tells the reader they are inside history — the shelf itself no
+   *  longer springs open to say so. */
+  settled?: boolean;
+  /** Return it to the list. Absent hides the button, never the banner. */
+  onUnsettle?: () => void;
+  /** Submit a `/compact` turn. The cockpit passes it on Claude sessions only —
+   *  the slash command is that provider's. */
+  onCompact?: () => void;
+  /**
+   * The question the drawer answers — an open all-choice `user_input` request.
+   * While present, THE COMPOSER CHANGES MODE: the editor's text is the active
+   * question's custom answer (the real draft is untouched underneath and
+   * returns when the question resolves), Enter advances or submits, and the
+   * send button relabels. See composer-question-drawer.tsx.
+   */
+  question?: EngineRequest;
+  onAnswerQuestion?: (requestId: string, answers: Record<string, string>) => void;
+  onCancelQuestion?: (requestId: string) => void;
+  /** The provider is squeezing its context RIGHT NOW — an open
+   *  context_compaction row on the live turn. Gates the compact button. */
+  compacting?: boolean;
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
   onStop: () => void;
@@ -358,6 +511,14 @@ export function Composer({
   /** Pull a queued message back into the box to re-edit it. Withdrawing it
    *  is the caller's job — the composer only asks for the text. */
   onRecall?: (item: QueuedMessage) => void;
+  /** SEND NOW — promote a queued message into the RUNNING turn. Passed only
+   *  while something is running; the engine owns the promoting. */
+  onSendNow?: (runId: string) => void;
+  sendNowDisabled?: boolean;
+  /** Why the button is disabled, as its tooltip — "compacting", "a question
+   *  is waiting". The client mirrors the engine's own refusals so the two
+   *  tell one story rather than the client discovering a 409. */
+  sendNowReason?: string;
   onRuntimeMode: (mode: RuntimeMode) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
@@ -380,6 +541,49 @@ export function Composer({
    * armed paint survive one render past the turn it belonged to.
    */
   const escArmed = armedRaw && busy;
+
+  /* ---------------------------------------------------------------- *
+   * THE BANNER STACK — the notices tucked behind the composer's top edge.
+   * ---------------------------------------------------------------- */
+
+  /** Dismissal is per SESSION, not a boolean: keyed on the id, it survives
+   *  nothing and resets by construction when the composer shows another
+   *  conversation — no effect clearing state behind the render. */
+  const [contextNoticeDismissedFor, setContextNoticeDismissedFor] = useState<string>();
+  const contextShare = usage?.contextUsed && usage.contextMax ? usage.contextUsed / usage.contextMax : 0;
+  /** Three quarters full is when compaction stops being trivia and starts
+   *  being the next thing worth doing — late enough to never nag a short
+   *  conversation, early enough that the squeeze still has room to run. */
+  const contextNotice = Boolean(
+    !fresh && session && onCompact && !compacting && contextShare >= 0.75 && contextNoticeDismissedFor !== session.id,
+  );
+  const settledNotice = Boolean(!fresh && session && settled);
+
+  /* ---------------------------------------------------------------- *
+   * QUESTION MODE — the drawer above, the editor as the custom answer.
+   * ---------------------------------------------------------------- */
+
+  const qFields = useMemo(() => (question ? questionFields(question) : []), [question]);
+  const questionActive = qFields.length > 0 && Boolean(onAnswerQuestion);
+  /**
+   * KEYED BY REQUEST ID rather than reset in an effect: a new question simply
+   * fails the id check and reads as a fresh empty draft, so one request's
+   * half-typed answer can never leak into the next request's form.
+   */
+  const [qState, setQState] = useState<{ requestId: string; draft: QuestionDraft }>();
+  const qd = questionActive && question && qState?.requestId === question.id ? qState.draft : emptyQuestionDraft();
+  const setQd = (next: QuestionDraft) => question && setQState({ requestId: question.id, draft: next });
+  const qActiveKey = qFields[qd.index]?.key;
+
+  const advanceOrSubmitQuestion = () => {
+    if (!question || !onAnswerQuestion || !canAdvance(qFields, qd)) return;
+    if (!isLastQuestion(qFields, qd)) {
+      setQd(advanceQuestion(qd));
+      return;
+    }
+    const answers = buildAnswers(qFields, qd);
+    if (answers) onAnswerQuestion(question.id, answers);
+  };
 
   useEffect(() => {
     if (!escArmed) return;
@@ -418,7 +622,7 @@ export function Composer({
    */
   const checkout = sessionId ?? (projectId ? `project:${projectId}` : "none");
   const paths = pathCache?.checkout === checkout ? pathCache.entries : undefined;
-  const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel));
+  const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel), session?.providerInstanceId);
 
   /**
    * READ ONCE, ON THE FIRST `@`, AND NEVER ON MOUNT.
@@ -474,7 +678,9 @@ export function Composer({
     );
   }, [trigger, dismissed, paths, busy, fresh, runtimeMode, driver, envMode, commandChoices]);
 
-  const menuOpen = trigger !== null && !dismissed && (completions.length > 0 || (trigger.kind === "path" && reading));
+  // No completions while a question is active: the editor's text is an ANSWER,
+  // and an `@` in "I'd prefer @latest" is punctuation, not a mention.
+  const menuOpen = !questionActive && trigger !== null && !dismissed && (completions.length > 0 || (trigger.kind === "path" && reading));
 
   /** Recompute the trigger from the live caret. Called after every edit and
    *  every caret move, because moving out of a `@word` must close the menu. */
@@ -544,6 +750,18 @@ export function Composer({
           return;
         }
       }
+      /**
+       * QUESTION MODE HIJACKS ENTER: it advances or submits the form, the way
+       * the send button does. Everything below — recall, escape-to-stop — is
+       * about the DRAFT, which is parked while a question is on screen.
+       */
+      if (questionActive) {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          advanceOrSubmitQuestion();
+        }
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         if (draft.trim() && ready) onSubmit();
@@ -588,7 +806,8 @@ export function Composer({
       // Any other key disarms — the human moved on.
       if (escArmed) setEscArmed(false);
     },
-    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop, menuOpen, completions, active, apply],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- advanceOrSubmitQuestion is rebuilt per render by design; questionActive covers its liveness
+    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop, menuOpen, completions, active, apply, questionActive, qd, question],
   );
 
   /**
@@ -648,6 +867,11 @@ export function Composer({
     event.dataTransfer.types.includes("text/uri-list");
 
   const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
+  const questionSubmitLabel = isLastQuestion(qFields, qd)
+    ? qFields.length === 1
+      ? "Submit answer"
+      : "Submit answers"
+    : "Next question";
   /**
    * ONE VALUE FOR EVERY PROVIDER KNOB, passed whole to every control.
    *
@@ -657,6 +881,11 @@ export function Composer({
    * makes that loss unrepresentable — see `ModelChoice`.
    */
   const activeDriver = activeDriverOf(session, driver);
+  /** WHOSE LOGIN'S curated model list the menus should show. The session's own
+   *  once it exists; before that, the driver's built-in slot — which is the only
+   *  login a not-yet-created session could mean, and what the engine falls back
+   *  to when nobody names one. */
+  const activeInstanceId = session?.providerInstanceId;
   const choice = modelChoiceOf(session, pendingModel);
 
   return (
@@ -693,7 +922,7 @@ export function Composer({
         <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2" aria-label="Queued messages">
           {queued.length > 1 && (
             <div className="flex items-center justify-between px-1.5 pt-0.5">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{queued.length} waiting</span>
+              <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">{queued.length} waiting</span>
             </div>
           )}
           {queued.map((item, index) => (
@@ -703,6 +932,9 @@ export function Composer({
               {...(queued.length > 1 ? { index: index + 1 } : {})}
               onWithdraw={onWithdraw}
               {...(onRecall ? { onRecall } : {})}
+              {...(onSendNow ? { onSendNow } : {})}
+              sendNowDisabled={Boolean(sendNowDisabled)}
+              {...(sendNowReason ? { sendNowReason } : {})}
             />
           ))}
         </div>
@@ -716,9 +948,48 @@ export function Composer({
           tray read as a second card floating below. Grouping them makes the
           gap apply around the pair, never inside it. */}
       <div>
+      {/* THE BANNER STACK, back to front: settled first (furthest from the
+          input — it is about the whole conversation), then the context notice,
+          then the question drawer, then the box. Later siblings paint over
+          earlier ones in normal flow, which is the entire stacking mechanism —
+          no z-index anywhere. */}
+      {settledNotice && (
+        <ComposerBanner
+          icon={<CircleCheckIcon className="size-4 shrink-0 text-muted-foreground" />}
+          title="This conversation is settled"
+          detail="Sending a message returns it to the list in the sidebar."
+          {...(onUnsettle ? { action: onUnsettle, actionLabel: "Un-settle" } : {})}
+        />
+      )}
+      {contextNotice && session && onCompact && (
+        <ComposerBanner
+          icon={<FoldVerticalIcon className="size-4 shrink-0 text-muted-foreground" />}
+          title="The context is getting heavy"
+          detail={`${fmtTokens(usage?.contextUsed ?? 0)} of ${fmtTokens(usage?.contextMax ?? 0)} tokens in the provider's window.`}
+          action={onCompact}
+          actionLabel="Compact"
+          onDismiss={() => setContextNoticeDismissedFor(session.id)}
+        />
+      )}
+      {/* The question drawer fuses onto the composer's TOP edge — same width
+          inset as the foot below, rounded top corners, its bottom tucked under
+          the box so the two read as one object. */}
+      {questionActive && question && (
+        <ComposerQuestionDrawer
+          fields={qFields}
+          draft={qd}
+          onDraft={setQd}
+          sending={sending}
+          onCancelTurn={() => onCancelQuestion?.(question.id)}
+        />
+      )}
       <form
         onSubmit={(event) => {
           event.preventDefault();
+          if (questionActive) {
+            advanceOrSubmitQuestion();
+            return;
+          }
           if (draft.trim() && ready) onSubmit();
         }}
       >
@@ -738,7 +1009,7 @@ export function Composer({
             active={Math.min(active, Math.max(0, completions.length - 1))}
             heading={trigger.kind === "path" ? "Files and folders" : "Commands"}
             {...(trigger.kind === "path" && reading ? { loading: true } : {})}
-            emptyText={trigger.kind === "path" ? "No matching files or folders." : "No matching command."}
+            emptyText="No matches."
             onActive={setActive}
             onPick={apply}
           />
@@ -764,21 +1035,38 @@ export function Composer({
           }}
           onDrop={onDrop}
           className={cn(
-            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl",
+            // The shadow is cast in --shadow-tint, not raw black: pure black is
+            // the one ink no theme has, and under a light or warm palette it
+            // smudges grey instead of deepening the surface. See globals.css.
+            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl",
             dropping && "border-ring ring-2 ring-ring/40",
           )}
         >
           <label className="sr-only" htmlFor="turn-prompt">
             Message
           </label>
+          {/* IN QUESTION MODE THE EDITOR IS THE CUSTOM-ANSWER FIELD: its value
+              is the active question's free text, and edits land in the drawer
+              state instead of the draft — which sits untouched underneath and
+              returns the moment the question resolves. Losing a half-typed
+              message to an incoming question would be the sin the recall path
+              already refuses. */}
           <ComposerEditor
             ref={editor}
             id="turn-prompt"
-            value={draft}
-            placeholder={placeholderFor(ready, busy, placeholder)}
+            value={questionActive && qActiveKey !== undefined ? (qd.custom[qActiveKey] ?? "") : draft}
+            placeholder={
+              questionActive
+                ? "Type your own answer, or leave blank…"
+                : placeholderFor(ready, busy, placeholder)
+            }
             // NOT disabled while busy. That is the whole point.
             disabled={!ready}
             onChange={(text) => {
+              if (questionActive && qActiveKey !== undefined) {
+                setQd(setCustomAnswer(qd, qActiveKey, text));
+                return;
+              }
               onDraftChange(text);
               // Synchronous, and BEFORE the state round-trip: `retrigger` reads
               // the caret out of the live DOM, so it has to run while the DOM
@@ -787,7 +1075,7 @@ export function Composer({
               setActive(0);
               setDismissed(false);
             }}
-            onSelectionChange={() => retrigger(draft)}
+            onSelectionChange={() => !questionActive && retrigger(draft)}
             onKeyDown={onKeyDown}
             onPasteFiles={addFiles}
           />
@@ -829,6 +1117,7 @@ export function Composer({
                   <AgentControl
                     driver={activeDriver}
                     choice={choice}
+                    {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
                     {...(onModelChange ? { onChange: onModelChange } : {})}
                     {...(onDriverChange ? { onDriverChange } : {})}
                   />
@@ -837,7 +1126,12 @@ export function Composer({
                       the same three as labels with a rule between them. */}
                   <div className="hidden items-center gap-1 @2xl/composer:flex">
                     <ControlDivider />
-                    <ReasoningControl driver={activeDriver} choice={choice} {...(onModelChange ? { onChange: onModelChange } : {})} />
+                    <ReasoningControl
+                      driver={activeDriver}
+                      choice={choice}
+                      {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
+                      {...(onModelChange ? { onChange: onModelChange } : {})}
+                    />
                     {runtimeMode && (
                       <>
                         <ControlDivider />
@@ -853,6 +1147,7 @@ export function Composer({
                     <ComposerOverflowMenu
                       driver={activeDriver}
                       choice={choice}
+                      {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
                       fresh={fresh}
                       {...(runtimeMode ? { runtimeMode } : {})}
                       {...(envMode ? { envMode } : {})}
@@ -866,7 +1161,13 @@ export function Composer({
               )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1.5 self-end">
-            <ContextPill {...(usage ? { usage } : {})} {...(session ? { driver: session.driver } : {})} />
+            <ContextPill
+              {...(usage ? { usage } : {})}
+              {...(session ? { driver: session.driver } : {})}
+              {...(onCompact ? { onCompact } : {})}
+              compactDisabled={busy || sending || Boolean(compacting)}
+              compactReason={compacting ? "Already compacting." : "A turn is running."}
+            />
             {/* NOT DISABLED ON AN EMPTY DRAFT, and that is a fix rather than an
                 oversight: `InputGroup` carries `has-disabled:opacity-50`, so a
                 disabled descendant greys the ENTIRE composer — box, pills,
@@ -875,21 +1176,32 @@ export function Composer({
                 broken. The donor never disables it either; submitting an empty
                 draft is simply a no-op. */}
             <InputGroupButton
-              type={busy ? "button" : "submit"}
+              // In question mode the button SUBMITS THE FORM — the turn is
+              // running (busy), but the gesture on offer is answering, not
+              // stopping; the drawer keeps its own "Cancel the turn".
+              type={busy && !questionActive ? "button" : "submit"}
               variant="default"
               size="icon-sm"
-              aria-label={submitLabel}
-              onClick={busy ? onStop : undefined}
+              aria-label={questionActive ? questionSubmitLabel : submitLabel}
+              title={questionActive ? questionSubmitLabel : undefined}
+              onClick={busy && !questionActive ? onStop : undefined}
               className={cn(
-                escArmed && "bg-destructive text-background hover:bg-destructive",
+                escArmed && !questionActive && "bg-destructive text-background hover:bg-destructive",
                 !busy && !draft.trim() && "opacity-60",
+                questionActive && !canAdvance(qFields, qd) && "opacity-60",
               )}
             >
-              {escArmed ? (
+              {questionActive ? (
+                sending ? (
+                  <Spinner />
+                ) : (
+                  <CornerDownLeftIcon className="size-4" />
+                )
+              ) : escArmed ? (
                 // The WORD, not a glyph. "ESC" names the key the user just
                 // pressed and the key that will finish the job, which no icon
                 // can say.
-                <span className="text-[10px] leading-none font-semibold tracking-tight">ESC</span>
+                <span className="text-[0.625rem] leading-none font-semibold tracking-tight">ESC</span>
               ) : busy ? (
                 <SquareIcon className="size-4" />
               ) : sending ? (
@@ -919,6 +1231,8 @@ export function Composer({
         {...(session ? { session } : {})}
         {...(envMode ? { envMode } : {})}
         {...(onEnvMode ? { onEnvMode } : {})}
+        {...(pendingBase ? { pendingBase } : {})}
+        {...(onBase ? { onBase } : {})}
         {...(onOpenChanges ? { onOpenChanges } : {})}
       />
       )}

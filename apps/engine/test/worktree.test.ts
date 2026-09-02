@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, WorktreeError, type GitRunner } from "../src/worktree";
+import { gitOverview } from "../src/git";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -158,6 +159,38 @@ test("a session created with envMode worktree records its branch and base", () =
   expect(store.claimNextTurn("worker_one")?.projectRoot).toBe(session.workspace.path);
 });
 
+test("the standing default decides an omitted envMode, and an explicit one still wins", () => {
+  // THE SETTING IS A REAL DEFAULT, not a pre-ticked box in the composer: a
+  // caller that says nothing — the MCP toolkit, an API client — builds what the
+  // preference says.
+  const projectRoot = repo();
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.setSessionDefaults({ envMode: "worktree" });
+
+  const silent = store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(silent.envMode).toBe("worktree");
+  expect(silent.workspace.mode).toBe("worktree");
+
+  // A caller who ASKED for the shared checkout gets it regardless.
+  const asked = store.createSession({ id: "session_two", projectId: "project_one", envMode: "local" });
+  expect(asked.envMode).toBe("local");
+});
+
+test("the worktree default yields on an unversioned project, but a stated worktree still throws", () => {
+  // `createSessionWorktree` refuses a directory that is not a repo — right for
+  // a caller who asked for a worktree, and wrong for one who asked for nothing
+  // and would otherwise be unable to open a session in that project at all.
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
+  store.setSessionDefaults({ envMode: "worktree" });
+
+  const silent = store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(silent.envMode).toBe("local");
+
+  expect(() => store.createSession({ id: "session_two", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
+});
+
 test("a failed worktree cut leaves no half-created session behind", () => {
   // The worktree is cut BEFORE the session document is written, so there is
   // nothing to repair on read.
@@ -208,4 +241,84 @@ test("archiving is idempotent", () => {
   expect(store.archiveSession("session_one").state).toBe("archived");
   expect(store.archiveSession("session_one").state).toBe("archived");
   expect(store.readEvents("session_one").filter((event) => event.type === "session.archived")).toHaveLength(1);
+});
+
+test("a worktree cut from a NAMED base starts at that commit, not HEAD", () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const baseSha = git("rev-parse", "HEAD").trim();
+  git("branch", "feature-x");
+  // HEAD moves on; feature-x stays at the first commit.
+  fs.writeFileSync(path.join(projectRoot, "later.md"), "later\n");
+  git("add", "-A");
+  git("commit", "-qm", "second");
+
+  const cut = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", baseRef: "feature-x" });
+  expect(cut.baseRef).toBe(baseSha);
+  expect(fs.existsSync(path.join(cut.path, "later.md"))).toBe(false);
+});
+
+test("a HUMAN-named branch is created with -b: a collision refuses, never resets", () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  const first = createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "one", branchName: "my-feature" });
+  expect(first.branch).toBe("my-feature");
+  // The same name again must refuse — a branch a person values is never reset.
+  expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "two", branchName: "my-feature" })).toThrow(
+    WorktreeError,
+  );
+});
+
+test("human branch names refuse the engine namespaces and unusable shapes", () => {
+  const projectRoot = repo();
+  const engineRoot = tmp("telar-wt-state-");
+  for (const bad of ["telar/mine", "loom/x", "-flag", "a..b", "a//b", "ends/"]) {
+    expect(() => createSessionWorktree(defaultGitRunner, { engineRoot, projectRoot, sessionId: "s", branchName: bad })).toThrow(WorktreeError);
+  }
+});
+
+test("the overview lists cuttable refs: locals and remote-tracking, current marked, no origin/HEAD", () => {
+  const projectRoot = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  git("branch", "feature-x");
+  // A remote-tracking ref without a network: write the ref directly.
+  const sha = git("rev-parse", "HEAD").trim();
+  git("update-ref", "refs/remotes/origin/main", sha);
+  git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+
+  const overview = gitOverview(defaultGitRunner, projectRoot);
+  const names = (overview.refs ?? []).map((ref) => `${ref.kind}:${ref.name}`);
+  expect(names).toContain("local:main");
+  expect(names).toContain("local:feature-x");
+  expect(names).toContain("remote:origin/main");
+  // origin/HEAD is a pointer, not a branch.
+  expect(names.some((name) => name.endsWith("/HEAD"))).toBe(false);
+  // The checkout's branch is marked, so a picker can say "current".
+  expect((overview.refs ?? []).find((ref) => ref.name === "main")?.head).toBe(true);
+  // origin/HEAD names the default base a fresh worktree is cut from.
+  expect(overview.defaultBase).toBe("origin/main");
+});
+
+test("the default base falls back to common names, and is absent without remote state", () => {
+  const projectRoot = repo();
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: projectRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  // No remote-tracking refs at all: nothing to default to.
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBeUndefined();
+
+  // A hand-added remote has refs but no origin/HEAD pointer — the common
+  // names are the fallback.
+  const sha = git("rev-parse", "HEAD").trim();
+  git("update-ref", "refs/remotes/origin/master", sha);
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/master");
+  git("update-ref", "refs/remotes/origin/main", sha);
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
+
+  // A pointer to a branch that no longer exists must not be trusted — every
+  // worktree cut from it would fail its rev-parse.
+  git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone");
+  expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
 });

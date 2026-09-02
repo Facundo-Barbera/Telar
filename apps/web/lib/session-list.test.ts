@@ -23,7 +23,7 @@ import {
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const opts = { now: NOW, autoSettleAfterDays: 3 };
+const opts = { now: NOW, autoSettleAfterHours: 72 };
 
 const row = (id: string, title: string, over: Partial<SidebarSession> = {}): SidebarSession => ({
   id,
@@ -62,8 +62,8 @@ describe("bandOf", () => {
 
   test("the window is a parameter, and null turns the clock off", () => {
     const stale = row("s1", "Ancient", { updatedAt: NOW - 400 * DAY });
-    expect(bandOf(stale, { now: NOW, autoSettleAfterDays: null })).toBe("active");
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * DAY }), { now: NOW, autoSettleAfterDays: 7 })).toBe("active");
+    expect(bandOf(stale, { now: NOW, autoSettleAfterHours: null })).toBe("active");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * DAY }), { now: NOW, autoSettleAfterHours: 168 })).toBe("active");
   });
 
   test("a snooze hides a row, and outranks the pin it survives underneath", () => {

@@ -75,8 +75,41 @@ export function sanitizeBranchSlug(slug: string): string {
   return segments.join("/");
 }
 
+/**
+ * A HUMAN-chosen branch name — the "new branch…" arm of the base picker.
+ *
+ * The opposite posture from `sanitizeBranchSlug`: any namespace EXCEPT the
+ * engine-owned ones, and the branch is created with `-b`, never `-B` — a name
+ * a person typed may collide with a branch a person values, and the only safe
+ * answer to that collision is a refusal that names it. Validation is
+ * charset-conservative rather than a full check-ref-format: every name it
+ * admits is a valid ref, not the reverse.
+ */
+export function sanitizeBranchName(name: string): string {
+  const trimmed = name.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,120}$/.test(trimmed) || trimmed.endsWith("/") || trimmed.includes("//") || trimmed.includes("..")) {
+    throw new WorktreeError(`branch name "${name}" is not a usable git branch name`);
+  }
+  if (trimmed === "loom" || trimmed === "telar" || trimmed.startsWith("loom/") || trimmed.startsWith("telar/")) {
+    throw new WorktreeError(`branch name "${name}" is inside an engine-owned namespace; pick a name outside loom/ and telar/`);
+  }
+  return trimmed;
+}
+
 export function worktreesRoot(engineRoot: string): string {
   return path.join(engineRoot, "worktrees");
+}
+
+/**
+ * Can this directory host a worktree at all?
+ *
+ * `createSessionWorktree` asks this to decide whether to THROW; the create path
+ * asks it to decide whether a standing "worktree by default" preference applies
+ * to an unversioned project. One probe, so the two answers cannot drift.
+ */
+export function isGitWorkTree(git: GitRunner, projectRoot: string): boolean {
+  const inside = git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
+  return inside.status === 0 && inside.stdout.trim() === "true";
 }
 
 /**
@@ -90,10 +123,18 @@ export function worktreesRoot(engineRoot: string): string {
  */
 export function createSessionWorktree(
   git: GitRunner,
-  input: { engineRoot: string; projectRoot: string; sessionId: string; baseRef?: string; branchSlug?: string },
+  input: {
+    engineRoot: string;
+    projectRoot: string;
+    sessionId: string;
+    baseRef?: string;
+    branchSlug?: string;
+    /** A human's own name for the new branch — wins over `branchSlug`, lives
+     *  OUTSIDE the engine namespaces, and is never reset (see below). */
+    branchName?: string;
+  },
 ): { path: string; branch: string; baseRef: string } {
-  const inside = git(input.projectRoot, ["rev-parse", "--is-inside-work-tree"]);
-  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+  if (!isGitWorkTree(git, input.projectRoot)) {
     throw new WorktreeError(
       `worktree sessions need a git repository; ${input.projectRoot} is not one. Use envMode "local" for an unversioned project.`,
     );
@@ -106,22 +147,24 @@ export function createSessionWorktree(
   }
   const baseSha = head.stdout.trim();
 
-  const branch = input.branchSlug !== undefined ? sanitizeBranchSlug(input.branchSlug) : `telar/${sanitize(input.sessionId)}`;
+  const named = input.branchName !== undefined ? sanitizeBranchName(input.branchName) : undefined;
+  const branch = named ?? (input.branchSlug !== undefined ? sanitizeBranchSlug(input.branchSlug) : `telar/${sanitize(input.sessionId)}`);
   // The directory is named after the branch (minus its namespace prefix), not
   // the session id: the branch is what a human recognises, and the id is
   // recoverable from the session record.
-  const dirname = branch.split("/").slice(1).join("--");
+  const dirname = (named ? branch.split("/") : branch.split("/").slice(1)).join("--");
   const root = worktreesRoot(input.engineRoot);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   // The suffix keeps a retry after a partial failure from colliding with the
   // corpse of the previous attempt, which `git worktree add` refuses to reuse.
   const target = path.join(root, `${dirname}-${crypto.randomUUID().slice(0, 8)}`);
 
-  // `-B` rather than `-b`: a session recreated after its worktree was reaped
-  // would otherwise fail forever on a branch name that still exists. The
-  // branch is engine-owned and namespaced under `telar/`, so resetting it
-  // cannot clobber a human's branch.
-  const added = git(input.projectRoot, ["worktree", "add", "-B", branch, target, baseSha]);
+  // `-B` rather than `-b` FOR ENGINE-OWNED NAMES ONLY: a session recreated
+  // after its worktree was reaped would otherwise fail forever on a branch
+  // that still exists, and resetting inside `telar/`/`loom/` cannot clobber a
+  // human's branch. A HUMAN-named branch takes `-b`: colliding with a branch
+  // a person values must refuse, never reset.
+  const added = git(input.projectRoot, ["worktree", "add", named ? "-b" : "-B", branch, target, baseSha]);
   if (added.status !== 0) {
     throw new WorktreeError(`git worktree add failed: ${added.stderr.trim() || added.stdout.trim()}`);
   }
