@@ -49,22 +49,29 @@ export type FileGlyph =
   | "plain";
 
 /**
- * The tints, as light/dark class pairs.
+ * The tints, one token each.
  *
- * Both halves are needed: a 400-level colour that reads on the dark canvas is
- * washed out on the light one, and a 600 is muddy on dark. Named rather than
- * inlined so the table below stays one line per file kind, and so a colour is
- * chosen once for everything that shares a family.
+ * THESE USED TO BE RAW TAILWIND PAIRS — `text-sky-600 dark:text-sky-400` — and
+ * a raw ramp is a fixed sRGB value, so it could not follow a theme: every file
+ * icon in the panel stayed the same eight stock colours whether the canvas was
+ * Telar's grey, Ember's warm sand or something a reader built. It also had to
+ * restate itself in two halves, because a 400 that reads on the dark canvas is
+ * washed out on the light one.
+ *
+ * `--tint-*` (globals.css) is that pair as one token: it flips with the scheme
+ * on its own, so a call site names the FAMILY and nothing else, and a theme can
+ * move it. Identity, never state — see the note beside the tokens for the law
+ * these live under, which is the one file-kinds already set out.
  */
 const TINTS = {
-  blue: "text-sky-600 dark:text-sky-400",
-  yellow: "text-amber-600 dark:text-amber-400",
-  orange: "text-orange-600 dark:text-orange-400",
-  green: "text-emerald-600 dark:text-emerald-400",
-  purple: "text-violet-600 dark:text-violet-400",
-  red: "text-rose-600 dark:text-rose-400",
-  cyan: "text-cyan-600 dark:text-cyan-400",
-  pink: "text-pink-600 dark:text-pink-400",
+  blue: "text-tint-blue",
+  yellow: "text-tint-yellow",
+  orange: "text-tint-orange",
+  green: "text-tint-green",
+  purple: "text-tint-purple",
+  red: "text-tint-red",
+  cyan: "text-tint-cyan",
+  pink: "text-tint-pink",
   /** The default. A token rather than a palette colour, because "no particular
    *  language" is exactly what the panel's muted foreground already means. */
   plain: "text-muted-foreground",
