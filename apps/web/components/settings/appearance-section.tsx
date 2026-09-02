@@ -46,7 +46,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ImageIcon, MonitorIcon, PaletteIcon, SparklesIcon, TypeIcon, Undo2Icon } from "lucide-react";
-import { useAppearance, type Frost } from "@/lib/appearance";
+import { MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import {
   applyLook,
@@ -64,6 +64,7 @@ import {
   loadThemeIntoDraft,
   newDraftFromCurrent,
   patchDraftHalf,
+  patchDraftStrength,
   readStudioDraft,
   replaceDraftBackdrop,
   setDraftLabel,
@@ -419,10 +420,12 @@ export function AppearanceSection() {
             sliders for one value is the confusion this pane was rebuilt to
             delete — and the draft's copy wins the preview anyway, so the live
             one silently did nothing while a draft was open. */}
-        {tab === "window" && (
+        {tab === "window" && current && (
           <Panel>
             <PanelHeader icon={<MonitorIcon />} label="Window" />
-            <PanelBody>
+            {/* px-3: `Row` carries no horizontal padding — right for a flat
+                settings group, wrong against a panel border. */}
+            <PanelBody className="px-3">
               <Row label="Colour scheme" control={<ThemeControl />} />
               {hasBridge && windowSupported ? (
                 <>
@@ -449,8 +452,34 @@ export function AppearanceSection() {
                   )}
                 </>
               ) : (
-                <p className="px-3 pb-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
+                <p className="pb-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
               )}
+              {/* SHOW-THROUGH IS HERE TOO, and that is not the old duplication.
+                  What made two sliders a bug was that they wrote DIFFERENT
+                  stores — the live one silently lost to the draft's copy during
+                  a preview. This is the same draft field rendered in the second
+                  place a reader looks for it: it governs the desktop behind a
+                  translucent window AND the wash over a backdrop, so it has two
+                  honest homes and exactly one value. */}
+              <Row
+                label="Show-through"
+                hint="The desktop behind a translucent window, and the backdrop under the app."
+                control={
+                  <div className="flex items-center gap-2.5">
+                    <input
+                      type="range"
+                      min={MIN_TRANSLUCENCY}
+                      max={MAX_TRANSLUCENCY}
+                      step={5}
+                      value={current.translucencyLevel}
+                      aria-label="Show-through"
+                      className="w-36 accent-primary"
+                      onChange={(event) => edit(patchDraftStrength(current, Number(event.target.value)))}
+                    />
+                    <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{current.translucencyLevel}%</span>
+                  </div>
+                }
+              />
             </PanelBody>
           </Panel>
         )}

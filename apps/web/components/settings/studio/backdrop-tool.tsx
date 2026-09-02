@@ -493,7 +493,7 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
         </div>
       </div>
       {image && (
-        <>
+        <div className="px-3">
           <Row
             label="Fit"
             control={
@@ -556,7 +556,7 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
               }
             />
           )}
-        </>
+        </div>
       )}
     </>
   );

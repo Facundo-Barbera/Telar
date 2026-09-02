@@ -257,7 +257,11 @@ export function SettingsGroup({
           {action && <div className="shrink-0">{action}</div>}
         </div>
       )}
-      <div className="divide-y divide-border/60">{children}</div>
+      {/* The group owns the tightening at its ends: its own title supplies the
+          space above the first field, and the next group supplies it below the
+          last. A Row cannot know that — it also lives inside Panels, where
+          eating its own padding pressed the text against the border. */}
+      <div className="divide-y divide-border/60 [&>*:first-child]:pt-0 [&>*:last-child]:pb-0">{children}</div>
     </section>
   );
 }
@@ -297,7 +301,7 @@ export function Row({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
+    <div className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3">
       <div className="flex min-w-48 flex-1 items-start gap-2.5">
         {Icon && (
           <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
