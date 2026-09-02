@@ -77,6 +77,7 @@ import { isStarterLook } from "@/lib/starter-looks";
 import { clearPreview, previewLook } from "@/lib/studio-preview";
 import { matchThemeHalf, THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
+import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
@@ -114,10 +115,6 @@ export function AppearanceSection() {
   const [windowSupported, setWindowSupported] = useState(false);
 
   const [tab, setTab] = useState<Tab>("colour");
-  /** Which half the preview wears while a draft is open. Sticky once picked —
-   *  a preview that flipped when the OS crossed into evening would be worse
-   *  than one that stays where it was put. */
-  const [pickedMode, setPickedMode] = useState<StudioMode>();
   /** Undefined means "nothing drafted" — the pane shows the live truth. */
   const [draft, setDraft] = useState<StudioDraft>();
   const [notice, setNotice] = useState<string>();
@@ -130,12 +127,32 @@ export function AppearanceSection() {
   const lastEditAt = useRef(0);
 
   const mounted = useSyncExternalStore(subscribeToNothing, () => true, () => false);
-  const documentIsDark = useSyncExternalStore(
-    subscribeToNothing,
-    () => document.documentElement.classList.contains("dark"),
+  /**
+   * WHICH HALF YOU ARE LOOKING AT — and therefore editing.
+   *
+   * This used to be a second, preview-only Light/Dark that sat in the masthead
+   * looking exactly like a colour-scheme switch while the real one hid in a
+   * tab called Window. Two controls, one of them a decoy, and the setting
+   * everybody actually reaches for was the one you could not find.
+   *
+   * So the scheme IS the half selector now. It reads from the theme store
+   * (which resolves `system` against the OS and notifies on change), which
+   * also means the answer stays right when evening arrives — the old sticky
+   * `pickedMode` existed to stop that, and a pane whose whole claim is "the
+   * app is the preview" should not be showing you a half your window is not
+   * wearing.
+   */
+  const { theme } = useTheme();
+  const systemIsDark = useSyncExternalStore(
+    (onChange) => {
+      const query = window.matchMedia("(prefers-color-scheme: dark)");
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches,
     () => false,
   );
-  const mode: StudioMode = pickedMode ?? (documentIsDark ? "dark" : "light");
+  const mode: StudioMode = (theme === "system" ? systemIsDark : theme === "dark") ? "dark" : "light";
 
   useEffect(() => {
     if (!hasBridge) return;
@@ -170,9 +187,9 @@ export function AppearanceSection() {
   // the draft goes, and when the pane unmounts (the draft itself survives in
   // storage — only the paint is removed).
   useEffect(() => {
-    if (draft) previewLook(draft, pickedMode);
+    if (draft) previewLook(draft);
     else clearPreview();
-  }, [draft, pickedMode]);
+  }, [draft]);
   useEffect(() => () => clearPreview(), []);
 
   // Write-through, debounced: a slider drag is one write, not ninety.
@@ -395,14 +412,7 @@ export function AppearanceSection() {
           <span className="shrink-0 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">Worn</span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <Segmented<StudioMode>
-            value={mode}
-            onChange={setPickedMode}
-            options={[
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
-            ]}
-          />
+          <ThemeControl />
           {/* UNDO OUTLIVES THE DRAFT. Wearing a look from its card clears the
               draft, and gating this button on `dirty` made the one gesture
               that can discard work also hide the way back to it. It shows
@@ -515,7 +525,6 @@ export function AppearanceSection() {
             {/* px-3: `Row` carries no horizontal padding — right for a flat
                 settings group, wrong against a panel border. */}
             <PanelBody className="px-3">
-              <Row label="Colour scheme" control={<ThemeControl />} />
               {hasBridge && windowSupported ? (
                 <>
                   <ToggleRow
