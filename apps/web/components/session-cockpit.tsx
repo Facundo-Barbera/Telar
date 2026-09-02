@@ -850,11 +850,50 @@ export function SessionCockpit({
    * keystroke and a synchronous `setItem` per character is a jank source on a
    * long message.
    */
+
+  /**
+   * WHICH COMPOSER THE TEXT IN `draft` WAS TYPED INTO.
+   *
+   * NEEDED BECAUSE THIS COMPONENT OUTLIVES THE CONVERSATION IT SHOWS. The route
+   * segment is the same for every session, so moving between two of them — or
+   * clicking a draft row while a session is open — re-renders this instance
+   * rather than remounting it, and `draft` is ordinary state that survives. The
+   * restore below could only ever FILL an empty box, never replace a full one,
+   * so whatever you had half-written in the last conversation simply stayed on
+   * screen in the next one, and a draft you clicked could not load over it.
+   *
+   * Comparing against this ref is what tells a re-render from a change of
+   * hands. `submit` reassigns it directly when the first message creates a
+   * session: the box did not change hands there, it is the same box that just
+   * learned its id, and treating that as a switch would empty it under anyone
+   * who started typing a follow-up during the round trip.
+   */
+  const owner = useRef<{ sessionId: string | undefined; projectId: string }>({ sessionId, projectId });
+  /** The live text, readable from an effect that must not re-run per keystroke. */
+  const draftText = useRef(draft);
+  useEffect(() => {
+    draftText.current = draft;
+  }, [draft]);
+
   useEffect(() => {
     const task = window.setTimeout(() => {
+      if (owner.current.sessionId !== sessionId || owner.current.projectId !== projectId) {
+        const leaving = owner.current;
+        owner.current = { sessionId, projectId };
+        // SAVED ON THE WAY OUT, because the debounced write below is CANCELLED
+        // by this very change rather than flushed — so without this, switching
+        // conversations within 400ms of a keystroke silently ate the tail of
+        // what you had written.
+        writeDraft(leaving.sessionId, leaving.projectId, draftText.current);
+        // AUTHORITATIVE, unlike the fallback below: a different composer's text
+        // is not a draft for this one.
+        setDraft(readDraft(sessionId, projectId));
+        return;
+      }
       const stored = readDraft(sessionId, projectId);
-      // Never clobber something already typed — the restore is a fallback for an
-      // empty box, not an authority over it.
+      // The first paint, where this reads back what a reload dropped. Never
+      // clobbers something already typed — here the restore is a fallback for
+      // an empty box, not an authority over it.
       if (stored) setDraft((current) => current || stored);
     }, 0);
     return () => window.clearTimeout(task);
@@ -1095,6 +1134,25 @@ export function SessionCockpit({
     const text = draft.trim();
     const files = attachments;
     setDraft("");
+    /**
+     * AND CLEARED IN STORAGE HERE, not by the debounced save below.
+     *
+     * A fresh canvas keys its draft `new:<project>` — one slot shared by every
+     * new conversation in the project — and sending is the single moment that
+     * key changes identity underneath the save. `setDraft("")` only SCHEDULES
+     * the removal, 400ms out; `setCreatedSessionId` lands well inside that
+     * window, and the save effect's cleanup CANCELS the pending write rather
+     * than flushing it, because the id it was keyed on is now a dependency that
+     * changed. What survived was the message you had just sent, still sitting
+     * in the canvas slot, restored into the next conversation you started —
+     * only ever the first message of a session, because only the first is typed
+     * before the session has an id of its own.
+     *
+     * Removing it now, against the id it was actually typed under, puts the
+     * clear before anything can cancel it. The master chat has always done this
+     * on send, for this reason.
+     */
+    writeDraft(sessionId, projectId, "");
     setDraftRunId(undefined);
     setAttachments([]);
     try {
@@ -1155,6 +1213,10 @@ export function SessionCockpit({
         setTasks([]);
         setRequests([]);
         setEvents([]);
+        // THE SAME BOX, WITH AN ID NOW — not a different composer. Handing
+        // ownership over before the id lands stops the restore effect treating
+        // this as a switch and emptying a follow-up typed during the round trip.
+        owner.current = { sessionId: target, projectId };
         setCreatedSessionId(target);
         // Only when the patch did not already give us a newer record.
         if (Object.keys(creationPatch).length === 0) setSession(created.session);

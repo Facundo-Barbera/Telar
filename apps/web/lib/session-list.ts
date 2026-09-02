@@ -377,3 +377,22 @@ export function activeSessionFromPathname(pathname: string): string | undefined 
     return match[1];
   }
 }
+
+/**
+ * Which project's CANVAS is open, if a canvas is open at all.
+ *
+ * `activeSessionFromPathname` answers `"new"` here — a literal that matches no
+ * session id, which is exactly right for the session list and useless for the
+ * draft rail, where the open canvas IS one of the rows and has to be able to
+ * show it. Reads the project half instead, and only on the canvas route: on a
+ * session route the draft rows are all elsewhere and none of them is current.
+ */
+export function canvasProjectFromPathname(pathname: string): string | undefined {
+  const match = /^\/projects\/([^/]+)\/sessions\/new\/?$/.exec(pathname);
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
