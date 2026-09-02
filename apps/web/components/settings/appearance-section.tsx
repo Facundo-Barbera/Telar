@@ -86,7 +86,7 @@ import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Row, Segmented, Tabs, ToggleRow } from "./settings-shell";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
-import { DesignerChat } from "./studio/chat";
+import { ConfigSessionCard } from "./config-session-card";
 import { BackdropTool } from "./studio/backdrop-tool";
 import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
 
@@ -97,7 +97,7 @@ const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
 
 /** The pane has two MODES, not six tools. Designing by conversation and
- *  designing by hand are different sittings — one wants the whole window and a
+ *  asking an agent and doing it by hand are different sittings — one wants the whole window and a
  *  composer, the other wants a shelf and a grid — and burying the first as a
  *  sixth tab beside "Type" said they were the same size of thing. */
 type Mode = "looks" | "designer";
@@ -495,7 +495,7 @@ export function AppearanceSection() {
         onChange={setPane}
         options={[
           { value: "looks", label: <><LayersIcon className="size-3.5" /> Looks</> },
-          { value: "designer", label: <><SparklesIcon className="size-3.5" /> Designer</> },
+          { value: "designer", label: <><SparklesIcon className="size-3.5" /> Agent</> },
         ]}
       />
       </div>
@@ -650,7 +650,7 @@ export function AppearanceSection() {
           </div>
         </>
       ) : (
-        current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[calc(100dvh-var(--titlebar-height)-8.5rem)] min-h-[24rem]" />
+        <ConfigSessionCard />
       )}
     </div>
   );
