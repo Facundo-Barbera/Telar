@@ -18,6 +18,8 @@ import type {
   ComputerUseBackend,
   ComputerUseStatus,
   InboxPolicy,
+  EnvMode,
+  SessionDefaults,
   TextGenPolicy,
   UsageReport,
   UsageResolution,
@@ -123,6 +125,11 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
     setInbox: (patch: { autoSettleAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** What a new session is built with when nobody said — see
+     *  `SessionDefaults`. One answer for every client of this engine. */
+    sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
+    setSessionDefaults: (patch: { envMode?: EnvMode }) =>
+      request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
     /** Spend over time, folded from the engine's journals. */
     usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {
       const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
