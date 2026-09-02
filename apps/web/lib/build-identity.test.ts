@@ -162,3 +162,16 @@ describe("about routes", () => {
     expect(body.appName).toBe("Telar Dev");
   });
 });
+
+test("the layout is found from the repository root, not only from apps/web", () => {
+  // What broke: every path was a fixed hop count from the process cwd, so a
+  // runner starting at the root resolved `../desktop` outside the repository
+  // and fell back to the defaults. Both entry points must agree.
+  // The runner may start in either place, so find the root rather than assume.
+  const repoRoot = fs.existsSync(path.join(savedCwd, "apps", "web", "package.json")) ? savedCwd : path.resolve(savedCwd, "..", "..");
+  const fromWeb = buildIdentity({}, path.join(repoRoot, "apps", "web"));
+  const fromRoot = buildIdentity({}, repoRoot);
+  expect(fromRoot.appName).toBe(fromWeb.appName);
+  expect(fromRoot.channel).toBe(fromWeb.channel);
+  expect(fromRoot.icon?.path).toBe(fromWeb.icon?.path);
+});

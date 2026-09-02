@@ -134,12 +134,39 @@ function resolveIcon(cwd: string, channel: Channel): BuildIdentity["icon"] {
   return undefined;
 }
 
+/**
+ * THE DIRECTORY THE WEB SERVER RUNS IN — what every layout above is measured
+ * from: `apps/web` in a checkout, `<standalone>/apps/web` when packaged.
+ *
+ * It was taken to BE the process cwd, which holds for `next dev` and for the
+ * standalone `server.js` (which chdir's there) and fails for anything started
+ * at the repository root. There `../desktop` resolves OUTSIDE the repository
+ * altogether, so the name and the icon silently fell back to their defaults —
+ * caught by the route tests, which pass from `apps/web` and fail from the root.
+ *
+ * One probe, not a walk: the repo root is the only other place anything starts
+ * from, and a layout that has neither `apps/web/package.json` nor the siblings
+ * this file wants is not a layout it can read anyway.
+ */
+function webRoot(cwd: string): string {
+  const nested = path.join(cwd, "apps", "web");
+  try {
+    if (fs.statSync(path.join(nested, "package.json")).isFile()) return nested;
+  } catch {
+    // Not a repository root, so `cwd` is the web root itself — or nothing is,
+    // and every lookup below falls into its own default, which is the honest
+    // answer for a layout this cannot read.
+  }
+  return cwd;
+}
+
 export function buildIdentity(
   env: { TELAR_APP_NAME?: string } = process.env as { TELAR_APP_NAME?: string },
   cwd: string = process.cwd(),
 ): BuildIdentity {
-  const channel = resolveChannel(readBuildStamp(cwd));
-  const icon = resolveIcon(cwd, channel);
+  const root = webRoot(cwd);
+  const channel = resolveChannel(readBuildStamp(root));
+  const icon = resolveIcon(root, channel);
   // An explicit name wins outright: it is how somebody running two checkouts at
   // once tells them apart, and no derived name can second-guess that.
   const override = env.TELAR_APP_NAME?.trim();
@@ -148,5 +175,5 @@ export function buildIdentity(
   // here — it is the string the shell has always put in the title bar, said to
   // a client that cannot see one.
   const suffix = channel === "dev" ? " Dev" : channel === "nightly" ? " Nightly" : "";
-  return { appName: `${productName(cwd) ?? DEFAULT_APP_NAME}${suffix}`, channel, icon };
+  return { appName: `${productName(root) ?? DEFAULT_APP_NAME}${suffix}`, channel, icon };
 }

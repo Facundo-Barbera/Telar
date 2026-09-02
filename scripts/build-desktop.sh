@@ -137,6 +137,15 @@ NODE_OPTIONS= bash apps/desktop/build-app.sh
 # --- stamp build-info.json into the desktop resources (BEFORE packaging) -----
 # It lands at the root of the standalone tree, which electron-builder copies to
 # <Resources>/standalone/build-info.json, so it is inside the packaged .app.
+#
+# `channel` rides along because the WEB TIER has no other way to learn it. The
+# version's prerelease tag is what electron-builder derives the channel from,
+# but that version is bumped below — after `next build` has already frozen
+# apps/web/package.json into the bundle — and it is bumped in the SHELL's
+# package.json, which a packaged Next server cannot read out of app.asar. So the
+# flag that picked the channel writes it down here, and /api/about reports it
+# (apps/web/lib/build-identity.ts). Empty for an unchannelled build, which reads
+# as "stable" — a build somebody cut.
 STANDALONE="$SNAP/apps/web/.next-desktop/standalone"
 BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cat > "$STANDALONE/build-info.json" <<JSON
@@ -144,6 +153,7 @@ cat > "$STANDALONE/build-info.json" <<JSON
   "shortSha": "$SHORT_SHA",
   "sha": "$SHA",
   "ref": "$REF",
+  "channel": "$CHANNEL",
   "commitDate": "$COMMIT_DATE",
   "builtAt": "$BUILT_AT"
 }

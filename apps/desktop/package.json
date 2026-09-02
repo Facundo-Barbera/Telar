@@ -54,6 +54,13 @@
       {
         "from": "../engine/dist/node_modules",
         "to": "engine/node_modules"
+      },
+      {
+        "from": "build",
+        "to": "branding",
+        "filter": [
+          "*.png"
+        ]
       }
     ],
     "directories": {
