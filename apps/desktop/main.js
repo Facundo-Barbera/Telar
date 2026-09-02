@@ -611,6 +611,11 @@ function createWindow(url) {
     width: 1280,
     height: 800,
     backgroundColor: translucent ? "#00000000" : "#0a0a0a",
+    // `transparent: true` is what actually marks the NSWindow non-opaque. An
+    // alpha backgroundColor alone leaves the window server believing the layer
+    // is opaque, so it skips clearing it — and every resize or navigation
+    // leaves the previous frame composited under the new one.
+    ...(translucent ? { transparent: true } : {}),
     ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "under-window", visualEffectState: "followWindow" } : {}),
     show: false,
     title,
