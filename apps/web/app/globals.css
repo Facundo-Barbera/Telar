@@ -451,7 +451,9 @@
   z-index: -1;
   pointer-events: none;
   background-color: var(--background);
-  background-image: var(--backdrop-light);
+  /* `none` is the honest fallback: the variables are written inline on <html>
+     by lib/backdrop.ts, and until they are, there is no scene. */
+  background-image: var(--backdrop-light, none);
   background-size: var(--backdrop-size, cover);
   background-position: center;
   background-repeat: var(--backdrop-repeat, no-repeat);
