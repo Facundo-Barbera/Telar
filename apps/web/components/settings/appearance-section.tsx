@@ -52,6 +52,7 @@ import {
   applyLook,
   LOOKS_FULL_MESSAGE,
   LOOKS_QUOTA_MESSAGE,
+  newLookId,
   upsertLook,
   useLooks,
   writeLooks,
@@ -70,13 +71,14 @@ import {
   type StudioDraft,
   type StudioMode,
 } from "@/lib/studio-draft";
+import { isStarterLook } from "@/lib/starter-looks";
 import { clearPreview, previewLook } from "@/lib/studio-preview";
 import { THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
-import { Row, Segmented, ToggleRow } from "./settings-shell";
+import { Row, Segmented, Tabs, ToggleRow } from "./settings-shell";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { DesignerChat } from "./studio/chat";
@@ -265,7 +267,10 @@ export function AppearanceSection() {
   /** Shelve the draft (or, with nothing drafted, the live look). Same id →
    *  same card: editing a saved Look updates it in place. */
   const saveLook = () => {
-    const look = current;
+    // A starter is a recipe, not a card: shelving one mints a real id so it
+    // becomes yours, rather than writing a card under an id this build's
+    // table also claims.
+    const look = current && isStarterLook(current) ? { ...current, id: newLookId() } : current;
     if (!look) return;
     const next = upsertLook(looks, look);
     if (next === undefined) {
@@ -352,8 +357,7 @@ export function AppearanceSection() {
           like the others: you go to it, and while you are not there the
           palette and the scene get the whole page. */}
       <div className="flex min-w-0 flex-col gap-3">
-        <div className="flex">
-        <Segmented<Tab>
+        <Tabs<Tab>
           value={tab}
           onChange={setTab}
           options={[
@@ -364,7 +368,6 @@ export function AppearanceSection() {
             { value: "designer", label: <><SparklesIcon className="size-3.5" /> Designer</> },
           ]}
         />
-        </div>
 
         {tab === "colour" && current && (
           <>

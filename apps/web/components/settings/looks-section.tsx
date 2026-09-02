@@ -342,10 +342,12 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
               key={look.id}
               look={look}
               active={activeId === lookThemeId(look)}
-              // A NEW ID: a starter is somewhere to begin, so Save shelves a
-              // card of your own rather than trying to update one that only
-              // ever existed in this build's table.
-              onOpen={() => onOpen({ ...look, id: newLookId() })}
+              // The starter's OWN id rides into the draft. It is stable, so
+              // opening Dusk twice and applying both updates one theme instead
+              // of breeding a second one called Dusk. The fresh id is minted at
+              // SAVE (appearance-section), which is the moment it stops being a
+              // starter and becomes a card of your own.
+              onOpen={() => onOpen(look)}
             />
           ))}
         </div>
