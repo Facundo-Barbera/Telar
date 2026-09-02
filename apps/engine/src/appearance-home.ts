@@ -45,6 +45,71 @@ export type AppearanceHomePaths = {
   readme: string;
 };
 
+/**
+ * WHAT EVERY AGENT IN THIS DIRECTORY READS FIRST.
+ *
+ * A brief handed to one session at creation time is knowledge that one session
+ * has. `AGENTS.md` at the working directory is knowledge the PLACE has — every
+ * CLI agent Telar drives reads it on entry, so a session started from the
+ * settings button, from the sidebar, or by hand next Tuesday is equally aware.
+ *
+ * It sits at the state root rather than inside appearance/ because the state
+ * root is the working directory, and because appearance is not the only thing
+ * here worth explaining.
+ */
+const AGENTS_MD = `# This is a Telar instance's own state
+
+You are working inside Telar's state directory. Everything here decides how
+this Telar behaves and looks. Changes take effect in the running app — treat
+it as a live system, not a scratch checkout.
+
+## Appearance
+
+\`appearance/\` is read by the app and merged into the open window. Its README
+describes the schema; read it before writing there.
+
+    appearance/settings.json      accent, fonts, sizes, translucency, scheme
+    appearance/themes/<id>.json   a palette: two halves, sixteen tokens each
+    appearance/looks/<id>.json    a whole appearance: theme + backdrop + type
+    appearance/images/<id>.<ext>  pictures, referenced by looks
+
+Write valid JSON and it appears in Settings → Appearance. A malformed file is
+skipped and reported rather than breaking anything, so a bad edit is safe.
+
+## The rest
+
+    projects.json             registered projects
+    sessions/                 every session's record and journal
+    mcp-servers.json          tool servers offered to sessions
+    provider-instances.json   configured provider logins
+    text-generation.json      which model writes titles and one-shot answers
+
+\`provider-secrets.json\` holds credentials. There is no reason to read it.
+
+## Working here
+
+Prefer editing one file at a time and telling the person what changed — this
+is their machine's configuration, and a large silent rewrite is hard to undo.
+`;
+
+/** Written beside the appearance home, so a session in this directory knows
+ *  what the directory is. Kept honest the same way the README is. */
+export function ensureAgentsFile(stateRoot: string): void {
+  const file = path.join(stateRoot, "AGENTS.md");
+  let existing: string | undefined;
+  try {
+    existing = fs.readFileSync(file, "utf8");
+  } catch {
+    // Absent or unreadable — about to be written either way.
+  }
+  if (existing === AGENTS_MD) return;
+  try {
+    fs.writeFileSync(file, AGENTS_MD, { mode: 0o600 });
+  } catch {
+    // A directory whose map cannot be written still works.
+  }
+}
+
 export function appearanceHomePaths(stateRoot: string): AppearanceHomePaths {
   const root = path.join(stateRoot, "appearance");
   return {
@@ -131,6 +196,7 @@ export function ensureAppearanceHome(stateRoot: string): AppearanceHomePaths {
       // A home whose map cannot be written still works; the map is a courtesy.
     }
   }
+  ensureAgentsFile(stateRoot);
   return paths;
 }
 

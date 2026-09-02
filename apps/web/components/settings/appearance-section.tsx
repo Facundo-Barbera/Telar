@@ -45,7 +45,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ImageIcon, LayersIcon, MonitorIcon, PaletteIcon, SparklesIcon, TypeIcon, Undo2Icon } from "lucide-react";
+import { ImageIcon, MonitorIcon, PaletteIcon, TypeIcon, Undo2Icon } from "lucide-react";
 import { MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import {
@@ -86,7 +86,6 @@ import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 import { Row, Segmented, Tabs, ToggleRow } from "./settings-shell";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
-import { ConfigSessionCard } from "./config-session-card";
 import { BackdropTool } from "./studio/backdrop-tool";
 import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
 
@@ -95,12 +94,6 @@ import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
 const subscribeToNothing = () => () => {};
 const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
-
-/** The pane has two MODES, not six tools. Designing by conversation and
- *  asking an agent and doing it by hand are different sittings — one wants the whole window and a
- *  composer, the other wants a shelf and a grid — and burying the first as a
- *  sixth tab beside "Type" said they were the same size of thing. */
-type Mode = "looks" | "designer";
 
 type Tab = "colour" | "backdrop" | "type" | "window";
 
@@ -122,7 +115,6 @@ export function AppearanceSection() {
   // answer rather than flashing a control that then disappears.
   const [windowSupported, setWindowSupported] = useState(false);
 
-  const [pane, setPane] = useState<Mode>("looks");
   const [tab, setTab] = useState<Tab>("colour");
   /** Undefined means "nothing drafted" — the pane shows the live truth. */
   const [draft, setDraft] = useState<StudioDraft>();
@@ -488,20 +480,7 @@ export function AppearanceSection() {
       {notice && <p className="text-xs text-warning">{notice}</p>}
       {homeNotice && <p className="text-xs text-warning">{homeNotice}</p>}
 
-      {/* THE DIVISION AT THE TOP. Two sittings, named, before anything else. */}
-      <div className="flex">
-      <Segmented<Mode>
-        value={pane}
-        onChange={setPane}
-        options={[
-          { value: "looks", label: <><LayersIcon className="size-3.5" /> Looks</> },
-          { value: "designer", label: <><SparklesIcon className="size-3.5" /> Agent</> },
-        ]}
-      />
-      </div>
-
-      {pane === "looks" ? (
-        <>
+      <>
         <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
 
         {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
@@ -648,10 +627,7 @@ export function AppearanceSection() {
               the only tab you TALK to, so it takes the height the window has left
               rather than a number picked to sit politely beside a colour grid. */}
           </div>
-        </>
-      ) : (
-        <ConfigSessionCard />
-      )}
+      </>
     </div>
   );
 }

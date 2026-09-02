@@ -145,3 +145,23 @@ describe("the appearance home", () => {
     expect(fs.readFileSync(path.join(paths.root, "secret.png"))).toEqual(Buffer.from(PNG));
   });
 });
+
+describe("what a session in this directory reads first", () => {
+  test("AGENTS.md is written beside the home, so the PLACE carries the knowledge", () => {
+    const root = home();
+    ensureAppearanceHome(root);
+    const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8");
+    // The facts a config session cannot work without.
+    expect(agents).toContain("appearance/themes/<id>.json");
+    expect(agents).toContain("Settings → Appearance");
+    expect(agents).toContain("provider-secrets.json");
+  });
+
+  test("a stale AGENTS.md is rewritten rather than left to mislead", () => {
+    const root = home();
+    ensureAppearanceHome(root);
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "# out of date\n");
+    ensureAppearanceHome(root);
+    expect(fs.readFileSync(path.join(root, "AGENTS.md"), "utf8")).toContain("appearance/themes/<id>.json");
+  });
+});

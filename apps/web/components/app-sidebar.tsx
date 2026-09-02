@@ -37,6 +37,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { configStateRoot, ensureConfigProject } from "@/lib/config-session";
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -49,6 +50,7 @@ import {
   MoreHorizontalIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
+  SlidersHorizontalIcon,
   SpoolIcon,
   WorkflowIcon,
   XIcon,
@@ -577,6 +579,13 @@ function SidebarBody() {
   return (
     <>
       <TelarSidebarHeader />
+      {/* THE WAY TO A SETTINGS SESSION, at the top where the other "start
+          something" affordances are. It was buried as a tab inside Settings →
+          Appearance, which put the general act — configure this Telar — inside
+          one of the things it configures. */}
+      <div className="px-2 pt-2">
+        <SettingsSessionButton onNavigate={onNavigate} />
+      </div>
       <SidebarContent>
         {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
             §11's warehouse nav is what the rail shows on `/spool` — search,
@@ -896,6 +905,44 @@ function UsageButton({ onNavigate }: { onNavigate: () => void }) {
       <ChartNoAxesColumnIcon className="size-4 shrink-0" />
       <span>Usage</span>
     </Link>
+  );
+}
+
+/**
+ * START A SESSION THAT CONFIGURES THIS TELAR.
+ *
+ * A normal session, in the engine's own state directory. The knowledge lives
+ * in an AGENTS.md the engine writes there, so the agent is oriented by the
+ * PLACE rather than by a brief this button would have to keep in sync.
+ */
+function SettingsSessionButton({ onNavigate }: { onNavigate: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const router = useRouter();
+  const start = async () => {
+    setBusy(true);
+    try {
+      const stateRoot = await configStateRoot();
+      if (!stateRoot) return;
+      const projectId = await ensureConfigProject(stateRoot);
+      router.push(`/projects/${encodeURIComponent(projectId)}`);
+      onNavigate();
+    } catch {
+      // No engine, no session; the button simply does not take.
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={() => void start()}
+      disabled={busy}
+      title="Start a session that configures this Telar"
+      className="flex w-full items-center gap-2 rounded-md p-2 text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-60"
+    >
+      <SlidersHorizontalIcon className="size-4 shrink-0" />
+      <span>{busy ? "Starting…" : "Settings session"}</span>
+    </button>
   );
 }
 
