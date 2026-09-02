@@ -94,8 +94,8 @@ function ThemeCard({
   return (
     <div
       className={cn(
-        "group flex cursor-pointer items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
-        active && "ring-2 ring-primary",
+        "group flex cursor-pointer items-center gap-2.5 rounded-lg p-2 ring-1 transition-colors",
+        active ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
       )}
       onClick={onUse}
       role="button"
@@ -114,12 +114,9 @@ function ThemeCard({
         <ThemeOrb theme={theme} mode="light" active={lightActive} onUse={() => onUseHalf("light")} />
         <ThemeOrb theme={theme} mode="dark" active={darkActive} onUse={() => onUseHalf("dark")} />
       </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 text-sm font-medium">
-          <span className="truncate">{theme.label}</span>
-          {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
-        </div>
-        <div className="text-[0.6875rem] text-muted-foreground">{theme.builtIn ? "Built-in" : "Custom"}</div>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 text-sm font-medium">
+        <span className="truncate">{theme.label}</span>
+        {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
@@ -213,9 +210,8 @@ export function ThemeLibrary({
         }}
       />
       {importError && <p className="border-b border-border px-3 py-1.5 text-xs text-warning">{importError}</p>}
-      <PanelBody className="p-3">
-        <p className="mb-2.5 text-xs text-muted-foreground">A card loads both halves; one orb takes just that half. Import also reads a VS Code theme — one file is one half.</p>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+      <PanelBody className="p-2">
+        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
           {themes.map((theme) => (
             <ThemeCard
               key={theme.id}

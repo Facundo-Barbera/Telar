@@ -199,9 +199,7 @@ export function DesignerChat({
           </span>
           <div className="space-y-1">
             <p className="text-sm font-medium">Describe a look</p>
-            <p className="mx-auto max-w-72 text-xs text-muted-foreground">
-              The app previews the draft as you go. Nothing is kept until you press Apply.
-            </p>
+            <p className="text-xs text-muted-foreground">Previewed live. Nothing is kept until you Apply.</p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
             {OPENINGS.map((opening) => (
@@ -219,6 +217,7 @@ export function DesignerChat({
         </PanelBody>
       ) : (
         <PanelBody ref={transcript} className="flex flex-col gap-1.5 px-3 py-2.5">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-1.5">
           {lines.map((line) => (
             <div key={line.id} className={cn("flex", line.kind === "you" ? "justify-end" : "justify-start")}>
               <span
@@ -233,10 +232,14 @@ export function DesignerChat({
               </span>
             </div>
           ))}
+          </div>
         </PanelBody>
       )}
 
-      <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-2">
+      {/* The rule spans the panel; the composer inside it keeps the transcript's
+          measure, so a wide window does not hand you a metre-long input. */}
+      <div className="shrink-0 border-t border-border px-3 py-2">
+        <div className="mx-auto flex w-full max-w-3xl items-center gap-1.5">
         <Input
           className="h-8"
           value={instruction}
@@ -259,6 +262,7 @@ export function DesignerChat({
             <SendHorizontalIcon /> Send
           </Button>
         )}
+        </div>
       </div>
     </Panel>
   );

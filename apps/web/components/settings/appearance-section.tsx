@@ -34,10 +34,18 @@
  * THE DRAFT SURVIVES NAVIGATION (written through to storage, restored on
  * mount) and EVERY EDIT IS UNDOABLE — a bounded history whose entries coalesce
  * while a slider is being dragged.
+ *
+ * THE PANE READS TOP TO BOTTOM AS THE WORK ITSELF: start from something (the
+ * Looks shelf, which is never empty), change it (one of four tools, each
+ * getting the whole width), keep it (Apply or Save, in the masthead). The
+ * designer is the fourth TOOL rather than a permanent half of the screen —
+ * welding it in place cost every other tool half its measure, and a pane where
+ * two unrelated things always shout at once is the noise this rebuild set out
+ * to delete.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { MonitorIcon, PaletteIcon, SunMoonIcon, TypeIcon, Undo2Icon } from "lucide-react";
+import { ImageIcon, MonitorIcon, PaletteIcon, SparklesIcon, TypeIcon, Undo2Icon } from "lucide-react";
 import {
   MAX_TRANSLUCENCY,
   MIN_TRANSLUCENCY,
@@ -78,7 +86,7 @@ import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { DesignerChat } from "./studio/chat";
 import { BackdropTool } from "./studio/backdrop-tool";
-import { ColourTool, TypeTool } from "./studio/tools";
+import { ColourTool, ShowThroughTool, TypeTool } from "./studio/tools";
 
 // Same idiom as updates-section.tsx: whether there is a shell at all is an
 // external fact, present before React ran, and it never changes.
@@ -86,7 +94,7 @@ const subscribeToNothing = () => () => {};
 const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
 
-type Tab = "colours" | "backdrop" | "type";
+type Tab = "colour" | "backdrop" | "type" | "designer";
 
 /** How long a gap between edits starts a NEW undo step. Inside it, edits
  *  coalesce — a colour-picker drag is one step, not ninety. */
@@ -106,7 +114,7 @@ export function AppearanceSection() {
   // answer rather than flashing a control that then disappears.
   const [windowSupported, setWindowSupported] = useState(false);
 
-  const [tab, setTab] = useState<Tab>("colours");
+  const [tab, setTab] = useState<Tab>("colour");
   /** Which half the preview wears while a draft is open. Sticky once picked —
    *  a preview that flipped when the OS crossed into evening would be worse
    *  than one that stays where it was put. */
@@ -288,12 +296,12 @@ export function AppearanceSection() {
 
   return (
     <div className="flex flex-col gap-3">
-      {/* THE MASTHEAD — the draft's identity and what can be done with it, in
-          the same register as a session's: a quiet title that becomes an input
-          under the cursor, state as a mono chip, actions on the right. */}
+      {/* THE MASTHEAD — what you are editing, and what can be done with it.
+          A quiet title that finds its border under the cursor, the state as a
+          mono chip, actions on the right: a session's header, for a look. */}
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="h-8 max-w-64 flex-1 border-transparent bg-transparent font-heading text-sm font-semibold tracking-tight shadow-none hover:border-border focus:border-border"
+          className="h-8 max-w-64 flex-1 border-transparent bg-transparent font-heading text-base font-semibold tracking-tight shadow-none hover:border-border focus:border-border dark:bg-transparent"
           value={current?.label ?? ""}
           placeholder="Name this look"
           aria-label="Look name"
@@ -342,79 +350,80 @@ export function AppearanceSection() {
 
       <LooksSection onOpen={openLook} />
 
-      {/* The designer beside the inspector: describing a look is the primary
-          path, and the app around this pane is the canvas it draws on. */}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[3fr_2fr]">
-        <div className="min-w-0">{current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="xl:h-[30rem]" />}</div>
+      {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
+          The designer used to be welded to the left half of this pane, which
+          cost every other tool half its measure — that is what squeezed the
+          scene composer's rows into a column of one word each. It is a TOOL
+          like the others: you go to it, and while you are not there the
+          palette and the scene get the whole page. */}
+      <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex">
+        <Segmented<Tab>
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: "colour", label: <><PaletteIcon className="size-3.5" /> Colour</> },
+            { value: "backdrop", label: <><ImageIcon className="size-3.5" /> Backdrop</> },
+            { value: "type", label: <><TypeIcon className="size-3.5" /> Type</> },
+            { value: "designer", label: <><SparklesIcon className="size-3.5" /> Designer</> },
+          ]}
+        />
+        </div>
 
-        <div className="flex min-w-0 flex-col gap-3">
-          <Segmented<Tab>
-            value={tab}
-            onChange={setTab}
-            options={[
-              { value: "colours", label: "Colours" },
-              { value: "backdrop", label: "Backdrop" },
-              { value: "type", label: "Type" },
-            ]}
+        {tab === "colour" && current && (
+          <>
+            <Panel>
+              <PanelHeader icon={<PaletteIcon />} label={`Palette · ${mode}`} count={THEME_TOKENS.length} />
+              <PanelBody>
+                <ColourTool draft={current} onDraft={edit} mode={mode} />
+              </PanelBody>
+            </Panel>
+            {/* The library is where a palette comes FROM: a card loads both
+                halves into the draft; an orb loads one. */}
+            <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} />
+          </>
+        )}
+
+        {tab === "backdrop" && current && (
+          <BackdropTool
+            value={current.backdrop}
+            mode={mode}
+            onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
+            // A palette taken from the picture lands on the draft's two halves
+            // like any other edit — undoable, and never a new library entry.
+            // Only the halves: the look keeps the name it was given, because
+            // naming it was a separate decision.
+            onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
+            footer={<ShowThroughTool draft={current} onDraft={edit} />}
           />
+        )}
 
-          {tab === "colours" && (
-            <>
-              {current && (
-                <Panel>
-                  <PanelHeader icon={<PaletteIcon />} label={`Palette · ${mode} half`} count={THEME_TOKENS.length} />
-                  <PanelBody>
-                    <ColourTool draft={current} onDraft={edit} mode={mode} />
-                  </PanelBody>
-                </Panel>
-              )}
-              {/* The library is where a palette comes FROM: a card loads its
-                  halves into the draft; an orb loads one half. */}
-              <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} />
-            </>
-          )}
+        {tab === "type" && current && (
+          <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
+            <Panel>
+              <PanelHeader icon={<TypeIcon />} label="Type" />
+              <PanelBody>
+                <TypeTool draft={current} onDraft={edit} />
+              </PanelBody>
+            </Panel>
 
-          {tab === "backdrop" && current && (
-            <BackdropTool
-              value={current.backdrop}
-              mode={mode}
-              onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
-              // A palette taken from the picture lands on the draft's two
-              // halves like any other edit — undoable, and never a new
-              // library entry. Only the halves: the look keeps the name it
-              // was given, because naming it was a separate decision.
-              onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
-            />
-          )}
-
-          {tab === "type" && (
-            <>
-              {current && (
-                <Panel>
-                  <PanelHeader icon={<TypeIcon />} label="Type" />
-                  <PanelBody>
-                    <TypeTool draft={current} onDraft={edit} />
-                  </PanelBody>
-                </Panel>
-              )}
-
-              {/* THE WINDOW, not the look: which half this window wears, and —
-                  in the desktop shell — how much desktop shows through it.
-                  None of it travels in a Look. */}
-              <Panel>
-                <PanelHeader icon={<MonitorIcon />} label="Window" />
-                <PanelBody>
-                  <Row label="Scheme" hint="System follows the OS. The Light/Dark toggle above only moves the preview." icon={SunMoonIcon} control={<ThemeControl />} />
-                  {hasBridge && windowSupported && (
-                    <>
-                      <ToggleRow
-                        label="Translucency"
-                        hint="Turning it on rebuilds the window."
-                        icon={MonitorIcon}
-                        checked={appearance.translucent}
-                        onCheckedChange={setTranslucent}
-                      />
-                      {appearance.translucent && (
+            {/* THE WINDOW, not the look: which half this window wears, and — in
+                the desktop shell — how much desktop shows through it. None of
+                it travels in a Look. */}
+            <Panel>
+              <PanelHeader icon={<MonitorIcon />} label="Window" />
+              <PanelBody>
+                <Row label="Colour scheme" control={<ThemeControl />} />
+                {hasBridge && windowSupported && (
+                  <>
+                    <ToggleRow
+                      label="Translucency"
+                      hint="Rebuilds the window."
+                      checked={appearance.translucent}
+                      onCheckedChange={setTranslucent}
+                    />
+                    {appearance.translucent && (
+                      <>
                         <Row
                           label="Glass"
                           control={
@@ -428,10 +437,8 @@ export function AppearanceSection() {
                             />
                           }
                         />
-                      )}
-                      {appearance.translucent && (
                         <Row
-                          label="Strength"
+                          label="Desktop show-through"
                           control={
                             <div className="flex items-center gap-2.5">
                               <input
@@ -448,14 +455,16 @@ export function AppearanceSection() {
                             </div>
                           }
                         />
-                      )}
-                    </>
-                  )}
-                </PanelBody>
-              </Panel>
-            </>
-          )}
-        </div>
+                      </>
+                    )}
+                  </>
+                )}
+              </PanelBody>
+            </Panel>
+          </div>
+        )}
+
+        {tab === "designer" && current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[24rem]" />}
       </div>
     </div>
   );

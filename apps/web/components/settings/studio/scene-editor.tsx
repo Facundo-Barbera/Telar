@@ -70,7 +70,7 @@ import {
   type SceneLayerPatch,
 } from "@/lib/scene-composer";
 import { draftSceneStack, sceneBackdrop } from "@/lib/studio-draft";
-import { Row } from "../settings-shell";
+import { PanelDivider } from "@/components/ui/panel";
 
 function messageFor(error: unknown): string {
   if (error instanceof ImageBackdropError) return error.message;
@@ -425,46 +425,52 @@ export function SceneEditor({ value, onChange }: { value: LookBackdrop; onChange
 
   return (
     <>
-      <Row
-        label="Layers"
-        icon={LayersIcon}
-        hint={
-          error
-            ? error
-            : busy
-              ? "Working…"
-              : `Gradients and images stack together, the top one first — up to ${MAX_SCENE_LAYERS} images and ${MAX_SCENE_GRADIENT_LAYERS} gradients. ${layerCount} ${layerCount === 1 ? "layer" : "layers"} here. The stack rides inside the draft and is only stored when you Apply. Nothing is uploaded.`
-        }
-        control={
-          <div className="flex items-center gap-2">
-            {!live && layerCount > 0 && (
-              <Button size="sm" variant="outline" onClick={() => apply(scene, images)}>
-                Use this scene
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant={picking ? "secondary" : "outline"}
-              aria-expanded={picking}
-              disabled={busy || gradientCount >= MAX_SCENE_GRADIENT_LAYERS}
-              onClick={() => setPicking((open) => !open)}
-            >
-              <PaintbrushIcon /> Add gradient
+      {/* A TOOLBAR, NOT A ROW. `Row` puts its label in a flexible column and
+          its control in a fixed one — hand it three buttons and the label
+          collapses to a ribbon of one word per line. What the stack is gets
+          said by the stack; the counters say how much room is left. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        <span className="flex items-center gap-1.5 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">
+          <LayersIcon className="size-3.5" />
+          Layers
+          <span className="text-muted-foreground/60 tabular-nums">{layerCount}</span>
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          {!live && layerCount > 0 && (
+            <Button size="sm" variant="outline" onClick={() => apply(scene, images)}>
+              Use this scene
             </Button>
-            <Button size="sm" variant="outline" disabled={busy || imageCount >= MAX_SCENE_LAYERS} onClick={() => fileInput.current?.click()}>
-              <UploadIcon /> Add image…
-            </Button>
-          </div>
-        }
-      />
+          )}
+          <Button
+            size="sm"
+            variant={picking ? "secondary" : "outline"}
+            aria-expanded={picking}
+            title={`Up to ${MAX_SCENE_GRADIENT_LAYERS} gradients — ${gradientCount} used`}
+            disabled={busy || gradientCount >= MAX_SCENE_GRADIENT_LAYERS}
+            onClick={() => setPicking((open) => !open)}
+          >
+            <PaintbrushIcon /> Gradient
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            title={`Up to ${MAX_SCENE_LAYERS} images — ${imageCount} used`}
+            disabled={busy || imageCount >= MAX_SCENE_LAYERS}
+            onClick={() => fileInput.current?.click()}
+          >
+            <UploadIcon /> Image…
+          </Button>
+        </div>
+      </div>
+      {(error || busy) && <p className={cn("px-3 pt-2 text-xs", error ? "text-warning" : "text-muted-foreground")}>{error || "Working…"}</p>}
       {picking && (
-        <div className="px-4 pb-1">
+        <div className="px-3 pb-1">
           {/* The same grid the base uses, minus None: adding a layer of
               nothing is what NOT adding a layer already is. */}
           <PresetGrid value={null} onPick={addGradient} />
         </div>
       )}
-      <div className="flex flex-col gap-2 px-4 py-3">
+      <div className="flex flex-col gap-2 p-3">
         <input
           ref={fileInput}
           type="file"
@@ -527,11 +533,8 @@ export function SceneEditor({ value, onChange }: { value: LookBackdrop; onChange
           {busy ? "Working…" : imageCount >= MAX_SCENE_LAYERS ? "The stack is full — remove an image to add another." : "Drop images here to add layers."}
         </div>
       </div>
-      <Row
-        label="Under everything"
-        hint="The gradient at the bottom of the stack — both halves of the pair come with it, light and dark. Choose None to leave the bottom transparent: in a translucent window that is the desktop, and in a browser tab the theme's own canvas."
-      />
-      <div className="px-4 pb-3">
+      <PanelDivider label="Under everything" />
+      <div className="px-3 pb-3">
         <PresetGrid value={baseId} withNone onPick={(presetId) => apply(setSceneBase(scene, presetId), images)} />
       </div>
     </>

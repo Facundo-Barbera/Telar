@@ -17,6 +17,12 @@
  * Saving lives in the pane header ("Save look") — one save path, fed by the
  * draft, instead of the old second button here that captured the live stores
  * behind the draft's back.
+ *
+ * THE SHELF IS NEVER EMPTY. Six STARTERS (lib/starter-looks.ts) stand after
+ * whatever has been saved — built from the same themes and presets the pane
+ * offers, so they cost no storage and cannot be deleted away. They are what
+ * makes this pane legible on first arrival: the first thing you can do here is
+ * wear something, not read a paragraph about what a Look would be.
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -36,19 +42,21 @@ import {
   LOOKS_QUOTA_MESSAGE,
   type Look,
 } from "@/lib/looks";
+import { STARTER_LOOKS } from "@/lib/starter-looks";
 import { useThemeLibrary } from "@/lib/theme-palettes";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Panel, PanelBody, PanelEmpty, PanelHeader, PanelRow } from "@/components/ui/panel";
+import { Panel, PanelBody, PanelHeader, PanelRow } from "@/components/ui/panel";
+import { LookThumb } from "./look-thumb";
 
-/** What the strip says under the label — the one word that tells you whether
- *  this Look brings a wallpaper with it. */
+/** The one word the HOST row still needs — a row has no thumbnail to say it
+ *  with. The cards do, so they carry no subtitle at all. */
 const BACKDROP_LABEL: Record<Look["backdrop"]["kind"], string> = {
-  none: "No backdrop",
-  gradient: "Gradient",
-  "custom-gradient": "Custom gradient",
-  image: "Image",
-  scene: "Composed scene",
+  none: "no backdrop",
+  gradient: "gradient",
+  "custom-gradient": "custom gradient",
+  image: "image",
+  scene: "composed scene",
 };
 
 function downloadFile(filename: string, contents: string): void {
@@ -61,33 +69,46 @@ function downloadFile(filename: string, contents: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
-/**
- * The strip: the Look's two CANVAS colours, light beside dark. Two flat chips
- * read as "one thing with a day and a night", which is what a Look is.
- */
+/** The host row's avatar — the same thumbnail the cards use, at row size. */
 function LookStrip({ look }: { look: Look }) {
   return (
-    <div className="flex size-9 shrink-0 overflow-hidden rounded-lg ring-1 ring-foreground/15">
-      <span className="flex-1" style={{ background: look.theme.light.background }} />
-      <span className="flex-1" style={{ background: look.theme.dark.background }} />
+    <div className="w-14 shrink-0">
+      <LookThumb look={look} />
     </div>
   );
 }
 
-function LookCard({ look, active, onOpen, onExport, onRemove }: { look: Look; active: boolean; onOpen: () => void; onExport: () => void; onRemove: () => void }) {
+/**
+ * A CARD IS THE LOOK ITSELF — a thumbnail, and a name under it. The old card
+ * spent two thirds of its width on words ("Gradient", "Composed scene") that
+ * the picture says better, and the picture is the only thing anyone chooses a
+ * look by.
+ */
+function LookCard({
+  look,
+  active,
+  onOpen,
+  onExport,
+  onRemove,
+}: {
+  look: Look;
+  active: boolean;
+  onOpen: () => void;
+  onExport?: () => void;
+  onRemove?: () => void;
+}) {
   return (
     <div
       className={cn(
-        // A STRIP, NOT A GRID: the shelf sits across the top of the editor,
-        // where it is a place to start from rather than a section to read. A
-        // fixed width keeps the cards a scannable rank instead of a ragged one.
-        "group flex w-60 shrink-0 cursor-pointer items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
-        active && "ring-2 ring-primary",
+        // A RANK, NOT A GRID: the shelf runs across the top of the editor,
+        // where it is a place to start from rather than a section to read.
+        "group relative w-32 shrink-0 cursor-pointer rounded-lg p-1 ring-1 transition-colors",
+        active ? "ring-2 ring-primary" : "ring-foreground/10 hover:bg-accent/50",
       )}
       onClick={onOpen}
       role="button"
-      title={`Open ${look.label} in the studio`}
-      aria-label={`Open ${look.label} in the studio`}
+      title={`Open ${look.label}`}
+      aria-label={`Open ${look.label}`}
       aria-pressed={active}
       tabIndex={0}
       onKeyDown={(event) => {
@@ -97,22 +118,39 @@ function LookCard({ look, active, onOpen, onExport, onRemove }: { look: Look; ac
         }
       }}
     >
-      <LookStrip look={look} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 text-sm font-medium">
-          <span className="truncate">{look.label}</span>
-          {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
+      <LookThumb look={look} />
+      <div className="flex items-center gap-1 px-0.5 pt-1.5 pb-0.5 text-xs">
+        <span className="min-w-0 flex-1 truncate font-medium">{look.label}</span>
+        {active && <CheckIcon className="size-3 shrink-0 text-primary" />}
+      </div>
+      {(onExport || onRemove) && (
+        <div className="absolute top-1.5 right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+          {onExport && (
+            <Button
+              size="icon-sm"
+              variant="secondary"
+              className="size-6 shadow-sm"
+              title="Export"
+              aria-label={`Export ${look.label}`}
+              onClick={(event) => (event.stopPropagation(), onExport())}
+            >
+              <DownloadIcon />
+            </Button>
+          )}
+          {onRemove && (
+            <Button
+              size="icon-sm"
+              variant="secondary"
+              className="size-6 shadow-sm"
+              title="Delete"
+              aria-label={`Delete ${look.label}`}
+              onClick={(event) => (event.stopPropagation(), onRemove())}
+            >
+              <Trash2Icon />
+            </Button>
+          )}
         </div>
-        <div className="text-[0.6875rem] text-muted-foreground">{BACKDROP_LABEL[look.backdrop.kind]}</div>
-      </div>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-        <Button size="icon-sm" variant="ghost" title="Export" aria-label={`Export ${look.label}`} onClick={(event) => (event.stopPropagation(), onExport())}>
-          <DownloadIcon />
-        </Button>
-        <Button size="icon-sm" variant="ghost" title="Delete" aria-label={`Delete ${look.label}`} onClick={(event) => (event.stopPropagation(), onRemove())}>
-          <Trash2Icon />
-        </Button>
-      </div>
+      )}
     </div>
   );
 }
@@ -262,7 +300,7 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
       <PanelHeader
         icon={<LayersIcon />}
         label="Looks"
-        count={looks.length}
+        count={looks.length + STARTER_LOOKS.length}
         actions={
           <Button size="icon-sm" variant="ghost" title="Import a look file" aria-label="Import a look" onClick={() => fileInput.current?.click()}>
             <UploadIcon />
@@ -285,27 +323,33 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
       />
       {error && <p className="border-b border-border px-3 py-1.5 text-xs text-warning">{error}</p>}
       {!isHost && <HostLookRow onOpen={onOpen} />}
-      {looks.length === 0 ? (
-        <PanelEmpty icon={<LayersIcon />} title="Nothing saved yet">
-          Save look shelves the draft as a card you can come back to, or send to another machine.
-        </PanelEmpty>
-      ) : (
-        <PanelBody className="overflow-x-auto p-3">
-          <div className="flex gap-2">
-            {looks.map((look) => (
-              <LookCard
-                key={look.id}
-                look={look}
-                // Worn = the library is wearing the theme this Look installs.
-                active={activeId === lookThemeId(look)}
-                onOpen={() => onOpen(look)}
-                onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
-                onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
-              />
-            ))}
-          </div>
-        </PanelBody>
-      )}
+      <PanelBody className="overflow-x-auto p-2">
+        <div className="flex items-start gap-1.5">
+          {looks.map((look) => (
+            <LookCard
+              key={look.id}
+              look={look}
+              // Worn = the library is wearing the theme this Look installs.
+              active={activeId === lookThemeId(look)}
+              onOpen={() => onOpen(look)}
+              onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
+              onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
+            />
+          ))}
+          {looks.length > 0 && <span className="mx-1 h-16 w-px shrink-0 self-center bg-border" />}
+          {STARTER_LOOKS.map((look) => (
+            <LookCard
+              key={look.id}
+              look={look}
+              active={activeId === lookThemeId(look)}
+              // A NEW ID: a starter is somewhere to begin, so Save shelves a
+              // card of your own rather than trying to update one that only
+              // ever existed in this build's table.
+              onOpen={() => onOpen({ ...look, id: newLookId() })}
+            />
+          ))}
+        </div>
+      </PanelBody>
     </Panel>
   );
 }

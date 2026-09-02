@@ -36,8 +36,8 @@
  * effect.
  */
 
-import { useCallback, useRef, useState } from "react";
-import { CheckIcon, ImageIcon, MinusIcon, PaletteIcon, PlusIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
+import { CheckIcon, ImageIcon, MinusIcon, PaletteIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { BACKDROP_FITS, MAX_BACKDROP_BLUR, MAX_BACKDROP_DIM, type BackdropFit } from "@/lib/backdrop";
@@ -186,10 +186,7 @@ function CustomGradientEditor({
   return (
     <div className="mt-3 rounded-xl bg-card ring-1 ring-foreground/10">
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <span className="text-xs font-medium">
-          Editing the {mode} half
-          <span className="ml-1.5 font-normal text-muted-foreground">— the Light/Dark toggle above chooses which.</span>
-        </span>
+        <span className="text-xs font-medium">Editing the {mode} half</span>
         <Button size="sm" variant="ghost" className="ml-auto" onClick={onClose}>
           Done
         </Button>
@@ -291,8 +288,8 @@ function GradientEditor({ value, onChange, mode }: BackdropEditor & { mode: Stud
   return (
     <>
       <PanelDivider label="Presets" />
-      <div className="px-4 py-3">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <div className="px-3 pb-3">
+        <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 xl:grid-cols-6">
           {BACKDROP_PRESETS.map((preset) => (
             <PresetCard
               key={preset.id}
@@ -424,17 +421,8 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
 
   return (
     <>
-      <Row
-        label="Image"
-        icon={ImageIcon}
-        hint={error ? error : "A photo of your own, scaled down and carried inside the draft. Nothing is uploaded, and nothing is stored until you Apply."}
-        control={
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => fileInput.current?.click()}>
-            <UploadIcon /> Choose image…
-          </Button>
-        }
-      />
-      <div className="px-4 py-3">
+      {error && <p className="px-3 pt-2.5 text-xs text-warning">{error}</p>}
+      <div className="p-3">
         <input
           ref={fileInput}
           type="file"
@@ -447,7 +435,21 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
             void accept(file);
           }}
         />
+        {/* THE DROPZONE IS THE BUTTON. There used to be a "Choose image…"
+            button in a row above, doing exactly what clicking here does — two
+            controls for one act, and a paragraph beside them explaining the
+            act. One target, one line. */}
         <div
+          role="button"
+          tabIndex={0}
+          aria-label="Choose a backdrop image"
+          onClick={() => !busy && fileInput.current?.click()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              if (!busy) fileInput.current?.click();
+            }
+          }}
           onDragOver={(event) => {
             event.preventDefault();
             setDragging(true);
@@ -458,19 +460,23 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
             setDragging(false);
             void accept(event.dataTransfer.files?.[0]);
           }}
-          className={cn("flex items-center gap-3 rounded-lg border border-dashed p-3 transition-colors", dragging ? "border-primary bg-primary/5" : "border-border")}
+          className={cn(
+            "flex cursor-pointer items-center gap-3 rounded-lg border border-dashed p-3 transition-colors",
+            dragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/40 hover:bg-accent/40",
+          )}
         >
           {image ? (
             <>
               {/* eslint-disable-next-line @next/next/no-img-element -- a data URL held in the draft; there is nothing for next/image to fetch or optimise */}
               <img src={image.image} alt="" className="size-14 shrink-0 rounded-md border border-border object-cover" />
-              <div className="min-w-0 flex-1 text-xs text-muted-foreground">{busy ? "Working…" : "Drop another image here to replace it."}</div>
+              <div className="min-w-0 flex-1 text-xs text-muted-foreground">{busy ? "Working…" : "Click or drop to replace."}</div>
               <Button
                 size="sm"
                 variant="ghost"
                 className="shrink-0 text-muted-foreground"
                 disabled={busy}
-                onClick={() => {
+                onClick={(event) => {
+                  event.stopPropagation();
                   setError(false);
                   onChange({ kind: "none" });
                 }}
@@ -479,7 +485,10 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
               </Button>
             </>
           ) : (
-            <div className="flex-1 text-center text-xs text-muted-foreground">{busy ? "Working…" : "Drop an image here, or choose one above."}</div>
+            <div className="flex flex-1 items-center justify-center gap-2 py-4 text-xs text-muted-foreground">
+              <ImageIcon className="size-4" />
+              {busy ? "Working…" : "Click, or drop an image here"}
+            </div>
           )}
         </div>
       </div>
@@ -487,7 +496,6 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
         <>
           <Row
             label="Fit"
-            hint="How the picture meets the window."
             control={
               <Segmented<BackdropFit>
                 value={image.fit}
@@ -498,7 +506,6 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
           />
           <Row
             label="Blur"
-            hint="Softens the picture so the text over it stays the thing you read."
             control={
               <div className="flex items-center gap-2.5">
                 <input
@@ -517,7 +524,6 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
           />
           <Row
             label="Dim"
-            hint="Darkens the picture behind the app without touching its colours."
             control={
               <div className="flex items-center gap-2.5">
                 <input
@@ -536,10 +542,15 @@ function ImageEditor({ value, onChange, onThemeHalves }: BackdropEditor & { onTh
           />
           {onThemeHalves && (
             <Row
-              label="Theme from image"
-              hint="Takes the picture's dominant colour and tints the draft's surfaces with it — both halves at once, undoable like any other edit."
+              label="Palette from image"
               control={
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => void makeTheme()}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  title="Tint both halves of the draft with the picture's dominant colour"
+                  onClick={() => void makeTheme()}
+                >
                   <PaletteIcon /> Take colours
                 </Button>
               }
@@ -558,7 +569,14 @@ export function BackdropTool({
   onChange,
   mode,
   onThemeHalves,
-}: BackdropEditor & { mode: StudioMode; onThemeHalves?: (theme: Omit<ThemeDefinition, "id">) => void }) {
+  footer,
+}: BackdropEditor & {
+  mode: StudioMode;
+  onThemeHalves?: (theme: Omit<ThemeDefinition, "id">) => void;
+  /** Rows that belong to the scene but are not part of the backdrop VALUE —
+   *  today just how much of it washes through the app. */
+  footer?: ReactNode;
+}) {
   const valueView = viewOf(value);
   // Local so a picker can be opened BEFORE anything is chosen; adjusted during
   // render (React's sanctioned derived-state idiom, not an effect) so a change
@@ -594,7 +612,7 @@ export function BackdropTool({
         }
       />
       {view === "none" ? (
-        <PanelBody className="px-3 py-6 text-center text-xs text-muted-foreground">No scene — the canvas paints flat.</PanelBody>
+        <PanelBody className="px-3 py-6 text-center text-xs text-muted-foreground">The canvas paints flat.</PanelBody>
       ) : (
         <PanelBody>
           {view === "gradient" && <GradientEditor value={value} onChange={onChange} mode={mode} />}
@@ -602,6 +620,7 @@ export function BackdropTool({
           {view === "scene" && <SceneEditor value={value} onChange={onChange} />}
         </PanelBody>
       )}
+      {footer && <div className="shrink-0 border-t border-border">{footer}</div>}
     </Panel>
   );
 }

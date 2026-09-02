@@ -55,12 +55,16 @@ const ACCENT_LABEL: Record<Accent, string> = {
   violet: "Violet",
 };
 
-function ToolBlock({ title, hint, children }: { title?: string; hint?: string; children: React.ReactNode }) {
+/** A labelled block. The label sits in the left column and the control in the
+ *  right, so the tool reads as a list of decisions rather than a wall — and
+ *  there is nowhere for a paragraph to grow. What a control does is said by
+ *  the control; anything that genuinely needs a sentence gets a `title`. */
+function ToolBlock({ title, children }: { title?: string; children: React.ReactNode }) {
+  if (!title) return <div className="px-3 py-2.5">{children}</div>;
   return (
-    <div className="px-4 py-3">
-      {title && <div className="text-xs font-medium text-foreground">{title}</div>}
-      {hint && <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">{hint}</p>}
-      <div className="mt-2.5">{children}</div>
+    <div className="flex items-center gap-4 border-b border-border px-3 py-2 last:border-b-0">
+      <span className="w-32 shrink-0 text-xs font-medium">{title}</span>
+      <div className="flex min-w-0 flex-1 justify-end">{children}</div>
     </div>
   );
 }
@@ -133,7 +137,7 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
   const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
     <ToolBlock>
-      <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2 xl:grid-cols-3">
         {THEME_TOKENS.map((token) => {
           const value = draft.theme[mode][token];
           const hex = cssColorToHex(value);
@@ -210,11 +214,12 @@ function AccentSwatches({ value, onChange }: { value: Accent; onChange: (next: A
 export function TypeTool({ draft, onDraft }: DraftTool) {
   return (
     <>
-      <ToolBlock title="Accent" hint="Buttons, links, the focus ring.">
+      <ToolBlock title="Accent">
         <AccentSwatches value={draft.accent} onChange={(accent) => onDraft(patchDraftAccent(draft, accent))} />
       </ToolBlock>
 
       <ToolBlock title="Interface font">
+        <div className="flex flex-col items-end gap-2">
         <Select
           value={draft.fontSans}
           items={SANS_LABEL}
@@ -222,7 +227,7 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
             if (typeof next === "string" && (SANS_FONTS as readonly string[]).includes(next)) onDraft(patchDraftType(draft, { fontSans: next as SansFont }));
           }}
         >
-          <SelectTrigger size="sm" className="w-full">
+          <SelectTrigger size="sm" className="w-48">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -235,16 +240,18 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
         </Select>
         {draft.fontSans === "custom" && (
           <Input
-            className="mt-2"
+            className="w-48"
             value={draft.fontSansCustom}
             placeholder="e.g. Helvetica Neue"
             aria-label="Custom interface font"
             onChange={(event) => onDraft(patchDraftType(draft, { fontSansCustom: event.target.value }))}
           />
         )}
+        </div>
       </ToolBlock>
 
       <ToolBlock title="Code font">
+        <div className="flex flex-col items-end gap-2">
         <Select
           value={draft.fontMono}
           items={MONO_LABEL}
@@ -252,7 +259,7 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
             if (typeof next === "string" && (MONO_FONTS as readonly string[]).includes(next)) onDraft(patchDraftType(draft, { fontMono: next as MonoFont }));
           }}
         >
-          <SelectTrigger size="sm" className="w-full">
+          <SelectTrigger size="sm" className="w-48">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -265,16 +272,17 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
         </Select>
         {draft.fontMono === "custom" && (
           <Input
-            className="mt-2"
+            className="w-48"
             value={draft.fontMonoCustom}
             placeholder="e.g. SF Mono"
             aria-label="Custom code font"
             onChange={(event) => onDraft(patchDraftType(draft, { fontMonoCustom: event.target.value }))}
           />
         )}
+        </div>
       </ToolBlock>
 
-      <ToolBlock title="Text size" hint="The root size the whole interface is measured from.">
+      <ToolBlock title="Text size">
         <div className="flex items-center gap-2">
           <Input
             type="number"
@@ -294,22 +302,33 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
           <span className="text-xs text-muted-foreground">px</span>
         </div>
       </ToolBlock>
-
-      <ToolBlock title="Strength" hint="How much backdrop shows through the canvas and the rail.">
-        <div className="flex items-center gap-2.5">
-          <input
-            type="range"
-            min={MIN_TRANSLUCENCY}
-            max={MAX_TRANSLUCENCY}
-            step={5}
-            value={draft.translucencyLevel}
-            aria-label="Draft translucency strength"
-            className="w-full accent-primary"
-            onChange={(event) => onDraft(patchDraftStrength(draft, Number(event.target.value)))}
-          />
-          <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{draft.translucencyLevel}%</span>
-        </div>
-      </ToolBlock>
     </>
+  );
+}
+
+/**
+ * HOW MUCH BACKDROP COMES THROUGH — filed with the backdrop, where it belongs.
+ * It rode in the type tool for no better reason than that both are sliders,
+ * and a reader hunting for it under "Type" has already learnt that this pane's
+ * grouping means nothing.
+ */
+export function ShowThroughTool({ draft, onDraft }: DraftTool) {
+  return (
+    <ToolBlock title="Show-through">
+      <div className="flex items-center gap-2.5">
+        <input
+          type="range"
+          min={MIN_TRANSLUCENCY}
+          max={MAX_TRANSLUCENCY}
+          step={5}
+          value={draft.translucencyLevel}
+          aria-label="Draft translucency strength"
+          title="How much of the backdrop shows through the canvas and the rail"
+          className="w-36 accent-primary"
+          onChange={(event) => onDraft(patchDraftStrength(draft, Number(event.target.value)))}
+        />
+        <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{draft.translucencyLevel}%</span>
+      </div>
+    </ToolBlock>
   );
 }
