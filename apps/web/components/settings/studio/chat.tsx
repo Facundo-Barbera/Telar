@@ -37,7 +37,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpIcon, ImagePlusIcon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
+import { CornerDownLeftIcon, ImagePlusIcon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { compressImageFile } from "@/lib/image-backdrop";
 import { dominantHues, samplePixels, themeFromPixels } from "@/lib/palette-from-image";
@@ -57,6 +57,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Message, MessageContent } from "@/components/ui/message";
 import { ComposerEditor, type ComposerEditorHandle } from "@/components/composer-editor";
+import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 
 const api = createEngineApi();
@@ -326,65 +327,46 @@ export function DesignerChat({
       {/* The composer a session gets: the same editor, the same measure, the
           same keys. Enter sends, Shift+Enter is a newline — claimed here
           because ComposerEditor hands the key to its parent first. */}
-      <div className="shrink-0 border-t border-border px-4 py-3">
+      {/* THE SAME COMPOSER A SESSION HAS, built from the same primitives:
+          `InputGroup` with its own chrome (the shadow is cast in
+          --shadow-tint, not raw black — see globals.css), `ComposerEditor`,
+          attachments in a block-start addon, and a block-end addon whose left
+          side holds the tools and whose right holds the submit. The first cut
+          of this invented its own rounded box with a circular send button,
+          which is why it read as a different app. */}
+      <div className="shrink-0 px-4 pt-1 pb-4">
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          aria-hidden
+          onChange={(event) => {
+            const picked = event.target.files ? Array.from(event.target.files) : [];
+            // Cleared so picking the SAME file twice still fires a change.
+            event.target.value = "";
+            void attach(picked);
+          }}
+        />
         <div className="mx-auto w-full max-w-[50rem]">
-          {pictures.length > 0 && (
-            <div className="mb-2 flex flex-wrap gap-2">
-              {pictures.map((picture) => (
-                <div key={picture.id} className="group relative flex items-center gap-2 rounded-lg border border-border p-1 pr-2">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- a data URL held in state; there is nothing for next/image to fetch */}
-                  <img src={picture.url} alt="" className="size-8 rounded object-cover" />
-                  <span className="flex gap-0.5">
-                    {picture.colours.slice(0, 5).map((colour, index) => (
-                      <span key={index} className="size-3 rounded-full ring-1 ring-foreground/10" style={{ background: colour }} />
-                    ))}
-                  </span>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    className="size-5"
-                    title={`Remove ${picture.name}`}
-                    aria-label={`Remove ${picture.name}`}
-                    onClick={() => setPictures((current) => current.filter((entry) => entry.id !== picture.id))}
-                  >
-                    <XIcon />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            aria-hidden
-            onChange={(event) => {
-              const picked = event.target.files ? Array.from(event.target.files) : [];
-              event.target.value = "";
-              void attach(picked);
-            }}
-          />
-          <div className="flex items-end gap-2 rounded-xl border border-border bg-background p-2 focus-within:border-ring">
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              className="size-8 shrink-0"
-              disabled={busy || reading}
-              title="Attach a picture to design from"
-              aria-label="Attach a picture"
-              onClick={() => fileInput.current?.click()}
-            >
-              <ImagePlusIcon />
-            </Button>
+          <InputGroup
+            className={cn(
+              "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl",
+              dragging && "border-ring ring-2 ring-ring/40",
+            )}
+          >
+            <label className="sr-only" htmlFor="designer-prompt">
+              Describe a look
+            </label>
             <ComposerEditor
               ref={editor}
+              id="designer-prompt"
               value={instruction}
-              onChange={setInstruction}
               placeholder={PLACEHOLDER}
-              disabled={busy}
-              className="max-h-40 min-h-9 flex-1 px-1.5 py-1.5 text-sm"
+              // NOT disabled while drafting: you can write the next change
+              // while this one lands, exactly as a session lets you.
+              onChange={setInstruction}
               onPasteFiles={(files) => void attach(files)}
               onKeyDown={(event) => {
                 if (event.key !== "Enter" || event.shiftKey) return;
@@ -392,22 +374,57 @@ export function DesignerChat({
                 void send();
               }}
             />
-            {busy ? (
-              <Button size="icon-sm" variant="outline" className="size-8 shrink-0" onClick={stop} aria-label="Stop drafting">
-                <SquareIcon />
-              </Button>
-            ) : (
-              <Button
-                size="icon-sm"
-                className="size-8 shrink-0"
-                disabled={instruction.trim().length === 0 && pictures.length === 0}
-                aria-label="Send"
-                onClick={() => void send()}
-              >
-                <ArrowUpIcon />
-              </Button>
+            {pictures.length > 0 && (
+              <InputGroupAddon align="block-start" className="flex-wrap gap-1.5 px-2.5 pt-2.5">
+                {pictures.map((picture) => (
+                  <span key={picture.id} className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 p-1 pr-1.5">
+                    {/* eslint-disable-next-line @next/next/no-img-element -- a data URL held in state; there is nothing for next/image to fetch */}
+                    <img src={picture.url} alt="" className="size-7 rounded object-cover" />
+                    <span className="flex gap-0.5">
+                      {picture.colours.slice(0, 5).map((colour, index) => (
+                        <span key={index} className="size-3 rounded-full ring-1 ring-foreground/10" style={{ background: colour }} />
+                      ))}
+                    </span>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      className="size-5"
+                      title={`Remove ${picture.name}`}
+                      aria-label={`Remove ${picture.name}`}
+                      onClick={() => setPictures((current) => current.filter((entry) => entry.id !== picture.id))}
+                    >
+                      <XIcon />
+                    </Button>
+                  </span>
+                ))}
+              </InputGroupAddon>
             )}
-          </div>
+            <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
+                <InputGroupButton
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={reading}
+                  title="Attach a picture to design from"
+                  aria-label="Attach a picture"
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <ImagePlusIcon className="size-4" />
+                </InputGroupButton>
+                {reading && <span className="text-xs text-muted-foreground">Reading the picture…</span>}
+              </div>
+              <InputGroupButton
+                type="button"
+                variant="default"
+                size="icon-sm"
+                aria-label={busy ? "Stop drafting" : "Send"}
+                onClick={busy ? stop : () => void send()}
+                className={cn(!busy && instruction.trim().length === 0 && pictures.length === 0 && "opacity-60")}
+              >
+                {busy ? <SquareIcon className="size-4" /> : <CornerDownLeftIcon className="size-4" />}
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
         </div>
       </div>
     </Panel>
