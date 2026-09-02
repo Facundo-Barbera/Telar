@@ -1,62 +1,56 @@
 "use client";
 
 /**
- * THE SCENE COMPOSER — arranging gradients and images into one stack.
+ * THE SCENE EDITOR — arranging gradients and images into one stack, on the
+ * DRAFT.
  *
- * Rendered by backdrop-section.tsx when Scene says Compose. It is the image
- * picker's idiom taken plural: pick or drop, tune with sliders, and every
- * change is already committed — but where that pane tunes ONE picture with
- * CSS filters, this one builds a whole `background-image` list in
- * lib/scene-composer.ts and hands the resolved lists to the store.
+ * This is the settings pane's old scene composer with its storage taken out.
+ * The model and the compiler have not moved: lib/scene-composer.ts still owns
+ * layers, clamping and the `background-image` lists, and composeScene is still
+ * the only thing that turns a stack into CSS. What changed is where the result
+ * goes — `sceneBackdrop` folds the composed lists, the stack and its images
+ * into one self-contained LookBackdrop, and that value is handed up. Nothing
+ * here writes SCENE_KEY, SCENE_IMAGES_KEY or the backdrop store; a scene only
+ * reaches storage when the whole draft is applied.
  *
- * THE APP BEHIND THE PANE IS THE PREVIEW. There is no save button and no
- * preview surface, for the reason the gradient editor gives: nothing on this
- * screen is big enough to judge a backdrop against, and the real one is
- * already on the other side of the settings window. So every slider tick
- * recomposes and calls setBackdrop.
+ * THE STACK IS HELD LOCALLY ANYWAY, for one reason: an EMPTY stack is a real
+ * state of this editor and not a paintable value. composeScene refuses it (as
+ * it must — an empty declaration paints nothing), so emptying the stack to
+ * start over keeps the edit here and leaves the draft's backdrop standing
+ * until there is something to replace it with. Every stack that DOES compose
+ * is handed up immediately. The local copy is resynced whenever a scene
+ * arrives from outside — an undo, a Look opened from the shelf — so it can
+ * never drift from what is painted.
  *
- * TWO EXCEPTIONS TO "LIVE", both about cost:
- *
- *   - AN IMAGE'S OPACITY LANDS ON RELEASE. It is the one control that cannot
- *     be a CSS value — it is baked into the layer's pixels (see the lib
- *     header) — and re-encoding a megapixel WebP per pointer sample would turn
- *     the drag into a slideshow. The number tracks the thumb live; the picture
- *     updates when you let go. A GRADIENT's opacity is only string surgery, so
- *     that slider is live like every other.
- *   - THE IMAGE MAP IS ONLY REWRITTEN WHEN IT CHANGED. Dragging position or
- *     size does not touch the layer data, and re-serialising several
- *     megabytes of data URL forty times a second would be felt.
- *
- * THE ORDER OF WRITES is the store's, same as the image picker's: layer
- * images FIRST, then the scene, then the choice — the composed CSS is what
- * actually paints, but a scene whose images did not fit must not become the
- * live backdrop at all. A refused write leaves the previous backdrop standing
- * and says so in the hint line.
+ * ONE EXCEPTION TO "EVERY CHANGE IS COMMITTED": AN IMAGE'S OPACITY LANDS ON
+ * RELEASE. It is the one control that cannot be a CSS value — it is baked into
+ * the layer's pixels (see the lib header) — and re-encoding a megapixel WebP
+ * per pointer sample would turn the drag into a slideshow. The number tracks
+ * the thumb live; the picture updates when you let go. A GRADIENT's opacity is
+ * only string surgery, so that slider is live like every other.
  *
  * REORDERING IS ARRAY ORDER. `layers[0]` paints on top (CSS's own rule), so
  * "up" is towards index 0 and the list reads top-of-the-stack first, like a
  * layers palette anywhere else. Rows are addressed BY POSITION rather than by
  * id, because gradient layers have no id to address them with.
  *
- * THE BASE GRID IS STILL AT THE BOTTOM, but it no longer stands for a
- * mandatory base — it writes (or removes) the bottom-most gradient layer, and
- * its first tile is None. Choosing None leaves the stack ending in
- * transparency, which is the whole point of the pane inside a translucent
- * window: the desktop becomes the bottom layer.
+ * THE BASE GRID AT THE BOTTOM writes (or removes) the bottom-most gradient
+ * layer, and its first tile is None. Choosing None leaves the stack ending in
+ * transparency, which is the point inside a translucent window: the desktop
+ * becomes the bottom layer.
  */
 
 import { useCallback, useRef, useState } from "react";
 import { ChevronDownIcon, ChevronUpIcon, ImagePlusIcon, LayersIcon, PaintbrushIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useBackdrop } from "@/lib/backdrop";
 import { backdropPresetById, BACKDROP_PRESETS } from "@/lib/backdrop-presets";
 import { ImageBackdropError } from "@/lib/image-backdrop";
+import type { LookBackdrop } from "@/lib/looks";
 import {
   addSceneGradientLayer,
   addSceneLayer,
   bakeLayerOpacity,
-  composeScene,
   countSceneGradients,
   countSceneImages,
   forgetLayerImages,
@@ -65,23 +59,18 @@ import {
   moveSceneLayerAt,
   newLayerId,
   prepareSceneImage,
-  readScene,
-  readSceneImages,
   removeSceneLayerAt,
   sceneBasePresetId,
   SCENE_LIMITS,
   setSceneBase,
   updateSceneLayerAt,
-  writeScene,
-  writeSceneImages,
   type Scene,
   type SceneGradientLayer,
   type SceneImageLayer,
   type SceneLayerPatch,
 } from "@/lib/scene-composer";
-import { Row } from "./settings-shell";
-
-const QUOTA_MESSAGE = "There is no room left in this browser's storage for that layer — the scene you had is untouched.";
+import { draftSceneStack, sceneBackdrop } from "@/lib/studio-draft";
+import { Row } from "../settings-shell";
 
 function messageFor(error: unknown): string {
   if (error instanceof ImageBackdropError) return error.message;
@@ -108,7 +97,7 @@ function LayerSlider({
   onCommit?: () => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-[11px]">
+    <label className="flex items-center gap-2 text-[0.6875rem]">
       <span className="w-10 shrink-0 text-muted-foreground">{label}</span>
       <input
         type="range"
@@ -176,7 +165,7 @@ function PresetGrid({ value, onPick, withNone = false }: { value: string | null;
               backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0px",
             }}
           />
-          <span className="truncate px-0.5 text-[10px] font-medium">None</span>
+          <span className="truncate px-0.5 text-[0.625rem] font-medium">None</span>
         </button>
       )}
       {BACKDROP_PRESETS.map((preset) => (
@@ -194,7 +183,7 @@ function PresetGrid({ value, onPick, withNone = false }: { value: string | null;
           <span className="block aspect-video w-full">
             <PresetSwatch presetId={preset.id} />
           </span>
-          <span className="truncate px-0.5 text-[10px] font-medium">{preset.label}</span>
+          <span className="truncate px-0.5 text-[0.625rem] font-medium">{preset.label}</span>
         </button>
       ))}
     </div>
@@ -243,16 +232,9 @@ function GradientCard({
         <PresetSwatch presetId={layer.presetId} />
       </span>
       <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
-        <span className="truncate text-[11px] font-medium">{backdropPresetById(layer.presetId)?.label ?? "Gradient"}</span>
-        <LayerSlider
-          label="Fade"
-          value={layer.opacity}
-          min={SCENE_LIMITS.opacity.min}
-          max={SCENE_LIMITS.opacity.max}
-          suffix="%"
-          onChange={(opacity) => onPatch({ opacity })}
-        />
-        <span className="text-[10px] text-muted-foreground">Fills the window; anything below shows through as it fades.</span>
+        <span className="truncate text-[0.6875rem] font-medium">{backdropPresetById(layer.presetId)?.label ?? "Gradient"}</span>
+        <LayerSlider label="Fade" value={layer.opacity} min={SCENE_LIMITS.opacity.min} max={SCENE_LIMITS.opacity.max} suffix="%" onChange={(opacity) => onPatch({ opacity })} />
+        <span className="text-[0.625rem] text-muted-foreground">Fills the window; anything below shows through as it fades.</span>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         <StackControls index={index} count={count} onMove={onMove} onRemove={onRemove} />
@@ -283,24 +265,17 @@ function LayerCard({
   return (
     <div className="flex gap-3 rounded-lg border border-border p-2.5">
       {image ? (
-        // eslint-disable-next-line @next/next/no-img-element -- a data URL held in localStorage; there is nothing for next/image to fetch or optimise
+        // eslint-disable-next-line @next/next/no-img-element -- a data URL held in the draft; there is nothing for next/image to fetch or optimise
         <img src={image} alt="" className="size-14 shrink-0 self-start rounded-md border border-border object-cover" />
       ) : (
-        <span className="flex size-14 shrink-0 items-center justify-center self-start rounded-md border border-dashed border-border text-[10px] text-muted-foreground">
+        <span className="flex size-14 shrink-0 items-center justify-center self-start rounded-md border border-dashed border-border text-[0.625rem] text-muted-foreground">
           Missing
         </span>
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <LayerSlider label="X" value={layer.x} min={SCENE_LIMITS.x.min} max={SCENE_LIMITS.x.max} suffix="%" onChange={(x) => onPatch({ x })} />
         <LayerSlider label="Y" value={layer.y} min={SCENE_LIMITS.y.min} max={SCENE_LIMITS.y.max} suffix="%" onChange={(y) => onPatch({ y })} />
-        <LayerSlider
-          label="Size"
-          value={layer.scale}
-          min={SCENE_LIMITS.scale.min}
-          max={SCENE_LIMITS.scale.max}
-          suffix="%"
-          onChange={(scale) => onPatch({ scale })}
-        />
+        <LayerSlider label="Size" value={layer.scale} min={SCENE_LIMITS.scale.min} max={SCENE_LIMITS.scale.max} suffix="%" onChange={(scale) => onPatch({ scale })} />
         <LayerSlider
           label="Fade"
           value={layer.opacity}
@@ -317,7 +292,7 @@ function LayerCard({
           size="sm"
           variant={layer.tiled ? "secondary" : "ghost"}
           aria-pressed={layer.tiled}
-          className="text-[11px]"
+          className="text-[0.6875rem]"
           title="Repeat this layer across the whole window"
           onClick={() => onPatch({ tiled: !layer.tiled })}
         >
@@ -328,39 +303,38 @@ function LayerCard({
   );
 }
 
-export function SceneComposer() {
-  const { backdrop, setBackdrop } = useBackdrop();
+/** The same controlled contract every editor in this tool takes — restated
+ *  rather than imported from the shell, which imports this file. */
+export function SceneEditor({ value, onChange }: { value: LookBackdrop; onChange: (next: LookBackdrop) => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
-
-  // Seeded from storage once; from here on this state is the source and
-  // storage is the sink (every edit writes through), exactly like the
-  // gradient editor's pair.
-  const [scene, setScene] = useState<Scene>(() => readScene());
-  const [images, setImages] = useState<Record<string, string>>(() => readSceneImages());
+  // The stack and its images move together — every write sets both — so they
+  // are one piece of state and the editor can never show layers whose pictures
+  // belong to a different arrangement.
+  const [stack, setStack] = useState(() => draftSceneStack(value));
+  const { scene, images } = stack;
   const [error, setError] = useState<string | false>(false);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [picking, setPicking] = useState(false);
 
-  const live = backdrop.kind === "scene";
+  const live = value.kind === "scene" ? value : undefined;
+  // A scene arriving from OUTSIDE (an undo, a Look opened from the shelf)
+  // replaces the local copy; our own writes come back with the same identity
+  // and are ignored, so a keystroke never round-trips into a reset.
+  const [seenScene, setSeenScene] = useState<Scene | undefined>(live?.scene);
+  if (seenScene !== live?.scene) {
+    setSeenScene(live?.scene);
+    if (live && live.scene !== scene) setStack({ scene: live.scene, images: live.images });
+  }
 
-  /** The one write path: compose, store (images only when they changed), then
-   *  make it the backdrop. Returns false when nothing was PAINTED — which an
-   *  empty stack does not, though the arrangement is still saved. */
+  /** The one write path: keep the edit, then hand up a backdrop if the stack
+   *  composes to one. Returns false when nothing was PAINTED — which an empty
+   *  stack does not, though the arrangement is still kept here. */
   const apply = useCallback(
     (nextScene: Scene, nextImages: Record<string, string>): boolean => {
-      const composed = composeScene(nextScene, nextImages);
-      if (nextImages !== images && !writeSceneImages(nextImages)) {
-        setError(QUOTA_MESSAGE);
-        return false;
-      }
-      writeScene(nextScene);
-      setScene(nextScene);
-      setImages(nextImages);
-      if (!composed) {
-        // Emptying the stack is how you start over, not a failure: the edit is
-        // kept and whatever backdrop is up stays up until there is something
-        // to replace it with.
+      setStack({ scene: nextScene, images: nextImages });
+      const backdrop = sceneBackdrop(nextScene, nextImages);
+      if (!backdrop) {
         setError(
           nextScene.layers.length === 0
             ? "This scene is empty — add a gradient or an image, or choose something under the stack."
@@ -369,12 +343,10 @@ export function SceneComposer() {
         return false;
       }
       setError(false);
-      // `stamp` is what tells the store this is a NEW composition even though
-      // the choice ("a scene is on") did not change.
-      setBackdrop({ kind: "scene", stamp: Date.now() }, composed);
+      onChange(backdrop);
       return true;
     },
-    [images, setBackdrop],
+    [onChange],
   );
 
   const accept = useCallback(
@@ -417,7 +389,7 @@ export function SceneComposer() {
     (index: number, changes: SceneLayerPatch) => {
       const next = updateSceneLayerAt(scene, index, changes);
       const image = scene.layers[index]?.type === "image";
-      if (image && changes.opacity !== undefined && Object.keys(changes).length === 1) setScene(next);
+      if (image && changes.opacity !== undefined && Object.keys(changes).length === 1) setStack({ scene: next, images });
       else apply(next, images);
     },
     [apply, images, scene],
@@ -461,7 +433,7 @@ export function SceneComposer() {
             ? error
             : busy
               ? "Working…"
-              : `Gradients and images stack together, the top one first — up to ${MAX_SCENE_LAYERS} images and ${MAX_SCENE_GRADIENT_LAYERS} gradients. ${layerCount} ${layerCount === 1 ? "layer" : "layers"} here. With window translucency on, the desktop shows through wherever the stack is transparent. Nothing is uploaded.`
+              : `Gradients and images stack together, the top one first — up to ${MAX_SCENE_LAYERS} images and ${MAX_SCENE_GRADIENT_LAYERS} gradients. ${layerCount} ${layerCount === 1 ? "layer" : "layers"} here. The stack rides inside the draft and is only stored when you Apply. Nothing is uploaded.`
         }
         control={
           <div className="flex items-center gap-2">

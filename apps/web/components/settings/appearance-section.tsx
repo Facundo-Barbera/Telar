@@ -59,7 +59,9 @@ import {
   loadThemeHalfIntoDraft,
   loadThemeIntoDraft,
   newDraftFromCurrent,
+  patchDraftHalf,
   readStudioDraft,
+  replaceDraftBackdrop,
   setDraftLabel,
   writeStudioDraft,
   type StudioDraft,
@@ -75,7 +77,8 @@ import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { DesignerChat } from "./studio/chat";
-import { ColourTool, SceneTool, TypeTool } from "./studio/tools";
+import { BackdropTool } from "./studio/backdrop-tool";
+import { ColourTool, TypeTool } from "./studio/tools";
 
 // Same idiom as updates-section.tsx: whether there is a shell at all is an
 // external fact, present before React ran, and it never changes.
@@ -375,8 +378,17 @@ export function AppearanceSection() {
           )}
 
           {tab === "backdrop" && current && (
-            <SettingsGroup title="Backdrop" description="The scene under the whole app — part of the draft.">
-              <SceneTool draft={current} onDraft={edit} mode={mode} />
+            <SettingsGroup title="Backdrop" description="The scene under the whole app — gradients, a photograph, or a stack of both. Part of the draft.">
+              <BackdropTool
+                value={current.backdrop}
+                mode={mode}
+                onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
+                // A palette taken from the picture lands on the draft's two
+                // halves like any other edit — undoable, and never a new
+                // library entry. Only the halves: the look keeps the name it
+                // was given, because naming it was a separate decision.
+                onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
+              />
             </SettingsGroup>
           )}
 

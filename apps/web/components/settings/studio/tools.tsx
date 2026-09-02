@@ -3,42 +3,34 @@
 /**
  * THE INSPECTOR'S DRAFT-WRITING TOOLS.
  *
- * Three small editors that write the DRAFT rather than the live stores — the
- * counterpart to the immediate-mode groups they sit beside (the theme library,
- * the backdrop composer, the window controls), which keep writing through as
- * they always have. The division is the one the page's hint states: anything
- * that changes the app you are sitting in is live; anything that changes the
- * picture on the stage is a draft edit waiting on Apply.
+ * The palette rows and the type rows: two editors that take a whole draft and
+ * hand a whole draft back, writing no store on the way. They are the pane's
+ * one rule in miniature — everything here edits the draft, and the draft is
+ * painted on the app itself until Apply makes it the truth.
  *
- * THE COLOUR ROWS EDIT ONE HALF — whichever the stage is showing. A studio
+ * THE BACKDROP LIVES NEXT DOOR, in backdrop-tool.tsx, because it is a
+ * different shape of thing: a gallery, a gradient editor, a picture and a
+ * layer stack, each of which produces a whole self-contained LookBackdrop
+ * rather than a patch to the draft it came from.
+ *
+ * THE COLOUR ROWS EDIT ONE HALF — whichever the pane is showing. A studio
  * that wrote both halves from one picker would make the Light/Dark toggle a
  * decoration, and the whole reason a theme has two halves is that the answer
  * differs. The toggle in the page header is therefore the mode selector for
  * this tool as much as it is for the preview.
- *
- * THE SCENE TOOL IS DELIBERATELY THE SHALLOW END: one preset, one fade. Layered
- * images, tiling and positioning are a different kind of work — they need the
- * full composer, which is right there in the same tab and writes the live
- * backdrop. This tool exists so a chat-drafted look can be given a different
- * sky without leaving the draft.
  */
 
 import { useState } from "react";
 import { ACCENTS, MAX_FONT_SIZE, MAX_TRANSLUCENCY, MIN_FONT_SIZE, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
-import { BACKDROP_PRESETS } from "@/lib/backdrop-presets";
-import { SCENE_LIMITS } from "@/lib/scene-composer";
 import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeToken } from "@/lib/theme-palettes";
 import { FOREGROUND_SURFACES } from "@/lib/theme-designer";
 import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
 import {
-  draftScenePreset,
   patchDraftAccent,
   patchDraftHalf,
   patchDraftStrength,
   patchDraftToken,
   patchDraftType,
-  replaceDraftBackdrop,
-  scenePresetBackdrop,
   type StudioDraft,
   type StudioMode,
 } from "@/lib/studio-draft";
@@ -184,96 +176,6 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
         </Button>
       </div>
     </ToolBlock>
-  );
-}
-
-/* --------------------------------------------------------------- scene */
-
-/** A preset's own light gradient as the swatch — the same string the backdrop
- *  would paint, so a chip can never disagree with what choosing it does. */
-function PresetSwatch({ css }: { css: string }) {
-  return <span className="block h-8 w-full rounded-md ring-1 ring-foreground/10" style={{ backgroundImage: css }} />;
-}
-
-export function SceneTool({ draft, onDraft, mode }: DraftTool & { mode: StudioMode }) {
-  const current = draftScenePreset(draft);
-  const fade = current?.opacity ?? SCENE_LIMITS.opacity.max;
-
-  return (
-    <>
-      <ToolBlock
-        title="Backdrop"
-        hint="One gradient under the draft. Layered images, tiling and positioning live in the composer below — that one writes the backdrop you are actually wearing."
-      >
-        <div className="grid grid-cols-3 gap-1.5">
-          <button
-            type="button"
-            onClick={() => onDraft(replaceDraftBackdrop(draft, { kind: "none" }))}
-            className={cn(
-              "flex h-8 items-center justify-center rounded-md border border-dashed border-border text-[11px] text-muted-foreground transition-colors hover:text-foreground",
-              draft.backdrop.kind === "none" && "border-solid border-primary text-foreground",
-            )}
-          >
-            None
-          </button>
-          {BACKDROP_PRESETS.map((preset) => {
-            const on = current?.presetId === preset.id;
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                title={preset.label}
-                aria-label={preset.label}
-                aria-pressed={on}
-                onClick={() => {
-                  const backdrop = scenePresetBackdrop(preset.id, fade);
-                  if (backdrop) onDraft(replaceDraftBackdrop(draft, backdrop));
-                }}
-                className={cn("relative rounded-md p-0.5 ring-1 ring-transparent transition-shadow", on && "ring-2 ring-primary")}
-              >
-                <PresetSwatch css={mode === "light" ? preset.light : preset.dark} />
-                {on && (
-                  <span className="absolute right-1 top-1 flex size-3.5 items-center justify-center rounded-full bg-primary">
-                    <CheckIcon className="size-2.5 text-primary-foreground" />
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      </ToolBlock>
-
-      {current && (
-        <ToolBlock title="Fade" hint="How much of the gradient survives — written into the colours themselves, so it costs nothing to drag.">
-          <div className="flex items-center gap-2.5">
-            <input
-              type="range"
-              min={SCENE_LIMITS.opacity.min}
-              max={SCENE_LIMITS.opacity.max}
-              step={5}
-              value={fade}
-              aria-label="Backdrop fade"
-              className="w-full accent-primary"
-              onChange={(event) => {
-                const backdrop = scenePresetBackdrop(current.presetId, Number(event.target.value));
-                if (backdrop) onDraft(replaceDraftBackdrop(draft, backdrop));
-              }}
-            />
-            <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{fade}%</span>
-          </div>
-        </ToolBlock>
-      )}
-
-      {(draft.backdrop.kind === "image" || draft.backdrop.kind === "custom-gradient" || draft.backdrop.kind === "gradient") && (
-        <ToolBlock title="This draft's backdrop">
-          <p className="text-[11px] leading-snug text-muted-foreground">
-            {draft.backdrop.kind === "image"
-              ? "A photograph. The stage shows it flat — its blur is a filter on the real backdrop, not something a preview can fake. Choosing a preset above replaces it."
-              : "A gradient the designer drew. Choosing a preset above replaces it."}
-          </p>
-        </ToolBlock>
-      )}
-    </>
   );
 }
 
