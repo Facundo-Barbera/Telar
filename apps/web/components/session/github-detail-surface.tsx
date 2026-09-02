@@ -155,12 +155,12 @@ function ForgeHeader({
       <span className="mt-0.5 flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">{icon}</span>
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-baseline gap-1.5">
-          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">#{number}</span>
+          <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">#{number}</span>
           <span className="min-w-0 flex-1 text-xs font-medium" title={title}>
             {title}
           </span>
         </span>
-        <Badge variant="outline" className={cn("mt-1 px-1 py-0 text-[9px] font-normal", TONE_CLASS[state.tone])}>
+        <Badge variant="outline" className={cn("mt-1 px-1 py-0 text-[0.5625rem] font-normal", TONE_CLASS[state.tone])}>
           {state.words}
         </Badge>
       </span>
@@ -202,7 +202,7 @@ function ForgeHeader({
  * `h2` was the largest text on screen, larger than the session title beside it.
  */
 const PANEL_MARKDOWN =
-  "[&_h1]:text-sm [&_h1]:mt-3 [&_h2]:text-[13px] [&_h2]:mt-3 [&_h3]:text-xs [&_h4]:text-xs [&_h5]:text-xs [&_h6]:text-xs [&_pre]:text-[10px] [&_code]:text-[10px]";
+  "[&_h1]:text-sm [&_h1]:mt-3 [&_h2]:text-[0.8125rem] [&_h2]:mt-3 [&_h3]:text-xs [&_h4]:text-xs [&_h5]:text-xs [&_h6]:text-xs [&_pre]:text-[0.625rem] [&_code]:text-[0.625rem]";
 
 /**
  * IMAGES ARE PLAIN, WHICH FIXES A REAL HYDRATION ERROR.
@@ -297,7 +297,7 @@ function EntryCard({ entry }: { entry: ForgeEntry }) {
 
   return (
     <div className="min-w-0 overflow-hidden rounded-md border border-border">
-      <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-[10px] text-muted-foreground">
+      <div className="flex min-w-0 items-baseline gap-1.5 border-b border-border bg-muted/40 px-2 py-1 text-[0.625rem] text-muted-foreground">
         <span className="min-w-0 truncate font-medium text-foreground">{entry.author ?? "someone"}</span>
         {/* WHAT THIS ENTRY IS, in the fewest words that distinguish it: the opening
             post, a plain comment, or a review with a verdict. A plain comment says
@@ -306,7 +306,7 @@ function EntryCard({ entry }: { entry: ForgeEntry }) {
         {entry.kind === "body" && <span className="shrink-0">opened this</span>}
         {entry.kind === "review" && <span className={cn("shrink-0", verdict)}>{reviewLabel(entry.state ?? "")}</span>}
         {entry.association && (
-          <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+          <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal">
             {entry.association.toLowerCase()}
           </Badge>
         )}
@@ -330,7 +330,7 @@ function EntryCard({ entry }: { entry: ForgeEntry }) {
           <button
             type="button"
             onClick={() => setRevealed(true)}
-            className="w-full rounded border border-dashed border-border px-2 py-1 text-left text-[10px] leading-snug text-muted-foreground transition-colors hover:text-foreground"
+            className="w-full rounded border border-dashed border-border px-2 py-1 text-left text-[0.625rem] leading-snug text-muted-foreground transition-colors hover:text-foreground"
           >
             Hidden by the repository{entry.minimizedReason ? ` as ${entry.minimizedReason.toLowerCase().replaceAll("_", " ")}` : ""} — show anyway
           </button>
@@ -338,7 +338,7 @@ function EntryCard({ entry }: { entry: ForgeEntry }) {
           <Markdown>{entry.body}</Markdown>
         ) : (
           /* A bare approval has no body, and that is not a missing one. */
-          <p className="text-[11px] text-muted-foreground">{entry.kind === "review" ? "No comment left with this review." : "No description was written."}</p>
+          <p className="text-[0.6875rem] text-muted-foreground">{entry.kind === "review" ? "No comment left with this review." : "No description was written."}</p>
         )}
       </div>
     </div>
@@ -361,7 +361,7 @@ function Timeline({ entries, older }: { entries: readonly ForgeEntry[]; older: n
       {/* NEVER SILENT ABOUT THE CUT. A surface that dropped half a conversation
           without saying so has lied about the conversation. */}
       {older > 0 && (
-        <p className="px-3 pb-2 text-[10px] leading-snug text-muted-foreground">
+        <p className="px-3 pb-2 text-[0.625rem] leading-snug text-muted-foreground">
           The {older} oldest {older === 1 ? "comment is" : "comments are"} not shown — open it on GitHub for the whole thread.
         </p>
       )}
@@ -456,7 +456,7 @@ function CheckRow({
           )
         }
         title={`${check.workflow ? `${check.workflow} · ` : ""}${check.name} — drag into the message to reference it`}
-        className="flex min-w-0 cursor-grab items-center gap-1.5 text-[11px] active:cursor-grabbing"
+        className="flex min-w-0 cursor-grab items-center gap-1.5 text-[0.6875rem] active:cursor-grabbing"
       >
         <CheckGlyph check={check} />
         {/* THE NAME IS THE DISCLOSURE when there is a log, and inert when there is
@@ -470,7 +470,7 @@ function CheckRow({
           <span className="min-w-0 flex-1 truncate">{check.name}</span>
         )}
         {check.workflow && check.workflow !== check.name && (
-          <span className="max-w-24 shrink-0 truncate text-[10px] text-muted-foreground">{check.workflow}</span>
+          <span className="max-w-24 shrink-0 truncate text-[0.625rem] text-muted-foreground">{check.workflow}</span>
         )}
         {check.url && (
           <a
@@ -489,21 +489,21 @@ function CheckRow({
       {open && (
         <div className="mt-1 mb-2 ml-4">
           {log?.loading ? (
-            <p className="flex items-center gap-2 text-[10px] text-muted-foreground">
+            <p className="flex items-center gap-2 text-[0.625rem] text-muted-foreground">
               <Spinner className="size-3" /> reading the failing step…
             </p>
           ) : log?.unavailable !== undefined ? (
-            <p className="text-[10px] leading-snug text-muted-foreground">{log.unavailable}</p>
+            <p className="text-[0.625rem] leading-snug text-muted-foreground">{log.unavailable}</p>
           ) : log?.lines ? (
             <>
               {/* MONOSPACE, SCROLLED, AND CAPPED IN HEIGHT. A log is the one thing on
                   this surface that can be thousands of lines, and it must not push the
                   conversation off the screen. */}
-              <pre className="max-h-64 overflow-auto rounded border border-border bg-muted/40 p-1.5 font-mono text-[10px] leading-snug whitespace-pre-wrap">
+              <pre className="max-h-64 overflow-auto rounded border border-border bg-muted/40 p-1.5 font-mono text-[0.625rem] leading-snug whitespace-pre-wrap">
                 {log.lines.join("\n")}
               </pre>
               {log.truncated && (
-                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                <p className="mt-0.5 text-[0.625rem] text-muted-foreground">
                   The last {log.lines.length} lines.
                 </p>
               )}
@@ -563,11 +563,11 @@ function ChecksBlock({ checks, projectId }: { checks: readonly GitHubCheck[]; pr
         /* NOT "all clear". No checks ran is a different fact from every check
            passing, and a green tick here would invent a CI this repository does
            not have. */
-        <p className="px-3 pb-3 text-[11px] text-muted-foreground">No checks ran on this commit.</p>
+        <p className="px-3 pb-3 text-[0.6875rem] text-muted-foreground">No checks ran on this commit.</p>
       ) : (
         <div className="flex flex-col gap-1 px-3 pb-3">
           <div className="flex min-w-0 items-center gap-2">
-            <p className={cn("min-w-0 flex-1 truncate text-[11px]", summary.failed > 0 ? "text-destructive" : "text-muted-foreground")}>
+            <p className={cn("min-w-0 flex-1 truncate text-[0.6875rem]", summary.failed > 0 ? "text-destructive" : "text-muted-foreground")}>
               {checkHeadline(summary)}
             </p>
             {/* ONE DRAG FOR ALL OF THEM. Only offered when something is actually
@@ -578,7 +578,7 @@ function ChecksBlock({ checks, projectId }: { checks: readonly GitHubCheck[]; pr
                 draggable
                 onDragStart={(event) => startReferenceDrag(event.dataTransfer, failingChecksReference(failingWithLogs))}
                 title={`Drag ${failing.length === 1 ? "this failure" : `all ${failing.length} failures`} into the message`}
-                className="inline-flex shrink-0 cursor-grab items-center gap-1 rounded border border-destructive/40 px-1 py-0 text-[9px] text-destructive active:cursor-grabbing"
+                className="inline-flex shrink-0 cursor-grab items-center gap-1 rounded border border-destructive/40 px-1 py-0 text-[0.5625rem] text-destructive active:cursor-grabbing"
               >
                 <GripVerticalIcon className="size-2.5" />
                 {failing.length === 1 ? "drag the failure" : `drag all ${failing.length}`}
@@ -605,7 +605,7 @@ function ChecksBlock({ checks, projectId }: { checks: readonly GitHubCheck[]; pr
               <button
                 type="button"
                 onClick={() => setShowAll(true)}
-                className="self-start text-[10px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                className="self-start text-[0.625rem] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline"
               >
                 show {quiet.length} that {quiet.length === 1 ? "passed or was skipped" : "passed or were skipped"}
               </button>
@@ -656,7 +656,7 @@ function MergeFooter({
 
   if (!pull.headRefOid) {
     return (
-      <div className="shrink-0 border-t border-border px-3 py-2 text-[11px] leading-snug text-muted-foreground">
+      <div className="shrink-0 border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
         gh did not report this branch&apos;s head commit, so merging is not offered.
       </div>
     );
@@ -688,7 +688,7 @@ function MergeFooter({
           Every state here is one GitHub would also refuse; saying it in front of
           the reader turns a round trip and a red banner into a sentence. */}
       {problem ? (
-        <div className="flex items-start gap-2 text-[11px] leading-snug">
+        <div className="flex items-start gap-2 text-[0.6875rem] leading-snug">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
           <span className="min-w-0 flex-1">
             {MERGE_REFUSAL[problem.refusal]}
@@ -718,7 +718,7 @@ function MergeFooter({
         </div>
       ) : armed ? (
         <div className="flex flex-col gap-2">
-          <p className="text-[11px] leading-snug">
+          <p className="text-[0.6875rem] leading-snug">
             {METHOD_LABEL[method!]} <span className="font-mono">#{pull.number}</span> into{" "}
             <span className="font-mono">{pull.baseRefName ?? "its base branch"}</span>?{" "}
             <span className="text-muted-foreground">This happens on GitHub and cannot be undone from Telar.</span>
@@ -736,10 +736,10 @@ function MergeFooter({
       ) : (
         <div className="flex flex-col gap-1.5">
           {readiness.note && (
-            <p className={cn("text-[11px] leading-snug", readiness.canMerge ? "text-muted-foreground" : "text-warning")}>{readiness.note}</p>
+            <p className={cn("text-[0.6875rem] leading-snug", readiness.canMerge ? "text-muted-foreground" : "text-warning")}>{readiness.note}</p>
           )}
           {methods.length === 0 ? (
-            <p className="text-[11px] leading-snug text-muted-foreground">
+            <p className="text-[0.6875rem] leading-snug text-muted-foreground">
               This repository has every merge method turned off.
             </p>
           ) : (
@@ -763,7 +763,7 @@ function MergeFooter({
                       />
                     }
                   >
-                    <span aria-hidden className="text-[10px]">
+                    <span aria-hidden className="text-[0.625rem]">
                       ▾
                     </span>
                   </DropdownMenuTrigger>
@@ -868,7 +868,7 @@ export function ForgeDetailSurface({
   const thing = kind === "issue" ? issue : pull;
   if (!thing) {
     return (
-      <p className="flex items-center gap-2 px-4 py-3 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
         <Spinner className="size-3" /> asking gh about #{number}…
       </p>
     );
@@ -913,7 +913,7 @@ export function ForgeDetailSurface({
          * language it was described in.
          */}
         <div className="flex flex-col gap-1.5 px-3 py-2.5">
-          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.6875rem] text-muted-foreground">
             <span className="font-medium text-foreground">{thing.author ?? "someone"}</span>
             <span title={when(openedAt)}>opened this {fmtAgo(openedAt)}</span>
             {thing.updatedAt > openedAt && <span>· updated {fmtAgo(thing.updatedAt)}</span>}
@@ -929,7 +929,7 @@ export function ForgeDetailSurface({
               thing — what this changes and where it goes — and separating them cost
               a whole row each for six words. */}
           {pull && (
-            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[0.625rem] text-muted-foreground">
               <span className="text-foreground">{pull.headRefName ?? "?"}</span>
               <span aria-hidden>→</span>
               <span className="text-foreground">{pull.baseRefName ?? "?"}</span>
@@ -943,7 +943,7 @@ export function ForgeDetailSurface({
               {/* The one badge worth the width on a session's panel: this pull
                   request is FOR THE BRANCH THIS SESSION IS ON. */}
               {mine && (
-                <Badge variant="secondary" className="px-1 py-0 font-sans text-[9px] font-normal">
+                <Badge variant="secondary" className="px-1 py-0 font-sans text-[0.5625rem] font-normal">
                   this session
                 </Badge>
               )}
@@ -951,7 +951,7 @@ export function ForgeDetailSurface({
           )}
 
           {pull?.mergedAt && (
-            <p className="flex items-center gap-1 text-[11px] text-success">
+            <p className="flex items-center gap-1 text-[0.6875rem] text-success">
               <GitMergeIcon className="size-3" />
               Merged{pull.mergedBy ? ` by ${pull.mergedBy}` : ""} <span title={when(pull.mergedAt)}>{fmtAgo(pull.mergedAt)}</span>
             </p>
@@ -963,12 +963,12 @@ export function ForgeDetailSurface({
           {(thing.labels.length > 0 || thing.milestone || thing.projects.length > 0) && (
             <div className="flex flex-wrap items-center gap-1">
               {thing.labels.map((label) => (
-                <Badge key={label.name} variant="outline" className="px-1 py-0 text-[9px] font-normal">
+                <Badge key={label.name} variant="outline" className="px-1 py-0 text-[0.5625rem] font-normal">
                   {label.name}
                 </Badge>
               ))}
               {thing.milestone && (
-                <Badge variant="outline" className="gap-0.5 px-1 py-0 text-[9px] font-normal" title={`Milestone ${thing.milestone}`}>
+                <Badge variant="outline" className="gap-0.5 px-1 py-0 text-[0.5625rem] font-normal" title={`Milestone ${thing.milestone}`}>
                   <MilestoneIcon className="size-2.5" />
                   {thing.milestone}
                 </Badge>
@@ -977,7 +977,7 @@ export function ForgeDetailSurface({
                   where the "no read:project scope" sentence lives — a detail view has
                   no way to tell an unscoped token from an unplaced issue. */}
               {thing.projects.map((project) => (
-                <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-[9px] font-normal" title={`On the ${project} board`}>
+                <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-[0.5625rem] font-normal" title={`On the ${project} board`}>
                   <SquareKanbanIcon className="size-2.5" />
                   {project}
                 </Badge>

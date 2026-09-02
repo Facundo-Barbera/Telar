@@ -180,7 +180,7 @@ function AddContextMenu({ onPick }: { onPick: (files: File[]) => void }) {
             <MonitorIcon />
             Take screenshot
           </DropdownMenuItem>
-          <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
             Images go to the model; other files land beside the session, named by path.
           </p>
         </DropdownMenuContent>
@@ -230,8 +230,8 @@ function AttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }
         )}
       </span>
       <span className="flex min-w-0 flex-col">
-        <span className="max-w-40 truncate text-[11px] font-medium leading-tight">{file.name}</span>
-        <span className="text-[10px] leading-tight text-muted-foreground">{fileSize(file.size)}</span>
+        <span className="max-w-40 truncate text-[0.6875rem] font-medium leading-tight">{file.name}</span>
+        <span className="text-[0.625rem] leading-tight text-muted-foreground">{fileSize(file.size)}</span>
       </span>
       <button
         type="button"
@@ -272,12 +272,12 @@ function QueueChip({
           <Spinner className="size-3.5 shrink-0 text-primary" />
         ) : (
           index !== undefined && (
-            <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-medium text-primary">
+            <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[0.625rem] font-medium text-primary">
               {index}
             </span>
           )
         )}
-        {steering && <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-primary">sending</span>}
+        {steering && <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-wide text-primary">sending</span>}
         {/* THE TEXT ITSELF IS THE EDIT TARGET, as in the donor. A queued line is
             a sentence you wrote thirty seconds ago and can still improve;
             clicking it pulls it back into the box rather than making you
@@ -303,7 +303,7 @@ function QueueChip({
             title={sendNowDisabled ? (sendNowReason ?? "Send now is unavailable.") : "The running turn hears it without stopping"}
             disabled={sendNowDisabled}
             onClick={() => onSendNow(item.runId)}
-            className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <SendHorizontalIcon className="size-3" />
             Send now
@@ -364,13 +364,13 @@ function ComposerBanner({
         {icon}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium">{title}</p>
-          <p className="truncate text-[11px] text-muted-foreground">{detail}</p>
+          <p className="truncate text-[0.6875rem] text-muted-foreground">{detail}</p>
         </div>
         {action && actionLabel && (
           <button
             type="button"
             onClick={action}
-            className="shrink-0 rounded-md border border-border bg-background/80 px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-accent"
+            className="shrink-0 rounded-md border border-border bg-background/80 px-2.5 py-1 text-[0.6875rem] font-medium transition-colors hover:bg-accent"
           >
             {actionLabel}
           </button>
@@ -917,7 +917,7 @@ export function Composer({
         <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2" aria-label="Queued messages">
           {queued.length > 1 && (
             <div className="flex items-center justify-between px-1.5 pt-0.5">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{queued.length} waiting</span>
+              <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">{queued.length} waiting</span>
             </div>
           )}
           {queued.map((item, index) => (
@@ -1030,7 +1030,10 @@ export function Composer({
           }}
           onDrop={onDrop}
           className={cn(
-            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl",
+            // The shadow is cast in --shadow-tint, not raw black: pure black is
+            // the one ink no theme has, and under a light or warm palette it
+            // smudges grey instead of deepening the surface. See globals.css.
+            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl",
             dropping && "border-ring ring-2 ring-ring/40",
           )}
         >
@@ -1186,7 +1189,7 @@ export function Composer({
                 // The WORD, not a glyph. "ESC" names the key the user just
                 // pressed and the key that will finish the job, which no icon
                 // can say.
-                <span className="text-[10px] leading-none font-semibold tracking-tight">ESC</span>
+                <span className="text-[0.625rem] leading-none font-semibold tracking-tight">ESC</span>
               ) : busy ? (
                 <SquareIcon className="size-4" />
               ) : sending ? (

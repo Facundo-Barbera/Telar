@@ -71,16 +71,21 @@ export const CHIP_GLYPH_MARKUP: Record<ChipGlyph, string> = {
  * request is not "success" and an issue is not "info". These are the colours
  * GitHub itself uses for the same objects, so a chip is recognisable before it
  * is read, and they must not be confused with the app's state vocabulary.
+ *
+ * ON THE `--tint-*` TOKENS, for the reason file-kinds.ts gives: a raw Tailwind
+ * ramp is a fixed sRGB pair that cannot follow a theme, and had to spell itself
+ * out twice to survive a scheme change. These are still GitHub's colours for
+ * GitHub's objects — the same families, on the app's own spine.
  */
 export const CHIP_GLYPH_TINT: Record<ChipGlyph, string> = {
   directory: "text-muted-foreground",
-  issue: "text-emerald-600 dark:text-emerald-400",
-  pull: "text-violet-600 dark:text-violet-400",
-  page: "text-sky-600 dark:text-sky-400",
-  task: "text-amber-600 dark:text-amber-400",
+  issue: "text-tint-green",
+  pull: "text-tint-purple",
+  page: "text-tint-blue",
+  task: "text-tint-yellow",
   // A check is dragged in when it went red. Rose is the honest colour for the
   // only case this chip is ever created in.
-  check: "text-rose-600 dark:text-rose-400",
+  check: "text-tint-red",
 };
 
 /**

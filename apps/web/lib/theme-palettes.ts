@@ -126,7 +126,28 @@ function tintedDark(hue: number, chroma: number): ThemeHalf {
     "muted-foreground": `oklch(0.72 ${c(0.8)} ${hue})`,
     accent: `oklch(0.315 ${c(1.3)} ${hue})`,
     "accent-foreground": `oklch(0.965 ${c(0.35)} ${hue})`,
-    border: `oklch(1 0 0 / 10%)`,
+    /**
+     * THE HAIRLINE IS TINTED TOO, and it was the one token in this half that
+     * was not.
+     *
+     * `oklch(1 0 0 / 10%)` is the base palette's dark border, and copying it
+     * verbatim into a tinted theme put pure achromatic white on every edge in
+     * the app — the most repeated mark there is, and the only one still
+     * insisting the theme was grey. Alpha is what makes --border work on all
+     * four rungs of the elevation ladder from one value (see globals.css), so
+     * that part stays; only the ink it lays down moves.
+     *
+     * L 0.92 RATHER THAN 1, and it buys the hue rather than costing contrast.
+     * sRGB has almost no chroma left at L 1, so a tinted white clamps straight
+     * back to white; at 0.92 the chroma actually lands. The composite over a
+     * 0.16 canvas is within a thousandth of a lightness step of the old value
+     * once the alpha is nudged 10% → 11% to pay for the darker ink, so the
+     * hairline reads exactly as heavy as it did — just warm on Ember and cool
+     * on Tide. Chroma is 3× the theme's base because a 11% veil dilutes it by
+     * an order of magnitude; the surfaces above can afford subtlety, an edge
+     * this thin cannot.
+     */
+    border: `oklch(0.92 ${c(3)} ${hue} / 11%)`,
     input: `oklch(0.53 ${c(0.8)} ${hue})`,
     sidebar: `oklch(0.19 ${c(1)} ${hue})`,
     "sidebar-accent": `oklch(0.275 ${c(1.2)} ${hue})`,
@@ -464,28 +485,137 @@ function linearToSrgb(v: number): number {
   return Math.round(Math.min(1, Math.max(0, s)) * 255);
 }
 
-export function cssColorToHex(value: string): string {
-  const oklch = /^oklch\(\s*([\d.]+)\s+([\d.]+)\s+(-?[\d.]+)/.exec(value);
-  if (oklch) {
-    const l = Number(oklch[1]);
-    const chroma = Number(oklch[2]);
-    const hue = (Number(oklch[3]) * Math.PI) / 180;
-    const a = chroma * Math.cos(hue);
-    const b = chroma * Math.sin(hue);
-    const lp = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;
-    const mp = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3;
-    const sp = (l - 0.0894841775 * a - 1.291485548 * b) ** 3;
-    const channels = [
-      linearToSrgb(4.0767416621 * lp - 3.3077115913 * mp + 0.2309699292 * sp),
-      linearToSrgb(-1.2684380046 * lp + 2.6097574011 * mp - 0.3413193965 * sp),
-      linearToSrgb(-0.0041960863 * lp - 0.7034186147 * mp + 1.707614701 * sp),
-    ];
-    return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+function toHex(channels: readonly number[]): string {
+  return `#${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * One oklch component. Each may be a number, a percentage against its own
+ * basis, or `none` — all three are valid CSS and only the first was read, so
+ * `oklch(96% 0 0)` (a perfectly ordinary way to write a canvas) fell through
+ * to the grey below.
+ */
+function oklchComponent(raw: string, percentBasis: number): number {
+  if (raw === "none") return 0;
+  const number = Number.parseFloat(raw);
+  if (!Number.isFinite(number)) return Number.NaN;
+  return raw.endsWith("%") ? (number / 100) * percentBasis : number;
+}
+
+/** Degrees, from any of the four angle units CSS allows. */
+function hueDegrees(raw: string): number {
+  if (raw === "none") return 0;
+  const number = Number.parseFloat(raw);
+  if (!Number.isFinite(number)) return Number.NaN;
+  if (raw.endsWith("turn")) return number * 360;
+  if (raw.endsWith("grad")) return number * 0.9;
+  if (raw.endsWith("rad")) return (number * 180) / Math.PI;
+  return number;
+}
+
+/**
+ * ANYTHING CSS CAN PARSE, RESOLVED BY THE THING THAT PARSES CSS.
+ *
+ * A canvas context's `fillStyle` is a colour parser with a serialiser attached:
+ * assigning an invalid value is a no-op by spec, so a sentinel tells "did not
+ * parse" apart from "parsed to something". This is what catches named colours,
+ * `hsl()`, `lab()`, `color()` and every syntax added after this file was
+ * written, without any of them needing a branch here.
+ *
+ * Undefined outside a browser (the tests, and any pre-paint path) — the
+ * caller's own branches cover everything this palette actually stores.
+ */
+function resolveThroughCss(value: string): string | undefined {
+  if (typeof document === "undefined") return undefined;
+  try {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return undefined;
+    const sentinel = "#010203";
+    context.fillStyle = sentinel;
+    context.fillStyle = value;
+    const resolved = context.fillStyle;
+    if (typeof resolved !== "string" || resolved === sentinel) return undefined;
+    if (/^#[\da-f]{6}$/i.test(resolved)) return resolved.toLowerCase();
+    // Translucent values serialise as `rgba(r, g, b, a)`; the alpha is dropped
+    // for the same reason it is everywhere else here — see below.
+    const rgba = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(resolved);
+    if (!rgba) return undefined;
+    return toHex([1, 2, 3].map((index) => Math.min(255, Math.max(0, Math.round(Number(rgba[index]))))));
+  } catch {
+    return undefined;
   }
-  if (/^#[\da-f]{6}$/i.test(value)) return value;
-  // A translucent border ("oklch(1 0 0 / 10%)") or anything else exotic: the
-  // picker shows an approximation and writing through it replaces the value.
-  return "#808080";
+}
+
+/**
+ * A CSS colour as the six-digit hex `<input type="color">` insists on.
+ *
+ * IT MUST ALWAYS RETURN `#rrggbb`. Both callers put the result straight into an
+ * `<input type="color">`, whose value sanitiser rejects anything else and shows
+ * black — so "return the original when it is exotic" would trade a wrong colour
+ * for a wrong colour AND a broken swatch. Everything below exists to make the
+ * last-resort grey unreachable in practice instead.
+ *
+ * It used to be two branches — a strict oklch shape, and literal `#rrggbb` —
+ * and everything else became `#808080`. That grey is not a display artefact:
+ * lib/studio-draft.ts fingerprints a draft through this function and
+ * lib/vscode-theme-import.ts reads imported colours through it, so a value it
+ * could not parse became a real grey downstream. `oklch(96% 0 0)`, `#abc`,
+ * `rgb(20 20 20)` and every named colour all took that path.
+ *
+ * ALPHA IS DROPPED, AND THAT IS A PROPERTY OF THE WIDGET, NOT A BUG HERE. There
+ * is no way to show 10% white in a colour input. `oklch(1 0 0 / 10%)` reports
+ * as `#ffffff`, which is the honest answer to "what colour is this"; the alpha
+ * survives in the stored value and is only lost if the reader actually picks a
+ * new colour through that swatch, which is an edit.
+ */
+export function cssColorToHex(value: string): string {
+  const trimmed = value.trim();
+
+  const oklch = /^oklch\(\s*(none|[\d.]+%?)\s+(none|[\d.]+%?)\s+(none|-?[\d.]+(?:deg|rad|grad|turn)?)/i.exec(trimmed);
+  if (oklch) {
+    const l = oklchComponent(oklch[1], 1);
+    const chroma = oklchComponent(oklch[2], 0.4);
+    const degrees = hueDegrees(oklch[3]);
+    if (Number.isFinite(l) && Number.isFinite(chroma) && Number.isFinite(degrees)) {
+      const hue = (degrees * Math.PI) / 180;
+      const a = chroma * Math.cos(hue);
+      const b = chroma * Math.sin(hue);
+      const lp = (l + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+      const mp = (l - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+      const sp = (l - 0.0894841775 * a - 1.291485548 * b) ** 3;
+      return toHex([
+        linearToSrgb(4.0767416621 * lp - 3.3077115913 * mp + 0.2309699292 * sp),
+        linearToSrgb(-1.2684380046 * lp + 2.6097574011 * mp - 0.3413193965 * sp),
+        linearToSrgb(-0.0041960863 * lp - 0.7034186147 * mp + 1.707614701 * sp),
+      ]);
+    }
+  }
+
+  // `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa` — the shorthands expand, the alpha
+  // halves are cut off.
+  const hex = /^#([\da-f]{3,8})$/i.exec(trimmed);
+  if (hex) {
+    const digits = hex[1];
+    if (digits.length === 3 || digits.length === 4) {
+      return `#${[...digits.slice(0, 3)].map((digit) => digit + digit).join("")}`.toLowerCase();
+    }
+    if (digits.length === 6 || digits.length === 8) return `#${digits.slice(0, 6)}`.toLowerCase();
+  }
+
+  // `rgb()` / `rgba()`, in either the comma or the space form, with numbers or
+  // percentages — the syntax the VS Code theme importer meets most often.
+  const rgb = /^rgba?\(\s*([\d.]+%?)[\s,]+([\d.]+%?)[\s,]+([\d.]+%?)/i.exec(trimmed);
+  if (rgb) {
+    const channels = [1, 2, 3].map((index) => {
+      const raw = rgb[index];
+      const number = Number.parseFloat(raw);
+      const scaled = raw.endsWith("%") ? (number / 100) * 255 : number;
+      return Math.min(255, Math.max(0, Math.round(scaled)));
+    });
+    if (channels.every(Number.isFinite)) return toHex(channels);
+  }
+
+  return resolveThroughCss(trimmed) ?? "#808080";
 }
 
 /** Hex straight through — CSS accepts it, and round-tripping user picks

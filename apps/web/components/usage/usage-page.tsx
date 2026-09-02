@@ -11,12 +11,20 @@
  * (a dash, never $0.00) for models neither knows; shares are of processed
  * tokens so a missing rate cannot skew them.
  *
- * The two series colors are chart-local custom properties validated with the
- * dataviz six-check palette validator against both surfaces (light `#436ed1`
- * / `#a84d95` on white, dark `#6990e2` / `#ca549d` on `#161616`; worst-pair
- * CVD ΔE 10.0 light / 10.8 dark). They deliberately do NOT reuse
- * `--chart-1/2`: the dark steps of those tokens sit above the validated
- * lightness band on this surface.
+ * THE TWO SERIES COLOURS ARE --chart-1 AND --chart-2, and that is a change of
+ * mind this note owes an explanation for. They used to be four hexes injected
+ * in a chart-local <style>, picked with the dataviz validator against two
+ * NAMED surfaces — white and `#161616`. That validation was sound and it is
+ * also exactly the problem: `#161616` is Telar's dark canvas and nobody else's.
+ * The moment a reader wears Ember or something they built, the chart is two
+ * fixed sRGB values sitting on a surface they were never checked against, and
+ * unlike every other colour in the app they cannot move with it.
+ *
+ * The chart tokens are the app's answer to the same question, already: five
+ * hues at one lightness, 72 degrees apart so no pair collapses under any CVD,
+ * with a dark step tuned on the dark spine. --chart-1 (264) and --chart-2 (336)
+ * are the same two families the hexes were — a blue and a magenta — and they
+ * re-tune themselves for whatever canvas they land on.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -50,7 +58,7 @@ const WINDOWS: { key: WindowKey; label: string; ms: number; resolution: "day" | 
   { key: "90d", label: "90d", ms: 90 * 86_400_000, resolution: "day" },
 ];
 
-const SERIES_COLOR: Record<string, string> = { claude: "var(--usage-claude)", codex: "var(--usage-codex)" };
+const SERIES_COLOR: Record<string, string> = { claude: "var(--chart-1)", codex: "var(--chart-2)" };
 
 function Dot({ driver }: { driver: string }) {
   return <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: SERIES_COLOR[driver] }} />;
@@ -130,9 +138,7 @@ export function UsagePage() {
   const empty = fold !== undefined && fold.total.turns === 0;
 
   return (
-    <div className="usage-viz flex h-full min-h-0 flex-col">
-      {/* Chart-local series colors, both modes — see the header comment. */}
-      <style>{`.usage-viz{--usage-claude:#436ed1;--usage-codex:#a84d95}.dark .usage-viz{--usage-claude:#6990e2;--usage-codex:#ca549d}`}</style>
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         title="Usage"
         description={error ?? (unpricedProvider && metric === "cost" ? "Some models have no known rate; their cost is not counted." : undefined)}

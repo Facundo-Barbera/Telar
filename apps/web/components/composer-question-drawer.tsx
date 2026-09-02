@@ -117,7 +117,7 @@ export function ComposerQuestionDrawer({
             {collapsed ? field.label : "The agent needs your input"}
           </span>
           {fields.length > 1 && (
-            <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">
+            <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">
               {draft.index + 1}/{fields.length}
             </span>
           )}
@@ -146,7 +146,7 @@ export function ComposerQuestionDrawer({
                       <CheckIcon className="size-3.5 shrink-0 text-warning" />
                     ) : (
                       at < 9 && (
-                        <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-[10px] text-muted-foreground">{at + 1}</kbd>
+                        <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-[0.625rem] text-muted-foreground">{at + 1}</kbd>
                       )
                     )}
                   </button>
@@ -158,12 +158,12 @@ export function ComposerQuestionDrawer({
                 <button
                   type="button"
                   onClick={() => onDraft(back(draft))}
-                  className="rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="rounded-md px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   Previous
                 </button>
               )}
-              <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-[0.6875rem] text-muted-foreground">
                 {canAdvance(fields, draft)
                   ? isLastQuestion(fields, draft)
                     ? "Enter submits"
@@ -174,7 +174,7 @@ export function ComposerQuestionDrawer({
                 type="button"
                 disabled={sending}
                 onClick={onCancelTurn}
-                className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                className="shrink-0 rounded-md px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
               >
                 Cancel the turn
               </button>

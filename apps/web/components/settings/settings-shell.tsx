@@ -116,7 +116,7 @@ export function SettingsShell({
           {groups.map(({ group, items }) => (
             <div key={group} className="flex flex-col gap-0.5">
               {group && (
-                <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
+                <div className="px-2 pb-1 text-[0.625rem] font-medium uppercase tracking-wider text-muted-foreground/60">
                   {group}
                 </div>
               )}
@@ -143,7 +143,7 @@ export function SettingsShell({
                     />
                     <span className="flex-1 truncate">{s.label}</span>
                     {s.count != null && (
-                      <span className="text-[11px] tabular-nums text-muted-foreground/60">
+                      <span className="text-[0.6875rem] tabular-nums text-muted-foreground/60">
                         {s.count}
                       </span>
                     )}
@@ -186,7 +186,7 @@ export function SettingsShell({
             {onSave && (
               <>
                 {dirty && (
-                  <Badge variant="outline" className="gap-1.5 text-[10px]">
+                  <Badge variant="outline" className="gap-1.5 text-[0.625rem]">
                     {/* --warning, where the donor reached for a raw Tailwind
                         ramp. This app holds every state colour on the five-token
                         vocabulary so a dot and a badge cannot disagree about

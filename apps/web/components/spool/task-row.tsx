@@ -201,7 +201,7 @@ export function RowDisclosure({
               {tags.map((tag) => (
                 <span
                   key={tag}
-                  className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                  className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[0.625rem] text-muted-foreground"
                 >
                   #{tag}
                   <button
@@ -225,7 +225,7 @@ export function RowDisclosure({
                   }
                 }}
                 placeholder="add a tag"
-                className="h-6 w-20 rounded-md border-none bg-transparent px-1 text-right text-[11px] text-foreground outline-none placeholder:text-muted-foreground/50"
+                className="h-6 w-20 rounded-md border-none bg-transparent px-1 text-right text-[0.6875rem] text-foreground outline-none placeholder:text-muted-foreground/50"
               />
             </div>
           </FieldRow>

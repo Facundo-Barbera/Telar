@@ -231,7 +231,7 @@ function SidebarEmpty({
     <div className="px-3 py-6 text-center text-sidebar-foreground/55">
       <Icon className="mx-auto mb-2 size-5" />
       <p className="text-xs font-medium text-sidebar-foreground/75">{title}</p>
-      <p className="mt-1 text-[11px] leading-4">{detail}</p>
+      <p className="mt-1 text-[0.6875rem] leading-4">{detail}</p>
     </div>
   );
 }
@@ -259,7 +259,7 @@ function SidebarEmpty({
  * Everything else about the rule (the rule itself, the chevron, the count)
  * is unchanged — only the label's type scale moved.
  */
-const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 function BandRule({ label, count, open, onToggle }: { label: string; count: number; open: boolean; onToggle: () => void }) {
   return (
@@ -272,7 +272,7 @@ function BandRule({ label, count, open, onToggle }: { label: string; count: numb
       <ChevronRightIcon className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
       <span className={cn("shrink-0", CAPTION)}>{label}</span>
       <span aria-hidden className="h-px flex-1 bg-sidebar-border" />
-      <span className="shrink-0 tabular-nums text-[11px]">{count}</span>
+      <span className="shrink-0 tabular-nums text-[0.6875rem]">{count}</span>
     </button>
   );
 }
@@ -633,7 +633,7 @@ function SidebarBody() {
                       <XIcon className="size-3.5" />
                     </button>
                   ) : (
-                    <kbd className="pointer-events-none font-sans text-[10px] text-sidebar-foreground/35">⌘K</kbd>
+                    <kbd className="pointer-events-none font-sans text-[0.625rem] text-sidebar-foreground/35">⌘K</kbd>
                   )
                 }
               />

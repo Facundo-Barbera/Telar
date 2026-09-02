@@ -149,7 +149,7 @@ export function SessionInboxMenu({
               </DropdownMenuItem>
             ) : (
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                <DropdownMenuLabel className="text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   Snooze until
                 </DropdownMenuLabel>
                 {/* Presets rather than a picker: the point of a snooze is that

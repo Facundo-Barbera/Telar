@@ -59,7 +59,7 @@ function ToolBlock({ title, hint, children }: { title: string; hint?: string; ch
   return (
     <div className="px-4 py-3">
       <div className="text-xs font-medium text-foreground">{title}</div>
-      {hint && <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</p>}
+      {hint && <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">{hint}</p>}
       <div className="mt-2.5">{children}</div>
     </div>
   );
@@ -108,7 +108,7 @@ function HexField({ value, label, onCommit }: { value: string; label: string; on
       value={editing ? text : value}
       aria-label={`${label} hex value`}
       spellCheck={false}
-      className="h-6 w-[4.75rem] shrink-0 px-1.5 font-mono text-[10px] tabular-nums"
+      className="h-6 w-[4.75rem] shrink-0 px-1.5 font-mono text-[0.625rem] tabular-nums"
       onFocus={() => {
         setEditing(true);
         setText(value);
@@ -153,7 +153,7 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
               <span className="min-w-0 flex-1 truncate text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
               {ratio !== undefined && (
                 <span
-                  className={cn("shrink-0 font-mono text-[9px] tabular-nums", ratio < READABLE ? "font-semibold text-destructive" : "text-muted-foreground/60")}
+                  className={cn("shrink-0 font-mono text-[0.5625rem] tabular-nums", ratio < READABLE ? "font-semibold text-destructive" : "text-muted-foreground/60")}
                   title={`${ratio.toFixed(1)}:1 against its surface (4.5:1 reads comfortably)`}
                 >
                   {ratio.toFixed(1)}
@@ -168,7 +168,7 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
         <Button
           size="sm"
           variant="ghost"
-          className="h-7 px-2 text-[11px] text-muted-foreground"
+          className="h-7 px-2 text-[0.6875rem] text-muted-foreground"
           title={`Replace the ${other} half with a copy of the ${mode} half`}
           onClick={() => onDraft(patchDraftHalf(draft, other, { ...draft.theme[mode] }))}
         >

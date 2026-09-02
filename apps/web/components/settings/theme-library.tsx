@@ -119,7 +119,7 @@ function ThemeCard({
           <span className="truncate">{theme.label}</span>
           {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
         </div>
-        <div className="text-[11px] text-muted-foreground">{theme.builtIn ? "Built-in" : "Custom"}</div>
+        <div className="text-[0.6875rem] text-muted-foreground">{theme.builtIn ? "Built-in" : "Custom"}</div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>

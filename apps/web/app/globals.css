@@ -35,7 +35,17 @@
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
+  /* THE ONE TOKEN THE WASH IS ALLOWED TO REPLACE, and the indirection is what
+     makes that possible at all. The rail is a GROUND (see the translucency
+     section below), so it has to go see-through — but a custom property cannot
+     reference its own themed value, and the injected theme stylesheet sets
+     `--sidebar` at (0,1,1) while the wash rules sit at (0,2,0). Writing
+     `--sidebar: color-mix(… var(--sidebar) …)` in the wash block is a cycle;
+     writing it from --background/--foreground instead throws the theme's own
+     rail colour away. So the wash writes a DIFFERENT name, and the bridge
+     prefers it when it exists: no cycle, and the mix reads the live
+     `--sidebar` — whatever theme set it. */
+  --color-sidebar: var(--sidebar-wash, var(--sidebar));
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -50,6 +60,18 @@
      `text-success` would compile to nothing and leave the text whatever it
      inherited. These four are the state vocabulary catching up to
      --destructive, which already had its bridge. */
+  /* The kind hues (see :root). Bridged because the call sites are class
+     strings in a lookup table — `text-tint-blue` has to be a real utility. */
+  --color-tint-blue: var(--tint-blue);
+  --color-tint-cyan: var(--tint-cyan);
+  --color-tint-green: var(--tint-green);
+  --color-tint-yellow: var(--tint-yellow);
+  --color-tint-orange: var(--tint-orange);
+  --color-tint-red: var(--tint-red);
+  --color-tint-pink: var(--tint-pink);
+  --color-tint-purple: var(--tint-purple);
+  /* The modal scrim, so `bg-overlay` exists in place of a hardcoded black. */
+  --color-overlay: var(--overlay);
   --color-info: var(--info);
   --color-verify: var(--verify);
   --color-success: var(--success);
@@ -201,6 +223,35 @@
   --subject-sky: oklch(0.57 0.09 240);
   --subject-sand: oklch(0.58 0.05 90);
 
+  /* THE EIGHT KIND HUES — what a THING IS, not how it is doing.
+
+     A TypeScript file, a pull request, a stylesheet: `lib/file-kinds.ts` and
+     `lib/glyph-paths.ts` colour these so a chip is recognisable before it is
+     read. Both files used to reach for raw Tailwind ramps
+     (`text-sky-600 dark:text-sky-400`) — a fixed sRGB pair that cannot follow a
+     theme and had to restate itself in every block. One token per hue, flipping
+     with the scheme like everything else, is the same fix `--subject-*` already
+     is for the Spool.
+
+     IDENTITY, NEVER STATE, exactly like the subject hues above: nothing here may
+     ever mean done, blocked or failing — those stay on --success / --warning /
+     --destructive. The names are the FAMILY (blue, green, …), not the meaning,
+     because "TypeScript is blue" is the fact those tables encode.
+
+     BRIDGED, unlike --subject-*, because the call sites ARE class strings —
+     `text-tint-blue` has to exist as a utility. Tuned on the --chart-* spine
+     (L 0.56 light, 0.74 dark) rather than the subject dots' quieter one: these
+     are read as small glyphs against a panel, and they carry more chroma so
+     eight file kinds stay apart at 14px. */
+  --tint-blue: oklch(0.56 0.15 245);
+  --tint-cyan: oklch(0.56 0.095 200);
+  --tint-green: oklch(0.56 0.13 155);
+  --tint-yellow: oklch(0.58 0.12 85);
+  --tint-orange: oklch(0.58 0.14 55);
+  --tint-red: oklch(0.56 0.16 20);
+  --tint-pink: oklch(0.56 0.16 350);
+  --tint-purple: oklch(0.56 0.16 295);
+
   --border: oklch(0.92 0.004 286);
   /* --input is far darker than --border deliberately. --border is the hairline
      the base layer puts on EVERY element; pushed to 3:1 it would draw a box
@@ -213,6 +264,32 @@
      and it needs its own border. */
   --input: oklch(0.66 0.008 286);
   --ring: var(--primary);
+
+  /* WHAT A MODAL PUTS THE APP BEHIND. Dialog and Sheet both shipped
+     `bg-black/10`, which is not a colour this palette owns: under a warm theme
+     it lays a cold grey film over an ember canvas, and it says the same thing
+     in both schemes when the two schemes need opposite things. So the scrim
+     is a TOKEN, and each half is mixed from the theme's own ends — the ink in
+     light, the canvas in dark — which is what "push the app back" actually
+     means on each. Kept deliberately light: the overlay carries
+     `backdrop-blur-xs` too, and blur plus a heavy film reads as a curtain.
+
+     TRANSPARENT IS WRITTEN FIRST ON PURPOSE. Tailwind emits an @supports guard
+     around every color-mix in a theme block and falls the declaration back to
+     the mix's FIRST colour; with the ink first, a browser without color-mix
+     would paint an opaque slab over the app and the dialog would open onto
+     nothing. Transparent first degrades to "no scrim", which is a look, not a
+     failure. Same reasoning for --shadow-tint below. */
+  --overlay: color-mix(in oklab, transparent 90%, var(--foreground));
+
+  /* THE COLOUR A RAISED SURFACE CASTS. Three call sites hardcoded
+     `rgba(0,0,0,.9)`, and pure black is the one ink no theme has: under a light
+     theme it smudges, and it cannot pick up a tint the rest of the surface
+     carries. Light mixes the theme's ink toward its canvas; dark deepens the
+     theme's canvas past its own floor, because a shadow in dark mode is
+     "darker than the room", not "black". Both carry their alpha, so call sites
+     stay one arbitrary value: `shadow-[0_18px_60px_-30px_var(--shadow-tint)]`. */
+  --shadow-tint: color-mix(in oklab, transparent 12%, color-mix(in oklab, var(--foreground) 92%, var(--background)));
 
   /* The anchor plus four even 72-degree steps, all at one lightness so no
      series reads as "more" than another. Deliberately NOT the status tokens: a
@@ -311,6 +388,17 @@
   --subject-sky: oklch(0.74 0.1 240);
   --subject-sand: oklch(0.76 0.06 90);
 
+  /* The kind hues, lifted onto the dark spine the same way — see the light
+     theme for the law they live under: WHAT IT IS, never how it is doing. */
+  --tint-blue: oklch(0.74 0.13 245);
+  --tint-cyan: oklch(0.74 0.1 200);
+  --tint-green: oklch(0.74 0.14 155);
+  --tint-yellow: oklch(0.79 0.14 85);
+  --tint-orange: oklch(0.77 0.14 55);
+  --tint-red: oklch(0.74 0.15 20);
+  --tint-pink: oklch(0.74 0.15 350);
+  --tint-purple: oklch(0.74 0.16 295);
+
   /* These two split on whether the value has to promise a number. --border is
      decorative — the base layer puts it on every element, a 3:1 hairline
      everywhere would be a wireframe — and its job is to sit correctly on all
@@ -322,6 +410,12 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(0.53 0 0);
   --ring: var(--primary);
+
+  /* The scrim flips ENDS, not just values: dimming toward the theme's ink is
+     what "behind" means on a light canvas, and there is no ink darker than a
+     dark canvas — so this half deepens the canvas instead. See :root. */
+  --overlay: color-mix(in oklab, transparent 45%, var(--background));
+  --shadow-tint: color-mix(in oklab, transparent 12%, color-mix(in oklab, var(--background) 45%, oklch(0 0 0)));
 
   --chart-1: oklch(0.74 0.13 264);
   --chart-2: oklch(0.74 0.15 336);
@@ -419,18 +513,62 @@
    on either attribute. `:is()` keeps the specificity at the higher of the two
    (0,2,0), which still outranks the theme stylesheet's `html:root`.
 
-   AND IT IS THEME-AWARE NOW: the washes are mixed from the live --background
-   and --foreground tokens instead of restating Telar's neutrals, so an Ember
-   canvas frosts ember, not grey. The sidebar and highlight mixes reproduce the
-   base palette's deltas to within a hundredth of a lightness step, so the
-   default look is visually unchanged. */
+   ─── THE CONTRACT, IN ONE LINE ──────────────────────────────────────────────
+
+   THE WASH THINS GROUNDS. IT NEVER RETINTS A MARK.
+
+   A GROUND is a structural canvas layer — body, the rail, the pane behind a
+   panel, a room's `h-dvh` sheet. Those are what the scene is meant to show
+   through, and they are the ONLY things these rules touch. Everything else —
+   cards, popovers, chips, hover fills, inline code, the selected row — keeps
+   the value its theme gave it, at FULL ALPHA.
+
+   Two bugs are why that line is now a rule rather than a habit.
+
+   1. THE WASH USED TO REPLACE TOKENS IT DID NOT OWN. --muted, --accent and
+      --sidebar-accent were re-synthesised here from --background and
+      --foreground at ratios reproducing TELAR's deltas (light 3-6% toward ink,
+      dark 14-19%). Those numbers are a property of one palette. A theme whose
+      hover is a deliberate colour — the whole point of a custom theme — had it
+      silently discarded the moment a backdrop came on: turn on a wallpaper and
+      your theme partly stopped being your theme.
+
+   2. ALPHA ON A TOKEN MULTIPLIES, IT DOES NOT REPLACE. Tailwind compiles
+      `bg-muted/25` to `color-mix(in oklab, var(--muted) 25%, transparent)`, so
+      a token already sitting at 72% alpha lands the element at 18% — and
+      `bg-muted/25` is exactly what the Spool header, the stance and the
+      workspace strip use for their fills. Under a backdrop they dissolved.
+      This is NOT fixable at the call sites: the SAME class string renders on a
+      page with no backdrop at all, where the token is opaque and /25 means
+      what it says. One class, two states, one value — so the value is the
+      thing that has to stop moving.
+
+   WHAT THE MARKS LOSE, and why that is the right trade: a hover fill no longer
+   frosts, so a selected sidebar row over a wallpaper is an opaque step rather
+   than a translucent one. That is what a selection should look like — it lifts
+   OUT of the glass. What it gains is that every `/NN` in the app keeps meaning
+   what it says, in every scene, under every theme.
+
+   THE ONE SURVIVOR IS --sidebar, because the rail IS a ground. It is mixed
+   from the live `--sidebar` — the theme's own rail colour, whatever it is —
+   through the `--sidebar-wash` indirection the @theme block explains, rather
+   than re-derived from --background. Ratios are unchanged, so Telar's default
+   look is pixel-identical; Ember's rail now frosts ember instead of grey. */
 :is([data-telar-shell][data-translucent], [data-backdrop]) body {
   background-color: color-mix(in oklab, var(--background) calc(100% - var(--translucency, 45%)), transparent);
 }
 :is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --sidebar: color-mix(in oklab, color-mix(in oklab, var(--background) 96.5%, var(--foreground)) calc(90% - var(--translucency, 45%)), transparent);
+  --sidebar-wash: color-mix(in oklab, var(--sidebar) calc(90% - var(--translucency, 45%)), transparent);
 }
-:is([data-telar-shell][data-translucent], [data-backdrop]) :is(.app-ground, .bg-background\/65, .bg-background\/80) {
+/* THE OPT-IN IS A CLASS, NOT A CLASS NAME. This used to also match
+   `.bg-background\/65` and `.bg-background\/80` — the utilities the two
+   blurred headers happened to wear — which made "is this a ground?" a question
+   about the string a component typed. Three chips and a button in
+   components/composer.tsx wear `bg-background/80` because they want an 80%
+   fill, and under a backdrop they lost it entirely. `app-ground` is the only
+   door now, and the grounds that were relying on the class-name coincidence
+   carry it explicitly. */
+:is([data-telar-shell][data-translucent], [data-backdrop]) .app-ground {
   background-color: transparent;
 }
 
@@ -443,6 +581,37 @@
    "more theme", so it works in both schemes and on any theme. */
 #app-backdrop {
   display: none;
+}
+/**
+ * THE ONE DECLARATION THAT PUTS THE WASH ON THE RIGHT SIDE OF THE SCENE.
+ *
+ * Nothing set a background on <html>, so CSS did what it does for an HTML
+ * document whose root has none: it PROPAGATED body's background to the canvas.
+ * A propagated background is painted before the root's own stacking context —
+ * strictly below a `z-index: -1` descendant. So the order was
+ *
+ *     [body's washed background]  →  #app-backdrop (the scene)  →  the app
+ *
+ * and the wash sat UNDERNEATH the wallpaper it was supposed to be tinting. The
+ * translucency slider moved a layer nobody could see: grounds went transparent
+ * straight onto a full-strength photo, with only --backdrop-dim between the
+ * image and the text on top of it.
+ *
+ * Giving the root a background of its own stops the propagation, and body's
+ * background becomes an ordinary in-flow block background — painted in step 3
+ * of the root stacking context, AFTER the negative-z-index scene in step 2:
+ *
+ *     html's canvas  →  #app-backdrop (the scene)  →  body's wash  →  the app
+ *
+ * SCOPED TO [data-backdrop] BECAUSE VIBRANCY NEEDS THE OPPOSITE. In the
+ * desktop shell's translucent mode with no scene, propagation is exactly what
+ * makes the window canvas alpha and lets the desktop through; an opaque root
+ * there would kill it. With a scene present there is nothing to lose — the
+ * backdrop div is already an opaque `background-color: var(--background)`
+ * across the whole viewport, so the desktop was covered either way.
+ */
+[data-backdrop] {
+  background-color: var(--background);
 }
 [data-backdrop] #app-backdrop {
   display: block;
@@ -469,26 +638,21 @@
   background-color: color-mix(in oklab, var(--background) var(--backdrop-dim, 0%), transparent);
 }
 
-/* THE HIGHLIGHT TOKENS FROST TOO. Inline code chips, hover fills and the
-   selected sidebar row all sit on --muted/--accent/--sidebar-accent — solid
-   near-white in light mode, and over a see-through canvas each one reads as a
-   sticker. 72% of the token keeps them legible while letting the glass
-   breathe through; cards, popovers and text tokens stay untouched. */
-/* Mixed from the live tokens like the sidebar above — the per-scheme ratios
-   reproduce the base palette's highlight deltas exactly (light rungs sit 3-6%
-   toward ink from the canvas; dark rungs 14-19%), then 72% alpha frosts them.
-   A custom property cannot reference its own themed value, which is why these
-   are re-derived from --background/--foreground rather than `var(--muted)`. */
-:is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --muted: color-mix(in oklab, color-mix(in oklab, var(--background) 97%, var(--foreground)) 72%, transparent);
-  --accent: color-mix(in oklab, color-mix(in oklab, var(--background) 95.5%, var(--foreground)) 72%, transparent);
-  --sidebar-accent: color-mix(in oklab, color-mix(in oklab, var(--background) 94.5%, var(--foreground)) 72%, transparent);
-}
-.dark:is([data-telar-shell][data-translucent], [data-backdrop]) {
-  --muted: color-mix(in oklab, color-mix(in oklab, var(--background) 86%, var(--foreground)) 72%, transparent);
-  --accent: color-mix(in oklab, color-mix(in oklab, var(--background) 81%, var(--foreground)) 72%, transparent);
-  --sidebar-accent: color-mix(in oklab, color-mix(in oklab, var(--background) 86%, var(--foreground)) 72%, transparent);
-}
+/* THE HIGHLIGHT TOKENS USED TO FROST HERE — --muted, --accent and
+   --sidebar-accent, re-synthesised from --background/--foreground at Telar's
+   own deltas and dropped to 72% alpha. Both halves of that were wrong, and the
+   contract above says why at length: the re-synthesis threw away a custom
+   theme's hover colour, and the alpha multiplied against every `bg-muted/25`
+   in the app until those elements dissolved.
+
+   The rule is gone rather than rewritten. There is no version of it that
+   frosts a bare `bg-accent` without also thinning a `bg-accent/60`, because
+   Tailwind gives both exactly one lever — the token's value — and the same
+   class string also has to render on a page with no scene behind it.
+
+   The user's chat bubble below is the shape a mark-level frost has to take if
+   one is ever wanted again: a rule on the ELEMENT, which can set an alpha
+   without moving a token every other call site reads. */
 
 /* The user's chat bubble is a solid `bg-secondary` chip (components/ui/
    message.tsx) — near-white in light mode, and against a see-through canvas it

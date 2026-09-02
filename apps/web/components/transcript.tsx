@@ -123,7 +123,7 @@ const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 tex
 
 function DiffBody({ diff }: { diff: string }) {
   return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">
+    <pre className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[0.6875rem] leading-relaxed">
       {diff.split("\n").map((line, index) => {
         // `---`/`+++`/`@@` are the file header, not a removed and an added
         // line. Tested first, or every diff opens with one of each.
@@ -176,18 +176,18 @@ function ToolRow({ item }: { item: JournalItem }) {
           <>
             <RowIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
             <span className={cn("shrink-0", isError && "text-destructive")}>{label}</span>
-            <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{preview(item)}</span>
+            <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{preview(item)}</span>
           </>
         )}
         {change && (change.linesAdded || change.linesRemoved) ? (
-          <span className="shrink-0 font-mono text-[10px]">
+          <span className="shrink-0 font-mono text-[0.625rem]">
             {change.linesAdded ? <span className="text-success">+{change.linesAdded}</span> : null}
             {change.linesAdded && change.linesRemoved ? " " : null}
             {change.linesRemoved ? <span className="text-destructive">−{change.linesRemoved}</span> : null}
           </span>
         ) : null}
         {item.status === "declined" && (
-          <Badge variant="destructive" className="shrink-0 px-1 py-0 text-[9px]">
+          <Badge variant="destructive" className="shrink-0 px-1 py-0 text-[0.5625rem]">
             declined
           </Badge>
         )}
@@ -202,7 +202,7 @@ function ToolRow({ item }: { item: JournalItem }) {
           {change?.unifiedDiff ? (
             <DiffBody diff={change.unifiedDiff} />
           ) : (
-            <pre className="max-h-60 overflow-auto font-mono text-[11px] break-words whitespace-pre-wrap text-muted-foreground">
+            <pre className="max-h-60 overflow-auto font-mono text-[0.6875rem] break-words whitespace-pre-wrap text-muted-foreground">
               {output}
             </pre>
           )}
@@ -225,7 +225,7 @@ function ReasoningRow({ item }: { item: JournalItem }) {
           <span aria-hidden className="text-xs">
             ✻
           </span>
-          <Shimmer as="span" className="text-[11px] font-medium">
+          <Shimmer as="span" className="text-[0.6875rem] font-medium">
             Thinking
           </Shimmer>
         </div>
@@ -247,7 +247,7 @@ function ReasoningRow({ item }: { item: JournalItem }) {
         <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />
       </button>
       {open && (
-        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/30 p-2 text-[11px] whitespace-pre-wrap italic text-muted-foreground">
+        <p className="mx-1.5 mb-1.5 rounded-md bg-muted/30 p-2 text-[0.6875rem] whitespace-pre-wrap italic text-muted-foreground">
           {text}
         </p>
       )}
@@ -266,7 +266,7 @@ function PlanRow({ item }: { item: JournalItem }) {
       <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
         <ListTodoIcon className="size-3.5" />
         To-dos
-        <span className="font-mono text-[10px] text-muted-foreground/70">
+        <span className="font-mono text-[0.625rem] text-muted-foreground/70">
           {done}/{steps.length}
         </span>
       </div>
@@ -345,7 +345,7 @@ function AgentChip({ task, onOpen }: { task: JournalTask; onOpen?: (taskId: stri
       )}
       {/* Counted from the rows this agent PRODUCED, which is the only honest
           number available while it is still working. */}
-      <span className="shrink-0 text-[10px] text-muted-foreground">
+      <span className="shrink-0 text-[0.625rem] text-muted-foreground">
         {task.items.length} step{task.items.length === 1 ? "" : "s"}
       </span>
       <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
@@ -377,8 +377,8 @@ function CompactionRow({ item }: { item: JournalItem }) {
       ) : (
         <span className="min-w-0 flex-1 truncate">{label}</span>
       )}
-      {detail?.reason === "auto" && <span className="shrink-0 text-[10px] opacity-70">automatic</span>}
-      {reclaimed && <span className="shrink-0 font-mono text-[10px] tabular-nums">{reclaimed}</span>}
+      {detail?.reason === "auto" && <span className="shrink-0 text-[0.625rem] opacity-70">automatic</span>}
+      {reclaimed && <span className="shrink-0 font-mono text-[0.625rem] tabular-nums">{reclaimed}</span>}
     </p>
   );
 }
@@ -555,7 +555,7 @@ export function Marker({ children, attention }: { children: React.ReactNode; att
       <span className="h-px flex-1 bg-border" />
       <span
         className={cn(
-          "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-[9px]",
+          "flex max-w-[80%] items-center gap-1.5 rounded-full border border-dashed px-2.5 py-0.5 text-center font-mono text-[0.5625rem]",
           attention ? "border-warning/40 text-warning" : "border-border text-muted-foreground",
         )}
       >
@@ -616,12 +616,12 @@ export function WorkingIndicator({
   const silent = !delegated && quiet >= SILENCE_THRESHOLD;
 
   return (
-    <div className={cn("flex items-center gap-2 text-[11px] text-muted-foreground/70", silent && "text-warning/80")}>
+    <div className={cn("flex items-center gap-2 text-[0.6875rem] text-muted-foreground/70", silent && "text-warning/80")}>
       <span
         aria-hidden
         className={cn("size-1.5 shrink-0 rounded-full motion-safe:animate-pulse", silent ? "bg-warning" : "bg-muted-foreground/50")}
       />
-      <Shimmer as="span" className={cn("text-[11px]", silent && "text-warning/80")}>
+      <Shimmer as="span" className={cn("text-[0.6875rem]", silent && "text-warning/80")}>
         {label}
       </Shimmer>
       <span className="shrink-0 font-mono tabular-nums">{formatElapsed(elapsed)}</span>

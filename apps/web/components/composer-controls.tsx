@@ -126,7 +126,7 @@ export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>
 ControlTrigger.displayName = "ControlTrigger";
 
 function MenuHeading({ children }: { children: ReactNode }) {
-  return <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+  return <div className="px-2 pb-1 pt-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
 
 /**
@@ -163,7 +163,7 @@ function CompactRow({
       )}
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {hint && <span className="shrink-0 text-[10px] text-muted-foreground">{hint}</span>}
+      {hint && <span className="shrink-0 text-[0.625rem] text-muted-foreground">{hint}</span>}
       <span className="flex size-3.5 shrink-0 items-center justify-center">
         {selected && <CheckIcon className="size-3.5 text-primary" />}
       </span>
@@ -432,7 +432,7 @@ function FamilyRow({
           </span>
         )}
         <span className="min-w-0 flex-1 truncate">{family.label}</span>
-        {family.isDefault && <span className="shrink-0 text-[10px] text-muted-foreground">Default</span>}
+        {family.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
         <span className="flex size-3.5 shrink-0 items-center justify-center">
           {selected && <CheckIcon className="size-3.5 text-primary" />}
         </span>
@@ -693,7 +693,7 @@ export function AgentControl({
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
               >
                 <span className="min-w-0 flex-1 truncate">Legacy models</span>
-                <span className="shrink-0 text-[10px]">{legacy.length}</span>
+                <span className="shrink-0 text-[0.625rem]">{legacy.length}</span>
                 <ChevronRightIcon className="size-3.5 shrink-0" />
               </button>
             )}
@@ -703,19 +703,19 @@ export function AgentControl({
             {view !== "favorites" && choice.model && models.length > 0 && !selectedFamily && (
               <CompactRow label={choice.model} hint="external" selected disabled onSelect={() => undefined} />
             )}
-            {asking && <p className="px-2 py-1.5 text-[11px] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
+            {asking && <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
             {/* Nothing to show, and the two reasons are different questions. */}
             {view === "favorites" && !asking && listed.length === 0 && (
-              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">Star a model to keep it here.</p>
+              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">Star a model to keep it here.</p>
             )}
             {view !== "favorites" && catalogue && models.length === 0 && (
-              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
                 {catalogue.message ?? `${PROVIDER_LABEL[driver]} did not report any models.`}
               </p>
             )}
           </div>
         </div>
-        <p className="border-t border-border px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
+        <p className="border-t border-border px-2.5 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
           {readOnly ? "Chosen when the session starts." : onDriverChange ? "Applies to the first message." : "Takes effect next turn."}
           {/* Whether this list was ASKED FOR or guessed. The distinction matters
               the moment an id here 404s at the provider. */}
@@ -825,7 +825,7 @@ export function ReasoningControl({
             is the honest floor until the provider answers — and if it could not
             be asked, its own words say why. */}
         {levels.length === 0 && catalogue?.message && (
-          <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">{catalogue.message}</p>
+          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{catalogue.message}</p>
         )}
 
         {/**
@@ -1143,7 +1143,7 @@ export function ContextPill({
         render={
           <button
             type="button"
-            className="relative flex size-8 items-center justify-center rounded-full text-[9px] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
+            className="relative flex size-8 items-center justify-center rounded-full text-[0.5625rem] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
             aria-label={`Context window${unknown ? ", size not reported" : usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
             title="Context window"
           />
@@ -1207,7 +1207,7 @@ export function BackgroundPresence({ count, onStop }: { count: number; onStop: (
   if (count === 0) return null;
   return (
     <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
-      <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+      <span className="flex items-center gap-2 text-[0.6875rem] font-medium text-muted-foreground">
         <span className="relative flex size-2">
           <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
           <span className="relative inline-flex size-2 rounded-full bg-primary" />

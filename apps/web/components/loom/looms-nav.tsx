@@ -16,7 +16,7 @@ import { ChevronRightIcon, WorkflowIcon } from "lucide-react";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
 
-const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 interface NavLoom {
   id: string;
@@ -78,7 +78,7 @@ export function LoomsNav() {
       >
         <span className={cn("size-2 shrink-0 rounded-full", STATE_DOT[loom.state])} aria-hidden />
         <span className="min-w-0 flex-1 truncate">{loom.title}</span>
-        <span className="shrink-0 font-mono text-[10px] text-sidebar-foreground/40">{loom.threads.length}</span>
+        <span className="shrink-0 font-mono text-[0.625rem] text-sidebar-foreground/40">{loom.threads.length}</span>
       </Link>
     );
   };

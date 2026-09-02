@@ -45,18 +45,18 @@ function TickingDuration({ startedAt }: { startedAt: number }) {
  */
 export function ThreadStatusSlot({ live }: { live: ThreadLiveness | null }) {
   if (!live?.activity) {
-    return <span className="shrink-0 text-[11px] text-muted-foreground">unreachable</span>;
+    return <span className="shrink-0 text-[0.6875rem] text-muted-foreground">unreachable</span>;
   }
   const badge = activityBadge(live.activity);
   if (!badge) {
     return (
-      <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+      <span className="shrink-0 text-[0.6875rem] tabular-nums text-muted-foreground">
         {live.updatedAt ? fmtAgo(live.updatedAt) : "idle"}
       </span>
     );
   }
   return (
-    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${ACTIVITY_TONE[badge.tone]}`}>
+    <span className={`inline-flex shrink-0 items-center gap-1 text-[0.6875rem] font-medium ${ACTIVITY_TONE[badge.tone]}`}>
       {badge.ticking ? (
         <CircleDashedIcon className="size-3 animate-spin [animation-duration:3s]" />
       ) : badge.tone === "attention" ? (
@@ -82,7 +82,7 @@ export function LoomStateBadge({ state }: { state: LoomDisplayStateName }) {
     accepted: "text-muted-foreground",
   };
   return (
-    <Badge variant="outline" className={`font-mono text-[10px] uppercase tracking-wide ${tone[state]}`}>
+    <Badge variant="outline" className={`font-mono text-[0.625rem] uppercase tracking-wide ${tone[state]}`}>
       {state}
     </Badge>
   );
@@ -92,11 +92,11 @@ export function LoomStateBadge({ state }: { state: LoomDisplayStateName }) {
  *  blank. Both render as the system's own Badge. */
 export function TierBadge({ tier }: { tier?: string }) {
   return tier ? (
-    <Badge variant="outline" className="font-mono text-[10px] uppercase text-verify">
+    <Badge variant="outline" className="font-mono text-[0.625rem] uppercase text-verify">
       {tier}
     </Badge>
   ) : (
-    <Badge variant="outline" className="font-mono text-[10px] uppercase text-warning" title="No executable tier backs this contract">
+    <Badge variant="outline" className="font-mono text-[0.625rem] uppercase text-warning" title="No executable tier backs this contract">
       no tier
     </Badge>
   );
@@ -110,7 +110,7 @@ export function VerificationBadge({
 }) {
   if (!verification) return null;
   return (
-    <Badge variant="outline" className={`font-mono text-[10px] ${verification.ok ? "text-success" : "text-destructive"}`}>
+    <Badge variant="outline" className={`font-mono text-[0.625rem] ${verification.ok ? "text-success" : "text-destructive"}`}>
       {verification.tier} {verification.ok ? "green" : "red"}
       {verification.commit ? ` @ ${verification.commit.slice(0, 7)}` : ""}
     </Badge>

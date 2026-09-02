@@ -167,8 +167,8 @@ function ItsTurnCame({ detail, projects }: { detail: SpoolItemDetail; projects: 
         <MessageSquareIcon />
         Start a session
       </Button>
-      {blocked && <p className="text-[11px] leading-relaxed text-muted-foreground">{blocked}</p>}
-      <p className="pt-1 text-center text-[10px] leading-relaxed text-muted-foreground/60">
+      {blocked && <p className="text-[0.6875rem] leading-relaxed text-muted-foreground">{blocked}</p>}
+      <p className="pt-1 text-center text-[0.625rem] leading-relaxed text-muted-foreground/60">
         everything above was prepared by agents —
         <br />
         nothing runs until you click
@@ -341,7 +341,7 @@ function PacketHandVerbs({
       {landed && !refused && mode === null && (
         <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{landed}</p>
       )}
-      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
+      <p className="mt-1.5 text-[0.625rem] leading-relaxed text-muted-foreground/60">
         The chat&rsquo;s own two verbs, as hand controls — they write the map directly and submit no turn.
       </p>
     </section>
@@ -535,12 +535,12 @@ function PacketFace({
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
           <ProjectChip name={item.project} mirrored={item.mirrored} />
           {item.deadline && <DeadlineChip deadline={item.deadline} />}
-          <span className="font-mono text-[10px] text-muted-foreground/60">
+          <span className="font-mono text-[0.625rem] text-muted-foreground/60">
             {detail.lane ? `filed in ${detail.lane} · rank ${detail.rank}` : "not filed in any lane"}
           </span>
           {/* The store's own label, QUOTED — never a time this code minted. */}
           {item.closed && (
-            <span className="font-mono text-[10px] text-muted-foreground/60">“closed {item.closed.label}”</span>
+            <span className="font-mono text-[0.625rem] text-muted-foreground/60">“closed {item.closed.label}”</span>
           )}
         </div>
         {closeNote && <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{closeNote}</p>}
@@ -557,7 +557,7 @@ function PacketFace({
         <SectionLabel>Filing</SectionLabel>
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <span className="w-16 shrink-0 text-[11px] text-muted-foreground">Lane</span>
+            <span className="w-16 shrink-0 text-[0.6875rem] text-muted-foreground">Lane</span>
             <Select
               value={detail.lane ?? ""}
               onValueChange={(next) => {
@@ -578,7 +578,7 @@ function PacketFace({
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="w-16 shrink-0 text-[11px] text-muted-foreground">Subject</span>
+            <span className="w-16 shrink-0 text-[0.6875rem] text-muted-foreground">Subject</span>
             {/* Keyed on the stored value so a landed PATCH re-seeds it with the
                 store's own word — the area input's idiom. Blank leaves the
                 filing as it is; there is no clear verb on this field. */}
@@ -608,7 +608,7 @@ function PacketFace({
             </datalist>
           </div>
           <div className="flex items-center gap-2">
-            <span className="w-16 shrink-0 text-[11px] text-muted-foreground">Deadline</span>
+            <span className="w-16 shrink-0 text-[0.6875rem] text-muted-foreground">Deadline</span>
             {/* Your own words — the chip's label, never a date this code
                 parses. Committing a label writes the whole deadline with the
                 kind beside it. */}
@@ -654,7 +654,7 @@ function PacketFace({
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <span className="w-16 shrink-0 text-[11px] text-muted-foreground">Pin</span>
+            <span className="w-16 shrink-0 text-[0.6875rem] text-muted-foreground">Pin</span>
             {/* Picking a day IS stating it — the calendar's own boundary.
                 Clearing the field unpins (`pinned: null`); the item stays. */}
             <input
@@ -671,7 +671,7 @@ function PacketFace({
           </div>
         </div>
         {filingRefused && <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{filingRefused}</p>}
-        <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
+        <p className="mt-1.5 text-[0.625rem] leading-relaxed text-muted-foreground/60">
           Filing only — the words this was born as stay verbatim, and nothing here submits a turn.
         </p>
       </section>
@@ -702,7 +702,7 @@ function PacketFace({
 
       <section>
         <SectionLabel>Sub-tasks</SectionLabel>
-        <p className="mb-2 text-[11px] text-muted-foreground/60">
+        <p className="mb-2 text-[0.6875rem] text-muted-foreground/60">
           Breakdown lives inside this item — it never grows the queue count.
         </p>
         <div className="space-y-1.5">
@@ -732,7 +732,7 @@ function PacketFace({
                 type="button"
                 disabled={busy}
                 onClick={() => setPromoting({ id: s.id, title: s.title })}
-                className="shrink-0 text-[10px] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
+                className="shrink-0 text-[0.625rem] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
               >
                 promote
               </button>
@@ -955,7 +955,7 @@ function NoteFace({
       )}
       {/* Whose hand wrote it — permanent, never editable. */}
       {note?.author === "session" && (
-        <p className="font-mono text-[10px] text-muted-foreground/60">agent&rsquo;s note — written by a session, when asked</p>
+        <p className="font-mono text-[0.625rem] text-muted-foreground/60">agent&rsquo;s note — written by a session, when asked</p>
       )}
       <Input
         value={title}
@@ -979,7 +979,7 @@ function NoteFace({
         placeholder="tags, separated by commas"
         aria-label="Note tags"
         disabled={retired}
-        className="h-8 font-mono text-[11px] md:text-[11px]"
+        className="h-8 font-mono text-[0.6875rem] md:text-[0.6875rem]"
       />
       {refused && <p className="text-xs leading-relaxed text-muted-foreground">{refused}</p>}
       {!retired && (
@@ -1277,7 +1277,7 @@ export function SubjectFace({
             list="subject-area-options"
             placeholder="Area — “Trabajo”, “Personal”…"
             aria-label={`Area for ${subjectKey}`}
-            className="h-7 text-[11px] md:text-[11px]"
+            className="h-7 text-[0.6875rem] md:text-[0.6875rem]"
             onBlur={(event) => commitArea(event.currentTarget.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -1314,7 +1314,7 @@ export function SubjectFace({
               >
                 {/* TITLES level — the user's words, like every line in the room. */}
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{said || item.title}</span>
-                {lane && <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">{lane}</span>}
+                {lane && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground/60">{lane}</span>}
                 {item.deadline && (
                   <span className="shrink-0">
                     <DeadlineChip deadline={item.deadline} />
@@ -1366,7 +1366,7 @@ export function SubjectFace({
                     >
                       <span className="block truncate text-sm font-medium text-muted-foreground/60">{words}</span>
                       {item.closed && (
-                        <span className="block truncate text-[10px] text-muted-foreground/60">
+                        <span className="block truncate text-[0.625rem] text-muted-foreground/60">
                           “closed {item.closed.label}”
                         </span>
                       )}
@@ -1388,7 +1388,7 @@ export function SubjectFace({
              reason quoted: dismissing drains. */}
       <div className="mt-2 border-t border-border/60 pt-2">
         <div className="flex items-center gap-2 px-2 pb-1">
-          <span className="flex-1 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">Notes</span>
+          <span className="flex-1 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">Notes</span>
           <button
             type="button"
             onClick={() => onNewNote(subjectKey ?? undefined)}
@@ -1424,16 +1424,16 @@ export function SubjectFace({
                         {note.title}
                       </span>
                       {note.author === "session" && (
-                        <span className="shrink-0 font-mono text-[10px] text-muted-foreground/60">agent&rsquo;s note</span>
+                        <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground/60">agent&rsquo;s note</span>
                       )}
                       {note.tags.map((tag) => (
-                        <span key={tag} className="shrink-0 font-mono text-[10px] text-muted-foreground/60">
+                        <span key={tag} className="shrink-0 font-mono text-[0.625rem] text-muted-foreground/60">
                           #{tag}
                         </span>
                       ))}
                     </span>
                     {note.retired && (
-                      <span className="block truncate text-[10px] text-muted-foreground/50">
+                      <span className="block truncate text-[0.625rem] text-muted-foreground/50">
                         retired {note.retired.label} — “{note.retired.reason}”
                       </span>
                     )}
@@ -1592,7 +1592,7 @@ function PermitsFace() {
                 <PermitsChip subject={subject.key} permits={stated} onChanged={() => void load()} />
               </span>
               {clamped && (
-                <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                <p className="mt-0.5 text-[0.6875rem] leading-relaxed text-muted-foreground">
                   {stated} — clamped to {acts} by &ldquo;{clampSource}&rdquo;&rsquo;s ceiling
                 </p>
               )}
@@ -1621,7 +1621,7 @@ function PermitsFace() {
                       onChange={(event) =>
                         setCeiling(name, (event.currentTarget.value || null) as SpoolSubjectPermits | null)
                       }
-                      className="h-5 shrink-0 rounded-sm border border-border bg-transparent px-1 text-[10px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      className="h-5 shrink-0 rounded-sm border border-border bg-transparent px-1 text-[0.625rem] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       {CEILING_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -1631,7 +1631,7 @@ function PermitsFace() {
                     </select>
                   </span>
                   {refused[name] && (
-                    <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">{refused[name]}</p>
+                    <p className="mt-0.5 text-[0.625rem] leading-relaxed text-muted-foreground">{refused[name]}</p>
                   )}
                 </li>
               );

@@ -49,7 +49,7 @@ type Tab = "tasks" | "board" | "calendar" | "notes" | "about";
 function BriefSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <p className="text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">{title}</p>
+      <p className="text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">{title}</p>
       {children}
     </div>
   );
@@ -543,7 +543,7 @@ export function SubjectRoom({
                               className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left outline-none hover:bg-muted/40"
                             >
                               <span className="min-w-0 flex-1 truncate text-sm text-foreground">{n.title}</span>
-                              <span className="shrink-0 text-[10px] text-muted-foreground/60">{n.source}</span>
+                              <span className="shrink-0 text-[0.625rem] text-muted-foreground/60">{n.source}</span>
                             </button>
                           </li>
                         ))}
@@ -649,7 +649,7 @@ export function SubjectRoom({
             aria-pressed={!!filter.stuckOnMe}
             onClick={() => setFilter((f) => ({ ...f, stuckOnMe: f.stuckOnMe ? undefined : true }))}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+              "rounded-full border px-2 py-0.5 text-[0.6875rem] transition-colors",
               filter.stuckOnMe ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
             )}
           >
@@ -660,7 +660,7 @@ export function SubjectRoom({
             aria-pressed={!!filter.unfiled}
             onClick={() => setFilter((f) => ({ ...f, unfiled: f.unfiled ? undefined : true }))}
             className={cn(
-              "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+              "rounded-full border px-2 py-0.5 text-[0.6875rem] transition-colors",
               filter.unfiled ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
             )}
           >
@@ -673,7 +673,7 @@ export function SubjectRoom({
               aria-pressed={filter.lane === lane.key}
               onClick={() => setFilter((f) => ({ ...f, lane: f.lane === lane.key ? undefined : lane.key }))}
               className={cn(
-                "rounded-full border px-2 py-0.5 text-[11px] transition-colors",
+                "rounded-full border px-2 py-0.5 text-[0.6875rem] transition-colors",
                 filter.lane === lane.key ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
               )}
             >
@@ -687,7 +687,7 @@ export function SubjectRoom({
               aria-pressed={filter.tag === tag}
               onClick={() => setFilter((f) => ({ ...f, tag: f.tag === tag ? undefined : tag }))}
               className={cn(
-                "rounded-full border px-2 py-0.5 font-mono text-[10px] transition-colors",
+                "rounded-full border px-2 py-0.5 font-mono text-[0.625rem] transition-colors",
                 filter.tag === tag ? "border-border bg-muted text-foreground" : "border-transparent text-muted-foreground hover:border-border",
               )}
             >
@@ -698,7 +698,7 @@ export function SubjectRoom({
             <button
               type="button"
               onClick={() => setFilter({})}
-              className="ml-1 text-[11px] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
+              className="ml-1 text-[0.6875rem] text-muted-foreground/70 underline decoration-dotted transition-colors hover:text-foreground"
             >
               clear ✕
             </button>

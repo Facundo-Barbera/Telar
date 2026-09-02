@@ -313,7 +313,7 @@ export function AppearanceSection() {
         <div className="ml-auto flex items-center gap-2">
           {dirty ? (
             <>
-              <Badge variant="outline" className="gap-1.5 text-[10px]">
+              <Badge variant="outline" className="gap-1.5 text-[0.625rem]">
                 <span className="size-1.5 rounded-full bg-warning" />
                 Previewing
               </Badge>
@@ -342,7 +342,7 @@ export function AppearanceSection() {
       </div>
 
       {notice && <p className="text-xs text-warning">{notice}</p>}
-      <p className="text-[11px] leading-snug text-muted-foreground">{HINT}</p>
+      <p className="text-[0.6875rem] leading-snug text-muted-foreground">{HINT}</p>
 
       <LooksSection onOpen={openLook} />
 
