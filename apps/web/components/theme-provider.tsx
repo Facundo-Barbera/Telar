@@ -67,7 +67,9 @@ function subscribe(onChange: () => void): () => void {
   };
 }
 
-function readTheme(): Theme {
+/** Exported for the studio preview, which moves the scheme class behind the
+ *  store's back and needs the stored truth to put it back. */
+export function readTheme(): Theme {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(PREVIOUS_STORAGE_KEY);
     return stored === "light" || stored === "dark" || stored === "system" ? stored : DEFAULT_THEME;

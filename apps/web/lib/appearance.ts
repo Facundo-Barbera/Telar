@@ -208,6 +208,12 @@ function writeAppearance(patch: Partial<Appearance>): void {
   for (const listener of listeners) listener();
 }
 
+/** The stored appearance, read outside React — what the studio preview
+ *  replays when a draft comes off. */
+export function currentAppearance(): Appearance {
+  return readAppearance();
+}
+
 export function useAppearance(): { appearance: Appearance; setAppearance: (patch: Partial<Appearance>) => void } {
   const appearance = useSyncExternalStore(subscribe, readAppearance, () => DEFAULT_APPEARANCE);
   const setAppearance = useCallback((patch: Partial<Appearance>) => writeAppearance(patch), []);

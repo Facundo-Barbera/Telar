@@ -11,18 +11,28 @@ import { useEffect } from "react";
 import { AppearancePublisher } from "@/components/appearance-publisher";
 import { applyAppearance, useAppearance } from "@/lib/appearance";
 import { applyBackdrop, useBackdrop } from "@/lib/backdrop";
+import { isPreviewActive } from "@/lib/studio-preview";
 import { applyThemeCss, useThemeLibrary } from "@/lib/theme-palettes";
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
   const { appearance } = useAppearance();
   const { backdrop } = useBackdrop();
   const { activeId, themes } = useThemeLibrary();
-  useEffect(() => applyAppearance(appearance), [appearance]);
-  useEffect(() => applyBackdrop(backdrop), [backdrop]);
+  // While the studio is previewing a draft on the document, the replays stand
+  // back: the preview wrote these same surfaces from the draft, and clearing
+  // the preview replays the stores itself (lib/studio-preview.ts).
+  useEffect(() => {
+    if (!isPreviewActive()) applyAppearance(appearance);
+  }, [appearance]);
+  useEffect(() => {
+    if (!isPreviewActive()) applyBackdrop(backdrop);
+  }, [backdrop]);
   // The theme library writes its compiled stylesheet to localStorage; this
   // keeps the injected <style id="telar-theme"> tracking it after the init
   // script's one shot — on switches AND on edits to the active theme (the
   // hook re-renders for both, and applyThemeCss no-ops when unchanged).
+  // Not gated on the preview: the preview element sits after this one and
+  // wins ties, so a stale telar-theme is refreshed harmlessly beneath it.
   useEffect(() => applyThemeCss(), [activeId, themes]);
   // Renders null. It watches the same three stores and tells the engine what
   // this window resolved to, so a paired client can wear the same look — see
