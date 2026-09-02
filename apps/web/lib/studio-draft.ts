@@ -419,12 +419,18 @@ export function designSummary(outcome: DesignSuccess): string {
  */
 export function describeDraft(draft: StudioDraft): string {
   const half = (mode: StudioMode) => THEME_TOKENS.map((token) => `${token}=${cssColorToHex(draft.theme[mode][token])}`).join(" ");
+  // Bounded: a composed scene's resolved CSS embeds data URLs and can be
+  // megabytes — the daemon refuses prompts over 20k characters, so the model
+  // gets a description, never the pixels.
+  const css = (value: string) => (value.length > 400 ? `${value.slice(0, 400)}… (${draft.backdrop.kind}, truncated)` : value);
   const backdrop =
     draft.backdrop.kind === "none"
       ? "none"
       : draft.backdrop.kind === "image"
         ? "a photograph (leave it alone unless asked to replace it)"
-        : `${draft.backdrop.kind} — light: ${draft.backdrop.resolved.light} | dark: ${draft.backdrop.resolved.dark}`;
+        : draft.backdrop.kind === "scene"
+          ? "a composed scene of layered images and gradients (leave it alone unless asked)"
+          : `${draft.backdrop.kind} — light: ${css(draft.backdrop.resolved.light)} | dark: ${css(draft.backdrop.resolved.dark)}`;
   const fonts = `${draft.fontSans === "custom" ? draft.fontSansCustom || "custom" : draft.fontSans} / ${draft.fontMono === "custom" ? draft.fontMonoCustom || "custom" : draft.fontMono} mono`;
   return [
     `Name: ${draft.label}`,
