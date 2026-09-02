@@ -215,7 +215,7 @@ export function SettingsShell({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn("w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
+          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
         </div>
       </div>
     </div>
