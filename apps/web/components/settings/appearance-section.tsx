@@ -37,7 +37,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { MonitorIcon, SunMoonIcon, Undo2Icon } from "lucide-react";
+import { MonitorIcon, PaletteIcon, SunMoonIcon, TypeIcon, Undo2Icon } from "lucide-react";
 import {
   MAX_TRANSLUCENCY,
   MIN_TRANSLUCENCY,
@@ -68,12 +68,12 @@ import {
   type StudioMode,
 } from "@/lib/studio-draft";
 import { clearPreview, previewLook } from "@/lib/studio-preview";
-import { useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
+import { THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
+import { Row, Segmented, ToggleRow } from "./settings-shell";
 import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { DesignerChat } from "./studio/chat";
@@ -87,9 +87,6 @@ const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
 
 type Tab = "colours" | "backdrop" | "type";
-
-const HINT =
-  "Everything here edits the draft, and the draft is painted on the app itself while you work. Nothing is kept until you press Apply.";
 
 /** How long a gap between edits starts a NEW undo step. Inside it, edits
  *  coalesce — a colour-picker drag is one step, not ninety. */
@@ -290,86 +287,86 @@ export function AppearanceSection() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* THE HEADER carries the draft's identity and, only while there IS a
-          draft, the things you can do with it. */}
+    <div className="flex flex-col gap-3">
+      {/* THE MASTHEAD — the draft's identity and what can be done with it, in
+          the same register as a session's: a quiet title that becomes an input
+          under the cursor, state as a mono chip, actions on the right. */}
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="h-8 max-w-64 flex-1 font-medium"
+          className="h-8 max-w-64 flex-1 border-transparent bg-transparent font-heading text-sm font-semibold tracking-tight shadow-none hover:border-border focus:border-border"
           value={current?.label ?? ""}
           placeholder="Name this look"
           aria-label="Look name"
           disabled={!current}
           onChange={(event) => current && edit(setDraftLabel(current, event.target.value))}
         />
-        <Segmented<StudioMode>
-          value={mode}
-          onChange={setPickedMode}
-          options={[
-            { value: "light", label: "Light" },
-            { value: "dark", label: "Dark" },
-          ]}
-        />
+        {dirty ? (
+          <span className="flex shrink-0 items-center gap-1.5 font-mono text-[0.625rem] tracking-[0.08em] text-warning uppercase">
+            <span className="size-1.5 rounded-full bg-warning" />
+            Previewing
+          </span>
+        ) : (
+          <span className="shrink-0 font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase">Worn</span>
+        )}
         <div className="ml-auto flex items-center gap-2">
-          {dirty ? (
+          <Segmented<StudioMode>
+            value={mode}
+            onChange={setPickedMode}
+            options={[
+              { value: "light", label: "Light" },
+              { value: "dark", label: "Dark" },
+            ]}
+          />
+          {dirty && (
             <>
-              <Badge variant="outline" className="gap-1.5 text-[0.625rem]">
-                <span className="size-1.5 rounded-full bg-warning" />
-                Previewing
-              </Badge>
               <Button size="sm" variant="ghost" title="Undo the last edit (⌘Z)" disabled={undoDepth === 0} onClick={undo}>
                 <Undo2Icon /> Undo
               </Button>
               <Button size="sm" variant="ghost" onClick={discard}>
                 Discard
               </Button>
-              <Button size="sm" variant="outline" onClick={saveLook}>
-                Save look
-              </Button>
-              <Button size="sm" onClick={apply}>
-                Apply
-              </Button>
             </>
-          ) : (
-            <>
-              <span className="text-xs text-muted-foreground">This is what you are wearing.</span>
-              <Button size="sm" variant="outline" onClick={saveLook}>
-                Save look
-              </Button>
-            </>
+          )}
+          <Button size="sm" variant="outline" onClick={saveLook}>
+            Save look
+          </Button>
+          {dirty && (
+            <Button size="sm" onClick={apply}>
+              Apply
+            </Button>
           )}
         </div>
       </div>
 
       {notice && <p className="text-xs text-warning">{notice}</p>}
-      <p className="text-[0.6875rem] leading-snug text-muted-foreground">{HINT}</p>
 
       <LooksSection onOpen={openLook} />
 
       {/* The designer beside the inspector: describing a look is the primary
-          path now, and the app around this pane is the canvas it draws on. */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[3fr_2fr]">
-        <div className="min-w-0">{current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="xl:min-h-[26rem]" />}</div>
+          path, and the app around this pane is the canvas it draws on. */}
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[3fr_2fr]">
+        <div className="min-w-0">{current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="xl:h-[30rem]" />}</div>
 
-        <div className="min-w-0">
-          <div className="mb-3">
-            <Segmented<Tab>
-              value={tab}
-              onChange={setTab}
-              options={[
-                { value: "colours", label: "Colours" },
-                { value: "backdrop", label: "Backdrop" },
-                { value: "type", label: "Type" },
-              ]}
-            />
-          </div>
+        <div className="flex min-w-0 flex-col gap-3">
+          <Segmented<Tab>
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: "colours", label: "Colours" },
+              { value: "backdrop", label: "Backdrop" },
+              { value: "type", label: "Type" },
+            ]}
+          />
 
           {tab === "colours" && (
             <>
               {current && (
-                <SettingsGroup title="Palette" description="Sixteen surfaces, edited on the draft and painted on the app.">
-                  <ColourTool draft={current} onDraft={edit} mode={mode} />
-                </SettingsGroup>
+                <Panel>
+                  <PanelHeader icon={<PaletteIcon />} label={`Palette · ${mode} half`} count={THEME_TOKENS.length} />
+                  <PanelBody>
+                    <ColourTool draft={current} onDraft={edit} mode={mode} />
+                  </PanelBody>
+                </Panel>
               )}
               {/* The library is where a palette comes FROM: a card loads its
                   halves into the draft; an orb loads one half. */}
@@ -378,85 +375,84 @@ export function AppearanceSection() {
           )}
 
           {tab === "backdrop" && current && (
-            <SettingsGroup title="Backdrop" description="The scene under the whole app — gradients, a photograph, or a stack of both. Part of the draft.">
-              <BackdropTool
-                value={current.backdrop}
-                mode={mode}
-                onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
-                // A palette taken from the picture lands on the draft's two
-                // halves like any other edit — undoable, and never a new
-                // library entry. Only the halves: the look keeps the name it
-                // was given, because naming it was a separate decision.
-                onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
-              />
-            </SettingsGroup>
+            <BackdropTool
+              value={current.backdrop}
+              mode={mode}
+              onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
+              // A palette taken from the picture lands on the draft's two
+              // halves like any other edit — undoable, and never a new
+              // library entry. Only the halves: the look keeps the name it
+              // was given, because naming it was a separate decision.
+              onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
+            />
           )}
 
           {tab === "type" && (
             <>
-              <SettingsGroup title="Colour scheme" description="Which half of every look this window wears. Not part of a look — applied immediately.">
-                <Row
-                  label="Scheme"
-                  hint="System follows the OS setting. The Light/Dark toggle above only moves the preview."
-                  icon={SunMoonIcon}
-                  control={<ThemeControl />}
-                />
-              </SettingsGroup>
-
               {current && (
-                <SettingsGroup title="Type" description="Accent, typefaces, size and strength — on the draft.">
-                  <TypeTool draft={current} onDraft={edit} />
-                </SettingsGroup>
+                <Panel>
+                  <PanelHeader icon={<TypeIcon />} label="Type" />
+                  <PanelBody>
+                    <TypeTool draft={current} onDraft={edit} />
+                  </PanelBody>
+                </Panel>
               )}
 
-              {hasBridge && windowSupported && (
-                <SettingsGroup title="Window" description="Desktop app only, and never part of a look — this is a property of the machine.">
-                  <ToggleRow
-                    label="Translucency"
-                    hint="The desktop shows through the canvas and the sidebar; cards and text stay opaque. Turning it on rebuilds the window — transparency is decided when a window is created."
-                    icon={MonitorIcon}
-                    checked={appearance.translucent}
-                    onCheckedChange={setTranslucent}
-                  />
-                  {appearance.translucent && (
-                    <Row
-                      label="Glass"
-                      hint="Blur is macOS's frosted vibrancy — it brightens what it blurs. Clear shows the desktop crisp, tinted only by the app."
-                      control={
-                        <Segmented<Frost>
-                          value={appearance.frost}
-                          onChange={setFrost}
-                          options={[
-                            { value: "blur", label: "Blur" },
-                            { value: "clear", label: "Clear" },
-                          ]}
+              {/* THE WINDOW, not the look: which half this window wears, and —
+                  in the desktop shell — how much desktop shows through it.
+                  None of it travels in a Look. */}
+              <Panel>
+                <PanelHeader icon={<MonitorIcon />} label="Window" />
+                <PanelBody>
+                  <Row label="Scheme" hint="System follows the OS. The Light/Dark toggle above only moves the preview." icon={SunMoonIcon} control={<ThemeControl />} />
+                  {hasBridge && windowSupported && (
+                    <>
+                      <ToggleRow
+                        label="Translucency"
+                        hint="Turning it on rebuilds the window."
+                        icon={MonitorIcon}
+                        checked={appearance.translucent}
+                        onCheckedChange={setTranslucent}
+                      />
+                      {appearance.translucent && (
+                        <Row
+                          label="Glass"
+                          control={
+                            <Segmented<Frost>
+                              value={appearance.frost}
+                              onChange={setFrost}
+                              options={[
+                                { value: "blur", label: "Blur" },
+                                { value: "clear", label: "Clear" },
+                              ]}
+                            />
+                          }
                         />
-                      }
-                    />
+                      )}
+                      {appearance.translucent && (
+                        <Row
+                          label="Strength"
+                          control={
+                            <div className="flex items-center gap-2.5">
+                              <input
+                                type="range"
+                                min={MIN_TRANSLUCENCY}
+                                max={MAX_TRANSLUCENCY}
+                                step={5}
+                                value={appearance.translucencyLevel}
+                                onChange={(event) => setAppearance({ translucencyLevel: Number(event.target.value) })}
+                                className="w-36 accent-primary"
+                                aria-label="Translucency strength"
+                              />
+                              <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{appearance.translucencyLevel}%</span>
+                            </div>
+                          }
+                        />
+                      )}
+                    </>
                   )}
-                  {appearance.translucent && (
-                    <Row
-                      label="Strength"
-                      hint="How much desktop shows through. A property of the window, applied live; the draft carries its own copy for the backdrop wash."
-                      control={
-                        <div className="flex items-center gap-2.5">
-                          <input
-                            type="range"
-                            min={MIN_TRANSLUCENCY}
-                            max={MAX_TRANSLUCENCY}
-                            step={5}
-                            value={appearance.translucencyLevel}
-                            onChange={(event) => setAppearance({ translucencyLevel: Number(event.target.value) })}
-                            className="w-36 accent-primary"
-                            aria-label="Translucency strength"
-                          />
-                          <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{appearance.translucencyLevel}%</span>
-                        </div>
-                      }
-                    />
-                  )}
-                </SettingsGroup>
-              )}
+                </PanelBody>
+              </Panel>
             </>
           )}
         </div>

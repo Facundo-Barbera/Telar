@@ -55,10 +55,10 @@ const ACCENT_LABEL: Record<Accent, string> = {
   violet: "Violet",
 };
 
-function ToolBlock({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+function ToolBlock({ title, hint, children }: { title?: string; hint?: string; children: React.ReactNode }) {
   return (
     <div className="px-4 py-3">
-      <div className="text-xs font-medium text-foreground">{title}</div>
+      {title && <div className="text-xs font-medium text-foreground">{title}</div>}
       {hint && <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">{hint}</p>}
       <div className="mt-2.5">{children}</div>
     </div>
@@ -132,10 +132,7 @@ function HexField({ value, label, onCommit }: { value: string; label: string; on
 export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioMode }) {
   const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
-    <ToolBlock
-      title={`Surfaces — ${mode} half`}
-      hint="Edits land on the draft and paint the app. A red ratio is text below 4.5:1 on the surface it sits on — shown, not enforced."
-    >
+    <ToolBlock>
       <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
         {THEME_TOKENS.map((token) => {
           const value = draft.theme[mode][token];
@@ -213,7 +210,7 @@ function AccentSwatches({ value, onChange }: { value: Accent; onChange: (next: A
 export function TypeTool({ draft, onDraft }: DraftTool) {
   return (
     <>
-      <ToolBlock title="Accent" hint="Buttons, links, the focus ring. Part of the draft — the stage's button follows it.">
+      <ToolBlock title="Accent" hint="Buttons, links, the focus ring.">
         <AccentSwatches value={draft.accent} onChange={(accent) => onDraft(patchDraftAccent(draft, accent))} />
       </ToolBlock>
 
@@ -277,7 +274,7 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
         )}
       </ToolBlock>
 
-      <ToolBlock title="Text size" hint="The root size everything is measured from. The stage keeps its own scale — a miniature that grew with it would only rescale the mock.">
+      <ToolBlock title="Text size" hint="The root size the whole interface is measured from.">
         <div className="flex items-center gap-2">
           <Input
             type="number"
@@ -298,7 +295,7 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
         </div>
       </ToolBlock>
 
-      <ToolBlock title="Strength" hint="How much of the backdrop shows through the canvas and the rail. Shared with the desktop window's translucency.">
+      <ToolBlock title="Strength" hint="How much backdrop shows through the canvas and the rail.">
         <div className="flex items-center gap-2.5">
           <input
             type="range"

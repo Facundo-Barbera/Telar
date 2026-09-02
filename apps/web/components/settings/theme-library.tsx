@@ -20,7 +20,7 @@
  */
 
 import { useRef, useState } from "react";
-import { CheckIcon, CopyIcon, DownloadIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadIcon, SwatchBookIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import {
   concreteHalf,
   serializeTheme,
@@ -30,7 +30,7 @@ import {
 import { isVsCodeThemeFile, vsCodeThemeToDefinition } from "@/lib/vscode-theme-import";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 
 /**
  * The orb: the theme's canvas with its chip and rail breathing at the edges
@@ -184,41 +184,37 @@ export function ThemeLibrary({
   };
 
   return (
-    <SettingsGroup
-      title="Themes"
-      description="Surfaces — canvas, cards, chips, the rail. A card loads its palette into the draft; the accent stays yours across every theme."
-    >
-      <Row
-        label="Library"
-        hint={
-          importError
-            ? importError
-            : "Click a theme to load it into the draft, or a single orb to take just that light or dark half. Import also reads a VS Code *-color-theme.json — one file is one half."
-        }
-        control={
-          <Button size="sm" variant="outline" onClick={() => fileInput.current?.click()}>
-            <UploadIcon /> Import
+    <Panel>
+      <PanelHeader
+        icon={<SwatchBookIcon />}
+        label="Themes"
+        count={themes.length}
+        actions={
+          <Button size="icon-sm" variant="ghost" title="Import a Telar or VS Code theme" aria-label="Import a theme" onClick={() => fileInput.current?.click()}>
+            <UploadIcon />
           </Button>
         }
       />
-      <div className="px-4 py-3">
-        <input
-          ref={fileInput}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          aria-hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = "";
-            if (!file) return;
-            void file.text().then((raw) => {
-              const outcome = importFile(raw);
-              setImportError(outcome.error);
-              if (outcome.theme) onPick(outcome.theme);
-            });
-          }}
-        />
+      <input
+        ref={fileInput}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        aria-hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (!file) return;
+          void file.text().then((raw) => {
+            const outcome = importFile(raw);
+            setImportError(outcome.error);
+            if (outcome.theme) onPick(outcome.theme);
+          });
+        }}
+      />
+      {importError && <p className="border-b border-border px-3 py-1.5 text-xs text-warning">{importError}</p>}
+      <PanelBody className="p-3">
+        <p className="mb-2.5 text-xs text-muted-foreground">A card loads both halves; one orb takes just that half. Import also reads a VS Code theme — one file is one half.</p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {themes.map((theme) => (
             <ThemeCard
@@ -242,7 +238,7 @@ export function ThemeLibrary({
             />
           ))}
         </div>
-      </div>
-    </SettingsGroup>
+      </PanelBody>
+    </Panel>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * THE DESIGNER CHAT — a conversation about the draft, with memory.
+ * THE DESIGNER — a conversation about the draft, with memory.
  *
  * Each send carries the base brief, the CURRENT DRAFT, and the RECENT
  * TRANSCRIPT (buildStudioPrompt). The draft makes the next message an edit
@@ -15,9 +15,11 @@
  * the draft has become — so a mid-flight hand edit survives, and so does a
  * renamed label.
  *
- * THE TRANSCRIPT PERSISTS beside the draft (lib/studio-draft.ts): navigating
- * away and back resumes the same conversation over the same draft, because
- * the record of WHY the draft looks like it does is part of the work.
+ * IT IS A PANEL, in the app's own grammar (components/ui/panel.tsx): a mono
+ * header naming the region, and the BUSY STATE IS THE HEADER'S TONE rather
+ * than a sentence — the same way a running session reports itself. An empty
+ * transcript is not dead space either: it is the one place on the pane that
+ * says what the studio does, and it hands over four openings to press.
  *
  * ONE REQUEST AT A TIME, but now with a way out: Stop aborts the fetch — the
  * engine's harness may still run to completion server-side, but its answer is
@@ -44,10 +46,15 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 
 const api = createEngineApi();
 
-const PLACEHOLDER = "Describe a look — “cedar and dusk”, or a change — “warmer”…";
+const PLACEHOLDER = "Describe a look, or a change…";
+
+/** Four openings, because a blank prompt is the hardest one to answer. They
+ *  are moods rather than instructions — the brief the model does best with. */
+const OPENINGS = ["cedar and dusk", "deep sea at night", "paper and ink", "warm autumn library"];
 
 type Line = StudioChatLine & { id: number };
 
@@ -121,6 +128,10 @@ export function DesignerChat({
   // An abandoned request must not write into a pane that no longer exists.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  /** Nothing has been asked yet — the invitation shows instead of a transcript
+   *  of one line talking to itself. */
+  const fresh = lines.length === 1 && lines[0]?.text === OPENING.text;
+
   const say = (kind: Line["kind"], text: string) => {
     const id = (nextId.current += 1);
     setLines((current) => [...current, { id, kind, text }]);
@@ -128,8 +139,10 @@ export function DesignerChat({
 
   const stop = () => abortRef.current?.abort();
 
-  const send = async () => {
-    const brief = instruction.trim();
+  /** `spoken` is what an opening chip presses with; everything else sends
+   *  whatever is in the input. */
+  const send = async (spoken?: string) => {
+    const brief = (spoken ?? instruction).trim();
     if (brief.length === 0 || busy) return;
     setInstruction("");
     say("you", brief);
@@ -169,33 +182,61 @@ export function DesignerChat({
   };
 
   return (
-    <div className={cn("flex min-h-0 flex-col overflow-hidden rounded-xl bg-card text-card-foreground ring-1 ring-foreground/10", className)}>
-      <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
-        <SparklesIcon className="size-3.5 text-muted-foreground" />
-        <span className="text-xs font-medium">Designer</span>
-        <span className="ml-auto text-[0.6875rem] text-muted-foreground">
-          {busy ? "Drafting… this can take a minute" : "Edits the draft — nothing lands until Apply"}
-        </span>
-      </div>
+    <Panel className={cn("min-h-0", className)}>
+      <PanelHeader
+        icon={<SparklesIcon />}
+        label="Designer"
+        tone={busy ? "active" : "none"}
+        actions={busy ? <span className="text-primary">Drafting…</span> : undefined}
+      />
 
-      <div ref={transcript} className="flex max-h-96 min-h-24 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2.5">
-        {lines.map((line) => (
-          <div key={line.id} className={cn("flex", line.kind === "you" ? "justify-end" : "justify-start")}>
-            <span
-              className={cn(
-                "max-w-[85%] rounded-lg px-2.5 py-1.5 text-xs leading-snug",
-                line.kind === "you" && "bg-secondary text-secondary-foreground",
-                line.kind === "studio" && "text-muted-foreground",
-                line.kind === "trouble" && "bg-destructive/10 text-destructive",
-              )}
-            >
-              {line.text}
-            </span>
+      {fresh ? (
+        // THE INVITATION. The one place on the pane that states the contract,
+        // and the only copy that survived the redesign's cull.
+        <PanelBody className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+          <span className="text-muted-foreground/60 [&_svg]:size-5">
+            <SparklesIcon />
+          </span>
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Describe a look</p>
+            <p className="mx-auto max-w-72 text-xs text-muted-foreground">
+              The app previews the draft as you go. Nothing is kept until you press Apply.
+            </p>
           </div>
-        ))}
-      </div>
+          <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
+            {OPENINGS.map((opening) => (
+              <button
+                key={opening}
+                type="button"
+                disabled={busy}
+                onClick={() => void send(opening)}
+                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                {opening}
+              </button>
+            ))}
+          </div>
+        </PanelBody>
+      ) : (
+        <PanelBody ref={transcript} className="flex flex-col gap-1.5 px-3 py-2.5">
+          {lines.map((line) => (
+            <div key={line.id} className={cn("flex", line.kind === "you" ? "justify-end" : "justify-start")}>
+              <span
+                className={cn(
+                  "max-w-[85%] rounded-lg px-2.5 py-1.5 text-xs leading-snug",
+                  line.kind === "you" && "bg-secondary text-secondary-foreground",
+                  line.kind === "studio" && "text-muted-foreground",
+                  line.kind === "trouble" && "bg-destructive/10 text-destructive",
+                )}
+              >
+                {line.text}
+              </span>
+            </div>
+          ))}
+        </PanelBody>
+      )}
 
-      <div className="flex items-center gap-1.5 border-t border-border px-3 py-2">
+      <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-2">
         <Input
           className="h-8"
           value={instruction}
@@ -219,6 +260,6 @@ export function DesignerChat({
           </Button>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }

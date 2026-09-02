@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CheckIcon, DownloadIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { CheckIcon, DownloadIcon, LayersIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
 import { isHostWindow } from "@/lib/host-window";
 import {
@@ -39,7 +39,7 @@ import {
 import { useThemeLibrary } from "@/lib/theme-palettes";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Panel, PanelBody, PanelEmpty, PanelHeader, PanelRow } from "@/components/ui/panel";
 
 /** What the strip says under the label — the one word that tells you whether
  *  this Look brings a wallpaper with it. */
@@ -145,9 +145,9 @@ const api = createEngineApi();
 type HostLookState = { status: "loading" } | { status: "ready"; look: Look } | { status: "empty" | "failed" | "invalid" };
 
 const HOST_LOOK_HINT: Record<"loading" | "empty" | "failed" | "invalid", string> = {
-  loading: "Asking the engine what the host is wearing…",
-  empty: "The host has not published a look yet. It publishes automatically from the window running on the machine.",
-  failed: "The engine did not answer. It may be down, locked, or this device may not be paired.",
+  loading: "Asking the engine…",
+  empty: "Nothing published yet — the host publishes on its own.",
+  failed: "The engine did not answer.",
   invalid: "The host published something this build cannot read.",
 };
 
@@ -185,25 +185,30 @@ function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
   }, []);
 
   return (
-    <Row
-      label="Host's look"
-      icon={MonitorSmartphoneIcon}
-      hint={state.status === "ready" ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}. Opens in the studio like any other source.` : HOST_LOOK_HINT[state.status]}
-      control={
-        state.status === "ready" ? (
-          <div className="flex items-center gap-2">
-            <LookStrip look={state.look} />
-            <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
-              Open
-            </Button>
-          </div>
-        ) : (
-          <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
-            {state.status === "loading" ? "Loading…" : "Retry"}
-          </Button>
-        )
-      }
-    />
+    <PanelRow tone="info" className="border-b border-border">
+      {state.status === "ready" ? (
+        <LookStrip look={state.look} />
+      ) : (
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground [&_svg]:size-4">
+          <MonitorSmartphoneIcon />
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">Host&apos;s look</div>
+        <div className="truncate text-xs text-muted-foreground">
+          {state.status === "ready" ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}` : HOST_LOOK_HINT[state.status]}
+        </div>
+      </div>
+      {state.status === "ready" ? (
+        <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
+          Open
+        </Button>
+      ) : (
+        <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
+          {state.status === "loading" ? "Loading…" : "Retry"}
+        </Button>
+      )}
+    </PanelRow>
   );
 }
 
@@ -253,45 +258,40 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
   };
 
   return (
-    <SettingsGroup
-      title="Looks"
-      description="The whole appearance as one thing — theme, backdrop, accent, type and strength, saved together and shareable as a file."
-    >
-      {!isHost && <HostLookRow onOpen={onOpen} />}
-      <Row
-        label="Saved looks"
-        hint={
-          error
-            ? error
-            : "Click a look to open it in the studio — the app previews it instantly, and Apply wears it. Save look, above, updates the card a draft came from."
-        }
-        control={
-          <Button size="sm" variant="outline" onClick={() => fileInput.current?.click()}>
-            <UploadIcon /> Import
+    <Panel>
+      <PanelHeader
+        icon={<LayersIcon />}
+        label="Looks"
+        count={looks.length}
+        actions={
+          <Button size="icon-sm" variant="ghost" title="Import a look file" aria-label="Import a look" onClick={() => fileInput.current?.click()}>
+            <UploadIcon />
           </Button>
         }
       />
-      <div className="px-4 py-3">
-        <input
-          ref={fileInput}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          aria-hidden
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            // Cleared so picking the SAME file twice still fires a change.
-            event.target.value = "";
-            if (!file) return;
-            void file.text().then(importFile);
-          }}
-        />
-        {looks.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Nothing saved yet. Get the draft looking how you want it, then press Save look — the card lands here, and travels as a file.
-          </p>
-        ) : (
-          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+      <input
+        ref={fileInput}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        aria-hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          // Cleared so picking the SAME file twice still fires a change.
+          event.target.value = "";
+          if (!file) return;
+          void file.text().then(importFile);
+        }}
+      />
+      {error && <p className="border-b border-border px-3 py-1.5 text-xs text-warning">{error}</p>}
+      {!isHost && <HostLookRow onOpen={onOpen} />}
+      {looks.length === 0 ? (
+        <PanelEmpty icon={<LayersIcon />} title="Nothing saved yet">
+          Save look shelves the draft as a card you can come back to, or send to another machine.
+        </PanelEmpty>
+      ) : (
+        <PanelBody className="overflow-x-auto p-3">
+          <div className="flex gap-2">
             {looks.map((look) => (
               <LookCard
                 key={look.id}
@@ -304,8 +304,8 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
               />
             ))}
           </div>
-        )}
-      </div>
-    </SettingsGroup>
+        </PanelBody>
+      )}
+    </Panel>
   );
 }

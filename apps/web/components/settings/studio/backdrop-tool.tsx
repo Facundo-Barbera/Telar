@@ -63,6 +63,7 @@ import {
   type StudioMode,
 } from "@/lib/studio-draft";
 import type { ThemeDefinition } from "@/lib/theme-palettes";
+import { Panel, PanelBody, PanelDivider, PanelHeader } from "@/components/ui/panel";
 import { Row, Segmented } from "../settings-shell";
 import { SceneEditor } from "./scene-editor";
 
@@ -289,7 +290,7 @@ function GradientEditor({ value, onChange, mode }: BackdropEditor & { mode: Stud
 
   return (
     <>
-      <Row label="Scene" hint="Each tile shows both halves — light on the left, dark on the right. The scheme in force picks which one paints." />
+      <PanelDivider label="Presets" />
       <div className="px-4 py-3">
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {BACKDROP_PRESETS.map((preset) => (
@@ -570,11 +571,11 @@ export function BackdropTool({
   }
 
   return (
-    <>
-      <Row
+    <Panel>
+      <PanelHeader
+        icon={<ImageIcon />}
         label="Scene"
-        hint="A scene under the whole app — the canvas and the rail frost over it. Part of the draft: nothing is worn until you Apply."
-        control={
+        actions={
           <Segmented<SceneView>
             value={view}
             onChange={(next) => {
@@ -592,9 +593,15 @@ export function BackdropTool({
           />
         }
       />
-      {view === "gradient" && <GradientEditor value={value} onChange={onChange} mode={mode} />}
-      {view === "image" && <ImageEditor value={value} onChange={onChange} onThemeHalves={onThemeHalves} />}
-      {view === "scene" && <SceneEditor value={value} onChange={onChange} />}
-    </>
+      {view === "none" ? (
+        <PanelBody className="px-3 py-6 text-center text-xs text-muted-foreground">No scene — the canvas paints flat.</PanelBody>
+      ) : (
+        <PanelBody>
+          {view === "gradient" && <GradientEditor value={value} onChange={onChange} mode={mode} />}
+          {view === "image" && <ImageEditor value={value} onChange={onChange} onThemeHalves={onThemeHalves} />}
+          {view === "scene" && <SceneEditor value={value} onChange={onChange} />}
+        </PanelBody>
+      )}
+    </Panel>
   );
 }
