@@ -265,10 +265,28 @@ export function applyAppearance(appearance: Appearance): void {
   // size — including a reader's larger minimum.
   if (appearance.fontSize === DEFAULT_APPEARANCE.fontSize) root.style.removeProperty("font-size");
   else root.style.fontSize = `${appearance.fontSize}px`;
-  set("data-translucent", "", !appearance.translucent);
+  applyWindowChrome(appearance);
   // Written UNCONDITIONALLY: the wash rules gate on data-translucent OR
   // data-backdrop (lib/backdrop.ts), and both read this one strength var.
   // With neither attribute present it is inert, so there is nothing to save
   // by removing it.
   root.style.setProperty("--translucency", translucencyCss(appearance.translucencyLevel));
+}
+
+/**
+ * THE PART OF THE APPEARANCE THAT IS THE MACHINE, NOT THE LOOK.
+ *
+ * A Look carries taste — the palette, the accent, the type, how much shows
+ * through. It pointedly does NOT carry `translucent` (lib/looks.ts says why:
+ * it is macOS-only, the shell owns the authoritative copy, and turning it on
+ * rebuilds the window). So the studio's preview never writes this attribute,
+ * and the provider must keep replaying it EVEN WHILE A DRAFT IS PAINTED —
+ * otherwise flipping Translucency with a draft open asks the shell for a
+ * vibrancy window and leaves the page opaque inside it, which looked exactly
+ * like "the blur does not work until you press Apply".
+ */
+export function applyWindowChrome(appearance: Appearance): void {
+  const root = document.documentElement;
+  if (appearance.translucent) root.setAttribute("data-translucent", "");
+  else root.removeAttribute("data-translucent");
 }

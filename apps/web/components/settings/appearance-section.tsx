@@ -46,12 +46,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ImageIcon, MonitorIcon, PaletteIcon, SparklesIcon, TypeIcon, Undo2Icon } from "lucide-react";
-import {
-  MAX_TRANSLUCENCY,
-  MIN_TRANSLUCENCY,
-  useAppearance,
-  type Frost,
-} from "@/lib/appearance";
+import { useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import {
   applyLook,
@@ -413,7 +408,14 @@ export function AppearanceSection() {
             filing that teaches a reader the grouping is arbitrary. None of it
             travels in a Look: the scheme is which half THIS window wears, and
             translucency is a property of the machine — macOS only, stored by
-            the shell, and turning it on rebuilds the window. */}
+            the shell, and turning it on rebuilds the window.
+
+            HOW MUCH SHOWS THROUGH IS NOT HERE, though it reads like it should
+            be. It is the one member of this group that DOES travel in a Look,
+            so it is a draft control and lives with the backdrop it thins. Two
+            sliders for one value is the confusion this pane was rebuilt to
+            delete — and the draft's copy wins the preview anyway, so the live
+            one silently did nothing while a draft was open. */}
         {tab === "window" && (
           <Panel>
             <PanelHeader icon={<MonitorIcon />} label="Window" />
@@ -439,27 +441,6 @@ export function AppearanceSection() {
                             { value: "clear", label: "Clear" },
                           ]}
                         />
-                      }
-                    />
-                  )}
-                  {appearance.translucent && (
-                    <Row
-                      label="Desktop show-through"
-                      hint="Also thins a backdrop, so the desktop reaches you through it."
-                      control={
-                        <div className="flex items-center gap-2.5">
-                          <input
-                            type="range"
-                            min={MIN_TRANSLUCENCY}
-                            max={MAX_TRANSLUCENCY}
-                            step={5}
-                            value={appearance.translucencyLevel}
-                            onChange={(event) => setAppearance({ translucencyLevel: Number(event.target.value) })}
-                            className="w-36 accent-primary"
-                            aria-label="Translucency strength"
-                          />
-                          <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{appearance.translucencyLevel}%</span>
-                        </div>
                       }
                     />
                   )}

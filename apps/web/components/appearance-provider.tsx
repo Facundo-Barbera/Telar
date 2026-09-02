@@ -9,7 +9,7 @@
 
 import { useEffect } from "react";
 import { AppearancePublisher } from "@/components/appearance-publisher";
-import { applyAppearance, useAppearance } from "@/lib/appearance";
+import { applyAppearance, applyWindowChrome, useAppearance } from "@/lib/appearance";
 import { applyBackdrop, useBackdrop } from "@/lib/backdrop";
 import { isPreviewActive } from "@/lib/studio-preview";
 import { applyThemeCss, useThemeLibrary } from "@/lib/theme-palettes";
@@ -21,8 +21,15 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
   // While the studio is previewing a draft on the document, the replays stand
   // back: the preview wrote these same surfaces from the draft, and clearing
   // the preview replays the stores itself (lib/studio-preview.ts).
+  //
+  // EXCEPT THE WINDOW CHROME, which the preview does not own and therefore
+  // cannot restore. `translucent` is a property of the machine rather than of
+  // the look, so it is replayed unconditionally; without this, toggling
+  // Translucency with a draft open rebuilt the window with vibrancy behind an
+  // opaque page and appeared to do nothing at all until Apply.
   useEffect(() => {
-    if (!isPreviewActive()) applyAppearance(appearance);
+    if (isPreviewActive()) applyWindowChrome(appearance);
+    else applyAppearance(appearance);
   }, [appearance]);
   useEffect(() => {
     if (!isPreviewActive()) applyBackdrop(backdrop);
