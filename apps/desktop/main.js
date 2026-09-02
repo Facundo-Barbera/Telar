@@ -378,7 +378,11 @@ function nodeExecPath() {
  * page loads. Nothing is persisted and nothing is written into remote.json, so
  * quitting ends it and the next launch mints another.
  */
-const HOST_TOKEN = "tlr_" + randomBytes(32).toString("base64url");
+// MINTED HERE ONLY WHEN NOBODY ELSE DID. In dev the web child is spawned by
+// scripts/dev.mjs, not by this file, so the launcher mints the secret and
+// hands it to both halves; minting a second one here would have the shell
+// present a cookie the server had never heard of.
+const HOST_TOKEN = process.env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
 
 /**
  * Set BEFORE the first load, on the session that will make the request — an

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -147,6 +148,18 @@ async function main() {
   const engineRoot = path.join(telarHome, "engine");
   const env = childEnv(telarHome);
   const launchDesktop = shouldLaunchDesktop(process.argv.slice(2));
+  /**
+   * THE HOST SECRET, minted by whoever owns both halves.
+   *
+   * The shell proves it is the process that runs the server by presenting this
+   * as a cookie (apps/desktop/main.js) and the gate compares it against the
+   * same value in the web child's environment. In dev THIS script spawns the
+   * web child, so it has to be the one that mints — the shell would otherwise
+   * invent a secret the server had never heard of, and the host's own window
+   * would be asked to pair with itself.
+   */
+  env.TELAR_HOST_TOKEN = env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
+
   const webPort = resolveWebPort(env);
   const webHost = resolveWebHost(env);
   const cockpitUrl = makeCockpitUrl(webPort, webHost);
