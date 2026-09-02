@@ -615,7 +615,15 @@ function createWindow(url) {
     // alpha backgroundColor alone leaves the window server believing the layer
     // is opaque, so it skips clearing it — and every resize or navigation
     // leaves the previous frame composited under the new one.
-    ...(translucent ? { transparent: true } : {}),
+    //
+    // `hasShadow: false` because ACTIVATION REGENERATES THE SHADOW — key and
+    // inactive windows wear different ones — and recomputing a shadow from a
+    // transparent window's alpha is the one native repaint that visibly
+    // blinks on every alt-tab back in. A CDP screencast proved the renderer
+    // paints nothing during the flicker, so it had to be a native layer, and
+    // the shadow is the only one that changes with key status. Translucent
+    // windows barely show a shadow anyway.
+    ...(translucent ? { transparent: true, hasShadow: false } : {}),
     // "hud" is the most TRANSPARENT of macOS's vibrancy materials —
     // "under-window" (the obvious choice) is also the milkiest, and buried the
     // desktop no matter how far the strength slider went.
