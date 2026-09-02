@@ -17,12 +17,12 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CheckIcon } from "lucide-react";
-import { ACCENTS, MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, useAppearance, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
+import { ACCENTS, MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, useAppearance, type Accent, type Frost, type MonoFont, type SansFont } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { ThemeControl } from "@/components/theme-control";
 import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Row, SettingsGroup, ToggleRow } from "./settings-shell";
+import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 
 const ACCENT_LABEL: Record<Accent, string> = {
   indigo: "Indigo",
@@ -93,7 +93,7 @@ export function AppearanceSection() {
         setWindowSupported(state.supported);
         // The shell's copy wins on entry: it is what the window was actually
         // built with, and a stale localStorage copy must not disagree.
-        setAppearance({ translucent: state.translucent });
+        setAppearance({ translucent: state.translucent, frost: state.frost });
       })
       .catch(() => undefined);
     return () => {
@@ -106,6 +106,11 @@ export function AppearanceSection() {
   const setTranslucent = (next: boolean) => {
     setAppearance({ translucent: next });
     void desktopAppearance()?.set({ translucent: next });
+  };
+
+  const setFrost = (next: Frost) => {
+    setAppearance({ frost: next });
+    void desktopAppearance()?.set({ frost: next });
   };
 
   return (
@@ -180,6 +185,22 @@ export function AppearanceSection() {
             checked={appearance.translucent}
             onCheckedChange={setTranslucent}
           />
+          {appearance.translucent && (
+            <Row
+              label="Glass"
+              hint="Blur is macOS's frosted vibrancy — it brightens what it blurs. Clear shows the desktop crisp, tinted only by the app."
+              control={
+                <Segmented<Frost>
+                  value={appearance.frost}
+                  onChange={setFrost}
+                  options={[
+                    { value: "blur", label: "Blur" },
+                    { value: "clear", label: "Clear" },
+                  ]}
+                />
+              }
+            />
+          )}
           {appearance.translucent && (
             <Row
               label="Strength"

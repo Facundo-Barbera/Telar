@@ -9,6 +9,9 @@
 
 export type WindowAppearance = {
   translucent: boolean;
+  /** "blur" = macOS vibrancy (frosted, brightens what it blurs); "clear" = no
+   *  effect view, the desktop crisp behind the page's own wash. */
+  frost: "blur" | "clear";
   /** False off macOS — the cockpit hides the control rather than offering a
    *  toggle that cannot do anything. */
   supported: boolean;
@@ -16,7 +19,7 @@ export type WindowAppearance = {
 
 export type AppearanceBridge = {
   get: () => Promise<WindowAppearance>;
-  set: (patch: Partial<Pick<WindowAppearance, "translucent">>) => Promise<WindowAppearance>;
+  set: (patch: Partial<Pick<WindowAppearance, "translucent" | "frost">>) => Promise<WindowAppearance>;
 };
 
 export function desktopAppearance(): AppearanceBridge | undefined {

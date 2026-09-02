@@ -59,6 +59,9 @@ contextBridge.exposeInMainWorld("telarDesktop", {
   appearance: {
     get: () => ipcRenderer.invoke("telar:appearance:get"),
     set: (patch) => ipcRenderer.invoke("telar:appearance:set", patch),
+    // Keeps the vibrancy material's light/dark in step with the cockpit's own
+    // scheme — see main.js.
+    setTheme: (theme) => ipcRenderer.invoke("telar:appearance:setTheme", theme),
   },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),

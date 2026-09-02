@@ -17,7 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
@@ -605,12 +605,13 @@ function createWindow(url) {
   // appearance-preference block above. `followWindow` keeps the blur honest
   // when the app is in the background instead of freezing a stale frame.
   lastWindowUrl = url;
-  const translucent = supportsTranslucency() && readUiPrefs().translucent;
+  const uiPrefs = readUiPrefs();
+  const translucent = supportsTranslucency() && uiPrefs.translucent;
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     backgroundColor: translucent ? "#00000000" : "#0a0a0a",
-    ...(translucent ? { vibrancy: "under-window", visualEffectState: "followWindow" } : {}),
+    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "under-window", visualEffectState: "followWindow" } : {}),
     show: false,
     title,
     ...macWindowChrome(),
@@ -905,7 +906,7 @@ function writeUpdatePrefs(prefs) {
 //
 // macOS only: vibrancy is NSVisualEffectView. Everywhere else `supported` is
 // false and the cockpit hides the control.
-const DEFAULT_UI_PREFS = { translucent: false };
+const DEFAULT_UI_PREFS = { translucent: false, frost: "blur" };
 
 function uiPrefsPath() {
   return path.join(app.getPath("userData"), "ui-prefs.json");
@@ -915,7 +916,9 @@ function readUiPrefs() {
   const fs = require("node:fs");
   try {
     const raw = JSON.parse(fs.readFileSync(uiPrefsPath(), "utf8"));
-    return { translucent: raw.translucent === true };
+    // "clear" drops the vibrancy layer: crisp desktop, tinted only by the
+    // page's own wash. "blur" is the frosted NSVisualEffectView.
+    return { translucent: raw.translucent === true, frost: raw.frost === "clear" ? "clear" : "blur" };
   } catch {
     // Missing / corrupt / unreadable — first run, never a crash.
     return { ...DEFAULT_UI_PREFS };
@@ -947,7 +950,7 @@ function supportsTranslucency() {
  * app in the gap). Turning it OFF is safe live — an opaque page repaints every
  * pixel — and a window BUILT translucent can toggle both ways live.
  */
-function applyTranslucency(on) {
+function applyTranslucency(on, frost) {
   const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
   if (on && wins.some((win) => !win.telarTranslucentCapable)) {
     recreateWindowTranslucent(wins[0]);
@@ -955,7 +958,9 @@ function applyTranslucency(on) {
   }
   for (const win of wins) {
     try {
-      win.setVibrancy(on ? "under-window" : null);
+      // Frost changes are safe live in BOTH directions — attaching or removing
+      // the effect view does not re-plumb the compositor the way opacity does.
+      win.setVibrancy(on && frost !== "clear" ? "under-window" : null);
       // The opaque colour is the app's darkest canvas, matching createWindow's
       // — a translucent window turned opaque again must not flash white first.
       win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
@@ -1141,6 +1146,18 @@ ipcMain.handle("telar:updates:setPrefs", (_event, patch) => {
   return next;
 });
 
+/**
+ * THE VIBRANCY MATERIAL FOLLOWS TELAR'S THEME, NOT THE OS'S. The blur layer's
+ * tint comes from the window's effective appearance, which Electron takes from
+ * nativeTheme — by default the OS setting. Telar dark on a light Mac (or the
+ * reverse) then composites a dark wash over a bright frost and reads as milk.
+ * The cockpit reports its scheme here (theme-provider.tsx) and the shell keeps
+ * nativeTheme in agreement.
+ */
+ipcMain.handle("telar:appearance:setTheme", (_event, theme) => {
+  if (theme === "light" || theme === "dark" || theme === "system") nativeTheme.themeSource = theme;
+});
+
 // The window-appearance half of Settings → Appearance. `get` answers whether
 // this platform can do it at all, so the cockpit hides rather than disables
 // the control where it would be a lie.
@@ -1148,11 +1165,14 @@ ipcMain.handle("telar:appearance:get", () => ({ ...readUiPrefs(), supported: sup
 
 ipcMain.handle("telar:appearance:set", (_event, patch) => {
   const current = readUiPrefs();
-  const next = { translucent: typeof patch?.translucent === "boolean" ? patch.translucent : current.translucent };
+  const next = {
+    translucent: typeof patch?.translucent === "boolean" ? patch.translucent : current.translucent,
+    frost: patch?.frost === "clear" || patch?.frost === "blur" ? patch.frost : current.frost,
+  };
   writeUiPrefs(next);
   // Applied to the OPEN windows too: a preference that only takes effect on
   // the next launch reads as a broken toggle.
-  if (supportsTranslucency()) applyTranslucency(next.translucent);
+  if (supportsTranslucency()) applyTranslucency(next.translucent, next.frost);
   return { ...next, supported: supportsTranslucency() };
 });
 

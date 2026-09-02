@@ -102,6 +102,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       root.classList.toggle("dark", dark);
     };
     apply();
+    // Inside the desktop shell, the window's vibrancy material tints from
+    // nativeTheme — tell the shell so a dark cockpit never sits on a light
+    // frost (structural access: the bridge is legitimately absent in a tab).
+    (window as { telarDesktop?: { appearance?: { setTheme?: (t: Theme) => void } } }).telarDesktop?.appearance?.setTheme?.(theme);
     if (theme !== "system") return;
     const query = window.matchMedia("(prefers-color-scheme: dark)");
     query.addEventListener("change", apply);

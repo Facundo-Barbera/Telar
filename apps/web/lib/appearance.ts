@@ -48,7 +48,15 @@ export type Appearance = {
    *  translucencyCss maps it onto the real alpha range before the CSS sees
    *  it, so 100 means "as transparent as stays legible", not alpha zero. */
   translucencyLevel: number;
+  /** What the see-through part looks like. "blur" is macOS vibrancy — frosted,
+   *  and it BRIGHTENS what it blurs, which buries the wallpaper's colour.
+   *  "clear" drops the effect view entirely: the desktop shows crisp through
+   *  the wash, and only the wash's own alpha tints it. */
+  frost: Frost;
 };
+
+export const FROSTS = ["blur", "clear"] as const;
+export type Frost = (typeof FROSTS)[number];
 
 /**
  * THE SLIDER'S SCALE IS THE FEELING, NOT THE ALPHA. It reads 0–100 because
@@ -66,7 +74,7 @@ export function translucencyCss(level: number): string {
   return `${Math.round(level * 0.9)}%`;
 }
 
-export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false, translucencyLevel: 50 };
+export const DEFAULT_APPEARANCE: Appearance = { accent: "indigo", fontSans: "geist", fontMono: "geist", translucent: false, translucencyLevel: 50, frost: "blur" };
 
 const STORAGE_KEY = "telar-appearance";
 
@@ -108,6 +116,7 @@ export function parseAppearance(raw: string | null): Appearance {
         typeof record.translucencyLevel === "number" && record.translucencyLevel >= MIN_TRANSLUCENCY && record.translucencyLevel <= MAX_TRANSLUCENCY
           ? Math.round(record.translucencyLevel)
           : DEFAULT_APPEARANCE.translucencyLevel,
+      frost: oneOf(record.frost, FROSTS) ?? DEFAULT_APPEARANCE.frost,
     };
   } catch {
     return DEFAULT_APPEARANCE;
