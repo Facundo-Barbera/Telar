@@ -7,6 +7,13 @@
  * the translucency strength, captured together (lib/looks.ts states what is in
  * the bundle and why the desktop translucency TOGGLE is not).
  *
+ * TWO GESTURES, TWO MEANINGS. Clicking a card SELECTS it — loaded into the
+ * editor, previewed on the real app, nothing persisted. Hovering reveals WEAR,
+ * which puts it on outright. The shelf used to offer only the first, so the
+ * cheapest thing anyone wants to do here — "just put that one on" — cost a
+ * click, a scan for the Apply button, and a second click. Wear keeps the pane's
+ * one rule intact: it is Apply, reached from the card instead of the masthead.
+ *
  * OPENING A LOOK IS A DRAFT EDIT, like everything else on the pane now:
  * clicking a card loads the whole Look into the studio draft, which the
  * preview paints on the app instantly — it LOOKS worn, but nothing persists
@@ -89,6 +96,7 @@ function LookCard({
   active,
   selected,
   onOpen,
+  onWear,
   onExport,
   onRemove,
 }: {
@@ -98,6 +106,8 @@ function LookCard({
   /** Open in the editor: the draft in front of you came from this card. */
   selected?: boolean;
   onOpen: () => void;
+  /** Put it on now — Apply, without the trip to the masthead. */
+  onWear: () => void;
   onExport?: () => void;
   onRemove?: () => void;
 }) {
@@ -127,6 +137,22 @@ function LookCard({
       }}
     >
       <LookThumb look={look} />
+      {/* WEAR sits ON the thumbnail, centred, revealed on hover: the card's
+          primary verb, where the eye already is. Export and delete stay in the
+          corner — they are about the file, not about wearing it. */}
+      {!active && (
+        <div className="pointer-events-none absolute inset-x-1 top-1 flex items-center justify-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" style={{ height: "calc(100% - 2.25rem)" }}>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="pointer-events-auto h-7 shadow-sm"
+            title={`Wear ${look.label} now`}
+            onClick={(event) => (event.stopPropagation(), onWear())}
+          >
+            Wear
+          </Button>
+        </div>
+      )}
       <div className="flex items-center gap-1 px-0.5 pt-1.5 pb-0.5 text-xs">
         <span className="min-w-0 flex-1 truncate font-medium">{look.label}</span>
         {active && (
@@ -270,7 +296,7 @@ const subscribeToNothing = () => () => {};
 const hostNow = () => isHostWindow();
 const hostOnTheServer = () => true;
 
-export function LooksSection({ onOpen, openId }: { onOpen: (look: Look) => void; openId?: string }) {
+export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) => void; onWear: (look: Look) => void; openId?: string }) {
   // Defaults to "this IS the host" on the server, so the row never renders into
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
@@ -346,6 +372,7 @@ export function LooksSection({ onOpen, openId }: { onOpen: (look: Look) => void;
               active={activeId === lookThemeId(look)}
               selected={openId === look.id}
               onOpen={() => onOpen(look)}
+              onWear={() => onWear(look)}
               onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
               onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
             />
@@ -357,6 +384,7 @@ export function LooksSection({ onOpen, openId }: { onOpen: (look: Look) => void;
               look={look}
               active={activeId === lookThemeId(look)}
               selected={openId === look.id}
+              onWear={() => onWear(look)}
               // The starter's OWN id rides into the draft. It is stable, so
               // opening Dusk twice and applying both updates one theme instead
               // of breeding a second one called Dusk. The fresh id is minted at

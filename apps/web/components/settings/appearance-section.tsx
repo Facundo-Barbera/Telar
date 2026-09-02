@@ -321,6 +321,34 @@ export function AppearanceSection() {
   };
 
   const openLook = (look: Look) => edit(draftFromLook(look));
+
+  /**
+   * WEAR IT NOW — the same `applyLook` the masthead's Apply calls, reached from
+   * the card. It is a shortcut, not a second write model: there is still one
+   * function that puts an appearance on.
+   *
+   * WHATEVER WAS BEING EDITED GOES ONTO THE UNDO STACK first. A one-gesture
+   * shortcut must not be a one-gesture way to lose an hour of work, so ⌘Z
+   * brings the draft back, previewed, exactly as it was.
+   */
+  const wear = useCallback(
+    (look: Look) => {
+      history.current.push(draft);
+      if (history.current.length > MAX_UNDO) history.current.shift();
+      setUndoDepth(history.current.length);
+      lastEditAt.current = 0;
+      const worn = applyLook(look, { saveCustom, setActive }, setAppearance);
+      setDraft(undefined);
+      writeStudioDraft(undefined);
+      setNotice(worn);
+    },
+    [draft, saveCustom, setActive, setAppearance],
+  );
+
+  /** A palette worn over the look you already have on — everything else about
+   *  the look is left alone, which is what makes a theme a component rather
+   *  than a whole appearance. */
+  const wearTheme = (theme: ThemeDefinition) => current && wear(loadThemeIntoDraft(current, theme));
   const pickTheme = (theme: ThemeDefinition) => current && edit(loadThemeIntoDraft(current, theme));
   const pickThemeHalf = (half: StudioMode, theme: ThemeDefinition) => current && edit(loadThemeHalfIntoDraft(current, half, theme));
 
@@ -375,15 +403,19 @@ export function AppearanceSection() {
               { value: "dark", label: "Dark" },
             ]}
           />
+          {/* UNDO OUTLIVES THE DRAFT. Wearing a look from its card clears the
+              draft, and gating this button on `dirty` made the one gesture
+              that can discard work also hide the way back to it. It shows
+              whenever there is history, which is exactly when it can act. */}
+          {undoDepth > 0 && (
+            <Button size="sm" variant="ghost" title="Undo the last edit (⌘Z)" onClick={undo}>
+              <Undo2Icon /> Undo
+            </Button>
+          )}
           {dirty && (
-            <>
-              <Button size="sm" variant="ghost" title="Undo the last edit (⌘Z)" disabled={undoDepth === 0} onClick={undo}>
-                <Undo2Icon /> Undo
-              </Button>
-              <Button size="sm" variant="ghost" onClick={discard}>
-                Discard
-              </Button>
-            </>
+            <Button size="sm" variant="ghost" onClick={discard}>
+              Discard
+            </Button>
           )}
           <Button size="sm" variant="outline" onClick={saveLook}>
             Save look
@@ -398,7 +430,7 @@ export function AppearanceSection() {
 
       {notice && <p className="text-xs text-warning">{notice}</p>}
 
-      <LooksSection onOpen={openLook} openId={current?.id} />
+      <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
 
       {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
           The designer used to be welded to the left half of this pane, which
@@ -437,7 +469,7 @@ export function AppearanceSection() {
             </Panel>
             {/* The library is where a palette comes FROM: a card loads both
                 halves into the draft; an orb loads one. */}
-            <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} holding={holding} />
+            <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} onWear={wearTheme} holding={holding} />
           </>
         )}
 

@@ -86,6 +86,7 @@ function ThemeCard({
   lightActive,
   darkActive,
   onUse,
+  onWear,
   onUseHalf,
   onDuplicate,
   onExport,
@@ -97,6 +98,8 @@ function ThemeCard({
   lightActive: boolean;
   darkActive: boolean;
   onUse: () => void;
+  /** Wear this palette over the look you have on — Apply, from the card. */
+  onWear: () => void;
   onUseHalf: (mode: "light" | "dark") => void;
   onDuplicate: () => void;
   onExport?: () => void;
@@ -135,6 +138,11 @@ function ThemeCard({
         )}
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        {!worn && (
+          <Button size="sm" variant="secondary" className="h-7" title={`Wear ${theme.label}'s colours now`} onClick={(event) => (event.stopPropagation(), onWear())}>
+            Wear
+          </Button>
+        )}
         <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
           <CopyIcon />
         </Button>
@@ -156,12 +164,15 @@ function ThemeCard({
 export function ThemeLibrary({
   onPick,
   onPickHalf,
+  onWear,
   holding,
 }: {
   /** Load a whole theme into the draft. */
   onPick: (theme: ThemeDefinition) => void;
   /** Load one half into the draft — the orb click. */
   onPickHalf: (mode: "light" | "dark", theme: ThemeDefinition) => void;
+  /** Wear this palette over the current look, without the trip to Apply. */
+  onWear: (theme: ThemeDefinition) => void;
   /** Which theme each half of the DRAFT currently holds, if any — what the
    *  rings mark. Undefined halves mean "edited by hand, matching nothing". */
   holding: { light?: string; dark?: string };
@@ -241,6 +252,7 @@ export function ThemeLibrary({
               lightActive={holding.light === theme.id}
               darkActive={holding.dark === theme.id}
               onUse={() => onPick(theme)}
+              onWear={() => onWear(theme)}
               onUseHalf={(mode) => onPickHalf(mode, theme)}
               onDuplicate={() => {
                 const copy = duplicate(theme.id);
