@@ -43,7 +43,7 @@ import {
   type SansFont,
 } from "./appearance";
 import { composeGradient } from "./backdrop-presets";
-import { captureLook, type Look, type LookBackdrop } from "./looks";
+import { captureLook, parseLook, type Look, type LookBackdrop } from "./looks";
 import { composeScene, SCENE_LIMITS, type Scene } from "./scene-composer";
 import { cssColorToHex, THEME_TOKENS, type ThemeToken } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
@@ -87,6 +87,77 @@ export function accentPrimary(accent: Accent, mode: StudioMode): { primary: stri
  *  photographed. Impure — this is the one function here that reads storage. */
 export function newDraftFromCurrent(label = "New look"): StudioDraft {
   return captureLook(label);
+}
+
+/* ---------------------------------------------------------- persistence */
+
+/**
+ * THE DRAFT SURVIVES NAVIGATION. The studio used to hold its draft in
+ * component state, and clicking any other settings section unmounted the pane
+ * and threw a ten-minute design away without a word. So the draft is written
+ * through to storage (a draft IS a Look, so parseLook already knows how to
+ * read it back — id included, which is what keeps "Save" updating the same
+ * shelf card across a reload), and the transcript beside it, because the
+ * record of what was asked for is how you pick a conversation back up.
+ *
+ * A quota refusal is swallowed: the in-memory draft keeps working for this
+ * visit, and losing persistence is strictly better than losing the draft.
+ */
+export const STUDIO_DRAFT_KEY = "telar-studio-draft";
+export const STUDIO_CHAT_KEY = "telar-studio-chat";
+
+/** What one transcript line needs to survive a reload. The component adds its
+ *  own render-only ids back on read. */
+export type StudioChatLine = { kind: "you" | "studio" | "trouble"; text: string };
+
+const CHAT_KINDS = ["you", "studio", "trouble"] as const;
+const MAX_CHAT_LINES = 200;
+const MAX_CHAT_TEXT = 4000;
+
+export function readStudioDraft(): StudioDraft | undefined {
+  try {
+    const raw = window.localStorage.getItem(STUDIO_DRAFT_KEY);
+    if (raw === null) return undefined;
+    return parseLook(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeStudioDraft(draft: StudioDraft | undefined): void {
+  try {
+    if (draft === undefined) window.localStorage.removeItem(STUDIO_DRAFT_KEY);
+    else window.localStorage.setItem(STUDIO_DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    // Quota or private browsing — see the header.
+  }
+}
+
+export function readStudioChat(): StudioChatLine[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(STUDIO_CHAT_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    const lines: StudioChatLine[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const { kind, text } = entry as Record<string, unknown>;
+      if (!(CHAT_KINDS as readonly unknown[]).includes(kind) || typeof text !== "string") continue;
+      lines.push({ kind: kind as StudioChatLine["kind"], text: text.slice(0, MAX_CHAT_TEXT) });
+      if (lines.length === MAX_CHAT_LINES) break;
+    }
+    return lines;
+  } catch {
+    return [];
+  }
+}
+
+export function writeStudioChat(lines: StudioChatLine[]): void {
+  try {
+    if (lines.length === 0) window.localStorage.removeItem(STUDIO_CHAT_KEY);
+    else window.localStorage.setItem(STUDIO_CHAT_KEY, JSON.stringify(lines.slice(-MAX_CHAT_LINES)));
+  } catch {
+    // Same contract as the draft: the conversation keeps working unsaved.
+  }
 }
 
 /* -------------------------------------------------------------- updaters */
