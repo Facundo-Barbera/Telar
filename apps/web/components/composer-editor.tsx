@@ -352,7 +352,7 @@ export const ComposerEditor = forwardRef<
         // single target on the screen and the type has to hold its own against
         // the transcript it sits under.
         className={cn(
-          "max-h-48 min-h-[76px] w-full overflow-y-auto whitespace-pre-wrap break-words px-3 pt-3 pb-2 text-[15px] leading-6 outline-none",
+          "max-h-48 min-h-[76px] w-full overflow-y-auto whitespace-pre-wrap break-words px-3 pt-3 pb-2 text-[0.9375rem] leading-6 outline-none",
           disabled && "opacity-60",
         )}
         onInput={() => {
@@ -409,7 +409,7 @@ export const ComposerEditor = forwardRef<
         }}
       />
       {empty && placeholder ? (
-        <span aria-hidden className="pointer-events-none absolute left-3 top-3 select-none text-[15px] leading-6 text-muted-foreground">
+        <span aria-hidden className="pointer-events-none absolute left-3 top-3 select-none text-[0.9375rem] leading-6 text-muted-foreground">
           {placeholder}
         </span>
       ) : null}

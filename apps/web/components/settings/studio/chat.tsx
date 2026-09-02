@@ -109,7 +109,7 @@ export function DesignerChat({ draft, onDraft, className }: { draft: StudioDraft
       <div className="flex items-center gap-1.5 border-b border-border px-3 py-2">
         <SparklesIcon className="size-3.5 text-muted-foreground" />
         <span className="text-xs font-medium">Designer</span>
-        <span className="ml-auto text-[11px] text-muted-foreground">{busy ? "Drafting… this can take a minute" : "Drafts onto the stage, never onto the app"}</span>
+        <span className="ml-auto text-[0.6875rem] text-muted-foreground">{busy ? "Drafting… this can take a minute" : "Drafts onto the stage, never onto the app"}</span>
       </div>
 
       <div ref={transcript} className="flex max-h-56 min-h-24 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2.5">

@@ -86,7 +86,7 @@ function McpConnectionsCard() {
   return (
     <div className="w-full px-4 pb-4">
       <div className="rounded-lg bg-muted/40 p-2 ring-1 ring-border/60">
-        <code className="block font-mono text-[10px] leading-relaxed break-all text-muted-foreground">
+        <code className="block font-mono text-[0.625rem] leading-relaxed break-all text-muted-foreground">
           {revealed ? mcp.addCommand : mcp.addCommand.replaceAll(mcp.secret, "••••••••")}
         </code>
         <div className="mt-1.5 flex items-center gap-1.5">
@@ -95,7 +95,7 @@ function McpConnectionsCard() {
             onClick={() => {
               void navigator.clipboard.writeText(mcp.addCommand).then(() => setCopied(true));
             }}
-            className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+            className="rounded-md border border-border px-2 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
           >
             {copied ? "copied" : "copy"}
           </button>
@@ -103,13 +103,13 @@ function McpConnectionsCard() {
             type="button"
             aria-pressed={revealed}
             onClick={() => setRevealed((r) => !r)}
-            className="rounded-md border border-border px-2 py-0.5 text-[10px] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
+            className="rounded-md border border-border px-2 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
           >
             {revealed ? "hide the secret" : "reveal the secret"}
           </button>
         </div>
       </div>
-      <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground/60">
+      <p className="mt-1.5 text-[0.625rem] leading-relaxed text-muted-foreground/60">
         The secret lets any agent read and file into the whole Spool — treat it like a key.
       </p>
     </div>
@@ -500,7 +500,7 @@ export function MasterChat({
               type="button"
               onClick={startFresh}
               disabled={!!live || sending}
-              className="shrink-0 text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground disabled:hover:text-muted-foreground/70"
+              className="shrink-0 text-[0.6875rem] text-muted-foreground/70 transition-colors hover:text-foreground disabled:hover:text-muted-foreground/70"
             >
               Start fresh
             </button>
@@ -550,7 +550,7 @@ export function MasterChat({
               <button
                 type="button"
                 onClick={() => setShowEarlier((v) => !v)}
-                className="mb-2 self-start text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+                className="mb-2 self-start text-[0.6875rem] text-muted-foreground/70 transition-colors hover:text-foreground"
               >
                 {showEarlier ? "just the latest" : `earlier (${earlierCount})`}
               </button>

@@ -214,7 +214,7 @@ export function AppearanceSection() {
         <div className="ml-auto flex items-center gap-2">
           {dirty ? (
             <>
-              <Badge variant="outline" className="gap-1.5 text-[10px]">
+              <Badge variant="outline" className="gap-1.5 text-[0.625rem]">
                 <span className="size-1.5 rounded-full bg-warning" />
                 Draft
               </Badge>
@@ -244,7 +244,7 @@ export function AppearanceSection() {
           ) : (
             <div className="aspect-[16/10] w-full rounded-xl bg-muted/40 ring-1 ring-foreground/10" />
           )}
-          <p className="text-[11px] leading-snug text-muted-foreground">{STAGE_HINT}</p>
+          <p className="text-[0.6875rem] leading-snug text-muted-foreground">{STAGE_HINT}</p>
           {current && <DesignerChat draft={current} onDraft={edit} />}
         </div>
 

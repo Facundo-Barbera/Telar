@@ -158,6 +158,51 @@ describe("the backdrop layer", () => {
   });
 });
 
+/** Every .ts/.tsx under app/ and components/ (and lib/ when asked), minus
+ *  tests — the corpus the class-string guards below read. */
+function sources(segments: readonly string[], extension: RegExp): string[] {
+  const found: string[] = [];
+  const walk = (root: string) => {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const file = path.join(root, entry.name);
+      if (entry.isDirectory()) {
+        walk(file);
+        continue;
+      }
+      if (!extension.test(file) || file.includes(".test.")) continue;
+      found.push(file);
+    }
+  };
+  for (const segment of segments) walk(path.join(here, "..", segment));
+  return found;
+}
+
+describe("the text scale", () => {
+  /**
+   * THE ZOOM IS THE ROOT FONT SIZE, so anything measured in px opts out of it.
+   *
+   * lib/appearance.ts sets `html { font-size }` between 13 and 18px and every
+   * rem-based dimension in the app follows — which was the claim, but 357
+   * `text-[11px]` / `text-[10px]` / `text-[9px]` utilities were quietly
+   * exempt. A reader who moved the slider to 18 got a bigger shell with the
+   * same unreadable badges, chips and captions in it: the setting appeared to
+   * do half its job for no stated reason.
+   *
+   * The equivalents are exact at the 16px default (11 → 0.6875rem,
+   * 10 → 0.625rem, 9 → 0.5625rem), so the sweep changed nothing about how the
+   * app looks until the slider moves.
+   */
+  test("no component pins a font size in px", () => {
+    const offenders: string[] = [];
+    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+      for (const hit of fs.readFileSync(file, "utf8").matchAll(/text-\[[0-9.]+px\]/g)) {
+        offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("the state vocabulary", () => {
   /**
    * "Do not add a sixth ramp; keep new state colours on this vocabulary."

@@ -62,7 +62,7 @@ function ToolBlock({ title, hint, children }: { title: string; hint?: string; ch
   return (
     <div className="px-4 py-3">
       <div className="text-xs font-medium text-foreground">{title}</div>
-      {hint && <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{hint}</p>}
+      {hint && <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">{hint}</p>}
       <div className="mt-2.5">{children}</div>
     </div>
   );
@@ -90,7 +90,7 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
                 className="size-5 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
               />
               <span className="min-w-0 flex-1 truncate text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
-              <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70">{hex}</span>
+              <span className="shrink-0 font-mono text-[0.625rem] tabular-nums text-muted-foreground/70">{hex}</span>
             </label>
           );
         })}
@@ -122,7 +122,7 @@ export function SceneTool({ draft, onDraft, mode }: DraftTool & { mode: StudioMo
             type="button"
             onClick={() => onDraft(replaceDraftBackdrop(draft, { kind: "none" }))}
             className={cn(
-              "flex h-8 items-center justify-center rounded-md border border-dashed border-border text-[11px] text-muted-foreground transition-colors hover:text-foreground",
+              "flex h-8 items-center justify-center rounded-md border border-dashed border-border text-[0.6875rem] text-muted-foreground transition-colors hover:text-foreground",
               draft.backdrop.kind === "none" && "border-solid border-primary text-foreground",
             )}
           >
@@ -178,7 +178,7 @@ export function SceneTool({ draft, onDraft, mode }: DraftTool & { mode: StudioMo
 
       {(draft.backdrop.kind === "image" || draft.backdrop.kind === "custom-gradient" || draft.backdrop.kind === "gradient") && (
         <ToolBlock title="This draft's backdrop">
-          <p className="text-[11px] leading-snug text-muted-foreground">
+          <p className="text-[0.6875rem] leading-snug text-muted-foreground">
             {draft.backdrop.kind === "image"
               ? "A photograph. The stage shows it flat — its blur is a filter on the real backdrop, not something a preview can fake. Choosing a preset above replaces it."
               : "A gradient the designer drew. Choosing a preset above replaces it."}

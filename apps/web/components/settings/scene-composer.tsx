@@ -108,7 +108,7 @@ function LayerSlider({
   onCommit?: () => void;
 }) {
   return (
-    <label className="flex items-center gap-2 text-[11px]">
+    <label className="flex items-center gap-2 text-[0.6875rem]">
       <span className="w-10 shrink-0 text-muted-foreground">{label}</span>
       <input
         type="range"
@@ -176,7 +176,7 @@ function PresetGrid({ value, onPick, withNone = false }: { value: string | null;
               backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0px",
             }}
           />
-          <span className="truncate px-0.5 text-[10px] font-medium">None</span>
+          <span className="truncate px-0.5 text-[0.625rem] font-medium">None</span>
         </button>
       )}
       {BACKDROP_PRESETS.map((preset) => (
@@ -194,7 +194,7 @@ function PresetGrid({ value, onPick, withNone = false }: { value: string | null;
           <span className="block aspect-video w-full">
             <PresetSwatch presetId={preset.id} />
           </span>
-          <span className="truncate px-0.5 text-[10px] font-medium">{preset.label}</span>
+          <span className="truncate px-0.5 text-[0.625rem] font-medium">{preset.label}</span>
         </button>
       ))}
     </div>
@@ -243,7 +243,7 @@ function GradientCard({
         <PresetSwatch presetId={layer.presetId} />
       </span>
       <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
-        <span className="truncate text-[11px] font-medium">{backdropPresetById(layer.presetId)?.label ?? "Gradient"}</span>
+        <span className="truncate text-[0.6875rem] font-medium">{backdropPresetById(layer.presetId)?.label ?? "Gradient"}</span>
         <LayerSlider
           label="Fade"
           value={layer.opacity}
@@ -252,7 +252,7 @@ function GradientCard({
           suffix="%"
           onChange={(opacity) => onPatch({ opacity })}
         />
-        <span className="text-[10px] text-muted-foreground">Fills the window; anything below shows through as it fades.</span>
+        <span className="text-[0.625rem] text-muted-foreground">Fills the window; anything below shows through as it fades.</span>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
         <StackControls index={index} count={count} onMove={onMove} onRemove={onRemove} />
@@ -286,7 +286,7 @@ function LayerCard({
         // eslint-disable-next-line @next/next/no-img-element -- a data URL held in localStorage; there is nothing for next/image to fetch or optimise
         <img src={image} alt="" className="size-14 shrink-0 self-start rounded-md border border-border object-cover" />
       ) : (
-        <span className="flex size-14 shrink-0 items-center justify-center self-start rounded-md border border-dashed border-border text-[10px] text-muted-foreground">
+        <span className="flex size-14 shrink-0 items-center justify-center self-start rounded-md border border-dashed border-border text-[0.625rem] text-muted-foreground">
           Missing
         </span>
       )}
@@ -317,7 +317,7 @@ function LayerCard({
           size="sm"
           variant={layer.tiled ? "secondary" : "ghost"}
           aria-pressed={layer.tiled}
-          className="text-[11px]"
+          className="text-[0.6875rem]"
           title="Repeat this layer across the whole window"
           onClick={() => onPatch({ tiled: !layer.tiled })}
         >

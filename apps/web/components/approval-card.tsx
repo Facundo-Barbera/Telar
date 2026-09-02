@@ -68,7 +68,7 @@ function capitalise(word: string): string {
 }
 
 const CARD = "flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/5 p-3";
-const EYEBROW = "font-mono text-[10px] tracking-[0.08em] text-muted-foreground uppercase";
+const EYEBROW = "font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase";
 
 /** One field of a `user_input` request, in the kind the agent asked for. */
 function Field({ field, value, onChange }: { field: UserInputField; value: unknown; onChange: (next: unknown) => void }) {
@@ -192,7 +192,7 @@ export function ApprovalCard({
       </p>
 
       {argument && (
-        <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-[11px] break-words whitespace-pre-wrap">
+        <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-[0.6875rem] break-words whitespace-pre-wrap">
           {argument}
         </pre>
       )}
@@ -215,7 +215,7 @@ export function ApprovalCard({
         >
           <span className="text-sm leading-tight font-medium">Always allow</span>
           {/* The real scope, stated. See the note above on why this is not a glob. */}
-          <span className="font-mono text-[10px] leading-tight font-normal text-muted-foreground">for this session</span>
+          <span className="font-mono text-[0.625rem] leading-tight font-normal text-muted-foreground">for this session</span>
         </Button>
         <Button variant="ghost" disabled={sending} onClick={() => onDecide(request.id, "decline")} className="text-destructive hover:text-destructive">
           Deny

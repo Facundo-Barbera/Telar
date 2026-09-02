@@ -91,7 +91,7 @@ const REFUSAL: Record<string, string> = {
  * text slides out from under the coloured text, a character at a time, further
  * with every line. It is one constant for that reason.
  */
-const CODE_GEOMETRY = "font-mono text-[11px] leading-[1.55] tracking-normal";
+const CODE_GEOMETRY = "font-mono text-[0.6875rem] leading-[1.55] tracking-normal";
 
 export function FileViewSurface({
   path,
@@ -272,7 +272,7 @@ export function FileViewSurface({
         className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2 active:cursor-grabbing"
       >
         <FileKindIcon path={path} className="size-3.5" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
           {cut > -1 && <span className="text-muted-foreground">{path.slice(0, cut + 1)}</span>}
           <span className="text-foreground">{path.slice(cut + 1)}</span>
         </span>
@@ -285,7 +285,7 @@ export function FileViewSurface({
             className={cn("size-1.5 shrink-0 rounded-full", problem ? "bg-destructive" : "bg-primary")}
           />
         )}
-        {file && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{size(file.bytes)}</span>}
+        {file && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{size(file.bytes)}</span>}
         <button
           type="button"
           aria-label="Re-read this file"
@@ -305,7 +305,7 @@ export function FileViewSurface({
           as long as it is true. Only a conflict offers the re-read, because it is
           the only one re-reading fixes. */}
       {problem && (
-        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[11px] leading-snug">
+        <div className="flex shrink-0 items-start gap-2 border-b border-border bg-destructive/10 px-3 py-2 text-[0.6875rem] leading-snug">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-destructive" />
           <span className="min-w-0 flex-1">
             {REFUSAL[problem.reason] ?? problem.reason}
@@ -346,7 +346,7 @@ export function FileViewSurface({
             Bytes rather than text, so nothing was sent — rendering it as UTF-8 would show line noise instead of the file.
           </PanelEmpty>
         ) : (
-          <p className="flex items-center gap-2 px-4 py-3 text-[11px] text-muted-foreground">
+          <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
             <Spinner className="size-3" /> reading the file…
           </p>
         )
@@ -436,8 +436,8 @@ export function FileViewSurface({
               would read as a highlighter that does not work, or an editor that
               refuses for no reason. */}
           {!editable && file.truncated && (
-            <p className="border-t border-border px-3 py-2 text-[11px] leading-snug text-muted-foreground">
-              <Badge variant="outline" className="mr-1.5 px-1 py-0 text-[9px] font-normal">
+            <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+              <Badge variant="outline" className="mr-1.5 px-1 py-0 text-[0.5625rem] font-normal">
                 read only
               </Badge>
               This is the first part of a {size(file.bytes)} file, so it cannot be saved back — writing a prefix over the whole file would
@@ -445,7 +445,7 @@ export function FileViewSurface({
             </p>
           )}
           {kind.lang && draft.length > MAX_HIGHLIGHT_BYTES && (
-            <p className="border-t border-border px-3 py-2 text-[11px] leading-snug text-muted-foreground">
+            <p className="border-t border-border px-3 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
               Too large to highlight — {kind.label} colouring is skipped above {size(MAX_HIGHLIGHT_BYTES)} because tokenising it would block
               the window for longer than reading it takes.
             </p>

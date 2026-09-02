@@ -397,7 +397,7 @@ export function SessionTurn({
                 <li
                   key={attachment.id}
                   title={attachment.path}
-                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[11px] text-muted-foreground"
+                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground"
                 >
                   <PaperclipIcon className="size-3 shrink-0" />
                   <span className="max-w-48 truncate">{attachment.name}</span>
@@ -433,7 +433,7 @@ export function SessionTurn({
             />
           )}
           {!folded && turn.usage && !live && (
-            <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+            <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
               {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
             </p>
           )}
@@ -446,7 +446,7 @@ export function SessionTurn({
                 type="button"
                 aria-expanded={workShown}
                 onClick={() => setWorkShown((v) => !v)}
-                className="mt-1 inline-flex items-center gap-1 rounded-md text-[11px] text-muted-foreground/70 transition-colors hover:text-foreground"
+                className="mt-1 inline-flex items-center gap-1 rounded-md text-[0.6875rem] text-muted-foreground/70 transition-colors hover:text-foreground"
               >
                 {workShown ? "hide the work" : "how it did this"}
               </button>
@@ -454,7 +454,7 @@ export function SessionTurn({
                 <div className="mt-2 space-y-2">
                   <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
                   {turn.usage && (
-                    <p className="font-mono text-[10px] text-muted-foreground/70 tabular-nums">
+                    <p className="font-mono text-[0.625rem] text-muted-foreground/70 tabular-nums">
                       {(turn.usage.tokens.input + turn.usage.tokens.output).toLocaleString()} tokens
                     </p>
                   )}

@@ -445,12 +445,12 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
         className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2 active:cursor-grabbing"
       >
         <GlobeIcon className={cn("size-3.5 shrink-0", page.loading ? "text-primary" : "text-muted-foreground")} />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={page.url}>
+        <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-muted-foreground" title={page.url}>
           {page.url || "about:blank"}
         </span>
         {live && !snapshot?.screenshot && <Spinner className="size-3 shrink-0 text-muted-foreground" />}
-        {page.loading && <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">loading</Badge>}
-        {page.active && <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[9px] font-normal">active</Badge>}
+        {page.loading && <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal">loading</Badge>}
+        {page.active && <Badge variant="secondary" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal">active</Badge>}
       </div>
       {snapshot?.screenshot ? (
         <div className="min-h-0 flex-1 overflow-auto bg-muted/40 p-2">
@@ -532,15 +532,15 @@ function TaskRow({ task, focused }: { task: JournalTask; focused?: boolean }) {
           <RowIcon className={cn("size-3.5 shrink-0", task.state === "failed" ? "text-destructive" : "text-muted-foreground")} />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate">{task.title ?? task.role ?? "Sub-agent"}</span>
-            {task.role && task.title && <span className="truncate text-[10px] text-muted-foreground">{task.role}</span>}
+            {task.role && task.title && <span className="truncate text-[0.625rem] text-muted-foreground">{task.role}</span>}
           </span>
           {steps.length > 0 && (
-            <span className="shrink-0 text-[10px] text-muted-foreground">
+            <span className="shrink-0 text-[0.625rem] text-muted-foreground">
               {steps.length} step{steps.length === 1 ? "" : "s"}
             </span>
           )}
-          {tokens !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
-          <span className={cn("shrink-0 font-mono text-[10px]", task.state === "failed" ? "text-destructive" : "text-muted-foreground")}>
+          {tokens !== undefined && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
+          <span className={cn("shrink-0 font-mono text-[0.625rem]", task.state === "failed" ? "text-destructive" : "text-muted-foreground")}>
             {TASK_STATE[task.state]}
           </span>
           {detail && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
@@ -552,7 +552,7 @@ function TaskRow({ task, focused }: { task: JournalTask; focused?: boolean }) {
             <TranscriptItem key={item.id} item={item} />
           ))}
           {body && (
-            <p className={cn("pt-1 text-[11px] whitespace-pre-wrap", task.failure ? "text-destructive" : "text-muted-foreground")}>{body}</p>
+            <p className={cn("pt-1 text-[0.6875rem] whitespace-pre-wrap", task.failure ? "text-destructive" : "text-muted-foreground")}>{body}</p>
           )}
         </div>
       )}
@@ -681,7 +681,7 @@ function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocu
           <LayersIcon className={cn("size-3.5 shrink-0", failed > 0 ? "text-destructive" : "text-muted-foreground")} />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate">{group.name}</span>
-            <span className="truncate text-[10px] text-muted-foreground">
+            <span className="truncate text-[0.625rem] text-muted-foreground">
               {/* COUNTED, NOT SUMMARISED. "12 agents" while eight are still
                   queued reads as twelve running; the split is the progress. */}
               {agents.length} agent{agents.length === 1 ? "" : "s"}
@@ -690,8 +690,8 @@ function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocu
               {failed > 0 ? ` · ${failed} failed` : ""}
             </span>
           </span>
-          {tokens > 0 && <span className="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
-          <span className={cn("shrink-0 font-mono text-[10px]", state === "failed" ? "text-destructive" : "text-muted-foreground")}>
+          {tokens > 0 && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{figure(tokens)}</span>}
+          <span className={cn("shrink-0 font-mono text-[0.625rem]", state === "failed" ? "text-destructive" : "text-muted-foreground")}>
             {TASK_STATE[state]}
           </span>
           <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
@@ -713,7 +713,7 @@ function WarpGroupRow({ group, focused }: { group: WarpGroup; focused?: TaskFocu
               )}
             </div>
           ))}
-          {group.run?.failure && <p className="px-4 py-2 text-[11px] text-destructive">{group.run.failure}</p>}
+          {group.run?.failure && <p className="px-4 py-2 text-[0.6875rem] text-destructive">{group.run.failure}</p>}
         </div>
       )}
     </div>
@@ -951,7 +951,7 @@ function PanelEmptyState({
               <candidate.icon className="size-4 shrink-0 text-muted-foreground" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs font-medium text-foreground">{candidate.label}</span>
-                <span className="block truncate text-[11px] text-muted-foreground">{candidate.blurb}</span>
+                <span className="block truncate text-[0.6875rem] text-muted-foreground">{candidate.blurb}</span>
               </span>
             </button>
           ))}
@@ -968,7 +968,7 @@ function PanelEmptyState({
             <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-xs font-medium text-foreground">Open a browser</span>
-              <span className="block truncate text-[11px] text-muted-foreground">Start this session’s browser</span>
+              <span className="block truncate text-[0.6875rem] text-muted-foreground">Start this session’s browser</span>
             </span>
           </button>
         )}
@@ -976,7 +976,7 @@ function PanelEmptyState({
             that page's tab, which is the whole point of the change. */}
         {pages.length > 0 && (
           <>
-            <p className="mt-5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Open pages</p>
+            <p className="mt-5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">Open pages</p>
             <div className="mt-1.5 flex flex-col gap-1">
               {pages.map((page) => (
                 <button
@@ -988,7 +988,7 @@ function PanelEmptyState({
                   <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-xs font-medium text-foreground">{browserTabLabel(page)}</span>
-                    <span className="block truncate font-mono text-[10px] text-muted-foreground">{page.url}</span>
+                    <span className="block truncate font-mono text-[0.625rem] text-muted-foreground">{page.url}</span>
                   </span>
                 </button>
               ))}
@@ -1323,7 +1323,7 @@ export function RightPanel({
                   {count ? (
                     <span
                       className={cn(
-                        "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[9px] leading-4",
+                        "ml-auto inline-flex min-w-4 shrink-0 items-center justify-center rounded-full px-1 font-mono text-[0.5625rem] leading-4",
                         (id === "agents" ? failed : id === "processes" ? processesFailed : 0) > 0
                           ? "bg-destructive/15 text-destructive"
                           : (id === "agents" ? running : id === "processes" ? processesRunning : 0) > 0
@@ -1426,7 +1426,7 @@ export function RightPanel({
                 header and scroller, and a line above them pushes an `h-full`
                 child past the bottom of the box. */}
             {active && OWNS_ITS_HEIGHT.every((holds) => !holds(tab)) && (
-              <p className="px-4 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
+              <p className="px-4 pt-2 font-mono text-[0.625rem] uppercase tracking-[0.08em] text-muted-foreground/60">{active}</p>
             )}
             <PanelSurface
               tab={tab}

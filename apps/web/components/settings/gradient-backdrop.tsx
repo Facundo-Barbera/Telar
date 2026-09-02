@@ -78,7 +78,7 @@ function PresetCard({ preset, active, onUse }: { preset: BackdropPreset; active:
       )}
     >
       <SceneTile light={preset.light} dark={preset.dark} className="ring-1 ring-inset ring-foreground/10" />
-      <span className="flex items-center gap-1 px-0.5 text-[11px] font-medium">
+      <span className="flex items-center gap-1 px-0.5 text-[0.6875rem] font-medium">
         <span className="truncate">{preset.label}</span>
         {active && <CheckIcon className="size-3 shrink-0 text-primary" />}
       </span>
@@ -112,7 +112,7 @@ function StopRow({
         aria-label={`Stop ${index + 1} colour (${half})`}
         className="size-6 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
       />
-      <code className="flex-1 truncate font-mono text-[10px] text-muted-foreground/70">{color}</code>
+      <code className="flex-1 truncate font-mono text-[0.625rem] text-muted-foreground/70">{color}</code>
       <Button
         size="icon-sm"
         variant="ghost"
@@ -210,12 +210,12 @@ function CustomGradientEditor({ pair, onEdit, onClose }: { pair: Pair; onEdit: (
           </div>
         </div>
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11px] text-muted-foreground">Preview</span>
+          <span className="text-[0.6875rem] text-muted-foreground">Preview</span>
           <span
             className="block aspect-video w-full rounded-lg ring-1 ring-inset ring-foreground/10"
             style={{ backgroundImage: composeGradient(spec) }}
           />
-          <code className="break-all font-mono text-[10px] leading-tight text-muted-foreground/60">{composeGradient(spec)}</code>
+          <code className="break-all font-mono text-[0.625rem] leading-tight text-muted-foreground/60">{composeGradient(spec)}</code>
         </div>
       </div>
     </div>
@@ -287,7 +287,7 @@ export function GradientBackdrop() {
               dark={composeGradient(pair.dark)}
               className="outline-2 -outline-offset-2 outline-dashed outline-foreground/25"
             />
-            <span className="flex items-center gap-1 px-0.5 text-[11px] font-medium">
+            <span className="flex items-center gap-1 px-0.5 text-[0.6875rem] font-medium">
               <span className="truncate">Custom&hellip;</span>
               {custom && <CheckIcon className="size-3 shrink-0 text-primary" />}
             </span>

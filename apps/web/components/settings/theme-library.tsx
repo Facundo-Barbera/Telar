@@ -127,7 +127,7 @@ function ThemeCard({
           <span className="truncate">{theme.label}</span>
           {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
         </div>
-        <div className="text-[11px] text-muted-foreground">{theme.builtIn ? "Built-in" : "Custom"}</div>
+        <div className="text-[0.6875rem] text-muted-foreground">{theme.builtIn ? "Built-in" : "Custom"}</div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
@@ -183,7 +183,7 @@ function ThemeEditor({ theme, onSave, onClose }: { theme: ThemeDefinition; onSav
           <label key={token} className="flex items-center justify-between gap-3 text-xs">
             <span className="text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
             <span className="flex items-center gap-1.5">
-              <code className="max-w-40 truncate font-mono text-[10px] text-muted-foreground/70">{half[token]}</code>
+              <code className="max-w-40 truncate font-mono text-[0.625rem] text-muted-foreground/70">{half[token]}</code>
               <input
                 type="color"
                 // Edits apply LIVE when this theme is the active one — the

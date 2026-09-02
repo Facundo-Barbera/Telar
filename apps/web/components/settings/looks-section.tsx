@@ -121,7 +121,7 @@ function LookCard({ look, active, onWear, onExport, onRemove }: { look: Look; ac
           <span className="truncate">{look.label}</span>
           {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
         </div>
-        <div className="text-[11px] text-muted-foreground">{BACKDROP_LABEL[look.backdrop.kind]}</div>
+        <div className="text-[0.6875rem] text-muted-foreground">{BACKDROP_LABEL[look.backdrop.kind]}</div>
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <Button size="icon-sm" variant="ghost" title="Export" aria-label={`Export ${look.label}`} onClick={(event) => (event.stopPropagation(), onExport())}>
