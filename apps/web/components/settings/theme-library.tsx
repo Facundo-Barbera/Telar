@@ -5,7 +5,9 @@
  *
  * A grid of cards, one per theme; each card carries two preview orbs (the
  * light and dark halves, painted from the theme's own canvas/chip/rail
- * values) and clicking the card wears the theme. Built-ins can be duplicated
+ * values) and clicking the card wears the theme whole. The orbs are also
+ * controls: each wears only ITS half, so the pair can be mixed across themes
+ * the way t3 code's sun/moon circles do. Built-ins can be duplicated
  * into custom themes; custom themes get an inline editor (one colour row per
  * surface token, per half), export to a JSON file, and delete. Import reads
  * the same file back.
@@ -33,16 +35,31 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Row, Segmented, SettingsGroup } from "./settings-shell";
 
-/** The orb: the theme's canvas with its chip and rail breathing at the edges
- *  — enough to tell Ember from Tide at a glance, like t3's preview circles. */
-function ThemeOrb({ theme, mode }: { theme: ThemeDefinition; mode: "light" | "dark" }) {
+/**
+ * The orb: the theme's canvas with its chip and rail breathing at the edges
+ * — enough to tell Ember from Tide at a glance, like t3's preview circles.
+ *
+ * It is also the control for wearing that ONE half, so a pair can be mixed
+ * without a second surface: light from here, dark from there.
+ */
+function ThemeOrb({ theme, mode, active, onUse }: { theme: ThemeDefinition; mode: "light" | "dark"; active: boolean; onUse: () => void }) {
   const half = concreteHalf(theme, mode);
+  const label = `Use ${theme.label}'s ${mode} half`;
   return (
-    <span
-      aria-hidden
-      className="size-9 shrink-0 rounded-full ring-1 ring-foreground/15"
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      // z-10 so an active ring is not clipped by the orb overlapping it.
+      className={cn("relative size-9 shrink-0 rounded-full ring-1 ring-foreground/15 transition-shadow", active && "z-10 ring-2 ring-primary")}
       style={{
         background: `radial-gradient(circle at 30% 70%, ${half.secondary} 0%, transparent 55%), radial-gradient(circle at 72% 25%, ${half["sidebar-accent"]} 0%, transparent 60%), ${half.background}`,
+      }}
+      onClick={(event) => {
+        // The card body wears both halves; this orb must not also fire it.
+        event.stopPropagation();
+        onUse();
       }}
     />
   );
@@ -61,7 +78,10 @@ function downloadFile(filename: string, contents: string): void {
 function ThemeCard({
   theme,
   active,
+  lightActive,
+  darkActive,
   onUse,
+  onUseHalf,
   onDuplicate,
   onEdit,
   onExport,
@@ -69,7 +89,10 @@ function ThemeCard({
 }: {
   theme: ThemeDefinition;
   active: boolean;
+  lightActive: boolean;
+  darkActive: boolean;
   onUse: () => void;
+  onUseHalf: (mode: "light" | "dark") => void;
   onDuplicate: () => void;
   onEdit?: () => void;
   onExport?: () => void;
@@ -83,6 +106,8 @@ function ThemeCard({
       )}
       onClick={onUse}
       role="button"
+      title={`Use ${theme.label} for both halves`}
+      aria-label={`Use ${theme.label} for both halves`}
       aria-pressed={active}
       tabIndex={0}
       onKeyDown={(event) => {
@@ -93,8 +118,8 @@ function ThemeCard({
       }}
     >
       <div className="flex shrink-0 -space-x-2">
-        <ThemeOrb theme={theme} mode="light" />
-        <ThemeOrb theme={theme} mode="dark" />
+        <ThemeOrb theme={theme} mode="light" active={lightActive} onUse={() => onUseHalf("light")} />
+        <ThemeOrb theme={theme} mode="dark" active={darkActive} onUse={() => onUseHalf("dark")} />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-sm font-medium">
@@ -176,7 +201,7 @@ function ThemeEditor({ theme, onSave, onClose }: { theme: ThemeDefinition; onSav
 }
 
 export function ThemeLibrary() {
-  const { activeId, themes, setActive, saveCustom, removeCustom, duplicate, importTheme } = useThemeLibrary();
+  const { active, themes, setActive, setHalf, saveCustom, removeCustom, duplicate, importTheme } = useThemeLibrary();
   const [editingId, setEditingId] = useState<string>();
   const [importError, setImportError] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -190,7 +215,11 @@ export function ThemeLibrary() {
     >
       <Row
         label="Library"
-        hint={importError ? "That file is not a Telar theme." : "Click a theme to wear it. Duplicate anything to make it editable; export shares it as a file."}
+        hint={
+          importError
+            ? "That file is not a Telar theme."
+            : "Click a theme to wear it, or a single orb to take just that light or dark half. Duplicate anything to make it editable; export shares it as a file."
+        }
         control={
           <Button
             size="sm"
@@ -224,8 +253,11 @@ export function ThemeLibrary() {
             <ThemeCard
               key={theme.id}
               theme={theme}
-              active={theme.id === activeId}
+              active={active.light === theme.id && active.dark === theme.id}
+              lightActive={active.light === theme.id}
+              darkActive={active.dark === theme.id}
               onUse={() => setActive(theme.id)}
+              onUseHalf={(mode) => setHalf(mode, theme.id)}
               onDuplicate={() => {
                 const id = duplicate(theme.id);
                 if (id) setEditingId(id);

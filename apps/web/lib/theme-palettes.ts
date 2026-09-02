@@ -14,7 +14,12 @@
  * So switching themes never silently changes what buttons look like, and an
  * accent choice survives every theme change.
  *
- * HOW IT REACHES PIXELS: the active theme compiles to a tiny stylesheet
+ * THE HALVES ARE INDEPENDENTLY WEARABLE, as in t3 code: the active selection
+ * is a PAIR — one theme owns light, another owns dark — so you can take
+ * Ember's day and Tide's night. Clicking a card wears both halves; clicking
+ * one of its orbs wears only that half.
+ *
+ * HOW IT REACHES PIXELS: the active pair compiles to a tiny stylesheet
  * (`html:root { … } html:root.dark { … }` — one level of specificity above
  * globals.css's `:root`/`.dark`, so it wins by construction, while the
  * translucency rules at (0,2,0) still win above IT). The compiled CSS is
@@ -148,15 +153,71 @@ const CUSTOM_KEY = "telar-themes-custom";
  *  not need the compiler. Rewritten on every theme change. */
 export const THEME_CSS_KEY = "telar-theme-css";
 
+/** Which theme owns each half. Both halves are usually the same theme. */
+export type ActivePair = { light: string; dark: string };
+
+export const DEFAULT_PAIR: ActivePair = { light: "telar", dark: "telar" };
+
+function declarations(half: ThemeHalf): string {
+  return THEME_TOKENS.filter((token) => half[token])
+    .map((token) => `--${token}: ${half[token]};`)
+    .join(" ");
+}
+
+/**
+ * The two halves of the active pair, each from its own theme. "telar" is
+ * identity, so its half contributes no block at all — the absent rule IS the
+ * default look, and emitting an empty one would only be noise in the cache.
+ *
+ * `html:root` outranks globals.css's `:root` by one type selector; the
+ * translucency overrides at two attributes still outrank both.
+ */
+export function compilePair(light: ThemeDefinition, dark: ThemeDefinition): string {
+  const blocks: string[] = [];
+  const lightRules = light.id === "telar" ? "" : declarations(light.light);
+  if (lightRules) blocks.push(`html:root { ${lightRules} }`);
+  const darkRules = dark.id === "telar" ? "" : declarations(dark.dark);
+  if (darkRules) blocks.push(`html:root.dark { ${darkRules} }`);
+  return blocks.join(" ");
+}
+
+/** One theme wearing both halves. */
 export function compileTheme(theme: ThemeDefinition): string {
-  if (theme.id === "telar") return "";
-  const declarations = (half: ThemeHalf) =>
-    THEME_TOKENS.filter((token) => half[token])
-      .map((token) => `--${token}: ${half[token]};`)
-      .join(" ");
-  // `html:root` outranks globals.css's `:root` by one type selector; the
-  // translucency overrides at two attributes still outrank both.
-  return `html:root { ${declarations(theme.light)} } html:root.dark { ${declarations(theme.dark)} }`;
+  return compilePair(theme, theme);
+}
+
+/**
+ * Total, and deliberately forgiving of history: installs from before the pair
+ * existed stored a bare id ("tide"), which means that theme wore both halves.
+ * Anything else unreadable falls back to the default rather than throwing on
+ * a path that runs before first paint.
+ */
+export function parseActivePair(raw: string | null): ActivePair {
+  if (typeof raw !== "string") return DEFAULT_PAIR;
+  const trimmed = raw.trim();
+  if (trimmed === "") return DEFAULT_PAIR;
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const half = (value: unknown) => (typeof value === "string" && value !== "" ? value : "telar");
+      return { light: half(parsed.light), dark: half(parsed.dark) };
+    } catch {
+      return DEFAULT_PAIR;
+    }
+  }
+  // LEGACY: a bare theme id, and only that — anything else stored here is not
+  // a selection this build ever wrote.
+  if (/^[\w-]+$/.test(trimmed)) return { light: trimmed, dark: trimmed };
+  return DEFAULT_PAIR;
+}
+
+/** Deleting a theme you are wearing sends that half home rather than leaving
+ *  a dangling id pointing at nothing. */
+export function dropTheme(active: ActivePair, removedId: string): ActivePair {
+  return {
+    light: active.light === removedId ? "telar" : active.light,
+    dark: active.dark === removedId ? "telar" : active.dark,
+  };
 }
 
 function isHalf(value: unknown): value is ThemeHalf {
@@ -259,25 +320,25 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
-type ThemeState = { activeId: string; custom: ThemeDefinition[] };
+type ThemeState = { active: ActivePair; custom: ThemeDefinition[] };
 
 let cache: { raw: string; value: ThemeState } | undefined;
 
 function readState(): ThemeState {
-  let activeId = "telar";
+  let activeRaw: string | null = null;
   let customRaw: string | null = null;
   try {
-    activeId = window.localStorage.getItem(ACTIVE_KEY) ?? "telar";
+    activeRaw = window.localStorage.getItem(ACTIVE_KEY);
     customRaw = window.localStorage.getItem(CUSTOM_KEY);
   } catch {
     // Private browsing — the default theme.
   }
-  const raw = `${activeId}\n${customRaw ?? ""}`;
-  if (!cache || cache.raw !== raw) cache = { raw, value: { activeId, custom: parseCustomThemes(customRaw) } };
+  const raw = `${activeRaw ?? ""}\n${customRaw ?? ""}`;
+  if (!cache || cache.raw !== raw) cache = { raw, value: { active: parseActivePair(activeRaw), custom: parseCustomThemes(customRaw) } };
   return cache.value;
 }
 
-const SERVER_STATE: ThemeState = { activeId: "telar", custom: [] };
+const SERVER_STATE: ThemeState = { active: DEFAULT_PAIR, custom: [] };
 
 function findTheme(state: ThemeState, id: string): ThemeDefinition | undefined {
   return BUILT_IN_THEMES.find((theme) => theme.id === id) ?? state.custom.find((theme) => theme.id === id);
@@ -285,14 +346,17 @@ function findTheme(state: ThemeState, id: string): ThemeDefinition | undefined {
 
 /** Every write funnels here so the COMPILED cache can never go stale against
  *  the choice it caches. */
-function write(next: Partial<{ activeId: string; custom: ThemeDefinition[] }>): void {
+function write(next: Partial<{ active: ActivePair; custom: ThemeDefinition[] }>): void {
   const current = readState();
-  const state: ThemeState = { activeId: next.activeId ?? current.activeId, custom: next.custom ?? current.custom };
-  const active = findTheme(state, state.activeId) ?? BUILT_IN_THEMES[0];
+  const state: ThemeState = { active: next.active ?? current.active, custom: next.custom ?? current.custom };
+  // Resolve before persisting: a half pointing at a theme that no longer
+  // exists is stored as the default, never as a dangling id.
+  const light = findTheme(state, state.active.light) ?? BUILT_IN_THEMES[0];
+  const dark = findTheme(state, state.active.dark) ?? BUILT_IN_THEMES[0];
   try {
-    window.localStorage.setItem(ACTIVE_KEY, active.id);
+    window.localStorage.setItem(ACTIVE_KEY, JSON.stringify({ light: light.id, dark: dark.id }));
     window.localStorage.setItem(CUSTOM_KEY, JSON.stringify(state.custom));
-    window.localStorage.setItem(THEME_CSS_KEY, compileTheme(active));
+    window.localStorage.setItem(THEME_CSS_KEY, compilePair(light, dark));
   } catch {
     // The in-page listeners still fire; only persistence is lost.
   }
@@ -316,9 +380,12 @@ export function applyThemeCss(): void {
 }
 
 export function useThemeLibrary(): {
-  activeId: string;
+  /** The theme worn WHOLE, or undefined while the halves disagree. */
+  activeId: string | undefined;
+  active: ActivePair;
   themes: ThemeDefinition[];
   setActive: (id: string) => void;
+  setHalf: (mode: "light" | "dark", id: string) => void;
   saveCustom: (theme: ThemeDefinition) => void;
   removeCustom: (id: string) => void;
   duplicate: (id: string) => string | undefined;
@@ -326,7 +393,9 @@ export function useThemeLibrary(): {
 } {
   const state = useSyncExternalStore(subscribe, readState, () => SERVER_STATE);
 
-  const setActive = useCallback((id: string) => write({ activeId: id }), []);
+  const setActive = useCallback((id: string) => write({ active: { light: id, dark: id } }), []);
+
+  const setHalf = useCallback((mode: "light" | "dark", id: string) => write({ active: { ...readState().active, [mode]: id } }), []);
 
   const saveCustom = useCallback((theme: ThemeDefinition) => {
     const { custom } = readState();
@@ -336,12 +405,7 @@ export function useThemeLibrary(): {
 
   const removeCustom = useCallback((id: string) => {
     const current = readState();
-    write({
-      custom: current.custom.filter((entry) => entry.id !== id),
-      // Deleting the theme you are wearing falls back to the default rather
-      // than leaving a dangling id pointing at nothing.
-      ...(current.activeId === id ? { activeId: "telar" } : {}),
-    });
+    write({ custom: current.custom.filter((entry) => entry.id !== id), active: dropTheme(current.active, id) });
   }, []);
 
   const duplicate = useCallback((id: string) => {
@@ -362,13 +426,23 @@ export function useThemeLibrary(): {
     const parsed = parseThemeFile(raw);
     if (!parsed) return undefined;
     const theme: ThemeDefinition = { id: `custom-${Date.now().toString(36)}`, ...parsed };
-    write({ custom: [...readState().custom, theme], activeId: theme.id });
+    write({ custom: [...readState().custom, theme], active: { light: theme.id, dark: theme.id } });
     return theme.id;
   }, []);
 
   return useMemo(
-    () => ({ activeId: state.activeId, themes: [...BUILT_IN_THEMES, ...state.custom], setActive, saveCustom, removeCustom, duplicate, importTheme }),
-    [state, setActive, saveCustom, removeCustom, duplicate, importTheme],
+    () => ({
+      activeId: state.active.light === state.active.dark ? state.active.light : undefined,
+      active: state.active,
+      themes: [...BUILT_IN_THEMES, ...state.custom],
+      setActive,
+      setHalf,
+      saveCustom,
+      removeCustom,
+      duplicate,
+      importTheme,
+    }),
+    [state, setActive, setHalf, saveCustom, removeCustom, duplicate, importTheme],
   );
 }
 
