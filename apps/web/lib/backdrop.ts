@@ -34,12 +34,23 @@ export type Backdrop =
   | { kind: "none" }
   | { kind: "gradient"; id: string }
   | { kind: "custom-gradient"; light: string; dark: string }
-  | { kind: "image"; fit: BackdropFit; blur: number; dim: number };
+  | { kind: "image"; fit: BackdropFit; blur: number; dim: number }
+  /** A COMPOSED scene — several positioned images over a base, built by the
+   *  scene composer (lib/scene-composer.ts). The composition itself lives in
+   *  the resolved layers below (CSS multi-backgrounds: one comma list per
+   *  property), and the editable source — per-layer images, positions,
+   *  scales — in the composer's own keys. This store only knows "a scene is
+   *  on"; `stamp` busts the raw-string snapshot cache when the composition
+   *  changes but the choice otherwise wouldn't. */
+  | { kind: "scene"; stamp: number };
 
-/** Resolved CSS `background-image` values, one per colour scheme. Presets and
+/** Resolved CSS values, one `background-image` per colour scheme. Presets and
  *  custom gradients both resolve to this shape; the dark half falls back to
- *  the light one in CSS if a source only has one. */
-export type BackdropLayers = { light: string; dark: string };
+ *  the light one in CSS if a source only has one. A composed scene ALSO
+ *  carries the per-layer lists (`background-size/position/repeat` accept one
+ *  comma-separated entry per image layer), which single-source kinds leave to
+ *  the stylesheet's defaults. */
+export type BackdropLayers = { light: string; dark: string; size?: string; position?: string; repeat?: string };
 
 export const BACKDROP_KEY = "telar-backdrop";
 export const BACKDROP_CSS_KEY = "telar-backdrop-css";
@@ -57,6 +68,17 @@ export const DEFAULT_BACKDROP: Backdrop = { kind: "none" };
  */
 export function isGradientValue(value: unknown): value is string {
   return typeof value === "string" && /gradient\(/.test(value) && !value.includes(";") && !value.includes("}") && !/url\s*\(/i.test(value);
+}
+
+/** A composed scene's background-image list: any mix of gradients and
+ *  `url("data:image/…")` layers — data URLs ONLY, so a stored scene can never
+ *  make the page fetch anything — and still no way out of the declaration. */
+export function isSceneValue(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.includes(";") || value.includes("}")) return false;
+  return value
+    .split(/url\(/i)
+    .slice(1)
+    .every((segment) => segment.startsWith('"data:image/'));
 }
 
 function clamp(value: unknown, max: number): number {
@@ -79,6 +101,9 @@ export function parseBackdrop(raw: string | null): Backdrop {
     if (record.kind === "image") {
       const fit = BACKDROP_FITS.includes(record.fit as BackdropFit) ? (record.fit as BackdropFit) : "cover";
       return { kind: "image", fit, blur: clamp(record.blur, MAX_BACKDROP_BLUR), dim: clamp(record.dim, MAX_BACKDROP_DIM) };
+    }
+    if (record.kind === "scene") {
+      return { kind: "scene", stamp: typeof record.stamp === "number" && Number.isFinite(record.stamp) ? record.stamp : 0 };
     }
     return DEFAULT_BACKDROP;
   } catch {
@@ -119,12 +144,15 @@ function readBackdrop(): Backdrop {
 export function setBackdrop(next: Backdrop, resolved?: BackdropLayers): void {
   try {
     window.localStorage.setItem(BACKDROP_KEY, JSON.stringify(next));
-    if (next.kind === "gradient" || next.kind === "custom-gradient") {
-      if (!resolved) throw new Error("setBackdrop: gradient choices need resolved layers");
+    if (next.kind === "gradient" || next.kind === "custom-gradient" || next.kind === "scene") {
+      if (!resolved) throw new Error("setBackdrop: gradient and scene choices need resolved layers");
       window.localStorage.setItem(BACKDROP_CSS_KEY, JSON.stringify(resolved));
     } else {
       window.localStorage.removeItem(BACKDROP_CSS_KEY);
     }
+    // The composer's own keys (per-layer sources) are NOT cleared here even
+    // when the choice moves away from "scene" — an arrangement someone built
+    // by hand survives trying a preset, exactly like an image does not.
     if (next.kind !== "image") window.localStorage.removeItem(BACKDROP_IMAGE_KEY);
   } catch {
     // Quota or private browsing: the in-memory cache below still carries the
@@ -148,7 +176,13 @@ export function readBackdropLayers(): BackdropLayers | null {
     if (typeof parsed !== "object" || parsed === null) return null;
     const record = parsed as Record<string, unknown>;
     if (typeof record.light !== "string") return null;
-    return { light: record.light, dark: typeof record.dark === "string" ? record.dark : record.light };
+    return {
+      light: record.light,
+      dark: typeof record.dark === "string" ? record.dark : record.light,
+      ...(typeof record.size === "string" ? { size: record.size } : {}),
+      ...(typeof record.position === "string" ? { position: record.position } : {}),
+      ...(typeof record.repeat === "string" ? { repeat: record.repeat } : {}),
+    };
   } catch {
     return null;
   }
@@ -159,7 +193,7 @@ export function readBackdropLayers(): BackdropLayers | null {
  *  do the painting. */
 export function applyBackdrop(backdrop: Backdrop): void {
   const root = document.documentElement;
-  const vars = ["--backdrop-light", "--backdrop-dark", "--backdrop-size", "--backdrop-repeat", "--backdrop-blur", "--backdrop-dim"];
+  const vars = ["--backdrop-light", "--backdrop-dark", "--backdrop-size", "--backdrop-position", "--backdrop-repeat", "--backdrop-blur", "--backdrop-dim"];
   const clearAll = () => {
     for (const name of vars) root.style.removeProperty(name);
   };
@@ -199,8 +233,13 @@ export function applyBackdrop(backdrop: Backdrop): void {
   }
   root.style.setProperty("--backdrop-light", layers.light);
   root.style.setProperty("--backdrop-dark", layers.dark);
+  // A composed scene positions each of its image layers individually; the
+  // lists arrive resolved, one comma entry per layer.
+  if (layers.size) root.style.setProperty("--backdrop-size", layers.size);
+  if (layers.position) root.style.setProperty("--backdrop-position", layers.position);
+  if (layers.repeat) root.style.setProperty("--backdrop-repeat", layers.repeat);
 }
 
 /** Pre-paint application; same contract as APPEARANCE_INIT_SCRIPT (inline in
  *  <head>, dependency-free, fails to "no scene" on any error). */
-export const BACKDROP_INIT_SCRIPT = `(function(){try{var d=document.documentElement;var b=JSON.parse(localStorage.getItem('${BACKDROP_KEY}')||'null');if(!b||typeof b!=='object'||b.kind==='none'||!b.kind)return;if(b.kind==='image'){var img=localStorage.getItem('${BACKDROP_IMAGE_KEY}');if(!img||img.indexOf('data:image/')!==0)return;d.setAttribute('data-backdrop','image');var u='url("'+img+'")';d.style.setProperty('--backdrop-light',u);d.style.setProperty('--backdrop-dark',u);d.style.setProperty('--backdrop-size',b.fit==='fill'?'100% 100%':b.fit==='tile'?'auto':'cover');d.style.setProperty('--backdrop-repeat',b.fit==='tile'?'repeat':'no-repeat');if(typeof b.blur==='number'&&b.blur>0)d.style.setProperty('--backdrop-blur',Math.min(${MAX_BACKDROP_BLUR},Math.round(b.blur))+'px');if(typeof b.dim==='number'&&b.dim>0)d.style.setProperty('--backdrop-dim',Math.min(${MAX_BACKDROP_DIM},Math.round(b.dim))+'%');return;}if(b.kind!=='gradient'&&b.kind!=='custom-gradient')return;var c=JSON.parse(localStorage.getItem('${BACKDROP_CSS_KEY}')||'null');if(!c||typeof c.light!=='string')return;d.setAttribute('data-backdrop',b.kind);d.style.setProperty('--backdrop-light',c.light);d.style.setProperty('--backdrop-dark',typeof c.dark==='string'?c.dark:c.light);}catch(e){}})();`;
+export const BACKDROP_INIT_SCRIPT = `(function(){try{var d=document.documentElement;var b=JSON.parse(localStorage.getItem('${BACKDROP_KEY}')||'null');if(!b||typeof b!=='object'||b.kind==='none'||!b.kind)return;if(b.kind==='image'){var img=localStorage.getItem('${BACKDROP_IMAGE_KEY}');if(!img||img.indexOf('data:image/')!==0)return;d.setAttribute('data-backdrop','image');var u='url("'+img+'")';d.style.setProperty('--backdrop-light',u);d.style.setProperty('--backdrop-dark',u);d.style.setProperty('--backdrop-size',b.fit==='fill'?'100% 100%':b.fit==='tile'?'auto':'cover');d.style.setProperty('--backdrop-repeat',b.fit==='tile'?'repeat':'no-repeat');if(typeof b.blur==='number'&&b.blur>0)d.style.setProperty('--backdrop-blur',Math.min(${MAX_BACKDROP_BLUR},Math.round(b.blur))+'px');if(typeof b.dim==='number'&&b.dim>0)d.style.setProperty('--backdrop-dim',Math.min(${MAX_BACKDROP_DIM},Math.round(b.dim))+'%');return;}if(b.kind!=='gradient'&&b.kind!=='custom-gradient'&&b.kind!=='scene')return;var c=JSON.parse(localStorage.getItem('${BACKDROP_CSS_KEY}')||'null');if(!c||typeof c.light!=='string')return;d.setAttribute('data-backdrop',b.kind);d.style.setProperty('--backdrop-light',c.light);d.style.setProperty('--backdrop-dark',typeof c.dark==='string'?c.dark:c.light);['size','position','repeat'].forEach(function(k){if(typeof c[k]==='string')d.style.setProperty('--backdrop-'+k,c[k]);});}catch(e){}})();`;

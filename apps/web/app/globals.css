@@ -455,7 +455,7 @@
      by lib/backdrop.ts, and until they are, there is no scene. */
   background-image: var(--backdrop-light, none);
   background-size: var(--backdrop-size, cover);
-  background-position: center;
+  background-position: var(--backdrop-position, center);
   background-repeat: var(--backdrop-repeat, no-repeat);
   filter: blur(var(--backdrop-blur, 0px));
 }
