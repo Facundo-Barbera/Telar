@@ -69,15 +69,19 @@ export class EngineApiError extends Error {
 
 type Fetcher = typeof fetch;
 
-async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown): Promise<T> {
+async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetcher(pathname, {
       method,
       headers: body === undefined ? undefined : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
-  } catch {
+  } catch (cause) {
+    // An abort is the CALLER's decision arriving back, not the adapter being
+    // away — it must surface as itself so the UI can say "Stopped".
+    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
     throw new EngineApiError("engine_unavailable", "The cockpit cannot reach its local adapter.");
   }
 
@@ -121,9 +125,13 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       request<{ textGen: TextGenPolicy }>(fetcher, "PATCH", "/api/textgen", patch),
     /** One structured completion from the policy's harness. SLOW (a cold CLI
      *  start plus a completion) and fallible — a harness that does not answer
-     *  is a 502, never an empty result. */
-    complete: (input: { prompt: string; schema: Record<string, unknown>; model?: string }) =>
-      request<{ result: Record<string, unknown> }>(fetcher, "POST", "/api/textgen/complete", input),
+     *  is a 502, never an empty result. `effort` asks the harness to think
+     *  harder than the title-generation default; `signal` aborts the wait
+     *  (the harness may still finish server-side — its answer is discarded). */
+    complete: (
+      input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
+      options: { signal?: AbortSignal } = {},
+    ) => request<{ result: Record<string, unknown> }>(fetcher, "POST", "/api/textgen/complete", input, options.signal),
     /** The host cockpit's published look, for clients that want to match it —
      *  an OPAQUE blob, and readers must ignore keys they do not know. `null`
      *  means nothing has published yet. */

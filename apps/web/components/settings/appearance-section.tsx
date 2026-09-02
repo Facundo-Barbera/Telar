@@ -346,7 +346,7 @@ export function AppearanceSection() {
       {/* The designer beside the inspector: describing a look is the primary
           path now, and the app around this pane is the canvas it draws on. */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[3fr_2fr]">
-        <div className="min-w-0">{current && <DesignerChat draft={current} onDraft={edit} className="xl:min-h-[26rem]" />}</div>
+        <div className="min-w-0">{current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="xl:min-h-[26rem]" />}</div>
 
         <div className="min-w-0">
           <div className="mb-3">

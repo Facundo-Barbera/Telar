@@ -26,8 +26,9 @@ function answer(overrides: Record<string, unknown> = {}): Record<string, unknown
     label: "Autumn Library",
     light: { ...HALF, background: "#faf7f2", foreground: "#3a2a1c", card: "#fffdf9", "card-foreground": "#3a2a1c" },
     dark: { ...HALF, background: "#171310", foreground: "#f3ece3" },
-    backdrop: { present: true, angle: 165, lightStops: ["#f7efe2", "#e8d6bd"], darkStops: ["#1c1510", "#2a1d12"] },
+    backdrop: { action: "set", angle: 165, lightStops: ["#f7efe2", "#e8d6bd"], darkStops: ["#1c1510", "#2a1d12"] },
     accent: "amber",
+    type: { fontSans: "keep", fontMono: "keep", fontSize: 0 },
     ...overrides,
   };
 }
@@ -54,12 +55,20 @@ describe("DESIGN_SCHEMA", () => {
     }
   });
 
-  // "No backdrop" must be sayable INSIDE a strict schema, which is why it is a
-  // required boolean rather than an omitted member.
-  test("declining a backdrop is a required boolean, not an optional member", () => {
+  // Declining must be sayable INSIDE a strict schema, which is why every
+  // decline is a required VALUE ("keep", "none", 0), never an omitted member.
+  test("the backdrop action is a required keep/set/remove enum", () => {
     const backdrop = (DESIGN_SCHEMA.properties as Record<string, Record<string, unknown>>).backdrop!;
-    expect((backdrop.required as string[]).includes("present")).toBe(true);
-    expect((backdrop.properties as Record<string, Record<string, unknown>>).present!.type).toBe("boolean");
+    expect((backdrop.required as string[]).includes("action")).toBe(true);
+    expect((backdrop.properties as Record<string, Record<string, unknown>>).action!.enum).toEqual(["keep", "set", "remove"]);
+  });
+
+  test("the type block offers real families plus keep, and never custom", () => {
+    const type = (DESIGN_SCHEMA.properties as Record<string, Record<string, unknown>>).type!;
+    const sans = (type.properties as Record<string, Record<string, unknown>>).fontSans!.enum as string[];
+    expect(sans).toContain("keep");
+    expect(sans).toContain("geist");
+    expect(sans).not.toContain("custom");
   });
 });
 
@@ -148,16 +157,41 @@ describe("applyDesign", () => {
     expect(isGradientValue(composeGradient(outcome.backdropSpec!.dark))).toBe(true);
   });
 
-  test("present:false and unusable stops both mean no backdrop, not a failed design", () => {
-    const declined = answer({ backdrop: { present: false, angle: 0, lightStops: [], darkStops: [] } });
-    expect(applyDesign(declined).backdropSpec).toBeUndefined();
-    expect(applyDesign(declined).definition).toBeTruthy();
+  test("keep and unusable stops both mean no backdrop change, not a failed design", () => {
+    const kept = answer({ backdrop: { action: "keep", angle: 0, lightStops: [], darkStops: [] } });
+    expect(applyDesign(kept).backdropSpec).toBeUndefined();
+    expect(applyDesign(kept).removeBackdrop).toBeUndefined();
+    expect(applyDesign(kept).definition).toBeTruthy();
 
-    const broken = answer({ backdrop: { present: true, angle: 10, lightStops: ["#fff"], darkStops: ["#000000", "#111111"] } });
+    const broken = answer({ backdrop: { action: "set", angle: 10, lightStops: ["#fff"], darkStops: ["#000000", "#111111"] } });
     expect(applyDesign(broken).backdropSpec).toBeUndefined();
     expect(applyDesign(broken).definition).toBeTruthy();
 
     expect(applyDesign(answer({ backdrop: "sunset" })).definition).toBeTruthy();
+  });
+
+  test("remove asks for a plain canvas; the previous schema's present:true still sets", () => {
+    const removed = applyDesign(answer({ backdrop: { action: "remove", angle: 0, lightStops: [], darkStops: [] } }));
+    expect(removed.removeBackdrop).toBe(true);
+    expect(removed.backdropSpec).toBeUndefined();
+
+    const legacy = applyDesign(answer({ backdrop: { present: true, angle: 165, lightStops: ["#f7efe2", "#e8d6bd"], darkStops: ["#1c1510", "#2a1d12"] } }));
+    expect(legacy.backdropSpec).toBeTruthy();
+  });
+
+  test("type lands only when it names a real choice in range", () => {
+    expect(applyDesign(answer()).fontSans).toBeUndefined();
+    expect(applyDesign(answer()).fontSize).toBeUndefined();
+
+    const typed = applyDesign(answer({ type: { fontSans: "inter", fontMono: "jetbrains", fontSize: 15 } }));
+    expect(typed.fontSans).toBe("inter");
+    expect(typed.fontMono).toBe("jetbrains");
+    expect(typed.fontSize).toBe(15);
+
+    const junk = applyDesign(answer({ type: { fontSans: "papyrus", fontMono: "custom", fontSize: 40 } }));
+    expect(junk.fontSans).toBeUndefined();
+    expect(junk.fontMono).toBeUndefined();
+    expect(junk.fontSize).toBeUndefined();
   });
 
   test("angles wrap and junk angles fall back", () => {

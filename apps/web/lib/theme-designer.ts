@@ -27,7 +27,7 @@
  * a thrown error inside a click handler is a blank pane.
  */
 
-import { ACCENTS, type Accent } from "./appearance";
+import { ACCENTS, MAX_FONT_SIZE, MIN_FONT_SIZE, MONO_FONTS, SANS_FONTS, type Accent, type MonoFont, type SansFont } from "./appearance";
 import { MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS, type CustomGradientSpec } from "./backdrop-presets";
 import { hexToCssColor, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS, type ThemeDefinition, type ThemeHalf, type ThemeToken } from "./theme-palettes";
 import { contrastRatio, parseVsCodeColor, relativeLuminance, toHex } from "./vscode-theme-import";
@@ -69,26 +69,34 @@ function halfSchema(description: string): Record<string, unknown> {
   };
 }
 
+/** The font families the model may name — "custom" is excluded because it is
+ *  a free-text stack only the reader can type; "keep" declines. */
+const SANS_CHOICES = ["keep", ...SANS_FONTS.filter((font) => font !== "custom")] as const;
+const MONO_CHOICES = ["keep", ...MONO_FONTS.filter((font) => font !== "custom")] as const;
+
 /**
  * What the model must answer with, exactly. Every object carries
  * `additionalProperties: false` and a `required` naming all of its properties
  * — see the header: that is what makes this schema survive the codex harness.
+ * Declining is always a VALUE ("keep", "none", 0), never an omitted member,
+ * for the same reason.
  */
 export const DESIGN_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["label", "light", "dark", "backdrop", "accent"],
+  required: ["label", "light", "dark", "backdrop", "accent", "type"],
   properties: {
     label: { type: "string", description: "Two or three words naming the theme, title case." },
     light: halfSchema("The light half: every one of the sixteen surface tokens."),
     dark: halfSchema("The dark half: every one of the sixteen surface tokens."),
     backdrop: {
       type: "object",
-      description: "A scenic gradient under the whole app. Set present=false to leave the backdrop alone; the stop arrays are then ignored but must still be sent.",
+      description:
+        'A scenic gradient under the whole app. action="keep" leaves the current backdrop alone, "remove" clears it to a plain canvas, "set" applies the gradient described here. The stop arrays must always be sent; they are ignored unless action="set".',
       additionalProperties: false,
-      required: ["present", "angle", "lightStops", "darkStops"],
+      required: ["action", "angle", "lightStops", "darkStops"],
       properties: {
-        present: { type: "boolean", description: "Whether to apply this gradient at all." },
+        action: { type: "string", description: "What to do with the backdrop.", enum: ["keep", "set", "remove"] },
         angle: { type: "number", description: "Linear gradient angle in degrees, 0-359." },
         lightStops: { type: "array", description: "2-4 hex colours for the light scheme, in paint order.", items: { ...hexProperty } },
         darkStops: { type: "array", description: "2-4 hex colours for the dark scheme, in paint order.", items: { ...hexProperty } },
@@ -98,6 +106,17 @@ export const DESIGN_SCHEMA: Record<string, unknown> = {
     // CSS block in globals.css, so "the closest one" is the only answerable
     // question. "none" is the required way to decline.
     accent: { type: "string", description: 'The named accent that suits this theme, or "none" to keep the reader\'s.', enum: [...ACCENTS, "none"] },
+    type: {
+      type: "object",
+      description: 'The typography of the look. "keep" (or fontSize 0) leaves the reader\'s choice alone; only change type when the brief speaks to it.',
+      additionalProperties: false,
+      required: ["fontSans", "fontMono", "fontSize"],
+      properties: {
+        fontSans: { type: "string", description: 'The interface typeface, or "keep".', enum: [...SANS_CHOICES] },
+        fontMono: { type: "string", description: 'The code typeface, or "keep".', enum: [...MONO_CHOICES] },
+        fontSize: { type: "number", description: `Interface root size in px, ${MIN_FONT_SIZE}-${MAX_FONT_SIZE}, or 0 to keep the reader's.` },
+      },
+    },
   },
 };
 
@@ -147,9 +166,11 @@ export function buildDesignPrompt(description: string): string {
     "",
     "COLOUR DISCIPLINE: hue and personality are welcome and expected — the brief is a mood, not a greyscale. But chroma on the BIG surfaces (canvas, cards, rail) stays at tint level: a visible cast, never a saturated wash. Small surfaces (chips, hover, borders) may carry a little more. Keep one hue family across both halves so they read as one theme.",
     "",
-    'BACKDROP: a scenic gradient painted under the whole app and seen through a frosted canvas. Give 2-4 stops per half, evenly spaced along one angle — light stops pale and airy, dark stops deep and moody, both in the brief\'s palette. Set present=false only when the brief plainly wants no scene ("plain", "flat", "no background").',
+    'BACKDROP: a scenic gradient painted under the whole app and seen through a frosted canvas. action="set" with 2-4 stops per half, evenly spaced along one angle — light stops pale and airy, dark stops deep and moody, both in the brief\'s palette. action="remove" when the brief plainly wants no scene ("plain", "flat", "no background"). action="keep" when the brief does not speak to the backdrop at all.',
     "",
-    'ACCENT: the named family closest to this theme for buttons and links, or "none" if none of them fit.',
+    `ACCENT: the named family for buttons and links, or "none" to keep the reader's. The families and their hues: indigo (blue-violet), sky (blue), sea (teal), moss (green), amber (gold), rose (warm red), plum (magenta), violet (purple). Pick the one closest to the brief's mood.`,
+    "",
+    `TYPE: fontSans (interface) may be geist (modern grotesk), inter (neutral UI), or system; fontMono (code) may be geist, jetbrains, or system; fontSize is the interface root in px, ${MIN_FONT_SIZE}-${MAX_FONT_SIZE}. Answer "keep" / 0 unless the brief speaks to typography — most briefs are about colour.`,
   ].join("\n");
 }
 
@@ -158,14 +179,30 @@ export function buildDesignPrompt(description: string): string {
 /** The failure arm declares the success members as `undefined` rather than
  *  omitting them: a caller that checked `error` first should still be able to
  *  reach for `backdropSpec` without narrowing twice. */
-export type DesignFailure = { error: string; definition?: undefined; backdropSpec?: undefined; accent?: undefined };
+export type DesignFailure = {
+  error: string;
+  definition?: undefined;
+  backdropSpec?: undefined;
+  removeBackdrop?: undefined;
+  accent?: undefined;
+  fontSans?: undefined;
+  fontMono?: undefined;
+  fontSize?: undefined;
+};
 export type DesignSuccess = {
   error?: undefined;
   definition: Omit<ThemeDefinition, "id">;
-  /** Absent when the model declined a backdrop or its stops were unusable. */
+  /** Absent when the model kept the backdrop or its stops were unusable. */
   backdropSpec?: { light: CustomGradientSpec; dark: CustomGradientSpec };
+  /** The model asked for a plain canvas — mutually exclusive with a spec. */
+  removeBackdrop?: true;
   /** Absent when the model said "none" or named something that is not ours. */
   accent?: Accent;
+  /** Absent when the model said "keep" — which the brief tells it to prefer. */
+  fontSans?: SansFont;
+  fontMono?: MonoFont;
+  /** Absent when the model said 0 or something out of range. */
+  fontSize?: number;
 };
 export type DesignOutcome = DesignFailure | DesignSuccess;
 
@@ -258,7 +295,9 @@ export function applyDesign(result: unknown): DesignOutcome {
   const outcome: DesignSuccess = { definition: { label, light, dark } };
 
   const backdrop = isRecord(result.backdrop) ? result.backdrop : undefined;
-  if (backdrop?.present === true) {
+  // `present: true` is the previous schema's spelling of "set" — read for one
+  // build of grace so a harness answering from a cached schema still lands.
+  if (backdrop?.action === "set" || backdrop?.present === true) {
     const lightStops = readStops(backdrop.lightStops);
     const darkStops = readStops(backdrop.darkStops);
     if (lightStops && darkStops) {
@@ -268,10 +307,25 @@ export function applyDesign(result: unknown): DesignOutcome {
         dark: { type: "linear", angle, stops: darkStops },
       };
     }
+  } else if (backdrop?.action === "remove") {
+    outcome.removeBackdrop = true;
   }
 
   if (typeof result.accent === "string" && (ACCENTS as readonly string[]).includes(result.accent)) {
     outcome.accent = result.accent as Accent;
+  }
+
+  const type = isRecord(result.type) ? result.type : undefined;
+  if (type) {
+    if (typeof type.fontSans === "string" && type.fontSans !== "keep" && (SANS_FONTS as readonly string[]).includes(type.fontSans) && type.fontSans !== "custom") {
+      outcome.fontSans = type.fontSans as SansFont;
+    }
+    if (typeof type.fontMono === "string" && type.fontMono !== "keep" && (MONO_FONTS as readonly string[]).includes(type.fontMono) && type.fontMono !== "custom") {
+      outcome.fontMono = type.fontMono as MonoFont;
+    }
+    if (typeof type.fontSize === "number" && Number.isFinite(type.fontSize) && type.fontSize >= MIN_FONT_SIZE && type.fontSize <= MAX_FONT_SIZE) {
+      outcome.fontSize = Math.round(type.fontSize);
+    }
   }
 
   return outcome;
