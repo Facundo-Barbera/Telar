@@ -19,8 +19,10 @@
  * behind the draft's back.
  */
 
-import { useRef, useState } from "react";
-import { CheckIcon, DownloadIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { CheckIcon, DownloadIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { createEngineApi } from "@/lib/engine/client";
+import { isHostWindow } from "@/lib/host-window";
 import {
   lookFilename,
   lookThemeId,
@@ -115,7 +117,107 @@ function LookCard({ look, active, onOpen, onExport, onRemove }: { look: Look; ac
   );
 }
 
+/**
+ * THE HOST'S LOOK — the first thing that ever READ what the cockpit publishes.
+ *
+ * A window reached over tailscale is the same app with its own localStorage, so
+ * it starts with an empty shelf and the default palette while the machine it is
+ * driving wears something deliberate. The engine has known what the host looks
+ * like for a while and nothing had ever asked. This row asks.
+ *
+ * IT LOADS INTO THE DRAFT, LIKE EVERY OTHER SOURCE. The published blob parses
+ * into a `Look` — the same type a shelf card holds — so opening it goes through
+ * the same `onOpen` an import or a card does: previewed on the real app,
+ * undoable, worn only on Apply. There is deliberately no "wear it now" path;
+ * somebody else's taste is a starting point, not a command.
+ *
+ * ONLY WHERE IT IS NOT A REFLECTION. The host publishes; showing the host its
+ * own published look would be a card of what it is already wearing. The gate is
+ * lib/host-window.ts, the same one the publisher uses, so the two can never
+ * disagree about which window is which.
+ *
+ * EVERY OUTCOME IS A HINT LINE, this file's idiom for "three different things
+ * to do about it": nothing published yet, an engine that would not answer, and
+ * a blob that did not parse are three different sentences.
+ */
+const api = createEngineApi();
+
+type HostLookState = { status: "loading" } | { status: "ready"; look: Look } | { status: "empty" | "failed" | "invalid" };
+
+const HOST_LOOK_HINT: Record<"loading" | "empty" | "failed" | "invalid", string> = {
+  loading: "Asking the engine what the host is wearing…",
+  empty: "The host has not published a look yet. It publishes automatically from the window running on the machine.",
+  failed: "The engine did not answer. It may be down, locked, or this device may not be paired.",
+  invalid: "The host published something this build cannot read.",
+};
+
+function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
+  const [state, setState] = useState<HostLookState>({ status: "loading" });
+  /** Retry is a NEW ASK, not a re-render of the old one — bumping this is what
+   *  re-runs the effect, so the fetch stays in the effect where its cleanup
+   *  can disown a late answer. */
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .appearance()
+      .then((answer) => {
+        if (!live) return;
+        // The adapter already ran the shared parser, so a non-null answer is a
+        // Look this build can wear. Null covers both "nobody published" and
+        // "what they published did not parse" — and those want different
+        // sentences, so the absence of a timestamp tells them apart.
+        if (answer.appearance) setState({ status: "ready", look: answer.appearance.look });
+        else setState({ status: answer.updatedAt === null ? "empty" : "invalid" });
+      })
+      .catch(() => {
+        if (live) setState({ status: "failed" });
+      });
+    return () => {
+      live = false;
+    };
+  }, [attempt]);
+
+  const retry = useCallback(() => {
+    setState({ status: "loading" });
+    setAttempt((count) => count + 1);
+  }, []);
+
+  return (
+    <Row
+      label="Host's look"
+      icon={MonitorSmartphoneIcon}
+      hint={state.status === "ready" ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}. Opens in the studio like any other source.` : HOST_LOOK_HINT[state.status]}
+      control={
+        state.status === "ready" ? (
+          <div className="flex items-center gap-2">
+            <LookStrip look={state.look} />
+            <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
+              Open
+            </Button>
+          </div>
+        ) : (
+          <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
+            {state.status === "loading" ? "Loading…" : "Retry"}
+          </Button>
+        )
+      }
+    />
+  );
+}
+
+// Whether this window is the host is an external fact, settled before React ran
+// and never changing — the same idiom appearance-section.tsx uses for the
+// desktop bridge.
+const subscribeToNothing = () => () => {};
+const hostNow = () => isHostWindow();
+const hostOnTheServer = () => true;
+
 export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
+  // Defaults to "this IS the host" on the server, so the row never renders into
+  // the first paint and then vanishes on hydration.
+  const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
   const { activeId } = useThemeLibrary();
   const looks = useLooks();
   // The MESSAGE, not a flag: "full", "will not fit", and "not a look file" are
@@ -155,6 +257,7 @@ export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
       title="Looks"
       description="The whole appearance as one thing — theme, backdrop, accent, type and strength, saved together and shareable as a file."
     >
+      {!isHost && <HostLookRow onOpen={onOpen} />}
       <Row
         label="Saved looks"
         hint={
