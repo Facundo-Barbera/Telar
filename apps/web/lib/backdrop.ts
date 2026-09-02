@@ -30,10 +30,25 @@ import { useCallback, useMemo, useSyncExternalStore } from "react";
 export type BackdropFit = "cover" | "fill" | "tile";
 export const BACKDROP_FITS = ["cover", "fill", "tile"] as const;
 
+/**
+ * HOW FAR THE SCENE IS PUSHED BACK, in percent toward the canvas colour.
+ *
+ * OPTIONAL ON EVERY KIND BUT `image`, and that split is history rather than
+ * design: dim arrived with the image picker, so only an image ever wrote
+ * `--backdrop-dim` — even though the scrim that reads it (`#app-backdrop::after`
+ * in globals.css) has never cared what kind of scene it is over. A saturated
+ * gradient preset and a composed scene are exactly as capable of swallowing the
+ * text on top of them as a photograph is, and both had no way to say so.
+ *
+ * Absent means none, so nothing that already stores a backdrop has to change,
+ * and a choice made before this existed reads back identically.
+ */
+export type BackdropDim = { dim?: number };
+
 export type Backdrop =
   | { kind: "none" }
-  | { kind: "gradient"; id: string }
-  | { kind: "custom-gradient"; light: string; dark: string }
+  | ({ kind: "gradient"; id: string } & BackdropDim)
+  | ({ kind: "custom-gradient"; light: string; dark: string } & BackdropDim)
   | { kind: "image"; fit: BackdropFit; blur: number; dim: number }
   /** A COMPOSED scene — several positioned images over a base, built by the
    *  scene composer (lib/scene-composer.ts). The composition itself lives in
@@ -42,7 +57,7 @@ export type Backdrop =
    *  scales — in the composer's own keys. This store only knows "a scene is
    *  on"; `stamp` busts the raw-string snapshot cache when the composition
    *  changes but the choice otherwise wouldn't. */
-  | { kind: "scene"; stamp: number };
+  | ({ kind: "scene"; stamp: number } & BackdropDim);
 
 /** Resolved CSS values, one `background-image` per colour scheme. Presets and
  *  custom gradients both resolve to this shape; the dark half falls back to
@@ -85,6 +100,13 @@ function clamp(value: unknown, max: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.min(max, Math.max(0, Math.round(value))) : 0;
 }
 
+/** The optional dim, as the spread a kind's parse can carry — `{}` when there
+ *  is none, so an absent choice never becomes a stored `dim: 0`. */
+function dimOf(value: unknown): BackdropDim {
+  const dim = clamp(value, MAX_BACKDROP_DIM);
+  return dim > 0 ? { dim } : {};
+}
+
 /** Total, like parseAppearance: anything unrecognised is "none", so a stale
  *  or hand-edited value can never wedge the store. */
 export function parseBackdrop(raw: string | null): Backdrop {
@@ -93,17 +115,26 @@ export function parseBackdrop(raw: string | null): Backdrop {
     if (typeof parsed !== "object" || parsed === null) return DEFAULT_BACKDROP;
     const record = parsed as Record<string, unknown>;
     if (record.kind === "gradient" && typeof record.id === "string" && record.id.length > 0) {
-      return { kind: "gradient", id: record.id };
+      return { kind: "gradient", id: record.id, ...dimOf(record.dim) };
     }
     if (record.kind === "custom-gradient" && isGradientValue(record.light)) {
-      return { kind: "custom-gradient", light: record.light, dark: isGradientValue(record.dark) ? record.dark : record.light };
+      return {
+        kind: "custom-gradient",
+        light: record.light,
+        dark: isGradientValue(record.dark) ? record.dark : record.light,
+        ...dimOf(record.dim),
+      };
     }
     if (record.kind === "image") {
       const fit = BACKDROP_FITS.includes(record.fit as BackdropFit) ? (record.fit as BackdropFit) : "cover";
       return { kind: "image", fit, blur: clamp(record.blur, MAX_BACKDROP_BLUR), dim: clamp(record.dim, MAX_BACKDROP_DIM) };
     }
     if (record.kind === "scene") {
-      return { kind: "scene", stamp: typeof record.stamp === "number" && Number.isFinite(record.stamp) ? record.stamp : 0 };
+      return {
+        kind: "scene",
+        stamp: typeof record.stamp === "number" && Number.isFinite(record.stamp) ? record.stamp : 0,
+        ...dimOf(record.dim),
+      };
     }
     return DEFAULT_BACKDROP;
   } catch {
@@ -233,6 +264,11 @@ export function applyBackdrop(backdrop: Backdrop): void {
   }
   root.style.setProperty("--backdrop-light", layers.light);
   root.style.setProperty("--backdrop-dark", layers.dark);
+  // The scrim is kind-agnostic (globals.css) and always was; only the WRITE
+  // was image-only. A gradient can swallow the text over it just as readily.
+  if (backdrop.dim !== undefined && backdrop.dim > 0) {
+    root.style.setProperty("--backdrop-dim", `${Math.min(MAX_BACKDROP_DIM, Math.max(0, Math.round(backdrop.dim)))}%`);
+  }
   // A composed scene positions each of its image layers individually; the
   // lists arrive resolved, one comma entry per layer.
   if (layers.size) root.style.setProperty("--backdrop-size", layers.size);
@@ -242,4 +278,4 @@ export function applyBackdrop(backdrop: Backdrop): void {
 
 /** Pre-paint application; same contract as APPEARANCE_INIT_SCRIPT (inline in
  *  <head>, dependency-free, fails to "no scene" on any error). */
-export const BACKDROP_INIT_SCRIPT = `(function(){try{var d=document.documentElement;var b=JSON.parse(localStorage.getItem('${BACKDROP_KEY}')||'null');if(!b||typeof b!=='object'||b.kind==='none'||!b.kind)return;if(b.kind==='image'){var img=localStorage.getItem('${BACKDROP_IMAGE_KEY}');if(!img||img.indexOf('data:image/')!==0)return;d.setAttribute('data-backdrop','image');var u='url("'+img+'")';d.style.setProperty('--backdrop-light',u);d.style.setProperty('--backdrop-dark',u);d.style.setProperty('--backdrop-size',b.fit==='fill'?'100% 100%':b.fit==='tile'?'auto':'cover');d.style.setProperty('--backdrop-repeat',b.fit==='tile'?'repeat':'no-repeat');if(typeof b.blur==='number'&&b.blur>0)d.style.setProperty('--backdrop-blur',Math.min(${MAX_BACKDROP_BLUR},Math.round(b.blur))+'px');if(typeof b.dim==='number'&&b.dim>0)d.style.setProperty('--backdrop-dim',Math.min(${MAX_BACKDROP_DIM},Math.round(b.dim))+'%');return;}if(b.kind!=='gradient'&&b.kind!=='custom-gradient'&&b.kind!=='scene')return;var c=JSON.parse(localStorage.getItem('${BACKDROP_CSS_KEY}')||'null');if(!c||typeof c.light!=='string')return;d.setAttribute('data-backdrop',b.kind);d.style.setProperty('--backdrop-light',c.light);d.style.setProperty('--backdrop-dark',typeof c.dark==='string'?c.dark:c.light);['size','position','repeat'].forEach(function(k){if(typeof c[k]==='string')d.style.setProperty('--backdrop-'+k,c[k]);});}catch(e){}})();`;
+export const BACKDROP_INIT_SCRIPT = `(function(){try{var d=document.documentElement;var b=JSON.parse(localStorage.getItem('${BACKDROP_KEY}')||'null');if(!b||typeof b!=='object'||b.kind==='none'||!b.kind)return;if(b.kind==='image'){var img=localStorage.getItem('${BACKDROP_IMAGE_KEY}');if(!img||img.indexOf('data:image/')!==0)return;d.setAttribute('data-backdrop','image');var u='url("'+img+'")';d.style.setProperty('--backdrop-light',u);d.style.setProperty('--backdrop-dark',u);d.style.setProperty('--backdrop-size',b.fit==='fill'?'100% 100%':b.fit==='tile'?'auto':'cover');d.style.setProperty('--backdrop-repeat',b.fit==='tile'?'repeat':'no-repeat');if(typeof b.blur==='number'&&b.blur>0)d.style.setProperty('--backdrop-blur',Math.min(${MAX_BACKDROP_BLUR},Math.round(b.blur))+'px');if(typeof b.dim==='number'&&b.dim>0)d.style.setProperty('--backdrop-dim',Math.min(${MAX_BACKDROP_DIM},Math.round(b.dim))+'%');return;}if(b.kind!=='gradient'&&b.kind!=='custom-gradient'&&b.kind!=='scene')return;var c=JSON.parse(localStorage.getItem('${BACKDROP_CSS_KEY}')||'null');if(!c||typeof c.light!=='string')return;d.setAttribute('data-backdrop',b.kind);d.style.setProperty('--backdrop-light',c.light);d.style.setProperty('--backdrop-dark',typeof c.dark==='string'?c.dark:c.light);['size','position','repeat'].forEach(function(k){if(typeof c[k]==='string')d.style.setProperty('--backdrop-'+k,c[k]);});if(typeof b.dim==='number'&&b.dim>0)d.style.setProperty('--backdrop-dim',Math.min(${MAX_BACKDROP_DIM},Math.round(b.dim))+'%');}catch(e){}})();`;
