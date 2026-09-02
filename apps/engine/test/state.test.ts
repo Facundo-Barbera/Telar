@@ -1277,6 +1277,36 @@ test("a days-shaped inbox document from before the hours move still means what i
   expect(store.getInboxPolicy()).toEqual({ autoSettleAfterHours: null });
 });
 
+test("the standing session defaults round-trip, and refuse a mode that is not one", () => {
+  // WHAT A SESSION IS BUILT WITH WHEN NOBODY SAID. `local` is what the engine
+  // did before this document existed, so an install that never opens the
+  // settings page behaves exactly as it always has.
+  const { store } = readyStore();
+  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
+
+  expect(store.setSessionDefaults({ envMode: "worktree" })).toEqual({ envMode: "worktree" });
+  expect(store.getSessionDefaults()).toEqual({ envMode: "worktree" });
+  // An empty patch changes nothing rather than resetting anything.
+  expect(store.setSessionDefaults({})).toEqual({ envMode: "worktree" });
+
+  for (const bad of ["", "detached", 1, null]) {
+    expect(() => store.setSessionDefaults({ envMode: bad })).toThrow(EngineStateError);
+  }
+  // …and the refusal left the stored answer alone.
+  expect(store.getSessionDefaults()).toEqual({ envMode: "worktree" });
+});
+
+test("a malformed session-defaults document costs the preference, never the session", () => {
+  // Read on the CREATE path, which is why the never-throws rule matters more
+  // here than anywhere: garbage in this file must not make sessions unopenable.
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "session-defaults.json"), '{"version":1,"envMode":"elsewhere"}');
+  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
+  fs.writeFileSync(path.join(stateRoot, "session-defaults.json"), "not json at all");
+  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
+  expect(() => store.createSession({ id: "session_two", projectId: "project_one" })).not.toThrow();
+});
+
 test("a malformed inbox document costs the preference, never the sidebar", () => {
   // EVERY OTHER REGISTRY HERE REFUSES TO PARSE GARBAGE, because a malformed MCP
   // server is a server that must not run. A malformed settling window is a

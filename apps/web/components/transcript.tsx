@@ -452,6 +452,33 @@ function renderable(items: JournalItem[]): JournalItem[] {
 }
 
 /**
+ * The tasks the CONVERSATION shows, which is not every task in the turn.
+ *
+ * A BACKGROUNDED SHELL IS NOT A DELEGATE, and drawing it as one was a hole this
+ * file kept open after `Task.kind` was introduced: the Processes tab took the
+ * split, `turnActivity` below took the split, and the chips did not — so a
+ * `bun run verify` came back as a bot-icon row titled with the command and
+ * "0 steps", which reads as a sub-agent that never reported. It reported fine.
+ * It has no steps because a background shell produces no journal items; its
+ * output streams to the turn that started it.
+ *
+ * DROPPED RATHER THAN RESTYLED, and nothing is lost by dropping it: the tool
+ * call that backgrounded the shell is already an ordinary `Ran command` row in
+ * this same turn. The chip was a second, worse telling of a thing the
+ * transcript had already said, and the live process belongs on the Processes
+ * tab, where it can be watched and stopped.
+ *
+ * A WARP RUN SURVIVES THE FILTER. Its own row is `background` — it outlives its
+ * turn — but it carries warp linkage, and it is the row that says a fan-out
+ * happened at all. Dropping it would leave its agents as loose chips under no
+ * heading. This is the same "kind split happens AFTER the warp fold" rule
+ * `splitRoster` states in right-panel.tsx, applied to a flat list.
+ */
+export function transcriptTasks(tasks: readonly JournalTask[]): JournalTask[] {
+  return tasks.filter((task) => task.kind !== "background" || Boolean(task.warp));
+}
+
+/**
  * A run of activity rows: a rolling window while live, a tally once settled.
  * Both are the same sentence at two scales, so the grammar is learned once.
  */
@@ -466,14 +493,18 @@ export function ActivityGroup({
   tasks: JournalTask[];
   onOpenAgent?: (taskId: string) => void;
 }) {
-  const anyFailed = useMemo(() => items.some(failed) || tasks.some((task) => task.state === "failed"), [items, tasks]);
+  // DERIVED ONCE, and everything below reads the derived list — a background
+  // shell must not colour the fold red or hold an otherwise-empty group open
+  // for a chip that is not going to be drawn.
+  const delegates = useMemo(() => transcriptTasks(tasks), [tasks]);
+  const anyFailed = useMemo(() => items.some(failed) || delegates.some((task) => task.state === "failed"), [items, delegates]);
   const [open, setOpen] = useState(false);
   const rows = renderable(items);
-  if (rows.length === 0 && tasks.length === 0) return null;
+  if (rows.length === 0 && delegates.length === 0) return null;
 
   // Sub-agents are never hidden by the window: THAT a fan-out happened is part
   // of the conversation even when what it did is on another surface.
-  const agents = tasks.map((task) => <AgentChip key={task.id} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />);
+  const agents = delegates.map((task) => <AgentChip key={task.id} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />);
 
   if (live) {
     const hidden = Math.max(0, rows.length - 1);

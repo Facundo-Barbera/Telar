@@ -23,7 +23,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { InboxIcon, InfoIcon, PaletteIcon, PlugIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
+import { InfoIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
@@ -35,6 +35,7 @@ import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
 import { TextGenSection } from "./textgen-section";
 import { UpdatesSection } from "./updates-section";
+import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
 
@@ -47,16 +48,27 @@ const api = createEngineApi();
  * neighbour, because a side-nav where most destinations are one group deep
  * makes every setting harder to find, not easier:
  *
- *   - Sessions = the old Inbox + Text generation. Both decide how a session
- *     presents itself — when it leaves the list, what names it wears.
+ *   - General = the old Sessions (Inbox + Text generation) plus the standing
+ *     workspace choice. See below for why it is first.
  *   - Agent tools = the old MCP servers + Permissions. Both decide what a
  *     session's agent can reach beyond the repo.
  *   - Application = the old Updates + About. Both are facts about THIS
  *     INSTALL — its version, its channel, where its state lives.
+ *
+ * GENERAL IS FIRST, AND IS WHERE SETTINGS OPENS. The pane used to land on
+ * Appearance, which put a theme editor in front of somebody who came here to
+ * change how their work behaves — the most decorative screen in the app as the
+ * answer to "settings". General is the ordinary set: what a new session is
+ * built with, when one leaves your list, who names it. Appearance keeps its
+ * pane and loses the front door.
+ *
+ * "SESSIONS" BECAME "GENERAL" rather than gaining a sibling. Its rows were
+ * already the general ones, and a General pane beside a Sessions pane would
+ * make every reader guess which of the two holds the row they want.
  */
 const SECTIONS: SettingsSection[] = [
+  { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Cockpit" },
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
-  { id: "sessions", label: "Sessions", icon: InboxIcon, group: "Cockpit" },
   /**
    * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
    * a fact about the install, not about the machine that runs turns (the
@@ -75,8 +87,9 @@ const SECTIONS: SettingsSection[] = [
  * the default pane.
  */
 const SECTION_ALIASES: Record<string, string> = {
-  inbox: "sessions",
-  textgen: "sessions",
+  sessions: "general",
+  inbox: "general",
+  textgen: "general",
   mcp: "tools",
   permissions: "tools",
   updates: "application",
@@ -134,7 +147,7 @@ const SECTION_IDS = SECTIONS.map((section) => section.id);
 export function SettingsPage() {
   // `?section=mcp` is how a sign-in gets the user back to the pane they left —
   // see use-section-from-url.ts for the failure that made this necessary.
-  const [active, setActive] = useSectionFromUrl("appearance", SECTION_IDS, SECTION_ALIASES);
+  const [active, setActive] = useSectionFromUrl("general", SECTION_IDS, SECTION_ALIASES);
   const [about, setAbout] = useState<{ appVersion: string; stateRoot?: string }>();
   const [health, setHealth] = useState<EngineHealth>();
   const [unreachable, setUnreachable] = useState(false);
@@ -173,8 +186,12 @@ export function SettingsPage() {
     >
       {active === "appearance" && <AppearanceSection />}
 
-      {active === "sessions" && (
+      {/* WORKSPACE FIRST: it is the only row here that decides what gets BUILT,
+          and it is read before the session exists. Settling and naming both
+          describe a session that is already running. */}
+      {active === "general" && (
         <>
+          <WorkspaceSection />
           <InboxSection />
           <TextGenSection />
         </>

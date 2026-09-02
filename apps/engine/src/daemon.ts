@@ -709,6 +709,24 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * What a session is created with when the caller didn't say. A document
+       * of the environment, like the inbox rule above — and read on the create
+       * path, so every client that stays quiet builds the same thing.
+       */
+      if (url.pathname === "/v2/session-defaults" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { sessionDefaults: store.getSessionDefaults() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          sessionDefaults: store.setSessionDefaults({
+            ...("envMode" in input ? { envMode: input.envMode } : {}),
+          }),
+        });
+        return;
+      }
+      /**
        * COMPUTER USE, MEASURED. The GET runs one real read-only call through
        * the Sky client, because that is the only honest answer to "is the
        * Automation grant in place" — and when the grant is still undecided,

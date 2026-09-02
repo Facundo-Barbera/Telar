@@ -12,6 +12,7 @@ import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
   type BrowserSnapshot,
+  type EnvMode,
   type GitCommitEntry,
   forgeQuery,
   type GitHubCheckLog,
@@ -27,6 +28,7 @@ import {
   type ComputerUseBackend,
   type ComputerUseStatus,
   type InboxPolicy,
+  type SessionDefaults,
   type TextGenPolicy,
   type UsageReport,
   type UsageResolution,
@@ -271,6 +273,16 @@ export class EngineClient {
 
   setInboxPolicy(patch: { autoSettleAfterHours?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  /** What a session is created with when the caller didn't say — see
+   *  `SessionDefaults`. Environment-wide, like the inbox rule above. */
+  sessionDefaults(): Promise<{ sessionDefaults: SessionDefaults }> {
+    return this.request("GET", "/v2/session-defaults");
+  }
+
+  setSessionDefaults(patch: { envMode?: EnvMode }): Promise<{ sessionDefaults: SessionDefaults }> {
+    return this.request("PATCH", "/v2/session-defaults", patch);
   }
 
   /**

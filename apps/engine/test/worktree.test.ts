@@ -159,6 +159,38 @@ test("a session created with envMode worktree records its branch and base", () =
   expect(store.claimNextTurn("worker_one")?.projectRoot).toBe(session.workspace.path);
 });
 
+test("the standing default decides an omitted envMode, and an explicit one still wins", () => {
+  // THE SETTING IS A REAL DEFAULT, not a pre-ticked box in the composer: a
+  // caller that says nothing — the MCP toolkit, an API client — builds what the
+  // preference says.
+  const projectRoot = repo();
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.setSessionDefaults({ envMode: "worktree" });
+
+  const silent = store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(silent.envMode).toBe("worktree");
+  expect(silent.workspace.mode).toBe("worktree");
+
+  // A caller who ASKED for the shared checkout gets it regardless.
+  const asked = store.createSession({ id: "session_two", projectId: "project_one", envMode: "local" });
+  expect(asked.envMode).toBe("local");
+});
+
+test("the worktree default yields on an unversioned project, but a stated worktree still throws", () => {
+  // `createSessionWorktree` refuses a directory that is not a repo — right for
+  // a caller who asked for a worktree, and wrong for one who asked for nothing
+  // and would otherwise be unable to open a session in that project at all.
+  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
+  store.setSessionDefaults({ envMode: "worktree" });
+
+  const silent = store.createSession({ id: "session_one", projectId: "project_one" });
+  expect(silent.envMode).toBe("local");
+
+  expect(() => store.createSession({ id: "session_two", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
+});
+
 test("a failed worktree cut leaves no half-created session behind", () => {
   // The worktree is cut BEFORE the session document is written, so there is
   // nothing to repair on read.
