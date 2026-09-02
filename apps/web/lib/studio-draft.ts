@@ -12,25 +12,15 @@
  * that has not been through `applyLook` yet. Apply is therefore not a
  * conversion; it is `applyLook` on a value that was already the right type.
  *
- * EVERYTHING HERE IS PURE EXCEPT `newDraftFromCurrent`. The updaters return a
- * new draft rather than mutating, which is what lets the studio's Escape-with-
- * confirm compare against the draft it opened with by identity, and what lets
- * the chat merge be a function rather than a sequence of setState calls.
+ * THE UPDATERS ARE PURE — a new draft out for a draft in, which is what lets
+ * the studio keep an undo history of plain values and lets the chat merge be
+ * a function rather than a sequence of setState calls. The only impure code
+ * here is the storage edge: `newDraftFromCurrent` (reads the stores) and the
+ * persistence block (the draft and transcript surviving navigation).
  *
- * WHY THE STAGE NEEDS ITS OWN VARS. The preview must paint the DRAFT while the
- * surrounding app keeps painting the reader's real theme, so it cannot use the
- * live `--background`/`--foreground`: it declares its own on a container, and
- * every Tailwind colour utility inside resolves them from there (globals.css's
- * `@theme inline` block maps `--color-background: var(--background)`, so the
- * lookup happens at the USE site — the one property that makes this work).
- *
- * WHY THE ACCENT HUES ARE RESTATED BELOW. `--primary` is not a theme token: it
- * lives in globals.css's `[data-accent="…"]` blocks, and the settings swatches
- * reach it by wearing the attribute rather than by copying the value. The stage
- * cannot do that — `data-accent` on the stage would retint from the LIVE
- * scheme class, not the stage's own light/dark toggle — so this file keeps a
- * small mirror of those blocks. It is a copy, and it is documented as one:
- * ACCENT_PRIMARY must be edited whenever those blocks are.
+ * There is no mock stage any more — the draft is previewed on the document
+ * itself (lib/studio-preview.ts), so this file no longer restates accent hues
+ * or compiles per-container variables.
  */
 
 import {
@@ -45,7 +35,7 @@ import {
 import { composeGradient } from "./backdrop-presets";
 import { captureLook, parseLook, type Look, type LookBackdrop } from "./looks";
 import { composeScene, SCENE_LIMITS, type Scene } from "./scene-composer";
-import { cssColorToHex, THEME_TOKENS, type ThemeToken } from "./theme-palettes";
+import { concreteHalf, cssColorToHex, THEME_TOKENS, type ThemeDefinition, type ThemeToken } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
 
 /** The draft IS a Look — see the header. The alias exists so the studio's own
@@ -54,39 +44,39 @@ export type StudioDraft = Look;
 
 export type StudioMode = "light" | "dark";
 
-/* ------------------------------------------------------------- the accent */
-
-/**
- * A MIRROR OF globals.css's `[data-accent="…"]` BLOCKS, for the one consumer
- * that cannot wear the attribute (see the header). Light `--primary` is
- * `oklch(0.488 C H)` with a white foreground; dark is `oklch(0.68 C H)` with
- * `oklch(0.17 0.04 H)`. Indigo is the base pair and has no block there.
- */
-const ACCENT_PRIMARY: Record<Accent, { chromaLight: number; chromaDark: number; hue: number }> = {
-  indigo: { chromaLight: 0.16, chromaDark: 0.16, hue: 264 },
-  sky: { chromaLight: 0.15, chromaDark: 0.15, hue: 240 },
-  sea: { chromaLight: 0.1, chromaDark: 0.11, hue: 205 },
-  moss: { chromaLight: 0.11, chromaDark: 0.13, hue: 140 },
-  amber: { chromaLight: 0.12, chromaDark: 0.14, hue: 70 },
-  rose: { chromaLight: 0.17, chromaDark: 0.17, hue: 15 },
-  plum: { chromaLight: 0.16, chromaDark: 0.15, hue: 325 },
-  violet: { chromaLight: 0.17, chromaDark: 0.16, hue: 293 },
-};
-
-/** The accent's `--primary` and `--primary-foreground` for one scheme. */
-export function accentPrimary(accent: Accent, mode: StudioMode): { primary: string; primaryForeground: string } {
-  const spec = ACCENT_PRIMARY[accent] ?? ACCENT_PRIMARY.indigo;
-  return mode === "light"
-    ? { primary: `oklch(0.488 ${spec.chromaLight} ${spec.hue})`, primaryForeground: "oklch(1 0 0)" }
-    : { primary: `oklch(0.68 ${spec.chromaDark} ${spec.hue})`, primaryForeground: `oklch(0.17 0.04 ${spec.hue})` };
-}
-
 /* --------------------------------------------------------------- opening */
 
 /** A draft that starts where the reader already is: their whole current look,
- *  photographed. Impure — this is the one function here that reads storage. */
+ *  photographed. Impure — it reads the stores. */
 export function newDraftFromCurrent(label = "New look"): StudioDraft {
   return captureLook(label);
+}
+
+/**
+ * A saved Look opened INTO the studio — the id survives, which is the whole
+ * point: Save updates the card it came from instead of breeding a copy, and
+ * Apply installs the same `look-<id>` theme wearing it directly would. The
+ * halves are copied because the updaters spread them; everything else is
+ * replaced wholesale when edited.
+ */
+export function draftFromLook(look: Look): StudioDraft {
+  return { ...look, theme: { light: { ...look.theme.light }, dark: { ...look.theme.dark } } };
+}
+
+/**
+ * A library theme loaded into the draft — the library is where a palette comes
+ * FROM now, not a switch that retints the app under the studio. Both halves
+ * land concrete; the draft keeps its backdrop, accent and type, because a
+ * palette is not a whole look.
+ */
+export function loadThemeIntoDraft(draft: StudioDraft, theme: ThemeDefinition): StudioDraft {
+  return { ...draft, label: theme.label, theme: { light: concreteHalf(theme, "light"), dark: concreteHalf(theme, "dark") } };
+}
+
+/** One half from one theme — the orb click, drafted: Ember's day over the
+ *  draft's night. */
+export function loadThemeHalfIntoDraft(draft: StudioDraft, mode: StudioMode, theme: ThemeDefinition): StudioDraft {
+  return { ...draft, theme: { ...draft.theme, [mode]: concreteHalf(theme, mode) } };
 }
 
 /* ---------------------------------------------------------- persistence */
@@ -239,71 +229,6 @@ export function draftScenePreset(draft: StudioDraft): { presetId: string; opacit
   return { presetId: only.presetId, opacity: only.opacity };
 }
 
-/* ------------------------------------------------------------ the stage */
-
-/**
- * The half's sixteen tokens as an inline custom-property map, plus the two the
- * accent owns. Handed to the stage container's `style`; every utility inside
- * resolves against it (see the header).
- */
-export function draftCssVars(draft: StudioDraft, mode: StudioMode): Record<string, string> {
-  const half = draft.theme[mode];
-  const vars: Record<string, string> = {};
-  for (const token of THEME_TOKENS) vars[`--${token}`] = half[token];
-  const { primary, primaryForeground } = accentPrimary(draft.accent, mode);
-  vars["--primary"] = primary;
-  vars["--primary-foreground"] = primaryForeground;
-  // Not theme tokens, but the stage's rail and hairlines read them and an
-  // unset value would fall through to the LIVE theme's.
-  vars["--sidebar-foreground"] = half.foreground;
-  vars["--sidebar-border"] = half.border;
-  vars["--ring"] = primary;
-  return vars;
-}
-
-export type BackdropCss = {
-  backgroundImage: string;
-  backgroundSize: string;
-  backgroundPosition: string;
-  backgroundRepeat: string;
-};
-
-const NO_BACKDROP: BackdropCss = { backgroundImage: "none", backgroundSize: "cover", backgroundPosition: "center", backgroundRepeat: "no-repeat" };
-
-/**
- * What the stage's scene div paints. The gradient and scene kinds already
- * carry their resolved CSS (that is why a Look is self-contained), so this is
- * a lookup for them; an IMAGE has no resolved layers — its choice resolves
- * through a storage key at apply time — so its url() is built here, with `dim`
- * as a flat wash over the top.
- *
- * `blur` is deliberately NOT honoured: it is a filter on the real backdrop
- * element, not a background property, and the stage is a mock rather than a
- * second renderer. The Scene tool says so rather than pretending.
- */
-export function draftBackdropCss(draft: StudioDraft, mode: StudioMode): BackdropCss {
-  const backdrop = draft.backdrop;
-  if (backdrop.kind === "none") return NO_BACKDROP;
-  if (backdrop.kind === "image") {
-    if (!backdrop.image.startsWith("data:image/")) return NO_BACKDROP;
-    const wash = backdrop.dim > 0 ? `linear-gradient(oklch(0 0 0 / ${backdrop.dim}%), oklch(0 0 0 / ${backdrop.dim}%)), ` : "";
-    const size = backdrop.fit === "cover" ? "cover" : backdrop.fit === "fill" ? "100% 100%" : "auto";
-    return {
-      backgroundImage: `${wash}url("${backdrop.image}")`,
-      backgroundSize: backdrop.dim > 0 ? `cover, ${size}` : size,
-      backgroundPosition: backdrop.dim > 0 ? "center, center" : "center",
-      backgroundRepeat: backdrop.fit === "tile" ? (backdrop.dim > 0 ? "no-repeat, repeat" : "repeat") : backdrop.dim > 0 ? "no-repeat, no-repeat" : "no-repeat",
-    };
-  }
-  const resolved = backdrop.resolved;
-  return {
-    backgroundImage: mode === "light" ? resolved.light : resolved.dark,
-    backgroundSize: resolved.size ?? "cover",
-    backgroundPosition: resolved.position ?? "center",
-    backgroundRepeat: resolved.repeat ?? "no-repeat",
-  };
-}
-
 /* ------------------------------------------------- the chat's merge */
 
 /**
@@ -384,10 +309,3 @@ export function buildStudioPrompt(draft: StudioDraft, instruction: string, build
   ].join("\n");
 }
 
-/** Whether a draft has moved from the look it was opened on — what Escape
- *  asks about before throwing the work away. Compared as JSON because a Look
- *  is a plain value with no functions and no cycles, and `id` is stable across
- *  every updater above, so a false positive is impossible. */
-export function draftIsDirty(draft: StudioDraft, original: StudioDraft): boolean {
-  return JSON.stringify(draft) !== JSON.stringify(original);
-}

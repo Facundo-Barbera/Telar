@@ -344,6 +344,12 @@ function findTheme(state: ThemeState, id: string): ThemeDefinition | undefined {
   return BUILT_IN_THEMES.find((theme) => theme.id === id) ?? state.custom.find((theme) => theme.id === id);
 }
 
+/** A random suffix beside the timestamp: two ids minted in the same
+ *  millisecond (duplicate, duplicate) must not collide and overwrite. */
+function newCustomThemeId(): string {
+  return `custom-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+
 /** Every write funnels here so the COMPILED cache can never go stale against
  *  the choice it caches. */
 function write(next: Partial<{ active: ActivePair; custom: ThemeDefinition[] }>): void {
@@ -388,8 +394,11 @@ export function useThemeLibrary(): {
   setHalf: (mode: "light" | "dark", id: string) => void;
   saveCustom: (theme: ThemeDefinition) => void;
   removeCustom: (id: string) => void;
-  duplicate: (id: string) => string | undefined;
-  importTheme: (raw: string) => string | undefined;
+  /** Returns the copy so the caller can load it straight into the draft. */
+  duplicate: (id: string) => ThemeDefinition | undefined;
+  /** Adds to the library WITHOUT wearing it — the studio decides what happens
+   *  next. Returns the added theme, or undefined for an unreadable file. */
+  importTheme: (raw: string) => ThemeDefinition | undefined;
 } {
   const state = useSyncExternalStore(subscribe, readState, () => SERVER_STATE);
 
@@ -413,21 +422,21 @@ export function useThemeLibrary(): {
     const source = findTheme(current, id);
     if (!source) return undefined;
     const copy: ThemeDefinition = {
-      id: `custom-${Date.now().toString(36)}`,
+      id: newCustomThemeId(),
       label: `${source.label} copy`,
       light: concreteHalf(source, "light"),
       dark: concreteHalf(source, "dark"),
     };
     write({ custom: [...current.custom, copy] });
-    return copy.id;
+    return copy;
   }, []);
 
   const importTheme = useCallback((raw: string) => {
     const parsed = parseThemeFile(raw);
     if (!parsed) return undefined;
-    const theme: ThemeDefinition = { id: `custom-${Date.now().toString(36)}`, ...parsed };
-    write({ custom: [...readState().custom, theme], active: { light: theme.id, dark: theme.id } });
-    return theme.id;
+    const theme: ThemeDefinition = { id: newCustomThemeId(), ...parsed };
+    write({ custom: [...readState().custom, theme] });
+    return theme;
   }, []);
 
   return useMemo(

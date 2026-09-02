@@ -1,43 +1,27 @@
 "use client";
 
 /**
- * LOOKS — save the whole appearance, wear it back, send it to someone.
+ * LOOKS — the shelf of whole appearances, and where a design session starts.
  *
- * Everything else on this pane edits ONE axis. This group is the axis-free
- * one: a card here is the theme AND the backdrop AND the accent AND the type
- * AND the translucency strength, captured together (lib/looks.ts states what
- * is in the bundle and, just as importantly, why the desktop translucency
- * TOGGLE is not).
+ * A card here is the theme AND the backdrop AND the accent AND the type AND
+ * the translucency strength, captured together (lib/looks.ts states what is in
+ * the bundle and why the desktop translucency TOGGLE is not).
  *
- * IT IS A STRIP ACROSS THE TOP OF THE EDITOR, because a Look is the biggest
- * unit on the pane: someone arriving to change how the app feels should be
- * offered the whole answer before the parts of it. Everything below — the
- * stage, the designer, the inspector — is how you BUILD one. The strip scrolls
- * sideways rather than growing a second row, so the editor underneath keeps
- * its height whether the shelf holds one look or twelve.
+ * OPENING A LOOK IS A DRAFT EDIT, like everything else on the pane now:
+ * clicking a card loads the whole Look into the studio draft, which the
+ * preview paints on the app instantly — it LOOKS worn, but nothing persists
+ * until Apply. The id rides along, so Save updates this card rather than
+ * copying it. Import goes the same way: the file becomes a card and opens as
+ * the draft, previewed rather than auto-worn.
  *
- * WEARING ONE IS A LIVE CHANGE, deliberately: it is the only control here that
- * says "I want this now" rather than "I am trying something". Everything the
- * studio drafts goes the other way — onto the stage, and into the app only on
- * Apply, which lands here as a new card.
- *
- * THE CARD IDIOM IS THE THEME LIBRARY'S, EXACTLY: same ring, same hover-
- * revealed ghost actions, same download helper, same inline error line on the
- * Row's hint. A Look card is a different noun in the same grammar, and having
- * it look like a second design would suggest it behaves like one.
- *
- * WEARING A LOOK INSTALLS ITS THEME as a real custom theme in the library
- * (`look-${id}`), rather than writing the compiled CSS behind theme-palettes'
- * back. That keeps one owner for the stylesheet cache, and it means the theme
- * you just put on is immediately editable in the group below — wear, then
- * tweak, then save a new Look.
+ * Saving lives in the pane header ("Save look") — one save path, fed by the
+ * draft, instead of the old second button here that captured the live stores
+ * behind the draft's back.
  */
 
 import { useRef, useState } from "react";
 import { CheckIcon, DownloadIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import {
-  applyLook,
-  captureLook,
   lookFilename,
   lookThemeId,
   newLookId,
@@ -50,11 +34,9 @@ import {
   LOOKS_QUOTA_MESSAGE,
   type Look,
 } from "@/lib/looks";
-import { useAppearance } from "@/lib/appearance";
 import { useThemeLibrary } from "@/lib/theme-palettes";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Row, SettingsGroup } from "./settings-shell";
 
 /** What the strip says under the label — the one word that tells you whether
@@ -78,10 +60,8 @@ function downloadFile(filename: string, contents: string): void {
 }
 
 /**
- * The strip: the Look's two CANVAS colours, light beside dark. Not the theme
- * library's orbs — those are a control for wearing one half, and a Look's
- * halves are not separable. Two flat chips read as "one thing with a day and a
- * night", which is what a Look is.
+ * The strip: the Look's two CANVAS colours, light beside dark. Two flat chips
+ * read as "one thing with a day and a night", which is what a Look is.
  */
 function LookStrip({ look }: { look: Look }) {
   return (
@@ -92,26 +72,26 @@ function LookStrip({ look }: { look: Look }) {
   );
 }
 
-function LookCard({ look, active, onWear, onExport, onRemove }: { look: Look; active: boolean; onWear: () => void; onExport: () => void; onRemove: () => void }) {
+function LookCard({ look, active, onOpen, onExport, onRemove }: { look: Look; active: boolean; onOpen: () => void; onExport: () => void; onRemove: () => void }) {
   return (
     <div
       className={cn(
-        // A STRIP, NOT A GRID: the shelf sits across the top of the editor now,
+        // A STRIP, NOT A GRID: the shelf sits across the top of the editor,
         // where it is a place to start from rather than a section to read. A
         // fixed width keeps the cards a scannable rank instead of a ragged one.
         "group flex w-60 shrink-0 cursor-pointer items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
         active && "ring-2 ring-primary",
       )}
-      onClick={onWear}
+      onClick={onOpen}
       role="button"
-      title={`Wear ${look.label}`}
-      aria-label={`Wear ${look.label}`}
+      title={`Open ${look.label} in the studio`}
+      aria-label={`Open ${look.label} in the studio`}
       aria-pressed={active}
       tabIndex={0}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          onWear();
+          onOpen();
         }
       }}
     >
@@ -135,11 +115,9 @@ function LookCard({ look, active, onWear, onExport, onRemove }: { look: Look; ac
   );
 }
 
-export function LooksSection() {
-  const { activeId, saveCustom, setActive } = useThemeLibrary();
-  const { setAppearance } = useAppearance();
+export function LooksSection({ onOpen }: { onOpen: (look: Look) => void }) {
+  const { activeId } = useThemeLibrary();
   const looks = useLooks();
-  const [naming, setNaming] = useState<string>();
   // The MESSAGE, not a flag: "full", "will not fit", and "not a look file" are
   // three different things to do about it (theme-library.tsx's idiom).
   const [error, setError] = useState<string | false>(false);
@@ -157,21 +135,6 @@ export function LooksSection() {
     return true;
   };
 
-  const save = () => {
-    const next = upsertLook(looks, captureLook(naming ?? ""));
-    if (!next) {
-      setError(LOOKS_FULL_MESSAGE);
-      return;
-    }
-    if (commit(next)) setNaming(undefined);
-  };
-
-  const wear = (look: Look) => {
-    // applyLook returns a line only when part of it could not be worn — a
-    // scene or image that would not fit. The rest is on either way.
-    setError(applyLook(look, { saveCustom, setActive }, setAppearance) ?? false);
-  };
-
   const importFile = (raw: string) => {
     const look = parseLookFile(raw, newLookId());
     if (!look) {
@@ -183,55 +146,28 @@ export function LooksSection() {
       setError(LOOKS_FULL_MESSAGE);
       return;
     }
-    if (commit(next)) wear(look);
+    // Shelved, then opened as the draft — previewed on the app, worn on Apply.
+    if (commit(next)) onOpen(look);
   };
 
   return (
     <SettingsGroup
       title="Looks"
-      description="The whole appearance as one thing — theme, backdrop, accent, type and translucency, saved together and shareable as a file."
+      description="The whole appearance as one thing — theme, backdrop, accent, type and strength, saved together and shareable as a file."
     >
       <Row
         label="Saved looks"
         hint={
           error
             ? error
-            : "Click a look to wear it. The desktop translucency switch is never part of one — that is a property of the machine, not of the look."
+            : "Click a look to open it in the studio — the app previews it instantly, and Apply wears it. Save look, above, updates the card a draft came from."
         }
         control={
-          <div className="flex items-center gap-1.5">
-            <Button size="sm" variant="outline" onClick={() => fileInput.current?.click()}>
-              <UploadIcon /> Import
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setNaming((current) => (current === undefined ? "" : undefined))}>
-              Save current look…
-            </Button>
-          </div>
+          <Button size="sm" variant="outline" onClick={() => fileInput.current?.click()}>
+            <UploadIcon /> Import
+          </Button>
         }
-      >
-        {naming !== undefined && (
-          <div className="mt-2 flex items-center gap-1.5">
-            <Input
-              autoFocus
-              className="max-w-64"
-              value={naming}
-              placeholder="e.g. Deep sea night"
-              aria-label="Look name"
-              onChange={(event) => setNaming(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") save();
-                if (event.key === "Escape") setNaming(undefined);
-              }}
-            />
-            <Button size="sm" onClick={save}>
-              Save
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setNaming(undefined)}>
-              Cancel
-            </Button>
-          </div>
-        )}
-      </Row>
+      />
       <div className="px-4 py-3">
         <input
           ref={fileInput}
@@ -249,7 +185,7 @@ export function LooksSection() {
         />
         {looks.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            Nothing saved yet. Get the app looking how you want it, then save that as a look you can come back to — or send to another machine.
+            Nothing saved yet. Get the draft looking how you want it, then press Save look — the card lands here, and travels as a file.
           </p>
         ) : (
           <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
@@ -258,10 +194,8 @@ export function LooksSection() {
                 key={look.id}
                 look={look}
                 // Worn = the library is wearing the theme this Look installs.
-                // The backdrop and type can be edited afterwards, so this is
-                // deliberately "you started from here", not "nothing changed".
                 active={activeId === lookThemeId(look)}
-                onWear={() => wear(look)}
+                onOpen={() => onOpen(look)}
                 onExport={() => downloadFile(lookFilename(look), serializeLook(look))}
                 onRemove={() => commit(looks.filter((entry) => entry.id !== look.id))}
               />

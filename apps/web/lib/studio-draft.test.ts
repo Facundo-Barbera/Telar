@@ -1,28 +1,33 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
-  accentPrimary,
   buildStudioPrompt,
   describeDraft,
   designSummary,
-  draftBackdropCss,
-  draftCssVars,
-  draftIsDirty,
+  draftFromLook,
   draftScenePreset,
+  loadThemeHalfIntoDraft,
+  loadThemeIntoDraft,
   mergeDesignIntoDraft,
   patchDraftAccent,
   patchDraftHalf,
   patchDraftStrength,
   patchDraftToken,
   patchDraftType,
+  readStudioChat,
+  readStudioDraft,
   replaceDraftBackdrop,
   scenePresetBackdrop,
   setDraftLabel,
+  STUDIO_CHAT_KEY,
+  STUDIO_DRAFT_KEY,
+  writeStudioChat,
+  writeStudioDraft,
   type StudioDraft,
 } from "./studio-draft";
 import { MAX_FONT_SIZE, MIN_FONT_SIZE } from "./appearance";
 import { BACKDROP_PRESETS } from "./backdrop-presets";
-import { TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
+import { BUILT_IN_THEMES, concreteHalf, TELAR_DARK, TELAR_LIGHT } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
 
 const PRESET_ID = BACKDROP_PRESETS[0]!.id;
@@ -131,76 +136,94 @@ describe("the scene tool's one-layer backdrop", () => {
   });
 });
 
-describe("the stage's variables", () => {
-  test("every theme token becomes a custom property of the same name", () => {
-    const vars = draftCssVars(draft(), "light");
-    for (const token of THEME_TOKENS) expect(vars[`--${token}`]).toBe(TELAR_LIGHT[token]);
+describe("sources load into the draft", () => {
+  test("a Look opens with its id intact, halves copied", () => {
+    const look = draft({ id: "look-kept", label: "Deep Sea" });
+    const opened = draftFromLook(look);
+    expect(opened.id).toBe("look-kept");
+    expect(opened.theme.light).toEqual(look.theme.light);
+    expect(opened.theme.light).not.toBe(look.theme.light);
+    // Editing the opened draft leaves the shelf's Look untouched.
+    const edited = patchDraftToken(opened, "light", "background", "#123456");
+    expect(edited.theme.light.background).toBe("#123456");
+    expect(look.theme.light.background).toBe(TELAR_LIGHT.background);
   });
 
-  test("the accent supplies --primary, and it differs by scheme", () => {
-    const light = draftCssVars(patchDraftAccent(draft(), "amber"), "light");
-    const dark = draftCssVars(patchDraftAccent(draft(), "amber"), "dark");
-    expect(light["--primary"]).toBe(accentPrimary("amber", "light").primary);
-    expect(dark["--primary"]).toBe(accentPrimary("amber", "dark").primary);
-    expect(light["--primary"]).not.toBe(dark["--primary"]);
-    expect(light["--primary-foreground"]).toBe("oklch(1 0 0)");
+  test("a theme loads both halves concrete and takes its label; the rest of the look stays", () => {
+    const ember = BUILT_IN_THEMES.find((theme) => theme.id === "ember")!;
+    const before = draft({ accent: "plum", fontSize: 17 });
+    const after = loadThemeIntoDraft(before, ember);
+    expect(after.label).toBe("Ember");
+    expect(after.theme.light).toEqual(concreteHalf(ember, "light"));
+    expect(after.theme.dark).toEqual(concreteHalf(ember, "dark"));
+    expect(after.accent).toBe("plum");
+    expect(after.fontSize).toBe(17);
+    expect(after.id).toBe(before.id);
   });
 
-  test("the accent mirror matches globals.css's own numbers", () => {
-    // The values these blocks hold — a drift here is a stage that paints a
-    // different button colour from the one applying the draft would give.
-    expect(accentPrimary("indigo", "light").primary).toBe("oklch(0.488 0.16 264)");
-    expect(accentPrimary("sea", "dark")).toEqual({ primary: "oklch(0.68 0.11 205)", primaryForeground: "oklch(0.17 0.04 205)" });
-    expect(accentPrimary("violet", "light").primary).toBe("oklch(0.488 0.17 293)");
-  });
-
-  test("the rail and ring fall back to the draft rather than the live theme", () => {
-    const vars = draftCssVars(draft(), "dark");
-    expect(vars["--sidebar-foreground"]).toBe(TELAR_DARK.foreground);
-    expect(vars["--sidebar-border"]).toBe(TELAR_DARK.border);
-    expect(vars["--ring"]).toBe(vars["--primary"]);
+  test("an orb loads exactly one half", () => {
+    const ember = BUILT_IN_THEMES.find((theme) => theme.id === "ember")!;
+    const after = loadThemeHalfIntoDraft(draft(), "dark", ember);
+    expect(after.theme.dark).toEqual(concreteHalf(ember, "dark"));
+    expect(after.theme.light).toEqual(TELAR_LIGHT);
+    expect(after.label).toBe("Working draft");
   });
 });
 
-describe("the stage's backdrop", () => {
-  test("no backdrop paints nothing", () => {
-    expect(draftBackdropCss(draft(), "light")).toEqual({
-      backgroundImage: "none",
-      backgroundSize: "cover",
-      backgroundPosition: "center",
-      backgroundRepeat: "no-repeat",
-    });
+describe("persistence", () => {
+  // The persistence block reads window.localStorage; the test provides one —
+  // installed for THIS block only and torn down after, because a leaked global
+  // `window` flips environment checks in every test file that runs later.
+  const store = new Map<string, string>();
+  const fake = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => void store.set(key, value),
+    removeItem: (key: string) => void store.delete(key),
+  };
+  let hadWindow = false;
+  let previousWindow: unknown;
+  beforeAll(() => {
+    const host = globalThis as { window?: { localStorage?: unknown } };
+    hadWindow = host.window !== undefined;
+    previousWindow = host.window;
+    if (!hadWindow) host.window = {};
+    (host.window as { localStorage: unknown }).localStorage = fake;
+  });
+  afterAll(() => {
+    const host = globalThis as { window?: unknown };
+    if (hadWindow) host.window = previousWindow;
+    else delete host.window;
   });
 
-  test("a resolved backdrop is read per scheme, with its own lists", () => {
-    const withScene = replaceDraftBackdrop(draft(), {
-      kind: "gradient",
-      id: "dusk",
-      resolved: { light: "linear-gradient(#fff, #eee)", dark: "linear-gradient(#111, #000)", size: "cover", position: "top", repeat: "repeat" },
-    });
-    expect(draftBackdropCss(withScene, "light").backgroundImage).toBe("linear-gradient(#fff, #eee)");
-    expect(draftBackdropCss(withScene, "dark").backgroundImage).toBe("linear-gradient(#111, #000)");
-    expect(draftBackdropCss(withScene, "dark").backgroundPosition).toBe("top");
-    expect(draftBackdropCss(withScene, "dark").backgroundRepeat).toBe("repeat");
+  test("the draft round-trips with its id, and clearing removes the key", () => {
+    const kept = draft({ id: "look-persist", label: "Kept" });
+    writeStudioDraft(kept);
+    expect(readStudioDraft()).toEqual(kept);
+    writeStudioDraft(undefined);
+    expect(store.has(STUDIO_DRAFT_KEY)).toBe(false);
+    expect(readStudioDraft()).toBeUndefined();
   });
 
-  test("an image becomes a url(), and dim becomes a wash over it", () => {
-    const plain = replaceDraftBackdrop(draft(), { kind: "image", fit: "cover", blur: 0, dim: 0, image: DATA_URL });
-    expect(draftBackdropCss(plain, "light").backgroundImage).toBe(`url("${DATA_URL}")`);
-    expect(draftBackdropCss(plain, "light").backgroundSize).toBe("cover");
-
-    const dimmed = replaceDraftBackdrop(draft(), { kind: "image", fit: "tile", blur: 0, dim: 40, image: DATA_URL });
-    const css = draftBackdropCss(dimmed, "dark");
-    expect(css.backgroundImage.startsWith("linear-gradient(oklch(0 0 0 / 40%)")).toBe(true);
-    expect(css.backgroundImage.endsWith(`url("${DATA_URL}")`)).toBe(true);
-    // Two layers, so every positional list carries two entries.
-    expect(css.backgroundSize.split(", ")).toHaveLength(2);
-    expect(css.backgroundRepeat).toBe("no-repeat, repeat");
+  test("garbage in storage degrades to no draft", () => {
+    store.set(STUDIO_DRAFT_KEY, "{not json");
+    expect(readStudioDraft()).toBeUndefined();
+    store.set(STUDIO_DRAFT_KEY, JSON.stringify({ id: "" }));
+    expect(readStudioDraft()).toBeUndefined();
   });
 
-  test("an image that is not image data paints nothing rather than a broken url", () => {
-    const bogus = replaceDraftBackdrop(draft(), { kind: "image", fit: "cover", blur: 0, dim: 0, image: "javascript:alert(1)" });
-    expect(draftBackdropCss(bogus, "light").backgroundImage).toBe("none");
+  test("the transcript keeps only well-formed lines and clears with an empty list", () => {
+    writeStudioChat([
+      { kind: "you", text: "warmer" },
+      { kind: "studio", text: "Drafted “Cedar”." },
+    ]);
+    expect(readStudioChat()).toEqual([
+      { kind: "you", text: "warmer" },
+      { kind: "studio", text: "Drafted “Cedar”." },
+    ]);
+    store.set(STUDIO_CHAT_KEY, JSON.stringify([{ kind: "you", text: "kept" }, { kind: "shout", text: "dropped" }, "junk", { kind: "trouble" }]));
+    expect(readStudioChat()).toEqual([{ kind: "you", text: "kept" }]);
+    writeStudioChat([]);
+    expect(store.has(STUDIO_CHAT_KEY)).toBe(false);
   });
 });
 
@@ -272,12 +295,3 @@ describe("the chat's prompt", () => {
   });
 });
 
-describe("dirtiness", () => {
-  test("an untouched draft is clean and any edit is not", () => {
-    const before = draft();
-    expect(draftIsDirty(before, before)).toBe(false);
-    expect(draftIsDirty({ ...before }, before)).toBe(false);
-    expect(draftIsDirty(patchDraftToken(before, "light", "border", "#123456"), before)).toBe(true);
-    expect(draftIsDirty(setDraftLabel(before, "Other"), before)).toBe(true);
-  });
-});
