@@ -2,7 +2,7 @@ import { listEndpoints } from "@/lib/remote/endpoints";
 import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
-import { addDevice, mintDeviceToken, readRemote, setRequireAuth } from "@/lib/remote/store";
+import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure } from "@/lib/remote/store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -24,6 +24,7 @@ export function GET(request: Request) {
     );
     return Response.json({
       requireAuth: file.requireAuth,
+      exposure: file.exposure ?? "local-only",
       devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform }) => ({
         id,
         name,
@@ -49,7 +50,32 @@ export function GET(request: Request) {
  */
 export async function PATCH(request: Request) {
   try {
-    const body = (await request.json()) as { requireAuth?: unknown };
+    const body = (await request.json()) as { requireAuth?: unknown; exposure?: unknown };
+
+    /**
+     * WHERE THE SOCKET LISTENS is its own decision, taken separately from
+     * whether the gate is on — one PATCH, two fields, because a caller that
+     * meant to widen the bind must not have to restate the auth flag and risk
+     * turning it off by omission.
+     *
+     * The shell only reads this at launch, so the answer says a restart is
+     * needed rather than pretending the change already took.
+     */
+    if (body.exposure !== undefined) {
+      if (body.exposure !== "local-only" && body.exposure !== "network-accessible") {
+        return Response.json({ error: { code: "invalid_request", message: "exposure must be local-only or network-accessible." } }, { status: 400 });
+      }
+      try {
+        const file = setExposure(body.exposure);
+        return Response.json({ exposure: file.exposure, restartRequired: true });
+      } catch (cause) {
+        return Response.json(
+          { error: { code: "invalid_request", message: cause instanceof Error ? cause.message : "that exposure could not be set." } },
+          { status: 400 },
+        );
+      }
+    }
+
     if (typeof body.requireAuth !== "boolean") {
       return Response.json(
         { error: { code: "invalid_request", message: "requireAuth must be a boolean." } },

@@ -54,9 +54,27 @@ export interface PendingPairing {
   expiresAt: number;
 }
 
+/**
+ * WHERE THE COCKPIT'S SOCKET LISTENS.
+ *
+ * `local-only` binds 127.0.0.1 and is reachable from this machine and nothing
+ * else. `network-accessible` binds every interface, which is what makes a
+ * pairing URL on the tailnet resolve to an actual socket.
+ *
+ * IT LIVES HERE BECAUSE IT IS A REMOTE-ACCESS FACT, beside `requireAuth` and
+ * the paired devices — the three things that together decide who can reach
+ * this cockpit. The desktop shell reads this same file at launch to choose its
+ * bind address, which is why the value is a plain string rather than anything
+ * needing the web app to interpret it.
+ */
+export type ExposureMode = "local-only" | "network-accessible";
+
 export interface RemoteFile {
   version: 1;
   requireAuth: boolean;
+  /** Absent in every file written before this existed, and absent means the
+   *  safe answer — a loopback bind is what those installs already had. */
+  exposure?: ExposureMode;
   devices: PairedDevice[];
   pairing?: PendingPairing;
 }
@@ -119,6 +137,9 @@ export function readRemote(): RemoteFile {
   for (const device of parsed.devices) {
     device.role = device.role === "observer" ? "observer" : "full";
   }
+  // Anything but the one widening value reads as loopback, so a corrupted or
+  // hand-edited field cannot quietly open the socket.
+  parsed.exposure = parsed.exposure === "network-accessible" ? "network-accessible" : "local-only";
   return parsed;
 }
 
@@ -285,9 +306,29 @@ export function consumePairing(raw: string, nowMs: number = Date.now()): boolean
   return true;
 }
 
+/**
+ * WIDENING REQUIRES THE GATE TO BE ON. Binding every interface with
+ * `requireAuth` off would put an unauthenticated cockpit on whatever network
+ * this machine is attached to — a coffee-shop wifi, not just a tailnet. The
+ * refusal is here rather than in the UI so it holds for every caller.
+ */
+export function setExposure(exposure: ExposureMode): RemoteFile {
+  const file = readRemote();
+  if (exposure === "network-accessible" && !file.requireAuth) {
+    throw new Error("turn on pairing before opening this cockpit to the network");
+  }
+  file.exposure = exposure;
+  writeRemote(file);
+  return file;
+}
+
 export function setRequireAuth(requireAuth: boolean): RemoteFile {
   const file = readRemote();
   file.requireAuth = requireAuth;
+  // AND TURNING THE GATE OFF CLOSES THE SOCKET. Otherwise the one action a
+  // person takes to make this cockpit *less* guarded would leave it bound to
+  // every interface with nothing in front of it.
+  if (!requireAuth) file.exposure = "local-only";
   writeRemote(file);
   return file;
 }

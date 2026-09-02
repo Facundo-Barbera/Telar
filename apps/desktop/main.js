@@ -343,6 +343,38 @@ function nodeExecPath() {
 }
 
 /** What both children need to reach the tools this app does not bundle. */
+/**
+ * WHERE THE COCKPIT'S SOCKET LISTENS — the fix for a pairing link that pointed
+ * at an address nothing was bound to.
+ *
+ * This was `"127.0.0.1"`, hardcoded. The Remote access panel meanwhile builds
+ * its QR from the machine's tailnet address, because that is the whole point
+ * of remote access — so the code was correct, the token was valid, and the
+ * browser could not open a TCP connection to it. Pairing appeared broken on
+ * every build at once, which is exactly what one shared constant does.
+ *
+ * TWO MODES, NOT A BOOLEAN, and the second one is opt-in from Settings →
+ * Remote access. `local-only` is unchanged behaviour. `network-accessible`
+ * binds every interface, which is what makes a tailnet URL resolve.
+ *
+ * THE STORE REFUSES TO WIDEN WITHOUT PAIRING ON (apps/web/lib/remote/store.ts),
+ * and this reader re-checks rather than trusting the file: an edited
+ * remote.json must not be able to publish an unauthenticated cockpit onto a
+ * café's wifi. Two checks for one rule, because the cost of the file winning
+ * is the whole machine.
+ */
+function serverBindHost(home) {
+  try {
+    const file = path.join(home, "remote", "remote.json");
+    const remote = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (remote?.exposure === "network-accessible" && remote?.requireAuth === true) return "0.0.0.0";
+  } catch {
+    // No file, unreadable, or not JSON — loopback, which is the safe answer
+    // and the one every install had before this setting existed.
+  }
+  return "127.0.0.1";
+}
+
 function childEnv(home) {
   return {
     ...process.env,
@@ -476,7 +508,7 @@ function startServer(port, home) {
     env: {
       ...childEnv(home),
       PORT: String(port),
-      HOSTNAME: "127.0.0.1",
+      HOSTNAME: serverBindHost(home),
       NODE_ENV: "production",
       // THE LAUNCHER MARKER. The cockpit's server-side engine discovery refuses
       // to resolve a state root unless it is set (apps/web/lib/engine/

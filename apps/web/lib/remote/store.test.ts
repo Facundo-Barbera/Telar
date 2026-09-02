@@ -17,8 +17,10 @@ import {
   revokeOtherDevices,
   RemoteStoreError,
   setDeviceRole,
+  setExposure,
   setRequireAuth,
   storePath,
+  writeRemote,
   touchDevice,
 } from "./store";
 
@@ -189,5 +191,38 @@ describe("remote store", () => {
     fs.mkdirSync(path.dirname(storePath()), { recursive: true });
     fs.writeFileSync(storePath(), JSON.stringify({ version: 99, requireAuth: true, devices: [{}] }));
     expect(readRemote()).toEqual({ version: 1, requireAuth: false, devices: [] });
+  });
+});
+
+describe("where the socket listens", () => {
+  test("widening is refused while the gate is off", () => {
+    freshHome();
+    setRequireAuth(false);
+    // Binding every interface with no gate would publish an unauthenticated
+    // cockpit onto whatever network this machine is attached to.
+    expect(() => setExposure("network-accessible")).toThrow();
+    expect(readRemote().exposure).toBe("local-only");
+  });
+
+  test("turning the gate off closes the socket too", () => {
+    freshHome();
+    setRequireAuth(true);
+    setExposure("network-accessible");
+    expect(readRemote().exposure).toBe("network-accessible");
+    setRequireAuth(false);
+    expect(readRemote().exposure).toBe("local-only");
+  });
+
+  test("anything but the widening value reads as loopback", () => {
+    freshHome();
+    writeRemote({ version: 1, requireAuth: true, devices: [], exposure: "wide-open" as never });
+    // A hand-edited or corrupted field cannot quietly open the socket.
+    expect(readRemote().exposure).toBe("local-only");
+  });
+
+  test("a file written before this setting existed reads as loopback", () => {
+    freshHome();
+    writeRemote({ version: 1, requireAuth: true, devices: [] });
+    expect(readRemote().exposure).toBe("local-only");
   });
 });

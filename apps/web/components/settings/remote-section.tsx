@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CircleHelpIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
+import { GlobeIcon, CircleHelpIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,7 @@ interface RemoteDevice {
 
 interface RemoteStatus {
   requireAuth: boolean;
+  exposure?: "local-only" | "network-accessible";
   devices: RemoteDevice[];
   callerDeviceId?: string;
   callerRole?: "full" | "observer";
@@ -59,6 +60,9 @@ export function RemoteSection() {
   const [minted, setMinted] = useState<MintedPairing | null>(null);
   const [endpointUrl, setEndpointUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** The shell picks its bind address at launch, so a change here is pending
+   *  until the app restarts. Sticky: reloading the panel must not hide it. */
+  const [restartNeeded, setRestartNeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
   const [expiryFor, setExpiryFor] = useState<MintedPairing | null>(null);
@@ -114,6 +118,36 @@ export function RemoteSection() {
         await load();
       } catch {
         setError("Could not change the pairing requirement.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load],
+  );
+
+  /**
+   * WIDEN OR NARROW WHERE THE SOCKET LISTENS.
+   *
+   * The shell reads this at launch, so nothing about the running server moves
+   * — saying so is the honest answer, and it is why this reports a restart
+   * rather than reloading and pretending.
+   */
+  const setExposure = useCallback(
+    async (next: "local-only" | "network-accessible") => {
+      setBusy(true);
+      setError(null);
+      try {
+        const response = await fetch("/api/remote", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ exposure: next }),
+        });
+        const body = (await response.json()) as { error?: { message?: string } };
+        if (!response.ok) throw new Error(body.error?.message ?? `status ${response.status}`);
+        setRestartNeeded(true);
+        await load();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not change network access.");
       } finally {
         setBusy(false);
       }
@@ -206,6 +240,30 @@ export function RemoteSection() {
           checked={status.requireAuth}
           onCheckedChange={(next) => void toggle(next)}
         />
+        {/* WHERE THE SOCKET LISTENS, beside who may reach it — the two halves
+            of the same question. Only offered once pairing is on: binding every
+            interface without a gate would publish an unguarded cockpit to
+            whatever network this machine is attached to. */}
+        {status.requireAuth && (
+          <ToggleRow
+            label="Reachable from the network"
+            icon={GlobeIcon}
+            hint={
+              status.exposure === "network-accessible"
+                ? "Listening on every interface, so a tailnet or LAN address reaches this cockpit. Pairing is what guards it."
+                : "Listening on 127.0.0.1 only. A pairing link that names another address cannot connect — this machine is the only one that can reach it."
+            }
+            checked={status.exposure === "network-accessible"}
+            onCheckedChange={(next) => void setExposure(next ? "network-accessible" : "local-only")}
+          />
+        )}
+        {restartNeeded && (
+          <Row
+            label="Restart to apply"
+            hint="The server chooses its address when it starts, so this takes effect on the next launch."
+            control={null}
+          />
+        )}
       </SettingsGroup>
 
       {status.requireAuth && (
