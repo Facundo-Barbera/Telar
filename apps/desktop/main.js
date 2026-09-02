@@ -633,6 +633,9 @@ function createWindow(url) {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, "preload.js"),
+      // The renderer half of the anti-flicker pair (see Main): a throttled
+      // renderer hands the compositor nothing to show at refocus.
+      ...(translucent ? { backgroundThrottling: false } : {}),
     },
   });
   // Whether THIS window's compositor can blend alpha — decided above, at
@@ -1324,6 +1327,10 @@ async function runSmoke() {
 const softwareCompositing = supportsTranslucency() && readUiPrefs().translucent;
 if (softwareCompositing) {
   app.disableHardwareAcceleration();
+  // Chromium stops drawing an occluded window and evicts its frame; on
+  // refocus a TRANSPARENT window shows through for the beat before the fresh
+  // frame lands — the alt-tab flicker. Keep occluded windows rendering.
+  app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 }
 
 if (SMOKE) {
