@@ -30,6 +30,7 @@ import {
   type ThemeDefinition,
   type ThemeToken,
 } from "@/lib/theme-palettes";
+import { isVsCodeThemeFile, vsCodeThemeToDefinition } from "@/lib/vscode-theme-import";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -203,10 +204,38 @@ function ThemeEditor({ theme, onSave, onClose }: { theme: ThemeDefinition; onSav
 export function ThemeLibrary() {
   const { active, themes, setActive, setHalf, saveCustom, removeCustom, duplicate, importTheme } = useThemeLibrary();
   const [editingId, setEditingId] = useState<string>();
-  const [importError, setImportError] = useState(false);
+  // The MESSAGE, not a flag: a VS Code file can fail for a reason worth
+  // naming ("no editor.background"), and a bare boolean would flatten that
+  // into the generic "not a Telar theme".
+  const [importError, setImportError] = useState<string | false>(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const editing = themes.find((theme) => theme.id === editingId && !theme.builtIn);
+
+  /**
+   * Telar's own format first, then VS Code's. Both are JSON objects, so the
+   * order is the tiebreak: an export of ours never carries dotted workbench
+   * keys, and a `*-color-theme.json` never carries our two halves.
+   */
+  const importFile = (raw: string): string | false => {
+    if (importTheme(raw) !== undefined) return false;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return "That file is not valid JSON.";
+    }
+    if (!isVsCodeThemeFile(parsed)) return "That file is not a Telar or VS Code theme.";
+    try {
+      const definition = vsCodeThemeToDefinition(parsed);
+      const id = `custom-${Date.now().toString(36)}`;
+      saveCustom({ id, ...definition });
+      setActive(id);
+      return false;
+    } catch (error) {
+      return error instanceof Error ? error.message : "That VS Code theme could not be read.";
+    }
+  };
 
   return (
     <SettingsGroup
@@ -217,8 +246,8 @@ export function ThemeLibrary() {
         label="Library"
         hint={
           importError
-            ? "That file is not a Telar theme."
-            : "Click a theme to wear it, or a single orb to take just that light or dark half. Duplicate anything to make it editable; export shares it as a file."
+            ? importError
+            : "Click a theme to wear it, or a single orb to take just that light or dark half. Import also reads a VS Code *-color-theme.json — one file is one half."
         }
         control={
           <Button
@@ -242,9 +271,9 @@ export function ThemeLibrary() {
             event.target.value = "";
             if (!file) return;
             void file.text().then((raw) => {
-              const id = importTheme(raw);
-              setImportError(id === undefined);
-              if (id) setEditingId(undefined);
+              const failure = importFile(raw);
+              setImportError(failure);
+              if (!failure) setEditingId(undefined);
             });
           }}
         />
