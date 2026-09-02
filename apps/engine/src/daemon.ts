@@ -30,6 +30,19 @@ import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, prob
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
+import {
+  isAppearanceId,
+  listImages,
+  putImage,
+  readImage,
+  readLooks,
+  readSettings,
+  readThemes,
+  removeEntry,
+  writeLook,
+  writeSettings,
+  writeTheme,
+} from "./appearance-home";
 import { readUsageReport } from "./usage";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
@@ -185,6 +198,22 @@ async function body(request: http.IncomingMessage): Promise<Record<string, unkno
  *  an in-process caller must not be able to walk past a check that only ever
  *  ran on the socket. */
 const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/**
+ * A backdrop picture's ceiling. Generous next to the 3.5MB the browser store
+ * had to enforce — that number was a share of one origin's localStorage, and
+ * this one is a file on a disk. It exists so a mis-aimed upload cannot fill
+ * the volume, not to make anyone compress a photograph.
+ */
+const MAX_APPEARANCE_IMAGE_BYTES = 32 * 1024 * 1024;
+
+/** The four formats `imageExtension` will admit, by the extension it returns. */
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
 
 async function rawBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -827,6 +856,90 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * one person's machine, and the bearer check upstream is the whole access
        * story. Nothing here is exempt from it.
        */
+      /**
+       * THE APPEARANCE HOME — the files themselves, over HTTP.
+       *
+       * /v2/appearance is a MAILBOX: one resolved blob a browser published for
+       * paired clients to wear. This is the RECORD: the themes, looks, settings
+       * and pictures that a person or an agent edits on disk, which the cockpit
+       * reads and writes so both authors see one truth. Two routes because they
+       * are two different things, not two spellings of one.
+       */
+      if (url.pathname === "/v2/appearance/home") {
+        if (request.method === "GET") {
+          const themes = readThemes(store.paths.root);
+          const looks = readLooks(store.paths.root);
+          writeJson(response, 200, {
+            settings: readSettings(store.paths.root) ?? null,
+            themes: themes.entries,
+            looks: looks.entries,
+            images: listImages(store.paths.root),
+            // NAMED, not swallowed: a hand-edited directory grows broken files,
+            // and someone hunting for a theme that will not appear deserves to
+            // be told which one it is.
+            skipped: [...themes.skipped, ...looks.skipped],
+          });
+          return;
+        }
+        writeJson(response, 405, { error: { code: "invalid_request", message: "the appearance home accepts GET" } }, { allow: "GET" });
+        return;
+      }
+      if (url.pathname === "/v2/appearance/home/settings" && request.method === "PUT") {
+        const body_ = await body(request);
+        writeSettings(store.paths.root, body_);
+        writeJson(response, 200, { ok: true });
+        return;
+      }
+      {
+        // themes/<id> and looks/<id>, which differ only in the folder.
+        const entry = /^\/v2\/appearance\/home\/(themes|looks)\/([^/]+)$/.exec(url.pathname);
+        if (entry) {
+          const kind = entry[1] as "themes" | "looks";
+          const id = decodeURIComponent(entry[2]!);
+          if (!isAppearanceId(id)) {
+            throw new HttpError(400, "invalid_request", "id must contain only letters, numbers, underscores or hyphens");
+          }
+          if (request.method === "PUT") {
+            const value = await body(request);
+            if (kind === "themes") writeTheme(store.paths.root, id, value);
+            else writeLook(store.paths.root, id, value);
+            writeJson(response, 200, { ok: true, id });
+            return;
+          }
+          if (request.method === "DELETE") {
+            removeEntry(store.paths.root, kind, id);
+            writeJson(response, 200, { ok: true });
+            return;
+          }
+          writeJson(response, 405, { error: { code: "invalid_request", message: "accepts PUT and DELETE" } }, { allow: "PUT, DELETE" });
+          return;
+        }
+      }
+      if (url.pathname === "/v2/appearance/home/images" && request.method === "POST") {
+        const bytes = await rawBody(request, MAX_APPEARANCE_IMAGE_BYTES);
+        const name = putImage(store.paths.root, bytes);
+        // REFUSED HERE rather than stored and discovered broken later: the
+        // format is sniffed from the bytes, so "this is not an image" is a
+        // fact this route already knows.
+        if (name === undefined) throw new HttpError(400, "invalid_request", "the body must be a PNG, JPEG, GIF or WebP image");
+        writeJson(response, 200, { ok: true, name });
+        return;
+      }
+      {
+        const image = /^\/v2\/appearance\/home\/images\/([^/]+)$/.exec(url.pathname);
+        if (image && request.method === "GET") {
+          const bytes = readImage(store.paths.root, decodeURIComponent(image[1]!));
+          if (bytes === undefined) throw new HttpError(404, "not_found", "no such image");
+          response.writeHead(200, {
+            "content-type": IMAGE_TYPES[path.extname(image[1]!).slice(1)] ?? "application/octet-stream",
+            // The name IS a content hash, so the bytes behind it can never change.
+            "cache-control": "public, max-age=31536000, immutable",
+            "content-length": String(bytes.byteLength),
+          });
+          response.end(Buffer.from(bytes));
+          return;
+        }
+      }
       if (url.pathname === "/v2/appearance") {
         if (request.method === "GET") {
           const stored = store.getAppearance();

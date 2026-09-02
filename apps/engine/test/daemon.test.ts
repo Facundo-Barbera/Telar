@@ -359,3 +359,44 @@ test("a structured completion validates its request before spending a harness", 
   ).rejects.toMatchObject({ status: 400 });
   await expect(client.completeStructured({ prompt: "hello", schema, model: "  " })).rejects.toMatchObject({ status: 400 });
 });
+
+test("the appearance home is served, written and refuses what is not an image", async () => {
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const base = `http://127.0.0.1:${daemon.discovery.port}/v2/appearance/home`;
+  const auth = { authorization: `Bearer ${daemon.discovery.token}` };
+  const json = { ...auth, "content-type": "application/json" };
+
+  // An untouched home is empty rather than an error.
+  const empty = await (await fetch(base, { headers: auth })).json();
+  expect(empty).toEqual({ settings: null, themes: [], looks: [], images: [], skipped: [] });
+
+  await fetch(`${base}/themes/dusk`, { method: "PUT", headers: json, body: JSON.stringify({ label: "Dusk", light: {}, dark: {} }) });
+  await fetch(`${base}/settings`, { method: "PUT", headers: json, body: JSON.stringify({ accent: "sea" }) });
+  const filled = (await (await fetch(base, { headers: auth })).json()) as { themes: { id: string }[]; settings: unknown };
+  expect(filled.themes.map((theme) => theme.id)).toEqual(["dusk"]);
+  expect(filled.settings).toEqual({ accent: "sea" });
+
+  // A PNG round-trips under its content hash and comes back immutable.
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 9, 9]);
+  const stored = (await (await fetch(`${base}/images`, { method: "POST", headers: auth, body: png })).json()) as { name: string };
+  expect(stored.name.endsWith(".png")).toBe(true);
+  const served = await fetch(`${base}/images/${stored.name}`, { headers: auth });
+  expect(served.headers.get("content-type")).toBe("image/png");
+  expect(served.headers.get("cache-control")).toContain("immutable");
+  expect(Buffer.from(await served.arrayBuffer())).toEqual(png);
+
+  // A shell script named like a picture is refused where the bytes are read.
+  const refused = await fetch(`${base}/images`, { method: "POST", headers: auth, body: Buffer.from("#!/bin/sh\n") });
+  expect(refused.status).toBe(400);
+
+  // A traversal cannot reach out of images/.
+  expect((await fetch(`${base}/images/${encodeURIComponent("../settings.json")}`, { headers: auth })).status).toBe(404);
+
+  // Deleting is idempotent, and the verb set is stated rather than 404'd.
+  expect((await fetch(`${base}/themes/dusk`, { method: "DELETE", headers: auth })).status).toBe(200);
+  expect((await fetch(`${base}/themes/dusk`, { method: "DELETE", headers: auth })).status).toBe(200);
+  const wrongVerb = await fetch(base, { method: "POST", headers: json, body: "{}" });
+  expect(wrongVerb.status).toBe(405);
+  expect(wrongVerb.headers.get("allow")).toBe("GET");
+});
