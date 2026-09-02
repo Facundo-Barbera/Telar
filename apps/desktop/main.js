@@ -619,7 +619,11 @@ function createWindow(url) {
     // "hud" is the most TRANSPARENT of macOS's vibrancy materials —
     // "under-window" (the obvious choice) is also the milkiest, and buried the
     // desktop no matter how far the strength slider went.
-    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "hud", visualEffectState: "followWindow" } : {}),
+    // `active`, NOT `followWindow`: followWindow deactivates the material when
+    // the window loses focus — alt-tab away and the glass turns opaque, come
+    // back and it flickers through the state transition. A window whose look
+    // changes with focus reads as a bug, so the material stays active.
+    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "hud", visualEffectState: "active" } : {}),
     show: false,
     title,
     ...macWindowChrome(),

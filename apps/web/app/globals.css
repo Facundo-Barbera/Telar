@@ -429,6 +429,17 @@
   background-color: transparent;
 }
 
+/* The user's chat bubble is a solid `bg-secondary` chip (components/ui/
+   message.tsx) — near-white in light mode, and against a see-through canvas it
+   reads as a headlight. Frosted instead: most of the token's colour, a little
+   of the desktop, and its own blur so the text stays readable over whatever
+   is behind the window. */
+[data-telar-shell][data-translucent] [data-role="user"] > .bg-secondary {
+  background-color: color-mix(in oklab, var(--secondary) 72%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
