@@ -130,7 +130,7 @@ function DayLine({
         type="button"
         onClick={() => onUnpin(item.id)}
         title="unpin — it goes back to its lane"
-        className="absolute inset-y-0.5 right-1 rounded-sm bg-card px-1 text-[10px] text-muted-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+        className="absolute inset-y-0.5 right-1 rounded-sm bg-card px-1 text-[0.625rem] text-muted-foreground/60 opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
       >
         unpin
       </button>
@@ -334,7 +334,7 @@ export function SpoolCalendar({
         <div className="min-w-0 flex-1 overflow-hidden rounded-xl bg-card shadow-sm ring-1 ring-foreground/10">
           <div className="grid grid-cols-7 border-b border-border/60">
             {weekOf(anchor).map((day) => (
-              <div key={day} className="px-2 py-1.5 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
+              <div key={day} className="px-2 py-1.5 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground/70 uppercase">
                 {formatDay(day).split(" ")[0]}
               </div>
             ))}
@@ -418,7 +418,7 @@ export function SpoolCalendar({
             aria-expanded={railOpen}
             onClick={() => setRailOpen((o) => !o)}
             title={railOpen ? "Fold the rail away — the grid keeps the width" : "Unpinned items, back on the rail"}
-            className="flex w-full items-center gap-1 rounded-md px-1 pb-1 text-[11px] font-semibold tracking-[0.12em] text-muted-foreground uppercase outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex w-full items-center gap-1 rounded-md px-1 pb-1 text-[0.6875rem] font-semibold tracking-[0.12em] text-muted-foreground uppercase outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", railOpen && "rotate-90")} aria-hidden />
             Unpinned
@@ -500,7 +500,7 @@ export function SpoolCalendar({
                             >
                               <span className="block truncate text-xs leading-snug font-medium text-muted-foreground/60">{words}</span>
                               {row.item.closed && (
-                                <span className="block truncate text-[10px] text-muted-foreground/60">
+                                <span className="block truncate text-[0.625rem] text-muted-foreground/60">
                                   “closed {row.item.closed.label}”
                                 </span>
                               )}

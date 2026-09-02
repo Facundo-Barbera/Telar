@@ -74,7 +74,7 @@ export function FreshGreeting({ projectId, projectName, index: initial = 0 }: { 
               <button
                 type="button"
                 aria-label={`Project: ${name}. Change it.`}
-                title="Work on a different project"
+                title="Change project"
                 className="mx-0.5 inline-flex max-w-full items-baseline gap-1 rounded-lg px-1.5 text-primary underline decoration-primary/30 decoration-2 underline-offset-4 outline-none transition-colors hover:bg-primary/10 hover:decoration-primary/60 focus-visible:ring-2 focus-visible:ring-ring"
               />
             }

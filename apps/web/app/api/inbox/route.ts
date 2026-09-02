@@ -31,7 +31,7 @@ export async function PATCH(request: Request) {
       await (await engineClient()).setInboxPolicy({
         // `null` IS THE OFF SWITCH and `undefined` is "leave it alone", so the
         // key's presence is the question — not its truthiness.
-        ...("autoSettleAfterDays" in body ? { autoSettleAfterDays: body.autoSettleAfterDays as number | null } : {}),
+        ...("autoSettleAfterHours" in body ? { autoSettleAfterHours: body.autoSettleAfterHours as number | null } : {}),
       }),
     );
   } catch (error) {

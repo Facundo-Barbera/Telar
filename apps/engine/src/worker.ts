@@ -4,6 +4,7 @@ import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@
 import type { BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type TurnDriver } from "./driver";
 import { providerProcessEnv } from "./provider-instances";
+import { SteerMailbox } from "./steering";
 
 type WorkerClient = Pick<
   EngineClient,
@@ -15,6 +16,7 @@ type WorkerClient = Pick<
   | "openRequest"
   | "completeTurn"
   | "failTurn"
+  | "ackSteer"
   // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
   // back over the same loopback socket as everything else here, which is what
   // makes the toolkit identical in the embedded worker and the out-of-process
@@ -136,6 +138,21 @@ export class EngineWorker {
    * `tick()` comes AFTER the heartbeat rather than before it.
    */
   private readonly awaiting = new Map<string, (outcome: DriverRequestOutcome) => void>();
+  /**
+   * Each running turn's steer mailbox plus its unacked deliveries, keyed by
+   * claim token like `active`.
+   *
+   * ACK ON DRAIN, NOT ON PUSH. A pushed message can still be lost — the turn
+   * can settle before the driver's next boundary drains it — and an ack at
+   * push time would mark that lost message `steered`. A DRAINED message is
+   * one the driver holds, so the mailbox's drain hook is where the ack fires;
+   * an undrained one leaves the turn `steering`, and the engine's settlement
+   * sweep requeues it. A lost ACK still re-carries and re-pushes on a later
+   * heartbeat — duplication over loss, the codebase's stated side of that
+   * trade; `pushedSteers` narrows it to actually-lost acks.
+   */
+  private readonly steering = new Map<string, { mailbox: SteerMailbox; pendingAck: Array<{ sessionId: string; steerRunId: string; claimToken: string }> }>();
+  private readonly pushedSteers = new Set<string>();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -174,6 +191,17 @@ export class EngineWorker {
         // driver as a bare decision.
         settle({ decision: resolution.decision, ...(resolution.answers ? { answers: resolution.answers } : {}) });
       }
+      // Deliver send-now messages into their running turns' mailboxes. The
+      // ack fires later, from the mailbox's drain hook — see `steering`.
+      for (const delivery of status.steer ?? []) {
+        if (this.pushedSteers.has(delivery.steerRunId)) continue;
+        const entry = this.steering.get(delivery.claimToken);
+        // No mailbox (or closed): this worker cannot deliver — leave the
+        // turn `steering`; the engine's settlement sweep requeues it.
+        if (!entry?.mailbox.push(delivery.text)) continue;
+        this.pushedSteers.add(delivery.steerRunId);
+        entry.pendingAck.push({ sessionId: delivery.sessionId, steerRunId: delivery.steerRunId, claimToken: delivery.claimToken });
+      }
       // Claim until the cap or the queue runs dry. One claim per call is the
       // engine's shape (`claimNextTurn` hands out the oldest claimable turn),
       // so the loop is what turns a per-tick single claim into real
@@ -207,6 +235,23 @@ export class EngineWorker {
     const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();
     this.active.set(claimToken, controller);
+    // The turn's send-now mailbox, registered before the first heartbeat that
+    // could carry a delivery. Closed with the turn — a push after close is
+    // refused and the engine's sweep requeues the message instead.
+    const steer = new SteerMailbox();
+    const steerEntry = { mailbox: steer, pendingAck: [] as Array<{ sessionId: string; steerRunId: string; claimToken: string }> };
+    this.steering.set(claimToken, steerEntry);
+    steer.onDrain(() => {
+      // The driver holds the text now; tell the engine, one ack per delivery.
+      // A failed ack leaves `pushedSteers` cleared so a later heartbeat
+      // re-carries and re-pushes — the accepted duplicate, never a loss.
+      for (const ack of steerEntry.pendingAck.splice(0)) {
+        void this.options.client
+          .ackSteer(ack.sessionId, ack.steerRunId, ack.claimToken)
+          .catch(() => undefined)
+          .finally(() => this.pushedSteers.delete(ack.steerRunId));
+      }
+    });
     /**
      * ONE park/heartbeat implementation for both doors into the engine's gate:
      * the driver's own `onRequest`, and the browser socket's per-call gate.
@@ -320,6 +365,9 @@ export class EngineWorker {
         // requires of any row that names a model at all.
         providerInstanceId: claim.providerInstanceId,
         providerSessionId,
+        // Send-now deliveries land here; how the driver injects them is its
+        // own affair (Claude at turn boundaries, Codex mid-turn).
+        steer,
         // The browser rides the worker's socket; the driver only learns where
         // and with which credential. Spread on the same absent-means-absent
         // rule as everything above it.
@@ -460,6 +508,12 @@ export class EngineWorker {
       // The lease dies with the turn: a provider subprocess that outlives its
       // run holds a token that now answers 401, which is the revocation.
       lease?.release();
+      steer.close();
+      // An undrained delivery was never delivered: forget it here so the
+      // heartbeat's re-carry (after the engine's sweep requeues it) is not
+      // skipped by the pushed-set.
+      for (const ack of steerEntry.pendingAck.splice(0)) this.pushedSteers.delete(ack.steerRunId);
+      this.steering.delete(claimToken);
       this.active.delete(claimToken);
     }
   }

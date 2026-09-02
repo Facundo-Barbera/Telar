@@ -1,0 +1,124 @@
+/**
+ * STEERING PRIMITIVES — shared by the warp spawn and the session drivers.
+ *
+ * Extracted from `warp/spawn.ts`, where steering was first built for warp
+ * children, because "send now" gives the SESSION turn the same shape: a
+ * mailbox that text can be pushed into mid-turn, and a boundary the prompt
+ * generator waits on. A third home rather than `driver.ts`, because `warp/`
+ * deliberately imports nothing from the driver (see `spawn.ts`'s seam note)
+ * and the driver must not import from `warp/`.
+ */
+
+/**
+ * A turn boundary the prompt generator can wait on.
+ *
+ * EDGE-TRIGGERED WITH A COUNTER, not a bare promise, and that is the whole
+ * reason this is a class. A `result` message can arrive before the generator
+ * gets around to awaiting the next boundary; a level-triggered signal would
+ * miss it, the generator would park for ever, and the SDK would sit waiting
+ * for an input that never comes — the same deadlock the mailbox was
+ * introduced to kill, reintroduced one layer down.
+ */
+export class TurnBoundary {
+  private settled = 0;
+  private observed = 0;
+  private closed = false;
+  private waiters: Array<(open: boolean) => void> = [];
+
+  /** A turn just ended. */
+  mark(): void {
+    this.settled += 1;
+    const waiting = this.waiters;
+    this.waiters = [];
+    for (const resolve of waiting) resolve(true);
+  }
+
+  /** The output stream ended: no further boundary can ever arrive. */
+  close(): void {
+    this.closed = true;
+    const waiting = this.waiters;
+    this.waiters = [];
+    for (const resolve of waiting) resolve(false);
+  }
+
+  /** Resolves `true` at the next (or an already-missed) boundary, `false` once
+   *  the stream is closed. */
+  next(): Promise<boolean> {
+    if (this.settled > this.observed) {
+      this.observed = this.settled;
+      return Promise.resolve(true);
+    }
+    if (this.closed) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => this.waiters.push(resolve));
+  }
+}
+
+/**
+ * Text pushed into a running turn, waiting for the driver to take it.
+ *
+ * `wake` FIRES ON PUSH so a driver that can inject mid-turn (Codex's
+ * `turn/steer`) hears about a message the moment it arrives, while a driver
+ * that injects at turn boundaries (Claude's streaming-input prompt) simply
+ * drains when its boundary comes and never registers a waker. Closed with the
+ * turn; a push after close is dropped, because the engine's sweep will requeue
+ * the undelivered message as its own turn — losing it silently is the one
+ * failure this whole channel exists to prevent.
+ */
+export class SteerMailbox {
+  private queue: string[] = [];
+  private closed = false;
+  private wakers: Array<() => void> = [];
+
+  /** True when the text was accepted; false after close, when the engine's
+   *  requeue sweep is the delivery path instead. */
+  push(text: string): boolean {
+    if (this.closed) return false;
+    this.queue.push(text);
+    const waiting = this.wakers;
+    this.wakers = [];
+    for (const wake of waiting) wake();
+    return true;
+  }
+
+  /** Everything queued right now, removed. Non-blocking, never throws. */
+  drain(): string[] {
+    const queued = this.queue;
+    this.queue = [];
+    // Fired AFTER the take: a listener acking delivery must only hear about
+    // text the consumer actually holds.
+    if (queued.length > 0) for (const listener of this.drainListeners) listener();
+    return queued;
+  }
+
+  /** Hear every non-empty drain. The worker acks send-now deliveries here —
+   *  a drained message is one the driver holds, which is the earliest moment
+   *  "delivered" is true rather than hoped. */
+  onDrain(listener: () => void): void {
+    this.drainListeners.push(listener);
+  }
+  private drainListeners: Array<() => void> = [];
+
+  get pending(): number {
+    return this.queue.length;
+  }
+
+  /** True once the turn is over — how a consumer loop knows an empty drain
+   *  after a wake means "stop", not "spin". */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** Resolves on the next push, or immediately when something is already
+   *  waiting or the mailbox has closed. */
+  wake(): Promise<void> {
+    if (this.queue.length > 0 || this.closed) return Promise.resolve();
+    return new Promise<void>((resolve) => this.wakers.push(resolve));
+  }
+
+  close(): void {
+    this.closed = true;
+    const waiting = this.wakers;
+    this.wakers = [];
+    for (const wake of waiting) wake();
+  }
+}

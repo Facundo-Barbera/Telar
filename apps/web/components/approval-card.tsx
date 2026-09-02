@@ -49,17 +49,17 @@ const KIND_ICON = {
 export function describeRequest(detail: EngineRequest["detail"]): { eyebrow: string; verb: string; argument?: string } {
   switch (detail.kind) {
     case "command_execution":
-      return { eyebrow: "command — awaiting your approval", verb: "Run", argument: detail.command.command };
+      return { eyebrow: "command", verb: "Run", argument: detail.command.command };
     case "file_change":
-      return { eyebrow: "file change — awaiting your approval", verb: capitalise(detail.change.kind), argument: detail.change.path };
+      return { eyebrow: "file change", verb: capitalise(detail.change.kind), argument: detail.change.path };
     case "file_read":
-      return { eyebrow: "file read — awaiting your approval", verb: "Read", argument: detail.read.path };
+      return { eyebrow: "file read", verb: "Read", argument: detail.read.path };
     case "tool_call":
       // `browser_click`, not `mcp__telar__browser_click`. The qualified name is
       // addressing; a human being asked to permit something reads the verb.
-      return { eyebrow: "tool call — awaiting your approval", verb: displayToolName(detail.call.name) };
+      return { eyebrow: "tool call", verb: displayToolName(detail.call.name) };
     case "user_input":
-      return { eyebrow: "question — awaiting your answer", verb: detail.prompt };
+      return { eyebrow: "question", verb: detail.prompt };
   }
 }
 
@@ -68,7 +68,7 @@ function capitalise(word: string): string {
 }
 
 const CARD = "flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/5 p-3";
-const EYEBROW = "font-mono text-[10px] tracking-[0.08em] text-muted-foreground uppercase";
+const EYEBROW = "font-mono text-[0.625rem] tracking-[0.08em] text-muted-foreground uppercase";
 
 /** One field of a `user_input` request, in the kind the agent asked for. */
 function Field({ field, value, onChange }: { field: UserInputField; value: unknown; onChange: (next: unknown) => void }) {
@@ -137,7 +137,7 @@ function QuestionCard({
         if (!missing) onDecide(request.id, "accept", { answers });
       }}
     >
-      <p className={EYEBROW}>question — awaiting your answer</p>
+      <p className={EYEBROW}>question</p>
       <p className="flex items-start gap-1.5 text-sm">
         <MessageCircleQuestionIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
         <span className="whitespace-pre-wrap">{prompt}</span>
@@ -192,7 +192,7 @@ export function ApprovalCard({
       </p>
 
       {argument && (
-        <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-[11px] break-words whitespace-pre-wrap">
+        <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-[0.6875rem] break-words whitespace-pre-wrap">
           {argument}
         </pre>
       )}
@@ -200,7 +200,7 @@ export function ApprovalCard({
       {/* A request that parked with nobody watching is the case a detached
           session most needs surfaced — it is why this line is still here. */}
       {request.notified === false && (
-        <p className="text-xs text-muted-foreground">This parked while nothing was watching, and no notification was sent.</p>
+        <p className="text-xs text-muted-foreground">Parked with nobody watching — no notification was sent.</p>
       )}
 
       <div className="flex flex-wrap items-stretch gap-2">
@@ -215,7 +215,7 @@ export function ApprovalCard({
         >
           <span className="text-sm leading-tight font-medium">Always allow</span>
           {/* The real scope, stated. See the note above on why this is not a glob. */}
-          <span className="font-mono text-[10px] leading-tight font-normal text-muted-foreground">for this session</span>
+          <span className="font-mono text-[0.625rem] leading-tight font-normal text-muted-foreground">for this session</span>
         </Button>
         <Button variant="ghost" disabled={sending} onClick={() => onDecide(request.id, "decline")} className="text-destructive hover:text-destructive">
           Deny

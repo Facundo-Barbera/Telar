@@ -48,3 +48,8 @@ apps/engine/dist/
 
 # Telar — local state, not for sharing
 .telar-worktrees/
+
+# Xcode local state and build output (apps/ios)
+apps/ios/**/xcuserdata/
+apps/ios/**/project.xcworkspace/
+apps/ios/DerivedData/

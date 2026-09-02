@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -22,8 +23,10 @@ import {
   resolveWebPort,
   shouldLaunchDesktop,
   cockpitUrl as makeCockpitUrl,
+  describeRemotePosture,
   webDevCommand,
 } from "./dev-lifecycle.mjs";
+import { httpsBaseUrl, probeServe, readStatus, serveTarget, startServe, stopServe } from "./tailscale.mjs";
 
 const repoDir = path.resolve(import.meta.dirname, "..");
 const defaultTelarHome = path.join(os.homedir(), ".telar-dogfood");
@@ -32,6 +35,7 @@ const previousTelarHome = path.join(os.homedir(), ".telar-vnext-dogfood");
 const legacyHomes = new Set([path.join(os.homedir(), ".telar"), path.join(os.homedir(), ".telar-dev")]);
 const children = [];
 let stopping = false;
+let serveStarted = false;
 
 function resolveTelarHome(env = process.env) {
   const selected = env.TELAR_HOME?.trim() || defaultTelarHome;
@@ -99,8 +103,20 @@ async function stopChild(tracked, timeoutMs = 1_500) {
 async function stop(exitCode) {
   if (stopping) return;
   stopping = true;
+  // Best-effort: a stale serve mapping outlives the process it proxied to.
+  if (serveStarted) await stopServe(443).catch(() => undefined);
   await Promise.all(ownedChildrenForShutdown(children).map((tracked) => stopChild(tracked)));
   process.exit(exitCode);
+}
+
+/** requireAuth as the pairing store last wrote it — for the posture line only. */
+function readRequireAuth(telarHome) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(telarHome, "remote", "remote.json"), "utf8"));
+    return parsed?.requireAuth === true;
+  } catch {
+    return false;
+  }
 }
 
 async function probeEngine(engineRoot) {
@@ -132,15 +148,61 @@ async function main() {
   const engineRoot = path.join(telarHome, "engine");
   const env = childEnv(telarHome);
   const launchDesktop = shouldLaunchDesktop(process.argv.slice(2));
+  /**
+   * THE HOST SECRET, minted by whoever owns both halves.
+   *
+   * The shell proves it is the process that runs the server by presenting this
+   * as a cookie (apps/desktop/main.js) and the gate compares it against the
+   * same value in the web child's environment. In dev THIS script spawns the
+   * web child, so it has to be the one that mints — the shell would otherwise
+   * invent a secret the server had never heard of, and the host's own window
+   * would be asked to pair with itself.
+   */
+  env.TELAR_HOST_TOKEN = env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
+  // What the host row in Remote access is called. Says "dev" because in this
+  // path it IS the dev shell, and a row claiming to be the installed app on a
+  // machine running both would be the confusing answer.
+  env.TELAR_HOST_CLIENT = env.TELAR_HOST_CLIENT || "Telar (dev)";
+
   const webPort = resolveWebPort(env);
   const webHost = resolveWebHost(env);
   const cockpitUrl = makeCockpitUrl(webPort, webHost);
+  const serveRequested = env.TELAR_TAILSCALE_SERVE === "1";
   await assertWebPortAvailable(webPort, webHost);
   process.stdout.write(`[telar] TELAR_HOME=${telarHome}\n`);
   // Printed BEFORE anything starts listening, and to stderr: a warning about
   // exposing a shell should not be the line that scrolls past in a happy log.
   const exposure = describeWebExposure(webHost, webPort);
   if (exposure) console.error(`[telar] WARNING: ${exposure}`);
+  const posture = describeRemotePosture({
+    host: webHost,
+    port: webPort,
+    serveRequested,
+    requireAuth: readRequireAuth(telarHome),
+  });
+  if (posture) console.error(`[telar] WARNING: ${posture}`);
+
+  // Read tailscale status BEFORE the web child spawns: its env must carry the
+  // ts.net origin (dev-asset allowlist) and the HTTPS endpoint (the Remote
+  // access panel advertises it). Never spawned unless serve was requested —
+  // Mac App Store Tailscale re-prompts TCC per spawn.
+  let tailscale = null;
+  if (serveRequested) {
+    tailscale = await readStatus();
+    if (!tailscale) {
+      console.error("[telar] WARNING: TELAR_TAILSCALE_SERVE=1 but tailscale is not installed or not running; serve skipped.");
+    } else if (tailscale.certDomains.length === 0) {
+      console.error(
+        "[telar] WARNING: this tailnet has HTTPS certificates disabled (enable them at login.tailscale.com/admin/dns); serve skipped.",
+      );
+      tailscale = null;
+    } else {
+      const tsUrl = httpsBaseUrl(tailscale.certDomains[0]);
+      env.TELAR_TAILSCALE_URL = tsUrl;
+      const origins = env.TELAR_WEB_ALLOWED_ORIGINS?.trim();
+      env.TELAR_WEB_ALLOWED_ORIGINS = origins ? `${origins},${tailscale.certDomains[0]}` : tailscale.certDomains[0];
+    }
+  }
 
   let health = await probeEngine(engineRoot);
   const engineAction = decideEngineStart(health ? "healthy" : "unreachable");
@@ -206,6 +268,20 @@ async function main() {
     }
   });
   process.stdout.write(`[telar] cockpit: ${cockpitUrl}\n`);
+
+  if (tailscale) {
+    // One-shot: `serve --bg` writes the mapping and exits; it is not an owned
+    // child and its failure must not take down the stack.
+    const outcome = await startServe(443, serveTarget(webHost, webPort));
+    if (outcome !== "none") {
+      console.error(`[telar] WARNING: tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
+    } else {
+      serveStarted = true;
+      const tsUrl = httpsBaseUrl(tailscale.certDomains[0]);
+      const reachable = await probeServe(tsUrl);
+      process.stdout.write(`[telar] tailnet: ${tsUrl}/ ${reachable ? "" : "(registered; not answering yet)"}\n`);
+    }
+  }
 
   if (launchDesktop) {
     const desktopCommand = desktopDevCommand(cockpitUrl);

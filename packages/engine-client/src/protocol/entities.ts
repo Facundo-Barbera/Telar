@@ -54,6 +54,17 @@ export const Project = z.object({
    * support — not every project is a git repository.
    */
   branch: z.string().min(1).optional(),
+  /**
+   * Present when the engine found an icon file in the project's checkout —
+   * a favicon, an app icon, a `.telar/icon.*`. The value is an opaque cache
+   * key derived from the file's path, mtime and size; the bytes are served by
+   * `GET /v2/projects/:id/icon`. Because the key changes whenever the file
+   * does, a client may cache the bytes immutably against `?v=<icon>`.
+   *
+   * DERIVED ON LIST like `branch` above, and for the same reason: the file
+   * lives in somebody's working tree and changes without telling the engine.
+   */
+  icon: z.string().min(1).max(64).optional(),
 });
 export type Project = z.infer<typeof Project>;
 
@@ -289,10 +300,16 @@ export const Session = z.object({
 });
 export type Session = z.infer<typeof Session>;
 
-/** Ported verbatim from t3 code's `MIN/MAX_SIDEBAR_AUTO_SETTLE_AFTER_DAYS`. */
-export const MIN_AUTO_SETTLE_DAYS = 1;
-export const MAX_AUTO_SETTLE_DAYS = 90;
-export const DEFAULT_AUTO_SETTLE_DAYS = 3;
+/**
+ * HOURS, NOT DAYS — the window moved to hour granularity when a reader with
+ * twenty quiet-but-recent conversations had no number that would take them:
+ * a day was the old minimum, and "settle after a few hours" is the ordinary
+ * want for a fast-moving dogfooding week. The bounds are the old 1..90 days
+ * expressed in the new unit; the default is still three days.
+ */
+export const MIN_AUTO_SETTLE_HOURS = 1;
+export const MAX_AUTO_SETTLE_HOURS = 90 * 24;
+export const DEFAULT_AUTO_SETTLE_HOURS = 3 * 24;
 
 /**
  * HOW THE READER WANTS THEIR LIST BANDED — the POLICY half of settling.
@@ -315,11 +332,109 @@ export const DEFAULT_AUTO_SETTLE_DAYS = 3;
  * also decides what the inbox shows.
  */
 export const InboxPolicy = z.object({
-  autoSettleAfterDays: z.number().int().min(MIN_AUTO_SETTLE_DAYS).max(MAX_AUTO_SETTLE_DAYS).nullable(),
+  autoSettleAfterHours: z.number().int().min(MIN_AUTO_SETTLE_HOURS).max(MAX_AUTO_SETTLE_HOURS).nullable(),
 });
 export type InboxPolicy = z.infer<typeof InboxPolicy>;
 
-export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterDays: DEFAULT_AUTO_SETTLE_DAYS };
+export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS };
+
+/**
+ * WHAT A SESSION IS CREATED WITH WHEN NOBODY SAID — the standing answer to a
+ * question the composer otherwise asks on every new conversation.
+ *
+ * A SEPARATE DOCUMENT FROM `InboxPolicy`, on that schema's own instruction: a
+ * field belongs there only if it decides what the inbox shows, and this decides
+ * nothing about the list — it decides what gets built when a session starts.
+ * Same environment scope, same reason as both policies above: one engine read
+ * from the desktop shell and a browser tab must not disagree about what "new
+ * session" means.
+ *
+ * A DEFAULT, NOT A LOCK. Every caller may still say `envMode` outright and get
+ * exactly that; this only answers for the ones that don't.
+ */
+export const SessionDefaults = z.object({
+  /**
+   * `worktree` gives every new session its own checkout, so two of them can
+   * edit the same repo without colliding — the reason to make it the standing
+   * choice rather than picking it by hand each time.
+   */
+  envMode: EnvMode,
+});
+export type SessionDefaults = z.infer<typeof SessionDefaults>;
+
+/** `local` — what the engine did before this document existed, so an install
+ *  that never opens the settings page behaves exactly as it always has. */
+export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
+
+/**
+ * COMPUTER USE, MEASURED — the settings page's permission readout.
+ *
+ * Three facts with three different fixes, which is why they are not one enum:
+ * the Codex plugin being absent is an install task, the Sky host app being
+ * down is one button, and the Automation grant is a macOS decision keyed on a
+ * responsible process the engine cannot reliably name from the inside. The
+ * `permission` answer comes from ONE REAL read-only call — which is also the
+ * granting flow, because an undecided grant makes macOS raise its own prompt.
+ */
+export const ComputerUsePermission = z.enum(["granted", "denied", "host-not-running", "unknown"]);
+export type ComputerUsePermission = z.infer<typeof ComputerUsePermission>;
+
+/** Which engine is supplying the desktop: `cua` is Telar's own open-source
+ *  driver (trycua/cua, MIT); `sky` is Codex's proprietary bundled client, the
+ *  fallback. The pane names it so the reader knows what holds the grants. */
+export const ComputerUseBackend = z.enum(["cua", "sky"]);
+export type ComputerUseBackend = z.infer<typeof ComputerUseBackend>;
+
+export const ComputerUseStatus = z.object({
+  installed: z.boolean(),
+  hostRunning: z.boolean(),
+  /** Absent when not installed. */
+  backend: ComputerUseBackend.optional(),
+  /** Absent when not installed: there is nothing to measure. */
+  permission: ComputerUsePermission.optional(),
+  /** The backend's own words, when there were any. */
+  message: z.string().optional(),
+});
+export type ComputerUseStatus = z.infer<typeof ComputerUseStatus>;
+
+/**
+ * WHO WRITES THE WORDS THE HUMAN DIDN'T — t3 code's TextGeneration idea, on
+ * Telar's shapes. A session's title starts as the first message truncated, and
+ * its worktree branch is a slug of that truncation; both are placeholders a
+ * small model can do better than. This policy says whether it gets to, and
+ * through which harness.
+ *
+ * A DRIVER, NOT AN INSTANCE. Generation runs as the driver's BUILT-IN slot: it
+ * is a background nicety, and pointing it at a custom instance would let a
+ * settings page quietly spend somebody's metered account on titles. The model
+ * is optional because "the harness's own default" is a fine answer — the
+ * engine only pins a cheaper one where it knows the alias (`haiku`).
+ *
+ * ONE POLICY FOR THE ENVIRONMENT, like `InboxPolicy` above and for the same
+ * reason: the same sessions are read from the desktop shell and a browser tab,
+ * and a title that regenerates from one window but not the other would look
+ * like a sync bug, not a preference.
+ */
+export const TextGenPolicy = z.object({
+  /** Whether a session's first turn also asks a small model for a real title. */
+  titles: z.boolean(),
+  /** Whether a generated title also renames the engine-cut `telar/…` branch.
+   *  Never touches a branch a human named — those live outside `telar/`. */
+  renameBranches: z.boolean(),
+  driver: ProviderDriverKind,
+  /** Model id or alias for the generating call; absent = the driver's default. */
+  model: z.string().min(1).max(120).optional(),
+});
+export type TextGenPolicy = z.infer<typeof TextGenPolicy>;
+
+export const DEFAULT_TEXT_GEN_POLICY: TextGenPolicy = {
+  titles: true,
+  renameBranches: true,
+  driver: "claude",
+  // The alias, not a wire id: it keeps meaning "the current cheap model" as
+  // the provider moves it, exactly why `ProviderModel.resolves` exists.
+  model: "haiku",
+};
 
 /**
  * The live process. Not user-owned state — the engine's handle on something it
@@ -367,6 +482,16 @@ export const TurnState = z.enum([
   "stopped",
   "ambiguous",
   "discarded",
+  /**
+   * SEND NOW, IN TWO STATES — promoted into the RUNNING turn, and delivered.
+   *
+   * Two rather than one because the sweep on turn settlement must tell them
+   * apart: a `steering` turn's message has NOT reached the provider and goes
+   * back to `queued` (the message must never vanish), where a `steered` turn
+   * is terminal — its words are part of the run named in `steer.intoRunId`.
+   */
+  "steering",
+  "steered",
 ]);
 export type TurnState = z.infer<typeof TurnState>;
 
@@ -433,6 +558,16 @@ export const Turn = z.object({
 
   /** Provider continuity produced BY this turn, and the input to the next. */
   providerSessionId: z.string().min(1).optional(),
+
+  /** Present once this queued turn was promoted into a running one — see the
+   *  `steering`/`steered` states above. `deliveredAt` lands with `steered`. */
+  steer: z
+    .object({
+      intoRunId: Id,
+      requestedAt: Timestamp,
+      deliveredAt: Timestamp.optional(),
+    })
+    .optional(),
 });
 export type Turn = z.infer<typeof Turn>;
 
@@ -529,6 +664,20 @@ export const SessionDiff = z.object({
 });
 export type SessionDiff = z.infer<typeof SessionDiff>;
 
+/**
+ * One ref a worktree session could be cut from. `remote` names come qualified
+ * (`origin/main`) because that is both what a human recognises and what
+ * `git rev-parse` resolves — the picker forwards the name verbatim as
+ * `createSession.baseRef`.
+ */
+export const GitRefEntry = z.object({
+  name: z.string().min(1),
+  kind: z.enum(["local", "remote"]),
+  /** The checkout's current branch, so a picker can mark it. Local only. */
+  head: z.boolean().optional(),
+});
+export type GitRefEntry = z.infer<typeof GitRefEntry>;
+
 export const GitOverview = z.object({
   repository: z.boolean(),
   branch: z.string().optional(),
@@ -537,6 +686,21 @@ export const GitOverview = z.object({
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
   worktrees: z.array(GitWorktreeEntry),
+  /**
+   * Local and remote-tracking branches, newest commit first, capped — the
+   * base-ref picker's menu. Remote entries are whatever the last fetch saw:
+   * the engine's git surface stays read-only, so it never fetches to freshen
+   * them. Absent (never empty) on a non-repository.
+   */
+  refs: z.array(GitRefEntry).optional(),
+  /**
+   * The remote's default branch (`origin/main`), when remote-tracking state
+   * exists — what a fresh worktree is cut from unless the person picks
+   * otherwise. From `origin/HEAD` where a clone recorded one, else the common
+   * names checked against `refs`. Absent means "default to the checkout's
+   * HEAD", which is also what absent always meant.
+   */
+  defaultBase: z.string().min(1).optional(),
 });
 export type GitOverview = z.infer<typeof GitOverview>;
 

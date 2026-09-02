@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "bun scripts/dev.mjs",
     "dev:desktop": "bun scripts/dev.mjs --desktop",
-    "test:operations": "bun test scripts/dev-lifecycle.test.mjs",
+    "test:operations": "bun test scripts/dev-lifecycle.test.mjs scripts/tailscale.test.mjs",
     "dev:shell": "bun run --cwd apps/desktop dev",
     "desktop:package": "bun run --cwd apps/desktop package:local",
     "desktop:install": "bun run --cwd apps/desktop install:local",

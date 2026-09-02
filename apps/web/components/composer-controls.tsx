@@ -1,11 +1,11 @@
 "use client";
 
 import { forwardRef, useEffect, useMemo, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon, MoreHorizontalIcon, ShieldCheckIcon, StarIcon } from "lucide-react";
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
 import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
-import { keepStarredVisible, orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "@/lib/model-favorites";
+import { keepStarredVisible, orderByFavorite } from "@/lib/model-favorites";
 import { defaultModelId, splitGenerations } from "@/lib/model-generations";
 import {
   contextWindowOf,
@@ -17,11 +17,14 @@ import {
   stripWindow,
   windowSuffix,
   windowsOf,
+  visibleModels,
+  familyFavorites,
+  toggleFamilyFavorite,
   WINDOW_LABEL,
   type ContextWindow,
   type ModelFamily,
 } from "@/lib/model-families";
-import { createEngineApi } from "@/lib/engine/client";
+import { importLocalFavorites, patchModelOverlay, useModelCatalogue, useModelCatalogues, useModelOverlays } from "@/lib/model-catalogue-cache";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -126,7 +129,7 @@ export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>
 ControlTrigger.displayName = "ControlTrigger";
 
 function MenuHeading({ children }: { children: ReactNode }) {
-  return <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+  return <div className="px-2 pb-1 pt-1 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
 
 /**
@@ -163,7 +166,7 @@ function CompactRow({
       )}
     >
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {hint && <span className="shrink-0 text-[10px] text-muted-foreground">{hint}</span>}
+      {hint && <span className="shrink-0 text-[0.625rem] text-muted-foreground">{hint}</span>}
       <span className="flex size-3.5 shrink-0 items-center justify-center">
         {selected && <CheckIcon className="size-3.5 text-primary" />}
       </span>
@@ -216,73 +219,23 @@ export const RUNTIME_MODE_LABELS: Record<RuntimeMode, string> = {
 };
 
 export const RUNTIME_MODE_HELP: Record<RuntimeMode, string> = {
-  "approval-required": "Ask before commands and file changes.",
-  "auto-accept-edits": "Auto-approve edits, ask before other actions.",
-  auto: "A reviewer approves routine actions; risky ones still ask.",
-  "full-access": "Allow commands and edits without prompts.",
+  "approval-required": "Asks before every action",
+  "auto-accept-edits": "Other actions still ask",
+  auto: "A reviewer waves routine actions through",
+  "full-access": "No prompts",
 };
 
 const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
 
 /**
- * The catalogue, fetched once per driver per page.
+ * THE CATALOGUE HOOKS NOW LIVE IN `lib/model-catalogue-cache.ts`.
  *
- * MODULE SCOPE, NOT COMPONENT STATE. There are three controls that need it —
- * the model picker, the reasoning menu and the overflow — and the read is a
- * subprocess spawn on the engine's side. One promise per driver, shared, means
- * opening a popover never costs a second one.
+ * They moved because the cache had to become forgettable and keyed by LOGIN
+ * rather than by driver: a curated list is edited in the settings route, and a
+ * page-lifetime promise map keyed by driver would both go on serving the
+ * pre-edit list and serve one login's hidden rows to another. Nothing about how
+ * these controls use them changed.
  */
-const catalogues = new Map<ProviderDriverKind, Promise<ModelCatalogue>>();
-const api = createEngineApi();
-
-/**
- * ASKS FOR THE ONES IT IS GIVEN, AND NO OTHERS.
- *
- * Reading a catalogue SPAWNS A SUBPROCESS on the engine's side, so which
- * providers this is called with is a real cost rather than a detail. The
- * session's own provider is asked on mount, because the pill has to be able to
- * say which model is running without being opened. Every other provider is asked
- * only when something needs it — today that is the favourites view, which spans
- * providers and is reached by pressing the star.
- */
-function useModelCatalogues(drivers: readonly ProviderDriverKind[]): ReadonlyMap<ProviderDriverKind, ModelCatalogue> {
-  const [loaded, setLoaded] = useState<ReadonlyMap<ProviderDriverKind, ModelCatalogue>>(new Map());
-  // The dependency is the JOINED LIST, not the array: the caller rebuilds the
-  // array every render and an identity dependency would re-run this forever.
-  const wanted = drivers.join(",");
-  useEffect(() => {
-    let cancelled = false;
-    // Deferred, like every other read in this app that the server could not
-    // have performed.
-    const task = window.setTimeout(() => {
-      for (const driver of wanted.split(",").filter(Boolean) as ProviderDriverKind[]) {
-        let pending = catalogues.get(driver);
-        if (!pending) {
-          pending = api.modelCatalogue(driver).then((result) => result.catalogue);
-          catalogues.set(driver, pending);
-          // A failed read must not poison the cache — the next popover should
-          // try again rather than inherit the error for the life of the page.
-          void pending.catch(() => catalogues.delete(driver));
-        }
-        void pending
-          .then((result) => {
-            if (cancelled) return;
-            setLoaded((current) => (current.get(driver) === result ? current : new Map(current).set(driver, result)));
-          })
-          .catch(() => undefined);
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(task);
-    };
-  }, [wanted]);
-  return loaded;
-}
-
-function useModelCatalogue(driver: ProviderDriverKind): ModelCatalogue | undefined {
-  return useModelCatalogues([driver]).get(driver);
-}
 
 /**
  * EVERYTHING THE THREE MENUS NEED TO KNOW ABOUT THE MODEL THAT WILL RUN.
@@ -328,11 +281,20 @@ function selectionOf(models: readonly ProviderModel[], choice: ModelChoice) {
  * the same way.
  */
 function withModel(choice: ModelChoice, row: ProviderModel): ModelChoice {
+  /**
+   * EXCEPT ON A ROW NOBODY PUBLISHED. A hand-added model has no published
+   * `efforts` to check against — the engine fills them with the union of what
+   * the driver offers precisely so this check has something true to read, but
+   * the union is a guess about ONE model and the reader's own level is not.
+   * Dropping it here would silently undo the setting on the row somebody typed
+   * an id into in order to push a new model hard.
+   */
+  const trusted = row.source !== "user";
   return {
     ...choice,
     model: row.id,
-    ...(choice.effort && !row.efforts.includes(choice.effort) ? { effort: undefined } : {}),
-    ...(choice.fastMode && !row.fastMode ? { fastMode: undefined } : {}),
+    ...(trusted && choice.effort && !row.efforts.includes(choice.effort) ? { effort: undefined } : {}),
+    ...(trusted && choice.fastMode && !row.fastMode ? { fastMode: undefined } : {}),
   };
 }
 
@@ -352,8 +314,9 @@ function withModel(choice: ModelChoice, row: ProviderModel): ModelChoice {
 export function useComposerCommandChoices(
   driver: ProviderDriverKind,
   choice: ModelChoice,
+  instanceId?: string,
 ): { models: { id: string; label: string }[]; efforts: string[] } {
-  const catalogue = useModelCatalogue(driver);
+  const catalogue = useModelCatalogue(driver, instanceId);
   const models = catalogue?.models;
   // DESTRUCTURED, THEN REBUILT INSIDE. The composer makes a fresh `ModelChoice`
   // every render, so depending on its identity would refold the catalogue on
@@ -368,7 +331,12 @@ export function useComposerCommandChoices(
       ...(fastMode === undefined ? {} : { fastMode }),
     });
     return {
-      models: splitGenerations(selection.families).current.map((family) => ({
+      // FOLDED FROM THE VISIBLE ROWS, not from `selection.families`: this
+      // function's own contract is that the slash menu and the pills cannot
+      // disagree about what is on offer, so a model the reader curated away has
+      // to leave both. `selectionOf` above still reads the FULL list, because
+      // the effort levels of a hidden-but-running model are still needed.
+      models: splitGenerations(groupFamilies(visibleModels(models, model))).current.map((family) => ({
         id: pickInFamily(family, selection.window).id,
         label: stripWindow(family.label),
       })),
@@ -432,7 +400,7 @@ function FamilyRow({
           </span>
         )}
         <span className="min-w-0 flex-1 truncate">{family.label}</span>
-        {family.isDefault && <span className="shrink-0 text-[10px] text-muted-foreground">Default</span>}
+        {family.isDefault && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
         <span className="flex size-3.5 shrink-0 items-center justify-center">
           {selected && <CheckIcon className="size-3.5 text-primary" />}
         </span>
@@ -442,7 +410,7 @@ function FamilyRow({
       <button
         type="button"
         aria-label={starred ? `Unstar ${family.label}` : `Star ${family.label}`}
-        title={starred ? "Remove from favourites" : "Keep it in favourites"}
+        title={starred ? "Unstar" : "Star"}
         onClick={onStar}
         className={cn(
           "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-opacity hover:text-foreground",
@@ -474,11 +442,15 @@ function FamilyRow({
 export function AgentControl({
   driver,
   choice,
+  instanceId,
   onChange,
   onDriverChange,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** Whose login's curated list to show. Absent means the driver's built-in
+   *  slot, which is what the engine falls back to as well. */
+  instanceId?: string;
   /** Absent on a session that does not exist yet — the fresh canvas picks a
    *  model before there is anything to patch. */
   onChange?: (next: ModelChoice) => void;
@@ -499,26 +471,81 @@ export function AgentControl({
    * would be a subprocess spawned to list models this session cannot use.
    */
   const crossProvider = view === "favorites" && Boolean(onDriverChange);
-  const catalogues = useModelCatalogues(crossProvider ? PROVIDERS : [driver]);
+  // The session's own login for its own driver; the built-in slot for the other
+  // one, which is the only login a not-yet-created session could mean.
+  const catalogues = useModelCatalogues(
+    crossProvider ? PROVIDERS.map((option) => (option === driver && instanceId ? { driver: option, instanceId } : { driver: option })) : [{ driver, ...(instanceId ? { instanceId } : {}) }],
+  );
   const catalogue = catalogues.get(driver);
   const models = catalogue?.models ?? [];
-  const { families, family: selectedFamily, window: activeWindow } = selectionOf(models, choice);
+  // `families` is deliberately NOT taken from here any more — see
+  // `listedFamilies` below. What this call is still for is the SELECTION: which
+  // family is ticked and which window it runs in, both of which must resolve for
+  // a model the reader has since hidden.
+  const { family: selectedFamily, window: activeWindow } = selectionOf(models, choice);
   /**
-   * READ AFTER MOUNT, like every other localStorage-backed preference in this
-   * app: the server has no storage to agree with, and a value picked during
-   * render is a hydration mismatch waiting for its first star.
+   * STARS COME FROM THE ENGINE NOW, not from this browser's `localStorage`.
+   *
+   * They moved because the Models tab in Settings stars the same models, against
+   * the same login, and two stores behind one row is how "I unstarred it and it
+   * came back" happens. The store is ROW-keyed and this menu is FAMILY-keyed, so
+   * the set below is derived — see `familyFavorites`.
    */
-  const [favorites, setStoredFavorites] = useState<ReadonlySet<string>>(new Set());
+  const overlays = useModelOverlays(
+    crossProvider
+      ? PROVIDERS.map((option) => (option === driver && instanceId ? { driver: option, instanceId } : { driver: option }))
+      : [{ driver, ...(instanceId ? { instanceId } : {}) }],
+  );
+  const starredRows = overlays.get(driver)?.favorites ?? [];
+  /** Every provider's stars at once, because the favourites view spans them. */
+  const favorites = useMemo(() => {
+    const out = new Set<string>();
+    for (const option of crossProvider ? PROVIDERS : [driver]) {
+      const rows = new Set(overlays.get(option)?.favorites ?? []);
+      for (const id of familyFavorites(catalogues.get(option)?.models ?? [], rows)) out.add(id);
+    }
+    return out;
+  }, [overlays, catalogues, crossProvider, driver]);
+
+  /**
+   * The stars somebody had before this moved, carried across once per login.
+   * Best effort and silent — losing them is the gesture the `:v2` key bump
+   * already established as survivable; losing the menu would not be.
+   */
+  const overlayLoaded = overlays.get(driver) !== undefined;
   useEffect(() => {
-    const task = window.setTimeout(() => setStoredFavorites(readFavorites()), 0);
+    if (!overlayLoaded || models.length === 0) return;
+    const task = window.setTimeout(() => {
+      void importLocalFavorites(instanceId ?? driver, models, starredRows);
+    }, 0);
     return () => window.clearTimeout(task);
-  }, []);
-  const setFavorites = (next: Set<string>) => {
-    setStoredFavorites(next);
-    writeFavorites(next);
+    // `starredRows` is read, not depended on: the import is guarded by its own
+    // per-login sentinel, and depending on the list would re-run it on the very
+    // write it performs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayLoaded, models.length, instanceId, driver]);
+
+  /** Star a whole family — every row in it, so the derived bit above can never
+   *  be half true. The write is optimistic in the sense that the cache is
+   *  forgotten on success and every mounted menu re-reads. */
+  const starFamily = (from: ProviderDriverKind, familyId: string) => {
+    const rows = catalogues.get(from)?.models ?? [];
+    const owner = from === driver ? (instanceId ?? driver) : from;
+    const next = toggleFamilyFavorite(rows, overlays.get(from)?.favorites ?? [], familyId);
+    void patchModelOverlay(owner, { favorites: next }).catch(() => undefined);
   };
 
-  const { current, legacy } = keepStarredVisible(splitGenerations(families), favorites);
+  /**
+   * THE MENU'S OWN LIST, which is not the same set as `families` above.
+   *
+   * `selectionOf` reads the FULL catalogue on purpose — the pill has to resolve
+   * the effort levels, window and fast-mode flag of whatever is running, and a
+   * model the reader curated away can still be the model running. Only the
+   * LISTING drops hidden rows, and it keeps the running one (`visibleModels`),
+   * so hiding never rewrites a session out from under anybody.
+   */
+  const listedFamilies = groupFamilies(visibleModels(models, choice.model));
+  const { current, legacy } = keepStarredVisible(splitGenerations(listedFamilies), favorites);
   /**
    * THE LIST, EITHER WAY ROUND. A provider's own models are its current
    * generation, favourites first; the favourites view is every starred model on
@@ -527,7 +554,7 @@ export function AgentControl({
   const listed: { from: ProviderDriverKind; family: ModelFamily }[] =
     view === "favorites"
       ? (crossProvider ? PROVIDERS : [driver]).flatMap((option) =>
-          groupFamilies(catalogues.get(option)?.models ?? [])
+          groupFamilies(visibleModels(catalogues.get(option)?.models ?? [], choice.model))
             .filter((family) => favorites.has(family.id))
             .map((family) => ({ from: option, family })),
         )
@@ -625,7 +652,7 @@ export function AgentControl({
                 setShowLegacy(false);
               }}
               aria-label="Favourites"
-              title="Starred models"
+              title="Favourites"
               className={cn(
                 "flex size-8 items-center justify-center rounded-lg transition-colors",
                 view === "favorites"
@@ -650,7 +677,7 @@ export function AgentControl({
                   if (option !== driver) onDriverChange?.(option);
                 }}
                 aria-label={PROVIDER_LABEL[option]}
-                title={onDriverChange || option === driver ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed once the session exists`}
+                title={onDriverChange || option === driver ? PROVIDER_LABEL[option] : `${PROVIDER_LABEL[option]} — fixed for this session`}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-lg transition-colors disabled:cursor-default",
                   option === view
@@ -674,7 +701,7 @@ export function AgentControl({
                 starred={favorites.has(family.id)}
                 readOnly={readOnly}
                 onSelect={() => pickFamily(family, from)}
-                onStar={() => setFavorites(toggleFavorite(favorites, family.id))}
+                onStar={() => starFamily(from, family.id)}
               />
             ))}
             {/**
@@ -693,7 +720,7 @@ export function AgentControl({
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/60"
               >
                 <span className="min-w-0 flex-1 truncate">Legacy models</span>
-                <span className="shrink-0 text-[10px]">{legacy.length}</span>
+                <span className="shrink-0 text-[0.625rem]">{legacy.length}</span>
                 <ChevronRightIcon className="size-3.5 shrink-0" />
               </button>
             )}
@@ -703,27 +730,27 @@ export function AgentControl({
             {view !== "favorites" && choice.model && models.length > 0 && !selectedFamily && (
               <CompactRow label={choice.model} hint="external" selected disabled onSelect={() => undefined} />
             )}
-            {asking && <p className="px-2 py-1.5 text-[11px] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
+            {asking && <p className="px-2 py-1.5 text-[0.6875rem] text-muted-foreground">Asking {PROVIDER_LABEL[asking]}…</p>}
             {/* Nothing to show, and the two reasons are different questions. */}
             {view === "favorites" && !asking && listed.length === 0 && (
-              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">Star a model to keep it here.</p>
+              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">Star a model to keep it here.</p>
             )}
             {view !== "favorites" && catalogue && models.length === 0 && (
-              <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">
+              <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
                 {catalogue.message ?? `${PROVIDER_LABEL[driver]} did not report any models.`}
               </p>
             )}
           </div>
         </div>
-        <p className="border-t border-border px-2.5 py-1.5 text-[11px] leading-snug text-muted-foreground">
-          {readOnly
-            ? "Chosen when the session starts."
-            : onDriverChange
-              ? "Applies to the first message. The provider is fixed after that."
-              : `Next turn. Provider stays ${PROVIDER_LABEL[driver]}.`}
+        <p className="border-t border-border px-2.5 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
+          {readOnly ? "Chosen when the session starts." : onDriverChange ? "Applies to the first message." : "Takes effect next turn."}
           {/* Whether this list was ASKED FOR or guessed. The distinction matters
-              the moment an id here 404s at the provider. */}
-          {catalogue?.source === "builtin" && models.length > 0 ? " List is this cockpit's own." : ""}
+              the moment an id here 404s at the provider — and it is read PER ROW
+              rather than off the length, because a catalogue the provider could
+              not answer plus a model somebody typed is a list with rows in it
+              and nothing built-in about it. */}
+          {catalogue?.source === "builtin" && models.some((row) => row.source !== "user") ? " Built-in list." : ""}
+          {models.some((row) => row.source === "user") ? " Includes models you added." : ""}
         </p>
       </PopoverContent>
     </Popover>
@@ -756,14 +783,17 @@ export function AgentControl({
 export function ReasoningControl({
   driver,
   choice,
+  instanceId,
   onChange,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** Whose login's curated list to read. Absent means the built-in slot. */
+  instanceId?: string;
   onChange?: (next: ModelChoice) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const catalogue = useModelCatalogue(driver);
+  const catalogue = useModelCatalogue(driver, instanceId);
   /**
    * PER MODEL, not per provider. Codex reports six levels for its newest model
    * and four for an older one, and offering a level a model does not have fails
@@ -829,7 +859,7 @@ export function ReasoningControl({
             is the honest floor until the provider answers — and if it could not
             be asked, its own words say why. */}
         {levels.length === 0 && catalogue?.message && (
-          <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">{catalogue.message}</p>
+          <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{catalogue.message}</p>
         )}
 
         {/**
@@ -933,9 +963,12 @@ export function ComposerOverflowMenu({
   onRuntimeMode,
   onDriverChange,
   onEnvMode,
+  instanceId,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** Whose login's curated list to read. Absent means the built-in slot. */
+  instanceId?: string;
   runtimeMode?: RuntimeMode;
   /** Before a session exists the provider and the workspace are still choices;
    *  after, neither is. */
@@ -946,7 +979,7 @@ export function ComposerOverflowMenu({
   onDriverChange?: (driver: ProviderDriverKind) => void;
   onEnvMode?: (mode: "local" | "worktree") => void;
 }) {
-  const catalogue = useModelCatalogue(driver);
+  const catalogue = useModelCatalogue(driver, instanceId);
   // Same per-model rules as the pill's menus, from the same function — see
   // `selectionOf`, which exists because these two drifted apart once already.
   const models = catalogue?.models ?? [];
@@ -959,7 +992,7 @@ export function ComposerOverflowMenu({
           <button
             type="button"
             aria-label="More composer settings"
-            title="Everything else about this message"
+            title="More settings"
             className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           />
         }
@@ -1096,20 +1129,41 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 /**
  * How full the context is — the donor's 32px donut and its popover card.
  *
- * IT RENDERS EVEN WHEN THE FIGURE IS UNKNOWN, showing an em dash. `UsageSnapshot`
- * carries `contextUsed`/`contextMax` and today only the Codex driver populates
- * them (apps/engine/src/codex/items.ts), so on a Claude session this reads `—`
- * for the whole conversation. That is the donor's own behaviour after a
- * compaction it could not measure, and it is the honest shape: a gauge that
- * disappears makes the row jump, and one that prints `0%` measures nothing while
- * looking like a reading.
+ * IT RENDERS EVEN WHEN THE FIGURE IS UNKNOWN, showing an em dash. Both drivers
+ * populate `contextUsed`/`contextMax` now (Codex from tokenUsage updates,
+ * Claude per assistant envelope plus `modelUsage.contextWindow`), so an em
+ * dash means the turn has not reported yet — the honest shape either way: a
+ * gauge that disappears makes the row jump, and one that prints `0%` measures
+ * nothing while looking like a reading.
+ *
+ * `onCompact` puts a Compact button in the popover — the caller decides which
+ * provider gets one, because the gesture is a `/compact` prompt only Claude
+ * executes.
  */
-export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?: ProviderDriverKind }) {
+export function ContextPill({
+  usage,
+  driver,
+  onCompact,
+  compactDisabled,
+  compactReason,
+}: {
+  usage?: UsageSnapshot;
+  driver?: ProviderDriverKind;
+  onCompact?: () => void;
+  compactDisabled?: boolean;
+  /** Why the button is disabled, shown as its tooltip — "a turn is running",
+   *  "already compacting". */
+  compactReason?: string;
+}) {
   const [open, setOpen] = useState(false);
   const used = usage?.contextUsed;
   const max = usage?.contextMax;
   const unknown = used === undefined;
   const usedPct = used === undefined || max === undefined || max <= 0 ? null : Math.min(100, Math.max(0, (used / max) * 100));
+  /** Past 90% the next long tool result can overflow the window — the ring
+   *  turns to the app's danger colour so the state is visible without opening
+   *  the popover. */
+  const critical = usedPct !== null && usedPct > 90;
 
   const readout = unknown
     ? max
@@ -1126,9 +1180,9 @@ export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?:
         render={
           <button
             type="button"
-            className="relative flex size-8 items-center justify-center rounded-full text-[9px] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
-            aria-label={`Context window${unknown ? ", size not reported by this provider" : usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
-            title="View context window"
+            className="relative flex size-8 items-center justify-center rounded-full text-[0.5625rem] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
+            aria-label={`Context window${unknown ? ", size not reported" : usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
+            title="Context window"
           />
         }
       >
@@ -1144,7 +1198,7 @@ export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?:
             strokeLinecap="round"
             strokeDasharray={RING_CIRCUMFERENCE}
             strokeDashoffset={RING_CIRCUMFERENCE * (1 - (usedPct ?? 0) / 100)}
-            className="text-primary"
+            className={critical ? "text-destructive" : "text-primary"}
           />
         </svg>
         <span>{unknown ? "—" : usedPct === null ? compactTokens(used) : `${Math.round(usedPct)}%`}</span>
@@ -1162,12 +1216,23 @@ export function ContextPill({ usage, driver }: { usage?: UsageSnapshot; driver?:
             <span className="text-muted-foreground">Total processed</span>
             <span className="font-mono font-medium">{unknown ? "—" : compactTokens(used)}</span>
           </div>
-          {unknown && (
-            <p className="mt-3 max-w-56 text-sm leading-snug text-muted-foreground">
-              {harness} does not report context size to the engine yet, so there is nothing to measure here.
-            </p>
+          {unknown && <p className="mt-3 max-w-56 text-sm leading-snug text-muted-foreground">{harness} does not report context size yet.</p>}
+          <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">{harness} compacts automatically when needed.</p>
+          {onCompact && (
+            <button
+              type="button"
+              disabled={compactDisabled}
+              title={compactDisabled ? compactReason : "Summarise the conversation to free space"}
+              onClick={() => {
+                setOpen(false);
+                onCompact();
+              }}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Minimize2Icon className="size-3.5" />
+              Compact now
+            </button>
           )}
-          <p className="mt-5 max-w-56 text-sm leading-snug text-muted-foreground">{harness} automatically compacts its context when needed.</p>
         </div>
       </PopoverContent>
     </Popover>
@@ -1179,7 +1244,7 @@ export function BackgroundPresence({ count, onStop }: { count: number; onStop: (
   if (count === 0) return null;
   return (
     <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-border bg-card/60 px-2.5 py-1.5">
-      <span className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+      <span className="flex items-center gap-2 text-[0.6875rem] font-medium text-muted-foreground">
         <span className="relative flex size-2">
           <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/60" />
           <span className="relative inline-flex size-2 rounded-full bg-primary" />

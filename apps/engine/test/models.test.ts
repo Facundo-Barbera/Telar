@@ -39,6 +39,10 @@ describe("parseCodexModels", () => {
         // Codex has no fast mode. Stated rather than omitted, so the field means
         // the same thing on both providers.
         fastMode: false,
+        // A row straight off the provider carries no reader's opinion yet — the
+        // overlay is what sets these, downstream of the parser.
+        hiddenByUser: false,
+        source: "provider",
       },
     ]);
   });
@@ -46,7 +50,7 @@ describe("parseCodexModels", () => {
   test("a row from a newer or older codex degrades instead of throwing", () => {
     // A menu must not be able to fail because a field moved.
     expect(parseCodexModels({ data: [{ id: "x" }] })).toEqual([
-      { id: "x", label: "x", isDefault: false, hidden: false, efforts: [], fastMode: false },
+      { id: "x", label: "x", isDefault: false, hidden: false, efforts: [], fastMode: false, hiddenByUser: false, source: "provider" },
     ]);
     expect(parseCodexModels({ data: [{ displayName: "no id" }] })).toEqual([]);
     expect(parseCodexModels({})).toEqual([]);
@@ -128,12 +132,12 @@ describe("parseClaudeModels", () => {
     // Losing the default entirely would be worse than showing it under its own
     // name — so the fold only happens when a sibling genuinely resolves the same.
     const models = parseClaudeModels([{ value: "default", resolvedModel: "claude-opus-9", displayName: "Default" }]);
-    expect(models).toEqual([{ id: "default", label: "Default", isDefault: true, hidden: false, efforts: [], resolves: "claude-opus-9", fastMode: false }]);
+    expect(models).toEqual([{ id: "default", label: "Default", isDefault: true, hidden: false, efforts: [], resolves: "claude-opus-9", fastMode: false, hiddenByUser: false, source: "provider" }]);
   });
 
   test("a row from a newer or older claude degrades instead of throwing", () => {
     expect(parseClaudeModels([{ value: "x" }])).toEqual([
-      { id: "x", label: "x", isDefault: false, hidden: false, efforts: [], fastMode: false },
+      { id: "x", label: "x", isDefault: false, hidden: false, efforts: [], fastMode: false, hiddenByUser: false, source: "provider" },
     ]);
     // An effort level the Agent SDK's own type does not accept is dropped: it
     // would be silently ignored at best and fail the turn at worst.

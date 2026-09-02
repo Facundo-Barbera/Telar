@@ -67,7 +67,9 @@ function subscribe(onChange: () => void): () => void {
   };
 }
 
-function readTheme(): Theme {
+/** Exported for the studio preview, which moves the scheme class behind the
+ *  store's back and needs the stored truth to put it back. */
+export function readTheme(): Theme {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(PREVIOUS_STORAGE_KEY);
     return stored === "light" || stored === "dark" || stored === "system" ? stored : DEFAULT_THEME;
@@ -102,6 +104,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       root.classList.toggle("dark", dark);
     };
     apply();
+    // Inside the desktop shell, the window's vibrancy material tints from
+    // nativeTheme — tell the shell so a dark cockpit never sits on a light
+    // frost (structural access: the bridge is legitimately absent in a tab).
+    (window as { telarDesktop?: { appearance?: { setTheme?: (t: Theme) => void } } }).telarDesktop?.appearance?.setTheme?.(theme);
     if (theme !== "system") return;
     const query = window.matchMedia("(prefers-color-scheme: dark)");
     query.addEventListener("change", apply);

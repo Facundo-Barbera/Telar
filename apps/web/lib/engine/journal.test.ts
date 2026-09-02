@@ -4,6 +4,7 @@ import type { EngineEvent, Item, Turn } from "@telar/engine-client";
 import {
   appendJournalEvents,
   isActiveTurn,
+  isCompacting,
   isToolItem,
   itemLabel,
   itemText,
@@ -268,5 +269,23 @@ describe("item rendering helpers", () => {
       [],
     );
     expect(toolOutput(projected!.items[0]!)).toBe("a\nb");
+  });
+});
+
+describe("isCompacting", () => {
+  test("true exactly while a context_compaction row is open", () => {
+    const during = projectJournal(
+      [turn],
+      [item({ id: "cc", detail: { type: "context_compaction" } })],
+      [],
+    )[0];
+    expect(isCompacting(during)).toBe(true);
+    const after = projectJournal(
+      [turn],
+      [item({ id: "cc", status: "completed", detail: { type: "context_compaction", preTokens: 9, postTokens: 3 } })],
+      [],
+    )[0];
+    expect(isCompacting(after)).toBe(false);
+    expect(isCompacting(undefined)).toBe(false);
   });
 });

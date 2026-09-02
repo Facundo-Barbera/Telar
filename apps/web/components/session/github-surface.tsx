@@ -151,12 +151,12 @@ function FacetList({ loading, empty, children }: { loading: boolean; empty: stri
   const has = Array.isArray(children) ? children.some(Boolean) : Boolean(children);
   if (loading && !has) {
     return (
-      <p className="flex items-center gap-2 px-2 py-1.5 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-2 px-2 py-1.5 text-[0.6875rem] text-muted-foreground">
         <Spinner className="size-3" /> asking gh…
       </p>
     );
   }
-  if (!has) return <p className="px-2 py-1.5 text-[11px] leading-snug text-muted-foreground">{empty}</p>;
+  if (!has) return <p className="px-2 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">{empty}</p>;
   return <>{children}</>;
 }
 
@@ -238,13 +238,13 @@ function ForgeRow({
         <Glyph className={cn("mt-0.5 size-3.5 shrink-0", tone)} aria-label={STATUS_LABEL[status]} />
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-1.5">
-            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">#{number}</span>
+            <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground">#{number}</span>
             <span className="min-w-0 flex-1 truncate text-xs" title={title}>
               {title}
             </span>
           </span>
           {/* The facts line: status in words, then who opened it, then when. */}
-          <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.625rem] text-muted-foreground">
             <span className={tone}>{STATUS_LABEL[status]}</span>
             {author && <span>· {author}</span>}
             <span>· {fmtAgo(when)}</span>
@@ -265,19 +265,19 @@ function ForgeRow({
           {(labels.length > 0 || milestone || projects.length > 0) && (
             <span className="mt-1 flex flex-wrap items-center gap-1">
               {labels.slice(0, 3).map((label) => (
-                <Badge key={label.name} variant="outline" className="px-1 py-0 text-[9px] font-normal">
+                <Badge key={label.name} variant="outline" className="px-1 py-0 text-[0.5625rem] font-normal">
                   {label.name}
                 </Badge>
               ))}
-              {labels.length > 3 && <span className="text-[9px] text-muted-foreground">+{labels.length - 3}</span>}
+              {labels.length > 3 && <span className="text-[0.5625rem] text-muted-foreground">+{labels.length - 3}</span>}
               {milestone && (
-                <Badge variant="outline" className="gap-0.5 px-1 py-0 text-[9px] font-normal" title={`Milestone ${milestone}`}>
+                <Badge variant="outline" className="gap-0.5 px-1 py-0 text-[0.5625rem] font-normal" title={`Milestone ${milestone}`}>
                   <MilestoneIcon className="size-2.5" />
                   {milestone}
                 </Badge>
               )}
               {projects.map((project) => (
-                <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-[9px] font-normal" title={`On the ${project} board`}>
+                <Badge key={project} variant="secondary" className="gap-0.5 px-1 py-0 text-[0.5625rem] font-normal" title={`On the ${project} board`}>
                   <SquareKanbanIcon className="size-2.5" />
                   {project}
                 </Badge>
@@ -348,19 +348,19 @@ function PullRow({ pull, mine, open, onOpen }: { pull: GitHubPullRequest; mine: 
           {/* The one badge worth the width on a session's panel: this pull
               request is FOR THE BRANCH THIS SESSION IS ON. */}
           {mine && (
-            <Badge variant="secondary" className="px-1 py-0 text-[9px] font-normal">
+            <Badge variant="secondary" className="px-1 py-0 text-[0.5625rem] font-normal">
               this session
             </Badge>
           )}
           {/* Only shown while it can still change. A merged pull request's review
               decision is history, and history does not need a badge. */}
           {status === "open" && pull.reviewDecision === "APPROVED" && (
-            <Badge variant="outline" className="px-1 py-0 text-[9px] font-normal text-success">
+            <Badge variant="outline" className="px-1 py-0 text-[0.5625rem] font-normal text-success">
               approved
             </Badge>
           )}
           {status === "open" && pull.reviewDecision === "CHANGES_REQUESTED" && (
-            <Badge variant="outline" className="px-1 py-0 text-[9px] font-normal text-warning">
+            <Badge variant="outline" className="px-1 py-0 text-[0.5625rem] font-normal text-warning">
               changes requested
             </Badge>
           )}
@@ -489,7 +489,7 @@ export function GitHubSurface({
   }
   if (!snapshot) {
     return (
-      <p className="flex items-center gap-2 px-4 py-3 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
         <Spinner className="size-3" /> asking gh…
       </p>
     );
@@ -513,7 +513,7 @@ export function GitHubSurface({
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5 border-b border-border px-4 py-2 text-[0.6875rem] text-muted-foreground">
         {/**
          * ONE MENU FOR EVERY NARROWING, with the state at the top level and the
          * facets in submenus. A row of pills does not fit in 320px once there are
@@ -539,7 +539,7 @@ export function GitHubSurface({
             {/* A COUNT ON THE TRIGGER, so a collapsed menu still admits it is
                 narrowing. The chips below say by what. */}
             {chips.length > 0 && (
-              <span className="rounded-full bg-primary/15 px-1 font-mono text-[9px] leading-4 text-primary">{chips.length}</span>
+              <span className="rounded-full bg-primary/15 px-1 font-mono text-[0.5625rem] leading-4 text-primary">{chips.length}</span>
             )}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-56">
@@ -581,7 +581,7 @@ export function GitHubSurface({
                             <span className="flex-1 truncate">{milestone.title}</span>
                             {/* What is LEFT in it, which is the number that decides
                                 whether the milestone is worth opening. */}
-                            <span className="ml-1 shrink-0 font-mono text-[9px] text-muted-foreground tabular-nums">{milestone.open}</span>
+                            <span className="ml-1 shrink-0 font-mono text-[0.5625rem] text-muted-foreground tabular-nums">{milestone.open}</span>
                           </DropdownMenuRadioItem>
                         ))}
                       </DropdownMenuRadioGroup>
@@ -598,7 +598,7 @@ export function GitHubSurface({
                 <span className="max-w-24 truncate text-muted-foreground">{filter.assignee ?? "anyone"}</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-56">
-                <FacetList loading={loadingFacets} empty="Nobody can be assigned here, or gh could not say who.">
+                <FacetList loading={loadingFacets} empty="No assignees to choose from.">
                   <DropdownMenuRadioGroup value={filter.assignee ?? ""} onValueChange={(next) => choose({ assignee: next || undefined })}>
                     <DropdownMenuRadioItem value="">Anyone</DropdownMenuRadioItem>
                     {/* THE VIEWER FIRST AND BY NAME. "assigned to me" is the filter
@@ -692,7 +692,7 @@ export function GitHubSurface({
               type="button"
               onClick={() => clearChip(chip)}
               title={`Stop filtering by ${chip.label}`}
-              className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 py-0 text-[9px] text-muted-foreground transition-colors hover:border-destructive/40 hover:text-foreground"
+              className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 py-0 text-[0.5625rem] text-muted-foreground transition-colors hover:border-destructive/40 hover:text-foreground"
             >
               <span className="truncate">{chip.label}</span>
               <XIcon className="size-2.5 shrink-0" />
@@ -702,11 +702,11 @@ export function GitHubSurface({
       )}
 
       {rows.length === 0 ? (
-        <p className="px-4 py-6 text-center text-[11px] leading-snug text-muted-foreground">
+        <p className="px-4 py-6 text-center text-[0.6875rem] leading-snug text-muted-foreground">
           {shownChips.length > 0
-            ? `Nothing matches those filters. Remove one above, or clear them all from the menu.`
+            ? `Nothing matches those filters.`
             : shown.state === "open"
-              ? `Nothing open. Closed ${label} are one click away in the filter above.`
+              ? `Nothing open.`
               : `No ${label} in this repository match that.`}
         </p>
       ) : (
@@ -729,19 +729,18 @@ export function GitHubSurface({
           {/* WHY THE BOARD CHIPS ARE MISSING, said once at the bottom and only when
               it is true. Silence would make every row look like it is on no board. */}
           {snapshot.projectsUnavailable === "scope" && (
-            <p className="border-t border-border px-4 py-2 text-[11px] leading-snug text-muted-foreground">
+            <p className="border-t border-border px-4 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
               Boards are not shown: the gh token has no <span className="font-mono">read:project</span> scope. Run{" "}
               <span className="font-mono">gh auth refresh -s read:project</span> and press refresh.
             </p>
           )}
           {snapshot.projectsUnavailable === "failed" && (
-            <p className="border-t border-border px-4 py-2 text-[11px] leading-snug text-muted-foreground">
-              Boards could not be read this time. Everything else on these rows is current.
+            <p className="border-t border-border px-4 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+              Boards could not be read this time.
             </p>
           )}
-          <p className="px-4 py-2 text-[11px] leading-snug text-muted-foreground">
-            Click a row to read it here — body, conversation{kind === "pulls" ? ", checks, reviews and the merge" : " and status"}. Drag one into
-            the message to reference it instead; what lands in the box is exactly what the agent gets.
+          <p className="px-4 py-2 text-[0.6875rem] leading-snug text-muted-foreground">
+            Click a row to read it here; drag one into the message to reference it.
           </p>
         </>
       )}

@@ -144,7 +144,7 @@ export function MiniBraid({
           {braid.spine.map((node) => dot(node, SPINE_X))}
         </svg>
       </div>
-      <p className="min-h-8 px-1 pt-1 text-[10px] leading-4 text-muted-foreground">
+      <p className="min-h-8 px-1 pt-1 text-[0.625rem] leading-4 text-muted-foreground">
         {hovered ? `${fmtAgo(hovered.at)} · ${hovered.label}` : "The story so far — click a stop to open it."}
       </p>
     </div>

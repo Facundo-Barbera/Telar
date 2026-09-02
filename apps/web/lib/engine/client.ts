@@ -1,3 +1,6 @@
+// Type-only, so the browser bundle never follows it into `node:fs`: the channel
+// is DECIDED server-side (lib/build-identity.ts) and only described here.
+import type { Channel } from "@/lib/build-identity";
 import type {
   BrowserSnapshot,
   GitCommitEntry,
@@ -12,8 +15,17 @@ import type {
   GitHubSnapshot,
   GitignoreResult,
   GitOverview,
+  ComputerUseBackend,
+  ComputerUseStatus,
   InboxPolicy,
+  EnvMode,
+  SessionDefaults,
+  TextGenPolicy,
+  UsageReport,
+  UsageResolution,
   ModelCatalogue,
+  ModelOverlay,
+  CustomProviderModel,
   SessionDiff,
   EngineErrorCode,
   EngineEvent,
@@ -30,6 +42,7 @@ import type {
   ProviderInstanceEnvVar,
   ProviderProbe,
   ProviderUpdateRun,
+  PublishedAppearance,
   EngineRequest,
   RequestDecision,
   RuntimeMode,
@@ -48,8 +61,12 @@ import { forgeQuery } from "@telar/engine-client";
  * hand-written literals that had to be kept in step with the engine's own
  * `EngineErrorCode` by hand — and when v2 added `protocol_mismatch`, the copy
  * here was the thing that went stale. An alias cannot.
+ *
+ * `cockpit_unauthorized` is the one cockpit-minted addition: the pairing gate
+ * (proxy.ts) answers 401 with it. It is NOT in the engine contract because
+ * the engine never sees an unpaired request — the cockpit refuses it first.
  */
-export type EngineApiErrorCode = EngineErrorCode;
+export type EngineApiErrorCode = EngineErrorCode | "cockpit_unauthorized";
 
 export class EngineApiError extends Error {
   constructor(readonly code: EngineApiErrorCode, message: string, readonly status?: number) {
@@ -60,15 +77,19 @@ export class EngineApiError extends Error {
 
 type Fetcher = typeof fetch;
 
-async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown): Promise<T> {
+async function request<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetcher(pathname, {
       method,
       headers: body === undefined ? undefined : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
-  } catch {
+  } catch (cause) {
+    // An abort is the CALLER's decision arriving back, not the adapter being
+    // away — it must surface as itself so the UI can say "Stopped".
+    if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
     throw new EngineApiError("engine_unavailable", "The cockpit cannot reach its local adapter.");
   }
 
@@ -88,24 +109,83 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
 export function createEngineApi(fetcher: Fetcher = fetch) {
   return {
     health: () => request<EngineHealth>(fetcher, "GET", "/api/health"),
-    /** Which build this is and where its state lives. Deliberately does NOT go
-     *  through the engine: both answers matter most when the engine is down. */
-    about: () => request<{ appVersion: string; stateRoot?: string }>(fetcher, "GET", "/api/about"),
+    /** Which build this is, what it looks like, and where its state lives.
+     *  Deliberately does NOT go through the engine: every answer here matters
+     *  most when the engine is down. `iconUrl` is absent when this layout has no
+     *  icon to serve, so it is never a URL that 404s. */
+    about: () =>
+      request<{ appVersion: string; appName: string; channel: Channel; iconUrl?: string; stateRoot?: string }>(
+        fetcher,
+        "GET",
+        "/api/about",
+      ),
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
-    setInbox: (patch: { autoSettleAfterDays?: number | null }) =>
+    setInbox: (patch: { autoSettleAfterHours?: number | null }) =>
       request<{ inbox: InboxPolicy }>(fetcher, "PATCH", "/api/inbox", patch),
+    /** What a new session is built with when nobody said — see
+     *  `SessionDefaults`. One answer for every client of this engine. */
+    sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
+    setSessionDefaults: (patch: { envMode?: EnvMode }) =>
+      request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
+    /** Spend over time, folded from the engine's journals. */
+    usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {
+      const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
+      if (input.resolution) query.set("resolution", input.resolution);
+      if (input.timeZone) query.set("tz", input.timeZone);
+      return request<{ usage: UsageReport }>(fetcher, "GET", `/api/usage?${query.toString()}`);
+    },
+    /** Who writes generated titles and branch names — see `TextGenPolicy`. */
+    textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
+    setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
+      request<{ textGen: TextGenPolicy }>(fetcher, "PATCH", "/api/textgen", patch),
+    /** One structured completion from the policy's harness. SLOW (a cold CLI
+     *  start plus a completion) and fallible — a harness that does not answer
+     *  is a 502, never an empty result. `effort` asks the harness to think
+     *  harder than the title-generation default; `signal` aborts the wait
+     *  (the harness may still finish server-side — its answer is discarded). */
+    complete: (
+      input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
+      options: { signal?: AbortSignal } = {},
+    ) => request<{ result: Record<string, unknown> }>(fetcher, "POST", "/api/textgen/complete", input, options.signal),
+    /** The host cockpit's published look, for windows that want to wear it.
+     *  Already parsed by the shared total parser on the engine adapter's side,
+     *  so `null` covers both "nothing published" and "nothing readable" — the
+     *  same instruction to a reader either way. */
+    appearance: () => request<{ appearance: PublishedAppearance | null; updatedAt: number | null }>(fetcher, "GET", "/api/appearance"),
+    /** Replaces the published look wholesale — a snapshot, never a patch. */
+    setAppearance: (blob: PublishedAppearance) => request<{ ok: boolean; updatedAt: number; etag: string }>(fetcher, "PUT", "/api/appearance", blob),
+    /** Withdraw the published look. Idempotent — there is nothing to publish
+     *  and nothing to fail. */
+    clearAppearance: () => request<{ ok: boolean }>(fetcher, "DELETE", "/api/appearance"),
     /** Which models a provider says it has — asked of the provider where it can
      *  answer, and this cockpit's own short list where it cannot. */
-    modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {
+    modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean; instanceId?: string } = {}) => {
       const query = new URLSearchParams({ driver });
       if (options.refresh) query.set("refresh", "1");
+      if (options.instanceId) query.set("instanceId", options.instanceId);
       return request<{ catalogue: ModelCatalogue }>(fetcher, "GET", `/api/models?${query.toString()}`);
     },
+    /** What this login's reader did to that list. An untouched overlay is a real
+     *  answer, not a 404. */
+    modelOverlay: (instanceId: string) =>
+      request<{ overlay: ModelOverlay }>(fetcher, "GET", `/api/provider-instances/${encodeURIComponent(instanceId)}/models`),
+    /** Presence is the patch: a submitted list replaces its own whole, so
+     *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
+    setModelOverlay: (
+      instanceId: string,
+      patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+    ) =>
+      request<{ overlay: ModelOverlay }>(
+        fetcher,
+        "PATCH",
+        `/api/provider-instances/${encodeURIComponent(instanceId)}/models`,
+        patch,
+      ),
     projectGit: (projectId: string) =>
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
     /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
@@ -169,7 +249,18 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
-    createSession: (projectId: string, input: { title?: string; driver?: ProviderDriverKind; envMode?: "local" | "worktree" } = {}) =>
+    createSession: (
+      projectId: string,
+      input: {
+        title?: string;
+        driver?: ProviderDriverKind;
+        envMode?: "local" | "worktree";
+        /** Worktree base — any name from `GitOverview.refs`. Absent = HEAD. */
+        baseRef?: string;
+        /** A human's own branch name, outside loom//telar/. */
+        branchName?: string;
+      } = {},
+    ) =>
       request<{ session: Session }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/sessions`, input),
     // The contract's own snapshot type, not a hand-copied structural twin: this
     // route proxies the engine verbatim, so a field the engine adds is already
@@ -182,8 +273,25 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
      *  and the provider owns the resume cursor. */
     updateSession: (
       sessionId: string,
-      patch: { title?: string; runtimeMode?: RuntimeMode; detached?: boolean; model?: ModelSelection | null },
+      patch: {
+        title?: string;
+        runtimeMode?: RuntimeMode;
+        detached?: boolean;
+        model?: ModelSelection | null;
+        /** Shelve or pin this session in the sidebar. `null` hands it back to
+         *  the inactivity rule — see `Session.settledOverride`. */
+        settledOverride?: "settled" | "active" | null;
+        snoozedUntil?: number | null;
+      },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /** Computer use, measured — slow by design (one subprocess round trip in
+     *  the engine), and the probe doubles as the macOS granting flow. */
+    computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),
+    /** Wake the Sky host app in the background. Idempotent. */
+    wakeComputerUseHost: () => request<{ ok: boolean }>(fetcher, "POST", "/api/computer-use/host", {}),
+    /** cua's native granting flow — CuaDriver.app requests the grants. No-op for Sky. */
+    grantComputerUseAccess: () =>
+      request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),
@@ -435,6 +543,9 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
+    /** SEND NOW: promote a queued message into the running turn. */
+    promoteTurn: (sessionId: string, runId: string) =>
+      request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {}),
   };
 }
 

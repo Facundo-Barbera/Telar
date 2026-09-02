@@ -97,7 +97,7 @@ function AskOneThingForm({
         if (trimmed) onSubmit(trimmed);
       }}
     >
-      <label className="block px-1 text-[11px] font-medium text-muted-foreground">{label}</label>
+      <label className="block px-1 text-[0.6875rem] font-medium text-muted-foreground">{label}</label>
       <input
         autoFocus
         value={value}

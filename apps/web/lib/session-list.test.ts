@@ -9,6 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  canvasProjectFromPathname,
   bandOf,
   canvasHref,
   deriveSessionList,
@@ -22,7 +23,7 @@ import {
 const NOW = 1_800_000_000_000;
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
-const opts = { now: NOW, autoSettleAfterDays: 3 };
+const opts = { now: NOW, autoSettleAfterHours: 72 };
 
 const row = (id: string, title: string, over: Partial<SidebarSession> = {}): SidebarSession => ({
   id,
@@ -61,8 +62,8 @@ describe("bandOf", () => {
 
   test("the window is a parameter, and null turns the clock off", () => {
     const stale = row("s1", "Ancient", { updatedAt: NOW - 400 * DAY });
-    expect(bandOf(stale, { now: NOW, autoSettleAfterDays: null })).toBe("active");
-    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * DAY }), { now: NOW, autoSettleAfterDays: 7 })).toBe("active");
+    expect(bandOf(stale, { now: NOW, autoSettleAfterHours: null })).toBe("active");
+    expect(bandOf(row("s1", "Quiet", { updatedAt: NOW - 4 * DAY }), { now: NOW, autoSettleAfterHours: 168 })).toBe("active");
   });
 
   test("a snooze hides a row, and outranks the pin it survives underneath", () => {
@@ -281,5 +282,30 @@ describe("canvasHref", () => {
     expect(canvasHref("a/b")).toBe("/projects/a%2Fb/sessions/new");
     // And it must not be mistaken for a session by the sidebar's own reader.
     expect(sessionHref({ id: "s1", projectId: "project_a" })).not.toBe(canvasHref("project_a"));
+  });
+});
+
+describe("canvasProjectFromPathname", () => {
+  test("names the project whose canvas is open, and round-trips canvasHref", () => {
+    // The draft rail highlights the row you are currently writing in, and the
+    // only thing identifying that row is the project — `activeSessionFromPathname`
+    // answers the literal "new" here, which matches no session and no draft.
+    expect(canvasProjectFromPathname(canvasHref("project_a"))).toBe("project_a");
+    expect(canvasProjectFromPathname(canvasHref("a/b"))).toBe("a/b");
+  });
+
+  test("a session route has no open canvas", () => {
+    // Not "the project this session belongs to": on a session route every draft
+    // row is somewhere else, and none of them is current.
+    expect(canvasProjectFromPathname("/projects/project_a/sessions/s1")).toBeUndefined();
+    expect(canvasProjectFromPathname("/projects/project_a/sessions/new/extra")).toBeUndefined();
+    expect(canvasProjectFromPathname("/spool")).toBeUndefined();
+    expect(canvasProjectFromPathname("/")).toBeUndefined();
+  });
+
+  test("a session literally named new is still not a canvas", () => {
+    // `activeSessionFromPathname` cannot tell these apart; this reader gets the
+    // trailing-slash and suffix cases right so the two never disagree.
+    expect(canvasProjectFromPathname("/projects/project_a/sessions/new/")).toBe("project_a");
   });
 });

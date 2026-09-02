@@ -13,10 +13,14 @@ import {
   defaultInstanceIdForDriver,
   livenessOf,
   DEFAULT_INBOX_POLICY,
+  DEFAULT_SESSION_DEFAULTS,
+  DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
+  SessionDefaults as SessionDefaultsSchema,
+  TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
-  MAX_AUTO_SETTLE_DAYS,
-  MIN_AUTO_SETTLE_DAYS,
+  MAX_AUTO_SETTLE_HOURS,
+  MIN_AUTO_SETTLE_HOURS,
   McpServer as McpServerSchema,
   McpServerSpec as McpServerSpecSchema,
   ModelSelection,
@@ -45,7 +49,13 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type SessionDefaults,
+  type TextGenPolicy,
   type ModelCatalogue,
+  type ModelOverlay,
+  CustomProviderModel,
+  DEFAULT_MODEL_OVERLAY,
+  ModelOverlay as ModelOverlaySchema,
   type SessionDiff,
   type EngineEvent,
   type Item,
@@ -108,6 +118,8 @@ import {
   type WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
+import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
+import { findProjectIcon, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
 import {
   addSubtask as addSpoolSubtask,
@@ -196,7 +208,8 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
+import { applyModelOverlay } from "./model-overlay";
+import { createSessionWorktree, defaultGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
 function requestTitle(detail: RequestDetail): string {
@@ -321,6 +334,25 @@ const GITHUB_CACHE_MS = 30_000;
  *  subprocess — and the answer changes far less often. */
 const MODEL_CACHE_MS = 5 * 60_000;
 
+/**
+ * What could not possibly be a model id.
+ *
+ * LOOSE ON PURPOSE. `gpt-5.6-sol`, `opus[1m]`, `claude-fable-5-1` and
+ * `us.anthropic.claude-fable-5-1` are all real shapes and no provider ever
+ * promised a grammar — a strict pattern here would be this module's own version
+ * of the hand-written catalogue that shipped a model nobody had. What it refuses
+ * is only what could not be an id at all: a blank, something longer than any
+ * published id, and anything carrying whitespace, a quote or a control
+ * character — the characters that turn a stored string into a second problem
+ * when it reaches a CLI argument.
+ */
+const MODEL_ID = /^[^\s"'`\\\u0000-\u001f]{1,200}$/;
+
+/** Enough for every model two providers have ever published at once, several
+ *  times over. A bound at all, because this document is reachable over HTTP. */
+const MAX_OVERLAY_IDS = 200;
+const MAX_CUSTOM_MODELS = 64;
+
 /** Milestones and labels change on the timescale of a sprint, not of a page view,
  *  so what there is to FILTER BY is held far longer than the rows themselves. */
 const FACET_CACHE_MS = 5 * 60_000;
@@ -344,6 +376,17 @@ export type EngineStatePaths = {
    * has to remember at each call site.
    */
   providerSecrets: string;
+  /**
+   * What each login's reader did to that provider's model list — starred,
+   * hidden, ordered, plus the ids they typed because the installed CLI does not
+   * publish them yet.
+   *
+   * ITS OWN FILE, NOT A FIELD ON THE INSTANCE, for a sharper version of the
+   * reason the secrets are split out: `provider-instances.json` is read on every
+   * session claim through `resolveProviderInstance`, and dragging a model up one
+   * place in a menu must not rewrite the routing registry.
+   */
+  modelOverlays: string;
   /**
    * Completed MCP OAuth grants — access token, refresh token, the resolved
    * authorization server and the client they were minted for.
@@ -371,6 +414,19 @@ export type EngineStatePaths = {
    * the same session in two different bands depending on which window you opened.
    */
   inbox: string;
+  /** Who writes generated titles and branch names — see `TextGenPolicy`.
+   *  Environment-scoped like `inbox`, and for the same reason. */
+  textGen: string;
+  /** What a session is created with when nobody said — see `SessionDefaults`.
+   *  Environment-scoped like `inbox`, and for the same reason. */
+  sessionDefaults: string;
+  /**
+   * The host cockpit's resolved look, republished for paired clients — see
+   * `getAppearance`. Environment-scoped like `textGen`, but for the opposite
+   * reason: appearance genuinely LIVES in one browser's localStorage, and this
+   * file is the only place another device can read it from.
+   */
+  appearance: string;
   engine: string;
   lock: string;
 };
@@ -453,12 +509,38 @@ export function statePaths(root: string): EngineStatePaths {
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
     providerSecrets: path.join(resolved, "provider-secrets.json"),
+    modelOverlays: path.join(resolved, "model-overlays.json"),
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    textGen: path.join(resolved, "text-generation.json"),
+    sessionDefaults: path.join(resolved, "session-defaults.json"),
+    appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
+}
+
+/**
+ * The published appearance blob's only limit — see `setAppearance`.
+ *
+ * 8 MiB, AND THE WALLPAPER IS WHY. The first cut capped this at 64 KB
+ * explicitly to forbid an inlined image, on the reasoning that two theme halves
+ * and a handful of scalars fit in 4 KB. That reasoning was right about the
+ * SIZE and wrong about the CONTENT: what the cockpit publishes now is a whole
+ * `Look`, and a Look legitimately carries its backdrop's pixels — the picker
+ * compresses to at most 3.5 MB, and a composed scene stacks up to six smaller
+ * layers plus their un-faded originals. A cap that refused those would publish
+ * a look with a hole in it, which is precisely the divergence the shared format
+ * exists to end. 8 MiB is comfortably above what the cockpit's own compression
+ * ladders can produce and still far below anything worth streaming.
+ */
+const MAX_APPEARANCE_BYTES = 8 * 1024 * 1024;
+
+/** A JSON object and not an array — the shape a blob-shaped payload must have
+ *  for additive readers to be able to key into it at all. */
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertId(value: unknown, label: string): asserts value is string {
@@ -480,6 +562,51 @@ function assertInstanceId(value: unknown): asserts value is string {
       "provider instance id must start with a letter and contain only letters, numbers, underscores, or hyphens",
     );
   }
+}
+
+/**
+ * A list of model ids off the wire, deduped, first occurrence winning.
+ *
+ * DEDUPED RATHER THAN REFUSED, because a repeated id in a favourites list is a
+ * double-click, not a malformed request — and the order this preserves is the
+ * one the reader can see.
+ */
+function readModelIds(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.length > MAX_OVERLAY_IDS) {
+    throw new EngineStateError("invalid_request", `${field} must be an array of at most ${MAX_OVERLAY_IDS} model ids`);
+  }
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !MODEL_ID.test(entry)) {
+      throw new EngineStateError("invalid_request", `${field} must contain only model ids`);
+    }
+    if (!out.includes(entry)) out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * The hand-typed rows. A DUPLICATE ID IS REFUSED HERE rather than deduped: this
+ * is the one list whose entries carry a label, so two entries for one id are two
+ * different answers to "what should this be called" and the engine has no basis
+ * for picking one.
+ */
+function readCustomModels(value: unknown): CustomProviderModel[] {
+  if (!Array.isArray(value) || value.length > MAX_CUSTOM_MODELS) {
+    throw new EngineStateError("invalid_request", `custom must be an array of at most ${MAX_CUSTOM_MODELS} models`);
+  }
+  const out: CustomProviderModel[] = [];
+  for (const entry of value) {
+    const parsed = CustomProviderModel.safeParse(entry);
+    if (!parsed.success || !MODEL_ID.test(parsed.data.id)) {
+      throw new EngineStateError("invalid_request", "each custom model needs a model id, and an optional label");
+    }
+    if (out.some((existing) => existing.id === parsed.data.id)) {
+      throw new EngineStateError("invalid_request", `${parsed.data.id} is listed twice`);
+    }
+    out.push(parsed.data);
+  }
+  return out;
 }
 
 /**
@@ -546,6 +673,25 @@ function seedProviderInstance(driver: ProviderDriverKind, at: number): ProviderI
     createdAt: at,
     updatedAt: at,
   };
+}
+
+/**
+ * The engine-cut branch a title implies: `telar/<title-slug>-<id6>`, or
+ * undefined when the title yields no usable slug (worktree creation then falls
+ * back to `telar/<sessionId>`). One function because TWO callers must agree on
+ * it exactly: `createSession` names the branch from the seed title, and
+ * `refreshWorktreeBranchFromTitle` may only rename a branch it can prove the
+ * engine derived — which it proves by re-deriving.
+ */
+export function derivedBranchFor(title: string, sessionId: string): string | undefined {
+  const slug = title
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return slug ? `telar/${slug}-${sessionId.replace(/^session_/, "").slice(0, 6)}` : undefined;
 }
 
 function assertText(value: unknown): asserts value is string {
@@ -867,6 +1013,11 @@ export type EngineNotifier = (input: {
 export class EngineStore {
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
+  /** See the constructor: daemon-injected, absent means no computer use. */
+  private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
+  /** See the constructor: the real subprocess handshake unless a test says
+   *  otherwise. */
+  private readonly readModels: typeof readModelCatalogue;
   private readonly git: GitRunner;
   private readonly gh: GhRunner;
   /**
@@ -914,6 +1065,10 @@ export class EngineStore {
    * EngineStore directly and must not pull Chromium in to do it.
    */
   private browser?: AttachedBrowser;
+  /** The last tab set journalled from a HAND-STARTED browser read, per session.
+   *  In memory like the caches above: it only exists to stop repeated `start`
+   *  reads writing identical `browser.state.changed` rows. */
+  private readonly browserJournalSignature = new Map<string, string>();
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
@@ -937,12 +1092,27 @@ export class EngineStore {
   async browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
     this.getSession(sessionId);
     if (!this.browser?.state) {
-      return { scopeKey: sessionId, provider: "none", running: false, tabs: [] };
+      return { scopeKey: sessionId, provider: "none", running: false, tabs: [], canStart: false };
     }
     const state = await this.browser.state(sessionId, {
       ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
       ...(options.start === undefined ? {} : { start: options.start }),
     });
+    /**
+     * A browser opened BY HAND has no worker to report it. The socket journals
+     * `browser.state.changed` for agent-driven navigation; a human pressing
+     * "open a browser" goes through this read with `start`, and without this
+     * write the launched page would exist with no tab in the panel — the panel
+     * folds the journal, not this snapshot. Deduped by signature so repeated
+     * presses (or a poll that someone hands `start` to) journal nothing new.
+     */
+    if (options.start && !state.error && state.running) {
+      const signature = `${state.provider}:${JSON.stringify(state.tabs)}`;
+      if (this.browserJournalSignature.get(sessionId) !== signature) {
+        this.browserJournalSignature.set(sessionId, signature);
+        this.appendEvent(sessionId, { type: "browser.state.changed", provider: state.provider, tabs: state.tabs });
+      }
+    }
     return {
       scopeKey: sessionId,
       provider: state.provider,
@@ -950,6 +1120,7 @@ export class EngineStore {
       tabs: state.tabs,
       ...(state.screenshot ? { screenshot: state.screenshot } : {}),
       ...(state.error ? { error: state.error } : {}),
+      canStart: true,
     };
   }
 
@@ -1038,8 +1209,22 @@ export class EngineStore {
    */
   getInboxPolicy(): InboxPolicy {
     try {
-      const parsed = InboxPolicySchema.safeParse(readJson(this.paths.inbox));
-      return parsed.success ? parsed.data : { ...DEFAULT_INBOX_POLICY };
+      const stored = readJson(this.paths.inbox);
+      const parsed = InboxPolicySchema.safeParse(stored);
+      if (parsed.success) return parsed.data;
+      /**
+       * THE DAYS-SHAPED DOCUMENT STILL MEANS WHAT IT SAID. The window moved
+       * to hour granularity; a file written before that carries
+       * `autoSettleAfterDays`, and dropping it to the default would silently
+       * change which sessions somebody's sidebar shows. Converted on read,
+       * rewritten in the new shape on the next save.
+       */
+      const days = (stored as { autoSettleAfterDays?: unknown } | undefined)?.autoSettleAfterDays;
+      if (days === null) return { autoSettleAfterHours: null };
+      if (typeof days === "number" && Number.isInteger(days) && days >= 1 && days <= 90) {
+        return { autoSettleAfterHours: days * 24 };
+      }
+      return { ...DEFAULT_INBOX_POLICY };
     } catch {
       return { ...DEFAULT_INBOX_POLICY };
     }
@@ -1053,24 +1238,189 @@ export class EngineStore {
    * the bound belongs next to the schema that states it, not spelled a second
    * time in the route that happens to be the way in today.
    */
-  setInboxPolicy(patch: { autoSettleAfterDays?: unknown }): InboxPolicy {
+  setInboxPolicy(patch: { autoSettleAfterHours?: unknown }): InboxPolicy {
     const next: InboxPolicy = { ...this.getInboxPolicy() };
-    if (patch.autoSettleAfterDays !== undefined) {
-      if (patch.autoSettleAfterDays === null) {
-        next.autoSettleAfterDays = null;
+    if (patch.autoSettleAfterHours !== undefined) {
+      if (patch.autoSettleAfterHours === null) {
+        next.autoSettleAfterHours = null;
       } else {
-        const parsed = InboxPolicySchema.shape.autoSettleAfterDays.safeParse(patch.autoSettleAfterDays);
+        const parsed = InboxPolicySchema.shape.autoSettleAfterHours.safeParse(patch.autoSettleAfterHours);
         if (!parsed.success) {
           throw new EngineStateError(
             "invalid_request",
-            `auto-settle window must be a whole number of days between ${MIN_AUTO_SETTLE_DAYS} and ${MAX_AUTO_SETTLE_DAYS}, or null`,
+            `auto-settle window must be a whole number of hours between ${MIN_AUTO_SETTLE_HOURS} and ${MAX_AUTO_SETTLE_HOURS}, or null`,
           );
         }
-        next.autoSettleAfterDays = parsed.data;
+        next.autoSettleAfterHours = parsed.data;
       }
     }
     atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });
     return { ...next };
+  }
+
+  /**
+   * What a new session is built with when the caller didn't say.
+   *
+   * Same never-throws rule as `getInboxPolicy`, and here it matters more than
+   * anywhere: this document is read on the create path, so a file somebody
+   * hand-edited into nonsense must cost the preference and not the session.
+   */
+  getSessionDefaults(): SessionDefaults {
+    try {
+      const parsed = SessionDefaultsSchema.safeParse(readJson(this.paths.sessionDefaults));
+      return parsed.success ? parsed.data : { ...DEFAULT_SESSION_DEFAULTS };
+    } catch {
+      return { ...DEFAULT_SESSION_DEFAULTS };
+    }
+  }
+
+  /** Takes `unknown` and validates here, like the two policies above: the set
+   *  of legal modes belongs next to the schema, not spelled again in a route. */
+  setSessionDefaults(patch: { envMode?: unknown }): SessionDefaults {
+    const next: SessionDefaults = { ...this.getSessionDefaults() };
+    if (patch.envMode !== undefined) {
+      const parsed = SessionDefaultsSchema.shape.envMode.safeParse(patch.envMode);
+      if (!parsed.success) {
+        throw new EngineStateError("invalid_request", "default workspace must be local or worktree");
+      }
+      next.envMode = parsed.data;
+    }
+    atomicWrite(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /** Same never-throws rule as `getInboxPolicy`, same reason: a malformed
+   *  preference costs the preference, never the turn it decorates. */
+  getTextGenPolicy(): TextGenPolicy {
+    try {
+      const parsed = TextGenPolicySchema.safeParse(readJson(this.paths.textGen));
+      return parsed.success ? parsed.data : { ...DEFAULT_TEXT_GEN_POLICY };
+    } catch {
+      return { ...DEFAULT_TEXT_GEN_POLICY };
+    }
+  }
+
+  setTextGenPolicy(patch: { titles?: unknown; renameBranches?: unknown; driver?: unknown; model?: unknown }): TextGenPolicy {
+    const next: TextGenPolicy = { ...this.getTextGenPolicy() };
+    if (patch.titles !== undefined) {
+      if (typeof patch.titles !== "boolean") throw new EngineStateError("invalid_request", "titles must be a boolean");
+      next.titles = patch.titles;
+    }
+    if (patch.renameBranches !== undefined) {
+      if (typeof patch.renameBranches !== "boolean") throw new EngineStateError("invalid_request", "renameBranches must be a boolean");
+      next.renameBranches = patch.renameBranches;
+    }
+    if (patch.driver !== undefined) {
+      if (patch.driver !== "claude" && patch.driver !== "codex") {
+        throw new EngineStateError("invalid_request", "text generation driver must be claude or codex");
+      }
+      /**
+       * A DRIVER CHANGE DROPS THE MODEL rather than carrying it: model ids are
+       * meaningless across harnesses, and `haiku` handed to Codex would fail
+       * every generation until somebody worked out why. The new driver starts
+       * on its own default; the settings page offers its catalogue from there.
+       */
+      if (patch.driver !== next.driver) delete next.model;
+      next.driver = patch.driver;
+    }
+    if (patch.model !== undefined) {
+      if (patch.model === null) {
+        delete next.model;
+      } else {
+        const parsed = TextGenPolicySchema.shape.model.safeParse(patch.model);
+        if (!parsed.success || parsed.data === undefined) {
+          throw new EngineStateError("invalid_request", "text generation model must be a short model id, or null for the driver's default");
+        }
+        next.model = parsed.data;
+      }
+    }
+    atomicWrite(this.paths.textGen, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  // ── Appearance ────────────────────────────────────────────────────────────
+  //
+  // AN OPAQUE BLOB, AND THE OPACITY IS THE DESIGN. The cockpit's look — accent,
+  // typefaces, text size, translucency, backdrop, the two halves of the active
+  // theme pair — lives in ONE browser's localStorage, because that is where a
+  // person configures it. A paired client (the iOS app) has no way to read that
+  // storage, so the browser republishes its RESOLVED look here and the engine
+  // becomes the one place every device can ask "what does the host look like?".
+  //
+  // THE ENGINE DOES NOT UNDERSTAND IT and must not learn to. Every token the
+  // cockpit adds — a new font slot, a new theme key — would otherwise need a
+  // schema change here, an engine release, and a version handshake before it
+  // could reach a phone. Storing it as JSON the engine never inspects makes the
+  // whole vocabulary additive: new keys ride through untouched, and readers are
+  // expected to ignore what they do not recognise (the repo's additive rule).
+  // The only thing enforced is that it IS a JSON object and that it is small.
+
+  /**
+   * WHEN IT LANDED, STORED BESIDE IT — because a mailbox with no timestamp
+   * cannot be cached. The blob is now megabytes rather than kilobytes (a Look
+   * carries its wallpaper), and a phone that polls it on every foreground would
+   * re-download the whole thing to discover nothing changed. `updatedAt` is
+   * what the HTTP edge cuts an ETag from, so the second ask is a 304.
+   *
+   * THE ENGINE'S CLOCK, NOT THE PUBLISHER'S. The blob carries the publisher's
+   * own `updatedAtHint`, and it is advisory: two browsers with disagreeing
+   * clocks would make a hint-derived ETag go backwards. The stamp that matters
+   * is when THIS engine accepted the write.
+   */
+  getAppearance(): { updatedAt: number; blob: Record<string, unknown> } | null {
+    try {
+      const stored = readJson(this.paths.appearance) as { appearance?: unknown; updatedAt?: unknown } | undefined;
+      const blob = stored?.appearance;
+      if (!isPlainJsonObject(blob)) return null;
+      // A file written before the stamp existed reads as epoch 0 rather than
+      // as absent: it is a real published look, and a stable ETag is better
+      // than none. The next publish gives it a real time.
+      return { updatedAt: typeof stored?.updatedAt === "number" && Number.isFinite(stored.updatedAt) ? stored.updatedAt : 0, blob };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Replaces the blob wholesale — this is a snapshot of a browser's resolved
+   * state, not a patch, and merging two publishers' halves would produce a look
+   * neither of them wears.
+   *
+   * THE CAP IS THE ONLY POLICY, and it is enforced HERE as well as at the
+   * socket: an in-process caller must not be able to walk past a check that
+   * only ever ran on an HTTP request.
+   */
+  setAppearance(blob: unknown): { updatedAt: number; blob: Record<string, unknown> } {
+    if (!isPlainJsonObject(blob)) {
+      throw new EngineStateError("invalid_request", "appearance must be a JSON object");
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(blob);
+    } catch {
+      throw new EngineStateError("invalid_request", "appearance must be JSON-serializable");
+    }
+    if (Buffer.byteLength(serialized, "utf8") > MAX_APPEARANCE_BYTES) {
+      throw new EngineStateError("invalid_request", `appearance must be under ${MAX_APPEARANCE_BYTES} bytes when serialized`);
+    }
+    const updatedAt = Date.now();
+    atomicWrite(this.paths.appearance, { version: STATE_VERSION, updatedAt, appearance: blob });
+    return { updatedAt, blob };
+  }
+
+  /**
+   * Forget the published look. IDEMPOTENT — clearing an empty mailbox is not an
+   * error, because "there is nothing published" is the state the caller asked
+   * for and it is already true. Removing the FILE rather than writing an empty
+   * blob keeps `getAppearance`'s null the one meaning of "nobody has published".
+   */
+  clearAppearance(): void {
+    try {
+      fs.rmSync(this.paths.appearance, { force: true });
+    } catch {
+      // A file we cannot delete is a look that stays published — worth no
+      // failure on a route whose whole subject is decoration.
+    }
   }
 
   // ── Spool ─────────────────────────────────────────────────────────────────
@@ -2952,15 +3302,59 @@ export class EngineStore {
   constructor(
     root: string,
     private readonly now: () => number = Date.now,
-    options: { notifier?: EngineNotifier; git?: GitRunner; gh?: GhRunner; sessionsBudget?: number } = {},
+    options: {
+      notifier?: EngineNotifier;
+      git?: GitRunner;
+      gh?: GhRunner;
+      sessionsBudget?: number;
+      /** Resolves Telar's computer-use backend (cua-driver, or Sky). INJECTED
+       *  BY THE DAEMON, absent by default — so tests never read the real
+       *  machine's installs, and a store without it simply has no computer use. */
+      computerUse?: () => ResolvedComputerUse | undefined;
+      /** Asks the installed harnesses what they can run. INJECTED BY TESTS ONLY
+       *  — the default is the real subprocess handshake, and a store test that
+       *  wants to prove an overlay reaches a menu should not have to spawn a
+       *  `codex app-server` to do it. */
+      models?: typeof readModelCatalogue;
+    } = {},
   ) {
     this.notifier = options.notifier;
+    this.readModels = options.models ?? readModelCatalogue;
+    this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.gh = options.gh ?? defaultGhRunner;
     this.sessionsBudget = Math.max(0, Math.floor(options.sessionsBudget ?? DEFAULT_SESSIONS_BUDGET));
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
+  }
+
+  /**
+   * The project's icon, found in its checkout and cached for a minute.
+   *
+   * A TTL CACHE because `listProjects` is on the sidebar's poll path and the
+   * find is a dozen stats per project. In memory like the caches above: it
+   * describes files in somebody's working tree, which change without telling
+   * the engine — sixty seconds is the stated staleness bound.
+   */
+  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; at: number }>();
+
+  private projectIcon(project: Pick<Project, "id" | "root">): ProjectIcon | undefined {
+    const cached = this.projectIconCache.get(project.id);
+    const at = this.now();
+    if (cached && at - cached.at < 60_000) return cached.icon;
+    const icon = findProjectIcon(project.root);
+    this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at });
+    return icon;
+  }
+
+  /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
+   *  project has none rather than guessing. */
+  projectIconFile(projectId: string): ProjectIcon {
+    const project = this.getProject(projectId);
+    const icon = this.projectIcon(project);
+    if (!icon) throw new EngineStateError("not_found", "this project has no icon");
+    return icon;
   }
 
   listProjects(): Project[] {
@@ -2979,7 +3373,12 @@ export class EngineStore {
        */
       const head = this.git(project.root, ["rev-parse", "--abbrev-ref", "HEAD"]);
       const branch = head.status === 0 ? head.stdout.trim() : "";
-      return branch && branch !== "HEAD" ? { ...project, branch } : project;
+      const icon = this.projectIcon(project);
+      return {
+        ...project,
+        ...(branch && branch !== "HEAD" ? { branch } : {}),
+        ...(icon ? { icon: icon.etag } : {}),
+      };
     });
   }
 
@@ -3015,6 +3414,9 @@ export class EngineStore {
     };
     parsed.projects.push(project);
     atomicWrite(this.paths.projects, parsed);
+    // A fresh registration must not inherit a stale "no icon" answer cached
+    // for a project that briefly shared this id.
+    this.projectIconCache.delete(id);
     return structuredClone(project);
   }
 
@@ -3061,13 +3463,98 @@ export class EngineStore {
    * is far longer than a person spends in a menu and far shorter than the time
    * between a provider shipping a model and somebody wanting it.
    */
-  async modelCatalogue(driver: ProviderDriverKind, options: { force?: boolean } = {}): Promise<ModelCatalogue> {
+  async modelCatalogue(
+    driver: ProviderDriverKind,
+    options: { force?: boolean; instanceId?: string } = {},
+  ): Promise<ModelCatalogue> {
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
     const cached = this.modelCache.get(driver);
-    if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) return structuredClone(cached);
-    const catalogue = await readModelCatalogue(driver, this.now);
-    this.modelCache.set(driver, catalogue);
-    return structuredClone(catalogue);
+    let raw: ModelCatalogue;
+    if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) {
+      raw = structuredClone(cached);
+    } else {
+      raw = await this.readModels(driver, this.now);
+      this.modelCache.set(driver, raw);
+      raw = structuredClone(raw);
+    }
+    /**
+     * THE OVERLAY IS APPLIED HERE AND CACHED NOWHERE.
+     *
+     * It is a local file read of the same cost class as the inbox policy, so it
+     * happens on every answer — which is what makes an edit in the Models tab
+     * visible on the next menu open rather than five minutes later, and what
+     * means hiding a row never costs a subprocess. The cache above keeps holding
+     * WHAT THE PROVIDER SAID, which is what `source` claims about it.
+     */
+    const instanceId = options.instanceId ?? defaultInstanceIdForDriver(driver);
+    const overlay = this.getModelOverlay(instanceId);
+    return { ...raw, instanceId, models: applyModelOverlay(raw.models, overlay) };
+  }
+
+  /**
+   * One login's curated view of its provider's models, or an untouched one.
+   *
+   * NEVER THROWS, the same rule `getInboxPolicy` follows and for the same reason,
+   * with one extra clause worth stating: a malformed overlay costs the menu order
+   * AND a manually-added model id. That is a real loss and still the right trade —
+   * refusing to answer would take the whole picker with it, on both providers, over
+   * a document nobody can see in order to repair it.
+   *
+   * THE try/catch IS AROUND `readJson`, NOT JUST THE PARSE, for the reason the
+   * inbox policy already records: `readJson` swallows a missing file and RETHROWS
+   * a parse error, so "the shape is wrong" and "it is not JSON at all" are two
+   * different failures and only one of them is a safeParse.
+   */
+  getModelOverlay(instanceId: string): ModelOverlay {
+    assertInstanceId(instanceId);
+    const empty = (): ModelOverlay => ({ instanceId, ...DEFAULT_MODEL_OVERLAY, updatedAt: 0 });
+    try {
+      const stored = readJson(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
+      const parsed = ModelOverlaySchema.array().safeParse(stored?.overlays ?? []);
+      if (!parsed.success) return empty();
+      return parsed.data.find((entry) => entry.instanceId === instanceId) ?? empty();
+    } catch {
+      return empty();
+    }
+  }
+
+  /**
+   * TAKES `unknown` AND VALIDATES HERE, like `setInboxPolicy` and `saveMcpServer`:
+   * the bound belongs next to the schema that states it, not spelled a second time
+   * in whichever route is the way in today.
+   *
+   * PRESENCE IS THE PATCH, AND A SUBMITTED ARRAY REPLACES ITS LIST WHOLE. Not
+   * element-wise, because each of these is an ordered set the reader edits as a
+   * whole in one pane — merging would make "remove the last favourite"
+   * unexpressible, which is the same trap `optionalPatch` exists to keep out of
+   * the instance form.
+   */
+  setModelOverlay(
+    instanceId: string,
+    patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown },
+  ): ModelOverlay {
+    assertInstanceId(instanceId);
+    const next: ModelOverlay = { ...this.getModelOverlay(instanceId), updatedAt: this.now() };
+    for (const key of ["favorites", "hidden", "order"] as const) {
+      if (patch[key] === undefined) continue;
+      next[key] = readModelIds(patch[key], key);
+    }
+    if (patch.custom !== undefined) next.custom = readCustomModels(patch.custom);
+
+    const stored = (() => {
+      try {
+        const raw = readJson(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
+        const parsed = ModelOverlaySchema.array().safeParse(raw?.overlays ?? []);
+        return parsed.success ? parsed.data : [];
+      } catch {
+        // A document nobody can parse is replaced by this write rather than
+        // blocking it — the same stance the getter takes on the way in.
+        return [];
+      }
+    })();
+    const overlays = [...stored.filter((entry) => entry.instanceId !== instanceId), next];
+    atomicWrite(this.paths.modelOverlays, { version: STATE_VERSION, overlays });
+    return structuredClone(next);
   }
 
   /**
@@ -3455,6 +3942,15 @@ export class EngineStore {
      * machinery.
      */
     branchSlug?: string;
+    /**
+     * What the worktree is CUT FROM — any local or remote-tracking ref from
+     * `GitOverview.refs`, resolved to a sha at creation. Absent means HEAD.
+     * Validated conservatively here because it becomes a `git rev-parse`
+     * argument: a name that starts with `-` is an option, not a ref.
+     */
+    baseRef?: string;
+    /** A human's own name for the new branch — see `sanitizeBranchName`. */
+    branchName?: string;
     workspace?: { path: string; branch: string; baseRef?: string };
     /**
      * WHO ASKED — provenance, not a link. `"session"` means this came through
@@ -3505,7 +4001,22 @@ export class EngineStore {
     // what happens when a request opens with nobody home, and the two defaults
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
-    const envMode = input.envMode ?? "local";
+    /**
+     * AN OMITTED `envMode` ASKS THE STANDING PREFERENCE, not a constant. That
+     * is what makes the setting a real default rather than a pre-ticked box:
+     * the composer, the MCP toolkit and any API caller that stays quiet all get
+     * the same answer, and one that says `worktree` outright still gets exactly
+     * that.
+     *
+     * THE PREFERENCE YIELDS ON AN UNVERSIONED PROJECT. `createSessionWorktree`
+     * refuses a directory that is not a git repo — correct for a caller who
+     * ASKED for a worktree, and wrong for one who asked for nothing and would
+     * otherwise be unable to open a session in that project at all. A stated
+     * `worktree` still throws; only the silent case falls back.
+     */
+    const envMode =
+      input.envMode ??
+      (this.getSessionDefaults().envMode === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local");
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
@@ -3516,20 +4027,17 @@ export class EngineStore {
     const workspace: Session["workspace"] =
       envMode === "worktree"
         ? (() => {
-            const titleSlug = (input.title ?? "")
-              .toLowerCase()
-              .normalize("NFD")
-              .replace(/[\u0300-\u036f]/g, "")
-              .replace(/[^a-z0-9]+/g, "-")
-              .replace(/^-+|-+$/g, "")
-              .slice(0, 40);
-            const branchSlug =
-              input.branchSlug ?? (titleSlug ? `telar/${titleSlug}-${id.replace(/^session_/, "").slice(0, 6)}` : undefined);
+            const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
+            if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
+              throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
+            }
             const cut = createSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
               sessionId: id,
               ...(branchSlug !== undefined ? { branchSlug } : {}),
+              ...(input.baseRef !== undefined ? { baseRef: input.baseRef } : {}),
+              ...(input.branchName !== undefined ? { branchName: input.branchName } : {}),
             });
             return { mode: "worktree" as const, path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
           })()
@@ -3718,6 +4226,37 @@ export class EngineStore {
     atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.updated", session: next });
     return structuredClone(next);
+  }
+
+  /**
+   * Re-derive the worktree branch from the CURRENT title, after a generated
+   * title replaced the seed. Returns the new branch, or undefined for every
+   * way this can decline — and it declines rather than throws, because it runs
+   * behind a turn nobody should lose to a naming nicety.
+   *
+   * ONLY A `telar/` BRANCH IS TOUCHED. Human-named branches live outside the
+   * namespace by construction (`sanitizeBranchName` refuses it), and a loom's
+   * `loom/…` slugs encode the loom's own structure — both are names somebody
+   * or something else owns. `git branch -m` refusing a collision is the
+   * remaining guard, and its failure is a no-op here, not an error.
+   *
+   * The worktree DIRECTORY keeps its seed-derived name: it is an address the
+   * session document already holds, and moving a directory a provider process
+   * may be running in is how checkouts get corrupted.
+   */
+  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined {
+    const session = this.getSession(sessionId);
+    if (session.state === "archived" || session.workspace.mode !== "worktree") return undefined;
+    const current = session.workspace.branch;
+    if (!current.startsWith("telar/")) return undefined;
+    const next = derivedBranchFor(session.title, sessionId);
+    if (next === undefined || next === current) return undefined;
+    const renamed = this.git(session.workspace.path, ["branch", "-m", current, next]);
+    if (renamed.status !== 0) return undefined;
+    const updated: Session = { ...session, workspace: { ...session.workspace, branch: next }, updatedAt: this.now() };
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.appendEvent(sessionId, { type: "session.updated", session: updated });
+    return next;
   }
 
   getSession(sessionId: string): Session {
@@ -4041,7 +4580,22 @@ export class EngineStore {
        * ones, or to work out which scope wins, would be a second copy of a
        * decision that has to be identical every time.
        */
-      const mcpServers = resolveMcpServers(this.listMcpServers(), session.projectId).filter((server) => server.enabled);
+      const registered = resolveMcpServers(this.listMcpServers(), session.projectId);
+      /**
+       * TELAR'S OWN COMPUTER USE (cua-driver, or Sky as a fallback). Injected
+       * at claim time like everything else here, and re-resolved per claim so
+       * installing or removing the driver applies to the next turn rather than
+       * the next daemon. Goes to both providers when the backend is cua, Claude
+       * only when it is Sky — see `withComputerUse`. Absent installs inject
+       * nothing, silently, and the unfiltered `registered` list means a user's
+       * own entry (even a DISABLED one) is a decision this must not overrule.
+       */
+      const mcpServers = withComputerUse(
+        registered.filter((server) => server.enabled),
+        registered,
+        session.driver,
+        this.computerUse?.(),
+      );
       /**
        * Resolved at CLAIM TIME like everything else here, and never omitted:
        * a session whose instance was deleted still has to run, so this falls
@@ -4152,6 +4706,7 @@ export class EngineStore {
       }
       turn.providerSessionId = input.providerSessionId;
     }
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn ended before this agent reported back");
     this.touchSession(sessionId, at, input.providerSessionId);
@@ -4165,6 +4720,7 @@ export class EngineStore {
       },
       turn.runId,
     );
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     return structuredClone(turn);
   }
 
@@ -4184,10 +4740,14 @@ export class EngineStore {
     turn.completedAt = at;
     turn.updatedAt = at;
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn failed before this agent reported back");
+    // A failed turn means the provider process died — background shells died
+    // with it, whichever turn started them.
+    this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     return structuredClone(turn);
   }
 
@@ -4196,18 +4756,121 @@ export class EngineStore {
     const turn = requestedRunId
       ? queue.turns.find((candidate) => candidate.runId === requestedRunId)
       : queue.turns.find((candidate) => candidate.state === "queued" || candidate.state === "claimed" || candidate.state === "running");
-    if (!turn) return { stopped: false };
-    if (turn.state === "stopped" || turn.state === "ambiguous") return { turn: structuredClone(turn), stopped: false };
-    if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running") return { turn: structuredClone(turn), stopped: false };
+    if (!turn || turn.state === "stopped" || turn.state === "ambiguous" || (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running")) {
+      // NOTHING RUNNING, but Stop was pressed: the only thing left to stop is
+      // lingering background work. Settle it — this is also the retroactive
+      // cure for tasks orphaned before the sweeps below existed, which
+      // otherwise report "monitoring" forever with a Stop that no-ops.
+      const at = this.now();
+      const swept = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", { includeBackground: true, state: "stopped" });
+      if (swept > 0) this.touchSession(sessionId, at);
+      return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
+    }
     const at = this.now();
+    const wasLive = turn.state === "running" || turn.state === "claimed";
     turn.state = "stopped";
     turn.completedAt = at;
     turn.updatedAt = at;
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
-    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+    if (wasLive) {
+      // Stopping a live turn kills the provider process — and every
+      // background shell it hosted dies with it, whichever turn started them.
+      this.closeLiveTasks(sessionId, at, "the agent's process was stopped before this task finished", { includeBackground: true });
+    } else {
+      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+    }
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     return { turn: structuredClone(turn), stopped: true };
+  }
+
+  /**
+   * SEND NOW: promote a queued turn into the RUNNING one.
+   *
+   * `promoteTurn` is a promise of NOT-LOSING, never of delivery: the turn goes
+   * `steering`, the worker hears about it on its next heartbeat, and if the
+   * running turn settles first the sweep in the terminal transitions puts the
+   * message back to `queued`, where it runs as an ordinary next turn.
+   *
+   * REFUSED WHILE THE PROVIDER COMPACTS. Codex rejects a steer during
+   * compaction at the protocol level ("cannot steer a compact turn"), so the
+   * engine refuses up front rather than discovering it as a failed delivery —
+   * and the client disables the button for the same reason, so all three tell
+   * one story.
+   */
+  promoteTurn(sessionId: string, runId: string): Turn {
+    assertId(runId, "run id");
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
+    const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
+    if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
+    const compacting = [...this.readItems(sessionId).values()].some(
+      (item) => item.runId === running.runId && item.detail.type === "context_compaction" && item.status === "inProgress",
+    );
+    if (compacting) {
+      throw new EngineStateError("conflict", "the provider is compacting its context and cannot take a message right now");
+    }
+    const at = this.now();
+    turn.state = "steering";
+    turn.steer = { intoRunId: running.runId, requestedAt: at };
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.steering", intoRunId: running.runId }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
+   * The worker's half of delivery: the text is in the driver's mailbox.
+   * IDEMPOTENT — a retried ack after a dropped response returns the already-
+   * steered turn rather than a conflict, because the provider has the words
+   * either way and the record must not lie about that.
+   */
+  ackSteer(sessionId: string, steerRunId: string, claimToken: string): Turn {
+    assertId(steerRunId, "run id");
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === steerRunId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    if (turn.state === "steered") return structuredClone(turn);
+    if (turn.state !== "steering" || !turn.steer) {
+      throw new EngineStateError("conflict", "turn is not being steered");
+    }
+    const running = queue.turns.find((candidate) => candidate.runId === turn.steer!.intoRunId);
+    if (!running || running.state !== "running" || running.claim?.token !== claimToken) {
+      throw new EngineStateError("conflict", "the running turn is not held by this claim");
+    }
+    const at = this.now();
+    turn.state = "steered";
+    turn.steer.deliveredAt = at;
+    turn.completedAt = at;
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.steered", intoRunId: turn.steer.intoRunId }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
+   * THE NOT-LOSING GUARANTEE. Every terminal transition of a running turn
+   * calls this: any `steering` turn still pointing at it was never delivered,
+   * and goes back to `queued` to run as its own turn. Mutates the queue the
+   * caller is about to write; the caller appends the events after its own, so
+   * the journal reads settlement-then-requeue.
+   */
+  private requeueUndeliveredSteers(queue: { turns: Turn[] }, runId: string, at: number): Turn[] {
+    const reverted: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.state !== "steering" || turn.steer?.intoRunId !== runId) continue;
+      turn.state = "queued";
+      delete turn.steer;
+      turn.updatedAt = at;
+      reverted.push(turn);
+    }
+    return reverted;
   }
 
   /**
@@ -4476,6 +5139,31 @@ export class EngineStore {
     });
   }
 
+  /**
+   * Promoted turns waiting for this worker's running turns, the same shape of
+   * query as `resolutionsForWorker` and riding the same heartbeat: the worker
+   * pushes the text into the driver's mailbox, THEN acks — duplication over
+   * loss, see the worker's mailbox note.
+   */
+  steerForWorker(workerId: string): WorkerStatus["steer"] {
+    assertId(workerId, "worker id");
+    return this.allSessions().flatMap((session) => {
+      const queue = this.readQueue(session.id);
+      const claimed = new Map(
+        queue.turns
+          .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
+          .map((turn) => [turn.runId, turn.claim!.token] as const),
+      );
+      if (claimed.size === 0) return [];
+      return queue.turns.flatMap((turn) => {
+        if (turn.state !== "steering" || !turn.steer) return [];
+        const claimToken = claimed.get(turn.steer.intoRunId);
+        if (!claimToken) return [];
+        return [{ sessionId: session.id, runId: turn.steer.intoRunId, claimToken, steerRunId: turn.runId, text: turn.input }];
+      });
+    });
+  }
+
   readEvents(sessionId: string, after = 0): EngineEvent[] {
     this.getSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
@@ -4536,6 +5224,15 @@ export class EngineStore {
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
           changed = true;
+        } else if (turn.state === "steering") {
+          // Delivery is unknowable across a restart; requeue is the side the
+          // channel is built to err on (duplication over loss).
+          turn.state = "queued";
+          delete turn.steer;
+          turn.updatedAt = at;
+          requeued.push(turn.runId);
+          recoveryEvents.push({ type: "turn.requeued", runId: turn.runId });
+          changed = true;
         }
       }
       if (changed) {
@@ -4581,6 +5278,12 @@ export class EngineStore {
           // turn reached the provider is still undecided; whether its agents
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
+          // A promoted message aimed at this turn was never delivered by the
+          // vanished worker; back to the queue rather than gone.
+          for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
+            requeued.push(reverted.runId);
+            this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, reverted.runId);
+          }
           changed = true;
         }
       }
@@ -4748,20 +5451,45 @@ export class EngineStore {
    * rather than a second event.
    */
   private closeOrphanedTasks(sessionId: string, runId: string, at: number, failure: string): void {
+    this.closeLiveTasks(sessionId, at, failure, { runId, includeBackground: false });
+  }
+
+  /**
+   * A BACKGROUND TASK CANNOT OUTLIVE THE PROVIDER PROCESS. Outliving its TURN
+   * is the definition of background — but when the process that hosts it dies
+   * (a stop, a failure, a vanished worker), there is nothing left running,
+   * and a task left at `running` makes the session claim "monitoring" forever
+   * with nothing for a human to stop. Found in real data: a stopped turn's
+   * background shell sat live for two days, and the Stop button no-opped
+   * because no turn was running.
+   *
+   * Returns how many tasks it closed, so a stop with no stoppable turn can
+   * still report that it did something.
+   */
+  private closeLiveTasks(
+    sessionId: string,
+    at: number,
+    failure: string,
+    options: { runId?: string; includeBackground: boolean; state?: "failed" | "stopped" },
+  ): number {
     const tasks = this.readTasks(sessionId);
-    let changed = false;
+    let changed = 0;
     for (const [id, task] of tasks) {
-      if (task.runId !== runId || task.kind === "background") continue;
+      if (options.runId !== undefined && task.runId !== options.runId) continue;
+      if (!options.includeBackground && task.kind === "background") continue;
       if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
-      const closed: Task = { ...task, state: "failed", failure, updatedAt: at, completedAt: at };
+      // `failed` RATHER THAN `stopped` by default, matching the driver's own
+      // choice for the same situation: two spellings for one cause would
+      // render as two different colours in the roster depending on which
+      // path got there. A human-initiated sweep passes `stopped` — there the
+      // cause IS a stop.
+      const closed: Task = { ...task, state: options.state ?? "failed", failure, updatedAt: at, completedAt: at };
       tasks.set(id, closed);
-      // `failed` RATHER THAN `stopped`, matching the driver's own choice for
-      // the same situation: two spellings for one cause would render as two
-      // different colours in the roster depending on which path got there.
-      this.appendEvent(sessionId, { type: "task.completed", task: closed }, runId);
-      changed = true;
+      this.appendEvent(sessionId, { type: "task.completed", task: closed }, task.runId);
+      changed += 1;
     }
-    if (changed) this.writeTasks(sessionId, tasks);
+    if (changed > 0) this.writeTasks(sessionId, tasks);
+    return changed;
   }
 
   private readRequests(sessionId: string): Map<string, EngineRequest> {

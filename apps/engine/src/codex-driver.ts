@@ -47,9 +47,10 @@
 import crypto from "node:crypto";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
+import { claimHasComputerUse } from "./computer-use";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
-import { normalizeOutcome, type DriverRun, type DriverResult, type TurnDriver } from "./driver";
+import { normalizeOutcome, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./driver";
 
 /**
  * The posture a thread runs under.
@@ -244,6 +245,15 @@ function record(value: unknown): Record<string, unknown> {
  *  A method name no app-server message can collide with. */
 const CANCEL_SENTINEL = "@telar/cancelled";
 
+/**
+ * The app-server's own question-to-the-human, verified against the
+ * `rust-v0.149.1` protocol source: params carry `questions[]` (`id`,
+ * `header`, `question`, `isOther`, `isSecret`, `options?: [{label,
+ * description}]`) and the response maps question id →
+ * `{answers: string[]}` (`ToolRequestUserInputResponse`).
+ */
+const REQUEST_USER_INPUT = "item/tool/requestUserInput";
+
 class CodexTurnCancelled extends Error {
   constructor() {
     super("The human cancelled this turn.");
@@ -269,6 +279,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       browserSocket,
       onObservations,
       onRequest,
+      steer,
     }: DriverRun): Promise<DriverResult> {
       /**
        * PER-TURN FIRST, then the driver's construction default, then Codex's.
@@ -386,6 +397,63 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         }
       };
 
+      /**
+       * Answer a `requestUserInput`, detached for the same reason as the
+       * approvals above. The questions become the contract's own `user_input`
+       * request — the SAME shape the Claude driver's AskUserQuestion arm
+       * opens, so the cockpit's question drawer serves both providers with no
+       * provider branch. Keys are the QUESTION IDS, because that is what the
+       * response maps; the label carries the question text for the human.
+       */
+      const answerUserInput = async (request: CodexServerRequest): Promise<void> => {
+        const params = record(request.params);
+        const questions = Array.isArray(params.questions) ? params.questions.map(record) : [];
+        const fields = questions.flatMap((question) => {
+          const id = str(question.id);
+          const text = str(question.question);
+          if (!id || !text) return [];
+          const choices = Array.isArray(question.options)
+            ? question.options.map(record).flatMap((option) => (str(option.label) ? [str(option.label)!] : []))
+            : [];
+          // A secret question must never render as buttons; one with no
+          // options is free text. Both fall to the cockpit's form card rather
+          // than the drawer, which only takes all-choice requests.
+          const kind = question.isSecret === true ? ("secret" as const) : choices.length > 0 ? ("choice" as const) : ("text" as const);
+          return [{ key: id, label: text, kind, ...(choices.length > 0 ? { choices } : {}), required: true }];
+        });
+        let outcome: { decision: RequestDecision; answers?: Record<string, unknown> } = { decision: "decline" };
+        const itemId = str(params.itemId);
+        if (fields.length > 0 && onRequest) {
+          const ask: DriverRequest = {
+            kind: "user_input",
+            detail: { kind: "user_input", prompt: "The agent needs your input to continue.", fields },
+            // The protocol always carries an itemId; the JSON-RPC id is the
+            // fallback for a malformed request, still unique within the turn.
+            toolUseId: itemId ?? `codex_request_${String(request.id)}`,
+          };
+          try {
+            outcome = normalizeOutcome(await onRequest(ask));
+          } catch {
+            // An unanswerable question is a DISMISSED one, never a hang.
+            outcome = { decision: "decline" };
+          }
+        }
+        const answers: Record<string, { answers: string[] }> = {};
+        if ((outcome.decision === "accept" || outcome.decision === "acceptForSession") && outcome.answers) {
+          for (const field of fields) {
+            const value = outcome.answers[field.key];
+            if (value !== undefined) answers[field.key] = { answers: Array.isArray(value) ? value.map(String) : [String(value)] };
+          }
+        }
+        // An empty map is the graceful "the user did not answer" — the tool's
+        // own no-answer arm runs, the same shape the Claude path relies on.
+        client.respond(request.id, { answers });
+        if (outcome.decision === "cancel") {
+          cancelled = true;
+          client.notifications.push({ method: CANCEL_SENTINEL, params: {} });
+        }
+      };
+
       // Assigned BEFORE the first await, so no stdout line can be processed
       // against a client that cannot yet answer approvals.
       client.onServerRequest = (request) => {
@@ -399,6 +467,10 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
          */
         if (request.method === MCP_ELICITATION && str(record(request.params).serverName) === TELAR_BROWSER_MCP_SERVER) {
           client.respond(request.id, { action: "accept", content: {} });
+          return true;
+        }
+        if (request.method === REQUEST_USER_INPUT) {
+          void answerUserInput(request);
           return true;
         }
         if (onRequest && codexApprovalRequest(request.method, request.params)) {
@@ -588,6 +660,23 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
           : undefined;
         const mcpServers = userTable || telarTable ? { ...(userTable ?? {}), ...(telarTable ?? {}) } : undefined;
+        /**
+         * TELAR OWNS COMPUTER USE WHEN IT SUPPLIES IT. When the claim carries
+         * Telar's `mac` server (cua-driver), Codex's own bundled computer use
+         * is turned off FOR THIS THREAD ONLY — a `features` overlay on
+         * `thread/start`'s config, never written to `~/.codex/config.toml`, so
+         * the user's ChatGPT/Codex desktop and their `codex` CLI keep their
+         * native computer use untouched. Without this the model would see two
+         * desktops (`mac` and Codex's native `computer_use`) under two names.
+         */
+        const disableNativeComputerUse = claimHasComputerUse(userMcpServers);
+        const configOverlay =
+          mcpServers || disableNativeComputerUse
+            ? {
+                ...(mcpServers ? { mcp_servers: mcpServers } : {}),
+                ...(disableNativeComputerUse ? { features: { computer_use: false } } : {}),
+              }
+            : undefined;
         const threadParams = {
           cwd,
           approvalPolicy: threadConfig.approvalPolicy,
@@ -599,7 +688,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           // keeps the servers they configured for the CLI and gains the ones
           // Telar knows about. A shared id means Telar's wins for this thread,
           // which is the same shadowing rule the two Telar scopes already use.
-          ...(mcpServers ? { config: { mcp_servers: mcpServers } } : {}),
+          ...(configOverlay ? { config: configOverlay } : {}),
         };
         const thread = providerSessionId
           ? await client.request<{ thread?: { id?: string } }>("thread/resume", {
@@ -641,6 +730,46 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
           ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
         });
         rootTurnId = str(turn.turn?.id) ?? "";
+
+        /**
+         * SEND NOW, MID-TURN. Codex has a first-class door — `turn/steer`
+         * (`{threadId, expectedTurnId, input}` per the rust-v0.149.1 protocol
+         * source) — so a steered message goes in the moment it lands rather
+         * than at a boundary. Detached like every other side task here; it
+         * parks on `wake()`, and the mailbox's close (the worker's finally)
+         * releases it. A refusal ("no active turn", a race with completion)
+         * is journalled as an error row, never a turn failure: the drain
+         * already acked delivery, so silence would be the one wrong answer.
+         */
+        const steerPump = steer
+          ? (async () => {
+              for (;;) {
+                await steer.wake();
+                const queued = steer.drain();
+                if (queued.length === 0) {
+                  if (steer.isClosed) return;
+                  continue;
+                }
+                const text = queued.join("\n\n");
+                const rowId = itemIdFor(`steer-${crypto.randomUUID().slice(0, 8)}`);
+                emit({ kind: "item.started", item: { id: rowId, detail: { type: "user_message", text }, title: "Sent now" } });
+                emit({ kind: "item.completed", itemId: rowId, status: "completed" });
+                try {
+                  await client.request("turn/steer", {
+                    threadId: rootThreadId,
+                    expectedTurnId: rootTurnId,
+                    input: codexTurnInput(text),
+                  });
+                } catch (error) {
+                  const errorId = itemIdFor(`steer-error-${crypto.randomUUID().slice(0, 8)}`);
+                  const message = `The sent-now message could not reach the running turn: ${error instanceof Error ? error.message : String(error)}`;
+                  emit({ kind: "item.started", item: { id: errorId, detail: { type: "error", error: { message } } } });
+                  emit({ kind: "item.completed", itemId: errorId, status: "failed" });
+                }
+              }
+            })()
+          : Promise.resolve();
+        void steerPump;
 
         for (;;) {
           const { value: notification, done } = await client.notifications.next();

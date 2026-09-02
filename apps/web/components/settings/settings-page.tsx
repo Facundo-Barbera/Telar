@@ -23,39 +23,78 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { DownloadIcon, InboxIcon, InfoIcon, PaletteIcon, PlugIcon, WrenchIcon } from "lucide-react";
+import { InfoIcon, PaletteIcon, PlugIcon, SlidersHorizontalIcon, SmartphoneIcon, WrenchIcon } from "lucide-react";
 import type { EngineHealth } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
-import { ThemeControl } from "@/components/theme-control";
+import { AppearanceSection } from "./appearance-section";
 import { InboxSection } from "./inbox-section";
 import { McpSection } from "./mcp-section";
+import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
+import { RemoteSection } from "./remote-section";
+import { TextGenSection } from "./textgen-section";
 import { UpdatesSection } from "./updates-section";
+import { WorkspaceSection } from "./workspace-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
 
 const api = createEngineApi();
 
+/**
+ * SIX PANES, DOWN FROM NINE. The nav split stays what it was — "Cockpit" is
+ * decisions about this window, "Runtime" is decisions about the machine that
+ * runs turns — but panes that held two rows each merged with their nearest
+ * neighbour, because a side-nav where most destinations are one group deep
+ * makes every setting harder to find, not easier:
+ *
+ *   - General = the old Sessions (Inbox + Text generation) plus the standing
+ *     workspace choice. See below for why it is first.
+ *   - Agent tools = the old MCP servers + Permissions. Both decide what a
+ *     session's agent can reach beyond the repo.
+ *   - Application = the old Updates + About. Both are facts about THIS
+ *     INSTALL — its version, its channel, where its state lives.
+ *
+ * GENERAL IS FIRST, AND IS WHERE SETTINGS OPENS. The pane used to land on
+ * Appearance, which put a theme editor in front of somebody who came here to
+ * change how their work behaves — the most decorative screen in the app as the
+ * answer to "settings". General is the ordinary set: what a new session is
+ * built with, when one leaves your list, who names it. Appearance keeps its
+ * pane and loses the front door.
+ *
+ * "SESSIONS" BECAME "GENERAL" rather than gaining a sibling. Its rows were
+ * already the general ones, and a General pane beside a Sessions pane would
+ * make every reader guess which of the two holds the row they want.
+ */
 const SECTIONS: SettingsSection[] = [
+  { id: "general", label: "General", icon: SlidersHorizontalIcon, group: "Cockpit" },
   { id: "appearance", label: "Appearance", icon: PaletteIcon, group: "Cockpit" },
   /**
-   * UNDER "COCKPIT" RATHER THAN "RUNTIME", because settling changes what you
-   * are shown and nothing about what runs. It sits beside Appearance for that
-   * reason and not because they are alike — the split in this nav is between
-   * decisions about the surface and decisions about the machine.
+   * UNDER "COCKPIT": pairing decides who may reach THIS INSTALL's surface —
+   * a fact about the install, not about the machine that runs turns (the
+   * engine stays loopback either way).
    */
-  { id: "inbox", label: "Inbox", icon: InboxIcon, group: "Cockpit" },
+  { id: "remote", label: "Remote access", icon: SmartphoneIcon, group: "Cockpit" },
+  { id: "application", label: "Application", icon: InfoIcon, group: "Cockpit" },
   { id: "providers", label: "Providers", icon: PlugIcon, group: "Runtime" },
-  { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "Runtime" },
-  /**
-   * UNDER "COCKPIT", beside About, because an update is a fact about THIS
-   * INSTALL — its channel, its version, its feed — and nothing about the
-   * machine the sessions run on.
-   */
-  { id: "updates", label: "Updates", icon: DownloadIcon, group: "Cockpit" },
-  { id: "about", label: "About", icon: InfoIcon, group: "Cockpit" },
+  { id: "tools", label: "Agent tools", icon: WrenchIcon, group: "Runtime" },
 ];
+
+/**
+ * The retired pane ids keep answering. `section=mcp` is baked into the OAuth
+ * callback's redirect (app/api/mcp/oauth/callback/route.ts), and the rest may
+ * live in bookmarks; an alias costs one map entry and never strands a link on
+ * the default pane.
+ */
+const SECTION_ALIASES: Record<string, string> = {
+  sessions: "general",
+  inbox: "general",
+  textgen: "general",
+  mcp: "tools",
+  permissions: "tools",
+  updates: "application",
+  about: "application",
+};
 
 /** A figure the engine reported, in the register the rest of the app uses for
  *  machine-supplied values. */
@@ -96,7 +135,7 @@ function AboutSection({
       />
       <Row
         label="State"
-        hint="Sessions, transcripts, worktrees and settings. Telar never reads or writes the legacy state root."
+        hint="Sessions, transcripts, worktrees and settings."
         control={<Mono>{about?.stateRoot ?? "—"}</Mono>}
       />
     </SettingsGroup>
@@ -108,7 +147,7 @@ const SECTION_IDS = SECTIONS.map((section) => section.id);
 export function SettingsPage() {
   // `?section=mcp` is how a sign-in gets the user back to the pane they left —
   // see use-section-from-url.ts for the failure that made this necessary.
-  const [active, setActive] = useSectionFromUrl("appearance", SECTION_IDS);
+  const [active, setActive] = useSectionFromUrl("general", SECTION_IDS, SECTION_ALIASES);
   const [about, setAbout] = useState<{ appVersion: string; stateRoot?: string }>();
   const [health, setHealth] = useState<EngineHealth>();
   const [unreachable, setUnreachable] = useState(false);
@@ -134,22 +173,47 @@ export function SettingsPage() {
   }, [load]);
 
   return (
-    <SettingsShell title="Settings" subtitle="cockpit" sections={SECTIONS} active={active} onSelect={setActive} backHref="/">
-      {active === "appearance" && (
-        <SettingsGroup title="Theme" description="Applied before first paint, so switching never flashes the other theme.">
-          <Row label="Colour scheme" hint="System follows the OS setting and changes with it." control={<ThemeControl />} />
-        </SettingsGroup>
+    <SettingsShell
+      title="Settings"
+      subtitle="cockpit"
+      sections={SECTIONS}
+      active={active}
+      onSelect={setActive}
+      backHref="/"
+      // Appearance is a theme editor, not a list of rows — see `wide` in
+      // settings-shell.tsx. Every other pane keeps the reading column.
+      wide={active === "appearance"}
+    >
+      {active === "appearance" && <AppearanceSection />}
+
+      {/* WORKSPACE FIRST: it is the only row here that decides what gets BUILT,
+          and it is read before the session exists. Settling and naming both
+          describe a session that is already running. */}
+      {active === "general" && (
+        <>
+          <WorkspaceSection />
+          <InboxSection />
+          <TextGenSection />
+        </>
       )}
 
-      {active === "inbox" && <InboxSection />}
+      {active === "remote" && <RemoteSection />}
 
       {active === "providers" && <ProvidersSection />}
 
-      {active === "mcp" && <McpSection />}
+      {active === "tools" && (
+        <>
+          <McpSection />
+          <PermissionsSection />
+        </>
+      )}
 
-      {active === "updates" && <UpdatesSection />}
-
-      {active === "about" && <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />}
+      {active === "application" && (
+        <>
+          <AboutSection {...(about ? { about } : {})} {...(health ? { health } : {})} unreachable={unreachable} />
+          <UpdatesSection />
+        </>
+      )}
     </SettingsShell>
   );
 }

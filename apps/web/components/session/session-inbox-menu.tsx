@@ -132,23 +132,24 @@ export function SessionInboxMenu({
             {session.settledOverride === "active" ? (
               <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { settledOverride: null }))}>
                 <PinOffIcon />
-                Stop keeping in the list
+                Unpin
               </DropdownMenuItem>
             ) : (
               <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { settledOverride: "active" }))}>
                 <PinIcon />
-                Keep in the list
+                Pin to the list
               </DropdownMenuItem>
             )}
 
             {snoozing ? (
               <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { snoozedUntil: null }))}>
                 <AlarmClockIcon />
-                {`Wake now — sleeping ${wakeLabel(session.snoozedUntil!, now)}`}
+                <span className="flex-1">Wake now</span>
+                <span className="text-xs text-muted-foreground">{wakeLabel(session.snoozedUntil!, now)}</span>
               </DropdownMenuItem>
             ) : (
               <DropdownMenuGroup>
-                <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
+                <DropdownMenuLabel className="text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
                   Snooze until
                 </DropdownMenuLabel>
                 {/* Presets rather than a picker: the point of a snooze is that

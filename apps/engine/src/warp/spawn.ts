@@ -27,6 +27,10 @@
  */
 
 import type { UsageSnapshot } from "@telar/engine-client";
+// The boundary moved to `../steering` when session turns learned to steer too
+// (send now). `steering.ts` imports nothing, so the seam this file defends —
+// warp/ depends on the contract alone, never on driver.ts — holds.
+import { TurnBoundary } from "../steering";
 import type { WarpAgentOutcome, WarpSpawn, WarpSteer } from "./runner";
 
 /**
@@ -167,50 +171,6 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar__sessions_stop",
   "mcp__telar__sessions_diff",
 ] as const;
-
-/**
- * A turn boundary the prompt generator can wait on.
- *
- * EDGE-TRIGGERED WITH A COUNTER, not a bare promise, and that is the whole
- * reason this is a class. A `result` message can arrive before the generator
- * gets around to awaiting the next boundary; a level-triggered signal would
- * miss it, the generator would park for ever, and the SDK would sit waiting for
- * an input that never comes — the same deadlock the mailbox was introduced to
- * kill, reintroduced one layer down.
- */
-class TurnBoundary {
-  private settled = 0;
-  private observed = 0;
-  private closed = false;
-  private waiters: Array<(open: boolean) => void> = [];
-
-  /** A turn just ended. */
-  mark(): void {
-    this.settled += 1;
-    const waiting = this.waiters;
-    this.waiters = [];
-    for (const resolve of waiting) resolve(true);
-  }
-
-  /** The output stream ended: no further boundary can ever arrive. */
-  close(): void {
-    this.closed = true;
-    const waiting = this.waiters;
-    this.waiters = [];
-    for (const resolve of waiting) resolve(false);
-  }
-
-  /** Resolves `true` at the next (or an already-missed) boundary, `false` once
-   *  the stream is closed. */
-  next(): Promise<boolean> {
-    if (this.settled > this.observed) {
-      this.observed = this.settled;
-      return Promise.resolve(true);
-    }
-    if (this.closed) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => this.waiters.push(resolve));
-  }
-}
 
 const userMessage = (text: string): WarpUserMessage => ({
   type: "user",

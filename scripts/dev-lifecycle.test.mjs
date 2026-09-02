@@ -131,3 +131,14 @@ describe("reaching the cockpit from another device", () => {
     await assertWebPortAvailable(port, "127.0.0.1");
   });
 });
+
+test("a wildcard bind is not an address anything can dial", () => {
+  // The desktop shell gets a CONNECT url. Handing it the bind wildcard sent it
+  // to an origin it had never paired on, and the host's own window was told to
+  // pair with itself.
+  expect(cockpitUrl(3100, "0.0.0.0")).toBe("http://127.0.0.1:3100/");
+  expect(cockpitUrl(3100, "::")).toBe("http://[::1]:3100/");
+  // Real addresses are left exactly as given.
+  expect(cockpitUrl(3100, "100.110.136.102")).toBe("http://100.110.136.102:3100/");
+  expect(cockpitUrl(3100, "127.0.0.1")).toBe("http://127.0.0.1:3100/");
+});

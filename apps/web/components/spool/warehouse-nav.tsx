@@ -40,7 +40,7 @@ import { cn } from "@/lib/utils";
  *  renders in this file any more (the Areas group it used to label is gone),
  *  but the constant stays, declared and unused, so the two rails' scale
  *  stays provably identical. */
-const CAPTION = "text-[10px] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
+const CAPTION = "text-[0.625rem] font-semibold uppercase tracking-wider text-sidebar-foreground/45";
 
 export function SpoolWarehouseNav() {
   const room = useSpoolRoom();

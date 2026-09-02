@@ -24,7 +24,7 @@ const session = (over: Partial<SettleableSession> = {}): SettleableSession => ({
 // The contract owns the default and the 1..90 bound, because the engine
 // validates against them; this module takes the window as an argument and has
 // no opinion about which one is usual.
-const options = { now: NOW, autoSettleAfterDays: 3 };
+const options = { now: NOW, autoSettleAfterHours: 72 };
 
 describe("blockers beat everything", () => {
   test("a session waiting on a human is never settled, even when explicitly settled", () => {
@@ -79,14 +79,14 @@ describe("the clock", () => {
   });
 
   test("turning it off means nothing settles by neglect", () => {
-    const off = { now: NOW, autoSettleAfterDays: null };
+    const off = { now: NOW, autoSettleAfterHours: null };
     expect(isSettled(session({ updatedAt: NOW - 400 * DAY }), {}, off)).toBe(false);
     // A decision still settles it.
     expect(isSettled(session({ updatedAt: NOW, settledOverride: "settled" }), {}, off)).toBe(true);
   });
 
   test("the window is configurable, not the constant it used to be", () => {
-    const week = { now: NOW, autoSettleAfterDays: 7 };
+    const week = { now: NOW, autoSettleAfterHours: 168 };
     expect(isSettled(session({ updatedAt: NOW - 4 * DAY }), {}, week)).toBe(false);
     expect(isSettled(session({ updatedAt: NOW - 8 * DAY }), {}, week)).toBe(true);
   });

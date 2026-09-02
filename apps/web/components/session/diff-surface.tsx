@@ -92,7 +92,7 @@ const STATUS_TONE: Record<GitFileChange["status"], PanelTone> = {
  *  should extract it. */
 function Patch({ patch }: { patch: string }) {
   return (
-    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[10px] leading-relaxed">
+    <pre className="mx-3 mb-2 max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[0.625rem] leading-relaxed">
       {patch.split("\n").map((line, index) => {
         const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@") || line.startsWith("diff ");
         return (
@@ -172,31 +172,31 @@ function ReviewFileRow({
         >
           {/* Git's own letter, so anyone who has run `git status` needs no
               legend. */}
-          <span className="w-3 shrink-0 font-mono text-[10px] text-muted-foreground">{REVIEW_STATUS_LETTER[file.status]}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px]">
+          <span className="w-3 shrink-0 font-mono text-[0.625rem] text-muted-foreground">{REVIEW_STATUS_LETTER[file.status]}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">
             {cut > -1 && <span className="text-muted-foreground">{file.path.slice(0, cut + 1)}</span>}
             <span className="text-foreground">{file.path.slice(cut + 1)}</span>
           </span>
           {/* The one badge worth the width: this row is in the diff and was
               never in the transcript. */}
           {!reported && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal text-warning">
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal text-warning">
               unreported
             </Badge>
           )}
           {/* Rewritten more than once on the way here. Git shows the net result
               and cannot say this; the transcript can. */}
           {edits !== undefined && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal" title={`The session wrote this ${edits} times`}>
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal" title={`The session wrote this ${edits} times`}>
               ×{edits}
             </Badge>
           )}
           {file.binary && (
-            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[9px] font-normal">
+            <Badge variant="outline" className="shrink-0 px-1 py-0 text-[0.5625rem] font-normal">
               bin
             </Badge>
           )}
-          <span className="shrink-0 font-mono text-[10px] tabular-nums">
+          <span className="shrink-0 font-mono text-[0.625rem] tabular-nums">
             {file.linesAdded ? <span className="text-success">+{file.linesAdded}</span> : null}
             {file.linesAdded && file.linesRemoved ? " " : null}
             {/* U+2212, same width as the plus — the reason the column lines up. */}
@@ -206,17 +206,17 @@ function ReviewFileRow({
       </PanelRow>
       {open &&
         (failed ? (
-          <p className="px-4 pb-2 text-[11px] text-muted-foreground">git could not produce a patch for this path.</p>
+          <p className="px-4 pb-2 text-[0.6875rem] text-muted-foreground">git could not produce a patch for this path.</p>
         ) : patch === undefined ? (
-          <p className="flex items-center gap-2 px-4 pb-2 text-[11px] text-muted-foreground">
+          <p className="flex items-center gap-2 px-4 pb-2 text-[0.6875rem] text-muted-foreground">
             <Spinner className="size-3" /> reading the diff…
           </p>
         ) : patch === "" ? (
-          <p className="px-4 pb-2 text-[11px] text-muted-foreground">Binary file — changed, with no textual diff to show.</p>
+          <p className="px-4 pb-2 text-[0.6875rem] text-muted-foreground">Binary file — no textual diff.</p>
         ) : (
           <Patch patch={patch} />
         ))}
-      {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-[11px] text-muted-foreground">Renamed from {file.renamedFrom}</p>}
+      {file.renamedFrom && <p className="px-4 pb-2 pl-[1.9rem] text-[0.6875rem] text-muted-foreground">Renamed from {file.renamedFrom}</p>}
     </div>
   );
 }
@@ -231,7 +231,7 @@ function ReviewFileRow({
 function ReconciliationBand({ review }: { review: SessionReview }) {
   if (review.unreported.length === 0 && review.settled.length === 0) return null;
   return (
-    <div className="border-b border-border bg-muted/25 px-4 py-2.5 text-[11px] leading-relaxed">
+    <div className="border-b border-border bg-muted/25 px-4 py-2.5 text-[0.6875rem] leading-relaxed">
       {review.unreported.length > 0 && (
         <p className="flex gap-1.5 text-foreground">
           <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0 text-warning" />
@@ -239,7 +239,7 @@ function ReconciliationBand({ review }: { review: SessionReview }) {
             <span className="font-medium">
               {review.unreported.length} {review.unreported.length === 1 ? "file" : "files"} the transcript never mentioned
             </span>{" "}
-            — an install, a build, or a formatter. They are in the diff either way.
+            — an install, a build, or a formatter.
           </span>
         </p>
       )}
@@ -262,7 +262,7 @@ function CommitList({ commits }: { commits: SessionDiff["commits"] }) {
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 px-4 py-2 text-left text-[11px] hover:bg-muted/40"
+        className="flex w-full items-center gap-2 px-4 py-2 text-left text-[0.6875rem] hover:bg-muted/40"
       >
         <GitCommitHorizontalIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="font-medium">
@@ -273,7 +273,7 @@ function CommitList({ commits }: { commits: SessionDiff["commits"] }) {
       {open && (
         <ul className="pb-1">
           {commits.map((commit) => (
-            <li key={commit.sha} className="flex items-baseline gap-2 px-4 py-1 text-[11px]">
+            <li key={commit.sha} className="flex items-baseline gap-2 px-4 py-1 text-[0.6875rem]">
               <span className="shrink-0 font-mono text-muted-foreground">{commit.shortSha}</span>
               <span className="min-w-0 flex-1 truncate" title={commit.subject}>
                 {commit.subject || "(no subject)"}
@@ -344,7 +344,7 @@ function CommitBox({
   return (
     <div className="border-t border-border p-3">
       {result && (
-        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-[11px] leading-snug", result.ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>
+        <p className={cn("mb-2 rounded-md px-2.5 py-1.5 text-[0.6875rem] leading-snug", result.ok ? "bg-success/10 text-success" : "bg-muted text-muted-foreground")}>
           {result.text}
         </p>
       )}
@@ -387,9 +387,9 @@ function CommitBox({
       {/* WHAT THIS SURFACE WILL NOT DO, said once, at the point somebody would
           go looking for it. A cockpit that half-implements staging and branch
           switching is worse than one that names the tool that does them well. */}
-      <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-        Staging, branch switching and discarding are deliberately absent — they are irreversible next to a running agent. This session&rsquo;s
-        checkout is <span className="break-all font-mono">{workspacePath}</span>, and a terminal there does all three properly.
+      <p className="mt-2 text-[0.6875rem] leading-snug text-muted-foreground">
+        Staging, branch switching and discarding are absent — irreversible next to a running agent. Use a terminal in{" "}
+        <span className="break-all font-mono">{workspacePath}</span>.
       </p>
     </div>
   );
@@ -463,7 +463,7 @@ export function DiffSurface({
   if (!sessionId && !projectId) {
     return (
       <PanelEmpty icon={<GitBranchIcon />} title="No project">
-        This surface reviews a checkout, and there is not one to name yet.
+        Nothing to review yet.
       </PanelEmpty>
     );
   }
@@ -476,7 +476,7 @@ export function DiffSurface({
   }
   if (!diff || !review) {
     return (
-      <p className="flex items-center gap-2 px-4 py-3 text-[11px] text-muted-foreground">
+      <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
         <Spinner className="size-3" /> reading the repository…
       </p>
     );
@@ -484,7 +484,7 @@ export function DiffSurface({
   if (!diff.repository) {
     return (
       <PanelEmpty icon={<GitBranchIcon />} title="Not a git repository">
-        This session works in a directory that is not versioned. Sessions run there on purpose — there is simply no diff to review.
+        No diff to review.
       </PanelEmpty>
     );
   }
@@ -494,7 +494,7 @@ export function DiffSurface({
       {/* THE HEADLINE ANSWERS THE QUESTION IN ONE LINE: how far back the
           comparison reaches, and how big the answer is. */}
       <div className="border-b border-border px-4 py-2.5">
-        <div className="flex items-baseline gap-2 text-[11px]">
+        <div className="flex items-baseline gap-2 text-[0.6875rem]">
           <span className="text-muted-foreground">since</span>
           <span className="font-mono text-foreground">{diff.base ? diff.base.slice(0, 8) : "the last commit"}</span>
           {diff.branch && (
@@ -518,7 +518,7 @@ export function DiffSurface({
           </button>
         </div>
         <p className="mt-1 text-sm font-medium tabular-nums">{describeReview(review)}</p>
-        <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+        <p className="mt-0.5 text-[0.6875rem] leading-snug text-muted-foreground">
           {/* WITHOUT A BASE THIS IS A SMALLER QUESTION, and saying so is the
               difference between an honest figure and a wrong one: a session
               that committed its work would otherwise review as having done
@@ -527,7 +527,7 @@ export function DiffSurface({
             ? "Everything uncommitted in this project right now."
             : diff.base
               ? "Everything this session changed, committed and uncommitted."
-              : "This session recorded no starting commit, so this is only what is uncommitted right now — anything it committed is not counted."}
+              : "No starting commit was recorded, so this counts only what is uncommitted."}
           {diff.ahead !== undefined && diff.ahead > 0 ? ` ${diff.ahead} ahead of upstream.` : ""}
           {diff.truncated ? " The list below is capped; the figures above are not." : ""}
         </p>
@@ -540,7 +540,7 @@ export function DiffSurface({
       <CommitList commits={diff.commits} />
 
       {review.rows.length === 0 ? (
-        <div className="px-4 py-6 text-center text-[11px] text-muted-foreground">
+        <div className="px-4 py-6 text-center text-[0.6875rem] text-muted-foreground">
           Nothing differs from where this session started.
           {review.settled.length > 0 && " Everything it wrote has been put back or committed."}
         </div>
@@ -584,9 +584,8 @@ export function DiffSurface({
           /* No session, no commit. Committing a project's existing uncommitted
              work from a canvas would be snapshotting somebody else's work under
              a conversation that has not started. */
-          <p className="border-t border-border p-3 text-[11px] leading-snug text-muted-foreground">
-            This is the project&rsquo;s own uncommitted work, before this conversation starts. Send a message and this becomes a review of
-            what the session itself changed.
+          <p className="border-t border-border p-3 text-[0.6875rem] leading-snug text-muted-foreground">
+            The project&rsquo;s own uncommitted work, before this conversation starts.
           </p>
         )}
       </div>

@@ -7,10 +7,12 @@
  * three layers in. The routes moved with the version deliberately, so the break
  * is visible at the URL.
  */
+import { parsePublishedAppearance, type PublishedAppearance } from "./look";
 import {
   ENGINE_PROTOCOL_VERSION,
   EngineDiscovery,
   type BrowserSnapshot,
+  type EnvMode,
   type GitCommitEntry,
   forgeQuery,
   type GitHubCheckLog,
@@ -23,7 +25,13 @@ import {
   type GitHubPullRead,
   type GitHubSnapshot,
   type GitignoreResult,
+  type ComputerUseBackend,
+  type ComputerUseStatus,
   type InboxPolicy,
+  type SessionDefaults,
+  type TextGenPolicy,
+  type UsageReport,
+  type UsageResolution,
   type SpoolAperture,
   type SpoolApertureView,
   type SpoolArea,
@@ -59,6 +67,8 @@ import {
   type SpoolLane,
   type SpoolSnapshot,
   type ModelCatalogue,
+  type ModelOverlay,
+  type CustomProviderModel,
   type SessionDiff,
   type McpOAuthStatus,
   type McpServer,
@@ -101,6 +111,15 @@ import {
 
 export * from "./protocol";
 
+/**
+ * THE LOOK FORMAT — the appearance vocabulary the cockpit publishes and every
+ * other client reads. Kept out of `protocol/` because it is not part of the
+ * engine's own model: the engine stores this blob without understanding a word
+ * of it (see `/v2/appearance`), and the shape belongs to the clients that both
+ * write and wear it. Pure data and total parsers; no DOM, no framework.
+ */
+export * from "./look";
+
 export class EngineClientError extends Error {
   readonly code: EngineErrorCode;
   readonly status?: number;
@@ -138,7 +157,7 @@ export class EngineClient {
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
-  private async request<T>(method: string, pathname: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     let response: Response;
     try {
       response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
@@ -148,8 +167,12 @@ export class EngineClient {
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(signal ? { signal } : {}),
       });
-    } catch {
+    } catch (cause) {
+      // An abort is the caller hanging up, not the engine being away — rethrow
+      // it as itself so a forwarding route can end quietly.
+      if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
       throw new EngineClientError("engine_unavailable", "engine is unreachable");
     }
 
@@ -200,6 +223,40 @@ export class EngineClient {
     return this.request("GET", "/v2/health");
   }
 
+  /**
+   * The project's icon, as bytes — the image behind `Project.icon`.
+   *
+   * The one binary GET on this client. Not folded into `request` because that
+   * envelope parses JSON, and generalising it for one route would put a
+   * content-type branch on every call in the class.
+   */
+  async projectIcon(projectId: string): Promise<{ data: Uint8Array; contentType: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/projects/${encodeURIComponent(projectId)}/icon`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.discovery.token}` },
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+    }
+    if (!response.ok) {
+      let code: EngineErrorCode = "engine_unavailable";
+      let message = "engine request failed";
+      try {
+        const error = ((await response.json()) as EngineErrorBody | null)?.error;
+        if (error) ({ code, message } = error);
+      } catch {
+        // A non-JSON failure body keeps the defaults.
+      }
+      throw new EngineClientError(code, message, response.status);
+    }
+    return {
+      data: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+    };
+  }
+
   listProjects(): Promise<{ projects: Project[] }> {
     return this.request("GET", "/v2/projects");
   }
@@ -214,8 +271,171 @@ export class EngineClient {
     return this.request("GET", "/v2/inbox");
   }
 
-  setInboxPolicy(patch: { autoSettleAfterDays?: number | null }): Promise<{ inbox: InboxPolicy }> {
+  setInboxPolicy(patch: { autoSettleAfterHours?: number | null }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
+  }
+
+  /** What a session is created with when the caller didn't say — see
+   *  `SessionDefaults`. Environment-wide, like the inbox rule above. */
+  sessionDefaults(): Promise<{ sessionDefaults: SessionDefaults }> {
+    return this.request("GET", "/v2/session-defaults");
+  }
+
+  setSessionDefaults(patch: { envMode?: EnvMode }): Promise<{ sessionDefaults: SessionDefaults }> {
+    return this.request("PATCH", "/v2/session-defaults", patch);
+  }
+
+  /**
+   * Computer use, MEASURED: the Codex plugin's presence, its Sky host app, and
+   * the macOS Automation grant — the last one answered by a real read-only
+   * call, which is also what makes macOS raise its granting prompt when the
+   * decision is still open. Slow by design (one subprocess round trip).
+   */
+  computerUseStatus(): Promise<{ computerUse: ComputerUseStatus }> {
+    return this.request("GET", "/v2/computer-use");
+  }
+
+  /** Wake the Sky host app in the background. Idempotent. */
+  wakeComputerUseHost(): Promise<{ ok: boolean }> {
+    return this.request("POST", "/v2/computer-use/host", {});
+  }
+
+  /** Run cua's native granting flow (CuaDriver.app requests Accessibility +
+   *  Screen Recording, attributed to itself). A no-op for the Sky backend. */
+  grantComputerUseAccess(): Promise<{ started: boolean; backend?: ComputerUseBackend }> {
+    return this.request("POST", "/v2/computer-use/grant", {});
+  }
+
+  /** Spend over time, folded from the engine's journals — see `UsageReport`. */
+  usageReport(input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }): Promise<{ usage: UsageReport }> {
+    const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
+    if (input.resolution) query.set("resolution", input.resolution);
+    if (input.timeZone) query.set("tz", input.timeZone);
+    return this.request("GET", `/v2/usage?${query.toString()}`);
+  }
+
+  /** Who writes generated titles and branch names — see `TextGenPolicy`. */
+  textGenPolicy(): Promise<{ textGen: TextGenPolicy }> {
+    return this.request("GET", "/v2/textgen");
+  }
+
+  setTextGenPolicy(patch: {
+    titles?: boolean;
+    renameBranches?: boolean;
+    driver?: ProviderDriverKind;
+    /** `null` returns to the driver's default model; absent leaves it alone. */
+    model?: string | null;
+  }): Promise<{ textGen: TextGenPolicy }> {
+    return this.request("PATCH", "/v2/textgen", patch);
+  }
+
+  /**
+   * One structured completion from the policy's harness — the title job's
+   * subprocess, generalised for callers that bring their own JSON schema.
+   *
+   * SLOW AND FALLIBLE BY NATURE: a cold harness start plus a completion, and a
+   * harness that refuses or times out comes back as a `textgen_failed` 502
+   * rather than an empty answer. Treat it as a request that may take a minute
+   * and may not succeed.
+   */
+  completeStructured(
+    input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ result: Record<string, unknown> }> {
+    return this.request("POST", "/v2/textgen/complete", input, options.signal);
+  }
+
+  /**
+   * The host cockpit's published look — the whole `Look` (both theme halves,
+   * the backdrop with its pixels, accent, type, strength) plus the few facts
+   * about the publishing WINDOW a Look deliberately does not carry.
+   *
+   * PARSED HERE, NOT HANDED THROUGH RAW. The engine stores this blob without
+   * understanding a word of it, and any paired device may have written it — so
+   * the shared total parser runs on the way out, colour gates included. A
+   * `null` appearance means "nothing published, or nothing readable"; both are
+   * the same instruction to a reader: wear your own defaults.
+   */
+  async appearance(): Promise<{ appearance: PublishedAppearance | null; updatedAt: number | null }> {
+    const raw = await this.request<{ appearance?: unknown; updatedAt?: unknown }>("GET", "/v2/appearance");
+    return {
+      appearance: parsePublishedAppearance(raw.appearance) ?? null,
+      updatedAt: typeof raw.updatedAt === "number" && Number.isFinite(raw.updatedAt) ? raw.updatedAt : null,
+    };
+  }
+
+  /**
+   * THE APPEARANCE HOME — the files, not the mailbox.
+   *
+   * Returned RAW rather than parsed into Looks and Themes. The home is a
+   * directory two authors edit by hand, so "what is on disk" and "what this
+   * build can wear" are different questions: the caller parses with the
+   * vocabulary it paints with, and decides for itself what to do with an entry
+   * it does not understand. `skipped` names the files that were not even JSON.
+   */
+  async appearanceHome(): Promise<{
+    settings: Record<string, unknown> | null;
+    themes: Record<string, unknown>[];
+    looks: Record<string, unknown>[];
+    images: string[];
+    skipped: { file: string; reason: string }[];
+  }> {
+    const raw = await this.request<Record<string, unknown>>("GET", "/v2/appearance/home");
+    const list = (value: unknown): Record<string, unknown>[] =>
+      Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry)) : [];
+    return {
+      settings: typeof raw["settings"] === "object" && raw["settings"] !== null && !Array.isArray(raw["settings"]) ? (raw["settings"] as Record<string, unknown>) : null,
+      themes: list(raw["themes"]),
+      looks: list(raw["looks"]),
+      images: Array.isArray(raw["images"]) ? raw["images"].filter((name): name is string => typeof name === "string") : [],
+      skipped: list(raw["skipped"]).map((entry) => ({ file: String(entry["file"] ?? ""), reason: String(entry["reason"] ?? "") })),
+    };
+  }
+
+  async putAppearanceEntry(kind: "themes" | "looks", id: string, value: Record<string, unknown>): Promise<void> {
+    await this.request("PUT", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`, value);
+  }
+
+  async deleteAppearanceEntry(kind: "themes" | "looks", id: string): Promise<void> {
+    await this.request("DELETE", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * A stored picture's bytes. Shaped exactly like `projectIcon` because it is
+   * the same job — the engine holds a file, the cockpit streams it — and a
+   * second idiom for "fetch binary from the engine" is how two of them drift
+   * on error handling.
+   */
+  async appearanceImage(name: string): Promise<{ data: Uint8Array; contentType: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/appearance/home/images/${encodeURIComponent(name)}`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.discovery.token}` },
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+    }
+    if (!response.ok) throw new EngineClientError(response.status === 404 ? "not_found" : "engine_unavailable", "no such image");
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+  }
+
+  async putAppearanceSettings(settings: Record<string, unknown>): Promise<void> {
+    await this.request("PUT", "/v2/appearance/home/settings", settings);
+  }
+
+  /** Replaces the published look wholesale — a snapshot, never a patch, because
+   *  two publishers' merged halves would describe a look neither of them wears.
+   *  `updatedAt` and `etag` come back so a publisher can tell its own write
+   *  apart from somebody else's. */
+  setAppearance(blob: PublishedAppearance): Promise<{ ok: boolean; updatedAt: number; etag: string }> {
+    return this.request("PUT", "/v2/appearance", blob);
+  }
+
+  /** Forget the published look. Idempotent: clearing an empty mailbox is a
+   *  200, because "there is no published look" is the state either way. */
+  clearAppearance(): Promise<{ ok: boolean }> {
+    return this.request("DELETE", "/v2/appearance");
   }
 
   // ── Spool ─────────────────────────────────────────────────────────────────
@@ -1056,12 +1276,37 @@ export class EngineClient {
     );
   }
 
-  /** Which models a provider says it has. Cached in the engine for five
-   *  minutes — answering means spawning the provider's own CLI. */
-  modelCatalogue(driver: ProviderDriverKind, options: { refresh?: boolean } = {}): Promise<{ catalogue: ModelCatalogue }> {
+  /**
+   * Which models a provider says it has, as one login reads them.
+   *
+   * The PROVIDER answer is cached in the engine for five minutes — answering
+   * means spawning the provider's own CLI. The reader's overlay on top of it is
+   * not cached at all, so a hide or an added id shows up on the very next call
+   * without `refresh`. Omitting `instanceId` gets the driver's built-in slot.
+   */
+  modelCatalogue(
+    driver: ProviderDriverKind,
+    options: { refresh?: boolean; instanceId?: string } = {},
+  ): Promise<{ catalogue: ModelCatalogue }> {
     const query = new URLSearchParams({ driver });
     if (options.refresh) query.set("refresh", "1");
+    if (options.instanceId) query.set("instanceId", options.instanceId);
     return this.request("GET", `/v2/models?${query.toString()}`);
+  }
+
+  /** What this login's reader did to that provider's model list. An untouched
+   *  overlay is a real answer, not a 404. */
+  modelOverlay(instanceId: string): Promise<{ overlay: ModelOverlay }> {
+    return this.request("GET", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`);
+  }
+
+  /** Presence is the patch, and a submitted array replaces that list whole — so
+   *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
+  setModelOverlay(
+    instanceId: string,
+    patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+  ): Promise<{ overlay: ModelOverlay }> {
+    return this.request("PATCH", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`, patch);
   }
 
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {
@@ -1088,6 +1333,12 @@ export class EngineClient {
     /** Proposed branch for a worktree session, e.g. `loom/<loom>/<thread>`.
      *  Must live under `loom/` or `telar/`; the engine refuses anything else. */
     branchSlug?: string;
+    /** What a worktree is cut from — any name in `GitOverview.refs`
+     *  (`main`, `origin/feature-x`). Absent means HEAD. Worktree only. */
+    baseRef?: string;
+    /** A human's own name for the new branch, OUTSIDE loom//telar/. The engine
+     *  refuses (never resets) a collision with an existing branch. */
+    branchName?: string;
     /**
      * WHO ASKED — provenance, never a link to anything. `"session"` marks a
      * session that the `sessions` toolkit created and is the ONLY value the
@@ -1372,6 +1623,20 @@ export class EngineClient {
   /** Explicit human resolution for a turn whose provider effects are uncertain. */
   discardAmbiguousTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
+  }
+
+  /** SEND NOW: promote a queued turn into the running one. A promise of
+   *  not-losing, never of delivery — see the engine's `promoteTurn`. */
+  promoteTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {});
+  }
+
+  /** The worker confirming a steered message reached its driver's mailbox.
+   *  `runId` is the PROMOTED turn; the token proves the running claim. */
+  ackSteer(sessionId: string, steerRunId: string, claimToken: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(steerRunId)}/steer-ack`, {
+      claimToken,
+    });
   }
 
   registerWorker(workerId: string): Promise<{ worker: { workerId: string } }> {

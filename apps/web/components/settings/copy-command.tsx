@@ -25,7 +25,7 @@ export function CopyCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
-      <code className="min-w-0 flex-1 truncate font-mono text-[11px]">{command}</code>
+      <code className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">{command}</code>
       <Button
         variant="ghost"
         size="icon-sm"

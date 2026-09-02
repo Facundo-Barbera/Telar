@@ -173,7 +173,7 @@ test("the gate hears reads AS reads, and an accepted call proceeds", async () =>
   ]);
 });
 
-test("a call that CHANGED the page reports fresh state; reads and failures report nothing", async () => {
+test("an unchanged tab set reports once; a failed call reports nothing", async () => {
   const states: unknown[] = [];
   const socket = makeSocket(
     fakeCapability({
@@ -192,14 +192,36 @@ test("a call that CHANGED the page reports fresh state; reads and failures repor
   );
   const lease = await socket.bind({ scopeKey: "s", onNavigated: (state) => void states.push(state) });
   await rpc(lease.url, lease.token, call("browser_navigate", { url: "http://x" }));
-  // A READ must not trigger a state report: polling after every snapshot puts
-  // a page listing behind each look at the DOM. A FAILED mutation moved
-  // nothing worth describing either.
+  // The snapshot re-reads state but the tab set is IDENTICAL, so nothing is
+  // reported — the dedupe is what keeps read-after-every-call cheap. The
+  // failed click moved nothing worth describing either.
   await rpc(lease.url, lease.token, call("browser_snapshot"));
   await rpc(lease.url, lease.token, call("browser_click"));
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(states).toHaveLength(1);
   expect((states[0] as { tabs: { url: string }[] }).tabs[0]?.url).toBe("http://x");
+});
+
+test("a READ-ONLY call whose tabs changed still reports — a session that only reads has pages too", async () => {
+  // Before this, a session whose agent only ever snapshotted journalled no
+  // `browser.state.changed` at all, so its pages never appeared in the panel.
+  const states: string[] = [];
+  let reads = 0;
+  const socket = makeSocket(
+    fakeCapability({
+      isReadOnly: () => true,
+      tools: [{ name: "browser_snapshot", description: "look", input: z.object({}) }],
+      state: async () => ({
+        provider: "headless",
+        tabs: [{ id: "0", url: `http://page-${++reads}`, title: "P", active: true }],
+      }),
+    }),
+  );
+  const lease = await socket.bind({ scopeKey: "s", onNavigated: (state) => void states.push(state.tabs[0]?.url ?? "?") });
+  await rpc(lease.url, lease.token, call("browser_snapshot"));
+  await rpc(lease.url, lease.token, call("browser_snapshot"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(states).toEqual(["http://page-1", "http://page-2"]);
 });
 
 test("state reads are SEQUENCED per binding — a redirect's reports land in order", async () => {

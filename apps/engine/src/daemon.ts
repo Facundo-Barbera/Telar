@@ -24,10 +24,26 @@ import {
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
+import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
+import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
+import {
+  isAppearanceId,
+  listImages,
+  putImage,
+  readImage,
+  readLooks,
+  readSettings,
+  readThemes,
+  removeEntry,
+  writeLook,
+  writeSettings,
+  writeTheme,
+} from "./appearance-home";
+import { readUsageReport } from "./usage";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
 import type { SpoolCapability } from "./spool/tools";
@@ -120,6 +136,15 @@ class HttpError extends Error {
     readonly status: number,
     readonly code: EngineErrorCode,
     message: string,
+    /**
+     * ANSWER, THEN HANG UP. Set by a refusal that did NOT read the request
+     * body — the oversize guard, which is the whole point of refusing early.
+     * Keep-alive assumes the socket is clean between messages; one still
+     * carrying megabytes the server never drained is not, and the client's
+     * NEXT request on it waits for a reply that can never arrive. So the
+     * refusal that skipped the body also ends the connection that held it.
+     */
+    readonly endConnection = false,
   ) {
     super(message);
     this.name = "HttpError";
@@ -134,8 +159,8 @@ function errorFor(error: unknown): HttpError {
   return new HttpError(500, "internal_error", "engine encountered an internal error");
 }
 
-function writeJson(response: http.ServerResponse, status: number, body: unknown): void {
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+function writeJson(response: http.ServerResponse, status: number, body: unknown, headers: http.OutgoingHttpHeaders = {}): void {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
   response.end(JSON.stringify(body));
 }
 
@@ -174,6 +199,22 @@ async function body(request: http.IncomingMessage): Promise<Record<string, unkno
  *  ran on the socket. */
 const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
 
+/**
+ * A backdrop picture's ceiling. Generous next to the 3.5MB the browser store
+ * had to enforce — that number was a share of one origin's localStorage, and
+ * this one is a file on a disk. It exists so a mis-aimed upload cannot fill
+ * the volume, not to make anyone compress a photograph.
+ */
+const MAX_APPEARANCE_IMAGE_BYTES = 32 * 1024 * 1024;
+
+/** The four formats `imageExtension` will admit, by the extension it returns. */
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
 async function rawBody(request: http.IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -184,6 +225,79 @@ async function rawBody(request: http.IncomingMessage, limit: number): Promise<Bu
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * The appearance route's body — JSON like `body()`, but with the cap the
+ * published look actually needs.
+ *
+ * ITS OWN READER RATHER THAN A BIGGER `body()`, for the reason stated above
+ * `rawBody`: the 1 MB JSON ceiling is worth keeping tight on every other route,
+ * and one shared reader with a size argument is exactly how such a guard drifts.
+ * A published look carries its backdrop's pixels — the cockpit's picker
+ * compresses to at most 3.5 MB — so this one route reads up to 8 MiB and no
+ * other route can accidentally inherit that.
+ *
+ * REFUSED BEFORE IT IS BUFFERED, twice over: a declared `content-length` past
+ * the cap is answered without reading a byte, and a body that lies about (or
+ * omits) its length still stops at the limit mid-stream. Buffering eight
+ * megabytes only to measure them is the denial of service the cap exists to
+ * prevent.
+ */
+const MAX_APPEARANCE_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+async function appearanceBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const tooLarge = () => new HttpError(413, "invalid_request", `appearance must be under ${MAX_APPEARANCE_UPLOAD_BYTES} bytes`, true);
+  const declared = Number(request.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_APPEARANCE_UPLOAD_BYTES) throw tooLarge();
+  // The bounded read, inline rather than through `rawBody`: this one refuses
+  // with a connection-ending error, and `rawBody`'s caller (attachments) reads
+  // its body to the end and must keep its socket.
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > MAX_APPEARANCE_UPLOAD_BYTES) throw tooLarge();
+    chunks.push(buffer);
+  }
+  const bytes = Buffer.concat(chunks);
+  if (bytes.length === 0) throw new HttpError(400, "invalid_request", "request body must be an object");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "invalid_request", "request body is invalid JSON");
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new HttpError(400, "invalid_request", "request body must be an object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * The published look's validator, as one string.
+ *
+ * CUT FROM THE ENGINE'S OWN STAMP, not from a hash of the blob. Hashing would
+ * mean walking megabytes on every GET to answer a question the mailbox already
+ * knows: there is exactly one published look, it is replaced wholesale, and
+ * `updatedAt` is when this engine accepted that replacement. A republish of
+ * byte-identical content does mint a new tag and cost one re-download; that is
+ * the honest trade against hashing every read forever.
+ */
+function appearanceEtag(updatedAt: number): string {
+  return `"a${updatedAt.toString(36)}"`;
+}
+
+/** `If-None-Match` as clients actually send it: a list, possibly weak-tagged,
+ *  possibly `*`. Only equality against our own strong tag matters here. */
+function matchesEtag(header: string | string[] | undefined, etag: string): boolean {
+  const raw = Array.isArray(header) ? header.join(",") : header;
+  if (!raw) return false;
+  return raw
+    .split(",")
+    .map((candidate) => candidate.trim().replace(/^W\//, ""))
+    .some((candidate) => candidate === "*" || candidate === etag);
 }
 
 function stringValue(value: unknown, label: string, optional = false): string | undefined {
@@ -215,10 +329,10 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
-type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard";
+type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard)$/.exec(pathname);
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|promote|steer-ack)$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
 }
@@ -323,6 +437,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
+    // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
+    // installing or removing a driver applies to the next turn. Injected here,
+    // not defaulted in the store, so tests never read the real machine. The
+    // first claim that resolves also wakes the Sky host app if that is the
+    // backend — cua self-launches — once per daemon, in the background.
+    computerUse: () => {
+      const resolved = resolveComputerUse();
+      if (resolved) launchComputerUseHost();
+      return resolved;
+    },
   });
   const lock = acquireDaemonLock(statePaths(root));
   const daemonId = crypto.randomUUID();
@@ -546,8 +670,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       if (request.method === "GET" && url.pathname === "/v2/models") {
         const driver = url.searchParams.get("driver") ?? "claude";
+        const instanceId = url.searchParams.get("instanceId");
         writeJson(response, 200, {
-          catalogue: await store.modelCatalogue(driver as "claude" | "codex", { force: url.searchParams.get("refresh") === "1" }),
+          catalogue: await store.modelCatalogue(driver as "claude" | "codex", {
+            force: url.searchParams.get("refresh") === "1",
+            // Absent means the driver's built-in slot — the same fallback
+            // `resolveProviderInstance` makes for a session naming an id nobody
+            // configured. The PROVIDER answer is still driver-wide; the instance
+            // is what selects the overlay laid over it.
+            ...(instanceId ? { instanceId } : {}),
+          }),
         });
         return;
       }
@@ -571,9 +703,312 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // PRESENT-BUT-NULL IS THE OFF SWITCH, so `in` rather than a
             // truthiness test: `null` and "not mentioned" are different
             // requests and JSON can only tell them apart by the key.
-            ...("autoSettleAfterDays" in input ? { autoSettleAfterDays: input.autoSettleAfterDays } : {}),
+            ...("autoSettleAfterHours" in input ? { autoSettleAfterHours: input.autoSettleAfterHours } : {}),
           }),
         });
+        return;
+      }
+      /**
+       * What a session is created with when the caller didn't say. A document
+       * of the environment, like the inbox rule above — and read on the create
+       * path, so every client that stays quiet builds the same thing.
+       */
+      if (url.pathname === "/v2/session-defaults" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { sessionDefaults: store.getSessionDefaults() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          sessionDefaults: store.setSessionDefaults({
+            ...("envMode" in input ? { envMode: input.envMode } : {}),
+          }),
+        });
+        return;
+      }
+      /**
+       * COMPUTER USE, MEASURED. The GET runs one real read-only call through
+       * the Sky client, because that is the only honest answer to "is the
+       * Automation grant in place" — and when the grant is still undecided,
+       * that same call is what makes macOS show its own prompt, which names
+       * the responsible app better than this daemon can from the inside.
+       * The POST wakes the host app the client drives.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/computer-use") {
+        writeJson(response, 200, { computerUse: await computerUseStatus() });
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/host") {
+        openComputerUseHost();
+        writeJson(response, 200, { ok: true });
+        return;
+      }
+      // cua's native granting flow — CuaDriver.app requests Accessibility +
+      // Screen Recording, attributed to itself. Sky has no such command (its
+      // probe is the grant), so this reports what it did.
+      if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
+        writeJson(response, 200, grantComputerUseAccess());
+        return;
+      }
+      /**
+       * Spend over time, folded from the journals on demand. The window is the
+       * client's (epoch ms), the zone names how days are cut; both validated
+       * here because a NaN window would silently bucket nothing.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/usage") {
+        const sinceMs = Number(url.searchParams.get("since"));
+        const untilMs = Number(url.searchParams.get("until"));
+        if (!Number.isFinite(sinceMs) || !Number.isFinite(untilMs) || sinceMs >= untilMs) {
+          throw new HttpError(400, "invalid_request", "usage needs a since/until window in epoch milliseconds");
+        }
+        const resolution = url.searchParams.get("resolution") === "hour" ? "hour" : "day";
+        const timeZone = url.searchParams.get("tz")?.trim() || "UTC";
+        writeJson(response, 200, {
+          usage: await readUsageReport(
+            { sinceMs, untilMs, resolution, timeZone },
+            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json") },
+          ),
+        });
+        return;
+      }
+      /** Who writes generated titles and branch names — a document of the
+       *  environment, like the inbox rule above and for the same reason. */
+      if (url.pathname === "/v2/textgen" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { textGen: store.getTextGenPolicy() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          textGen: store.setTextGenPolicy({
+            ...("titles" in input ? { titles: input.titles } : {}),
+            ...("renameBranches" in input ? { renameBranches: input.renameBranches } : {}),
+            ...("driver" in input ? { driver: input.driver } : {}),
+            // `null` returns to the driver's default model; the key's presence
+            // is the question, same rule as the inbox window above.
+            ...("model" in input ? { model: input.model } : {}),
+          }),
+        });
+        return;
+      }
+      /**
+       * ONE STRUCTURED COMPLETION, for a caller that brought its own schema.
+       *
+       * THE GENERALISATION OF THE TITLE JOB above it: same policy, same
+       * built-in instance, same short-lived `claude -p` / `codex exec` child
+       * that cannot touch any session's transcript. What changes is who writes
+       * the prompt — a cockpit feature that needs one small model answer no
+       * longer has to grow its own subprocess plumbing.
+       *
+       * SYNCHRONOUS AND SLOW BY NATURE (a cold harness start plus a completion,
+       * bounded by textgen's own timeout). Callers must treat it as a request
+       * that can take a minute, and must survive it failing.
+       *
+       * A FAILURE IS A 502, NOT AN EMPTY 200. textgen's contract is that every
+       * failure — missing CLI, timeout, refusal, unparseable output — resolves
+       * to `undefined`, which is exactly right for a background nicety and
+       * exactly wrong for a caller that ASKED for an answer. The gateway status
+       * says the truth: this daemon is fine, the harness behind it did not
+       * deliver.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/textgen/complete") {
+        const input = await body(request);
+        const prompt = input["prompt"];
+        if (typeof prompt !== "string" || prompt.trim().length === 0) {
+          throw new HttpError(400, "invalid_request", "prompt must be a non-empty string");
+        }
+        // Well past any reasonable one-shot prompt, well short of a context
+        // window — a caller pasting a whole repository in here has taken a
+        // wrong turn, and the CLI would only fail slower.
+        if (prompt.length > 20_000) {
+          throw new HttpError(400, "invalid_request", "prompt must be under 20000 characters");
+        }
+        const schema = input["schema"];
+        if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+          throw new HttpError(400, "invalid_request", "schema must be a JSON schema object");
+        }
+        const model = input["model"];
+        if (model !== undefined && (typeof model !== "string" || model.trim().length === 0)) {
+          throw new HttpError(400, "invalid_request", "model must be a non-empty string when given");
+        }
+        const effort = input["effort"];
+        if (effort !== undefined && effort !== "low" && effort !== "medium" && effort !== "high") {
+          throw new HttpError(400, "invalid_request", "effort must be low, medium or high when given");
+        }
+        // A caller that hangs up mid-completion kills the harness child rather
+        // than leaving it to burn its two-minute timeout. `close` also fires
+        // after a normal end, where aborting a finished run is a no-op.
+        const abort = new AbortController();
+        response.on("close", () => abort.abort());
+        const result = await runStructuredForPolicy(store, {
+          prompt,
+          schema: schema as object,
+          ...(typeof model === "string" ? { model } : {}),
+          ...(typeof effort === "string" ? { effort: effort as "low" | "medium" | "high" } : {}),
+          signal: abort.signal,
+        });
+        if (abort.signal.aborted) return; // Nobody is listening for the answer.
+        if (result === undefined) throw new HttpError(502, "textgen_failed", "the harness did not answer");
+        writeJson(response, 200, { result });
+        return;
+      }
+      /**
+       * THE HOST'S LOOK, PUBLISHED — see `EngineStore.getAppearance`.
+       *
+       * WHY THE ENGINE HOLDS A BROWSER'S PREFERENCE, which is otherwise against
+       * the grain here: appearance lives in localStorage because that is where a
+       * person configures it, and a paired iOS client has no way to read another
+       * device's localStorage. The cockpit republishes its RESOLVED look through
+       * `PUT`, and every paired client reads the same answer from `GET`.
+       *
+       * OPAQUE ON PURPOSE. The daemon does not know what an accent or a theme
+       * half is and must not learn — the store's only rules are "a JSON object"
+       * and "under the cap", which is what keeps the vocabulary additive across
+       * an engine and an app that ship on different days. The SHAPE is a real
+       * type now (`PublishedAppearance` in @telar/engine-client) and the client
+       * parses it on the way out; the engine still does not read a key of it.
+       *
+       * CACHEABLE, BECAUSE IT GOT BIG. A published look carries its backdrop's
+       * pixels, so a phone polling this on every foreground would re-download
+       * megabytes to learn nothing changed. GET answers with `updatedAt` and an
+       * `ETag`; a matching `If-None-Match` gets a bodyless 304.
+       *
+       * DELETE IS A REAL OPERATION, not the absence of one. "I do not want my
+       * look published any more" had no expression at all, and the closest
+       * available move — PUTting an empty object — publishes a look that
+       * describes nothing rather than withdrawing the one on file.
+       *
+       * PAIRED-ONLY, like everything else under `/v2`: this is a description of
+       * one person's machine, and the bearer check upstream is the whole access
+       * story. Nothing here is exempt from it.
+       */
+      /**
+       * THE APPEARANCE HOME — the files themselves, over HTTP.
+       *
+       * /v2/appearance is a MAILBOX: one resolved blob a browser published for
+       * paired clients to wear. This is the RECORD: the themes, looks, settings
+       * and pictures that a person or an agent edits on disk, which the cockpit
+       * reads and writes so both authors see one truth. Two routes because they
+       * are two different things, not two spellings of one.
+       */
+      if (url.pathname === "/v2/appearance/home") {
+        if (request.method === "GET") {
+          const themes = readThemes(store.paths.root);
+          const looks = readLooks(store.paths.root);
+          writeJson(response, 200, {
+            settings: readSettings(store.paths.root) ?? null,
+            themes: themes.entries,
+            looks: looks.entries,
+            images: listImages(store.paths.root),
+            // NAMED, not swallowed: a hand-edited directory grows broken files,
+            // and someone hunting for a theme that will not appear deserves to
+            // be told which one it is.
+            skipped: [...themes.skipped, ...looks.skipped],
+          });
+          return;
+        }
+        writeJson(response, 405, { error: { code: "invalid_request", message: "the appearance home accepts GET" } }, { allow: "GET" });
+        return;
+      }
+      if (url.pathname === "/v2/appearance/home/settings" && request.method === "PUT") {
+        const body_ = await body(request);
+        writeSettings(store.paths.root, body_);
+        writeJson(response, 200, { ok: true });
+        return;
+      }
+      {
+        // themes/<id> and looks/<id>, which differ only in the folder.
+        const entry = /^\/v2\/appearance\/home\/(themes|looks)\/([^/]+)$/.exec(url.pathname);
+        if (entry) {
+          const kind = entry[1] as "themes" | "looks";
+          const id = decodeURIComponent(entry[2]!);
+          if (!isAppearanceId(id)) {
+            throw new HttpError(400, "invalid_request", "id must contain only letters, numbers, underscores or hyphens");
+          }
+          if (request.method === "PUT") {
+            const value = await body(request);
+            if (kind === "themes") writeTheme(store.paths.root, id, value);
+            else writeLook(store.paths.root, id, value);
+            writeJson(response, 200, { ok: true, id });
+            return;
+          }
+          if (request.method === "DELETE") {
+            removeEntry(store.paths.root, kind, id);
+            writeJson(response, 200, { ok: true });
+            return;
+          }
+          writeJson(response, 405, { error: { code: "invalid_request", message: "accepts PUT and DELETE" } }, { allow: "PUT, DELETE" });
+          return;
+        }
+      }
+      if (url.pathname === "/v2/appearance/home/images" && request.method === "POST") {
+        const bytes = await rawBody(request, MAX_APPEARANCE_IMAGE_BYTES);
+        const name = putImage(store.paths.root, bytes);
+        // REFUSED HERE rather than stored and discovered broken later: the
+        // format is sniffed from the bytes, so "this is not an image" is a
+        // fact this route already knows.
+        if (name === undefined) throw new HttpError(400, "invalid_request", "the body must be a PNG, JPEG, GIF or WebP image");
+        writeJson(response, 200, { ok: true, name });
+        return;
+      }
+      {
+        const image = /^\/v2\/appearance\/home\/images\/([^/]+)$/.exec(url.pathname);
+        if (image && request.method === "GET") {
+          const bytes = readImage(store.paths.root, decodeURIComponent(image[1]!));
+          if (bytes === undefined) throw new HttpError(404, "not_found", "no such image");
+          response.writeHead(200, {
+            "content-type": IMAGE_TYPES[path.extname(image[1]!).slice(1)] ?? "application/octet-stream",
+            // The name IS a content hash, so the bytes behind it can never change.
+            "cache-control": "public, max-age=31536000, immutable",
+            "content-length": String(bytes.byteLength),
+          });
+          response.end(Buffer.from(bytes));
+          return;
+        }
+      }
+      if (url.pathname === "/v2/appearance") {
+        if (request.method === "GET") {
+          const stored = store.getAppearance();
+          // No look published: no ETag either. There is nothing to revalidate,
+          // and a tag for "nothing" would let a client cache an empty mailbox
+          // past the moment somebody fills it.
+          if (!stored) {
+            writeJson(response, 200, { appearance: null, updatedAt: null });
+            return;
+          }
+          const etag = appearanceEtag(stored.updatedAt);
+          if (matchesEtag(request.headers["if-none-match"], etag)) {
+            response.writeHead(304, { etag, "cache-control": "no-store" });
+            response.end();
+            return;
+          }
+          writeJson(response, 200, { appearance: stored.blob, updatedAt: stored.updatedAt }, { etag });
+          return;
+        }
+        if (request.method === "PUT") {
+          // THE BODY IS THE BLOB ITSELF, not a wrapper around it. A snapshot of
+          // a browser's whole resolved look has no partial form worth
+          // expressing, so there is nothing for an envelope to carry.
+          const written = store.setAppearance(await appearanceBody(request));
+          writeJson(response, 200, { ok: true, updatedAt: written.updatedAt, etag: appearanceEtag(written.updatedAt) }, { etag: appearanceEtag(written.updatedAt) });
+          return;
+        }
+        if (request.method === "DELETE") {
+          store.clearAppearance();
+          writeJson(response, 200, { ok: true });
+          return;
+        }
+        // 405, NOT 404. Falling through to the catch-all told a client that
+        // POSTs here that the route does not exist — sending it looking for a
+        // typo in the path rather than at the verb it chose. Written here
+        // rather than thrown so `Allow` can say what would have worked, which
+        // is the whole point of answering 405 instead of 404.
+        writeJson(
+          response,
+          405,
+          { error: { code: "invalid_request", message: "appearance accepts GET, PUT and DELETE" } },
+          { allow: "GET, PUT, DELETE" },
+        );
         return;
       }
       /**
@@ -1454,6 +1889,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * The project's icon, as bytes. The ONE binary GET this daemon serves:
+       * `Project.icon` on the list is the cache key, this is the image behind
+       * it. Immutable because the key changes whenever the file does — the
+       * `?v=` a client appends is never read here, it exists to bust the
+       * browser cache.
+       */
+      const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
+      if (request.method === "GET" && projectIcon) {
+        const icon = store.projectIconFile(decodeURIComponent(projectIcon[1]));
+        const bytes = await fs.promises.readFile(icon.path);
+        response.writeHead(200, {
+          "content-type": icon.contentType,
+          "content-length": bytes.byteLength,
+          "cache-control": "public, max-age=31536000, immutable",
+          etag: `"${icon.etag}"`,
+        });
+        response.end(bytes);
+        return;
+      }
+      /**
        * A project's issues and pull requests.
        *
        * `?refresh=1` IS THE ONLY WAY PAST THE CACHE, and the surface sends it
@@ -1818,6 +2273,41 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { result, providerInstances, probes: await probeProviders(providerInstances, { force: true }) });
         return;
       }
+      /**
+       * ONE LOGIN'S CURATED MODEL LIST — starred, hidden, ordered, and the ids
+       * somebody added because the installed CLI does not publish them yet.
+       *
+       * NOT ON `/v2/provider-instances/:id`. That PUT is the login's
+       * configuration — the folder, the binary, the environment — and it is read
+       * on every session claim. This is a chatty preference document where a
+       * reorder is a burst of writes, and it belongs behind its own verb in its
+       * own file, the same way the provider secrets do.
+       *
+       * DELIBERATELY DOES NOT 404 ON AN UNCONFIGURED ID, mirroring
+       * `resolveProviderInstance`'s permissive stance: refusing would mean a
+       * session on a since-deleted instance loses its curation, which is the
+       * wrong way round.
+       */
+      const modelOverlay = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)\/models$/.exec(url.pathname);
+      if (modelOverlay && (request.method === "GET" || request.method === "PATCH")) {
+        const id = decodeURIComponent(modelOverlay[1]);
+        if (request.method === "GET") {
+          writeJson(response, 200, { overlay: store.getModelOverlay(id) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          overlay: store.setModelOverlay(id, {
+            // Presence, not truthiness — `[]` is "I cleared this list" and is a
+            // different request from "I did not touch it".
+            ...("favorites" in input ? { favorites: input.favorites } : {}),
+            ...("hidden" in input ? { hidden: input.hidden } : {}),
+            ...("order" in input ? { order: input.order } : {}),
+            ...("custom" in input ? { custom: input.custom } : {}),
+          }),
+        });
+        return;
+      }
       const providerInstance = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);
       if (providerInstance && (request.method === "PUT" || request.method === "DELETE")) {
         const id = decodeURIComponent(providerInstance[1]);
@@ -1888,6 +2378,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...(typeof input.detached === "boolean" ? { detached: input.detached } : {}),
             ...(input.envMode === "worktree" || input.envMode === "local" ? { envMode: input.envMode } : {}),
             ...(typeof input.branchSlug === "string" ? { branchSlug: input.branchSlug } : {}),
+            // The base-ref picker's two knobs. Validated in the store and in
+            // worktree.ts, for the same one-wall reason as `driver` below.
+            ...(typeof input.baseRef === "string" ? { baseRef: input.baseRef } : {}),
+            ...(typeof input.branchName === "string" ? { branchName: input.branchName } : {}),
             // Validated in the store rather than here, so the HTTP surface and
             // any in-process caller reject the same set of drivers.
             ...(typeof input.driver === "string" ? { driver: input.driver as "claude" | "codex" } : {}),
@@ -1935,6 +2429,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             heartbeatAt: worker.heartbeatAt,
             cancel: store.cancellationsForWorker(workerId),
             resolved: store.resolutionsForWorker(workerId),
+            steer: store.steerForWorker(workerId),
           };
           writeJson(response, 200, status);
         } else {
@@ -1955,10 +2450,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { turn: store.discardAmbiguousTurn(turn.sessionId, turn.runId) });
           return;
         }
+        // A HUMAN gesture like discard, so no claim token: send this queued
+        // message into the running turn.
+        if (turn.action === "promote") {
+          await body(request);
+          writeJson(response, 200, { turn: store.promoteTurn(turn.sessionId, turn.runId) });
+          return;
+        }
         const input = await body(request);
         const claimToken = stringValue(input.claimToken, "claim token")!;
         if (turn.action === "running") {
           writeJson(response, 200, { turn: store.markRunning(turn.sessionId, turn.runId, claimToken) });
+        } else if (turn.action === "steer-ack") {
+          // The runId in the path is the PROMOTED turn; the claim token proves
+          // the worker holds the running turn it was steered into.
+          writeJson(response, 200, { turn: store.ackSteer(turn.sessionId, turn.runId, claimToken) });
         } else if (turn.action === "request") {
           const parsed = RequestOpenInput.safeParse(input);
           if (!parsed.success) throw new HttpError(400, "invalid_request", "request payload is invalid");
@@ -2146,6 +2652,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           const result: TurnSubmissionResult = accepted;
           writeJson(response, accepted.replayed ? 200 : 202, result);
+          /**
+           * THE FIRST TURN ALSO NAMES THE SESSION. Sequence 1 is the moment
+           * both placeholders exist — the truncated-message title and the
+           * branch slugged from it — and the only moment worth a model call:
+           * a session that already has a real name keeps it (`titleIsSeed`).
+           * After the response and unawaited, because a title is never worth
+           * a millisecond of turn latency, let alone a failure.
+           */
+          if (!accepted.replayed && accepted.turn.sequence === 1) {
+            void maybeRetitleSession(store, session.sessionId, accepted.turn.input);
+          }
           return;
         }
         if (request.method === "PATCH" && session.tail === "") {
@@ -2193,7 +2710,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       throw new HttpError(404, "not_found", "engine endpoint does not exist");
     } catch (error) {
       const normalized = errorFor(error);
-      writeJson(response, normalized.status, { error: { code: normalized.code, message: normalized.message } });
+      writeJson(
+        response,
+        normalized.status,
+        { error: { code: normalized.code, message: normalized.message } },
+        normalized.endConnection ? { connection: "close" } : {},
+      );
     }
   });
 

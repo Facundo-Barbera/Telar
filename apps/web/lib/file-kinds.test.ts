@@ -69,12 +69,13 @@ describe("fileKind", () => {
     }
   });
 
-  test("tints name a colour for BOTH themes, or the panel's own token", () => {
-    // A single 400-level colour is washed out on the light canvas and a 600 is
-    // muddy on dark, so every palette tint has to carry both halves. The one
-    // exception is the default, which is a semantic token and themes itself.
+  test("every tint is a token, so a theme can move it", () => {
+    // These were `text-sky-600 dark:text-sky-400` pairs — a fixed sRGB value
+    // that no theme can reach, spelled twice because one ramp step cannot
+    // serve both canvases. `--tint-*` flips with the scheme by itself, so the
+    // `dark:` half is not merely unnecessary here: its absence is the point.
     for (const path of ["a.ts", "a.py", "a.rs", "package.json", "a.css"]) {
-      expect(fileKind(path).tint, path).toContain("dark:");
+      expect(fileKind(path).tint, path).toMatch(/^text-tint-[a-z]+$/);
     }
     expect(fileKind("mystery.qqq").tint).toBe("text-muted-foreground");
   });

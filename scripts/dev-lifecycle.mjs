@@ -79,13 +79,46 @@ export function describeWebExposure(host, port) {
   return `The cockpit is listening on ${host}:${port}, reachable by ${reach}. It has no login, and sessions run tools without asking by default — treat this port as a shell on this machine.`;
 }
 
+/**
+ * The louder sibling of `describeWebExposure`, aware of the two facts that
+ * change the story: TAILSCALE SERVE COUNTS AS REACHABILITY EVEN ON A LOOPBACK
+ * BIND (serve proxies the tailnet straight to 127.0.0.1 — inferring posture
+ * from the bind host alone is the mistake t3code ships), and pairing auth is
+ * what retires the warning. Returned, not printed, like its sibling.
+ */
+export function describeRemotePosture({ host, port, serveRequested = false, requireAuth = false }) {
+  const remotelyReachable = !isLoopbackHost(host) || serveRequested;
+  if (!remotelyReachable) return null;
+  if (requireAuth) return null;
+  const via = isLoopbackHost(host)
+    ? `via Tailscale Serve (the bind is loopback, but the tailnet is proxied to it)`
+    : `on ${host}:${port}`;
+  return `The cockpit is remotely reachable ${via} with pairing OFF. Enable "Require pairing" in Settings → Remote access, or treat this port as a shell on this machine.`;
+}
+
+/**
+ * WHERE TO CONNECT, WHICH IS NOT WHERE WE BIND.
+ *
+ * A wildcard is an instruction to the listener — "every interface" — and it is
+ * not an address anything can dial. Handing `http://0.0.0.0:3100/` to the
+ * desktop shell sent it to an ORIGIN it had never paired on, so the gate saw
+ * an unpaired caller, bounced it to /pair, and the window showed "this link is
+ * missing its pairing code" on the very machine running the server.
+ *
+ * Pairing is per-origin by design (the Remote access panel says so: a tailnet
+ * IP and a ts.net name are different origins). So the wildcard collapses to
+ * loopback here — the host's own window keeps the origin it already trusts,
+ * while the socket stays open to everything else.
+ */
 export function cockpitUrl(port, host = DEFAULT_WEB_HOST) {
+  const dialable = host === "0.0.0.0" ? "127.0.0.1" : host === "::" || host === "[::]" ? "::1" : host;
   // A bare IPv6 address needs brackets to be a URL authority at all.
-  const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const authority = dialable.includes(":") && !dialable.startsWith("[") ? `[${dialable}]` : dialable;
   return `http://${authority}:${port}/`;
 }
 
-/** Make Next bind to the same deterministic host and port advertised to the desktop. */
+/** Make Next bind where it was told to. The address the DESKTOP dials is
+ *  `cockpitUrl`, which is a different question — see its note. */
 export function webDevCommand(port, host = DEFAULT_WEB_HOST) {
   return {
     label: "web",

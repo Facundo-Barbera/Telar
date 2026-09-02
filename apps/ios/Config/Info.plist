@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Tailscale 100.x addresses over plain http are NOT "local networking"
+	     to ATS, so the blanket exception is required. Upgrade path: run
+	     `tailscale serve` on the Mac for a real *.ts.net HTTPS cert, point the
+	     app at that hostname, and delete this key. -->
+	<!-- ATS cannot whitelist a bare 100.x IP via NSExceptionDomains, so this
+	     stays until the ts.net HTTPS endpoint is the ONLY supported address. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Telar scans the pairing code shown in the cockpit's Remote access settings.</string>
+	<!-- Dialing the Mac by its LAN address (the "Local network" pairing QR)
+	     is local networking to iOS; without this key the connection is
+	     silently refused — a fresh install fails with a bare transport error.
+	     Tailnet 100.x traffic rides the VPN interface and never needs it. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Telar talks to the cockpit on your Mac over your local network when you pair by its LAN address.</string>
+	<!-- Standard HTTPS only — answers TestFlight's export-compliance question
+	     once, instead of a form on every nightly upload. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

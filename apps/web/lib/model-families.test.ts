@@ -20,6 +20,9 @@ import {
   stripWindow,
   windowSuffix,
   windowsOf,
+  visibleModels,
+  familyFavorites,
+  toggleFamilyFavorite,
 } from "./model-families";
 import { splitGenerations } from "./model-generations";
 import { keepStarredVisible } from "./model-favorites";
@@ -29,6 +32,10 @@ const model = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel =>
   label: id,
   isDefault: false,
   hidden: false,
+  // The reader's own hide, which is a different question from the provider's
+  // `hidden` above — see `ProviderModel` in the contract.
+  hiddenByUser: false,
+  source: "provider",
   efforts: [],
   fastMode: false,
   ...extra,
@@ -69,6 +76,35 @@ describe("familyKey", () => {
   test("a model with no alias is its own family", () => {
     // Every Codex row. Nothing to strip, nothing to resolve.
     expect(familyKey(model("gpt-5.6-sol"))).toBe("gpt-5.6-sol");
+  });
+
+  test("a point release is its OWN family, not a build of the last one", () => {
+    // Fable 5.1: `-5-1` is a version, not an 8-digit dated build — the strip
+    // must not eat it, or 5.1 and 5 fold into one row and the picker can't
+    // say which you'd run.
+    expect(familyKey(model("claude-fable-5-1[1m]", { resolves: "claude-fable-5-1[1m]" }))).toBe("claude-fable-5-1");
+    expect(familyKey(model("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]" }))).toBe("claude-fable-5");
+  });
+});
+
+describe("a new point release arrives (Fable 5.1)", () => {
+  const withFable51 = [
+    ...CLAUDE,
+    model("claude-fable-5-1[1m]", {
+      label: "Fable",
+      efforts: ["low", "medium", "high", "xhigh", "max"],
+      resolves: "claude-fable-5-1[1m]",
+    }),
+  ];
+
+  test("it lists beside Fable 5 with its own versioned label, filed as current", () => {
+    const families = groupFamilies(withFable51);
+    const labels = new Map(families.map((family) => [family.id, family.label]));
+    expect(labels.get("claude-fable-5")).toBe("Fable 5");
+    expect(labels.get("claude-fable-5-1")).toBe("Fable 5.1");
+    const { current, legacy } = splitGenerations(families);
+    expect(current.map((family) => family.id)).toContain("claude-fable-5-1");
+    expect(legacy.map((family) => family.id)).not.toContain("claude-fable-5-1");
   });
 });
 
@@ -217,5 +253,75 @@ describe("what the fold does to the generation split", () => {
     const split = keepStarredVisible(splitGenerations(groupFamilies(CLAUDE)), new Set(["claude-haiku-4-5"]));
     expect(split.current.map((family) => family.id)).toContain("claude-haiku-4-5");
     expect(split.legacy).toEqual([]);
+  });
+});
+
+describe("what a menu lists once somebody has curated it", () => {
+  test("a row the reader hid is gone", () => {
+    const models = [model("sonnet"), model("opus[1m]", { hiddenByUser: true })];
+    expect(visibleModels(models, undefined).map((row) => row.id)).toEqual(["sonnet"]);
+  });
+
+  test("EXCEPT the one running right now — hiding must not rewrite a session", () => {
+    const models = [model("sonnet"), model("opus[1m]", { hiddenByUser: true })];
+    expect(visibleModels(models, "opus[1m]").map((row) => row.id)).toEqual(["sonnet", "opus[1m]"]);
+  });
+
+  test("the running model is matched by its wire id too", () => {
+    // A session may carry `claude-sonnet-5` where the catalogue lists `sonnet`.
+    const models = [model("sonnet", { hiddenByUser: true, resolves: "claude-sonnet-5" })];
+    expect(visibleModels(models, "claude-sonnet-5").map((row) => row.id)).toEqual(["sonnet"]);
+  });
+
+  test("a family whose every row is hidden never gets built", () => {
+    const models = [
+      model("sonnet", { hiddenByUser: true, resolves: "claude-sonnet-5" }),
+      model("sonnet[1m]", { hiddenByUser: true, resolves: "claude-sonnet-5[1m]" }),
+      model("opus[1m]", { resolves: "claude-opus-5[1m]" }),
+    ];
+    expect(groupFamilies(visibleModels(models, undefined)).map((family) => family.id)).toEqual(["claude-opus-5"]);
+  });
+
+  test("hiding one window leaves the family with the other", () => {
+    // The row-level key earning its keep: `sonnet` and `sonnet[1m]` are two
+    // different things a reader may want to curate apart.
+    const models = [
+      model("sonnet", { resolves: "claude-sonnet-5" }),
+      model("sonnet[1m]", { hiddenByUser: true, resolves: "claude-sonnet-5[1m]" }),
+    ];
+    const [family] = groupFamilies(visibleModels(models, undefined));
+    expect(family!.id).toBe("claude-sonnet-5");
+    expect(windowsOf(family)).toEqual(["standard"]);
+  });
+});
+
+describe("stars, which the store keeps per ROW and the picker reads per FAMILY", () => {
+  const rows = [
+    model("sonnet", { resolves: "claude-sonnet-5" }),
+    model("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" }),
+    model("opus[1m]", { resolves: "claude-opus-5[1m]" }),
+  ];
+
+  test("a family is starred when ANY of its rows is", () => {
+    // Which is what makes a star survive switching context window — the thing
+    // the old family-keyed store got for free.
+    expect(familyFavorites(rows, new Set(["sonnet[1m]"]))).toEqual(new Set(["claude-sonnet-5"]));
+  });
+
+  test("starring a family writes EVERY row in it", () => {
+    // Half a family starred would read as starred and un-star in one press.
+    expect(toggleFamilyFavorite(rows, [], "claude-sonnet-5").sort()).toEqual(["sonnet", "sonnet[1m]"]);
+  });
+
+  test("un-starring clears every row, even from a half-starred state", () => {
+    expect(toggleFamilyFavorite(rows, ["sonnet"], "claude-sonnet-5")).toEqual([]);
+  });
+
+  test("other families are left alone", () => {
+    expect(toggleFamilyFavorite(rows, ["opus[1m]"], "claude-sonnet-5").sort()).toEqual(["opus[1m]", "sonnet", "sonnet[1m]"]);
+  });
+
+  test("a family this catalogue does not have changes nothing", () => {
+    expect(toggleFamilyFavorite(rows, ["opus[1m]"], "claude-gone-9")).toEqual(["opus[1m]"]);
   });
 });
