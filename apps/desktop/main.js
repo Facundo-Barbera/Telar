@@ -642,26 +642,6 @@ function createWindow(url) {
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
   });
-  /**
-   * TRANSPARENT WINDOWS KEEP STALE PIXELS WHERE NOTHING REPAINTED. The
-   * compositor only swaps DAMAGED rects; on an opaque window the undamaged
-   * rest already matches, but on a transparent one it still holds the LAST
-   * route's opaque pixels — navigate a session to Settings and the session
-   * ghosts through every region Settings left alpha. `invalidate()` marks the
-   * whole surface damaged, forcing one full swap. Client-side route changes
-   * surface as `did-navigate-in-page`; the second pass catches what React
-   * painted after the first.
-   */
-  if (translucent) {
-    const fullRepaint = () => {
-      if (!win.isDestroyed()) win.webContents.invalidate();
-    };
-    win.webContents.on("did-navigate-in-page", () => {
-      fullRepaint();
-      setTimeout(fullRepaint, 300);
-    });
-    win.webContents.on("did-finish-load", fullRepaint);
-  }
   win.on("closed", () => {
     manager.destroy();
     if (browserManager === manager) browserManager = null;
@@ -971,6 +951,15 @@ function supportsTranslucency() {
  * pixel — and a window BUILT translucent can toggle both ways live.
  */
 function applyTranslucency(on, frost) {
+  // Turning ON from a GPU-composited launch cannot be done in-place: the
+  // whole app has to come back up on software compositing (see the note at
+  // Main), or every alpha region shows recycled, uncleared GPU surfaces.
+  if (on && !softwareCompositing) {
+    app.relaunch();
+    app.isQuitting = true;
+    app.quit();
+    return;
+  }
   const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
   if (on && wins.some((win) => !win.telarTranslucentCapable)) {
     recreateWindowTranslucent(wins[0]);
@@ -1307,6 +1296,23 @@ async function runSmoke() {
 }
 
 // --- Main --------------------------------------------------------------------
+
+/**
+ * TRANSLUCENCY RUNS ON SOFTWARE COMPOSITING. GPU-composited transparent
+ * windows on macOS recycle IOSurfaces without clearing them, so alpha regions
+ * show STALE PIXELS — the previous route, a previous window, even another
+ * app's frames. (webContents.invalidate() is not a fix: it is offscreen-only.)
+ * Software compositing clears every frame in full. The price is GPU raster for
+ * this window and the agent-browser views — acceptable for the mode, and paid
+ * only while the preference is on. It cannot flip at runtime, so turning the
+ * toggle ON from a GPU launch RELAUNCHES the app (applyTranslucency); turning
+ * it OFF stays live and the GPU comes back at the next start.
+ */
+const softwareCompositing = supportsTranslucency() && readUiPrefs().translucent;
+if (softwareCompositing) {
+  app.disableHardwareAcceleration();
+}
+
 if (SMOKE) {
   // Never take the single-instance lock or create a window in smoke mode.
   app.on("window-all-closed", () => {}); // no-op; there are no windows
