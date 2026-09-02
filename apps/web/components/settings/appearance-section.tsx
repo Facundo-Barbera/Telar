@@ -247,7 +247,7 @@ export function AppearanceSection() {
         <SettingsGroup title="Window" description="Desktop app only.">
           <ToggleRow
             label="Translucency"
-            hint="The desktop shows through the canvas and the sidebar; cards and text stay opaque. Turning it on relaunches Telar — transparent windows need a different compositing mode, decided at launch."
+            hint="The desktop shows through the canvas and the sidebar; cards and text stay opaque. Turning it on rebuilds the window — transparency is decided when a window is created."
             checked={appearance.translucent}
             onCheckedChange={setTranslucent}
           />

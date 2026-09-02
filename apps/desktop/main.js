@@ -966,15 +966,6 @@ function supportsTranslucency() {
  * pixel — and a window BUILT translucent can toggle both ways live.
  */
 function applyTranslucency(on, frost) {
-  // Turning ON from a GPU-composited launch cannot be done in-place: the
-  // whole app has to come back up on software compositing (see the note at
-  // Main), or every alpha region shows recycled, uncleared GPU surfaces.
-  if (on && !softwareCompositing) {
-    app.relaunch();
-    app.isQuitting = true;
-    app.quit();
-    return;
-  }
   const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
   if (on && wins.some((win) => !win.telarTranslucentCapable)) {
     recreateWindowTranslucent(wins[0]);
@@ -1314,22 +1305,16 @@ async function runSmoke() {
 // --- Main --------------------------------------------------------------------
 
 /**
- * TRANSLUCENCY RUNS ON SOFTWARE COMPOSITING. GPU-composited transparent
- * windows on macOS recycle IOSurfaces without clearing them, so alpha regions
- * show STALE PIXELS — the previous route, a previous window, even another
- * app's frames. (webContents.invalidate() is not a fix: it is offscreen-only.)
- * Software compositing clears every frame in full. The price is GPU raster for
- * this window and the agent-browser views — acceptable for the mode, and paid
- * only while the preference is on. It cannot flip at runtime, so turning the
- * toggle ON from a GPU launch RELAUNCHES the app (applyTranslucency); turning
- * it OFF stays live and the GPU comes back at the next start.
+ * TRANSLUCENCY STAYS ON THE GPU. An earlier cut ran it on software
+ * compositing to beat ghosting — but the ghosting's real cause was the window
+ * never being MARKED transparent (`transparent: true` in createWindow), and
+ * once that landed the CPU path only bought a new bug: a large transparent
+ * window redisplaying on focus takes long enough in software that macOS shows
+ * a bad frame first — the activation flicker. What survives of that era is
+ * the occlusion switch: Chromium stops drawing a fully-covered window and
+ * evicts its frame, and a transparent window shows the eviction on refocus.
  */
-const softwareCompositing = supportsTranslucency() && readUiPrefs().translucent;
-if (softwareCompositing) {
-  app.disableHardwareAcceleration();
-  // Chromium stops drawing an occluded window and evicts its frame; on
-  // refocus a TRANSPARENT window shows through for the beat before the fresh
-  // frame lands — the alt-tab flicker. Keep occluded windows rendering.
+if (supportsTranslucency() && readUiPrefs().translucent) {
   app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 }
 
