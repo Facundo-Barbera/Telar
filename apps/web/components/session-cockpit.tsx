@@ -168,7 +168,11 @@ function SessionMasthead({
        row at every width. */
     <header
       className={cn(
-        "app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
+        // `app-ground`: the masthead is the top of the canvas, and it used to
+        // go see-through only because the wash rules happened to match the
+        // string `bg-background/65`. The opt-in is a class now, not a class
+        // name — see the translucency note in globals.css.
+        "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
         mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
       )}
     >

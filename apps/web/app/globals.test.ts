@@ -27,6 +27,10 @@ import { fileURLToPath } from "node:url";
 // does not carry Bun's types, and the URL form is standard and typed.
 const here = fileURLToPath(new URL(".", import.meta.url));
 const css = fs.readFileSync(path.join(here, "globals.css"), "utf8");
+/** The same file with `/* … *␘/` stripped — the stylesheet argues for itself at
+ *  length, and a rule quoted in prose is not a rule. Anything asserting about
+ *  what the browser SEES reads this rather than `css`. */
+const code = css.replaceAll(/\/\*[\s\S]*?\*\//g, "");
 
 /** The declarations inside a top-level block whose selector is `selector`. */
 function block(selector: string): string {
@@ -86,10 +90,71 @@ describe("the design token palette", () => {
     // A token bridged into @theme is used by utilities in BOTH themes, so a
     // value that only exists in :root silently keeps its light value on a dark
     // surface. `--ring` is excluded: it aliases --primary in both blocks.
-    const bridged = [...theme.matchAll(/--color-[a-z0-9-]+:\s*var\((--[a-z0-9-]+)\)/g)].map((match) => match[1]);
+    //
+    // `var(--x-wash, var(--x))` is the wash indirection (see @theme's note on
+    // --color-sidebar): the FALLBACK is the themed token and the one that has
+    // to exist in both blocks, so the pattern reaches past the override name.
+    const bridged = [...theme.matchAll(/--color-[a-z0-9-]+:\s*var\(\s*(--[a-z0-9-]+)(?:\s*,\s*var\(\s*(--[a-z0-9-]+)\s*\))?/g)].map(
+      (match) => match[2] ?? match[1],
+    );
     expect(bridged.length).toBeGreaterThan(20);
+    expect(bridged, "the wash indirection must still bridge the themed token").toContain("--sidebar");
     const missing = bridged.filter((token) => rootTokens.has(token) && !darkTokens.has(token));
     expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * THE WASH THINS GROUNDS AND NEVER RETINTS A MARK.
+ *
+ * The long note beside the translucency rules in globals.css argues this out;
+ * these are the two halves of it that a future edit could quietly undo, so
+ * they are assertions rather than prose.
+ */
+describe("the translucency wash", () => {
+  /** Every declaration inside a rule whose selector mentions the wash gate. */
+  const washBlocks = [...code.matchAll(/(:is\(\[data-telar-shell\]\[data-translucent\], \[data-backdrop\]\)[^{]*)\{([^}]*)\}/g)];
+
+  test("gates on both attributes, and there is more than one rule doing it", () => {
+    expect(washBlocks.length).toBeGreaterThan(1);
+  });
+
+  test("never redefines a token every call site also reads at partial alpha", () => {
+    // `bg-muted/25` compiles to a mix against transparent, so alpha on the
+    // TOKEN multiplies rather than replaces: a 72%-alpha --muted lands those
+    // elements at 18% and they vanish over a backdrop. The same class string
+    // renders on a page with no scene, where /25 means what it says — so the
+    // token is the thing that must not move. --sidebar is the exception and
+    // moves through `--sidebar-wash`, which no utility reads directly.
+    const forbidden = ["--muted", "--accent", "--sidebar-accent", "--sidebar", "--card", "--popover", "--secondary"];
+    const offenders: string[] = [];
+    for (const [, , body] of washBlocks) {
+      for (const [, token] of body.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)) {
+        if (forbidden.includes(token)) offenders.push(token);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("the see-through opt-in is a class, never a utility's class name", () => {
+    // Matching `.bg-background\/80` made "is this a ground?" a question about
+    // the string a component typed, and it stripped the fill off four real
+    // components in components/composer.tsx that merely wanted 80%.
+    expect(code).not.toMatch(/\.bg-background\\\//);
+    const optIn = washBlocks.find(([, selector]) => selector.includes("app-ground"));
+    expect(optIn, "a rule must still make .app-ground transparent").toBeDefined();
+    expect(optIn?.[2]).toContain("background-color: transparent");
+  });
+});
+
+describe("the backdrop layer", () => {
+  test("the root carries its own background, so the wash paints ABOVE the scene", () => {
+    // Without this, body's background PROPAGATES to the canvas, which is
+    // painted below a `z-index: -1` descendant — putting the translucency wash
+    // underneath the very wallpaper it exists to tint. Scoped to
+    // [data-backdrop] so the shell's vibrancy still gets propagation.
+    expect(code).toMatch(/\n\[data-backdrop\]\s*\{[^}]*background-color:\s*var\(--background\)/);
+    expect(code).toMatch(/z-index:\s*-1/);
   });
 });
 

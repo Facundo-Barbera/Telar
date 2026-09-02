@@ -3458,8 +3458,12 @@ export function SpoolStance({ initialItem }: { initialItem?: string }) {
        The layering now comes from real surfaces: the side columns step to the
        rail token (`bg-sidebar`, a legible step in BOTH schemes) behind their
        hairlines, and the stance's content stands on its own card sheet. Hue
-       still stays on icons; the room still says so with a mark. */
-    <div className="relative flex h-dvh flex-col bg-background">
+       still stays on icons; the room still says so with a mark.
+
+       `app-ground` because that canvas is a GROUND: this is the room's own
+       full-height sheet, and a backdrop has to show through it exactly as it
+       shows through the cockpit's. */
+    <div className="app-ground relative flex h-dvh flex-col bg-background">
       <SpoolHeader description="Where you left off, what moved, and what needs you." />
       {/* THE LAYER'S SUMMONING DOOR — §13.6. Rendered outside `SpoolHeader`'s
           own props on purpose: that component has no `actions` slot by

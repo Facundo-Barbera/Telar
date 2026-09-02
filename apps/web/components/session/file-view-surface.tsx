@@ -359,11 +359,18 @@ export function FileViewSurface({
              * would slide away horizontally. Sticky-left in the same scroll box
              * gives both, and keeps `select-none` doing its job — the numbers are
              * chrome and must never end up in a copied selection.
+             *
+             * `app-ground` because the gutter IS this surface's canvas — the
+             * viewer itself paints no background, so over a backdrop an opaque
+             * strip of --background was the one thing in the pane that did not
+             * go glassy. The blur comes with it and is not decoration: the
+             * gutter's whole job while the code is scrolled sideways is to stop
+             * the line it is covering from being read through it.
              */}
             <div
               aria-hidden
               className={cn(
-                "sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums",
+                "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
                 CODE_GEOMETRY,
               )}
             >

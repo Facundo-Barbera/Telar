@@ -46,7 +46,10 @@ export function PairClient() {
   }, [router]);
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-background text-foreground">
+    /* `app-ground`: this page's own full-height canvas. Without the opt-in a
+       backdrop stopped at its edges — the app went glassy and the pairing
+       screen stayed a solid sheet of --background over the scene. */
+    <main className="app-ground flex min-h-dvh items-center justify-center bg-background text-foreground">
       <div className="flex flex-col items-center gap-3 rounded-2xl border border-border/60 px-10 py-8">
         <div className="text-lg font-medium">Telar</div>
         {state.phase === "pairing" && <p className="text-sm text-muted-foreground">Pairing this browser…</p>}
