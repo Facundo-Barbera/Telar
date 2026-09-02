@@ -9,9 +9,16 @@
 
 import { useEffect } from "react";
 import { applyAppearance, useAppearance } from "@/lib/appearance";
+import { applyThemeCss, useThemeLibrary } from "@/lib/theme-palettes";
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
   const { appearance } = useAppearance();
+  const { activeId, themes } = useThemeLibrary();
   useEffect(() => applyAppearance(appearance), [appearance]);
+  // The theme library writes its compiled stylesheet to localStorage; this
+  // keeps the injected <style id="telar-theme"> tracking it after the init
+  // script's one shot — on switches AND on edits to the active theme (the
+  // hook re-renders for both, and applyThemeCss no-ops when unchanged).
+  useEffect(() => applyThemeCss(), [activeId, themes]);
   return children;
 }

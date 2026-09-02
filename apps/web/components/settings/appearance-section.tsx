@@ -23,6 +23,7 @@ import { ThemeControl } from "@/components/theme-control";
 import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { ThemeLibrary } from "./theme-library";
 
 const ACCENT_LABEL: Record<Accent, string> = {
   indigo: "Indigo",
@@ -123,6 +124,8 @@ export function AppearanceSection() {
           control={<AccentSwatches value={appearance.accent} onChange={(accent) => setAppearance({ accent })} />}
         />
       </SettingsGroup>
+
+      <ThemeLibrary />
 
       <SettingsGroup title="Type">
         <Row

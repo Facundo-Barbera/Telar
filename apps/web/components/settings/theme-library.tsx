@@ -1,0 +1,250 @@
+"use client";
+
+/**
+ * THE THEME LIBRARY — t3 code's theme settings, on Telar's model.
+ *
+ * A grid of cards, one per theme; each card carries two preview orbs (the
+ * light and dark halves, painted from the theme's own canvas/chip/rail
+ * values) and clicking the card wears the theme. Built-ins can be duplicated
+ * into custom themes; custom themes get an inline editor (one colour row per
+ * surface token, per half), export to a JSON file, and delete. Import reads
+ * the same file back.
+ *
+ * Themes own the SURFACES; the accent row above owns --primary. That split is
+ * stated in lib/theme-palettes.ts and it is why this pane has no "action
+ * colour" — choosing Ember and then rose is supposed to compose.
+ */
+
+import { useRef, useState } from "react";
+import { CheckIcon, CopyIcon, DownloadIcon, PenLineIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import {
+  concreteHalf,
+  cssColorToHex,
+  hexToCssColor,
+  serializeTheme,
+  THEME_TOKEN_LABELS,
+  THEME_TOKENS,
+  useThemeLibrary,
+  type ThemeDefinition,
+  type ThemeToken,
+} from "@/lib/theme-palettes";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Row, Segmented, SettingsGroup } from "./settings-shell";
+
+/** The orb: the theme's canvas with its chip and rail breathing at the edges
+ *  — enough to tell Ember from Tide at a glance, like t3's preview circles. */
+function ThemeOrb({ theme, mode }: { theme: ThemeDefinition; mode: "light" | "dark" }) {
+  const half = concreteHalf(theme, mode);
+  return (
+    <span
+      aria-hidden
+      className="size-9 shrink-0 rounded-full ring-1 ring-foreground/15"
+      style={{
+        background: `radial-gradient(circle at 30% 70%, ${half.secondary} 0%, transparent 55%), radial-gradient(circle at 72% 25%, ${half["sidebar-accent"]} 0%, transparent 60%), ${half.background}`,
+      }}
+    />
+  );
+}
+
+function downloadFile(filename: string, contents: string): void {
+  const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  // Revoking synchronously can abort the download; give the stream a moment.
+  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+function ThemeCard({
+  theme,
+  active,
+  onUse,
+  onDuplicate,
+  onEdit,
+  onExport,
+  onRemove,
+}: {
+  theme: ThemeDefinition;
+  active: boolean;
+  onUse: () => void;
+  onDuplicate: () => void;
+  onEdit?: () => void;
+  onExport?: () => void;
+  onRemove?: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex cursor-pointer items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
+        active && "ring-2 ring-primary",
+      )}
+      onClick={onUse}
+      role="button"
+      aria-pressed={active}
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onUse();
+        }
+      }}
+    >
+      <div className="flex shrink-0 -space-x-2">
+        <ThemeOrb theme={theme} mode="light" />
+        <ThemeOrb theme={theme} mode="dark" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <span className="truncate">{theme.label}</span>
+          {active && <CheckIcon className="size-3.5 shrink-0 text-primary" />}
+        </div>
+        <div className="text-[11px] text-muted-foreground">{theme.builtIn ? "Built-in" : "Custom"}</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <Button size="icon-sm" variant="ghost" title="Duplicate" aria-label={`Duplicate ${theme.label}`} onClick={(event) => (event.stopPropagation(), onDuplicate())}>
+          <CopyIcon />
+        </Button>
+        {onEdit && (
+          <Button size="icon-sm" variant="ghost" title="Edit" aria-label={`Edit ${theme.label}`} onClick={(event) => (event.stopPropagation(), onEdit())}>
+            <PenLineIcon />
+          </Button>
+        )}
+        {onExport && (
+          <Button size="icon-sm" variant="ghost" title="Export" aria-label={`Export ${theme.label}`} onClick={(event) => (event.stopPropagation(), onExport())}>
+            <DownloadIcon />
+          </Button>
+        )}
+        {onRemove && (
+          <Button size="icon-sm" variant="ghost" title="Delete" aria-label={`Delete ${theme.label}`} onClick={(event) => (event.stopPropagation(), onRemove())}>
+            <Trash2Icon />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ThemeEditor({ theme, onSave, onClose }: { theme: ThemeDefinition; onSave: (theme: ThemeDefinition) => void; onClose: () => void }) {
+  const [mode, setMode] = useState<"light" | "dark">("dark");
+  const [label, setLabel] = useState(theme.label);
+  const half = concreteHalf(theme, mode);
+
+  const commit = (token: ThemeToken, value: string) => {
+    onSave({ ...theme, label, [mode]: { ...half, [token]: value } });
+  };
+
+  return (
+    <div className="mt-3 rounded-xl bg-card ring-1 ring-foreground/10">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <Input value={label} className="h-8 w-44" aria-label="Theme name" onChange={(event) => setLabel(event.target.value)} onBlur={() => onSave({ ...theme, label })} />
+        <Segmented<"light" | "dark">
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: "light", label: "Light half" },
+            { value: "dark", label: "Dark half" },
+          ]}
+        />
+        <Button size="sm" variant="ghost" className="ml-auto" onClick={onClose}>
+          Done
+        </Button>
+      </div>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 px-4 py-3">
+        {THEME_TOKENS.map((token) => (
+          <label key={token} className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
+            <span className="flex items-center gap-1.5">
+              <code className="max-w-40 truncate font-mono text-[10px] text-muted-foreground/70">{half[token]}</code>
+              <input
+                type="color"
+                // Edits apply LIVE when this theme is the active one — the
+                // store recompiles on every write and the provider repaints.
+                value={cssColorToHex(half[token])}
+                onChange={(event) => commit(token, hexToCssColor(event.target.value))}
+                aria-label={`${THEME_TOKEN_LABELS[token]} colour (${mode})`}
+                className="size-6 cursor-pointer rounded border border-border bg-transparent p-0"
+              />
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ThemeLibrary() {
+  const { activeId, themes, setActive, saveCustom, removeCustom, duplicate, importTheme } = useThemeLibrary();
+  const [editingId, setEditingId] = useState<string>();
+  const [importError, setImportError] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const editing = themes.find((theme) => theme.id === editingId && !theme.builtIn);
+
+  return (
+    <SettingsGroup
+      title="Themes"
+      description="Surfaces — canvas, cards, chips, the rail. The accent above stays yours across every theme."
+    >
+      <Row
+        label="Library"
+        hint={importError ? "That file is not a Telar theme." : "Click a theme to wear it. Duplicate anything to make it editable; export shares it as a file."}
+        control={
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => fileInput.current?.click()}
+          >
+            <UploadIcon /> Import
+          </Button>
+        }
+      />
+      <div className="px-4 py-3">
+        <input
+          ref={fileInput}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          aria-hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            void file.text().then((raw) => {
+              const id = importTheme(raw);
+              setImportError(id === undefined);
+              if (id) setEditingId(undefined);
+            });
+          }}
+        />
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {themes.map((theme) => (
+            <ThemeCard
+              key={theme.id}
+              theme={theme}
+              active={theme.id === activeId}
+              onUse={() => setActive(theme.id)}
+              onDuplicate={() => {
+                const id = duplicate(theme.id);
+                if (id) setEditingId(id);
+              }}
+              {...(theme.builtIn
+                ? {}
+                : {
+                    onEdit: () => setEditingId(editingId === theme.id ? undefined : theme.id),
+                    onExport: () => downloadFile(`${theme.label.toLowerCase().replace(/\s+/g, "-")}.telar-theme.json`, serializeTheme(theme)),
+                    onRemove: () => {
+                      if (editingId === theme.id) setEditingId(undefined);
+                      removeCustom(theme.id);
+                    },
+                  })}
+            />
+          ))}
+        </div>
+        {editing && <ThemeEditor theme={editing} onSave={saveCustom} onClose={() => setEditingId(undefined)} />}
+      </div>
+    </SettingsGroup>
+  );
+}
