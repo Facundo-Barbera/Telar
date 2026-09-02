@@ -582,7 +582,13 @@ export function AppearanceSection() {
           </Panel>
         )}
 
-        {tab === "designer" && current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[24rem]" />}
+        {/* THE DESIGNER GETS THE ROOM A CONVERSATION NEEDS. As one panel among
+            the theme tools it was a 24rem box with a strip at the bottom; it is
+            the only tab you TALK to, so it takes the height the window has left
+            rather than a number picked to sit politely beside a colour grid. */}
+        {tab === "designer" && current && (
+          <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[calc(100dvh-var(--titlebar-height)-19rem)] min-h-[22rem]" />
+        )}
       </div>
     </div>
   );

@@ -15,11 +15,18 @@
  * the draft has become — so a mid-flight hand edit survives, and so does a
  * renamed label.
  *
- * IT IS A PANEL, in the app's own grammar (components/ui/panel.tsx): a mono
- * header naming the region, and the BUSY STATE IS THE HEADER'S TONE rather
- * than a sentence — the same way a running session reports itself. An empty
- * transcript is not dead space either: it is the one place on the pane that
- * says what the studio does, and it hands over four openings to press.
+ * IT IS A CONVERSATION, NOT A WIDGET. The transcript uses the app's own
+ * `Message`/`MessageContent` (components/ui/message.tsx) and the input is the
+ * app's own `ComposerEditor` (components/composer-editor.tsx) — the same
+ * contenteditable a session types into, with its multi-line behaviour, its
+ * Enter-to-send and Shift+Enter-for-a-newline, and its 50rem measure. It used
+ * to be a single-line `Input` in a strip, which made the one part of this pane
+ * you TALK to the least conversational surface in the app.
+ *
+ * The busy state is the header's tone rather than a sentence, the same way a
+ * running session reports itself. An empty transcript is not dead space
+ * either: it is the one place on the pane that says what the studio does, and
+ * it hands over four openings to press.
  *
  * ONE REQUEST AT A TIME, but now with a way out: Stop aborts the fetch — the
  * engine's harness may still run to completion server-side, but its answer is
@@ -30,7 +37,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { SendHorizontalIcon, SparklesIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon, SparklesIcon, SquareIcon } from "lucide-react";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { applyDesign, buildDesignPrompt, DESIGN_SCHEMA } from "@/lib/theme-designer";
 import {
@@ -45,7 +52,8 @@ import {
 } from "@/lib/studio-draft";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Message, MessageContent } from "@/components/ui/message";
+import { ComposerEditor, type ComposerEditorHandle } from "@/components/composer-editor";
 import { Panel, PanelBody, PanelHeader } from "@/components/ui/panel";
 
 const api = createEngineApi();
@@ -97,6 +105,7 @@ export function DesignerChat({
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
+  const editor = useRef<ComposerEditorHandle>(null);
   const nextId = useRef(0);
   /** The draft as it stands NOW — tracked via effect. The merge needs it
    *  because the response arrives long after the send-time closure. */
@@ -216,52 +225,62 @@ export function DesignerChat({
           </div>
         </PanelBody>
       ) : (
-        <PanelBody ref={transcript} className="flex flex-col gap-1.5 px-3 py-2.5">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-1.5">
+        <PanelBody ref={transcript} className="flex flex-col gap-5 px-4 py-4">
           {lines.map((line) => (
-            <div key={line.id} className={cn("flex", line.kind === "you" ? "justify-end" : "justify-start")}>
-              <span
-                className={cn(
-                  "max-w-[85%] rounded-lg px-2.5 py-1.5 text-xs leading-snug",
-                  line.kind === "you" && "bg-secondary text-secondary-foreground",
-                  line.kind === "studio" && "text-muted-foreground",
-                  line.kind === "trouble" && "bg-destructive/10 text-destructive",
-                )}
+            <Message key={line.id} from={line.kind === "you" ? "user" : "assistant"}>
+              <MessageContent
+                from={line.kind === "you" ? "user" : "assistant"}
+                className={cn(line.kind === "trouble" && "rounded-lg bg-destructive/10 px-3 py-2 text-destructive")}
               >
                 {line.text}
-              </span>
-            </div>
+              </MessageContent>
+            </Message>
           ))}
-          </div>
+          {busy && (
+            <Message from="assistant">
+              <MessageContent from="assistant" className="text-muted-foreground">
+                Drafting…
+              </MessageContent>
+            </Message>
+          )}
         </PanelBody>
       )}
 
-      {/* The rule spans the panel; the composer inside it keeps the transcript's
-          measure, so a wide window does not hand you a metre-long input. */}
-      <div className="shrink-0 border-t border-border px-3 py-2">
-        <div className="mx-auto flex w-full max-w-3xl items-center gap-1.5">
-        <Input
-          className="h-8"
-          value={instruction}
-          placeholder={PLACEHOLDER}
-          aria-label="Describe a change to the draft"
-          disabled={busy}
-          onChange={(event) => setInstruction(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter") return;
-            event.preventDefault();
-            void send();
-          }}
-        />
-        {busy ? (
-          <Button size="sm" variant="outline" onClick={stop} aria-label="Stop drafting">
-            <SquareIcon /> Stop
-          </Button>
-        ) : (
-          <Button size="sm" variant="outline" disabled={instruction.trim().length === 0} onClick={() => void send()}>
-            <SendHorizontalIcon /> Send
-          </Button>
-        )}
+      {/* The composer a session gets: the same editor, the same measure, the
+          same keys. Enter sends, Shift+Enter is a newline — claimed here
+          because ComposerEditor hands the key to its parent first. */}
+      <div className="shrink-0 border-t border-border px-4 py-3">
+        <div className="mx-auto w-full max-w-[50rem]">
+          <div className="flex items-end gap-2 rounded-xl border border-border bg-background p-2 focus-within:border-ring">
+            <ComposerEditor
+              ref={editor}
+              value={instruction}
+              onChange={setInstruction}
+              placeholder={PLACEHOLDER}
+              disabled={busy}
+              className="max-h-40 min-h-9 flex-1 px-1.5 py-1.5 text-sm"
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || event.shiftKey) return;
+                event.preventDefault();
+                void send();
+              }}
+            />
+            {busy ? (
+              <Button size="icon-sm" variant="outline" className="size-8 shrink-0" onClick={stop} aria-label="Stop drafting">
+                <SquareIcon />
+              </Button>
+            ) : (
+              <Button
+                size="icon-sm"
+                className="size-8 shrink-0"
+                disabled={instruction.trim().length === 0}
+                aria-label="Send"
+                onClick={() => void send()}
+              >
+                <ArrowUpIcon />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </Panel>

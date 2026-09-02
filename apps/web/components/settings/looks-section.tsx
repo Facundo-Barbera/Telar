@@ -51,6 +51,17 @@ import {
 } from "@/lib/looks";
 import { STARTER_LOOKS } from "@/lib/starter-looks";
 import { matchThemeHalf, useThemeLibrary } from "@/lib/theme-palettes";
+import { useAppearance } from "@/lib/appearance";
+import { useBackdrop, type Backdrop } from "@/lib/backdrop";
+
+/** Same scene, by the CHOICE rather than by the resolved pixels — two gradients
+ *  from one preset are the same scene even if one carries a dim the other does
+ *  not, and comparing megabytes of image data to draw a tick would be absurd. */
+function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
+  if (look.kind !== worn.kind) return false;
+  if (look.kind === "gradient" && worn.kind === "gradient") return look.id === worn.id;
+  return true;
+}
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader, PanelRow } from "@/components/ui/panel";
@@ -301,14 +312,23 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
   // the first paint and then vanishes on hydration.
   const isHost = useSyncExternalStore(subscribeToNothing, hostNow, hostOnTheServer);
   const { activeId, active, themes } = useThemeLibrary();
+  const { appearance } = useAppearance();
+  const { backdrop } = useBackdrop();
   /**
-   * WORN IS ABOUT COLOURS, NOT ABOUT AN ID. Wearing a look whose palette is
-   * already in the library now wears THAT theme rather than minting a copy
-   * (applyLook), so the id this card would have installed may never exist. The
-   * honest test is whether the window is wearing these two halves.
+   * WORN IS ABOUT WHAT THE WINDOW HAS ON, NOT ABOUT AN ID. Wearing a look whose
+   * palette is already in the library now wears THAT theme rather than minting
+   * a copy (applyLook), so the id this card would have installed may never
+   * exist and an id test would mark nothing at all.
+   *
+   * BUT A PALETTE IS NOT A LOOK. Dusk and Deep Sea are both built on Tide, so a
+   * colours-only test marked both of them worn at once — two cards claiming the
+   * one thing only one of them can be true of. A look is its palette AND its
+   * scene AND its accent, so all three have to agree.
    */
   const worn = useCallback(
     (look: Look) => {
+      if (look.accent !== appearance.accent) return false;
+      if (!sameScene(look.backdrop, backdrop)) return false;
       if (activeId === lookThemeId(look)) return true;
       const lightTheme = themes.find((theme) => theme.id === active.light);
       const darkTheme = themes.find((theme) => theme.id === active.dark);
@@ -318,7 +338,7 @@ export function LooksSection({ onOpen, onWear, openId }: { onOpen: (look: Look) 
         matchThemeHalf(look.theme.dark, [darkTheme], "dark") !== undefined
       );
     },
-    [activeId, active, themes],
+    [activeId, active, themes, appearance.accent, backdrop],
   );
   const looks = useLooks();
   // The MESSAGE, not a flag: "full", "will not fit", and "not a look file" are
