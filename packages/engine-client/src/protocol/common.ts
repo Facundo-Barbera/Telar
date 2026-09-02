@@ -777,6 +777,37 @@ export const ProviderModel = z.object({
    * a model that does not is a control that silently does nothing.
    */
   fastMode: z.boolean(),
+  /**
+   * THE PERSON WHO CONFIGURED THIS ENGINE SAID "not this one" — which is a
+   * different sentence from `hidden` above, and the two must not share a field.
+   *
+   * `hidden` is the PROVIDER withdrawing a row; this is a reader curating a menu
+   * the provider is still publishing. Conflating them would un-hide somebody's
+   * choice the moment the provider republished, and would file a curated-away
+   * model under "Legacy models" — where `splitGenerations` puts provider-hidden
+   * rows — instead of nowhere.
+   *
+   * THE ROW STILL COMES BACK, marked rather than dropped. The Models tab has to
+   * show it to offer un-hiding it, and a session already running this model must
+   * still resolve its efforts and its context window.
+   */
+  hiddenByUser: z.boolean().default(false),
+  /**
+   * WHO SAID THIS MODEL EXISTS. `provider` is every row the harness answered
+   * with; `user` is an id somebody typed into the Models tab because the
+   * installed harness does not publish it yet — a real state, and the one this
+   * overlay exists for: a model can ship, a login can be entitled to it, and the
+   * CLI can still not list it.
+   *
+   * IT IS NOT `ModelCatalogueSource`. That answers "was this catalogue asked for
+   * or guessed" for a whole list; this answers "did a person type this id" for
+   * one row, and a list can honestly be both at once.
+   *
+   * The distinction is load-bearing downstream: a user row carries no published
+   * `efforts`, so the surfaces must not strip a level the way they may for a
+   * provider row.
+   */
+  source: z.enum(["provider", "user"]).default("provider"),
 });
 export type ProviderModel = z.infer<typeof ProviderModel>;
 
@@ -792,5 +823,80 @@ export const ModelCatalogue = z.object({
   /** Why it fell back, when it did. Never invented. */
   message: z.string().min(1).optional(),
   readAt: Timestamp,
+  /**
+   * WHICH LOGIN'S VIEW THIS IS.
+   *
+   * The provider answer behind it is still keyed by driver (see
+   * apps/engine/src/models.ts, which asks the default CLI in the daemon's own
+   * cwd) — the OVERLAY is what makes this per-instance, and naming the instance
+   * here is what stops a client caching one login's curated list under
+   * another's key. When the provider read itself becomes per-instance, this
+   * field stops being only about the overlay and nothing else has to change.
+   *
+   * Optional so a catalogue stored or replayed from before this still parses.
+   */
+  instanceId: ProviderInstanceId.optional(),
 });
 export type ModelCatalogue = z.infer<typeof ModelCatalogue>;
+
+/**
+ * WHAT ONE PERSON DID TO ONE LOGIN'S MODEL LIST.
+ *
+ * FOUR FACTS, ONE DOCUMENT, KEYED BY THE PROVIDER'S OWN ROW ID — `sonnet`,
+ * `opus[1m]`, `gpt-5.6-sol`. Not by the family key the composer's picker lists
+ * (apps/web/lib/model-families.ts): a family is a way of READING a catalogue and
+ * its key moves when the provider re-points an alias, whereas a row id is the
+ * string that goes on the wire. Hiding `sonnet[1m]` while keeping `sonnet` is a
+ * thing somebody may reasonably want, and a family-keyed hide could not express
+ * it. The family view is DERIVED from the rows.
+ *
+ * KEYED BY INSTANCE AND NOT BY DRIVER, even though the provider answer behind it
+ * is driver-keyed today. Two logins of one provider can hold different
+ * entitlements, so this becomes a per-instance fact the moment the catalogue
+ * read stops using the daemon's own cwd — and retrofitting a key space is
+ * exactly the scar `ProviderInstanceId` above already refuses once.
+ *
+ * `custom` IS NOT A PREFERENCE. The other three decide what a menu SHOWS; a
+ * custom id decides what can RUN, and it is the only way to reach a model the
+ * installed CLI has not started publishing. That is why this whole document
+ * lives on the engine rather than in a browser: an id somebody added has to be
+ * runnable from a paired phone and from a session an agent started, and a
+ * per-browser copy would be a model that exists in one tab.
+ */
+export const CustomProviderModel = z.object({
+  /** The provider's own id, verbatim. Never interpreted here. */
+  id: z.string().min(1),
+  /** What to call it in the picker. Absent means the id itself — no name is
+   *  invented for a row nobody published. */
+  label: z.string().min(1).optional(),
+});
+export type CustomProviderModel = z.infer<typeof CustomProviderModel>;
+
+export const ModelOverlay = z.object({
+  instanceId: ProviderInstanceId,
+  /** Row ids to lift to the top of the menu. */
+  favorites: z.array(z.string().min(1)).default([]),
+  /** Row ids the reader curated away. Still returned by the catalogue, marked
+   *  `hiddenByUser` — see `ProviderModel`. */
+  hidden: z.array(z.string().min(1)).default([]),
+  /**
+   * The reader's own order, as row ids. A PARTIAL ORDER AND DELIBERATELY SO: ids
+   * named here lead, in this sequence; everything else follows in the provider's
+   * own order. A total order would have to be rewritten every time the provider
+   * ships a model, and until somebody rewrote it the new model would sort last —
+   * which is the opposite of what a new model wants.
+   */
+  order: z.array(z.string().min(1)).default([]),
+  custom: z.array(CustomProviderModel).default([]),
+  updatedAt: Timestamp,
+});
+export type ModelOverlay = z.infer<typeof ModelOverlay>;
+
+/** An untouched overlay. Every surface behaves exactly as it did before the
+ *  feature existed when this is what it gets. */
+export const DEFAULT_MODEL_OVERLAY: Omit<ModelOverlay, "instanceId" | "updatedAt"> = {
+  favorites: [],
+  hidden: [],
+  order: [],
+  custom: [],
+};
