@@ -429,6 +429,22 @@
   background-color: transparent;
 }
 
+/* THE HIGHLIGHT TOKENS FROST TOO. Inline code chips, hover fills and the
+   selected sidebar row all sit on --muted/--accent/--sidebar-accent — solid
+   near-white in light mode, and over a see-through canvas each one reads as a
+   sticker. 72% of the token keeps them legible while letting the glass
+   breathe through; cards, popovers and text tokens stay untouched. */
+[data-telar-shell][data-translucent] {
+  --muted: oklch(0.967 0.001 286 / 72%);
+  --accent: oklch(0.955 0.002 286 / 72%);
+  --sidebar-accent: oklch(0.945 0.003 286 / 72%);
+}
+.dark[data-telar-shell][data-translucent] {
+  --muted: oklch(0.265 0 0 / 72%);
+  --accent: oklch(0.305 0 0 / 72%);
+  --sidebar-accent: oklch(0.265 0 0 / 72%);
+}
+
 /* The user's chat bubble is a solid `bg-secondary` chip (components/ui/
    message.tsx) — near-white in light mode, and against a see-through canvas it
    reads as a headlight. Frosted instead: most of the token's colour, a little
