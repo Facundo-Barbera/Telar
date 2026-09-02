@@ -21,6 +21,7 @@ import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJourn
 import { canvasHref } from "@/lib/session-list";
 import { isSettled } from "@/lib/session-settling";
 import { useInboxPolicy } from "@/lib/inbox-policy";
+import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
@@ -548,9 +549,32 @@ export function SessionCockpit({
    * patches that instead.
    */
   const [draftDriver, setDraftDriver] = useState<ProviderDriverKind>("claude");
-  /** Where the first message will land. `local` matches the engine's own
-   *  default, so an untouched canvas creates what it says it will. */
+  /**
+   * Where the first message will land.
+   *
+   * SEEDED FROM THE STANDING PREFERENCE (Settings → General → Workspace), which
+   * is the same document the engine reads on the create path — so an untouched
+   * canvas creates what it says it will, whatever that preference says. The
+   * initial `local` is only what shows for the tick before the engine answers;
+   * `touched` is what stops a late answer from overwriting a human's pick.
+   */
   const [draftEnvMode, setDraftEnvMode] = useState<"local" | "worktree">("local");
+  const [envModeTouched, setEnvModeTouched] = useState(false);
+  const { defaults: sessionDefaults, loading: sessionDefaultsLoading } = useSessionDefaults();
+  const [seededEnvMode, setSeededEnvMode] = useState<"local" | "worktree">();
+  // A render-phase adjustment, not an effect — this app's lint enforces that
+  // for "adjust state when a value changes", and the value here is the
+  // engine's answer arriving.
+  if (!sessionDefaultsLoading && !envModeTouched && seededEnvMode !== sessionDefaults.envMode) {
+    setSeededEnvMode(sessionDefaults.envMode);
+    setDraftEnvMode(sessionDefaults.envMode);
+  }
+  /** EVERY human pick goes through here, so the seed above can never overwrite
+   *  one — including the implicit pick of choosing a base ref. */
+  const chooseEnvMode = useCallback((next: "local" | "worktree") => {
+    setEnvModeTouched(true);
+    setDraftEnvMode(next);
+  }, []);
   /** The base-ref picker's create-time choice: what a worktree is cut from,
    *  and optionally the human's own name for its branch. Only meaningful with
    *  `envMode: "worktree"` — picking a base is what flips the mode there. */
@@ -1424,14 +1448,14 @@ export function SessionCockpit({
                 onDriverChange: chooseDriver,
                 pendingModel: draftModel,
                 envMode: draftEnvMode,
-                onEnvMode: setDraftEnvMode,
+                onEnvMode: chooseEnvMode,
                 pendingBase: draftBase,
                 // Picking a base IS choosing a worktree: a base for the
                 // shared checkout would mean switching its branch, which the
                 // engine's read-only git surface refuses by construction.
                 onBase: (next: { baseRef?: string; branchName?: string }) => {
                   setDraftBase(next);
-                  if (next.baseRef || next.branchName) setDraftEnvMode("worktree");
+                  if (next.baseRef || next.branchName) chooseEnvMode("worktree");
                 },
               }
             : {})}

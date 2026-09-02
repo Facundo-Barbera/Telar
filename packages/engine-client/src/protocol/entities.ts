@@ -339,6 +339,34 @@ export type InboxPolicy = z.infer<typeof InboxPolicy>;
 export const DEFAULT_INBOX_POLICY: InboxPolicy = { autoSettleAfterHours: DEFAULT_AUTO_SETTLE_HOURS };
 
 /**
+ * WHAT A SESSION IS CREATED WITH WHEN NOBODY SAID — the standing answer to a
+ * question the composer otherwise asks on every new conversation.
+ *
+ * A SEPARATE DOCUMENT FROM `InboxPolicy`, on that schema's own instruction: a
+ * field belongs there only if it decides what the inbox shows, and this decides
+ * nothing about the list — it decides what gets built when a session starts.
+ * Same environment scope, same reason as both policies above: one engine read
+ * from the desktop shell and a browser tab must not disagree about what "new
+ * session" means.
+ *
+ * A DEFAULT, NOT A LOCK. Every caller may still say `envMode` outright and get
+ * exactly that; this only answers for the ones that don't.
+ */
+export const SessionDefaults = z.object({
+  /**
+   * `worktree` gives every new session its own checkout, so two of them can
+   * edit the same repo without colliding — the reason to make it the standing
+   * choice rather than picking it by hand each time.
+   */
+  envMode: EnvMode,
+});
+export type SessionDefaults = z.infer<typeof SessionDefaults>;
+
+/** `local` — what the engine did before this document existed, so an install
+ *  that never opens the settings page behaves exactly as it always has. */
+export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
+
+/**
  * COMPUTER USE, MEASURED — the settings page's permission readout.
  *
  * Three facts with three different fixes, which is why they are not one enum:

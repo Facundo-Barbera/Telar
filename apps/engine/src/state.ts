@@ -13,8 +13,10 @@ import {
   defaultInstanceIdForDriver,
   livenessOf,
   DEFAULT_INBOX_POLICY,
+  DEFAULT_SESSION_DEFAULTS,
   DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
+  SessionDefaults as SessionDefaultsSchema,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
@@ -47,6 +49,7 @@ import {
   type GitHubSnapshot,
   type GitignoreResult,
   type InboxPolicy,
+  type SessionDefaults,
   type TextGenPolicy,
   type ModelCatalogue,
   type SessionDiff,
@@ -201,7 +204,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, type GitRunner } from "./worktree";
+import { createSessionWorktree, defaultGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
 function requestTitle(detail: RequestDetail): string {
@@ -379,6 +382,9 @@ export type EngineStatePaths = {
   /** Who writes generated titles and branch names — see `TextGenPolicy`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   textGen: string;
+  /** What a session is created with when nobody said — see `SessionDefaults`.
+   *  Environment-scoped like `inbox`, and for the same reason. */
+  sessionDefaults: string;
   /**
    * The host cockpit's resolved look, republished for paired clients — see
    * `getAppearance`. Environment-scoped like `textGen`, but for the opposite
@@ -472,6 +478,7 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
     textGen: path.join(resolved, "text-generation.json"),
+    sessionDefaults: path.join(resolved, "session-defaults.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
@@ -1164,6 +1171,37 @@ export class EngineStore {
       }
     }
     atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });
+    return { ...next };
+  }
+
+  /**
+   * What a new session is built with when the caller didn't say.
+   *
+   * Same never-throws rule as `getInboxPolicy`, and here it matters more than
+   * anywhere: this document is read on the create path, so a file somebody
+   * hand-edited into nonsense must cost the preference and not the session.
+   */
+  getSessionDefaults(): SessionDefaults {
+    try {
+      const parsed = SessionDefaultsSchema.safeParse(readJson(this.paths.sessionDefaults));
+      return parsed.success ? parsed.data : { ...DEFAULT_SESSION_DEFAULTS };
+    } catch {
+      return { ...DEFAULT_SESSION_DEFAULTS };
+    }
+  }
+
+  /** Takes `unknown` and validates here, like the two policies above: the set
+   *  of legal modes belongs next to the schema, not spelled again in a route. */
+  setSessionDefaults(patch: { envMode?: unknown }): SessionDefaults {
+    const next: SessionDefaults = { ...this.getSessionDefaults() };
+    if (patch.envMode !== undefined) {
+      const parsed = SessionDefaultsSchema.shape.envMode.safeParse(patch.envMode);
+      if (!parsed.success) {
+        throw new EngineStateError("invalid_request", "default workspace must be local or worktree");
+      }
+      next.envMode = parsed.data;
+    }
+    atomicWrite(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -3788,7 +3826,22 @@ export class EngineStore {
     // what happens when a request opens with nobody home, and the two defaults
     // come from the contract rather than being re-picked here.
     const detached = input.detached ?? true;
-    const envMode = input.envMode ?? "local";
+    /**
+     * AN OMITTED `envMode` ASKS THE STANDING PREFERENCE, not a constant. That
+     * is what makes the setting a real default rather than a pre-ticked box:
+     * the composer, the MCP toolkit and any API caller that stays quiet all get
+     * the same answer, and one that says `worktree` outright still gets exactly
+     * that.
+     *
+     * THE PREFERENCE YIELDS ON AN UNVERSIONED PROJECT. `createSessionWorktree`
+     * refuses a directory that is not a git repo — correct for a caller who
+     * ASKED for a worktree, and wrong for one who asked for nothing and would
+     * otherwise be unable to open a session in that project at all. A stated
+     * `worktree` still throws; only the silent case falls back.
+     */
+    const envMode =
+      input.envMode ??
+      (this.getSessionDefaults().envMode === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local");
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");

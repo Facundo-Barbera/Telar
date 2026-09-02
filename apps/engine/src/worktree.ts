@@ -101,6 +101,18 @@ export function worktreesRoot(engineRoot: string): string {
 }
 
 /**
+ * Can this directory host a worktree at all?
+ *
+ * `createSessionWorktree` asks this to decide whether to THROW; the create path
+ * asks it to decide whether a standing "worktree by default" preference applies
+ * to an unversioned project. One probe, so the two answers cannot drift.
+ */
+export function isGitWorkTree(git: GitRunner, projectRoot: string): boolean {
+  const inside = git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
+  return inside.status === 0 && inside.stdout.trim() === "true";
+}
+
+/**
  * Cut a worktree for a session.
  *
  * ON A BRANCH, NOT DETACHED, which is the opposite of core's default and is
@@ -122,8 +134,7 @@ export function createSessionWorktree(
     branchName?: string;
   },
 ): { path: string; branch: string; baseRef: string } {
-  const inside = git(input.projectRoot, ["rev-parse", "--is-inside-work-tree"]);
-  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+  if (!isGitWorkTree(git, input.projectRoot)) {
     throw new WorktreeError(
       `worktree sessions need a git repository; ${input.projectRoot} is not one. Use envMode "local" for an unversioned project.`,
     );
