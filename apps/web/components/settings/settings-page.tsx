@@ -160,7 +160,17 @@ export function SettingsPage() {
   }, [load]);
 
   return (
-    <SettingsShell title="Settings" subtitle="cockpit" sections={SECTIONS} active={active} onSelect={setActive} backHref="/">
+    <SettingsShell
+      title="Settings"
+      subtitle="cockpit"
+      sections={SECTIONS}
+      active={active}
+      onSelect={setActive}
+      backHref="/"
+      // Appearance is a theme editor, not a list of rows — see `wide` in
+      // settings-shell.tsx. Every other pane keeps the reading column.
+      wide={active === "appearance"}
+    >
       {active === "appearance" && <AppearanceSection />}
 
       {active === "sessions" && (

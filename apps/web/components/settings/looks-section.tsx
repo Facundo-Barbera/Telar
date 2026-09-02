@@ -9,10 +9,17 @@
  * is in the bundle and, just as importantly, why the desktop translucency
  * TOGGLE is not).
  *
- * IT SITS FIRST, DIRECTLY UNDER THE THEME GROUP, because a Look is the
- * biggest unit on the pane: someone arriving to change how the app feels
- * should be offered the whole answer before the parts of it. Everything below
- * — themes, the designer, the backdrop, type — is how you BUILD one.
+ * IT IS A STRIP ACROSS THE TOP OF THE EDITOR, because a Look is the biggest
+ * unit on the pane: someone arriving to change how the app feels should be
+ * offered the whole answer before the parts of it. Everything below — the
+ * stage, the designer, the inspector — is how you BUILD one. The strip scrolls
+ * sideways rather than growing a second row, so the editor underneath keeps
+ * its height whether the shelf holds one look or twelve.
+ *
+ * WEARING ONE IS A LIVE CHANGE, deliberately: it is the only control here that
+ * says "I want this now" rather than "I am trying something". Everything the
+ * studio drafts goes the other way — onto the stage, and into the app only on
+ * Apply, which lands here as a new card.
  *
  * THE CARD IDIOM IS THE THEME LIBRARY'S, EXACTLY: same ring, same hover-
  * revealed ghost actions, same download helper, same inline error line on the
@@ -89,7 +96,10 @@ function LookCard({ look, active, onWear, onExport, onRemove }: { look: Look; ac
   return (
     <div
       className={cn(
-        "group flex cursor-pointer items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
+        // A STRIP, NOT A GRID: the shelf sits across the top of the editor now,
+        // where it is a place to start from rather than a section to read. A
+        // fixed width keeps the cards a scannable rank instead of a ragged one.
+        "group flex w-60 shrink-0 cursor-pointer items-center gap-3 rounded-xl bg-card p-3 ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
         active && "ring-2 ring-primary",
       )}
       onClick={onWear}
@@ -242,7 +252,7 @@ export function LooksSection() {
             Nothing saved yet. Get the app looking how you want it, then save that as a look you can come back to — or send to another machine.
           </p>
         ) : (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
             {looks.map((look) => (
               <LookCard
                 key={look.id}

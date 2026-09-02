@@ -33,6 +33,7 @@ export function SettingsShell({
   saving,
   onSave,
   headerActions,
+  wide,
   children,
 }: {
   title: ReactNode;
@@ -45,6 +46,16 @@ export function SettingsShell({
   saving?: boolean;
   onSave?: () => void;
   headerActions?: ReactNode;
+  /**
+   * OPT OUT OF THE READING COLUMN. Every pane here is a list of rows, and a
+   * list of rows wants a measure — hence the `max-w-2xl` that has held since
+   * this frame was ported. Appearance stopped being a list: it is an editor
+   * with a preview, a transcript and an inspector beside each other, and three
+   * columns folded into 42rem is a worse version of each. This flag is the
+   * ONE exception, asked for per pane rather than made the default, so no
+   * other section's measure moves.
+   */
+  wide?: boolean;
   children: ReactNode;
 }) {
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
@@ -198,7 +209,7 @@ export function SettingsShell({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-2xl px-5 py-5">{children}</div>
+          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
         </div>
       </div>
     </div>
