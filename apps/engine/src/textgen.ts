@@ -23,6 +23,8 @@ import path from "node:path";
 import { defaultInstanceIdForDriver, type TextGenPolicy } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 
+export type TextGenEffort = "low" | "medium" | "high";
+
 export type TextGenDriverInput = {
   driver: "claude" | "codex";
   /** The instance's own binary, when configured — same meaning as everywhere. */
@@ -34,6 +36,14 @@ export type TextGenDriverInput = {
   cwd: string;
   /** Model id or alias; absent = the harness's own default. */
   model?: string;
+  /** Reasoning effort. Defaults to "low" — right for the title job this file
+   *  was built around, and overridable by callers whose task is genuinely
+   *  harder (the theme designer's 32-colour palette is one). Only the codex
+   *  harness has a knob for it; claude ignores it. */
+  effort?: TextGenEffort;
+  /** Abort from the caller (a closed HTTP request, usually): the child is
+   *  killed and the run resolves undefined, same as a timeout. */
+  signal?: AbortSignal;
   timeoutMs?: number;
 };
 
@@ -172,7 +182,7 @@ async function runCodex(input: TextGenDriverInput, prompt: string, schema: objec
       "read-only",
       ...(input.model ? ["--model", input.model] : []),
       "--config",
-      'model_reasoning_effort="low"',
+      `model_reasoning_effort="${input.effort ?? "low"}"`,
       "--output-schema",
       schemaPath,
       "--output-last-message",
@@ -195,6 +205,10 @@ async function runCodex(input: TextGenDriverInput, prompt: string, schema: objec
  *  the turn that incidentally started it). */
 function runToCompletion(executable: string, args: string[], input: TextGenDriverInput, prompt: string): Promise<string | undefined> {
   return new Promise((resolve) => {
+    if (input.signal?.aborted) {
+      resolve(undefined);
+      return;
+    }
     // The exact spawn shape `codex/app-server.ts` uses — the tuple literal is
     // what keeps the overload resolvable under BOTH tsconfigs that compile
     // this file (the engine's and the web app's embedded-worker build).
@@ -212,12 +226,20 @@ function runToCompletion(executable: string, args: string[], input: TextGenDrive
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      input.signal?.removeEventListener("abort", onAbort);
       resolve(value);
     };
     const deadline = setTimeout(() => {
       child.kill("SIGKILL");
       finish(undefined);
     }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    // A caller that hung up must not leave a harness burning tokens for two
+    // more minutes — the child dies with the request that started it.
+    const onAbort = () => {
+      child.kill("SIGKILL");
+      finish(undefined);
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", () => finish(undefined));
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
@@ -284,7 +306,7 @@ export type StructuredPolicyStore = {
  */
 export async function runStructuredForPolicy(
   store: StructuredPolicyStore,
-  input: { prompt: string; schema: object; model?: string },
+  input: { prompt: string; schema: object; model?: string; effort?: TextGenEffort; signal?: AbortSignal },
 ): Promise<Record<string, unknown> | undefined> {
   let policy: TextGenPolicy;
   let instance: ReturnType<StructuredPolicyStore["resolveProviderInstance"]>;
@@ -305,6 +327,8 @@ export async function runStructuredForPolicy(
       env,
       cwd: store.paths?.root ?? os.tmpdir(),
       ...(model ? { model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
     },
     input.prompt,
     input.schema,

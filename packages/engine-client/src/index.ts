@@ -143,7 +143,7 @@ export class EngineClient {
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
-  private async request<T>(method: string, pathname: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     let response: Response;
     try {
       response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
@@ -153,8 +153,12 @@ export class EngineClient {
           ...(body === undefined ? {} : { "content-type": "application/json" }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        ...(signal ? { signal } : {}),
       });
-    } catch {
+    } catch (cause) {
+      // An abort is the caller hanging up, not the engine being away — rethrow
+      // it as itself so a forwarding route can end quietly.
+      if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
       throw new EngineClientError("engine_unavailable", "engine is unreachable");
     }
 
@@ -310,8 +314,11 @@ export class EngineClient {
    * rather than an empty answer. Treat it as a request that may take a minute
    * and may not succeed.
    */
-  completeStructured(input: { prompt: string; schema: Record<string, unknown>; model?: string }): Promise<{ result: Record<string, unknown> }> {
-    return this.request("POST", "/v2/textgen/complete", input);
+  completeStructured(
+    input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ result: Record<string, unknown> }> {
+    return this.request("POST", "/v2/textgen/complete", input, options.signal);
   }
 
   /**

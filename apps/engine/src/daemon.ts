@@ -694,11 +694,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (model !== undefined && (typeof model !== "string" || model.trim().length === 0)) {
           throw new HttpError(400, "invalid_request", "model must be a non-empty string when given");
         }
+        const effort = input["effort"];
+        if (effort !== undefined && effort !== "low" && effort !== "medium" && effort !== "high") {
+          throw new HttpError(400, "invalid_request", "effort must be low, medium or high when given");
+        }
+        // A caller that hangs up mid-completion kills the harness child rather
+        // than leaving it to burn its two-minute timeout. `close` also fires
+        // after a normal end, where aborting a finished run is a no-op.
+        const abort = new AbortController();
+        response.on("close", () => abort.abort());
         const result = await runStructuredForPolicy(store, {
           prompt,
           schema: schema as object,
           ...(typeof model === "string" ? { model } : {}),
+          ...(typeof effort === "string" ? { effort: effort as "low" | "medium" | "high" } : {}),
+          signal: abort.signal,
         });
+        if (abort.signal.aborted) return; // Nobody is listening for the answer.
         if (result === undefined) throw new HttpError(502, "textgen_failed", "the harness did not answer");
         writeJson(response, 200, { result });
         return;
