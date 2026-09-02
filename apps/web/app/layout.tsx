@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import { Fira_Code, Geist, Geist_Mono, IBM_Plex_Mono, IBM_Plex_Sans, Inter, JetBrains_Mono } from "next/font/google";
 // Streamdown FIRST, so the cockpit's own tokens win where the two overlap.
@@ -26,6 +26,32 @@ const firaCode = Fira_Code({ variable: "--font-fira-code", subsets: ["latin"], p
 export const metadata: Metadata = {
   title: "Telar",
   description: "Engine-owned local project sessions",
+};
+
+/**
+ * THE KEYBOARD MUST SHRINK THE PAGE, NOT COVER IT.
+ *
+ * With no viewport export Next emits the bare default, and the default on iOS
+ * is `overlays-content`: the software keyboard is painted OVER the layout
+ * without changing its size. Every `dvh` and every `h-full` column therefore
+ * still measures the whole screen, and whatever sits at the bottom of one —
+ * the composer's action row, with the send button in it — ends up underneath
+ * the keys. On a new session that made the message unsendable without first
+ * dismissing the keyboard, which is a lot to ask of someone who has just
+ * finished typing.
+ *
+ * `resizes-content` makes the layout viewport shrink when the keyboard opens,
+ * so the composer rides above it the way it does in every native app.
+ *
+ * `viewport-fit=cover` comes along because the two belong together on a
+ * notched phone: content may now reach the physical edges, and the app's
+ * safe-area insets are what keep it off them.
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
