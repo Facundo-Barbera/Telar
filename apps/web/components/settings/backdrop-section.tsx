@@ -3,11 +3,18 @@
 /**
  * BACKDROP — the scene under the app (lib/backdrop.ts), as a settings group.
  *
- * The Scene control is three-way (None / Gradient / Image) but only "None"
- * writes the store directly: the other two reveal their picker, and the
+ * The Scene control is four-way (None / Gradient / Image / Compose) but only
+ * "None" writes the store directly: the others reveal their picker, and the
  * PICKER writes the store when something is actually chosen — so flipping to
  * "Gradient" to browse never blanks an image already in place. The pickers
- * live in their own files (gradient-backdrop.tsx, image-backdrop.tsx).
+ * live in their own files (gradient-backdrop.tsx, image-backdrop.tsx,
+ * scene-composer.tsx).
+ *
+ * Compose is the plural of Image: a stack of positioned pictures over one of
+ * the gradient presets, resolved to CSS multi-backgrounds by
+ * lib/scene-composer.ts. It gets its own view because a composed scene is the
+ * store's own `scene` kind — the other three each map to a single kind too,
+ * which is what keeps this control a straight function of what is stored.
  *
  * Strength is the SAME value as the Window group's translucency slider —
  * there is one see-through wash and one number for how far it opens, whether
@@ -21,13 +28,15 @@ import { useBackdrop } from "@/lib/backdrop";
 import { Row, Segmented, SettingsGroup } from "./settings-shell";
 import { GradientBackdrop } from "./gradient-backdrop";
 import { ImageBackdrop } from "./image-backdrop";
+import { SceneComposer } from "./scene-composer";
 
-type SceneView = "none" | "gradient" | "image";
+type SceneView = "none" | "gradient" | "image" | "scene";
 
 export function BackdropSection() {
   const { appearance, setAppearance } = useAppearance();
   const { backdrop, setBackdrop } = useBackdrop();
-  const storeView: SceneView = backdrop.kind === "none" ? "none" : backdrop.kind === "image" ? "image" : "gradient";
+  const storeView: SceneView =
+    backdrop.kind === "none" ? "none" : backdrop.kind === "image" ? "image" : backdrop.kind === "scene" ? "scene" : "gradient";
   // Local so a person can open a picker BEFORE anything is chosen; adjusted
   // during render (React's sanctioned derived-state idiom, not an effect) so
   // an outside write — theme-from-image setting an image — moves the control.
@@ -56,12 +65,14 @@ export function BackdropSection() {
               { value: "none", label: "None" },
               { value: "gradient", label: "Gradient" },
               { value: "image", label: "Image" },
+              { value: "scene", label: "Compose" },
             ]}
           />
         }
       />
       {view === "gradient" && <GradientBackdrop />}
       {view === "image" && <ImageBackdrop />}
+      {view === "scene" && <SceneComposer />}
       {backdrop.kind !== "none" && (
         <Row
           label="Strength"
