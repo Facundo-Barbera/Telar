@@ -1030,7 +1030,10 @@ export function Composer({
           }}
           onDrop={onDrop}
           className={cn(
-            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl",
+            // The shadow is cast in --shadow-tint, not raw black: pure black is
+            // the one ink no theme has, and under a light or warm palette it
+            // smudges grey instead of deepening the surface. See globals.css.
+            "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl",
             dropping && "border-ring ring-2 ring-ring/40",
           )}
         >

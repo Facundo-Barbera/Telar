@@ -61,7 +61,9 @@ export function ComposerMenu({
     <div
       role="listbox"
       aria-label={heading}
-      className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-[0_18px_60px_-30px_rgba(0,0,0,.9)] backdrop-blur-xl"
+      // Cast in --shadow-tint rather than raw black — see the composer's own
+      // sheet, which this menu sits directly above and has to match.
+      className="absolute inset-x-0 bottom-full z-50 mb-2 overflow-hidden rounded-2xl border border-border/80 bg-popover/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl"
     >
       <div className="px-3 pt-2 pb-1 text-[0.625rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{heading}</div>
       {completions.length === 0 ? (

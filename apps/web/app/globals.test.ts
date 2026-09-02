@@ -158,6 +158,26 @@ describe("the backdrop layer", () => {
   });
 });
 
+/**
+ * A source file with its PROSE removed — block comments, and lines that are
+ * nothing but a comment.
+ *
+ * This app argues for its decisions in the files that make them, so the note
+ * explaining why `text-sky-600` is banned quotes `text-sky-600`. A guard that
+ * cannot tell the rule from the code fails on its own documentation, and the
+ * only way to satisfy it is to stop writing the rule down.
+ *
+ * Deliberately not a tokeniser: trailing `//` comments are LEFT ALONE, because
+ * dropping the rest of a line would also drop an offender sitting before a URL
+ * in a string on that line. Prose lives in the two forms handled here.
+ */
+function withoutProse(file: string): string {
+  return fs
+    .readFileSync(file, "utf8")
+    .replaceAll(/\/\*[\s\S]*?\*\//g, "")
+    .replaceAll(/^[ \t]*\/\/.*$/gm, "");
+}
+
 /** Every .ts/.tsx under app/ and components/ (and lib/ when asked), minus
  *  tests — the corpus the class-string guards below read. */
 function sources(segments: readonly string[], extension: RegExp): string[] {
@@ -195,7 +215,7 @@ describe("the text scale", () => {
   test("no component pins a font size in px", () => {
     const offenders: string[] = [];
     for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
-      for (const hit of fs.readFileSync(file, "utf8").matchAll(/text-\[[0-9.]+px\]/g)) {
+      for (const hit of withoutProse(file).matchAll(/text-\[[0-9.]+px\]/g)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
     }
@@ -216,24 +236,35 @@ describe("the state vocabulary", () => {
     const ramps = "red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone";
     const pattern = new RegExp(`\\b(?:bg|text|border|ring|fill|stroke|from|to|via)-(?:${ramps})-\\d{2,3}\\b`, "g");
 
-    const roots = ["app", "components"].map((segment) => path.join(here, "..", segment));
     const offenders: string[] = [];
-    const walk = (root: string) => {
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        const file = path.join(root, entry.name);
-        if (entry.isDirectory()) {
-          walk(file);
-          continue;
-        }
-        if (!/\.tsx$/.test(file) || file.includes(".test.")) continue;
-        // components/ui/* are vendored primitives; they are held to the same
-        // rule, and any ramp in one is a porting mistake worth catching.
-        for (const hit of fs.readFileSync(file, "utf8").matchAll(pattern)) {
-          offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
-        }
+    // components/ui/* are vendored primitives; they are held to the same rule,
+    // and any ramp in one is a porting mistake worth catching.
+    //
+    // lib/ IS IN SCOPE, because that is where the rule was being broken. The
+    // guard only ever read .tsx under app/ and components/, and the two files
+    // that actually held eight raw ramps each — lib/file-kinds.ts and
+    // lib/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
+    // string is a class string wherever it is written down.
+    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+      for (const hit of withoutProse(file).matchAll(pattern)) {
+        offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
-    };
-    for (const root of roots) walk(root);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("nothing paints a scrim or a shadow in raw black or white", () => {
+    // `bg-black/10` on the two overlays and `rgba(0,0,0,.9)` in three shadows:
+    // colours no palette owns, so they laid a cold film over a warm theme and
+    // could not follow one anywhere. --overlay and --shadow-tint are mixed
+    // from the live tokens instead, and each flips ENDS between the schemes.
+    const pattern = /\b(?:bg|text|border|ring|fill|stroke)-(?:black|white)\/\d+|rgba?\(\s*0\s*,\s*0\s*,\s*0\s*[,)]/g;
+    const offenders: string[] = [];
+    for (const file of sources(["app", "components", "lib"], /\.tsx?$/)) {
+      for (const hit of withoutProse(file).matchAll(pattern)) {
+        offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
+      }
+    }
     expect(offenders).toEqual([]);
   });
 });
