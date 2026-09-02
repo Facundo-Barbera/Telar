@@ -9,7 +9,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "./model-favorites";
+import { orderByFavorite, readFavorites } from "./model-favorites";
 
 function storage(initial?: string) {
   const slots = new Map<string, string>();
@@ -33,21 +33,8 @@ describe("reading", () => {
     expect(readFavorites(storage('["claude-opus-5", 7, null]'))).toEqual(new Set(["claude-opus-5"]));
   });
 
-  test("round-trips", () => {
-    const store = storage();
-    writeFavorites(new Set(["a", "b"]), store);
-    expect(readFavorites(store)).toEqual(new Set(["a", "b"]));
-  });
 });
 
-describe("toggleFavorite", () => {
-  test("adds, removes, and never mutates what it was given", () => {
-    const before = new Set(["a"]);
-    expect(toggleFavorite(before, "b")).toEqual(new Set(["a", "b"]));
-    expect(toggleFavorite(before, "a")).toEqual(new Set());
-    expect(before).toEqual(new Set(["a"]));
-  });
-});
 
 describe("orderByFavorite", () => {
   test("favourites lead, and both halves keep catalogue order", () => {

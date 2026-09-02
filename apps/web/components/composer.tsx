@@ -622,7 +622,7 @@ export function Composer({
    */
   const checkout = sessionId ?? (projectId ? `project:${projectId}` : "none");
   const paths = pathCache?.checkout === checkout ? pathCache.entries : undefined;
-  const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel));
+  const commandChoices = useComposerCommandChoices(activeDriverOf(session, driver), modelChoiceOf(session, pendingModel), session?.providerInstanceId);
 
   /**
    * READ ONCE, ON THE FIRST `@`, AND NEVER ON MOUNT.
@@ -881,6 +881,11 @@ export function Composer({
    * makes that loss unrepresentable — see `ModelChoice`.
    */
   const activeDriver = activeDriverOf(session, driver);
+  /** WHOSE LOGIN'S curated model list the menus should show. The session's own
+   *  once it exists; before that, the driver's built-in slot — which is the only
+   *  login a not-yet-created session could mean, and what the engine falls back
+   *  to when nobody names one. */
+  const activeInstanceId = session?.providerInstanceId;
   const choice = modelChoiceOf(session, pendingModel);
 
   return (
@@ -1112,6 +1117,7 @@ export function Composer({
                   <AgentControl
                     driver={activeDriver}
                     choice={choice}
+                    {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
                     {...(onModelChange ? { onChange: onModelChange } : {})}
                     {...(onDriverChange ? { onDriverChange } : {})}
                   />
@@ -1120,7 +1126,12 @@ export function Composer({
                       the same three as labels with a rule between them. */}
                   <div className="hidden items-center gap-1 @2xl/composer:flex">
                     <ControlDivider />
-                    <ReasoningControl driver={activeDriver} choice={choice} {...(onModelChange ? { onChange: onModelChange } : {})} />
+                    <ReasoningControl
+                      driver={activeDriver}
+                      choice={choice}
+                      {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
+                      {...(onModelChange ? { onChange: onModelChange } : {})}
+                    />
                     {runtimeMode && (
                       <>
                         <ControlDivider />
@@ -1136,6 +1147,7 @@ export function Composer({
                     <ComposerOverflowMenu
                       driver={activeDriver}
                       choice={choice}
+                      {...(activeInstanceId ? { instanceId: activeInstanceId } : {})}
                       fresh={fresh}
                       {...(runtimeMode ? { runtimeMode } : {})}
                       {...(envMode ? { envMode } : {})}

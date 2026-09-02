@@ -5,7 +5,7 @@ import { CheckIcon, ChevronDownIcon, ChevronRightIcon, GaugeIcon, Minimize2Icon,
 import type { ModelCatalogue, ProviderDriverKind, ProviderModel, RuntimeMode, UsageSnapshot } from "@telar/engine-client";
 import { fmtTokens } from "@/lib/format";
 import { effortLabel, modelLabel, type ModelChoice } from "@/lib/models";
-import { keepStarredVisible, orderByFavorite, readFavorites, toggleFavorite, writeFavorites } from "@/lib/model-favorites";
+import { keepStarredVisible, orderByFavorite } from "@/lib/model-favorites";
 import { defaultModelId, splitGenerations } from "@/lib/model-generations";
 import {
   contextWindowOf,
@@ -17,11 +17,14 @@ import {
   stripWindow,
   windowSuffix,
   windowsOf,
+  visibleModels,
+  familyFavorites,
+  toggleFamilyFavorite,
   WINDOW_LABEL,
   type ContextWindow,
   type ModelFamily,
 } from "@/lib/model-families";
-import { createEngineApi } from "@/lib/engine/client";
+import { importLocalFavorites, patchModelOverlay, useModelCatalogue, useModelCatalogues, useModelOverlays } from "@/lib/model-catalogue-cache";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -225,64 +228,14 @@ export const RUNTIME_MODE_HELP: Record<RuntimeMode, string> = {
 const RUNTIME_MODES: RuntimeMode[] = ["approval-required", "auto-accept-edits", "auto", "full-access"];
 
 /**
- * The catalogue, fetched once per driver per page.
+ * THE CATALOGUE HOOKS NOW LIVE IN `lib/model-catalogue-cache.ts`.
  *
- * MODULE SCOPE, NOT COMPONENT STATE. There are three controls that need it —
- * the model picker, the reasoning menu and the overflow — and the read is a
- * subprocess spawn on the engine's side. One promise per driver, shared, means
- * opening a popover never costs a second one.
+ * They moved because the cache had to become forgettable and keyed by LOGIN
+ * rather than by driver: a curated list is edited in the settings route, and a
+ * page-lifetime promise map keyed by driver would both go on serving the
+ * pre-edit list and serve one login's hidden rows to another. Nothing about how
+ * these controls use them changed.
  */
-const catalogues = new Map<ProviderDriverKind, Promise<ModelCatalogue>>();
-const api = createEngineApi();
-
-/**
- * ASKS FOR THE ONES IT IS GIVEN, AND NO OTHERS.
- *
- * Reading a catalogue SPAWNS A SUBPROCESS on the engine's side, so which
- * providers this is called with is a real cost rather than a detail. The
- * session's own provider is asked on mount, because the pill has to be able to
- * say which model is running without being opened. Every other provider is asked
- * only when something needs it — today that is the favourites view, which spans
- * providers and is reached by pressing the star.
- */
-function useModelCatalogues(drivers: readonly ProviderDriverKind[]): ReadonlyMap<ProviderDriverKind, ModelCatalogue> {
-  const [loaded, setLoaded] = useState<ReadonlyMap<ProviderDriverKind, ModelCatalogue>>(new Map());
-  // The dependency is the JOINED LIST, not the array: the caller rebuilds the
-  // array every render and an identity dependency would re-run this forever.
-  const wanted = drivers.join(",");
-  useEffect(() => {
-    let cancelled = false;
-    // Deferred, like every other read in this app that the server could not
-    // have performed.
-    const task = window.setTimeout(() => {
-      for (const driver of wanted.split(",").filter(Boolean) as ProviderDriverKind[]) {
-        let pending = catalogues.get(driver);
-        if (!pending) {
-          pending = api.modelCatalogue(driver).then((result) => result.catalogue);
-          catalogues.set(driver, pending);
-          // A failed read must not poison the cache — the next popover should
-          // try again rather than inherit the error for the life of the page.
-          void pending.catch(() => catalogues.delete(driver));
-        }
-        void pending
-          .then((result) => {
-            if (cancelled) return;
-            setLoaded((current) => (current.get(driver) === result ? current : new Map(current).set(driver, result)));
-          })
-          .catch(() => undefined);
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(task);
-    };
-  }, [wanted]);
-  return loaded;
-}
-
-function useModelCatalogue(driver: ProviderDriverKind): ModelCatalogue | undefined {
-  return useModelCatalogues([driver]).get(driver);
-}
 
 /**
  * EVERYTHING THE THREE MENUS NEED TO KNOW ABOUT THE MODEL THAT WILL RUN.
@@ -328,11 +281,20 @@ function selectionOf(models: readonly ProviderModel[], choice: ModelChoice) {
  * the same way.
  */
 function withModel(choice: ModelChoice, row: ProviderModel): ModelChoice {
+  /**
+   * EXCEPT ON A ROW NOBODY PUBLISHED. A hand-added model has no published
+   * `efforts` to check against — the engine fills them with the union of what
+   * the driver offers precisely so this check has something true to read, but
+   * the union is a guess about ONE model and the reader's own level is not.
+   * Dropping it here would silently undo the setting on the row somebody typed
+   * an id into in order to push a new model hard.
+   */
+  const trusted = row.source !== "user";
   return {
     ...choice,
     model: row.id,
-    ...(choice.effort && !row.efforts.includes(choice.effort) ? { effort: undefined } : {}),
-    ...(choice.fastMode && !row.fastMode ? { fastMode: undefined } : {}),
+    ...(trusted && choice.effort && !row.efforts.includes(choice.effort) ? { effort: undefined } : {}),
+    ...(trusted && choice.fastMode && !row.fastMode ? { fastMode: undefined } : {}),
   };
 }
 
@@ -352,8 +314,9 @@ function withModel(choice: ModelChoice, row: ProviderModel): ModelChoice {
 export function useComposerCommandChoices(
   driver: ProviderDriverKind,
   choice: ModelChoice,
+  instanceId?: string,
 ): { models: { id: string; label: string }[]; efforts: string[] } {
-  const catalogue = useModelCatalogue(driver);
+  const catalogue = useModelCatalogue(driver, instanceId);
   const models = catalogue?.models;
   // DESTRUCTURED, THEN REBUILT INSIDE. The composer makes a fresh `ModelChoice`
   // every render, so depending on its identity would refold the catalogue on
@@ -368,7 +331,12 @@ export function useComposerCommandChoices(
       ...(fastMode === undefined ? {} : { fastMode }),
     });
     return {
-      models: splitGenerations(selection.families).current.map((family) => ({
+      // FOLDED FROM THE VISIBLE ROWS, not from `selection.families`: this
+      // function's own contract is that the slash menu and the pills cannot
+      // disagree about what is on offer, so a model the reader curated away has
+      // to leave both. `selectionOf` above still reads the FULL list, because
+      // the effort levels of a hidden-but-running model are still needed.
+      models: splitGenerations(groupFamilies(visibleModels(models, model))).current.map((family) => ({
         id: pickInFamily(family, selection.window).id,
         label: stripWindow(family.label),
       })),
@@ -474,11 +442,15 @@ function FamilyRow({
 export function AgentControl({
   driver,
   choice,
+  instanceId,
   onChange,
   onDriverChange,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** Whose login's curated list to show. Absent means the driver's built-in
+   *  slot, which is what the engine falls back to as well. */
+  instanceId?: string;
   /** Absent on a session that does not exist yet — the fresh canvas picks a
    *  model before there is anything to patch. */
   onChange?: (next: ModelChoice) => void;
@@ -499,26 +471,81 @@ export function AgentControl({
    * would be a subprocess spawned to list models this session cannot use.
    */
   const crossProvider = view === "favorites" && Boolean(onDriverChange);
-  const catalogues = useModelCatalogues(crossProvider ? PROVIDERS : [driver]);
+  // The session's own login for its own driver; the built-in slot for the other
+  // one, which is the only login a not-yet-created session could mean.
+  const catalogues = useModelCatalogues(
+    crossProvider ? PROVIDERS.map((option) => (option === driver && instanceId ? { driver: option, instanceId } : { driver: option })) : [{ driver, ...(instanceId ? { instanceId } : {}) }],
+  );
   const catalogue = catalogues.get(driver);
   const models = catalogue?.models ?? [];
-  const { families, family: selectedFamily, window: activeWindow } = selectionOf(models, choice);
+  // `families` is deliberately NOT taken from here any more — see
+  // `listedFamilies` below. What this call is still for is the SELECTION: which
+  // family is ticked and which window it runs in, both of which must resolve for
+  // a model the reader has since hidden.
+  const { family: selectedFamily, window: activeWindow } = selectionOf(models, choice);
   /**
-   * READ AFTER MOUNT, like every other localStorage-backed preference in this
-   * app: the server has no storage to agree with, and a value picked during
-   * render is a hydration mismatch waiting for its first star.
+   * STARS COME FROM THE ENGINE NOW, not from this browser's `localStorage`.
+   *
+   * They moved because the Models tab in Settings stars the same models, against
+   * the same login, and two stores behind one row is how "I unstarred it and it
+   * came back" happens. The store is ROW-keyed and this menu is FAMILY-keyed, so
+   * the set below is derived — see `familyFavorites`.
    */
-  const [favorites, setStoredFavorites] = useState<ReadonlySet<string>>(new Set());
+  const overlays = useModelOverlays(
+    crossProvider
+      ? PROVIDERS.map((option) => (option === driver && instanceId ? { driver: option, instanceId } : { driver: option }))
+      : [{ driver, ...(instanceId ? { instanceId } : {}) }],
+  );
+  const starredRows = overlays.get(driver)?.favorites ?? [];
+  /** Every provider's stars at once, because the favourites view spans them. */
+  const favorites = useMemo(() => {
+    const out = new Set<string>();
+    for (const option of crossProvider ? PROVIDERS : [driver]) {
+      const rows = new Set(overlays.get(option)?.favorites ?? []);
+      for (const id of familyFavorites(catalogues.get(option)?.models ?? [], rows)) out.add(id);
+    }
+    return out;
+  }, [overlays, catalogues, crossProvider, driver]);
+
+  /**
+   * The stars somebody had before this moved, carried across once per login.
+   * Best effort and silent — losing them is the gesture the `:v2` key bump
+   * already established as survivable; losing the menu would not be.
+   */
+  const overlayLoaded = overlays.get(driver) !== undefined;
   useEffect(() => {
-    const task = window.setTimeout(() => setStoredFavorites(readFavorites()), 0);
+    if (!overlayLoaded || models.length === 0) return;
+    const task = window.setTimeout(() => {
+      void importLocalFavorites(instanceId ?? driver, models, starredRows);
+    }, 0);
     return () => window.clearTimeout(task);
-  }, []);
-  const setFavorites = (next: Set<string>) => {
-    setStoredFavorites(next);
-    writeFavorites(next);
+    // `starredRows` is read, not depended on: the import is guarded by its own
+    // per-login sentinel, and depending on the list would re-run it on the very
+    // write it performs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overlayLoaded, models.length, instanceId, driver]);
+
+  /** Star a whole family — every row in it, so the derived bit above can never
+   *  be half true. The write is optimistic in the sense that the cache is
+   *  forgotten on success and every mounted menu re-reads. */
+  const starFamily = (from: ProviderDriverKind, familyId: string) => {
+    const rows = catalogues.get(from)?.models ?? [];
+    const owner = from === driver ? (instanceId ?? driver) : from;
+    const next = toggleFamilyFavorite(rows, overlays.get(from)?.favorites ?? [], familyId);
+    void patchModelOverlay(owner, { favorites: next }).catch(() => undefined);
   };
 
-  const { current, legacy } = keepStarredVisible(splitGenerations(families), favorites);
+  /**
+   * THE MENU'S OWN LIST, which is not the same set as `families` above.
+   *
+   * `selectionOf` reads the FULL catalogue on purpose — the pill has to resolve
+   * the effort levels, window and fast-mode flag of whatever is running, and a
+   * model the reader curated away can still be the model running. Only the
+   * LISTING drops hidden rows, and it keeps the running one (`visibleModels`),
+   * so hiding never rewrites a session out from under anybody.
+   */
+  const listedFamilies = groupFamilies(visibleModels(models, choice.model));
+  const { current, legacy } = keepStarredVisible(splitGenerations(listedFamilies), favorites);
   /**
    * THE LIST, EITHER WAY ROUND. A provider's own models are its current
    * generation, favourites first; the favourites view is every starred model on
@@ -527,7 +554,7 @@ export function AgentControl({
   const listed: { from: ProviderDriverKind; family: ModelFamily }[] =
     view === "favorites"
       ? (crossProvider ? PROVIDERS : [driver]).flatMap((option) =>
-          groupFamilies(catalogues.get(option)?.models ?? [])
+          groupFamilies(visibleModels(catalogues.get(option)?.models ?? [], choice.model))
             .filter((family) => favorites.has(family.id))
             .map((family) => ({ from: option, family })),
         )
@@ -674,7 +701,7 @@ export function AgentControl({
                 starred={favorites.has(family.id)}
                 readOnly={readOnly}
                 onSelect={() => pickFamily(family, from)}
-                onStar={() => setFavorites(toggleFavorite(favorites, family.id))}
+                onStar={() => starFamily(from, family.id)}
               />
             ))}
             {/**
@@ -718,8 +745,12 @@ export function AgentControl({
         <p className="border-t border-border px-2.5 py-1.5 text-[0.6875rem] leading-snug text-muted-foreground">
           {readOnly ? "Chosen when the session starts." : onDriverChange ? "Applies to the first message." : "Takes effect next turn."}
           {/* Whether this list was ASKED FOR or guessed. The distinction matters
-              the moment an id here 404s at the provider. */}
-          {catalogue?.source === "builtin" && models.length > 0 ? " Built-in list." : ""}
+              the moment an id here 404s at the provider — and it is read PER ROW
+              rather than off the length, because a catalogue the provider could
+              not answer plus a model somebody typed is a list with rows in it
+              and nothing built-in about it. */}
+          {catalogue?.source === "builtin" && models.some((row) => row.source !== "user") ? " Built-in list." : ""}
+          {models.some((row) => row.source === "user") ? " Includes models you added." : ""}
         </p>
       </PopoverContent>
     </Popover>
@@ -752,14 +783,17 @@ export function AgentControl({
 export function ReasoningControl({
   driver,
   choice,
+  instanceId,
   onChange,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** Whose login's curated list to read. Absent means the built-in slot. */
+  instanceId?: string;
   onChange?: (next: ModelChoice) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const catalogue = useModelCatalogue(driver);
+  const catalogue = useModelCatalogue(driver, instanceId);
   /**
    * PER MODEL, not per provider. Codex reports six levels for its newest model
    * and four for an older one, and offering a level a model does not have fails
@@ -929,9 +963,12 @@ export function ComposerOverflowMenu({
   onRuntimeMode,
   onDriverChange,
   onEnvMode,
+  instanceId,
 }: {
   driver: ProviderDriverKind;
   choice: ModelChoice;
+  /** Whose login's curated list to read. Absent means the built-in slot. */
+  instanceId?: string;
   runtimeMode?: RuntimeMode;
   /** Before a session exists the provider and the workspace are still choices;
    *  after, neither is. */
@@ -942,7 +979,7 @@ export function ComposerOverflowMenu({
   onDriverChange?: (driver: ProviderDriverKind) => void;
   onEnvMode?: (mode: "local" | "worktree") => void;
 }) {
-  const catalogue = useModelCatalogue(driver);
+  const catalogue = useModelCatalogue(driver, instanceId);
   // Same per-model rules as the pill's menus, from the same function — see
   // `selectionOf`, which exists because these two drifted apart once already.
   const models = catalogue?.models ?? [];

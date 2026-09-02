@@ -22,9 +22,13 @@
  * TWO DEVIATIONS FROM t3, EACH BECAUSE THE ENGINE CANNOT BACK IT:
  *   · No identity line. t3 prints "Authenticated as <email> · Claude Max"; this
  *     engine holds no identity, so the auth line says what was measured.
- *   · No models section. Model choice lives on the composer's own picker here,
- *     fed by asking the harness (apps/engine/src/models.ts) rather than by a
- *     per-instance hidden/favourite list.
+ *   · The identity line is the only one left. There WAS a second — "no models
+ *     section" — and the Models tab is that decision reversed. What has not
+ *     changed is the reason it was written: every row in that tab still comes
+ *     from ASKING the harness (apps/engine/src/models.ts). The tab stores only
+ *     what this login's reader did to that answer — starred, hidden, and the
+ *     ids they typed because the CLI does not publish them yet. t3's tab lists
+ *     a catalogue this app still refuses to keep.
  *
  * THE UPDATE ADVISORY IS A FACT ABOUT THE BINARY, not about this login. Every
  * row for a driver shows the same one and updating from any of them updates all
@@ -40,13 +44,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { Tabs } from "@/components/settings/settings-shell";
+import { ProviderModelsTab } from "@/components/settings/provider-models-tab";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ProviderIcon } from "@/components/session/provider-icon";
 import { CopyCommand } from "@/components/settings/copy-command";
 
-/** What a save may carry. `null` clears, absent leaves alone — the engine's own
- *  three-state rule, mirrored so a form cannot express anything else. */
+type ProviderTab = "configuration" | "models";
+
+/** What a save may carry. */
 export type InstancePatch = {
   displayName?: string | null;
   accentColor?: string | null;
@@ -286,6 +293,7 @@ export function ProviderInstanceCard({
   onRemove?: () => void;
   error?: string | null;
 }) {
+  const [tab, setTab] = useState<ProviderTab>("configuration");
   const title = displayNameOf(instance);
   const status = probe?.status ?? (instance.enabled ? "warning" : "disabled");
   const summary = providerSummary(probe);
@@ -397,6 +405,22 @@ export function ProviderInstanceCard({
       <Collapsible open={expanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-4 px-3 pb-4 pt-1 sm:px-4">
+            {/* CONFIGURATION AND MODELS, the two things there are to say about a
+                login. They are tabs rather than two stacked sections because the
+                model list is long and is read for its own sake — scrolling past
+                a binary path to reach it every time is the tax that made t3
+                split them too. */}
+            <Tabs<ProviderTab>
+              value={tab}
+              onChange={setTab}
+              options={[
+                { value: "configuration", label: "Configuration" },
+                { value: "models", label: "Models" },
+              ]}
+            />
+            {tab === "models" && <ProviderModelsTab instance={instance} />}
+            {tab === "configuration" && (
+            <div className="space-y-4">
             {advisory && (
               <div className="space-y-1.5 rounded-lg border border-border/70 bg-muted/20 p-3">
                 <div className="flex items-center justify-between gap-2">
@@ -528,6 +552,8 @@ export function ProviderInstanceCard({
             </div>
 
             {error && <p className="text-xs text-destructive">{error}</p>}
+            </div>
+            )}
           </div>
         </CollapsibleContent>
       </Collapsible>

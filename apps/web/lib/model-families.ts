@@ -164,6 +164,68 @@ export function rowOf(models: readonly ProviderModel[], id: string | undefined):
   return models.find((model) => model.id === id) ?? models.find((model) => model.resolves === id);
 }
 
+/**
+ * WHICH FAMILIES COUNT AS STARRED, given the rows that are.
+ *
+ * THE STORE IS ROW-KEYED AND THE PICKER IS FAMILY-KEYED, so one of them has to
+ * derive. Rows win as the stored form: `sonnet` and `sonnet[1m]` are two ids the
+ * Models tab lists separately, and a family key moves when the provider re-points
+ * an alias. So a family is starred when ANY of its rows is — which is also the
+ * rule that makes the derived bit survive switching context window, the thing the
+ * old family-keyed store got for free.
+ */
+export function familyFavorites(models: readonly ProviderModel[], starredRows: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>();
+  for (const model of models) if (starredRows.has(model.id)) out.add(familyKey(model));
+  return out;
+}
+
+/**
+ * Star or unstar a whole family, as a new list of ROW ids.
+ *
+ * WRITES EVERY ROW, so the derived bit above is never ambiguous: a family with
+ * one row starred and one not would read as starred and un-star in one press,
+ * which is a control that does something different from what it says.
+ */
+export function toggleFamilyFavorite(
+  models: readonly ProviderModel[],
+  starredRows: readonly string[],
+  familyId: string,
+): string[] {
+  const rows = models.filter((model) => familyKey(model) === familyId).map((model) => model.id);
+  if (rows.length === 0) return [...starredRows];
+  const starred = new Set(starredRows);
+  const on = rows.some((id) => starred.has(id));
+  for (const id of rows) {
+    if (on) starred.delete(id);
+    else starred.add(id);
+  }
+  return [...starred];
+}
+
+/**
+ * The rows a MENU should list — everything except what the reader curated away,
+ * AND whatever is running right now.
+ *
+ * THE EXCEPTION IS THE WHOLE POINT. Hiding a model must not make the session
+ * already on it read as running something else; that is the failure the
+ * "external" row in the composer exists to prevent for a model the catalogue
+ * never had, and a model the reader hid is the same problem arriving from the
+ * opposite direction. So a hidden row stays listed, ticked, for exactly as long
+ * as it is the choice — and the hide takes effect the moment you move off it.
+ *
+ * MATCHED ON `id` THEN `resolves`, like `rowOf`, so a session carrying the wire
+ * id of an alias keeps its own row visible too.
+ *
+ * Note this filters ROWS, before `groupFamilies`. That is what makes every
+ * family-level consequence fall out for free: a family whose rows are all hidden
+ * simply never gets built, and hiding only `sonnet[1m]` leaves Sonnet listed
+ * with one window instead of two.
+ */
+export function visibleModels(models: readonly ProviderModel[], keep: string | undefined): ProviderModel[] {
+  return models.filter((model) => !model.hiddenByUser || (keep !== undefined && (model.id === keep || model.resolves === keep)));
+}
+
 /** The family a concrete model id belongs to, matched the same way. Undefined
  *  for a model this catalogue does not have. */
 export function familyOf(families: readonly ModelFamily[], id: string | undefined): ModelFamily | undefined {

@@ -117,6 +117,10 @@ export function parseClaudeModels(payload: unknown): ProviderModel[] {
         // and previous generations is the cockpit's own (see the client's
         // version rule), and it has no `hidden` to honour here.
         hidden: false,
+        // A row straight off the provider carries no reader's opinion yet — the
+        // overlay is what sets this, downstream of here (./model-overlay.ts).
+        hiddenByUser: false,
+        source: "provider",
         efforts,
         ...(typeof row.resolvedModel === "string" && row.resolvedModel ? { resolves: row.resolvedModel } : {}),
         fastMode: row.supportsFastMode === true,
@@ -230,6 +234,10 @@ export function parseCodexModels(payload: unknown): ProviderModel[] {
         ...(typeof row.description === "string" && row.description ? { description: row.description } : {}),
         isDefault: row.isDefault === true,
         hidden: row.hidden === true,
+        // As in the Claude parser: the reader's own hide arrives later, from the
+        // overlay, and must never be confused with the provider's `hidden`.
+        hiddenByUser: false,
+        source: "provider",
         efforts,
         ...(typeof row.defaultReasoningEffort === "string" && row.defaultReasoningEffort
           ? { defaultEffort: row.defaultReasoningEffort }

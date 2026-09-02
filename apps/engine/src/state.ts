@@ -52,6 +52,10 @@ import {
   type SessionDefaults,
   type TextGenPolicy,
   type ModelCatalogue,
+  type ModelOverlay,
+  CustomProviderModel,
+  DEFAULT_MODEL_OVERLAY,
+  ModelOverlay as ModelOverlaySchema,
   type SessionDiff,
   type EngineEvent,
   type Item,
@@ -204,6 +208,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
+import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
@@ -329,6 +334,25 @@ const GITHUB_CACHE_MS = 30_000;
  *  subprocess — and the answer changes far less often. */
 const MODEL_CACHE_MS = 5 * 60_000;
 
+/**
+ * What could not possibly be a model id.
+ *
+ * LOOSE ON PURPOSE. `gpt-5.6-sol`, `opus[1m]`, `claude-fable-5-1` and
+ * `us.anthropic.claude-fable-5-1` are all real shapes and no provider ever
+ * promised a grammar — a strict pattern here would be this module's own version
+ * of the hand-written catalogue that shipped a model nobody had. What it refuses
+ * is only what could not be an id at all: a blank, something longer than any
+ * published id, and anything carrying whitespace, a quote or a control
+ * character — the characters that turn a stored string into a second problem
+ * when it reaches a CLI argument.
+ */
+const MODEL_ID = /^[^\s"'`\\\u0000-\u001f]{1,200}$/;
+
+/** Enough for every model two providers have ever published at once, several
+ *  times over. A bound at all, because this document is reachable over HTTP. */
+const MAX_OVERLAY_IDS = 200;
+const MAX_CUSTOM_MODELS = 64;
+
 /** Milestones and labels change on the timescale of a sprint, not of a page view,
  *  so what there is to FILTER BY is held far longer than the rows themselves. */
 const FACET_CACHE_MS = 5 * 60_000;
@@ -352,6 +376,17 @@ export type EngineStatePaths = {
    * has to remember at each call site.
    */
   providerSecrets: string;
+  /**
+   * What each login's reader did to that provider's model list — starred,
+   * hidden, ordered, plus the ids they typed because the installed CLI does not
+   * publish them yet.
+   *
+   * ITS OWN FILE, NOT A FIELD ON THE INSTANCE, for a sharper version of the
+   * reason the secrets are split out: `provider-instances.json` is read on every
+   * session claim through `resolveProviderInstance`, and dragging a model up one
+   * place in a menu must not rewrite the routing registry.
+   */
+  modelOverlays: string;
   /**
    * Completed MCP OAuth grants — access token, refresh token, the resolved
    * authorization server and the client they were minted for.
@@ -474,6 +509,7 @@ export function statePaths(root: string): EngineStatePaths {
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
     providerSecrets: path.join(resolved, "provider-secrets.json"),
+    modelOverlays: path.join(resolved, "model-overlays.json"),
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
@@ -526,6 +562,51 @@ function assertInstanceId(value: unknown): asserts value is string {
       "provider instance id must start with a letter and contain only letters, numbers, underscores, or hyphens",
     );
   }
+}
+
+/**
+ * A list of model ids off the wire, deduped, first occurrence winning.
+ *
+ * DEDUPED RATHER THAN REFUSED, because a repeated id in a favourites list is a
+ * double-click, not a malformed request — and the order this preserves is the
+ * one the reader can see.
+ */
+function readModelIds(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.length > MAX_OVERLAY_IDS) {
+    throw new EngineStateError("invalid_request", `${field} must be an array of at most ${MAX_OVERLAY_IDS} model ids`);
+  }
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || !MODEL_ID.test(entry)) {
+      throw new EngineStateError("invalid_request", `${field} must contain only model ids`);
+    }
+    if (!out.includes(entry)) out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * The hand-typed rows. A DUPLICATE ID IS REFUSED HERE rather than deduped: this
+ * is the one list whose entries carry a label, so two entries for one id are two
+ * different answers to "what should this be called" and the engine has no basis
+ * for picking one.
+ */
+function readCustomModels(value: unknown): CustomProviderModel[] {
+  if (!Array.isArray(value) || value.length > MAX_CUSTOM_MODELS) {
+    throw new EngineStateError("invalid_request", `custom must be an array of at most ${MAX_CUSTOM_MODELS} models`);
+  }
+  const out: CustomProviderModel[] = [];
+  for (const entry of value) {
+    const parsed = CustomProviderModel.safeParse(entry);
+    if (!parsed.success || !MODEL_ID.test(parsed.data.id)) {
+      throw new EngineStateError("invalid_request", "each custom model needs a model id, and an optional label");
+    }
+    if (out.some((existing) => existing.id === parsed.data.id)) {
+      throw new EngineStateError("invalid_request", `${parsed.data.id} is listed twice`);
+    }
+    out.push(parsed.data);
+  }
+  return out;
 }
 
 /**
@@ -934,6 +1015,9 @@ export class EngineStore {
   private readonly notifier?: EngineNotifier;
   /** See the constructor: daemon-injected, absent means no computer use. */
   private readonly computerUse?: (() => ResolvedComputerUse | undefined) | undefined;
+  /** See the constructor: the real subprocess handshake unless a test says
+   *  otherwise. */
+  private readonly readModels: typeof readModelCatalogue;
   private readonly git: GitRunner;
   private readonly gh: GhRunner;
   /**
@@ -3227,9 +3311,15 @@ export class EngineStore {
        *  BY THE DAEMON, absent by default — so tests never read the real
        *  machine's installs, and a store without it simply has no computer use. */
       computerUse?: () => ResolvedComputerUse | undefined;
+      /** Asks the installed harnesses what they can run. INJECTED BY TESTS ONLY
+       *  — the default is the real subprocess handshake, and a store test that
+       *  wants to prove an overlay reaches a menu should not have to spawn a
+       *  `codex app-server` to do it. */
+      models?: typeof readModelCatalogue;
     } = {},
   ) {
     this.notifier = options.notifier;
+    this.readModels = options.models ?? readModelCatalogue;
     this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.gh = options.gh ?? defaultGhRunner;
@@ -3373,13 +3463,98 @@ export class EngineStore {
    * is far longer than a person spends in a menu and far shorter than the time
    * between a provider shipping a model and somebody wanting it.
    */
-  async modelCatalogue(driver: ProviderDriverKind, options: { force?: boolean } = {}): Promise<ModelCatalogue> {
+  async modelCatalogue(
+    driver: ProviderDriverKind,
+    options: { force?: boolean; instanceId?: string } = {},
+  ): Promise<ModelCatalogue> {
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
     const cached = this.modelCache.get(driver);
-    if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) return structuredClone(cached);
-    const catalogue = await readModelCatalogue(driver, this.now);
-    this.modelCache.set(driver, catalogue);
-    return structuredClone(catalogue);
+    let raw: ModelCatalogue;
+    if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) {
+      raw = structuredClone(cached);
+    } else {
+      raw = await this.readModels(driver, this.now);
+      this.modelCache.set(driver, raw);
+      raw = structuredClone(raw);
+    }
+    /**
+     * THE OVERLAY IS APPLIED HERE AND CACHED NOWHERE.
+     *
+     * It is a local file read of the same cost class as the inbox policy, so it
+     * happens on every answer — which is what makes an edit in the Models tab
+     * visible on the next menu open rather than five minutes later, and what
+     * means hiding a row never costs a subprocess. The cache above keeps holding
+     * WHAT THE PROVIDER SAID, which is what `source` claims about it.
+     */
+    const instanceId = options.instanceId ?? defaultInstanceIdForDriver(driver);
+    const overlay = this.getModelOverlay(instanceId);
+    return { ...raw, instanceId, models: applyModelOverlay(raw.models, overlay) };
+  }
+
+  /**
+   * One login's curated view of its provider's models, or an untouched one.
+   *
+   * NEVER THROWS, the same rule `getInboxPolicy` follows and for the same reason,
+   * with one extra clause worth stating: a malformed overlay costs the menu order
+   * AND a manually-added model id. That is a real loss and still the right trade —
+   * refusing to answer would take the whole picker with it, on both providers, over
+   * a document nobody can see in order to repair it.
+   *
+   * THE try/catch IS AROUND `readJson`, NOT JUST THE PARSE, for the reason the
+   * inbox policy already records: `readJson` swallows a missing file and RETHROWS
+   * a parse error, so "the shape is wrong" and "it is not JSON at all" are two
+   * different failures and only one of them is a safeParse.
+   */
+  getModelOverlay(instanceId: string): ModelOverlay {
+    assertInstanceId(instanceId);
+    const empty = (): ModelOverlay => ({ instanceId, ...DEFAULT_MODEL_OVERLAY, updatedAt: 0 });
+    try {
+      const stored = readJson(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
+      const parsed = ModelOverlaySchema.array().safeParse(stored?.overlays ?? []);
+      if (!parsed.success) return empty();
+      return parsed.data.find((entry) => entry.instanceId === instanceId) ?? empty();
+    } catch {
+      return empty();
+    }
+  }
+
+  /**
+   * TAKES `unknown` AND VALIDATES HERE, like `setInboxPolicy` and `saveMcpServer`:
+   * the bound belongs next to the schema that states it, not spelled a second time
+   * in whichever route is the way in today.
+   *
+   * PRESENCE IS THE PATCH, AND A SUBMITTED ARRAY REPLACES ITS LIST WHOLE. Not
+   * element-wise, because each of these is an ordered set the reader edits as a
+   * whole in one pane — merging would make "remove the last favourite"
+   * unexpressible, which is the same trap `optionalPatch` exists to keep out of
+   * the instance form.
+   */
+  setModelOverlay(
+    instanceId: string,
+    patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown },
+  ): ModelOverlay {
+    assertInstanceId(instanceId);
+    const next: ModelOverlay = { ...this.getModelOverlay(instanceId), updatedAt: this.now() };
+    for (const key of ["favorites", "hidden", "order"] as const) {
+      if (patch[key] === undefined) continue;
+      next[key] = readModelIds(patch[key], key);
+    }
+    if (patch.custom !== undefined) next.custom = readCustomModels(patch.custom);
+
+    const stored = (() => {
+      try {
+        const raw = readJson(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
+        const parsed = ModelOverlaySchema.array().safeParse(raw?.overlays ?? []);
+        return parsed.success ? parsed.data : [];
+      } catch {
+        // A document nobody can parse is replaced by this write rather than
+        // blocking it — the same stance the getter takes on the way in.
+        return [];
+      }
+    })();
+    const overlays = [...stored.filter((entry) => entry.instanceId !== instanceId), next];
+    atomicWrite(this.paths.modelOverlays, { version: STATE_VERSION, overlays });
+    return structuredClone(next);
   }
 
   /**

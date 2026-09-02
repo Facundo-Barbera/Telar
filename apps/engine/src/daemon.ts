@@ -670,8 +670,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       if (request.method === "GET" && url.pathname === "/v2/models") {
         const driver = url.searchParams.get("driver") ?? "claude";
+        const instanceId = url.searchParams.get("instanceId");
         writeJson(response, 200, {
-          catalogue: await store.modelCatalogue(driver as "claude" | "codex", { force: url.searchParams.get("refresh") === "1" }),
+          catalogue: await store.modelCatalogue(driver as "claude" | "codex", {
+            force: url.searchParams.get("refresh") === "1",
+            // Absent means the driver's built-in slot — the same fallback
+            // `resolveProviderInstance` makes for a session naming an id nobody
+            // configured. The PROVIDER answer is still driver-wide; the instance
+            // is what selects the overlay laid over it.
+            ...(instanceId ? { instanceId } : {}),
+          }),
         });
         return;
       }
@@ -2263,6 +2271,41 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const result = await updateProvider(instance.driver, instance.binaryPath);
         const providerInstances = store.listProviderInstances();
         writeJson(response, 200, { result, providerInstances, probes: await probeProviders(providerInstances, { force: true }) });
+        return;
+      }
+      /**
+       * ONE LOGIN'S CURATED MODEL LIST — starred, hidden, ordered, and the ids
+       * somebody added because the installed CLI does not publish them yet.
+       *
+       * NOT ON `/v2/provider-instances/:id`. That PUT is the login's
+       * configuration — the folder, the binary, the environment — and it is read
+       * on every session claim. This is a chatty preference document where a
+       * reorder is a burst of writes, and it belongs behind its own verb in its
+       * own file, the same way the provider secrets do.
+       *
+       * DELIBERATELY DOES NOT 404 ON AN UNCONFIGURED ID, mirroring
+       * `resolveProviderInstance`'s permissive stance: refusing would mean a
+       * session on a since-deleted instance loses its curation, which is the
+       * wrong way round.
+       */
+      const modelOverlay = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)\/models$/.exec(url.pathname);
+      if (modelOverlay && (request.method === "GET" || request.method === "PATCH")) {
+        const id = decodeURIComponent(modelOverlay[1]);
+        if (request.method === "GET") {
+          writeJson(response, 200, { overlay: store.getModelOverlay(id) });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          overlay: store.setModelOverlay(id, {
+            // Presence, not truthiness — `[]` is "I cleared this list" and is a
+            // different request from "I did not touch it".
+            ...("favorites" in input ? { favorites: input.favorites } : {}),
+            ...("hidden" in input ? { hidden: input.hidden } : {}),
+            ...("order" in input ? { order: input.order } : {}),
+            ...("custom" in input ? { custom: input.custom } : {}),
+          }),
+        });
         return;
       }
       const providerInstance = /^\/v2\/provider-instances\/([A-Za-z][A-Za-z0-9_-]*)$/.exec(url.pathname);

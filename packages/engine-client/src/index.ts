@@ -67,6 +67,8 @@ import {
   type SpoolLane,
   type SpoolSnapshot,
   type ModelCatalogue,
+  type ModelOverlay,
+  type CustomProviderModel,
   type SessionDiff,
   type McpOAuthStatus,
   type McpServer,
@@ -1274,12 +1276,37 @@ export class EngineClient {
     );
   }
 
-  /** Which models a provider says it has. Cached in the engine for five
-   *  minutes — answering means spawning the provider's own CLI. */
-  modelCatalogue(driver: ProviderDriverKind, options: { refresh?: boolean } = {}): Promise<{ catalogue: ModelCatalogue }> {
+  /**
+   * Which models a provider says it has, as one login reads them.
+   *
+   * The PROVIDER answer is cached in the engine for five minutes — answering
+   * means spawning the provider's own CLI. The reader's overlay on top of it is
+   * not cached at all, so a hide or an added id shows up on the very next call
+   * without `refresh`. Omitting `instanceId` gets the driver's built-in slot.
+   */
+  modelCatalogue(
+    driver: ProviderDriverKind,
+    options: { refresh?: boolean; instanceId?: string } = {},
+  ): Promise<{ catalogue: ModelCatalogue }> {
     const query = new URLSearchParams({ driver });
     if (options.refresh) query.set("refresh", "1");
+    if (options.instanceId) query.set("instanceId", options.instanceId);
     return this.request("GET", `/v2/models?${query.toString()}`);
+  }
+
+  /** What this login's reader did to that provider's model list. An untouched
+   *  overlay is a real answer, not a 404. */
+  modelOverlay(instanceId: string): Promise<{ overlay: ModelOverlay }> {
+    return this.request("GET", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`);
+  }
+
+  /** Presence is the patch, and a submitted array replaces that list whole — so
+   *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
+  setModelOverlay(
+    instanceId: string,
+    patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+  ): Promise<{ overlay: ModelOverlay }> {
+    return this.request("PATCH", `/v2/provider-instances/${encodeURIComponent(instanceId)}/models`, patch);
   }
 
   listSessions(projectId: string): Promise<{ sessions: Session[] }> {
