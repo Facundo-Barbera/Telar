@@ -22,6 +22,8 @@ import type {
   UsageReport,
   UsageResolution,
   ModelCatalogue,
+  ModelOverlay,
+  CustomProviderModel,
   SessionDiff,
   EngineErrorCode,
   EngineEvent,
@@ -155,11 +157,28 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     clearAppearance: () => request<{ ok: boolean }>(fetcher, "DELETE", "/api/appearance"),
     /** Which models a provider says it has — asked of the provider where it can
      *  answer, and this cockpit's own short list where it cannot. */
-    modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {
+    modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean; instanceId?: string } = {}) => {
       const query = new URLSearchParams({ driver });
       if (options.refresh) query.set("refresh", "1");
+      if (options.instanceId) query.set("instanceId", options.instanceId);
       return request<{ catalogue: ModelCatalogue }>(fetcher, "GET", `/api/models?${query.toString()}`);
     },
+    /** What this login's reader did to that list. An untouched overlay is a real
+     *  answer, not a 404. */
+    modelOverlay: (instanceId: string) =>
+      request<{ overlay: ModelOverlay }>(fetcher, "GET", `/api/provider-instances/${encodeURIComponent(instanceId)}/models`),
+    /** Presence is the patch: a submitted list replaces its own whole, so
+     *  `{ hidden: [] }` clears the hides and omitting `hidden` leaves them. */
+    setModelOverlay: (
+      instanceId: string,
+      patch: { favorites?: string[]; hidden?: string[]; order?: string[]; custom?: CustomProviderModel[] },
+    ) =>
+      request<{ overlay: ModelOverlay }>(
+        fetcher,
+        "PATCH",
+        `/api/provider-instances/${encodeURIComponent(instanceId)}/models`,
+        patch,
+      ),
     projectGit: (projectId: string) =>
       request<{ git: GitOverview }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/git`),
     /** Issues and pull requests. A NETWORK read behind a thirty-second cache —
