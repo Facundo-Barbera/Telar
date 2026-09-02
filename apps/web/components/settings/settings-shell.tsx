@@ -68,7 +68,9 @@ export function SettingsShell({
     : [{ group: "", items: sections }];
 
   return (
-    <div className="flex h-full min-h-0 bg-background text-foreground">
+    // `app-ground`: transparent in the desktop shell's translucent mode — the
+    // body's single wash is the canvas there (globals.css).
+    <div className="app-ground flex h-full min-h-0 bg-background text-foreground">
       {/* Side-nav — fixed, never scrolls the shell */}
       <nav
         className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar/40 p-3"

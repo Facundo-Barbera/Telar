@@ -1271,7 +1271,9 @@ export function RightPanel({
       aria-label="Right panel"
       style={fullscreen ? undefined : ({ "--right-panel-width": `${width}px` } as CSSProperties)}
       className={cn(
-        "relative flex shrink-0 flex-col border-l border-border bg-background",
+        // `app-ground`: transparent in the shell's translucent mode, so the
+        // panel shares the body's one wash instead of stacking a second.
+        "app-ground relative flex shrink-0 flex-col border-l border-border bg-background",
         // `min-w-80` is a FLOOR, not a preference. Below ~320px this stops being
         // a panel and becomes a column of truncation — the tab strip alone eats
         // it. Better to squeeze the conversation, which can scroll, than to keep

@@ -807,7 +807,10 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
         // pushes the whole shell past the viewport and scrolls the page
         // sideways. min-w-0 lets it shrink to its flex share; wide content then
         // scroll/clip within their own containers instead of the page.
-        "relative flex w-full min-w-0 flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        // `app-ground`: a structural canvas layer — stops painting in the
+        // desktop shell's translucent mode so the body's single wash shows
+        // through instead of compounding (globals.css).
+        "app-ground relative flex w-full min-w-0 flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
         className
       )}
       {...props}

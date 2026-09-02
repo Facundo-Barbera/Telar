@@ -400,16 +400,33 @@
    tab is a bug (there is no vibrancy behind it — the page behind is white).
    `data-telar-shell` is set by the shell's preload before any page script. */
 /* `--translucency` is percent TRANSPARENCY, written inline on <html> by
-   lib/appearance.ts (slider in Settings → Appearance, clamped 15–75). The
-   sidebar runs a step clearer than the canvas so the rail still reads as a
-   different ground. The fallback matches DEFAULT_APPEARANCE. */
+   lib/appearance.ts (the slider in Settings → Appearance, 0–100 display
+   mapped to 0–90 here). The fallback matches DEFAULT_APPEARANCE.
+
+   THE WASH IS PAINTED EXACTLY ONCE, ON BODY. The first cut put the alpha on
+   the --background TOKEN, and every nested `bg-background` ground — body,
+   then the sidebar-inset content pane, then a panel — painted it again:
+   two 64%-opacity layers compound to 87%, which is why "40%" read as no
+   transparency at all. So the token stays opaque (solid fills wearing
+   `text-background` need it opaque anyway), body alone carries the alpha,
+   and the structural grounds marked `app-ground` stop painting. The two
+   backdrop-blur header washes go fully transparent — their blur is what
+   keeps them legible, and a 65%-opaque bar over a see-through canvas would
+   read as a solid stripe. */
+[data-telar-shell][data-translucent] body {
+  background-color: oklch(0.992 0 0 / calc(100% - var(--translucency, 45%)));
+}
+.dark[data-telar-shell][data-translucent] body {
+  background-color: oklch(0.145 0 0 / calc(100% - var(--translucency, 45%)));
+}
 [data-telar-shell][data-translucent] {
-  --background: oklch(0.992 0 0 / calc(100% - var(--translucency, 40%)));
-  --sidebar: oklch(0.972 0.001 286 / calc(90% - var(--translucency, 40%)));
+  --sidebar: oklch(0.972 0.001 286 / calc(90% - var(--translucency, 45%)));
 }
 .dark[data-telar-shell][data-translucent] {
-  --background: oklch(0.145 0 0 / calc(100% - var(--translucency, 40%)));
-  --sidebar: oklch(0.175 0 0 / calc(90% - var(--translucency, 40%)));
+  --sidebar: oklch(0.175 0 0 / calc(90% - var(--translucency, 45%)));
+}
+[data-telar-shell][data-translucent] :is(.app-ground, .bg-background\/65, .bg-background\/80) {
+  background-color: transparent;
 }
 
 @layer base {
