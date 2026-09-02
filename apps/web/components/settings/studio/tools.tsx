@@ -23,13 +23,17 @@
  * sky without leaving the draft.
  */
 
+import { useState } from "react";
 import { ACCENTS, MAX_FONT_SIZE, MAX_TRANSLUCENCY, MIN_FONT_SIZE, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
 import { BACKDROP_PRESETS } from "@/lib/backdrop-presets";
 import { SCENE_LIMITS } from "@/lib/scene-composer";
-import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS } from "@/lib/theme-palettes";
+import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeToken } from "@/lib/theme-palettes";
+import { FOREGROUND_SURFACES } from "@/lib/theme-designer";
+import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
 import {
   draftScenePreset,
   patchDraftAccent,
+  patchDraftHalf,
   patchDraftStrength,
   patchDraftToken,
   patchDraftType,
@@ -39,7 +43,8 @@ import {
   type StudioMode,
 } from "@/lib/studio-draft";
 import { cn } from "@/lib/utils";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon, CopyIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
@@ -70,18 +75,82 @@ function ToolBlock({ title, hint, children }: { title: string; hint?: string; ch
 
 /* ------------------------------------------------------------- colours */
 
+/** The surface each foreground token is judged against — the designer's own
+ *  pairing table, inverted for row lookup. Undefined for surface tokens. */
+const SURFACE_OF: Partial<Record<ThemeToken, ThemeToken>> = Object.fromEntries(FOREGROUND_SURFACES);
+
+/** WCAG AA for body copy — the bar the designer and the VS Code importer both
+ *  repair to; shown here rather than enforced, because a hand edit is a
+ *  decision and the studio's job is to say what it costs. */
+const READABLE = 4.5;
+
+function ratioFor(draft: StudioDraft, mode: StudioMode, token: ThemeToken): number | undefined {
+  const surfaceToken = SURFACE_OF[token];
+  if (!surfaceToken) return undefined;
+  const fg = parseVsCodeColor(cssColorToHex(draft.theme[mode][token]));
+  const bg = parseVsCodeColor(cssColorToHex(draft.theme[mode][surfaceToken]));
+  if (!fg || !bg) return undefined;
+  return contrastRatio(fg, bg);
+}
+
+/**
+ * The hex, TYPEABLE. `<input type="color">` cannot accept a pasted `#1e1e2e`,
+ * and building a palette through 32 OS colour dialogs was the old editor's
+ * worst chore. The field holds free text while focused and commits on Enter or
+ * blur — only a well-formed hex lands; anything else snaps back.
+ */
+function HexField({ value, label, onCommit }: { value: string; label: string; onCommit: (hex: string) => void }) {
+  // `text` only means anything while focused — display falls back to `value`
+  // otherwise, so no effect has to chase external changes.
+  const [text, setText] = useState(value);
+  const [editing, setEditing] = useState(false);
+  const commit = () => {
+    setEditing(false);
+    const bare = text.trim().replace(/^([0-9a-f]{6}|[0-9a-f]{3})$/i, "#$1");
+    if (/^#[0-9a-f]{6}$/i.test(bare)) onCommit(bare.toLowerCase());
+    else if (/^#[0-9a-f]{3}$/i.test(bare)) onCommit(`#${[...bare.slice(1)].map((c) => c + c).join("")}`.toLowerCase());
+    else setText(value);
+  };
+  return (
+    <Input
+      value={editing ? text : value}
+      aria-label={`${label} hex value`}
+      spellCheck={false}
+      className="h-6 w-[4.75rem] shrink-0 px-1.5 font-mono text-[10px] tabular-nums"
+      onFocus={() => {
+        setEditing(true);
+        setText(value);
+      }}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+        if (event.key === "Escape") {
+          setEditing(false);
+          setText(value);
+        }
+      }}
+    />
+  );
+}
+
 export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioMode }) {
+  const other: StudioMode = mode === "light" ? "dark" : "light";
   return (
     <ToolBlock
       title={`Surfaces — ${mode} half`}
-      hint="The sixteen tokens the stage paints from. Edits stay on the draft; use the light/dark toggle above to reach the other half."
+      hint="Edits land on the draft and paint the app. A red ratio is text below 4.5:1 on the surface it sits on — shown, not enforced."
     >
       <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
         {THEME_TOKENS.map((token) => {
           const value = draft.theme[mode][token];
           const hex = cssColorToHex(value);
+          const ratio = ratioFor(draft, mode, token);
           return (
-            <label key={token} className="flex items-center gap-2 py-0.5 text-xs" title={`--${token}`}>
+            <label key={token} className="flex items-center gap-1.5 py-0.5 text-xs" title={`--${token}`}>
               <input
                 type="color"
                 value={hex}
@@ -90,10 +159,29 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
                 className="size-5 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
               />
               <span className="min-w-0 flex-1 truncate text-muted-foreground">{THEME_TOKEN_LABELS[token]}</span>
-              <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70">{hex}</span>
+              {ratio !== undefined && (
+                <span
+                  className={cn("shrink-0 font-mono text-[9px] tabular-nums", ratio < READABLE ? "font-semibold text-destructive" : "text-muted-foreground/60")}
+                  title={`${ratio.toFixed(1)}:1 against its surface (4.5:1 reads comfortably)`}
+                >
+                  {ratio.toFixed(1)}
+                </span>
+              )}
+              <HexField value={hex} label={THEME_TOKEN_LABELS[token]} onCommit={(next) => onDraft(patchDraftToken(draft, mode, token, hexToCssColor(next)))} />
             </label>
           );
         })}
+      </div>
+      <div className="mt-2.5">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2 text-[11px] text-muted-foreground"
+          title={`Replace the ${other} half with a copy of the ${mode} half`}
+          onClick={() => onDraft(patchDraftHalf(draft, other, { ...draft.theme[mode] }))}
+        >
+          <CopyIcon /> Copy {mode} half → {other}
+        </Button>
       </div>
     </ToolBlock>
   );

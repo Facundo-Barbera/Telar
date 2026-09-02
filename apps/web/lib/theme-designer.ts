@@ -42,9 +42,11 @@ const MAX_LABEL = 48;
 /**
  * Which surface each foreground is judged against. `muted-foreground` is
  * secondary text on the CANVAS (hints, timestamps) rather than on `muted`,
- * which is why it is not the pairing the token names suggest.
+ * which is why it is not the pairing the token names suggest. Exported so the
+ * palette tool can show the same judgement live while a colour is hand-picked
+ * — one contrast policy for every way a theme changes.
  */
-const FOREGROUND_SURFACES: ReadonlyArray<readonly [ThemeToken, ThemeToken]> = [
+export const FOREGROUND_SURFACES: ReadonlyArray<readonly [ThemeToken, ThemeToken]> = [
   ["foreground", "background"],
   ["card-foreground", "card"],
   ["popover-foreground", "popover"],
