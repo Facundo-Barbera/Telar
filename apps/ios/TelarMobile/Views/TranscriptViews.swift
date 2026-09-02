@@ -84,14 +84,32 @@ struct ActivityGroupView: View {
         }
     }
 
+    /// The tasks the CONVERSATION shows, which is not every task in the turn.
+    ///
+    /// A BACKGROUNDED SHELL IS NOT A DELEGATE. This used to draw one as a chip
+    /// with a terminal glyph, a "Background job" title and a sheet explaining
+    /// that its output went somewhere else — dressing that made the row look
+    /// deliberate without making it useful. The tool call that backgrounded the
+    /// shell is ALREADY an ordinary row in this same turn, so the chip was a
+    /// second, worse telling of something the transcript had said, and the live
+    /// process belongs on a surface where it can be watched and stopped.
+    ///
+    /// A WARP RUN SURVIVES THE FILTER: its own row is `background` because it
+    /// outlives its turn, but it carries warp linkage and it is the row that
+    /// says a fan-out happened at all. Same rule as the web's
+    /// `transcriptTasks` — the kind split happens AFTER the warp fold.
+    private var delegates: [JournalTask] {
+        tasks.filter { $0.task.kind != .background || $0.task.warp != nil }
+    }
+
     /// A step that failed inside the fold must not be swallowed by the very
     /// mechanism that hid it.
     private var anyFailed: Bool {
-        rows.contains { $0.status == .failed } || tasks.contains { $0.task.state == .failed }
+        rows.contains { $0.status == .failed } || delegates.contains { $0.task.state == .failed }
     }
 
     var body: some View {
-        if !rows.isEmpty || !tasks.isEmpty {
+        if !rows.isEmpty || !delegates.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 if live {
                     liveWindow
@@ -100,7 +118,7 @@ struct ActivityGroupView: View {
                 }
                 // Sub-agents are never hidden by the fold: THAT a fan-out
                 // happened is part of the conversation.
-                ForEach(tasks) { task in
+                ForEach(delegates) { task in
                     TaskRowView(task: task)
                 }
             }
@@ -453,12 +471,12 @@ struct TaskRowView: View {
             showDetail = true
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: task.task.kind == .background ? "terminal" : "person.2")
+                Image(systemName: "person.2")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
                     .opacity(0.7)
                     .frame(width: 24, height: 24)
-                Text(task.task.title ?? (task.task.kind == .background ? "Background job" : "Sub-agent"))
+                Text(task.task.title ?? "Sub-agent")
                     .font(Theme.body)
                     .foregroundStyle(Theme.textMuted)
                     .lineLimit(1)
@@ -516,9 +534,7 @@ struct AgentDetailSheet: View {
                         ItemRowView(item: item)
                     }
                     if task.items.isEmpty {
-                        Text(task.task.kind == .background
-                             ? "A background process — its output streams to the turn that started it."
-                             : "No steps recorded yet.")
+                        Text("No steps recorded yet.")
                             .font(Theme.meta)
                             .foregroundStyle(Theme.textMuted)
                     }
@@ -530,7 +546,7 @@ struct AgentDetailSheet: View {
                 .padding()
             }
             .background(Theme.canvas)
-            .navigationTitle(task.task.title ?? (task.task.kind == .background ? "Background job" : "Sub-agent"))
+            .navigationTitle(task.task.title ?? "Sub-agent")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
