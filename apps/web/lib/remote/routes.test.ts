@@ -11,6 +11,7 @@ import { DELETE as deviceDelete, PATCH as devicePatch } from "@/app/api/remote/d
 import { DELETE as devicesDeleteOthers } from "@/app/api/remote/devices/route";
 import { decideApiAccess } from "./gate";
 import { isTailnetIpv4, listEndpoints } from "./endpoints";
+import { machineName } from "./observe";
 import { readRemote } from "./store";
 
 const savedTelarHome = process.env.TELAR_HOME;
@@ -149,10 +150,12 @@ describe("pairing routes", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ requireAuth: true }),
     }));
-    // Three full devices now (two paired + the self-paired browser); demote two.
+    // Three full devices now (two paired + the self-paired caller); demote two.
     expect((await patchDeviceRequest(other.deviceId, { role: "observer" })).status).toBe(200);
-    const browserDevice = readRemote().devices.find((device) => device.name === "This browser")!;
-    expect((await patchDeviceRequest(browserDevice.id, { role: "observer" })).status).toBe(200);
+    const selfPaired = readRemote().devices.find(
+      (device) => device.id !== paired.deviceId && device.id !== other.deviceId,
+    )!;
+    expect((await patchDeviceRequest(selfPaired.id, { role: "observer" })).status).toBe(200);
     const last = await patchDeviceRequest(paired.deviceId, { role: "observer" });
     expect(last.status).toBe(409);
     expect(((await last.json()) as { error: { code: string } }).error.code).toBe("cockpit_last_full_device");
@@ -179,14 +182,55 @@ describe("pairing routes", () => {
     expect(readRemote().devices.map((device) => device.id)).toEqual([keeper.deviceId]);
   });
 
-  test("the self-paired browser is stamped as a browser", async () => {
+  test("the app running the server is listed, and named itself", async () => {
+    // It holds a secret rather than a device record, so without this row the
+    // one thing certainly connected appears nowhere in the list of what is.
     freshHome();
-    await remotePatch(new Request("http://x/api/remote", {
+    const savedToken = process.env.TELAR_HOST_TOKEN;
+    const savedClient = process.env.TELAR_HOST_CLIENT;
+    try {
+      expect(((await remoteGet(statusRequest()).json()) as { host?: unknown }).host).toBeUndefined();
+      process.env.TELAR_HOST_TOKEN = "tlr_hostsecret";
+      process.env.TELAR_HOST_CLIENT = "Telar (dev)";
+      const withHost = (await remoteGet(statusRequest()).json()) as {
+        host?: { name: string; isCaller: boolean; identity: { kind: string; client: string } };
+      };
+      expect(withHost.host?.identity.client).toBe("Telar (dev)");
+      expect(withHost.host?.identity.kind).toBe("desktop");
+      expect(withHost.host?.name).toBe(`Telar (dev) · ${machineName()}`);
+      expect(withHost.host?.isCaller).toBe(false);
+
+      const fromHost = (await remoteGet(
+        new Request("http://x/api/remote", { headers: { cookie: "telar_device=tlr_hostsecret" } }),
+      ).json()) as { host?: { isCaller: boolean } };
+      expect(fromHost.host?.isCaller).toBe(true);
+    } finally {
+      if (savedToken === undefined) delete process.env.TELAR_HOST_TOKEN;
+      else process.env.TELAR_HOST_TOKEN = savedToken;
+      if (savedClient === undefined) delete process.env.TELAR_HOST_CLIENT;
+      else process.env.TELAR_HOST_CLIENT = savedClient;
+    }
+  });
+
+  test("the self-paired caller is identified, not called 'This browser'", async () => {
+    // It is the one row guaranteed to be in every list, and it used to be the
+    // only one with no client, no machine and no address to know it by.
+    freshHome();
+    await remotePatch(new Request("http://127.0.0.1:3100/api/remote", {
       method: "PATCH",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Telar/0.4.0 Chrome/126.0 Electron/31.0 Safari/537.36",
+      },
       body: JSON.stringify({ requireAuth: true }),
     }));
-    expect(readRemote().devices[0].platform).toBe("browser");
+    const device = readRemote().devices[0];
+    expect(device.identity?.kind).toBe("desktop");
+    expect(device.identity?.client).toBe("Telar");
+    expect(device.identity?.origin).toBe("127.0.0.1:3100");
+    // Dialled loopback, so this server's machine IS that client's machine.
+    expect(device.name).toBe(`Telar · ${machineName()}`);
   });
 
   test("enabling requireAuth pairs the calling browser in the same response", async () => {

@@ -1,27 +1,6 @@
 import { addDevice, consumePairing, mintDeviceToken, RemoteStoreError, type PairingRefusal } from "@/lib/remote/store";
-import { cleanDeclared, describeDevice, isDeviceKind, sniffUserAgent, type DeviceIdentity } from "@/lib/remote/identity";
-
-/**
- * THE PEER ADDRESS, from whichever header this deployment actually sets. Next
- * does not expose the socket, and the cockpit sits behind its own proxy, so
- * the forwarded chain is the only source — first hop, because the ones after
- * it are whatever the client felt like appending.
- */
-function peerAddress(request: Request): string | undefined {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const candidate = forwarded || request.headers.get("x-real-ip")?.trim();
-  return candidate && candidate.length <= 64 ? candidate : undefined;
-}
-
-/** Which origin it paired against — pairing is per-origin, so this is how a
- *  reader tells a loopback pairing from a tailnet one for the same machine. */
-function originOf(request: Request): string | undefined {
-  try {
-    return new URL(request.url).host.slice(0, 64) || undefined;
-  } catch {
-    return undefined;
-  }
-}
+import { describeDevice } from "@/lib/remote/identity";
+import { observeIdentity } from "@/lib/remote/observe";
 
 /**
  * WHY IT WAS REFUSED, in words a person can act on. Every refusal used to read
@@ -65,27 +44,19 @@ export async function POST(request: Request) {
   const platform = body.platform === "ios" || body.platform === "browser" ? body.platform : undefined;
 
   /**
-   * WHAT IT SAYS IT IS, AND WHAT WE SAW.
+   * WHAT IT SAYS IT IS, AND WHAT WE SAW — see lib/remote/observe.ts.
    *
-   * Declared fields are believed and merely bounded — a native client knows
-   * its own name and a browser does not. The User-Agent fallback fills only
-   * what nothing declared, so a CLI that introduces itself is never overruled
-   * by a header it did not set.
-   *
-   * The address and origin are OBSERVED. A caller cannot claim to have
-   * connected from somewhere it did not, which is what makes them the fields
-   * worth trusting when two rows look alike.
+   * `kind` is a free slug: a client called Lintel declares `kind: "lintel"`
+   * and the row says Lintel. The retired `platform: "ios"` is still honoured
+   * for clients built against the old shape, but only as a default the new
+   * field overrides.
    */
-  const sniffed = sniffUserAgent(request.headers.get("user-agent"));
-  const declaredKind = isDeviceKind(body.kind) ? body.kind : undefined;
-  const identity: DeviceIdentity = {
-    kind: declaredKind ?? (platform === "ios" ? "phone" : sniffed.kind),
-    ...(cleanDeclared(body.client) ?? sniffed.client ? { client: cleanDeclared(body.client) ?? sniffed.client } : {}),
-    ...(cleanDeclared(body.machine) ? { machine: cleanDeclared(body.machine) } : {}),
-    ...(cleanDeclared(body.os) ?? sniffed.os ? { os: cleanDeclared(body.os) ?? sniffed.os } : {}),
-    ...(peerAddress(request) ? { address: peerAddress(request) } : {}),
-    ...(originOf(request) ? { origin: originOf(request) } : {}),
-  };
+  const identity = observeIdentity(request, {
+    kind: body.kind ?? (platform === "ios" ? "phone" : undefined),
+    client: body.client,
+    machine: body.machine,
+    os: body.os,
+  });
   const deviceName = describeDevice(identity, typeof body.deviceName === "string" ? body.deviceName : undefined);
   try {
     const outcome = token ? consumePairing(token) : "none-pending";

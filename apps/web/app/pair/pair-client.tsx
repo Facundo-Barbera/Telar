@@ -30,7 +30,12 @@ export function PairClient() {
         const response = await fetch("/api/pair", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ token, deviceName: "Browser", platform: "browser" }),
+          /* NO deviceName. This used to send the literal "Browser", and a
+             declared name beats everything the server can work out — so every
+             browser row said "Browser" while the cockpit knew perfectly well
+             it was Safari on an iPhone. A page cannot introduce itself better
+             than the request already does; let the server name it. */
+          body: JSON.stringify({ token }),
         });
         if (!response.ok) {
           const body = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;

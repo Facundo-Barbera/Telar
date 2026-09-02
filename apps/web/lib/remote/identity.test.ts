@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { cleanDeclared, describeDevice, isDeviceKind, sniffUserAgent } from "./identity";
+import { cleanDeclared, cleanKind, describeDevice, isKnownDeviceKind, sniffUserAgent } from "./identity";
 
 const CHROME_MAC =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
@@ -40,6 +40,12 @@ describe("sniffing a user agent", () => {
     expect(sniffUserAgent(CHROME_MAC.replace("Chrome/120.0", "Chrome/120.0 Edg/120.0")).client).toBe("Edge");
   });
 
+  test("an app shell is a desktop app, not a fourth tab of Chrome", () => {
+    const electron =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Telar/0.4.0 Chrome/126.0 Electron/31.0 Safari/537.36";
+    expect(sniffUserAgent(electron)).toEqual({ kind: "desktop", client: "Telar", os: "macOS" });
+  });
+
   test("something that is not a browser stays unknown rather than being guessed", () => {
     // A CLI has no business being labelled a browser because it sent no header.
     expect(sniffUserAgent(null)).toEqual({ kind: "unknown" });
@@ -63,9 +69,26 @@ describe("what the row says", () => {
     expect(describeDevice({ kind: "cli" })).toBe("Cli");
   });
 
-  test("kinds are open enough for clients that do not exist yet", () => {
-    expect(isDeviceKind("service")).toBe(true);
-    expect(isDeviceKind("cli")).toBe(true);
-    expect(isDeviceKind("toaster")).toBe(false);
+  test("a client that declared only a kind is still named by it", () => {
+    // The whole point of opening the kind: "Lintel" must survive to the row.
+    expect(describeDevice({ kind: "lintel", machine: "mini-fbarbera" })).toBe("Lintel · mini-fbarbera");
+    expect(describeDevice({ kind: "lintel" })).toBe("Lintel");
+  });
+});
+
+describe("kinds a client declares", () => {
+  test("any slug is accepted — the list is for icons, not for permission", () => {
+    expect(cleanKind("Lintel")).toBe("lintel");
+    expect(cleanKind("Smart TV")).toBe("smart-tv");
+    expect(cleanKind("  --weird--  ")).toBe("weird");
+    expect(isKnownDeviceKind("lintel")).toBe(false);
+    expect(isKnownDeviceKind("cli")).toBe(true);
+  });
+
+  test("bounded and refusable, like every other declared field", () => {
+    expect(cleanKind("x".repeat(80))!.length).toBe(32);
+    expect(cleanKind("!!!")).toBeUndefined();
+    expect(cleanKind("")).toBeUndefined();
+    expect(cleanKind(7)).toBeUndefined();
   });
 });

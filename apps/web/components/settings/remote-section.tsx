@@ -38,9 +38,18 @@ interface RemoteDevice {
   identity?: { kind?: string; client?: string; machine?: string; os?: string; address?: string; origin?: string };
 }
 
+/** The process running the server. Reported, never stored — it has no id
+ *  because there is nothing to revoke; quitting the app is the revoke. */
+interface RemoteHost {
+  name: string;
+  identity?: RemoteDevice["identity"];
+  isCaller?: boolean;
+}
+
 interface RemoteStatus {
   requireAuth: boolean;
   exposure?: "local-only" | "network-accessible";
+  host?: RemoteHost;
   devices: RemoteDevice[];
   callerDeviceId?: string;
   callerRole?: "full" | "observer";
@@ -48,10 +57,17 @@ interface RemoteStatus {
   endpoints: Array<{ kind: string; label: string; url: string; qrSafe: boolean }>;
 }
 
-/** By KIND, not by the retired two-value platform enum — the clients that pair
- *  with a cockpit are not all phones and browsers. */
+/**
+ * ICONS FOR THE KINDS WE KNOW, and a fallback for the ones we do not.
+ *
+ * The kind is a free slug a client declares about itself, so this map is a
+ * courtesy and not a validation: an unrecognised kind gets the question-mark
+ * glyph and keeps its own name in the row, which beats a familiar icon over a
+ * wrong label. Adding a row here is how a new client earns an icon; it is not
+ * how it earns the right to pair.
+ */
 const KIND_ICONS: Record<string, typeof MonitorIcon> = {
-  browser: MonitorIcon,
+  browser: GlobeIcon,
   phone: SmartphoneIcon,
   tablet: SmartphoneIcon,
   desktop: MonitorIcon,
@@ -345,7 +361,10 @@ export function RemoteSection() {
             : "Pairing is off — anything that can reach this address has full control. These credentials matter again when you turn it on."
         }
       >
-        {status.devices.length === 0 && <Row label="None yet" hint="Devices appear here as they pair." control={null} />}
+        {status.host && <HostRow host={status.host} />}
+        {status.devices.length === 0 && !status.host && (
+          <Row label="None yet" hint="Devices appear here as they pair." control={null} />
+        )}
         {status.devices.map((device) => (
           <DeviceRow
             key={device.id}
@@ -362,6 +381,29 @@ export function RemoteSection() {
         )}
       </SettingsGroup>
     </>
+  );
+}
+
+/**
+ * The app hosting the server. It is not pairable and not revocable, so it gets
+ * no role switch and no X — the controls a paired device needs would all be
+ * lies here. It is listed anyway because a panel that answers "what is
+ * connected" and omits the one certain answer is the bug this fixes.
+ */
+function HostRow({ host }: { host: RemoteHost }) {
+  const Icon = KIND_ICONS[host.identity?.kind ?? "desktop"] ?? MonitorIcon;
+  return (
+    <Row
+      icon={Icon}
+      label={
+        <span className="inline-flex items-center gap-2">
+          {host.name}
+          <Badge variant="outline">{host.isCaller ? "This app" : "Host"}</Badge>
+        </span>
+      }
+      hint="Runs the server — always connected, nothing to revoke."
+      control={null}
+    />
   );
 }
 
@@ -385,6 +427,10 @@ function DeviceRow({
   // The kind first; the old platform field only for rows written before it.
   const kind = device.identity?.kind ?? (device.platform === "ios" ? "phone" : device.platform);
   const Icon = (kind ? KIND_ICONS[kind] : undefined) ?? CircleHelpIcon;
+  // Suppressed when the name already carries it, so a row does not read
+  // "Chrome · macOS — Chrome · macOS · Last seen …".
+  const declaredSource = [device.identity?.client, device.identity?.machine].filter(Boolean).join(" · ");
+  const source = declaredSource && !device.name.includes(declaredSource) ? declaredSource : undefined;
 
   const commit = () => {
     setEditing(false);
@@ -428,6 +474,12 @@ function DeviceRow({
         )
       }
       hint={[
+        // WHAT IS ACTUALLY CONNECTED, when the name does not already say it.
+        // A client picks its own name at pairing and often picks the machine's
+        // — Lintel pairs as "MINI-FBARBERA" — which left the row naming the box
+        // and never the app running on it. The name is whatever it was called;
+        // this line is what it is. Renaming a row does not make it lie.
+        source,
         device.lastSeenAt ? `Last seen ${fmtAgo(device.lastSeenAt)}` : `Paired ${fmtAgo(device.createdAt)}`,
         // WHERE IT IS, which is the whole point of the report-back fields: two
         // rows reading "Chrome" are told apart by the address they came from.
