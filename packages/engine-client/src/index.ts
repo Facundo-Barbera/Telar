@@ -301,6 +301,37 @@ export class EngineClient {
     return this.request("PATCH", "/v2/textgen", patch);
   }
 
+  /**
+   * One structured completion from the policy's harness — the title job's
+   * subprocess, generalised for callers that bring their own JSON schema.
+   *
+   * SLOW AND FALLIBLE BY NATURE: a cold harness start plus a completion, and a
+   * harness that refuses or times out comes back as a `textgen_failed` 502
+   * rather than an empty answer. Treat it as a request that may take a minute
+   * and may not succeed.
+   */
+  completeStructured(input: { prompt: string; schema: Record<string, unknown>; model?: string }): Promise<{ result: Record<string, unknown> }> {
+    return this.request("POST", "/v2/textgen/complete", input);
+  }
+
+  /**
+   * The host cockpit's resolved look, republished for paired clients — accent,
+   * typefaces, translucency, backdrop, both halves of the active theme pair.
+   *
+   * AN OPAQUE BLOB, and every reader must be additive-tolerant: the cockpit
+   * grows this vocabulary on its own release schedule, and a client that does
+   * not recognise a key ignores it rather than failing. `null` means nothing
+   * has published yet — wear your own defaults.
+   */
+  appearance(): Promise<{ appearance: Record<string, unknown> | null }> {
+    return this.request("GET", "/v2/appearance");
+  }
+
+  /** Replaces the published look wholesale — a snapshot, never a patch. */
+  setAppearance(blob: Record<string, unknown>): Promise<{ ok: boolean }> {
+    return this.request("PUT", "/v2/appearance", blob);
+  }
+
   // ── Spool ─────────────────────────────────────────────────────────────────
   //
   // NOT PROJECT-SCOPED, and that is the module's premise rather than a routing

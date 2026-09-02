@@ -8,6 +8,7 @@
  */
 
 import { useEffect } from "react";
+import { AppearancePublisher } from "@/components/appearance-publisher";
 import { applyAppearance, useAppearance } from "@/lib/appearance";
 import { applyBackdrop, useBackdrop } from "@/lib/backdrop";
 import { applyThemeCss, useThemeLibrary } from "@/lib/theme-palettes";
@@ -23,5 +24,13 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
   // script's one shot — on switches AND on edits to the active theme (the
   // hook re-renders for both, and applyThemeCss no-ops when unchanged).
   useEffect(() => applyThemeCss(), [activeId, themes]);
-  return children;
+  // Renders null. It watches the same three stores and tells the engine what
+  // this window resolved to, so a paired client can wear the same look — see
+  // appearance-publisher.tsx for why a BROWSER is the one that has to say it.
+  return (
+    <>
+      <AppearancePublisher />
+      {children}
+    </>
+  );
 }

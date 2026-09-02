@@ -1313,3 +1313,53 @@ test("deleting a session removes everything it owns, and refuses mid-turn", () =
   // And it is gone from the list rather than lingering as an unreadable entry.
   expect(store.listSessions("project_one")).toEqual([]);
 });
+
+test("the published appearance is an opaque blob, capped, and survives a restart", () => {
+  // THE STORE'S WHOLE JOB IS TO NOT UNDERSTAND THIS. The cockpit's look lives
+  // in a browser's localStorage and is republished here for paired clients, so
+  // the vocabulary belongs to the cockpit and grows on its release schedule.
+  // What is tested is the mailbox: it holds what it was given, byte for byte,
+  // and it refuses the two things that are not a look.
+  const stateRoot = root();
+  const store = new EngineStore(stateRoot, () => 100);
+
+  // Nothing published yet is `null`, not a default look — a client with no
+  // host to copy wears its own.
+  expect(store.getAppearance()).toBeNull();
+
+  const blob = {
+    version: 1,
+    accent: "sea",
+    fontSize: 17,
+    // A key this engine has never heard of, which is the point: an iOS client
+    // shipping ahead of the engine must not need an engine release.
+    somethingInventedLater: { nested: [1, 2, 3] },
+    theme: { light: { background: "oklch(1 0 0)" }, dark: { background: "oklch(0.145 0 0)" } },
+  };
+  expect(store.setAppearance(blob)).toEqual(blob);
+  expect(store.getAppearance()).toEqual(blob);
+
+  // A SNAPSHOT, NOT A PATCH: the second publish replaces the first outright,
+  // because two merged halves would describe a look nobody is wearing.
+  store.setAppearance({ accent: "rose" });
+  expect(store.getAppearance()).toEqual({ accent: "rose" });
+
+  // Not an object is not a look.
+  expect(() => store.setAppearance([1, 2, 3])).toThrow(EngineStateError);
+  expect(() => store.setAppearance("indigo")).toThrow(EngineStateError);
+  expect(() => store.setAppearance(null)).toThrow(EngineStateError);
+
+  // The cap, which exists to forbid one specific abuse — an inlined wallpaper
+  // data URL riding in as "appearance".
+  expect(() => store.setAppearance({ wallpaper: "x".repeat(64 * 1024) })).toThrow(EngineStateError);
+  // …and the refusal left the last good publish alone.
+  expect(store.getAppearance()).toEqual({ accent: "rose" });
+
+  // On disk, so a restarted engine still answers a phone that pairs tomorrow.
+  expect(new EngineStore(stateRoot, () => 100).getAppearance()).toEqual({ accent: "rose" });
+
+  // Same never-throws rule as the policies: a corrupt file costs the
+  // decoration, never the request that asked for it.
+  fs.writeFileSync(path.join(stateRoot, "appearance.json"), "not json at all");
+  expect(store.getAppearance()).toBeNull();
+});

@@ -250,6 +250,11 @@ export const EngineErrorCode = z.enum([
   "worker_unavailable",
   "provider_unavailable",
   "driver_failed",
+  /** A one-shot text generation produced no answer — the harness was missing,
+   *  timed out, refused, or printed something unparseable. Distinct from
+   *  `driver_failed`, which is about a SESSION's provider: nothing is broken
+   *  here and nothing is lost, the completion simply did not arrive. */
+  "textgen_failed",
   "internal_error",
 ]);
 export type EngineErrorCode = z.infer<typeof EngineErrorCode>;

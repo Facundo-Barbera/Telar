@@ -379,6 +379,13 @@ export type EngineStatePaths = {
   /** Who writes generated titles and branch names — see `TextGenPolicy`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   textGen: string;
+  /**
+   * The host cockpit's resolved look, republished for paired clients — see
+   * `getAppearance`. Environment-scoped like `textGen`, but for the opposite
+   * reason: appearance genuinely LIVES in one browser's localStorage, and this
+   * file is the only place another device can read it from.
+   */
+  appearance: string;
   engine: string;
   lock: string;
 };
@@ -465,9 +472,24 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
     textGen: path.join(resolved, "text-generation.json"),
+    appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
   };
+}
+
+/**
+ * The published appearance blob's only limit — see `setAppearance`. Two
+ * concrete theme halves plus every scalar the cockpit publishes is under 4 KB,
+ * so this leaves room for a decade of additive growth while still refusing the
+ * one thing that would blow the file up: an inlined wallpaper data URL.
+ */
+const MAX_APPEARANCE_BYTES = 64 * 1024;
+
+/** A JSON object and not an array — the shape a blob-shaped payload must have
+ *  for additive readers to be able to key into it at all. */
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertId(value: unknown, label: string): asserts value is string {
@@ -1184,6 +1206,64 @@ export class EngineStore {
     }
     atomicWrite(this.paths.textGen, { version: STATE_VERSION, ...next });
     return { ...next };
+  }
+
+  // ── Appearance ────────────────────────────────────────────────────────────
+  //
+  // AN OPAQUE BLOB, AND THE OPACITY IS THE DESIGN. The cockpit's look — accent,
+  // typefaces, text size, translucency, backdrop, the two halves of the active
+  // theme pair — lives in ONE browser's localStorage, because that is where a
+  // person configures it. A paired client (the iOS app) has no way to read that
+  // storage, so the browser republishes its RESOLVED look here and the engine
+  // becomes the one place every device can ask "what does the host look like?".
+  //
+  // THE ENGINE DOES NOT UNDERSTAND IT and must not learn to. Every token the
+  // cockpit adds — a new font slot, a new theme key — would otherwise need a
+  // schema change here, an engine release, and a version handshake before it
+  // could reach a phone. Storing it as JSON the engine never inspects makes the
+  // whole vocabulary additive: new keys ride through untouched, and readers are
+  // expected to ignore what they do not recognise (the repo's additive rule).
+  // The only thing enforced is that it IS a JSON object and that it is small.
+
+  /** The host's published look, or `null` when nothing has published yet — the
+   *  same never-throws rule as the policies above: an unreadable file costs the
+   *  decoration, never the request that asked for it. */
+  getAppearance(): Record<string, unknown> | null {
+    try {
+      const stored = readJson(this.paths.appearance) as { appearance?: unknown } | undefined;
+      const blob = stored?.appearance;
+      return isPlainJsonObject(blob) ? blob : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Replaces the blob wholesale — this is a snapshot of a browser's resolved
+   * state, not a patch, and merging two publishers' halves would produce a look
+   * neither of them wears.
+   *
+   * THE CAP IS THE ONLY POLICY. 64 KB is far above any plausible palette (two
+   * halves of sixteen colour tokens is under 2 KB) and far below anything that
+   * would make this file expensive to read on every pairing handshake. It also
+   * quietly forbids the one abuse the opacity invites: pasting a wallpaper's
+   * data URL in here instead of serving it as an image.
+   */
+  setAppearance(blob: unknown): Record<string, unknown> {
+    if (!isPlainJsonObject(blob)) {
+      throw new EngineStateError("invalid_request", "appearance must be a JSON object");
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(blob);
+    } catch {
+      throw new EngineStateError("invalid_request", "appearance must be JSON-serializable");
+    }
+    if (Buffer.byteLength(serialized, "utf8") > MAX_APPEARANCE_BYTES) {
+      throw new EngineStateError("invalid_request", `appearance must be under ${MAX_APPEARANCE_BYTES} bytes when serialized`);
+    }
+    atomicWrite(this.paths.appearance, { version: STATE_VERSION, appearance: blob });
+    return blob;
   }
 
   // ── Spool ─────────────────────────────────────────────────────────────────

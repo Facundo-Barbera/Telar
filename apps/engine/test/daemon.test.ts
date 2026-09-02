@@ -204,3 +204,56 @@ test("the provider registry answers with its probe, and never with a secret", as
   await expect(client.removeProviderInstance("claude")).rejects.toMatchObject({ status: 409 });
   await expect(client.removeProviderInstance("claude_work")).resolves.toEqual({ removed: true });
 });
+
+test("the appearance mailbox round-trips an opaque blob and refuses what is not one", async () => {
+  // The cockpit's look lives in a browser's localStorage; this route is the
+  // only way a paired phone can learn it. The daemon deliberately understands
+  // nothing about the payload — see EngineStore.setAppearance.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+
+  await expect(client.appearance()).resolves.toEqual({ appearance: null });
+
+  const blob = {
+    version: 1,
+    accent: "sea",
+    fontSize: 17,
+    keyFromANewerClient: true,
+    theme: { light: { background: "oklch(1 0 0)" }, dark: { background: "oklch(0.145 0 0)" } },
+  };
+  await expect(client.setAppearance(blob)).resolves.toEqual({ ok: true });
+  await expect(client.appearance()).resolves.toEqual({ appearance: blob });
+
+  // Over the store's cap, reported as the client's fault rather than swallowed.
+  await expect(client.setAppearance({ wallpaper: "x".repeat(64 * 1024) })).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+  } satisfies Partial<EngineClientError>);
+
+  // Still paired-only: the bearer check runs before routing, as everywhere.
+  const unauthenticated = await fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/appearance`);
+  expect(unauthenticated.status).toBe(401);
+});
+
+test("a structured completion validates its request before spending a harness", async () => {
+  // ONLY THE REFUSALS ARE TESTED HERE, and deliberately: a valid request spawns
+  // a real `claude -p` child, so asserting the happy path would make this suite
+  // depend on which CLI is installed and on a network round trip. What belongs
+  // to the daemon is the guard in front of that child, and every case below
+  // fails before anything is spawned.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const schema = { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] };
+
+  await expect(client.completeStructured({ prompt: "   ", schema })).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+  } satisfies Partial<EngineClientError>);
+  await expect(client.completeStructured({ prompt: "x".repeat(20_001), schema })).rejects.toMatchObject({ status: 400 });
+  await expect(
+    client.completeStructured({ prompt: "hello", schema: [] as unknown as Record<string, unknown> }),
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(client.completeStructured({ prompt: "hello", schema, model: "  " })).rejects.toMatchObject({ status: 400 });
+});

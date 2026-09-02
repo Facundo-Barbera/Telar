@@ -253,6 +253,64 @@ export async function generateSessionTitle(input: TextGenDriverInput & { message
   return sanitizeTitle(result?.["title"]);
 }
 
+/**
+ * The policy half of a structured call: the driver, its built-in instance, and
+ * the model the environment settled on. Shared by `maybeRetitleSession` and
+ * `runStructuredForPolicy` so the two cannot drift on WHOSE account pays.
+ */
+export type StructuredPolicyStore = {
+  getTextGenPolicy(): TextGenPolicy;
+  resolveProviderInstance(
+    instanceId: string,
+    driver: "claude" | "codex",
+  ): { enabled: boolean; binaryPath?: string; env: { name: string; value: string }[] };
+  /** Only `root` is read — somewhere real to run the child from. */
+  paths?: { root?: string };
+};
+
+/**
+ * One structured completion, for a caller that brought its own schema.
+ *
+ * THE GENERALISATION OF THE TITLE CALL, and deliberately no more than that:
+ * same policy, same built-in instance (a background completion must never
+ * spend a custom instance's metered account — see `maybeRetitleSession`), same
+ * never-throws contract. `undefined` means the harness did not answer; the
+ * caller decides whether that is fatal, and the HTTP route above this one
+ * turns it into a 502.
+ *
+ * CWD IS ARBITRARY. A schema-bound `-p` run has no tools and reads no repo, so
+ * the engine's own state root — or the system temp dir when there is none — is
+ * as good a place to stand as any workspace.
+ */
+export async function runStructuredForPolicy(
+  store: StructuredPolicyStore,
+  input: { prompt: string; schema: object; model?: string },
+): Promise<Record<string, unknown> | undefined> {
+  let policy: TextGenPolicy;
+  let instance: ReturnType<StructuredPolicyStore["resolveProviderInstance"]>;
+  try {
+    policy = store.getTextGenPolicy();
+    instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
+  } catch {
+    return undefined;
+  }
+  if (!instance.enabled) return undefined;
+  const env: Record<string, string> = {};
+  for (const variable of instance.env) if (variable.value) env[variable.name] = variable.value;
+  const model = input.model ?? policy.model;
+  return runStructured(
+    {
+      driver: policy.driver,
+      ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}),
+      env,
+      cwd: store.paths?.root ?? os.tmpdir(),
+      ...(model ? { model } : {}),
+    },
+    input.prompt,
+    input.schema,
+  );
+}
+
 /** The slice of `EngineStore` this job needs — an interface so the whole flow
  *  is testable without a daemon or a real harness. */
 export type RetitleStore = {

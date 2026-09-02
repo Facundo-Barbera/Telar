@@ -119,6 +119,17 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     textGen: () => request<{ textGen: TextGenPolicy }>(fetcher, "GET", "/api/textgen"),
     setTextGen: (patch: { titles?: boolean; renameBranches?: boolean; driver?: ProviderDriverKind; model?: string | null }) =>
       request<{ textGen: TextGenPolicy }>(fetcher, "PATCH", "/api/textgen", patch),
+    /** One structured completion from the policy's harness. SLOW (a cold CLI
+     *  start plus a completion) and fallible — a harness that does not answer
+     *  is a 502, never an empty result. */
+    complete: (input: { prompt: string; schema: Record<string, unknown>; model?: string }) =>
+      request<{ result: Record<string, unknown> }>(fetcher, "POST", "/api/textgen/complete", input),
+    /** The host cockpit's published look, for clients that want to match it —
+     *  an OPAQUE blob, and readers must ignore keys they do not know. `null`
+     *  means nothing has published yet. */
+    appearance: () => request<{ appearance: Record<string, unknown> | null }>(fetcher, "GET", "/api/appearance"),
+    /** Replaces the published look wholesale — a snapshot, never a patch. */
+    setAppearance: (blob: Record<string, unknown>) => request<{ ok: boolean }>(fetcher, "PUT", "/api/appearance", blob),
     /** Which models a provider says it has — asked of the provider where it can
      *  answer, and this cockpit's own short list where it cannot. */
     modelCatalogue: (driver: ProviderDriverKind, options: { refresh?: boolean } = {}) => {

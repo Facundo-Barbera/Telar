@@ -29,7 +29,7 @@ import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
-import { maybeRetitleSession } from "./textgen";
+import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
 import { readUsageReport } from "./usage";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
@@ -653,6 +653,87 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }),
         });
         return;
+      }
+      /**
+       * ONE STRUCTURED COMPLETION, for a caller that brought its own schema.
+       *
+       * THE GENERALISATION OF THE TITLE JOB above it: same policy, same
+       * built-in instance, same short-lived `claude -p` / `codex exec` child
+       * that cannot touch any session's transcript. What changes is who writes
+       * the prompt — a cockpit feature that needs one small model answer no
+       * longer has to grow its own subprocess plumbing.
+       *
+       * SYNCHRONOUS AND SLOW BY NATURE (a cold harness start plus a completion,
+       * bounded by textgen's own timeout). Callers must treat it as a request
+       * that can take a minute, and must survive it failing.
+       *
+       * A FAILURE IS A 502, NOT AN EMPTY 200. textgen's contract is that every
+       * failure — missing CLI, timeout, refusal, unparseable output — resolves
+       * to `undefined`, which is exactly right for a background nicety and
+       * exactly wrong for a caller that ASKED for an answer. The gateway status
+       * says the truth: this daemon is fine, the harness behind it did not
+       * deliver.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/textgen/complete") {
+        const input = await body(request);
+        const prompt = input["prompt"];
+        if (typeof prompt !== "string" || prompt.trim().length === 0) {
+          throw new HttpError(400, "invalid_request", "prompt must be a non-empty string");
+        }
+        // Well past any reasonable one-shot prompt, well short of a context
+        // window — a caller pasting a whole repository in here has taken a
+        // wrong turn, and the CLI would only fail slower.
+        if (prompt.length > 20_000) {
+          throw new HttpError(400, "invalid_request", "prompt must be under 20000 characters");
+        }
+        const schema = input["schema"];
+        if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+          throw new HttpError(400, "invalid_request", "schema must be a JSON schema object");
+        }
+        const model = input["model"];
+        if (model !== undefined && (typeof model !== "string" || model.trim().length === 0)) {
+          throw new HttpError(400, "invalid_request", "model must be a non-empty string when given");
+        }
+        const result = await runStructuredForPolicy(store, {
+          prompt,
+          schema: schema as object,
+          ...(typeof model === "string" ? { model } : {}),
+        });
+        if (result === undefined) throw new HttpError(502, "textgen_failed", "the harness did not answer");
+        writeJson(response, 200, { result });
+        return;
+      }
+      /**
+       * THE HOST'S LOOK, PUBLISHED — see `EngineStore.getAppearance`.
+       *
+       * WHY THE ENGINE HOLDS A BROWSER'S PREFERENCE, which is otherwise against
+       * the grain here: appearance lives in localStorage because that is where a
+       * person configures it, and a paired iOS client has no way to read another
+       * device's localStorage. The cockpit republishes its RESOLVED look through
+       * `PUT`, and every paired client reads the same answer from `GET`.
+       *
+       * OPAQUE ON PURPOSE. The daemon does not know what an accent or a theme
+       * half is and must not learn — the store's only rules are "a JSON object"
+       * and "under 64 KB", which is what keeps the vocabulary additive across
+       * an engine and an app that ship on different days.
+       *
+       * PAIRED-ONLY, like everything else under `/v2`: this is a description of
+       * one person's machine, and the bearer check upstream is the whole access
+       * story. Nothing here is exempt from it.
+       */
+      if (url.pathname === "/v2/appearance") {
+        if (request.method === "GET") {
+          writeJson(response, 200, { appearance: store.getAppearance() });
+          return;
+        }
+        if (request.method === "PUT") {
+          // THE BODY IS THE BLOB ITSELF, not a wrapper around it. A snapshot of
+          // a browser's whole resolved look has no partial form worth
+          // expressing, so there is nothing for an envelope to carry.
+          store.setAppearance(await body(request));
+          writeJson(response, 200, { ok: true });
+          return;
+        }
       }
       /**
        * THE SPOOL — the item store behind SPEC-organization-workspace.
