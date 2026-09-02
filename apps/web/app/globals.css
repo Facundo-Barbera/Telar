@@ -413,20 +413,58 @@
    backdrop-blur header washes go fully transparent — their blur is what
    keeps them legible, and a 65%-opaque bar over a see-through canvas would
    read as a solid stripe. */
-[data-telar-shell][data-translucent] body {
-  background-color: oklch(0.992 0 0 / calc(100% - var(--translucency, 45%)));
+/* THE SAME WASH NOW SERVES TWO SCENES. `data-backdrop` (lib/backdrop.ts) puts
+   a gradient or an image under the app in ANY window — no shell required,
+   there is really something behind the page — so every see-through rule gates
+   on either attribute. `:is()` keeps the specificity at the higher of the two
+   (0,2,0), which still outranks the theme stylesheet's `html:root`.
+
+   AND IT IS THEME-AWARE NOW: the washes are mixed from the live --background
+   and --foreground tokens instead of restating Telar's neutrals, so an Ember
+   canvas frosts ember, not grey. The sidebar and highlight mixes reproduce the
+   base palette's deltas to within a hundredth of a lightness step, so the
+   default look is visually unchanged. */
+:is([data-telar-shell][data-translucent], [data-backdrop]) body {
+  background-color: color-mix(in oklab, var(--background) calc(100% - var(--translucency, 45%)), transparent);
 }
-.dark[data-telar-shell][data-translucent] body {
-  background-color: oklch(0.145 0 0 / calc(100% - var(--translucency, 45%)));
+:is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --sidebar: color-mix(in oklab, color-mix(in oklab, var(--background) 96.5%, var(--foreground)) calc(90% - var(--translucency, 45%)), transparent);
 }
-[data-telar-shell][data-translucent] {
-  --sidebar: oklch(0.972 0.001 286 / calc(90% - var(--translucency, 45%)));
-}
-.dark[data-telar-shell][data-translucent] {
-  --sidebar: oklch(0.175 0 0 / calc(90% - var(--translucency, 45%)));
-}
-[data-telar-shell][data-translucent] :is(.app-ground, .bg-background\/65, .bg-background\/80) {
+:is([data-telar-shell][data-translucent], [data-backdrop]) :is(.app-ground, .bg-background\/65, .bg-background\/80) {
   background-color: transparent;
+}
+
+/* ─── THE BACKDROP LAYER (lib/backdrop.ts) ──────────────────────────────────
+
+   One fixed div, first child of body, painted entirely from variables the
+   init script and applyBackdrop write on <html>. Inset is negative so a
+   blurred image's soft edges bleed off-screen instead of vignetting. The
+   scrim (::after) dims toward the CANVAS colour, not black — dimming is
+   "more theme", so it works in both schemes and on any theme. */
+#app-backdrop {
+  display: none;
+}
+[data-backdrop] #app-backdrop {
+  display: block;
+  position: fixed;
+  inset: -32px;
+  z-index: -1;
+  pointer-events: none;
+  background-color: var(--background);
+  background-image: var(--backdrop-light);
+  background-size: var(--backdrop-size, cover);
+  background-position: center;
+  background-repeat: var(--backdrop-repeat, no-repeat);
+  filter: blur(var(--backdrop-blur, 0px));
+}
+.dark[data-backdrop] #app-backdrop {
+  background-image: var(--backdrop-dark, var(--backdrop-light));
+}
+[data-backdrop] #app-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-color: color-mix(in oklab, var(--background) var(--backdrop-dim, 0%), transparent);
 }
 
 /* THE HIGHLIGHT TOKENS FROST TOO. Inline code chips, hover fills and the
@@ -434,15 +472,20 @@
    near-white in light mode, and over a see-through canvas each one reads as a
    sticker. 72% of the token keeps them legible while letting the glass
    breathe through; cards, popovers and text tokens stay untouched. */
-[data-telar-shell][data-translucent] {
-  --muted: oklch(0.967 0.001 286 / 72%);
-  --accent: oklch(0.955 0.002 286 / 72%);
-  --sidebar-accent: oklch(0.945 0.003 286 / 72%);
+/* Mixed from the live tokens like the sidebar above — the per-scheme ratios
+   reproduce the base palette's highlight deltas exactly (light rungs sit 3-6%
+   toward ink from the canvas; dark rungs 14-19%), then 72% alpha frosts them.
+   A custom property cannot reference its own themed value, which is why these
+   are re-derived from --background/--foreground rather than `var(--muted)`. */
+:is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --muted: color-mix(in oklab, color-mix(in oklab, var(--background) 97%, var(--foreground)) 72%, transparent);
+  --accent: color-mix(in oklab, color-mix(in oklab, var(--background) 95.5%, var(--foreground)) 72%, transparent);
+  --sidebar-accent: color-mix(in oklab, color-mix(in oklab, var(--background) 94.5%, var(--foreground)) 72%, transparent);
 }
-.dark[data-telar-shell][data-translucent] {
-  --muted: oklch(0.265 0 0 / 72%);
-  --accent: oklch(0.305 0 0 / 72%);
-  --sidebar-accent: oklch(0.265 0 0 / 72%);
+.dark:is([data-telar-shell][data-translucent], [data-backdrop]) {
+  --muted: color-mix(in oklab, color-mix(in oklab, var(--background) 86%, var(--foreground)) 72%, transparent);
+  --accent: color-mix(in oklab, color-mix(in oklab, var(--background) 81%, var(--foreground)) 72%, transparent);
+  --sidebar-accent: color-mix(in oklab, color-mix(in oklab, var(--background) 86%, var(--foreground)) 72%, transparent);
 }
 
 /* The user's chat bubble is a solid `bg-secondary` chip (components/ui/
@@ -450,7 +493,7 @@
    reads as a headlight. Frosted instead: most of the token's colour, a little
    of the desktop, and its own blur so the text stays readable over whatever
    is behind the window. */
-[data-telar-shell][data-translucent] [data-role="user"] > .bg-secondary {
+:is([data-telar-shell][data-translucent], [data-backdrop]) [data-role="user"] > .bg-secondary {
   background-color: color-mix(in oklab, var(--secondary) 72%, transparent);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);

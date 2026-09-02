@@ -9,12 +9,15 @@
 
 import { useEffect } from "react";
 import { applyAppearance, useAppearance } from "@/lib/appearance";
+import { applyBackdrop, useBackdrop } from "@/lib/backdrop";
 import { applyThemeCss, useThemeLibrary } from "@/lib/theme-palettes";
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
   const { appearance } = useAppearance();
+  const { backdrop } = useBackdrop();
   const { activeId, themes } = useThemeLibrary();
   useEffect(() => applyAppearance(appearance), [appearance]);
+  useEffect(() => applyBackdrop(backdrop), [backdrop]);
   // The theme library writes its compiled stylesheet to localStorage; this
   // keeps the injected <style id="telar-theme"> tracking it after the init
   // script's one shot — on switches AND on edits to the active theme (the

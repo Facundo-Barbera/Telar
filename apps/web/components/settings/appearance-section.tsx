@@ -38,6 +38,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { ThemeLibrary } from "./theme-library";
+import { BackdropSection } from "./backdrop-section";
 
 const ACCENT_LABEL: Record<Accent, string> = {
   indigo: "Indigo",
@@ -142,6 +143,8 @@ export function AppearanceSection() {
       </SettingsGroup>
 
       <ThemeLibrary />
+
+      <BackdropSection />
 
       <SettingsGroup title="Type">
         <Row
