@@ -3,6 +3,9 @@ import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
 import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure } from "@/lib/remote/store";
+import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
+import { machineName, observeIdentity } from "@/lib/remote/observe";
+import { HOST_TOKEN_ENV, isHostToken } from "@/lib/remote/host-token";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -12,17 +15,42 @@ function webPort(): number {
   return Number.isInteger(raw) && raw > 0 ? raw : 3000;
 }
 
+const OS_NAMES: Record<string, string> = { darwin: "macOS", win32: "Windows", linux: "Linux" };
+
+/**
+ * THE PROCESS THAT RUNS THE SERVER, AS A ROW.
+ *
+ * It holds a per-launch secret instead of a device record (host-token.ts), and
+ * the consequence was that the app doing the hosting — the one thing certain to
+ * be connected — appeared nowhere in a panel whose entire job is naming what is
+ * connected. So it is reported, not stored: derived fresh from this process
+ * every read, absent when nothing launched us (a bare `next dev`), and carrying
+ * no id because there is nothing to revoke. Quitting the shell is the revoke.
+ */
+function hostRow(): { name: string; identity: DeviceIdentity } | undefined {
+  if (!process.env[HOST_TOKEN_ENV]) return undefined;
+  const identity: DeviceIdentity = {
+    kind: "desktop",
+    client: process.env.TELAR_HOST_CLIENT?.trim() || "Telar",
+    ...(machineName() ? { machine: machineName() } : {}),
+    ...(OS_NAMES[process.platform] ? { os: OS_NAMES[process.platform] } : {}),
+  };
+  return { name: describeDevice(identity), identity };
+}
+
 /** The Remote access panel's whole state. Hashes never leave the store.
  *  callerDeviceId lets both surfaces badge "This device" without any client
  *  ever needing to remember its own id. */
 export function GET(request: Request) {
   try {
     const file = readRemote();
-    const caller = identifyCaller(
-      { authorization: request.headers.get("authorization"), deviceCookie: readDeviceCookie(request) },
-      file,
-    );
+    const cookie = readDeviceCookie(request);
+    const caller = identifyCaller({ authorization: request.headers.get("authorization"), deviceCookie: cookie }, file);
+    const host = hostRow();
     return Response.json({
+      // Present only when a shell launched this server, and flagged as the
+      // caller when this very request carries the host secret.
+      host: host ? { ...host, isCaller: isHostToken(cookie) } : undefined,
       requireAuth: file.requireAuth,
       exposure: file.exposure ?? "local-only",
       devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform, identity }) => ({
@@ -89,8 +117,15 @@ export async function PATCH(request: Request) {
       setRequireAuth(false);
       return Response.json({ requireAuth: false });
     }
+    /**
+     * NAMED THE SAME WAY A PAIRED DEVICE IS. This row used to be the literal
+     * string "This browser" with no identity at all, which made the one device
+     * guaranteed to be in every list the single least identifiable entry in it
+     * — no client, no machine, no address to tell it from the next tab.
+     */
     const deviceToken = mintDeviceToken();
-    const device = addDevice("This browser", deviceToken, { platform: "browser" });
+    const identity = observeIdentity(request);
+    const device = addDevice(describeDevice(identity), deviceToken, { identity });
     setRequireAuth(true);
     return Response.json(
       { requireAuth: true, device: { id: device.id, name: device.name } },

@@ -159,6 +159,10 @@ async function main() {
    * would be asked to pair with itself.
    */
   env.TELAR_HOST_TOKEN = env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
+  // What the host row in Remote access is called. Says "dev" because in this
+  // path it IS the dev shell, and a row claiming to be the installed app on a
+  // machine running both would be the confusing answer.
+  env.TELAR_HOST_CLIENT = env.TELAR_HOST_CLIENT || "Telar (dev)";
 
   const webPort = resolveWebPort(env);
   const webHost = resolveWebHost(env);

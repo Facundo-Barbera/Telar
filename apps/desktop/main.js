@@ -553,6 +553,10 @@ function startServer(port, home) {
       HOSTNAME: serverBindHost(home),
       // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
       TELAR_HOST_TOKEN: HOST_TOKEN,
+      // And what the Remote access panel calls the host row. The shell holds a
+      // secret rather than a device record, so this name is the only way the
+      // app hosting the server appears in the list of what is connected.
+      TELAR_HOST_CLIENT: app.getName(),
       NODE_ENV: "production",
       // THE LAUNCHER MARKER. The cockpit's server-side engine discovery refuses
       // to resolve a state root unless it is set (apps/web/lib/engine/
