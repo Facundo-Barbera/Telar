@@ -266,7 +266,7 @@ export function RemoteSection() {
           hint={
             error ??
             (status.requireAuth
-              ? "Unpaired devices are refused. This browser was paired when you enabled it."
+              ? "Unpaired devices are refused. Whatever turned this on was paired in the same breath, so it cannot lock itself out."
               : "Anything that can reach this address has full control. The tailnet ACL is the only boundary.")
           }
           checked={status.requireAuth}
