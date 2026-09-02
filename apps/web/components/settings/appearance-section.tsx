@@ -17,11 +17,25 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CheckIcon } from "lucide-react";
-import { ACCENTS, MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, useAppearance, type Accent, type Frost, type MonoFont, type SansFont } from "@/lib/appearance";
+import {
+  ACCENTS,
+  MAX_FONT_SIZE,
+  MAX_TRANSLUCENCY,
+  MIN_FONT_SIZE,
+  MIN_TRANSLUCENCY,
+  MONO_FONTS,
+  SANS_FONTS,
+  useAppearance,
+  type Accent,
+  type Frost,
+  type MonoFont,
+  type SansFont,
+} from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import { ThemeControl } from "@/components/theme-control";
 import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
 import { ThemeLibrary } from "./theme-library";
 
@@ -36,8 +50,10 @@ const ACCENT_LABEL: Record<Accent, string> = {
   violet: "Violet",
 };
 
-const SANS_LABEL: Record<SansFont, string> = { geist: "Geist", inter: "Inter", system: "System" };
-const MONO_LABEL: Record<MonoFont, string> = { geist: "Geist Mono", jetbrains: "JetBrains Mono", system: "System" };
+const SANS_LABEL: Record<SansFont, string> = { geist: "Geist", inter: "Inter", system: "System", custom: "Custom…" };
+const MONO_LABEL: Record<MonoFont, string> = { geist: "Geist Mono", jetbrains: "JetBrains Mono", system: "System", custom: "Custom…" };
+
+const CUSTOM_FAMILY_HINT = "Any font installed on this machine. Comma-separate fallbacks.";
 
 // Same idiom as updates-section.tsx: whether there is a shell at all is an
 // external fact, present before React ran, and it never changes.
@@ -130,7 +146,10 @@ export function AppearanceSection() {
       <SettingsGroup title="Type">
         <Row
           label="Interface font"
-          hint="System uses whatever this machine already renders its UI in."
+          hint={appearance.fontSans === "custom" ? CUSTOM_FAMILY_HINT : "System uses whatever this machine already renders its UI in."}
+          // The custom field lives under the label rather than beside the
+          // select: a font-family list is longer than any control that fits
+          // in the right-hand column.
           control={
             <Select
               value={appearance.fontSans}
@@ -153,10 +172,20 @@ export function AppearanceSection() {
               </SelectContent>
             </Select>
           }
-        />
+        >
+          {appearance.fontSans === "custom" && (
+            <Input
+              className="mt-2 max-w-64"
+              value={appearance.fontSansCustom}
+              placeholder="e.g. Helvetica Neue"
+              aria-label="Custom interface font"
+              onChange={(event) => setAppearance({ fontSansCustom: event.target.value })}
+            />
+          )}
+        </Row>
         <Row
           label="Code font"
-          hint="Transcripts, diffs, file views and every monospace value."
+          hint={appearance.fontMono === "custom" ? CUSTOM_FAMILY_HINT : "Transcripts, diffs, file views and every monospace value."}
           control={
             <Select
               value={appearance.fontMono}
@@ -176,6 +205,40 @@ export function AppearanceSection() {
                 ))}
               </SelectContent>
             </Select>
+          }
+        >
+          {appearance.fontMono === "custom" && (
+            <Input
+              className="mt-2 max-w-64"
+              value={appearance.fontMonoCustom}
+              placeholder="e.g. SF Mono"
+              aria-label="Custom code font"
+              onChange={(event) => setAppearance({ fontMonoCustom: event.target.value })}
+            />
+          )}
+        </Row>
+        <Row
+          label="Text size"
+          hint="The root size everything else is measured from — spacing and controls scale with it, not just the words."
+          control={
+            <div className="flex items-center gap-2">
+              <Input
+                type="number"
+                min={MIN_FONT_SIZE}
+                max={MAX_FONT_SIZE}
+                step={1}
+                value={appearance.fontSize}
+                aria-label="Text size in pixels"
+                className="w-20"
+                // Out-of-range keystrokes are ignored rather than clamped, so
+                // typing "1" on the way to "14" does not snap to 13.
+                onChange={(event) => {
+                  const next = Number(event.target.value);
+                  if (Number.isFinite(next) && next >= MIN_FONT_SIZE && next <= MAX_FONT_SIZE) setAppearance({ fontSize: Math.round(next) });
+                }}
+              />
+              <span className="text-xs text-muted-foreground">px</span>
+            </div>
           }
         />
       </SettingsGroup>
