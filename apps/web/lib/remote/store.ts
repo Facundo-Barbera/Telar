@@ -293,14 +293,34 @@ export function clearPairing(): void {
  * One-time by construction: a successful consume deletes the pending pairing
  * before returning, so a replayed token meets an empty slot.
  */
-export function consumePairing(raw: string, nowMs: number = Date.now()): boolean {
+export type PairingRefusal = "none-pending" | "expired" | "mismatch";
+
+/**
+ * WHY IT FAILED, NOT JUST THAT IT DID.
+ *
+ * This returned a bare boolean and the route rendered every false as "expired
+ * or already used" — so a code that was never minted here, a code from another
+ * instance, and a genuinely stale one all produced the same sentence, and the
+ * one question worth answering ("is my clock wrong, or am I pairing against
+ * the wrong cockpit?") had no evidence behind it.
+ *
+ * The three causes are genuinely different things to do about it:
+ *   none-pending  nothing was minted here, or it was already used
+ *   expired       minted here, ten minutes passed
+ *   mismatch      a real code, but not this cockpit's — the usual cause is
+ *                 two instances open and the code coming from the other one
+ *
+ * Still one-time by construction: a successful consume deletes the pending
+ * pairing before returning, so a replayed token meets an empty slot.
+ */
+export function consumePairing(raw: string, nowMs: number = Date.now()): true | PairingRefusal {
   const file = readRemote();
   const pairing = file.pairing;
-  if (!pairing) return false;
-  if (nowMs >= pairing.expiresAt) return false;
+  if (!pairing) return "none-pending";
+  if (nowMs >= pairing.expiresAt) return "expired";
   const stored = Buffer.from(pairing.tokenHash, "hex");
   const candidate = Buffer.from(hashToken(raw), "hex");
-  if (stored.length !== candidate.length || !crypto.timingSafeEqual(stored, candidate)) return false;
+  if (stored.length !== candidate.length || !crypto.timingSafeEqual(stored, candidate)) return "mismatch";
   delete file.pairing;
   writeRemote(file);
   return true;

@@ -90,17 +90,17 @@ describe("remote store", () => {
     const { token } = mintPairing(1000, 600_000);
     // Replay: first consume wins, second meets an empty slot.
     expect(consumePairing(token, 2000)).toBe(true);
-    expect(consumePairing(token, 2000)).toBe(false);
+    expect(consumePairing(token, 2000)).toBe("none-pending");
 
     const expired = mintPairing(1000, 600_000);
-    expect(consumePairing(expired.token, 601_001)).toBe(false);
+    expect(consumePairing(expired.token, 601_001)).toBe("expired");
   });
 
   test("minting a new pairing replaces the pending one", () => {
     freshHome();
     const first = mintPairing(1000);
     const second = mintPairing(2000);
-    expect(consumePairing(first.token, 3000)).toBe(false);
+    expect(consumePairing(first.token, 3000)).toBe("mismatch");
     expect(consumePairing(second.token, 3000)).toBe(true);
   });
 

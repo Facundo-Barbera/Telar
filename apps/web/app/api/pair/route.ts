@@ -1,4 +1,16 @@
-import { addDevice, consumePairing, mintDeviceToken, RemoteStoreError } from "@/lib/remote/store";
+import { addDevice, consumePairing, mintDeviceToken, RemoteStoreError, type PairingRefusal } from "@/lib/remote/store";
+
+/**
+ * WHY IT WAS REFUSED, in words a person can act on. Every refusal used to read
+ * "expired or already used", which is the wrong advice for two of the three
+ * causes — and "generate a fresh code" does not help at all when the code came
+ * from a different cockpit.
+ */
+const REFUSAL: Record<PairingRefusal, string> = {
+  "none-pending": "No pairing code is waiting. Generate one in Settings → Remote access — a code is single-use, so one that already paired a device is spent.",
+  expired: "That pairing code has expired. They last ten minutes; generate a fresh one.",
+  mismatch: "That pairing code was not issued by this cockpit. If you have more than one Telar running, generate the code from the same one you are pairing against.",
+};
 import { deviceCookieHeader } from "@/lib/remote/cookie";
 
 export const dynamic = "force-dynamic";
@@ -31,9 +43,10 @@ export async function POST(request: Request) {
   // Self-declared, never sniffed from User-Agent; anything else stays unknown.
   const platform = body.platform === "ios" || body.platform === "browser" ? body.platform : undefined;
   try {
-    if (!token || !consumePairing(token)) {
+    const outcome = token ? consumePairing(token) : "none-pending";
+    if (outcome !== true) {
       return Response.json(
-        { error: { code: "cockpit_unauthorized", message: "That pairing code has expired or was already used." } },
+        { error: { code: "cockpit_unauthorized", message: REFUSAL[outcome] } },
         { status: 401, headers: { "cache-control": "no-store" } },
       );
     }
