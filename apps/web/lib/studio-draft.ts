@@ -447,7 +447,12 @@ export function describeDraft(draft: StudioDraft): string {
 
 /** What the studio can add around the brief: which scheme the reader is
  *  judging the draft in, and the recent conversation. */
+/** The colours read out of an attached picture, and what to call it. */
+export type PromptPicture = { name?: string; colours: string[] };
+
 export type StudioPromptContext = {
+  /** Attached pictures, as palettes — see buildStudioPrompt for why. */
+  pictures?: PromptPicture[];
   mode?: StudioMode;
   /** Recent transcript lines, oldest first — what gives "like the last one
    *  but colder" something to refer to. */
@@ -486,6 +491,23 @@ export function buildStudioPrompt(
     "YOU ARE EDITING AN EXISTING DRAFT, NOT STARTING OVER. Below is the draft as it stands. Apply the brief as a CHANGE to it: keep everything the brief does not speak to — hues, relative lightnesses, the name, the backdrop — and answer with the complete edited theme (the schema still requires every token). Instructions from earlier in the conversation still stand unless the reader reverses them.",
     ...(context.mode ? ["", `The reader is judging the draft in its ${context.mode} half right now.`] : []),
     ...(history.length > 0 ? ["", "THE CONVERSATION SO FAR:", ...history] : []),
+    ...(context.pictures && context.pictures.length > 0
+      ? [
+          "",
+          // THE MODEL CANNOT SEE THE PICTURE. The engine's textgen takes a
+          // prompt and a schema and nothing else, so an attached image reaches
+          // it as the thing a palette designer would actually take from one:
+          // the colours, extracted here (lib/palette-from-image.ts, the same
+          // reader the backdrop's "Take colours" uses). Saying so plainly is
+          // the difference between a model that works from these hues and one
+          // that invents a description of a photograph it never saw.
+          "THE READER ATTACHED A PICTURE. You cannot see it. These are the colours read out of it — treat them as the brief's palette unless the reader says otherwise:",
+          ...context.pictures.map(
+            (picture, index) =>
+              `  Picture ${index + 1}${picture.name ? ` (${picture.name})` : ""}: ${picture.colours.join(", ")}`,
+          ),
+        ]
+      : []),
     "",
     describeDraft(draft),
   ].join("\n");

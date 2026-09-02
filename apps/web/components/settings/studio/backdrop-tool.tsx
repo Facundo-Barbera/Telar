@@ -52,7 +52,7 @@ import {
 } from "@/lib/backdrop-presets";
 import { compressImageFile, ImageBackdropError } from "@/lib/image-backdrop";
 import type { LookBackdrop } from "@/lib/looks";
-import { themeFromPixels } from "@/lib/palette-from-image";
+import { samplePixels, themeFromPixels } from "@/lib/palette-from-image";
 import {
   customGradientBackdrop,
   draftGradientPair,
@@ -343,27 +343,9 @@ const FIT_LABELS: Record<BackdropFit, string> = { cover: "Cover", fill: "Fill", 
 /** The sample the palette is read from. Large enough that a small accent in
  *  the picture still occupies pixels, small enough to be instant — a hue
  *  histogram over four thousand pixels is the same answer as over four
- *  million, arriving at once. */
-const SAMPLE_EDGE = 64;
 
 /** Draw the draft's data URL small and read its pixels. Separate from the
  *  extraction itself so the pure half stays canvas-free and testable. */
-async function samplePixels(dataUrl: string): Promise<Uint8ClampedArray> {
-  const image = new Image();
-  image.src = dataUrl;
-  await image.decode();
-  const longest = Math.max(image.naturalWidth || 1, image.naturalHeight || 1);
-  const scale = Math.min(1, SAMPLE_EDGE / longest);
-  const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
-  const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  if (!context) throw new Error("no 2d context");
-  context.drawImage(image, 0, 0, width, height);
-  return context.getImageData(0, 0, width, height).data;
-}
 
 /**
  * A photograph under the app, and a theme out of it.

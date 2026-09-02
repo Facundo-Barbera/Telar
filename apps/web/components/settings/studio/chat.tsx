@@ -37,8 +37,10 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpIcon, SparklesIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon, ImagePlusIcon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { compressImageFile } from "@/lib/image-backdrop";
+import { dominantHues, samplePixels, themeFromPixels } from "@/lib/palette-from-image";
 import { applyDesign, buildDesignPrompt, DESIGN_SCHEMA } from "@/lib/theme-designer";
 import {
   buildStudioPrompt,
@@ -47,6 +49,7 @@ import {
   readStudioChat,
   writeStudioChat,
   type StudioChatLine,
+  type PromptPicture,
   type StudioDraft,
   type StudioMode,
 } from "@/lib/studio-draft";
@@ -103,6 +106,15 @@ export function DesignerChat({
     return source.map((line, index) => ({ ...line, id: index }));
   });
   const [instruction, setInstruction] = useState("");
+  /** Pictures attached to the NEXT message. Each carries its own thumbnail and
+   *  the colours read out of it — the model never sees the pixels (the engine's
+   *  textgen takes a prompt and nothing else), so the palette IS the picture as
+   *  far as the brief is concerned. */
+  const [pictures, setPictures] = useState<{ id: number; name: string; url: string; colours: string[] }[]>([]);
+  const [reading, setReading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const pictureId = useRef(0);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const transcript = useRef<HTMLDivElement>(null);
   const editor = useRef<ComposerEditorHandle>(null);
@@ -148,20 +160,62 @@ export function DesignerChat({
 
   const stop = () => abortRef.current?.abort();
 
+  /** A picture becomes a swatch list. Compressed first so a 12MP photo is not
+   *  decoded at full size just to be averaged, then sampled with the same
+   *  reader the backdrop's "Take colours" uses — one answer to "what colours
+   *  are in this?" for the whole pane. */
+  const attach = async (files: readonly File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (images.length === 0) return;
+    setReading(true);
+    for (const file of images) {
+      try {
+        const url = await compressImageFile(file);
+        const pixels = await samplePixels(url);
+        // THE PICTURE'S OWN HUES, not a theme derived from them. Handing the
+        // model `--card: #1e1712` would be answering the design question
+        // before it saw the brief; handing it the colours that are actually IN
+        // the photograph leaves the design to the designer. A greyscale
+        // picture honestly has no hue, and falls back to saying so with the
+        // neutrals the reader would otherwise get.
+        const hues = dominantHues(pixels, { count: 5 });
+        const half = themeFromPixels(pixels).dark ?? {};
+        const colours =
+          hues.length > 0
+            // HSL, because that is literally what was measured: `PaletteColor`
+            // carries a hue in degrees and a MEAN HSL SATURATION, and its own
+            // docs warn that the second is "not a CSS chroma". Writing it into
+            // an oklch chroma slot pushed every swatch past the gamut and the
+            // browser clamped them all to the same wall of colour.
+            ? hues.map((hue) => `hsl(${hue.hue.toFixed(1)} ${Math.round(hue.chroma * 100)}% 55%)`)
+            : [half.background, half.foreground].filter((value): value is string => typeof value === "string");
+        const id = (pictureId.current += 1);
+        setPictures((current) => [...current, { id, name: file.name, url, colours }]);
+      } catch {
+        say("trouble", `Could not read colours from ${file.name}.`);
+      }
+    }
+    setReading(false);
+  };
+
   /** `spoken` is what an opening chip presses with; everything else sends
    *  whatever is in the input. */
   const send = async (spoken?: string) => {
     const brief = (spoken ?? instruction).trim();
-    if (brief.length === 0 || busy) return;
+    const sent = pictures;
+    if ((brief.length === 0 && sent.length === 0) || busy) return;
     setInstruction("");
-    say("you", brief);
+    setPictures([]);
+    say("you", brief || `Make a theme from ${sent.length === 1 ? "this picture" : "these pictures"}.`);
     setBusy(true);
     const controller = new AbortController();
     abortRef.current = controller;
     // What the model is shown — the merge later diffs its answer against this.
     const snapshot = draftRef.current;
     const history = lines.map(({ kind, text }) => ({ kind, text }));
-    const prompt = buildStudioPrompt(snapshot, brief, buildDesignPrompt, { mode, history });
+    const asked = brief || `Make a theme from the attached ${sent.length === 1 ? "picture" : "pictures"}.`;
+    const pictured: PromptPicture[] = sent.map((picture) => ({ name: picture.name, colours: picture.colours }));
+    const prompt = buildStudioPrompt(snapshot, asked, buildDesignPrompt, { mode, history, pictures: pictured });
     try {
       const ask = (extra?: string) =>
         api.complete(
@@ -191,7 +245,28 @@ export function DesignerChat({
   };
 
   return (
-    <Panel className={cn("min-h-0", className)}>
+    <Panel
+      className={cn("relative min-h-0", className, dragging && "ring-2 ring-primary")}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDragging(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        void attach(Array.from(event.dataTransfer.files));
+      }}
+    >
+      {dragging && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-background/80 text-sm font-medium">
+          Drop a picture to design from it
+        </div>
+      )}
       <PanelHeader
         icon={<SparklesIcon />}
         label="Designer"
@@ -208,7 +283,9 @@ export function DesignerChat({
           </span>
           <div className="space-y-1">
             <p className="text-sm font-medium">Describe a look</p>
-            <p className="text-xs text-muted-foreground">Previewed live. Nothing is kept until you Apply.</p>
+            <p className="text-xs text-muted-foreground">
+              Or drop a picture and design from its colours. Previewed live; nothing is kept until you Apply.
+            </p>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
             {OPENINGS.map((opening) => (
@@ -251,7 +328,56 @@ export function DesignerChat({
           because ComposerEditor hands the key to its parent first. */}
       <div className="shrink-0 border-t border-border px-4 py-3">
         <div className="mx-auto w-full max-w-[50rem]">
+          {pictures.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {pictures.map((picture) => (
+                <div key={picture.id} className="group relative flex items-center gap-2 rounded-lg border border-border p-1 pr-2">
+                  {/* eslint-disable-next-line @next/next/no-img-element -- a data URL held in state; there is nothing for next/image to fetch */}
+                  <img src={picture.url} alt="" className="size-8 rounded object-cover" />
+                  <span className="flex gap-0.5">
+                    {picture.colours.slice(0, 5).map((colour, index) => (
+                      <span key={index} className="size-3 rounded-full ring-1 ring-foreground/10" style={{ background: colour }} />
+                    ))}
+                  </span>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    className="size-5"
+                    title={`Remove ${picture.name}`}
+                    aria-label={`Remove ${picture.name}`}
+                    onClick={() => setPictures((current) => current.filter((entry) => entry.id !== picture.id))}
+                  >
+                    <XIcon />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            aria-hidden
+            onChange={(event) => {
+              const picked = event.target.files ? Array.from(event.target.files) : [];
+              event.target.value = "";
+              void attach(picked);
+            }}
+          />
           <div className="flex items-end gap-2 rounded-xl border border-border bg-background p-2 focus-within:border-ring">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              className="size-8 shrink-0"
+              disabled={busy || reading}
+              title="Attach a picture to design from"
+              aria-label="Attach a picture"
+              onClick={() => fileInput.current?.click()}
+            >
+              <ImagePlusIcon />
+            </Button>
             <ComposerEditor
               ref={editor}
               value={instruction}
@@ -259,6 +385,7 @@ export function DesignerChat({
               placeholder={PLACEHOLDER}
               disabled={busy}
               className="max-h-40 min-h-9 flex-1 px-1.5 py-1.5 text-sm"
+              onPasteFiles={(files) => void attach(files)}
               onKeyDown={(event) => {
                 if (event.key !== "Enter" || event.shiftKey) return;
                 event.preventDefault();
@@ -273,7 +400,7 @@ export function DesignerChat({
               <Button
                 size="icon-sm"
                 className="size-8 shrink-0"
-                disabled={instruction.trim().length === 0}
+                disabled={instruction.trim().length === 0 && pictures.length === 0}
                 aria-label="Send"
                 onClick={() => void send()}
               >

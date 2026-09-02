@@ -45,7 +45,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ImageIcon, MonitorIcon, PaletteIcon, SparklesIcon, TypeIcon, Undo2Icon } from "lucide-react";
+import { ImageIcon, LayersIcon, MonitorIcon, PaletteIcon, SparklesIcon, TypeIcon, Undo2Icon } from "lucide-react";
 import { MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
 import {
@@ -94,7 +94,13 @@ const subscribeToNothing = () => () => {};
 const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
 
-type Tab = "colour" | "backdrop" | "type" | "window" | "designer";
+/** The pane has two MODES, not six tools. Designing by conversation and
+ *  designing by hand are different sittings — one wants the whole window and a
+ *  composer, the other wants a shelf and a grid — and burying the first as a
+ *  sixth tab beside "Type" said they were the same size of thing. */
+type Mode = "looks" | "designer";
+
+type Tab = "colour" | "backdrop" | "type" | "window";
 
 /** How long a gap between edits starts a NEW undo step. Inside it, edits
  *  coalesce — a colour-picker drag is one step, not ninety. */
@@ -114,6 +120,7 @@ export function AppearanceSection() {
   // answer rather than flashing a control that then disappears.
   const [windowSupported, setWindowSupported] = useState(false);
 
+  const [pane, setPane] = useState<Mode>("looks");
   const [tab, setTab] = useState<Tab>("colour");
   /** Undefined means "nothing drafted" — the pane shows the live truth. */
   const [draft, setDraft] = useState<StudioDraft>();
@@ -380,7 +387,7 @@ export function AppearanceSection() {
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* THE MASTHEAD — what you are editing, and what can be done with it.
           A quiet title that finds its border under the cursor, the state as a
           mono chip, actions on the right: a session's header, for a look. */}
@@ -440,156 +447,170 @@ export function AppearanceSection() {
 
       {notice && <p className="text-xs text-warning">{notice}</p>}
 
-      <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
+      {/* THE DIVISION AT THE TOP. Two sittings, named, before anything else. */}
+      <div className="flex">
+      <Segmented<Mode>
+        value={pane}
+        onChange={setPane}
+        options={[
+          { value: "looks", label: <><LayersIcon className="size-3.5" /> Looks</> },
+          { value: "designer", label: <><SparklesIcon className="size-3.5" /> Designer</> },
+        ]}
+      />
+      </div>
 
-      {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
-          The designer used to be welded to the left half of this pane, which
-          cost every other tool half its measure — that is what squeezed the
-          scene composer's rows into a column of one word each. It is a TOOL
-          like the others: you go to it, and while you are not there the
-          palette and the scene get the whole page. */}
-      <div className="flex min-w-0 flex-col gap-3">
-        <Tabs<Tab>
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: "colour", label: <><PaletteIcon className="size-3.5" /> Colour</> },
-            { value: "backdrop", label: <><ImageIcon className="size-3.5" /> Backdrop</> },
-            { value: "type", label: <><TypeIcon className="size-3.5" /> Type</> },
-            { value: "window", label: <><MonitorIcon className="size-3.5" /> Window</> },
-            { value: "designer", label: <><SparklesIcon className="size-3.5" /> Designer</> },
-          ]}
-        />
+      {pane === "looks" ? (
+        <>
+        <LooksSection onOpen={openLook} onWear={wear} openId={current?.id} />
 
-        {tab === "colour" && current && (
-          <>
+        {/* FOUR TOOLS, ONE AT A TIME, EACH THE FULL WIDTH.
+            The designer used to be welded to the left half of this pane, which
+            cost every other tool half its measure — that is what squeezed the
+            scene composer's rows into a column of one word each. It is a TOOL
+            like the others: you go to it, and while you are not there the
+            palette and the scene get the whole page. */}
+        <div className="flex min-w-0 flex-col gap-3">
+          <Tabs<Tab>
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: "colour", label: <><PaletteIcon className="size-3.5" /> Colour</> },
+              { value: "backdrop", label: <><ImageIcon className="size-3.5" /> Backdrop</> },
+              { value: "type", label: <><TypeIcon className="size-3.5" /> Type</> },
+              { value: "window", label: <><MonitorIcon className="size-3.5" /> Window</> },
+            ]}
+          />
+
+          {tab === "colour" && current && (
+            <>
+              <Panel>
+                {/* The header NAMES the palette. Sixteen anonymous colour rows
+                    could not say whether you were editing Ember, a mix of two
+                    themes, or something that exists nowhere but this draft. */}
+                <PanelHeader
+                  icon={<PaletteIcon />}
+                  label={`Palette · ${mode} · ${paletteSource}`}
+                  count={THEME_TOKENS.length}
+                  tone={holding[mode] ? "none" : "attention"}
+                />
+                <PanelBody>
+                  <ColourTool draft={current} onDraft={edit} mode={mode} />
+                </PanelBody>
+              </Panel>
+              {/* The library is where a palette comes FROM: a card loads both
+                  halves into the draft; an orb loads one. */}
+              <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} onWear={wearTheme} holding={holding} />
+            </>
+          )}
+
+          {tab === "backdrop" && current && (
+            <BackdropTool
+              value={current.backdrop}
+              mode={mode}
+              onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
+              // A palette taken from the picture lands on the draft's two halves
+              // like any other edit — undoable, and never a new library entry.
+              // Only the halves: the look keeps the name it was given, because
+              // naming it was a separate decision.
+              onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
+              footer={<ShowThroughTool draft={current} onDraft={edit} />}
+            />
+          )}
+
+          {tab === "type" && current && (
             <Panel>
-              {/* The header NAMES the palette. Sixteen anonymous colour rows
-                  could not say whether you were editing Ember, a mix of two
-                  themes, or something that exists nowhere but this draft. */}
-              <PanelHeader
-                icon={<PaletteIcon />}
-                label={`Palette · ${mode} · ${paletteSource}`}
-                count={THEME_TOKENS.length}
-                tone={holding[mode] ? "none" : "attention"}
-              />
+              <PanelHeader icon={<TypeIcon />} label="Type" />
               <PanelBody>
-                <ColourTool draft={current} onDraft={edit} mode={mode} />
+                <TypeTool draft={current} onDraft={edit} />
               </PanelBody>
             </Panel>
-            {/* The library is where a palette comes FROM: a card loads both
-                halves into the draft; an orb loads one. */}
-            <ThemeLibrary onPick={pickTheme} onPickHalf={pickThemeHalf} onWear={wearTheme} holding={holding} />
-          </>
-        )}
+          )}
 
-        {tab === "backdrop" && current && (
-          <BackdropTool
-            value={current.backdrop}
-            mode={mode}
-            onChange={(backdrop) => edit(replaceDraftBackdrop(current, backdrop))}
-            // A palette taken from the picture lands on the draft's two halves
-            // like any other edit — undoable, and never a new library entry.
-            // Only the halves: the look keeps the name it was given, because
-            // naming it was a separate decision.
-            onThemeHalves={(theme) => edit(patchDraftHalf(patchDraftHalf(current, "light", theme.light), "dark", theme.dark))}
-            footer={<ShowThroughTool draft={current} onDraft={edit} />}
-          />
-        )}
+          {/* THE WINDOW IS NOT A LOOK, so it is not a look tool. It lived under
+              "Type" for no reason anyone could reconstruct, which is the kind of
+              filing that teaches a reader the grouping is arbitrary. None of it
+              travels in a Look: the scheme is which half THIS window wears, and
+              translucency is a property of the machine — macOS only, stored by
+              the shell, and turning it on rebuilds the window.
 
-        {tab === "type" && current && (
-          <Panel>
-            <PanelHeader icon={<TypeIcon />} label="Type" />
-            <PanelBody>
-              <TypeTool draft={current} onDraft={edit} />
-            </PanelBody>
-          </Panel>
-        )}
-
-        {/* THE WINDOW IS NOT A LOOK, so it is not a look tool. It lived under
-            "Type" for no reason anyone could reconstruct, which is the kind of
-            filing that teaches a reader the grouping is arbitrary. None of it
-            travels in a Look: the scheme is which half THIS window wears, and
-            translucency is a property of the machine — macOS only, stored by
-            the shell, and turning it on rebuilds the window.
-
-            HOW MUCH SHOWS THROUGH IS NOT HERE, though it reads like it should
-            be. It is the one member of this group that DOES travel in a Look,
-            so it is a draft control and lives with the backdrop it thins. Two
-            sliders for one value is the confusion this pane was rebuilt to
-            delete — and the draft's copy wins the preview anyway, so the live
-            one silently did nothing while a draft was open. */}
-        {tab === "window" && current && (
-          <Panel>
-            <PanelHeader icon={<MonitorIcon />} label="Window" />
-            {/* px-3: `Row` carries no horizontal padding — right for a flat
-                settings group, wrong against a panel border. */}
-            <PanelBody className="px-3">
-              {hasBridge && windowSupported ? (
-                <>
-                  <ToggleRow
-                    label="Translucency"
-                    hint="Rebuilds the window."
-                    checked={appearance.translucent}
-                    onCheckedChange={setTranslucent}
-                  />
-                  {appearance.translucent && (
-                    <Row
-                      label="Glass"
-                      control={
-                        <Segmented<Frost>
-                          value={appearance.frost}
-                          onChange={setFrost}
-                          options={[
-                            { value: "blur", label: "Blur" },
-                            { value: "clear", label: "Clear" },
-                          ]}
-                        />
-                      }
+              HOW MUCH SHOWS THROUGH IS NOT HERE, though it reads like it should
+              be. It is the one member of this group that DOES travel in a Look,
+              so it is a draft control and lives with the backdrop it thins. Two
+              sliders for one value is the confusion this pane was rebuilt to
+              delete — and the draft's copy wins the preview anyway, so the live
+              one silently did nothing while a draft was open. */}
+          {tab === "window" && current && (
+            <Panel>
+              <PanelHeader icon={<MonitorIcon />} label="Window" />
+              {/* px-3: `Row` carries no horizontal padding — right for a flat
+                  settings group, wrong against a panel border. */}
+              <PanelBody className="px-3">
+                {hasBridge && windowSupported ? (
+                  <>
+                    <ToggleRow
+                      label="Translucency"
+                      hint="Rebuilds the window."
+                      checked={appearance.translucent}
+                      onCheckedChange={setTranslucent}
                     />
-                  )}
-                </>
-              ) : (
-                <p className="pb-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
-              )}
-              {/* SHOW-THROUGH IS HERE TOO, and that is not the old duplication.
-                  What made two sliders a bug was that they wrote DIFFERENT
-                  stores — the live one silently lost to the draft's copy during
-                  a preview. This is the same draft field rendered in the second
-                  place a reader looks for it: it governs the desktop behind a
-                  translucent window AND the wash over a backdrop, so it has two
-                  honest homes and exactly one value. */}
-              <Row
-                label="Show-through"
-                hint="The desktop behind a translucent window, and the backdrop under the app."
-                control={
-                  <div className="flex items-center gap-2.5">
-                    <input
-                      type="range"
-                      min={MIN_TRANSLUCENCY}
-                      max={MAX_TRANSLUCENCY}
-                      step={5}
-                      value={current.translucencyLevel}
-                      aria-label="Show-through"
-                      className="w-36 accent-primary"
-                      onChange={(event) => edit(patchDraftStrength(current, Number(event.target.value)))}
-                    />
-                    <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{current.translucencyLevel}%</span>
-                  </div>
-                }
-              />
-            </PanelBody>
-          </Panel>
-        )}
+                    {appearance.translucent && (
+                      <Row
+                        label="Glass"
+                        control={
+                          <Segmented<Frost>
+                            value={appearance.frost}
+                            onChange={setFrost}
+                            options={[
+                              { value: "blur", label: "Blur" },
+                              { value: "clear", label: "Clear" },
+                            ]}
+                          />
+                        }
+                      />
+                    )}
+                  </>
+                ) : (
+                  <p className="pb-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
+                )}
+                {/* SHOW-THROUGH IS HERE TOO, and that is not the old duplication.
+                    What made two sliders a bug was that they wrote DIFFERENT
+                    stores — the live one silently lost to the draft's copy during
+                    a preview. This is the same draft field rendered in the second
+                    place a reader looks for it: it governs the desktop behind a
+                    translucent window AND the wash over a backdrop, so it has two
+                    honest homes and exactly one value. */}
+                <Row
+                  label="Show-through"
+                  hint="The desktop behind a translucent window, and the backdrop under the app."
+                  control={
+                    <div className="flex items-center gap-2.5">
+                      <input
+                        type="range"
+                        min={MIN_TRANSLUCENCY}
+                        max={MAX_TRANSLUCENCY}
+                        step={5}
+                        value={current.translucencyLevel}
+                        aria-label="Show-through"
+                        className="w-36 accent-primary"
+                        onChange={(event) => edit(patchDraftStrength(current, Number(event.target.value)))}
+                      />
+                      <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{current.translucencyLevel}%</span>
+                    </div>
+                  }
+                />
+              </PanelBody>
+            </Panel>
+          )}
 
-        {/* THE DESIGNER GETS THE ROOM A CONVERSATION NEEDS. As one panel among
-            the theme tools it was a 24rem box with a strip at the bottom; it is
-            the only tab you TALK to, so it takes the height the window has left
-            rather than a number picked to sit politely beside a colour grid. */}
-        {tab === "designer" && current && (
-          <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[calc(100dvh-var(--titlebar-height)-19rem)] min-h-[22rem]" />
-        )}
-      </div>
+          {/* THE DESIGNER GETS THE ROOM A CONVERSATION NEEDS. As one panel among
+              the theme tools it was a 24rem box with a strip at the bottom; it is
+              the only tab you TALK to, so it takes the height the window has left
+              rather than a number picked to sit politely beside a colour grid. */}
+          </div>
+        </>
+      ) : (
+        current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[calc(100dvh-var(--titlebar-height)-8.5rem)] min-h-[24rem]" />
+      )}
     </div>
   );
 }

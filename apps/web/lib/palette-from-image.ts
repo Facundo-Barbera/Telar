@@ -259,3 +259,33 @@ export function themeFromPalette(colors: readonly PaletteColor[]): Omit<ThemeDef
 export function themeFromPixels(pixels: Uint8ClampedArray | readonly Rgb[]): Omit<ThemeDefinition, "id"> {
   return themeFromPalette(dominantHues(pixels));
 }
+
+/**
+ * THE PIXELS OF A DATA URL, downsampled — moved here from the backdrop tool so
+ * the designer's picture attachments and the backdrop's "Take colours" read an
+ * image exactly the same way. Two samplers would be two answers to "what
+ * colours are in this?", and the pane has spent this rebuild deleting second
+ * opinions.
+ *
+ * Downsampling is not an optimisation: averaging a 12-megapixel photo at full
+ * size costs seconds and answers the same question a 96px edge does.
+ */
+/** The longest edge sampled — the value the backdrop tool has used all along. */
+const SAMPLE_EDGE = 64;
+
+export async function samplePixels(dataUrl: string): Promise<Uint8ClampedArray> {
+  const image = new Image();
+  image.src = dataUrl;
+  await image.decode();
+  const longest = Math.max(image.naturalWidth || 1, image.naturalHeight || 1);
+  const scale = Math.min(1, SAMPLE_EDGE / longest);
+  const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+  const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("no 2d context");
+  context.drawImage(image, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height).data;
+}
