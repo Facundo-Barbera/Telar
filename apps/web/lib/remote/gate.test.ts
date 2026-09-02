@@ -122,3 +122,37 @@ describe("api gate", () => {
     expect(ask("/api/pair", { method: "POST" }, file({}, "observer"))).toEqual({ allow: true });
   });
 });
+
+describe("the process that runs the server", () => {
+  const HOST = "tlr_" + "h".repeat(43);
+  const file = { version: 1 as const, requireAuth: true, devices: [] };
+
+  test("the host's secret is a full-role caller without a device record", () => {
+    process.env.TELAR_HOST_TOKEN = HOST;
+    try {
+      const decision = decideApiAccess({ pathname: "/api/projects", method: "POST", authorization: null, deviceCookie: HOST }, file);
+      expect(decision).toEqual({ allow: true, role: "full" });
+    } finally {
+      delete process.env.TELAR_HOST_TOKEN;
+    }
+  });
+
+  test("with no secret set, nothing passes as the host", () => {
+    delete process.env.TELAR_HOST_TOKEN;
+    // The dangerous shape: an absent env var must not let an empty cookie in.
+    expect(decideApiAccess({ pathname: "/api/projects", method: "GET", authorization: null, deviceCookie: "" }, file)).toEqual({
+      allow: false,
+      code: "cockpit_unauthorized",
+    });
+  });
+
+  test("a near-miss is still refused", () => {
+    process.env.TELAR_HOST_TOKEN = HOST;
+    try {
+      expect(decideApiAccess({ pathname: "/api/projects", method: "GET", authorization: null, deviceCookie: HOST + "x" }, file).allow).toBe(false);
+      expect(decideApiAccess({ pathname: "/api/projects", method: "GET", authorization: null, deviceCookie: HOST.slice(0, -1) + "z" }, file).allow).toBe(false);
+    } finally {
+      delete process.env.TELAR_HOST_TOKEN;
+    }
+  });
+});

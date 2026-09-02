@@ -15,9 +15,9 @@ const http = require("node:http");
 const net = require("node:net");
 const fs = require("node:fs");
 const os = require("node:os");
-const { randomUUID } = require("node:crypto");
+const { randomBytes, randomUUID } = require("node:crypto");
 const { fork, execFileSync } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
@@ -363,6 +363,44 @@ function nodeExecPath() {
  * café's wifi. Two checks for one rule, because the cost of the file winning
  * is the whole machine.
  */
+/**
+ * THE SHELL DOES NOT PAIR WITH ITSELF.
+ *
+ * Pairing answers "may this OTHER device reach my cockpit". This process
+ * launched the server and owns the state directory; it already has everything
+ * pairing would grant. Treating it as a guest failed in the two ways that hurt
+ * most — the host's own window asking to be paired, and any change of origin
+ * (a bind address, a tailnet URL) silently unpairing the app on the very
+ * machine running it.
+ *
+ * So it carries a per-launch secret: minted here, handed to the web child in
+ * its environment, and set as a cookie on this window's session before the
+ * page loads. Nothing is persisted and nothing is written into remote.json, so
+ * quitting ends it and the next launch mints another.
+ */
+const HOST_TOKEN = "tlr_" + randomBytes(32).toString("base64url");
+
+/**
+ * Set BEFORE the first load, on the session that will make the request — an
+ * Electron cookie is per-origin, so this is scoped to the URL the shell is
+ * about to open and travels nowhere else.
+ */
+async function seatHostCookie(url) {
+  try {
+    const { protocol, host } = new URL(url);
+    await session.defaultSession.cookies.set({
+      url: `${protocol}//${host}`,
+      name: "telar_device",
+      value: HOST_TOKEN,
+      httpOnly: true,
+      sameSite: "lax",
+    });
+  } catch {
+    // A cookie we cannot seat means the window pairs the old way rather than
+    // failing to open — degraded, not broken.
+  }
+}
+
 function serverBindHost(home) {
   try {
     const file = path.join(home, "remote", "remote.json");
@@ -509,6 +547,8 @@ function startServer(port, home) {
       ...childEnv(home),
       PORT: String(port),
       HOSTNAME: serverBindHost(home),
+      // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
+      TELAR_HOST_TOKEN: HOST_TOKEN,
       NODE_ENV: "production",
       // THE LAUNCHER MARKER. The cockpit's server-side engine discovery refuses
       // to resolve a state root unless it is set (apps/web/lib/engine/
@@ -735,7 +775,13 @@ function createWindow(url) {
 
   win.once("ready-to-show", () => win.show());
   win.setTitle(title);
-  win.loadURL(url);
+  // SEATED BEFORE THE FIRST REQUEST, not after: the gate reads this cookie on
+  // the opening navigation, so loading first would send the shell's own window
+  // in as an unpaired stranger. `finally` because a cookie we could not set is
+  // a window that pairs the old way, not a window that never opens.
+  seatHostCookie(url).finally(() => {
+    if (!win.isDestroyed()) win.loadURL(url);
+  });
   return win;
 }
 

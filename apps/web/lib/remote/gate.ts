@@ -1,3 +1,4 @@
+import { isHostToken } from "./host-token";
 import { matchDevice, type DeviceRole, type PairedDevice, type RemoteFile } from "./store";
 
 /**
@@ -47,6 +48,11 @@ export function decideApiAccess(
 ): GateDecision {
   if (!file.requireAuth) return { allow: true };
   if (EXEMPT_API_PATHS.has(request.pathname)) return { allow: true };
+
+  // THE PROCESS THAT LAUNCHED THE SERVER IS NOT A GUEST. It carries a
+  // per-launch secret rather than a device record — see host-token.ts for why
+  // pairing the host with itself was the wrong shape.
+  if (isHostToken(request.deviceCookie)) return { allow: true, role: "full" };
 
   const device = identifyCaller(request, file);
   if (!device) return { allow: false, code: "cockpit_unauthorized" };
