@@ -476,10 +476,39 @@
    The stacks the data attributes swap in. `geist` is the default and has no
    block; the system stacks name no webfont at all, which is the point of
    choosing them. */
+/* EVERY FACE IS OFFERED TO BOTH SLOTS, so every id needs a rule in both — a
+   reader who wants the whole interface in JetBrains Mono is not making a
+   mistake, and the picker no longer pretends they are. `geist` stays
+   role-dependent because that is what it has always meant in each slot:
+   Geist in the interface, Geist Mono in code. */
 [data-font-sans="inter"] { --app-font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="plex-sans"] { --app-font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
+[data-font-sans="jetbrains"] { --app-font-sans: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="plex-mono"] { --app-font-sans: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-sans="fira-code"] { --app-font-sans: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-sans="system"] { --app-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+[data-font-mono="inter"] { --app-font-mono: var(--font-inter), ui-sans-serif, system-ui, sans-serif; }
+[data-font-mono="plex-sans"] { --app-font-mono: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif; }
 [data-font-mono="jetbrains"] { --app-font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="plex-mono"] { --app-font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace; }
+[data-font-mono="fira-code"] { --app-font-mono: var(--font-fira-code), ui-monospace, SFMono-Regular, Menlo, monospace; }
 [data-font-mono="system"] { --app-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* THE SIZE OF MONO CONTENT, and pointedly not of mono CHROME.
+   `--app-font-mono-size` is written on <html> by lib/appearance.ts. It lands
+   on the elements that actually hold code — inline code, blocks, keys, sample
+   output — rather than on the `font-mono` utility, because that class is also
+   what every panel header and status chip wears. Sizing by the class would
+   have made the reader's "code a notch smaller" quietly reflow the entire
+   interface's labels; sizing by the ELEMENT gives them the thing they asked
+   for and nothing else.
+
+   A `text-*` utility on the same element still wins — it is a deliberate size
+   at a specific call site, and this is the default those sites depart from. */
+code, pre, kbd, samp {
+  font-size: var(--app-font-mono-size, inherit);
+}
 
 /* ─── WINDOW TRANSLUCENCY (macOS desktop shell only) ────────────────────────
 

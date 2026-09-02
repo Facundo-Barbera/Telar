@@ -21,7 +21,7 @@
  */
 
 import { useState } from "react";
-import { ACCENTS, MAX_FONT_SIZE, MAX_TRANSLUCENCY, MIN_FONT_SIZE, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
+import { ACCENTS, MAX_FONT_SIZE, MAX_MONO_FONT_SIZE, MAX_TRANSLUCENCY, MIN_FONT_SIZE, MIN_MONO_FONT_SIZE, MIN_TRANSLUCENCY, MONO_FONTS, SANS_FONTS, type Accent, type MonoFont, type SansFont } from "@/lib/appearance";
 import { cssColorToHex, hexToCssColor, THEME_TOKEN_LABELS, THEME_TOKENS, type ThemeToken } from "@/lib/theme-palettes";
 import { FOREGROUND_SURFACES } from "@/lib/theme-designer";
 import { contrastRatio, parseVsCodeColor } from "@/lib/vscode-theme-import";
@@ -39,11 +39,23 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { CodeSpecimen, InterfaceSpecimen, TerminalSpecimen } from "./type-specimen";
 
 export type DraftTool = { draft: StudioDraft; onDraft: (next: StudioDraft) => void };
 
-const SANS_LABEL: Record<SansFont, string> = { geist: "Geist", inter: "Inter", system: "System", custom: "Custom…" };
-const MONO_LABEL: Record<MonoFont, string> = { geist: "Geist Mono", jetbrains: "JetBrains Mono", system: "System", custom: "Custom…" };
+// The SAME catalogue in both slots; only the name of the shared `geist` id
+// differs, because Geist and Geist Mono are what it has always meant in each.
+const SANS_LABEL: Record<SansFont, string> = {
+  geist: "Geist",
+  inter: "Inter",
+  "plex-sans": "IBM Plex Sans",
+  jetbrains: "JetBrains Mono",
+  "plex-mono": "IBM Plex Mono",
+  "fira-code": "Fira Code",
+  system: "System",
+  custom: "Custom…",
+};
+const MONO_LABEL: Record<MonoFont, string> = { ...SANS_LABEL, geist: "Geist Mono" };
 const ACCENT_LABEL: Record<Accent, string> = {
   indigo: "Indigo",
   sky: "Sky",
@@ -182,6 +194,111 @@ export function ColourTool({ draft, onDraft, mode }: DraftTool & { mode: StudioM
 
 /* ------------------------------------------------------------ type & accent */
 
+/**
+ * ONE TYPEFACE, ONE FIELD: what it governs, the family, the size, and a
+ * specimen underneath. Family and size sit on the same row because they are
+ * one decision — a face at the wrong size is the wrong face — and the reference
+ * this pane follows puts them there for the same reason.
+ */
+function TypeField({
+  title,
+  hint,
+  family,
+  size,
+  custom,
+  children,
+}: {
+  title: string;
+  hint: string;
+  family: React.ReactNode;
+  size: React.ReactNode;
+  custom?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border-b border-border px-3 py-3 last:border-b-0">
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+        <div className="min-w-40 flex-1">
+          <div className="text-xs font-medium">{title}</div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{hint}</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {family}
+          {size}
+        </div>
+      </div>
+      {custom && <div className="mt-2">{custom}</div>}
+      <div className="mt-2.5 flex flex-col gap-2">{children}</div>
+    </div>
+  );
+}
+
+/** The family picker. A select rather than a row of pills: this is a value out
+ *  of a list, and the list grows with every custom face. */
+function FontSelect<T extends string>({
+  value,
+  items,
+  options,
+  onPick,
+  label,
+}: {
+  value: T;
+  items: Record<T, string>;
+  options: readonly T[];
+  onPick: (next: T) => void;
+  label: string;
+}) {
+  return (
+    <Select
+      value={value}
+      items={items}
+      onValueChange={(next) => {
+        if (typeof next === "string" && (options as readonly string[]).includes(next)) onPick(next as T);
+      }}
+    >
+      <SelectTrigger size="sm" className="w-40" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map((option) => (
+          <SelectItem key={option} value={option}>
+            {items[option]}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** Sizes as a list, not a spinner: the useful range is a handful of integers,
+ *  and every one of them is a legible choice rather than a number to type. */
+function SizeSelect({ value, min, max, label, onPick }: { value: number; min: number; max: number; label: string; onPick: (next: number) => void }) {
+  const sizes = Array.from({ length: max - min + 1 }, (_, index) => min + index);
+  const items = Object.fromEntries(sizes.map((size) => [String(size), `${size} px`])) as Record<string, string>;
+  return (
+    <Select
+      value={String(value)}
+      items={items}
+      onValueChange={(next) => {
+        const parsed = Number(next);
+        if (Number.isInteger(parsed) && parsed >= min && parsed <= max) onPick(parsed);
+      }}
+    >
+      <SelectTrigger size="sm" className="w-24" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {sizes.map((size) => (
+          <SelectItem key={size} value={String(size)}>
+            {size} px
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+
 function AccentSwatches({ value, onChange }: { value: Accent; onChange: (next: Accent) => void }) {
   return (
     <div className="flex items-center gap-1.5" role="radiogroup" aria-label="Draft accent colour">
@@ -218,90 +335,54 @@ export function TypeTool({ draft, onDraft }: DraftTool) {
         <AccentSwatches value={draft.accent} onChange={(accent) => onDraft(patchDraftAccent(draft, accent))} />
       </ToolBlock>
 
-      <ToolBlock title="Interface font">
-        <div className="flex flex-col items-end gap-2">
-        <Select
-          value={draft.fontSans}
-          items={SANS_LABEL}
-          onValueChange={(next) => {
-            if (typeof next === "string" && (SANS_FONTS as readonly string[]).includes(next)) onDraft(patchDraftType(draft, { fontSans: next as SansFont }));
-          }}
-        >
-          <SelectTrigger size="sm" className="w-48">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {SANS_FONTS.map((font) => (
-              <SelectItem key={font} value={font}>
-                {SANS_LABEL[font]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {draft.fontSans === "custom" && (
-          <Input
-            className="w-48"
-            value={draft.fontSansCustom}
-            placeholder="e.g. Helvetica Neue"
-            aria-label="Custom interface font"
-            onChange={(event) => onDraft(patchDraftType(draft, { fontSansCustom: event.target.value }))}
-          />
-        )}
-        </div>
-      </ToolBlock>
+      <TypeField
+        title="Interface font"
+        hint="Everything outside code blocks and the terminal."
+        family={
+          <FontSelect value={draft.fontSans} items={SANS_LABEL} options={SANS_FONTS} onPick={(fontSans) => onDraft(patchDraftType(draft, { fontSans }))} label="Interface font" />
+        }
+        size={
+          <SizeSelect value={draft.fontSize} min={MIN_FONT_SIZE} max={MAX_FONT_SIZE} label="Interface text size" onPick={(fontSize) => onDraft(patchDraftType(draft, { fontSize }))} />
+        }
+        custom={
+          draft.fontSans === "custom" ? (
+            <Input
+              className="w-full"
+              value={draft.fontSansCustom}
+              placeholder="e.g. Helvetica Neue"
+              aria-label="Custom interface font"
+              onChange={(event) => onDraft(patchDraftType(draft, { fontSansCustom: event.target.value }))}
+            />
+          ) : undefined
+        }
+      >
+        <InterfaceSpecimen />
+      </TypeField>
 
-      <ToolBlock title="Code font">
-        <div className="flex flex-col items-end gap-2">
-        <Select
-          value={draft.fontMono}
-          items={MONO_LABEL}
-          onValueChange={(next) => {
-            if (typeof next === "string" && (MONO_FONTS as readonly string[]).includes(next)) onDraft(patchDraftType(draft, { fontMono: next as MonoFont }));
-          }}
-        >
-          <SelectTrigger size="sm" className="w-48">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {MONO_FONTS.map((font) => (
-              <SelectItem key={font} value={font}>
-                {MONO_LABEL[font]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {draft.fontMono === "custom" && (
-          <Input
-            className="w-48"
-            value={draft.fontMonoCustom}
-            placeholder="e.g. SF Mono"
-            aria-label="Custom code font"
-            onChange={(event) => onDraft(patchDraftType(draft, { fontMonoCustom: event.target.value }))}
-          />
-        )}
-        </div>
-      </ToolBlock>
-
-      <ToolBlock title="Text size">
-        <div className="flex items-center gap-2">
-          <Input
-            type="number"
-            min={MIN_FONT_SIZE}
-            max={MAX_FONT_SIZE}
-            step={1}
-            value={draft.fontSize}
-            aria-label="Draft text size in pixels"
-            className="w-20"
-            onChange={(event) => {
-              const next = Number(event.target.value);
-              // Out-of-range keystrokes are ignored rather than clamped, so
-              // typing "1" on the way to "14" does not snap to 13.
-              if (Number.isFinite(next) && next >= MIN_FONT_SIZE && next <= MAX_FONT_SIZE) onDraft(patchDraftType(draft, { fontSize: next }));
-            }}
-          />
-          <span className="text-xs text-muted-foreground">px</span>
-        </div>
-      </ToolBlock>
+      <TypeField
+        title="Code font"
+        hint="Code blocks, diffs, file previews, and the terminal."
+        family={
+          <FontSelect value={draft.fontMono} items={MONO_LABEL} options={MONO_FONTS} onPick={(fontMono) => onDraft(patchDraftType(draft, { fontMono }))} label="Code font" />
+        }
+        size={
+          <SizeSelect value={draft.fontMonoSize} min={MIN_MONO_FONT_SIZE} max={MAX_MONO_FONT_SIZE} label="Code text size" onPick={(fontMonoSize) => onDraft(patchDraftType(draft, { fontMonoSize }))} />
+        }
+        custom={
+          draft.fontMono === "custom" ? (
+            <Input
+              className="w-full"
+              value={draft.fontMonoCustom}
+              placeholder="e.g. SF Mono"
+              aria-label="Custom code font"
+              onChange={(event) => onDraft(patchDraftType(draft, { fontMonoCustom: event.target.value }))}
+            />
+          ) : undefined
+        }
+      >
+        <CodeSpecimen />
+        <TerminalSpecimen />
+      </TypeField>
     </>
   );
 }

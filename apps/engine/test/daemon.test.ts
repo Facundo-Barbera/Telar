@@ -236,6 +236,7 @@ function publishedLook(label: string): PublishedAppearance {
       fontSansCustom: "",
       fontMonoCustom: "",
       fontSize: 17,
+      fontMonoSize: 13,
       translucencyLevel: 50,
     },
   };

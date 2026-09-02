@@ -113,20 +113,34 @@ const ACCENT_COLOURS: Record<Accent, { light: string; dark: { primary: string; p
  * fallbacks globals.css guarantees. A reader without the webfont lands on the
  * fallbacks, which is exactly what a "system" choice already means.
  */
+const SANS_TAIL = "ui-sans-serif, system-ui, sans-serif";
+const MONO_TAIL = "ui-monospace, SFMono-Regular, Menlo, monospace";
+
 const SANS_STACKS: Record<SansFont, string> = {
-  geist: '"Geist", ui-sans-serif, system-ui, sans-serif',
-  inter: '"Inter", ui-sans-serif, system-ui, sans-serif',
+  geist: `"Geist", ${SANS_TAIL}`,
+  inter: `"Inter", ${SANS_TAIL}`,
+  "plex-sans": `"IBM Plex Sans", ${SANS_TAIL}`,
+  // A monospaced face chosen for the INTERFACE — its fallbacks are monospaced
+  // too, because falling back to a proportional face would silently undo the
+  // one thing the reader asked for.
+  jetbrains: `"JetBrains Mono", ${MONO_TAIL}`,
+  "plex-mono": `"IBM Plex Mono", ${MONO_TAIL}`,
+  "fira-code": `"Fira Code", ${MONO_TAIL}`,
   system: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
   // Replaced below by the reader's own typed family; this is the fallback tail
   // the cockpit appends to it, and the answer when nothing was typed.
-  custom: "ui-sans-serif, system-ui, sans-serif",
+  custom: SANS_TAIL,
 };
 
 const MONO_STACKS: Record<MonoFont, string> = {
-  geist: '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
-  jetbrains: '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
+  geist: `"Geist Mono", ${MONO_TAIL}`,
+  inter: `"Inter", ${SANS_TAIL}`,
+  "plex-sans": `"IBM Plex Sans", ${SANS_TAIL}`,
+  jetbrains: `"JetBrains Mono", ${MONO_TAIL}`,
+  "plex-mono": `"IBM Plex Mono", ${MONO_TAIL}`,
+  "fira-code": `"Fira Code", ${MONO_TAIL}`,
   system: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-  custom: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  custom: MONO_TAIL,
 };
 
 /** A typed family in front of its fallbacks, quoted the way the store quotes it

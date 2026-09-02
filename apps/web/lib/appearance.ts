@@ -27,12 +27,15 @@ import {
   SANS_FONTS,
   DEFAULT_ACCENT,
   DEFAULT_FONT_SIZE,
+  DEFAULT_MONO_FONT_SIZE,
   DEFAULT_MONO_FONT,
   DEFAULT_SANS_FONT,
   DEFAULT_TRANSLUCENCY_LEVEL,
   MAX_FONT_SIZE,
+  MAX_MONO_FONT_SIZE,
   MAX_TRANSLUCENCY,
   MIN_FONT_SIZE,
+  MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   type Accent,
   type MonoFont,
@@ -50,8 +53,10 @@ import {
 export {
   ACCENTS,
   MAX_FONT_SIZE,
+  MAX_MONO_FONT_SIZE,
   MAX_TRANSLUCENCY,
   MIN_FONT_SIZE,
+  MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   MONO_FONTS,
   SANS_FONTS,
@@ -97,6 +102,8 @@ export type Appearance = {
   fontSansCustom: string;
   fontMonoCustom: string;
   fontSize: number;
+  /** Mono CONTENT — code, diffs, file previews, the terminal. */
+  fontMonoSize: number;
   /** Only means anything inside the desktop shell, but it is stored here —
    *  with the rest of appearance — rather than in the shell, so the same
    *  toggle round-trips through the same store as everything on the pane.
@@ -142,6 +149,7 @@ export const DEFAULT_APPEARANCE: Appearance = {
   fontSansCustom: "",
   fontMonoCustom: "",
   fontSize: DEFAULT_FONT_SIZE,
+  fontMonoSize: DEFAULT_MONO_FONT_SIZE,
   translucent: false,
   translucencyLevel: DEFAULT_TRANSLUCENCY_LEVEL,
   frost: "blur",
@@ -155,7 +163,7 @@ const STORAGE_KEY = "telar-appearance";
  * default values are OMITTED rather than written, so the base tokens in
  * globals.css stay the single source of the default look.
  */
-export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var css=localStorage.getItem('telar-theme-css');if(css){var s=document.createElement('style');s.id='telar-theme';s.textContent=css;document.head.appendChild(s);}var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});var ff=function(v){if(typeof v!=='string')return null;var o=[];v.split(',').forEach(function(n){n=n.trim();if(!n)return;if(/^['"].*['"]$/.test(n)||/^[a-zA-Z][a-zA-Z0-9-]*$/.test(n))o.push(n);else o.push('"'+n.replace(/"/g,'')+'"');});return o.length?o.join(', '):null;};var fam=function(p,mode,raw,fb){var l=mode==='custom'?ff(raw):null;if(l)d.style.setProperty(p,l+', '+fb);else d.style.removeProperty(p);};fam('--app-font-sans',a.fontSans,a.fontSansCustom,'${CUSTOM_SANS_FALLBACK}');fam('--app-font-mono',a.fontMono,a.fontMonoCustom,'${CUSTOM_MONO_FALLBACK}');var fs=typeof a.fontSize==='number'&&isFinite(a.fontSize)?Math.min(${MAX_FONT_SIZE},Math.max(${MIN_FONT_SIZE},Math.round(a.fontSize))):${DEFAULT_APPEARANCE.fontSize};if(fs!==${DEFAULT_APPEARANCE.fontSize})d.style.fontSize=fs+'px';else d.style.removeProperty('font-size');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};d.style.setProperty('--translucency',Math.round(l*0.9)+'%');if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
+export const APPEARANCE_INIT_SCRIPT = `(function(){try{var a=JSON.parse(localStorage.getItem('${STORAGE_KEY}')||'{}');var d=document.documentElement;var css=localStorage.getItem('telar-theme-css');if(css){var s=document.createElement('style');s.id='telar-theme';s.textContent=css;document.head.appendChild(s);}var set=function(n,v,ok){if(ok.indexOf(v)>=0&&v!==ok[0])d.setAttribute(n,v);else d.removeAttribute(n);};set('data-accent',a.accent,${JSON.stringify([...ACCENTS])});set('data-font-sans',a.fontSans,${JSON.stringify([...SANS_FONTS])});set('data-font-mono',a.fontMono,${JSON.stringify([...MONO_FONTS])});var ff=function(v){if(typeof v!=='string')return null;var o=[];v.split(',').forEach(function(n){n=n.trim();if(!n)return;if(/^['"].*['"]$/.test(n)||/^[a-zA-Z][a-zA-Z0-9-]*$/.test(n))o.push(n);else o.push('"'+n.replace(/"/g,'')+'"');});return o.length?o.join(', '):null;};var fam=function(p,mode,raw,fb){var l=mode==='custom'?ff(raw):null;if(l)d.style.setProperty(p,l+', '+fb);else d.style.removeProperty(p);};fam('--app-font-sans',a.fontSans,a.fontSansCustom,'${CUSTOM_SANS_FALLBACK}');fam('--app-font-mono',a.fontMono,a.fontMonoCustom,'${CUSTOM_MONO_FALLBACK}');var fs=typeof a.fontSize==='number'&&isFinite(a.fontSize)?Math.min(${MAX_FONT_SIZE},Math.max(${MIN_FONT_SIZE},Math.round(a.fontSize))):${DEFAULT_APPEARANCE.fontSize};if(fs!==${DEFAULT_APPEARANCE.fontSize})d.style.fontSize=fs+'px';else d.style.removeProperty('font-size');var l=typeof a.translucencyLevel==='number'&&a.translucencyLevel>=${MIN_TRANSLUCENCY}&&a.translucencyLevel<=${MAX_TRANSLUCENCY}?a.translucencyLevel:${DEFAULT_APPEARANCE.translucencyLevel};var ms=typeof a.fontMonoSize==='number'&&isFinite(a.fontMonoSize)?Math.min(${MAX_MONO_FONT_SIZE},Math.max(${MIN_MONO_FONT_SIZE},Math.round(a.fontMonoSize))):${DEFAULT_APPEARANCE.fontMonoSize};d.style.setProperty('--app-font-mono-size',ms+'px');d.style.setProperty('--translucency',Math.round(l*0.9)+'%');if(a.translucent===true)d.setAttribute('data-translucent','');else d.removeAttribute('data-translucent');}catch(e){}})();`;
 
 const listeners = new Set<() => void>();
 
@@ -188,6 +196,10 @@ export function parseAppearance(raw: string | null): Appearance {
         typeof record.fontSize === "number" && Number.isFinite(record.fontSize)
           ? Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, Math.round(record.fontSize)))
           : DEFAULT_APPEARANCE.fontSize,
+      fontMonoSize:
+        typeof record.fontMonoSize === "number" && Number.isFinite(record.fontMonoSize)
+          ? Math.min(MAX_MONO_FONT_SIZE, Math.max(MIN_MONO_FONT_SIZE, Math.round(record.fontMonoSize)))
+          : DEFAULT_APPEARANCE.fontMonoSize,
       translucent: record.translucent === true,
       translucencyLevel:
         typeof record.translucencyLevel === "number" && record.translucencyLevel >= MIN_TRANSLUCENCY && record.translucencyLevel <= MAX_TRANSLUCENCY
@@ -265,6 +277,9 @@ export function applyAppearance(appearance: Appearance): void {
   // size — including a reader's larger minimum.
   if (appearance.fontSize === DEFAULT_APPEARANCE.fontSize) root.style.removeProperty("font-size");
   else root.style.fontSize = `${appearance.fontSize}px`;
+  // Read by globals.css on the elements that actually HOLD mono content, so
+  // mono chrome (a panel header) keeps the size its utility class gave it.
+  root.style.setProperty("--app-font-mono-size", `${appearance.fontMonoSize}px`);
   applyWindowChrome(appearance);
   // Written UNCONDITIONALLY: the wash rules gate on data-translucent OR
   // data-backdrop (lib/backdrop.ts), and both read this one strength var.

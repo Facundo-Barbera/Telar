@@ -103,16 +103,46 @@ export type Accent = (typeof ACCENTS)[number];
 
 /** "custom" has no stylesheet block anywhere: the look's own
  *  `fontSansCustom` / `fontMonoCustom` is what makes it mean something. */
-export const SANS_FONTS = ["geist", "inter", "system", "custom"] as const;
+/**
+ * ONE CATALOGUE, OFFERED TO BOTH SLOTS.
+ *
+ * The lists used to be disjoint, which quietly encoded an opinion nobody
+ * asked for: that a monospaced face is for code and never for the interface.
+ * Plenty of people want the whole app in JetBrains Mono. So both slots now
+ * choose from the same set, and the LABEL is what differs by role — `geist`
+ * is Geist in the interface slot and Geist Mono in the code slot, which is
+ * what it has always meant in each and is why the id stays shared rather than
+ * splitting into two that would strand every stored preference.
+ *
+ * The two type names survive because every caller distinguishes the two
+ * SLOTS even now that they share a range.
+ */
+export const APP_FONTS = ["geist", "inter", "plex-sans", "jetbrains", "plex-mono", "fira-code", "system", "custom"] as const;
+
+export const SANS_FONTS = APP_FONTS;
 export type SansFont = (typeof SANS_FONTS)[number];
 
-export const MONO_FONTS = ["geist", "jetbrains", "system", "custom"] as const;
+export const MONO_FONTS = APP_FONTS;
 export type MonoFont = (typeof MONO_FONTS)[number];
+
+/** Which faces are monospaced — the picker groups by it, and nothing else
+ *  depends on it, because either slot may take either kind. */
+export const MONOSPACED_FONTS: ReadonlySet<string> = new Set(["jetbrains", "plex-mono", "fira-code"]);
 
 /** The root px the whole interface is measured in — every rem-based dimension
  *  scales with it, which is the point: this is a zoom, not a text-only tweak. */
 export const MIN_FONT_SIZE = 13;
 export const MAX_FONT_SIZE = 18;
+
+/** The size of MONO CONTENT — code blocks, diffs, file previews, the terminal.
+ *  It travels separately because the two answers genuinely differ: a reader
+ *  who wants roomy prose usually wants code a notch tighter, and every mono
+ *  face runs small at the same nominal size as its sans companion. Chrome that
+ *  merely happens to be mono (a panel header) keeps its own size — this is the
+ *  size of text you READ, not of labels. */
+export const MIN_MONO_FONT_SIZE = 11;
+export const MAX_MONO_FONT_SIZE = 18;
+export const DEFAULT_MONO_FONT_SIZE = 13;
 
 /** The translucency slider's DISPLAY scale (the cockpit maps it onto the real
  *  alpha range before any CSS sees it). */
@@ -376,6 +406,7 @@ export type Look = {
   fontSansCustom: string;
   fontMonoCustom: string;
   fontSize: number;
+  fontMonoSize: number;
   translucencyLevel: number;
 };
 
@@ -492,6 +523,9 @@ export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_
     fontSansCustom: typeof value.fontSansCustom === "string" ? value.fontSansCustom : "",
     fontMonoCustom: typeof value.fontMonoCustom === "string" ? value.fontMonoCustom : "",
     fontSize: clampInt(value.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE, DEFAULT_FONT_SIZE),
+    // Absent in every Look written before this field existed, and a total
+    // parser must not reject those — it defaults, like every other member.
+    fontMonoSize: clampInt(value.fontMonoSize, MIN_MONO_FONT_SIZE, MAX_MONO_FONT_SIZE, DEFAULT_MONO_FONT_SIZE),
     translucencyLevel: clampInt(value.translucencyLevel, MIN_TRANSLUCENCY, MAX_TRANSLUCENCY, DEFAULT_TRANSLUCENCY_LEVEL),
   };
 }

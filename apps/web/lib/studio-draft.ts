@@ -25,8 +25,10 @@
 
 import {
   MAX_FONT_SIZE,
+  MAX_MONO_FONT_SIZE,
   MAX_TRANSLUCENCY,
   MIN_FONT_SIZE,
+  MIN_MONO_FONT_SIZE,
   MIN_TRANSLUCENCY,
   type Accent,
   type MonoFont,
@@ -187,7 +189,7 @@ export function patchDraftAccent(draft: StudioDraft, accent: Accent): StudioDraf
  *  enforces — a draft that could hold a 40px root would only be refused later. */
 export function patchDraftType(
   draft: StudioDraft,
-  patch: Partial<{ fontSans: SansFont; fontMono: MonoFont; fontSansCustom: string; fontMonoCustom: string; fontSize: number }>,
+  patch: Partial<{ fontSans: SansFont; fontMono: MonoFont; fontSansCustom: string; fontMonoCustom: string; fontSize: number; fontMonoSize: number }>,
 ): StudioDraft {
   return {
     ...draft,
@@ -196,6 +198,7 @@ export function patchDraftType(
     ...(patch.fontSansCustom !== undefined ? { fontSansCustom: patch.fontSansCustom } : {}),
     ...(patch.fontMonoCustom !== undefined ? { fontMonoCustom: patch.fontMonoCustom } : {}),
     ...(patch.fontSize !== undefined ? { fontSize: clampInt(patch.fontSize, MIN_FONT_SIZE, MAX_FONT_SIZE, draft.fontSize) } : {}),
+    ...(patch.fontMonoSize !== undefined ? { fontMonoSize: clampInt(patch.fontMonoSize, MIN_MONO_FONT_SIZE, MAX_MONO_FONT_SIZE, draft.fontMonoSize) } : {}),
   };
 }
 
@@ -435,7 +438,7 @@ export function describeDraft(draft: StudioDraft): string {
   return [
     `Name: ${draft.label}`,
     `Accent: ${draft.accent}`,
-    `Type: ${fonts}, ${draft.fontSize}px root`,
+    `Type: ${fonts}, ${draft.fontSize}px root, ${draft.fontMonoSize}px code`,
     `Light half: ${half("light")}`,
     `Dark half: ${half("dark")}`,
     `Backdrop: ${backdrop}`,

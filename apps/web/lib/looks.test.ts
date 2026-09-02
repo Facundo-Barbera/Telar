@@ -35,6 +35,7 @@ function look(overrides: Partial<Look> = {}): Look {
     fontSansCustom: "",
     fontMonoCustom: "",
     fontSize: 15,
+    fontMonoSize: 12,
     translucencyLevel: 70,
     ...overrides,
   };
@@ -280,6 +281,7 @@ describe("wearing", () => {
       fontSansCustom: "",
       fontMonoCustom: "",
       fontSize: 15,
+      fontMonoSize: 12,
       translucencyLevel: 70,
     });
   });

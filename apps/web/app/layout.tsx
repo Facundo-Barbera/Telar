@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Script from "next/script";
-import { Geist, Geist_Mono, Inter, JetBrains_Mono } from "next/font/google";
+import { Fira_Code, Geist, Geist_Mono, IBM_Plex_Mono, IBM_Plex_Sans, Inter, JetBrains_Mono } from "next/font/google";
 // Streamdown FIRST, so the cockpit's own tokens win where the two overlap.
 import "streamdown/styles.css";
 import "./globals.css";
@@ -17,6 +17,11 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 // used on the page, so the cost of offering them is bytes on disk, not paint.
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 const jetbrainsMono = JetBrains_Mono({ variable: "--font-jetbrains", subsets: ["latin"] });
+// `preload: false` on the optional faces: they are alternatives, not the
+// default, so nothing should pay a preload hint for a face nobody chose.
+const plexSans = IBM_Plex_Sans({ variable: "--font-plex-sans", subsets: ["latin"], weight: ["400", "500", "600"], preload: false });
+const plexMono = IBM_Plex_Mono({ variable: "--font-plex-mono", subsets: ["latin"], weight: ["400", "500", "600"], preload: false });
+const firaCode = Fira_Code({ variable: "--font-fira-code", subsets: ["latin"], preload: false });
 
 export const metadata: Metadata = {
   title: "Telar",
@@ -28,7 +33,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     /* `suppressHydrationWarning` because THEME_INIT_SCRIPT mutates this exact
        element's class list before React hydrates — the mismatch is the design,
        not a bug, and it is confined to <html>. */
-    <html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}>
+    <html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} ${jetbrainsMono.variable} ${plexSans.variable} ${plexMono.variable} ${firaCode.variable} h-full antialiased`}>
       <head>
         {/**
          * `next/script`, NOT a bare `<script>`, and the difference is a warning

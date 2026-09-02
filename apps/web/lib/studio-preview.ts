@@ -135,6 +135,7 @@ export function previewLook(look: Look, mode?: PreviewMode): void {
 
   if (look.fontSize === DEFAULT_APPEARANCE.fontSize) root.style.removeProperty("font-size");
   else root.style.fontSize = `${look.fontSize}px`;
+  root.style.setProperty("--app-font-mono-size", `${look.fontMonoSize}px`);
   root.style.setProperty("--translucency", translucencyCss(look.translucencyLevel));
 
   previewBackdrop(look.backdrop);
