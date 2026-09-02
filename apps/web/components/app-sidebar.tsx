@@ -4,8 +4,12 @@
 //
 // STRUCTURE, TOP TO BOTTOM: a 56px header with the collapse trigger and the
 // wordmark; a search field wearing its ⌘K hint and a new-session button beside
-// it; a project scope dropdown with a register button; then the four bands —
+// it; a project scope dropdown with a register button; then the five bands —
 //
+//   drafts    above everything, unheaded, and DELIBERATELY THE SMALLEST ROWS
+//             in the rail: a conversation you started writing and did not send
+//             has no session behind it, so it is one line wearing a pencil.
+//             Same rule-underneath treatment as pinned, for the same reason
 //   pinned    above the scroll, so it stays where you left it, and unheaded:
 //             a rule UNDER it divides it from the list, and each row wears a
 //             pin rather than the band wearing a word
@@ -60,10 +64,13 @@ import { createEngineApi } from "@/lib/engine/client";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { PROJECTS_CHANGED_EVENT } from "@/lib/projects";
 import { useCommandKeys } from "@/lib/use-command-keys";
+import { DraftRow } from "@/components/session/draft-row";
+import { DRAFTS_CHANGED_EVENT, listCanvasDrafts, writeDraft, type CanvasDraft } from "@/lib/composer-draft";
 import {
   activeSessionFromPathname,
   bandOf,
   canvasHref,
+  canvasProjectFromPathname,
   deriveSessionList,
   SESSION_PAGE_SIZE,
   sessionHref,
@@ -356,6 +363,15 @@ function SidebarBody() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [sessions, setSessions] = useState<SidebarSession[]>([]);
   /**
+   * Started conversations with no session behind them yet.
+   *
+   * SEEDED EMPTY, LIKE `renderedAt` IS ZERO, and for the same reason: these live
+   * in localStorage, which does not exist during the server render, so reading
+   * them into the initial state would make the two renders disagree about what
+   * is in the rail. The effect below fills them a tick later.
+   */
+  const [drafts, setDrafts] = useState<CanvasDraft[]>([]);
+  /**
    * How long a quiet session stays in the list, from the ENGINE rather than
    * from this browser — so the desktop shell and a browser tab band the same
    * sessions the same way. See lib/inbox-policy.ts.
@@ -437,6 +453,27 @@ function SidebarBody() {
   }, [loadAll]);
 
   /**
+   * Drafts, which are NOT POLLED — they are this browser's own, and the only
+   * things that change them are in this document or another tab of it.
+   *
+   * `writeDraft` announces on every save, so a draft row appears while you are
+   * still typing the first sentence and disappears the instant the message is
+   * sent. `storage` covers the second tab, which never fires in the tab that
+   * wrote and so cannot replace the announcement.
+   */
+  useEffect(() => {
+    const reread = () => setDrafts(listCanvasDrafts());
+    const task = window.setTimeout(reread, 0);
+    window.addEventListener(DRAFTS_CHANGED_EVENT, reread);
+    window.addEventListener("storage", reread);
+    return () => {
+      window.clearTimeout(task);
+      window.removeEventListener(DRAFTS_CHANGED_EVENT, reread);
+      window.removeEventListener("storage", reread);
+    };
+  }, []);
+
+  /**
    * Sessions advance without a local action — a detached turn finishes, a title
    * is derived — and there is no cross-session event stream to subscribe to, so
    * the rail re-reads on a timer.
@@ -494,6 +531,32 @@ function SidebarBody() {
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
   const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterDays });
+
+  /**
+   * The draft rows, joined to the registry and narrowed the same way the list is.
+   *
+   * DROPPED WHEN THE PROJECT IS GONE. A draft outlives deregistration — nothing
+   * cleans localStorage when a project leaves — and a row for a project the rail
+   * cannot name would link to a canvas that 404s.
+   *
+   * SEARCHED RATHER THAN HIDDEN. The pinned band folds away under a query
+   * because its rows reappear inside the flat result list; a draft is in no
+   * result list, so hiding it would make the one thing you cannot find by title
+   * also unfindable by text. Its text IS its title, so matching on that is the
+   * same promise the session rows make.
+   */
+  const openCanvasProject = canvasProjectFromPathname(pathname);
+  const needle = query.trim().toLocaleLowerCase();
+  const draftRows = drafts
+    .filter((draft) => (selectedScope ? draft.projectId === selectedScope : true))
+    .filter((draft) => (needle ? draft.text.toLocaleLowerCase().includes(needle) : true))
+    .map((draft) => ({ ...draft, projectName: projects.find((project) => project.id === draft.projectId)?.name }))
+    .filter((draft) => draft.projectName !== undefined);
+  const discardDraft = (projectId: string) => {
+    // Straight to storage: the write announces, and this component re-reads its
+    // own announcement like every other listener. One path in, one path out.
+    writeDraft(undefined, projectId, "");
+  };
 
   /**
    * ⌘N, ⌘T, ⌘1..⌘9 and ⌘, — mounted HERE because this is the one component
@@ -691,6 +754,45 @@ function SidebarBody() {
             <RegisterProjectDialog onRegistered={() => void loadAll()} compact />
           </div>
         </div>
+
+        {/*
+          DRAFTS SIT ABOVE EVERYTHING, AND COST ONE LINE EACH.
+
+          A conversation you started writing and walked away from used to leave
+          no mark anywhere: the canvas mints no session until its first message,
+          so the text was remembered — `composer-draft.ts` has always done that
+          — and there was nowhere to see that it existed. You had to remember to
+          go back to the same project's canvas. These rows are that memory.
+
+          SMALLER THAN EVERY OTHER ROW, WHICH IS THE POINT. A draft is a
+          sentence, not a session: no branch, no provider, no activity, nothing
+          to report. `DraftRow` gives it a single line wearing a pencil, so a
+          rail with three drafts in it still reads as a list of conversations
+          with some scraps on top, rather than six sessions of two kinds.
+
+          Unheaded with the rule underneath, exactly like pinned below: the
+          boundary that exists is between these and what follows, and the glyph
+          on each row says what the band would have said.
+        */}
+        {draftRows.length > 0 && (
+          <SidebarGroup className="shrink-0 pb-0">
+            <SidebarGroupContent className="space-y-0.5">
+              {draftRows.map((draft) => (
+                <DraftRow
+                  key={draft.projectId}
+                  projectId={draft.projectId}
+                  projectName={draft.projectName}
+                  text={draft.text}
+                  active={draft.projectId === openCanvasProject}
+                  showProject={showProject}
+                  onNavigate={onNavigate}
+                  onDiscard={() => discardDraft(draft.projectId)}
+                />
+              ))}
+            </SidebarGroupContent>
+            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
+          </SidebarGroup>
+        )}
 
         {/*
           PINNED SITS ABOVE THE SCROLL, NOT INSIDE IT — which is what makes it
