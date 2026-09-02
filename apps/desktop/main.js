@@ -616,7 +616,10 @@ function createWindow(url) {
     // is opaque, so it skips clearing it — and every resize or navigation
     // leaves the previous frame composited under the new one.
     ...(translucent ? { transparent: true } : {}),
-    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "under-window", visualEffectState: "followWindow" } : {}),
+    // "hud" is the most TRANSPARENT of macOS's vibrancy materials —
+    // "under-window" (the obvious choice) is also the milkiest, and buried the
+    // desktop no matter how far the strength slider went.
+    ...(translucent && uiPrefs.frost !== "clear" ? { vibrancy: "hud", visualEffectState: "followWindow" } : {}),
     show: false,
     title,
     ...macWindowChrome(),
@@ -974,7 +977,8 @@ function applyTranslucency(on, frost) {
     try {
       // Frost changes are safe live in BOTH directions — attaching or removing
       // the effect view does not re-plumb the compositor the way opacity does.
-      win.setVibrancy(on && frost !== "clear" ? "under-window" : null);
+      // "hud" over "under-window": the clearest material macOS offers.
+      win.setVibrancy(on && frost !== "clear" ? "hud" : null);
       // The opaque colour is the app's darkest canvas, matching createWindow's
       // — a translucent window turned opaque again must not flash white first.
       win.setBackgroundColor(on ? "#00000000" : "#0a0a0a");
