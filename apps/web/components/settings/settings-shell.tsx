@@ -83,8 +83,11 @@ export function SettingsShell({
     // body's single wash is the canvas there (globals.css).
     <div className="app-ground flex h-full min-h-0 bg-background text-foreground">
       {/* Side-nav — fixed, never scrolls the shell */}
+      {/* `bg-sidebar` full-alpha: --sidebar is the one token the wash still
+          thins under a backdrop, so a /40 here would multiply down to ~18%
+          and vanish over wallpaper (the Phase-2 contract in globals.css). */}
       <nav
-        className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar/40 p-3"
+        className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar p-3"
         style={{ width: navWidth }}
       >
         {/*
@@ -176,7 +179,10 @@ export function SettingsShell({
         {/* EXACTLY the titlebar height, as the app header is — `min-h` plus
             padding let this bar settle a few pixels off the one it replaces,
             and the seam jumped on every trip into Settings. */}
-        <header className="app-drag sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 text-foreground backdrop-blur">
+        {/* `app-ground`: this sticky bar is a ground — over a backdrop it goes
+            glass with the wash instead of keeping an 80% fill (class-name
+            matching died with Phase 2; grounds opt in). */}
+        <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 text-foreground backdrop-blur">
           <ActiveIcon className="size-4 text-muted-foreground" />
           <h3 className="font-heading text-sm font-semibold tracking-tight">
             {activeSection.label}

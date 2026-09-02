@@ -127,10 +127,10 @@ export const MAX_LOOKS = 12;
  */
 export type LookBackdrop =
   | { kind: "none" }
-  | { kind: "gradient"; id: string; resolved: BackdropLayers }
-  | { kind: "custom-gradient"; light: string; dark: string; resolved: BackdropLayers }
+  | { kind: "gradient"; id: string; dim?: number; resolved: BackdropLayers }
+  | { kind: "custom-gradient"; light: string; dark: string; dim?: number; resolved: BackdropLayers }
   | { kind: "image"; fit: BackdropFit; blur: number; dim: number; image: string }
-  | { kind: "scene"; scene: Scene; images: Record<string, string>; resolved: BackdropLayers };
+  | { kind: "scene"; scene: Scene; images: Record<string, string>; dim?: number; resolved: BackdropLayers };
 
 export type Look = {
   /** Bumped only for a change no total parser could absorb; the parser accepts
@@ -225,14 +225,19 @@ function parseLayers(value: unknown, check: (candidate: unknown) => candidate is
  */
 export function parseLookBackdrop(value: unknown): LookBackdrop {
   if (!isRecord(value)) return { kind: "none" };
+  // Absent stays absent — a missing dim must not round-trip into `dim: 0`.
+  const dim = (raw: unknown): { dim?: number } => {
+    const clamped = clampInt(raw, 0, 80, 0);
+    return clamped > 0 ? { dim: clamped } : {};
+  };
   if (value.kind === "gradient" && typeof value.id === "string" && value.id.length > 0) {
     const resolved = parseLayers(value.resolved, isGradientValue);
-    return resolved ? { kind: "gradient", id: value.id, resolved } : { kind: "none" };
+    return resolved ? { kind: "gradient", id: value.id, ...dim(value.dim), resolved } : { kind: "none" };
   }
   if (value.kind === "custom-gradient") {
     const resolved = parseLayers(value.resolved, isGradientValue);
     if (!resolved || !isGradientValue(value.light)) return { kind: "none" };
-    return { kind: "custom-gradient", light: value.light, dark: isGradientValue(value.dark) ? value.dark : value.light, resolved };
+    return { kind: "custom-gradient", light: value.light, dark: isGradientValue(value.dark) ? value.dark : value.light, ...dim(value.dim), resolved };
   }
   if (value.kind === "image") {
     // An image choice resolves through the image key, not through layers, so
@@ -253,7 +258,7 @@ export function parseLookBackdrop(value: unknown): LookBackdrop {
     // the same "only real image data URLs" filter the composer applies.
     const scene = parseScene(JSON.stringify(value.scene ?? null));
     const images = parseSceneImages(JSON.stringify(value.images ?? null));
-    return { kind: "scene", scene, images, resolved };
+    return { kind: "scene", scene, images, ...dim(value.dim), resolved };
   }
   return { kind: "none" };
 }
@@ -364,18 +369,20 @@ function captureBackdrop(): LookBackdrop {
   }
   const layers = readBackdropLayers();
   if (!layers) return { kind: "none" };
+  // The store's optional dim rides along wherever the kind carries one.
+  const dim = backdrop.dim !== undefined && backdrop.dim > 0 ? { dim: backdrop.dim } : {};
   if (backdrop.kind === "gradient") {
     const resolved = parseLayers(layers, isGradientValue);
-    return resolved ? { kind: "gradient", id: backdrop.id, resolved } : { kind: "none" };
+    return resolved ? { kind: "gradient", id: backdrop.id, ...dim, resolved } : { kind: "none" };
   }
   if (backdrop.kind === "custom-gradient") {
     const resolved = parseLayers(layers, isGradientValue);
-    return resolved ? { kind: "custom-gradient", light: backdrop.light, dark: backdrop.dark, resolved } : { kind: "none" };
+    return resolved ? { kind: "custom-gradient", light: backdrop.light, dark: backdrop.dark, ...dim, resolved } : { kind: "none" };
   }
   const resolved = parseLayers(layers, isSceneValue);
   if (!resolved) return { kind: "none" };
   const scene = readScene();
-  return { kind: "scene", scene, images: readSceneImages(), resolved };
+  return { kind: "scene", scene, images: readSceneImages(), ...dim, resolved };
 }
 
 export function newLookId(): string {
@@ -461,12 +468,13 @@ function applyLookBackdrop(backdrop: LookBackdrop): string | undefined {
     setBackdrop({ kind: "none" });
     return undefined;
   }
+  const dim = backdrop.kind !== "image" && backdrop.dim !== undefined && backdrop.dim > 0 ? { dim: backdrop.dim } : {};
   if (backdrop.kind === "gradient") {
-    setBackdrop({ kind: "gradient", id: backdrop.id }, backdrop.resolved);
+    setBackdrop({ kind: "gradient", id: backdrop.id, ...dim }, backdrop.resolved);
     return undefined;
   }
   if (backdrop.kind === "custom-gradient") {
-    setBackdrop({ kind: "custom-gradient", light: backdrop.light, dark: backdrop.dark }, backdrop.resolved);
+    setBackdrop({ kind: "custom-gradient", light: backdrop.light, dark: backdrop.dark, ...dim }, backdrop.resolved);
     return undefined;
   }
   if (backdrop.kind === "image") {
@@ -487,7 +495,7 @@ function applyLookBackdrop(backdrop: LookBackdrop): string | undefined {
   }
   // A fresh stamp: the composition changed even though the choice did not, and
   // the stamp is what busts backdrop.ts's raw-string snapshot cache.
-  setBackdrop({ kind: "scene", stamp: Date.now() }, backdrop.resolved);
+  setBackdrop({ kind: "scene", stamp: Date.now(), ...dim }, backdrop.resolved);
   return undefined;
 }
 
