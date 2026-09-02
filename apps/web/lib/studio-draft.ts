@@ -132,28 +132,87 @@ export function writeStudioDraft(draft: StudioDraft | undefined): void {
   }
 }
 
-export function readStudioChat(): StudioChatLine[] {
+/**
+ * MORE THAN ONE CONVERSATION, because a design session is not one thought.
+ *
+ * There was a single transcript, so trying a second direction meant talking
+ * over the first — and the memory that makes "like that, but colder" work
+ * (buildStudioPrompt carries the recent history) is exactly what makes a
+ * half-finished tangent poison the next idea. Chats are separate memories.
+ *
+ * PARSING IS TOTAL, like every store this file touches: a malformed chat is
+ * skipped rather than thrown on, and a file from before this shape existed
+ * reads as one chat holding those lines, so nobody loses a conversation to an
+ * upgrade.
+ */
+export type StudioChat = { id: string; label: string; lines: StudioChatLine[]; updatedAt: number };
+
+/** Enough to keep a few directions alive; bounded because they share one
+ *  origin's storage with the draft and its backdrop images. */
+export const MAX_CHATS = 12;
+
+export function newChatId(): string {
+  return `chat-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+
+/** The first words of the first thing you said — a session's own idiom for
+ *  naming itself before anything better exists. */
+export function chatLabel(lines: StudioChatLine[]): string {
+  const spoken = lines.find((line) => line.kind === "you")?.text.trim();
+  if (!spoken) return "New chat";
+  return spoken.length > 40 ? `${spoken.slice(0, 40).trimEnd()}…` : spoken;
+}
+
+function parseLines(value: unknown): StudioChatLine[] {
+  if (!Array.isArray(value)) return [];
+  const lines: StudioChatLine[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { kind, text } = entry as Record<string, unknown>;
+    if (!(CHAT_KINDS as readonly unknown[]).includes(kind) || typeof text !== "string") continue;
+    lines.push({ kind: kind as StudioChatLine["kind"], text: text.slice(0, MAX_CHAT_TEXT) });
+    if (lines.length === MAX_CHAT_LINES) break;
+  }
+  return lines;
+}
+
+export function readStudioChats(): StudioChat[] {
   try {
     const parsed: unknown = JSON.parse(window.localStorage.getItem(STUDIO_CHAT_KEY) ?? "[]");
     if (!Array.isArray(parsed)) return [];
-    const lines: StudioChatLine[] = [];
+    // THE OLD SHAPE WAS A BARE LINE ARRAY. Its entries carry `kind`, so one
+    // look at the first element says which shape this is — and the reader's
+    // existing conversation becomes their first chat instead of vanishing.
+    const first = parsed[0];
+    if (first !== undefined && typeof first === "object" && first !== null && "kind" in (first as object)) {
+      const lines = parseLines(parsed);
+      return lines.length === 0 ? [] : [{ id: newChatId(), label: chatLabel(lines), lines, updatedAt: Date.now() }];
+    }
+    const chats: StudioChat[] = [];
     for (const entry of parsed) {
       if (typeof entry !== "object" || entry === null) continue;
-      const { kind, text } = entry as Record<string, unknown>;
-      if (!(CHAT_KINDS as readonly unknown[]).includes(kind) || typeof text !== "string") continue;
-      lines.push({ kind: kind as StudioChatLine["kind"], text: text.slice(0, MAX_CHAT_TEXT) });
-      if (lines.length === MAX_CHAT_LINES) break;
+      const { id, label, lines, updatedAt } = entry as Record<string, unknown>;
+      if (typeof id !== "string" || id === "") continue;
+      const parsedLines = parseLines(lines);
+      chats.push({
+        id,
+        label: typeof label === "string" && label.trim() ? label.slice(0, 80) : chatLabel(parsedLines),
+        lines: parsedLines,
+        updatedAt: typeof updatedAt === "number" && Number.isFinite(updatedAt) ? updatedAt : 0,
+      });
+      if (chats.length === MAX_CHATS) break;
     }
-    return lines;
+    return chats;
   } catch {
     return [];
   }
 }
 
-export function writeStudioChat(lines: StudioChatLine[]): void {
+export function writeStudioChats(chats: StudioChat[]): void {
   try {
-    if (lines.length === 0) window.localStorage.removeItem(STUDIO_CHAT_KEY);
-    else window.localStorage.setItem(STUDIO_CHAT_KEY, JSON.stringify(lines.slice(-MAX_CHAT_LINES)));
+    const kept = chats.filter((chat) => chat.lines.length > 0).slice(0, MAX_CHATS);
+    if (kept.length === 0) window.localStorage.removeItem(STUDIO_CHAT_KEY);
+    else window.localStorage.setItem(STUDIO_CHAT_KEY, JSON.stringify(kept));
   } catch {
     // Same contract as the draft: the conversation keeps working unsaved.
   }

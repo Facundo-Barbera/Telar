@@ -22,14 +22,15 @@ import {
   patchDraftStrength,
   patchDraftToken,
   patchDraftType,
-  readStudioChat,
+  chatLabel,
+  readStudioChats,
   readStudioDraft,
   replaceDraftBackdrop,
   scenePresetBackdrop,
   setDraftLabel,
   STUDIO_CHAT_KEY,
   STUDIO_DRAFT_KEY,
-  writeStudioChat,
+  writeStudioChats,
   writeStudioDraft,
   type StudioDraft,
 } from "./studio-draft";
@@ -305,19 +306,44 @@ describe("persistence", () => {
     expect(readStudioDraft()).toBeUndefined();
   });
 
-  test("the transcript keeps only well-formed lines and clears with an empty list", () => {
-    writeStudioChat([
-      { kind: "you", text: "warmer" },
-      { kind: "studio", text: "Drafted “Cedar”." },
-    ]);
-    expect(readStudioChat()).toEqual([
-      { kind: "you", text: "warmer" },
-      { kind: "studio", text: "Drafted “Cedar”." },
-    ]);
-    store.set(STUDIO_CHAT_KEY, JSON.stringify([{ kind: "you", text: "kept" }, { kind: "shout", text: "dropped" }, "junk", { kind: "trouble" }]));
-    expect(readStudioChat()).toEqual([{ kind: "you", text: "kept" }]);
-    writeStudioChat([]);
+  test("a chat keeps only well-formed lines, and an empty list clears the key", () => {
+    const lines = [
+      { kind: "you" as const, text: "warmer" },
+      { kind: "studio" as const, text: "Drafted “Cedar”." },
+    ];
+    writeStudioChats([{ id: "chat-1", label: "warmer", lines, updatedAt: 1 }]);
+    expect(readStudioChats()).toEqual([{ id: "chat-1", label: "warmer", lines, updatedAt: 1 }]);
+
+    store.set(
+      STUDIO_CHAT_KEY,
+      JSON.stringify([{ id: "chat-2", label: "mixed", updatedAt: 2, lines: [{ kind: "you", text: "kept" }, { kind: "shout", text: "dropped" }, "junk", { kind: "trouble" }] }]),
+    );
+    expect(readStudioChats()[0]?.lines).toEqual([{ kind: "you", text: "kept" }]);
+
+    writeStudioChats([]);
     expect(store.has(STUDIO_CHAT_KEY)).toBe(false);
+  });
+
+  test("a chat with nothing said in it is not written", () => {
+    writeStudioChats([{ id: "chat-empty", label: "New chat", lines: [], updatedAt: 1 }]);
+    expect(store.has(STUDIO_CHAT_KEY)).toBe(false);
+  });
+
+  test("the old single-transcript shape becomes the reader's first chat", () => {
+    // Nobody loses a conversation to an upgrade: the entries carry `kind`, so
+    // one look at the first element tells the two shapes apart.
+    store.set(STUDIO_CHAT_KEY, JSON.stringify([{ kind: "you", text: "cedar and dusk" }, { kind: "studio", text: "Drafted." }]));
+    const migrated = readStudioChats();
+    expect(migrated).toHaveLength(1);
+    expect(migrated[0]?.lines).toEqual([{ kind: "you", text: "cedar and dusk" }, { kind: "studio", text: "Drafted." }]);
+    expect(migrated[0]?.label).toBe("cedar and dusk");
+  });
+
+  test("a chat is named by the first thing you said, elided when long", () => {
+    expect(chatLabel([])).toBe("New chat");
+    expect(chatLabel([{ kind: "studio", text: "an opening nobody typed" }])).toBe("New chat");
+    expect(chatLabel([{ kind: "you", text: "warmer" }])).toBe("warmer");
+    expect(chatLabel([{ kind: "you", text: "x".repeat(60) }]).endsWith("…")).toBe(true);
   });
 });
 

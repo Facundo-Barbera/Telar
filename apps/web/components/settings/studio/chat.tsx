@@ -37,7 +37,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { CornerDownLeftIcon, ImagePlusIcon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
+import { CornerDownLeftIcon, ImagePlusIcon, MessageSquarePlusIcon, SparklesIcon, SquareIcon, XIcon } from "lucide-react";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { compressImageFile } from "@/lib/image-backdrop";
 import { dominantHues, samplePixels, themeFromPixels } from "@/lib/palette-from-image";
@@ -46,8 +46,12 @@ import {
   buildStudioPrompt,
   designSummary,
   mergeDesignIntoDraft,
-  readStudioChat,
-  writeStudioChat,
+  chatLabel,
+  MAX_CHATS,
+  newChatId,
+  readStudioChats,
+  writeStudioChats,
+  type StudioChat,
   type StudioChatLine,
   type PromptPicture,
   type StudioDraft,
@@ -55,6 +59,7 @@ import {
 } from "@/lib/studio-draft";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Message, MessageContent } from "@/components/ui/message";
 import { ComposerEditor, type ComposerEditorHandle } from "@/components/composer-editor";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
@@ -101,11 +106,24 @@ export function DesignerChat({
 }) {
   // Restored from storage on mount (client-only component — the parent gates
   // on `mounted`), persisted on every change, ids re-minted for render.
-  const [lines, setLines] = useState<Line[]>(() => {
-    const kept = readStudioChat();
-    const source = kept.length > 0 ? kept : [OPENING];
-    return source.map((line, index) => ({ ...line, id: index }));
-  });
+  /** Every conversation, newest first, and which one is open. A chat is only
+   *  written once it has something in it, so opening the pane does not litter
+   *  the list with empty ones. */
+  const [chats, setChats] = useState<StudioChat[]>(() => readStudioChats());
+  const [openId, setOpenId] = useState<string>(() => readStudioChats()[0]?.id ?? newChatId());
+  const open = chats.find((chat) => chat.id === openId);
+  const lines: Line[] = (open?.lines ?? [OPENING]).map((line, index) => ({ ...line, id: index }));
+
+  const setLines = (next: (current: StudioChatLine[]) => StudioChatLine[]) => {
+    setChats((current) => {
+      const at = current.findIndex((chat) => chat.id === openId);
+      const before = at === -1 ? [] : current[at]!.lines;
+      const after = next(before);
+      const chat: StudioChat = { id: openId, label: chatLabel(after), lines: after, updatedAt: Date.now() };
+      const kept = at === -1 ? [chat, ...current] : [chat, ...current.filter((entry) => entry.id !== openId)];
+      return kept.slice(0, MAX_CHATS);
+    });
+  };
   const [instruction, setInstruction] = useState("");
   /** Pictures attached to the NEXT message. Each carries its own thumbnail and
    *  the colours read out of it — the model never sees the pixels (the engine's
@@ -141,22 +159,21 @@ export function DesignerChat({
     if (node) node.scrollTop = node.scrollHeight;
   }, [lines, busy]);
 
-  // Persist without the render ids; the opening line alone is not worth a key.
+  // Persist the list, never the opening line — a chat nobody has spoken in is
+  // not a chat.
   useEffect(() => {
-    const bare = lines.map(({ kind, text }) => ({ kind, text }));
-    writeStudioChat(bare.length === 1 && bare[0]?.text === OPENING.text ? [] : bare);
-  }, [lines]);
+    writeStudioChats(chats);
+  }, [chats]);
 
   // An abandoned request must not write into a pane that no longer exists.
   useEffect(() => () => abortRef.current?.abort(), []);
 
   /** Nothing has been asked yet — the invitation shows instead of a transcript
    *  of one line talking to itself. */
-  const fresh = lines.length === 1 && lines[0]?.text === OPENING.text;
+  const fresh = open === undefined || open.lines.length === 0;
 
-  const say = (kind: Line["kind"], text: string) => {
-    const id = (nextId.current += 1);
-    setLines((current) => [...current, { id, kind, text }]);
+  const say = (kind: StudioChatLine["kind"], text: string) => {
+    setLines((current) => [...current, { kind, text }]);
   };
 
   const stop = () => abortRef.current?.abort();
@@ -213,7 +230,7 @@ export function DesignerChat({
     abortRef.current = controller;
     // What the model is shown — the merge later diffs its answer against this.
     const snapshot = draftRef.current;
-    const history = lines.map(({ kind, text }) => ({ kind, text }));
+    const history = (open?.lines ?? []).map(({ kind, text }) => ({ kind, text }));
     const asked = brief || `Make a theme from the attached ${sent.length === 1 ? "picture" : "pictures"}.`;
     const pictured: PromptPicture[] = sent.map((picture) => ({ name: picture.name, colours: picture.colours }));
     const prompt = buildStudioPrompt(snapshot, asked, buildDesignPrompt, { mode, history, pictures: pictured });
@@ -270,9 +287,46 @@ export function DesignerChat({
       )}
       <PanelHeader
         icon={<SparklesIcon />}
-        label="Designer"
+        label={open ? open.label : "Designer"}
         tone={busy ? "active" : "none"}
-        actions={busy ? <span className="text-primary">Drafting…</span> : undefined}
+        actions={
+          <>
+            {reading && <span>Reading…</span>}
+            {busy && <span className="text-primary">Drafting…</span>}
+            {chats.length > 0 && (
+              <Select
+                value={chats.some((chat) => chat.id === openId) ? openId : ""}
+                items={Object.fromEntries(chats.map((chat) => [chat.id, chat.label]))}
+                onValueChange={(next) => typeof next === "string" && next !== "" && setOpenId(next)}
+              >
+                <SelectTrigger size="sm" className="h-7 w-44" aria-label="Switch conversation">
+                  <SelectValue placeholder="New chat" />
+                </SelectTrigger>
+                <SelectContent>
+                  {chats.map((chat) => (
+                    <SelectItem key={chat.id} value={chat.id}>
+                      {chat.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              title="Start a new conversation"
+              aria-label="New chat"
+              // A NEW ID IS ALL IT TAKES: a chat is not written until something
+              // is said in it, so pressing this twice cannot leave two empty
+              // rows in the list. Disabled on an untouched one for the same
+              // reason — there is nothing to start away from.
+              disabled={fresh}
+              onClick={() => setOpenId(newChatId())}
+            >
+              <MessageSquarePlusIcon />
+            </Button>
+          </>
+        }
       />
 
       {fresh ? (
