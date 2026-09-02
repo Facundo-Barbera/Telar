@@ -26,7 +26,18 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CornerDownLeftIcon, ImageIcon, MonitorIcon, PaperclipIcon, PencilIcon, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  CornerDownLeftIcon,
+  ImageIcon,
+  LayersIcon,
+  MonitorIcon,
+  PaperclipIcon,
+  PencilIcon,
+  PlusIcon,
+  SquareIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { ProviderDriverKind, RuntimeMode, Session, UsageSnapshot } from "@telar/engine-client";
 import type { ModelChoice } from "@/lib/models";
@@ -45,8 +56,12 @@ import {
 } from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { ComposerMenu } from "./composer-menu";
+import { ComposerStashMenu } from "./composer-stash-menu";
 import { availableCommands, buildPathIndex, rankCommands, rankPaths, type Completion, type PathEntry } from "@/lib/composer-completions";
 import { detectComposerTrigger, type ComposerTrigger } from "@/lib/composer-tokens";
+import { appendPrompt, mergeAttachments, splitImages, type StashEntry, type StashedImage } from "@/lib/prompt-stash";
+import { encodeImagesForStash, filesFromStash } from "@/lib/stash-images";
+import { usePromptStash } from "@/lib/use-prompt-stash";
 import { readReferenceDrag, REFERENCE_MIME } from "@/lib/drag-reference";
 import { createEngineApi } from "@/lib/engine/client";
 import { FreshGreeting } from "./session/fresh-greeting";
@@ -410,6 +425,128 @@ export function Composer({
   const [pathCache, setPathCache] = useState<{ checkout: string; entries: PathEntry[] }>();
   const [reading, setReading] = useState(false);
 
+  /* ---------------------------------------------------------------- *
+   * THE STASH — ⌘S sets this box aside; any composer can pull it back.
+   * ---------------------------------------------------------------- */
+
+  const stash = usePromptStash();
+  const [stashOpen, setStashOpen] = useState(false);
+  const [stashActive, setStashActive] = useState(0);
+  const [stashing, setStashing] = useState(false);
+  /** The one thing that went wrong, said in place. There is no toast in this
+   *  app and that is deliberate — see file-view-surface.tsx. */
+  const [note, setNote] = useState<string>();
+  /**
+   * WHAT THE BOX HOLDS RIGHT NOW, readable from inside an await.
+   *
+   * Encoding pictures takes a beat, and a person carries on typing through it.
+   * `draft` inside `doStash` is the value from the render that started it; this
+   * ref is the value from the render that is on screen when it finishes, and
+   * the difference between them is exactly the characters typed in between —
+   * which must survive the clear.
+   */
+  const latest = useRef(draft);
+  useEffect(() => {
+    latest.current = draft;
+  }, [draft]);
+
+  /** What the host is showing as attached RIGHT NOW, after the latest commit. */
+  const held = useRef(attachments);
+  useEffect(() => {
+    held.current = attachments;
+  });
+
+  /**
+   * CAPTURE, ENCODE, WRITE, AND ONLY THEN CLEAR.
+   *
+   * The donor writes a text-only entry first, clears the box immediately, and
+   * attaches the compressed pictures afterwards — which buys instant clearing
+   * across a server upload it has and this app does not: attachments here are
+   * `File`s in memory until `submit` uploads them, so there is nothing to race.
+   * What the phased shape would cost is the whole point of the feature: the box
+   * emptied before the images were known to fit, and a half-written entry that a
+   * closed tab strands forever with no process that could reconcile it.
+   */
+  const doStash = useCallback(async () => {
+    const text = draft.trim();
+    const { images, rest } = splitImages(attachments);
+    if (!text && images.length === 0) return;
+    setNote(undefined);
+
+    // THE COMMON CASE NEVER AWAITS. A prompt with no pictures has to feel like
+    // a keystroke, not like a save.
+    let encoded: { images: StashedImage[]; kept: File[] } = { images: [], kept: [] };
+    if (images.length > 0) {
+      setStashing(true);
+      try {
+        encoded = await encodeImagesForStash(images);
+      } finally {
+        setStashing(false);
+      }
+    }
+
+    const ok = stash.stash({ id: crypto.randomUUID(), at: Date.now(), prompt: text, images: encoded.images });
+    if (!ok) {
+      setNote("There was no room to stash this. Nothing was taken from the box.");
+      return;
+    }
+
+    // WHAT YOU TYPED WHILE IT WAS ENCODING IS STILL YOURS. Only the run that
+    // was captured is removed; anything added after it stays in the box.
+    onDraftChange(latest.current.startsWith(draft) ? latest.current.slice(draft.length) : "");
+    // What the stash could not carry goes straight back — the leftover chip is
+    // its own explanation, which is why there is no message for it.
+    onAttach([...rest, ...encoded.kept]);
+    setStashOpen(false);
+  }, [draft, attachments, stash, onDraftChange, onAttach]);
+
+  const doRestore = useCallback(
+    (entry: StashEntry) => {
+      const room = Math.max(0, MAX_ATTACHMENTS - attachments.length);
+      const taken = stash.take(entry.id, room);
+      // Gone — the other window took it between the paint and the click. Also
+      // the guard that stops a click and an Enter landing on the same row.
+      if (!taken) return;
+      setNote(undefined);
+      onDraftChange(appendPrompt(draft, taken.prompt));
+      if (taken.images.length > 0) {
+        const before = attachments.length;
+        onAttach(mergeAttachments(attachments, filesFromStash(taken.images), MAX_ATTACHMENTS));
+        /**
+         * A HOST THAT TAKES NO ATTACHMENTS.
+         *
+         * The Spool's master chat passes a stub `onAttach` and an always-empty
+         * list, and nothing in the props tells it apart from a real one. The
+         * only honest test is to hand the files over and then look: if the box
+         * is not holding more than it was, they never arrived, and they go back
+         * in the stash rather than nowhere. Restoring a prompt must never be
+         * how you lose the picture.
+         *
+         * A TASK RATHER THAN AN EFFECT ON `attachments`, deliberately. That
+         * effect would only run if the prop's identity changed, which is a
+         * property of how each host happens to spell its JSX — true today by
+         * luck, and silent data loss on the day one of them memoises the array.
+         * A task runs after the commit either way.
+         */
+        const images = taken.images;
+        window.setTimeout(() => {
+          if (held.current.length > before) return;
+          stash.put(images, crypto.randomUUID(), Date.now());
+          setNote("This chat cannot hold images — they are back in the stash.");
+        }, 0);
+      }
+      if (taken.left > 0) {
+        setNote(`${taken.left === 1 ? "1 image is" : `${taken.left} images are`} still in the stash — this box is full.`);
+      }
+      setStashOpen(false);
+      // Insurance. Focus is normally never lost, because every row prevents its
+      // own mousedown — but an image-only entry changes no text, so the editor's
+      // repaint (which is what usually restores the caret) never runs.
+      editor.current?.focus();
+    },
+    [attachments, stash, draft, onDraftChange, onAttach],
+  );
+
   const sessionId = session?.id;
   /**
    * The cache key for `@`-completions. `none` is the project-less case: there is
@@ -516,6 +653,82 @@ export function Composer({
       // IME composition: Enter is committing a candidate, not sending.
       if (event.nativeEvent.isComposing) return;
       /**
+       * ⌘S RESOLVES BEFORE EVERY CONTENT KEY, and it always prevents.
+       *
+       * The requirement is that the browser's Save dialog never opens — not
+       * usually, never — so `preventDefault` is the first statement in the
+       * branch rather than something reached after a condition. The file editor
+       * in the right panel prevents it even while read-only for the same reason.
+       * Shift is deliberately not checked: ⌘⇧S is "Save As" and belongs here too.
+       *
+       * It sits this high because a modifier chord can never mean "type an s",
+       * so nothing below has a claim on it — the same rule the app's command-key
+       * table already encodes for every other chord.
+       */
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (stashing) return;
+        // WITH SOMETHING IN THE BOX IT STASHES; EMPTY, IT OPENS THE LIST. One
+        // key, because the two are the same thought at different moments and a
+        // second binding for the second half is a second thing to remember.
+        if (draft.trim() || attachments.some((file) => file.type.startsWith("image/"))) void doStash();
+        else {
+          setStashOpen((open) => !open);
+          setStashActive(0);
+        }
+        return;
+      }
+      /**
+       * A VISIBLE LIST OWNS THE ARROWS. Above the completion block (which is
+       * dead here — that one needs an `@` or `/`, and this menu only opens over
+       * an empty box) and above the ArrowUp recall, which claims exactly the
+       * state the stash menu opens in. Walking the queue while a list is on
+       * screen would be moving something the user cannot see.
+       */
+      if (stashOpen) {
+        /**
+         * ESCAPE CLOSES IT EVEN WHEN IT IS EMPTY, and that is not symmetry —
+         * it is the only way out. The badge is not rendered at zero, so a menu
+         * that ignored Escape on an empty stash would leave the panel sitting
+         * over the conversation with nothing on screen that could dismiss it.
+         * Which is why this is the one key handled above the count check.
+         */
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setStashOpen(false);
+          // Returned so Escape never also abandons a recall or arms the stop.
+          return;
+        }
+        if (stash.entries.length > 0) {
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setStashActive((index) => (index + 1) % stash.entries.length);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setStashActive((index) => (index - 1 + stash.entries.length) % stash.entries.length);
+            return;
+          }
+          if (event.key === "Enter") {
+            event.preventDefault();
+            const picked = stash.entries[Math.min(stashActive, stash.entries.length - 1)];
+            if (picked) doRestore(picked);
+            return;
+          }
+          // ⌘⌫, the gesture Mail and Finder use for "delete the highlighted
+          // thing". NOT a bare Backspace: over a list of prompts you
+          // deliberately saved, that is one twitch away from unrecoverable.
+          if (event.key === "Backspace" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            const picked = stash.entries[Math.min(stashActive, stash.entries.length - 1)];
+            if (picked) stash.drop(picked.id);
+            setStashActive((index) => Math.max(0, Math.min(index, stash.entries.length - 2)));
+            return;
+          }
+        }
+      }
+      /**
        * THE MENU GETS THE KEYS FIRST, and only while it is open. Enter picks the
        * highlighted row instead of sending, which is the behaviour every editor
        * with a completion list has and the reason none of them need a modifier
@@ -588,7 +801,29 @@ export function Composer({
       // Any other key disarms — the human moved on.
       if (escArmed) setEscArmed(false);
     },
-    [draft, ready, busy, escArmed, queued, recalled, onRecall, onDraftChange, onSubmit, onStop, menuOpen, completions, active, apply],
+    [
+      draft,
+      ready,
+      busy,
+      escArmed,
+      queued,
+      recalled,
+      onRecall,
+      onDraftChange,
+      onSubmit,
+      onStop,
+      menuOpen,
+      completions,
+      active,
+      apply,
+      attachments,
+      stash,
+      stashOpen,
+      stashActive,
+      stashing,
+      doStash,
+      doRestore,
+    ],
   );
 
   /**
@@ -710,6 +945,20 @@ export function Composer({
 
       <BackgroundPresence count={backgroundTasks} onStop={onStop} />
 
+      {/* WHY IT DID NOT HAPPEN, above the box rather than in a toast — the
+          same choice, for the same reason, as the file editor's save notice.
+          A stash that quietly refused is a paragraph the person thinks they
+          still have. */}
+      {note && (
+        <div className="flex items-start gap-1.5 rounded-lg bg-destructive/10 px-2 py-1.5 text-[11px] leading-snug text-destructive">
+          <TriangleAlertIcon aria-hidden className="mt-px size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1">{note}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setNote(undefined)} className="shrink-0 rounded p-0.5">
+            <XIcon className="size-3.5" />
+          </button>
+        </div>
+      )}
+
       {/* ONE BLOCK, form plus foot. The outer wrapper is a flex column with a
           gap, and the foot's whole fuse (workspace-environment.tsx's `-mt-px`,
           `border-t-0`) is defeated by any gap between it and the form — the
@@ -732,7 +981,18 @@ export function Composer({
             rather than off the whole composer column — the queued strip and the
             greeting live in that column and would push the menu around. */}
         <div className="relative">
-        {menuOpen && trigger && (
+        {/* ONE SLOT, WRITTEN AS ONE EXPRESSION. Both panels are
+            `bottom-full`, so rendering them as two independent conditions
+            would stack them the day the invariant above ever slipped. */}
+        {stashOpen ? (
+          <ComposerStashMenu
+            entries={stash.entries}
+            active={Math.min(stashActive, Math.max(0, stash.entries.length - 1))}
+            onActive={setStashActive}
+            onPick={doRestore}
+            onDrop={(entry) => stash.drop(entry.id)}
+          />
+        ) : menuOpen && trigger ? (
           <ComposerMenu
             completions={completions}
             active={Math.min(active, Math.max(0, completions.length - 1))}
@@ -742,7 +1002,7 @@ export function Composer({
             onActive={setActive}
             onPick={apply}
           />
-        )}
+        ) : null}
         <InputGroup
           onDragEnter={(event) => {
             if (!dragging(event)) return;
@@ -786,6 +1046,12 @@ export function Composer({
               retrigger(text);
               setActive(0);
               setDismissed(false);
+              // THE TWO MENUS SHARE ONE SLOT, and this line is the whole of
+              // what keeps them apart. A completion needs an `@` or `/`, which
+              // needs text; the stash menu only opens over an empty box; and
+              // typing is the only route between those two states.
+              setStashOpen(false);
+              setNote(undefined);
             }}
             onSelectionChange={() => retrigger(draft)}
             onKeyDown={onKeyDown}
@@ -808,6 +1074,39 @@ export function Composer({
                   not have yet. Disabled with the reason rather than absent, so
                   the row's shape is the one it will keep. */}
               <AddContextMenu onPick={addFiles} />
+              {/**
+               * THE STASH COUNT, and it is not rendered at all while the stash
+               * is empty. A "0" is chrome advertising a feature you have not
+               * used, and — the harder constraint — `InputGroup` carries
+               * `has-disabled:opacity-50`, so the obvious alternative of a
+               * disabled chip would grey the entire composer for the life of
+               * the session. Nothing in here is ever `disabled`.
+               *
+               * IT SITS IN THE LEFT CLUSTER because that cluster is already
+               * "things that go into this message"; the right one is send and
+               * turn status, where a count competes with the send affordance.
+               */}
+              {(stash.entries.length > 0 || stashing) && (
+                <button
+                  type="button"
+                  aria-label="Stashed prompts"
+                  aria-haspopup="listbox"
+                  aria-expanded={stashOpen}
+                  title="Stashed prompts (⌘S)"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    setStashOpen((open) => !open);
+                    setStashActive(0);
+                  }}
+                  className={cn(
+                    "flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                    stashOpen && "bg-accent text-foreground",
+                  )}
+                >
+                  <LayersIcon className="size-4" />
+                  {stashing ? <Spinner /> : <span className="text-xs tabular-nums">{stash.entries.length}</span>}
+                </button>
+              )}
               {/**
                * THE PILLS ARE THE DEFAULT; `···` IS WHAT HAPPENS WHEN THEY DO
                * NOT FIT.
