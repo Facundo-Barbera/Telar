@@ -642,6 +642,26 @@ function createWindow(url) {
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
   });
+  /**
+   * TRANSPARENT WINDOWS KEEP STALE PIXELS WHERE NOTHING REPAINTED. The
+   * compositor only swaps DAMAGED rects; on an opaque window the undamaged
+   * rest already matches, but on a transparent one it still holds the LAST
+   * route's opaque pixels — navigate a session to Settings and the session
+   * ghosts through every region Settings left alpha. `invalidate()` marks the
+   * whole surface damaged, forcing one full swap. Client-side route changes
+   * surface as `did-navigate-in-page`; the second pass catches what React
+   * painted after the first.
+   */
+  if (translucent) {
+    const fullRepaint = () => {
+      if (!win.isDestroyed()) win.webContents.invalidate();
+    };
+    win.webContents.on("did-navigate-in-page", () => {
+      fullRepaint();
+      setTimeout(fullRepaint, 300);
+    });
+    win.webContents.on("did-finish-load", fullRepaint);
+  }
   win.on("closed", () => {
     manager.destroy();
     if (browserManager === manager) browserManager = null;
