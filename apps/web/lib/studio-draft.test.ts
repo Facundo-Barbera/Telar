@@ -2,10 +2,18 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   buildStudioPrompt,
+  customGradientBackdrop,
+  DEFAULT_IMAGE_DIM,
   describeDraft,
   designSummary,
   draftFromLook,
+  draftGradientPair,
   draftScenePreset,
+  draftSceneStack,
+  imageBackdrop,
+  patchImageBackdrop,
+  presetBackdrop,
+  sceneBackdrop,
   loadThemeHalfIntoDraft,
   loadThemeIntoDraft,
   mergeDesignIntoDraft,
@@ -26,8 +34,9 @@ import {
   type StudioDraft,
 } from "./studio-draft";
 import { MAX_FONT_SIZE, MIN_FONT_SIZE } from "./appearance";
-import { BACKDROP_PRESETS } from "./backdrop-presets";
-import { BUILT_IN_THEMES, concreteHalf, TELAR_DARK, TELAR_LIGHT } from "./theme-palettes";
+import { MAX_BACKDROP_BLUR } from "./backdrop";
+import { BACKDROP_PRESETS, DEFAULT_CUSTOM_GRADIENT } from "./backdrop-presets";
+import { BUILT_IN_THEMES, concreteHalf, TELAR_DARK, TELAR_LIGHT, THEME_TOKENS } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
 
 const PRESET_ID = BACKDROP_PRESETS[0]!.id;
@@ -136,6 +145,90 @@ describe("the scene tool's one-layer backdrop", () => {
   });
 });
 
+describe("the backdrop tool's constructors", () => {
+  test("a preset carries its own halves as the resolved CSS", () => {
+    const backdrop = presetBackdrop(PRESET_ID);
+    if (backdrop?.kind !== "gradient") throw new Error("unreachable");
+    expect(backdrop.id).toBe(PRESET_ID);
+    expect(backdrop.resolved.light).toBe(BACKDROP_PRESETS[0]!.light);
+    expect(backdrop.resolved.dark).toBe(BACKDROP_PRESETS[0]!.dark);
+  });
+
+  test("an unknown preset refuses", () => {
+    expect(presetBackdrop("not-a-preset")).toBeUndefined();
+  });
+
+  test("a custom gradient stores both halves and their resolved copies", () => {
+    const pair = { light: { type: "linear" as const, angle: 20, stops: ["#ffffff", "#000000"] }, dark: { type: "radial" as const, angle: 0, stops: ["#111111", "#222222"] } };
+    const backdrop = customGradientBackdrop(pair);
+    if (backdrop?.kind !== "custom-gradient") throw new Error("unreachable");
+    expect(backdrop.light).toContain("linear-gradient(20deg");
+    expect(backdrop.dark).toContain("radial-gradient(");
+    expect(backdrop.resolved).toEqual({ light: backdrop.light, dark: backdrop.dark });
+  });
+
+  test("a custom gradient round-trips back into stops", () => {
+    const pair = { light: { type: "linear" as const, angle: 45, stops: ["#aabbcc", "#112233", "#445566"] }, dark: { type: "linear" as const, angle: 200, stops: ["#000000", "#ffffff"] } };
+    const backdrop = customGradientBackdrop(pair)!;
+    expect(draftGradientPair(backdrop)).toEqual(pair);
+  });
+
+  test("anything that is not a custom gradient opens on the defaults", () => {
+    expect(draftGradientPair({ kind: "none" })).toEqual(DEFAULT_CUSTOM_GRADIENT);
+    expect(draftGradientPair(presetBackdrop(PRESET_ID)!)).toEqual(DEFAULT_CUSTOM_GRADIENT);
+  });
+
+  test("an image lands with a default dim, and a replacement keeps the tuning", () => {
+    const first = imageBackdrop(DATA_URL);
+    if (first?.kind !== "image") throw new Error("unreachable");
+    expect(first).toMatchObject({ fit: "cover", blur: 0, dim: DEFAULT_IMAGE_DIM, image: DATA_URL });
+
+    const tuned = patchImageBackdrop(first, { fit: "tile", blur: 12, dim: 0 });
+    const replaced = imageBackdrop("data:image/png;base64,BBBB", tuned);
+    expect(replaced).toMatchObject({ fit: "tile", blur: 12, dim: 0, image: "data:image/png;base64,BBBB" });
+  });
+
+  test("only real image data URLs become a backdrop", () => {
+    expect(imageBackdrop("https://example.com/cat.png")).toBeUndefined();
+    expect(imageBackdrop("")).toBeUndefined();
+  });
+
+  test("image tuning clamps to the store's bounds and ignores other kinds", () => {
+    const image = imageBackdrop(DATA_URL)!;
+    expect(patchImageBackdrop(image, { blur: 999 })).toMatchObject({ blur: MAX_BACKDROP_BLUR });
+    expect(patchImageBackdrop(image, { dim: -5 })).toMatchObject({ dim: 0 });
+    // A patch against another kind is a no-op, not a coercion into an image.
+    expect(patchImageBackdrop({ kind: "none" }, { blur: 10 })).toEqual({ kind: "none" });
+  });
+
+  test("a scene composes, and drops images no layer refers to", () => {
+    const scene = { layers: [{ type: "gradient" as const, presetId: PRESET_ID, opacity: 100 }] };
+    const backdrop = sceneBackdrop(scene, { ghost: DATA_URL, "orig:ghost": DATA_URL });
+    if (backdrop?.kind !== "scene") throw new Error("unreachable");
+    expect(backdrop.images).toEqual({});
+    expect(backdrop.resolved.light.length).toBeGreaterThan(0);
+  });
+
+  test("an empty stack refuses rather than painting nothing", () => {
+    expect(sceneBackdrop({ layers: [] }, {})).toBeUndefined();
+  });
+
+  test("the composer opens on the draft's own stack", () => {
+    const scene = { layers: [{ type: "gradient" as const, presetId: PRESET_ID, opacity: 60 }] };
+    const composed = sceneBackdrop(scene, {})!;
+    expect(draftSceneStack(composed)).toEqual({ scene, images: {} });
+
+    // A preset choice becomes the one bottom layer it already is…
+    expect(draftSceneStack(presetBackdrop(PRESET_ID)!)).toEqual({
+      scene: { layers: [{ type: "gradient", presetId: PRESET_ID, opacity: 100 }] },
+      images: {},
+    });
+    // …and everything else opens empty, so nothing is written until a layer is.
+    expect(draftSceneStack({ kind: "none" })).toEqual({ scene: { layers: [] }, images: {} });
+    expect(draftSceneStack(imageBackdrop(DATA_URL)!)).toEqual({ scene: { layers: [] }, images: {} });
+  });
+});
+
 describe("sources load into the draft", () => {
   test("a Look opens with its id intact, halves copied", () => {
     const look = draft({ id: "look-kept", label: "Deep Sea" });
@@ -227,27 +320,64 @@ describe("persistence", () => {
   });
 });
 
-describe("the chat's merge", () => {
-  test("the palette and label land; the type members never move", () => {
-    const before = patchDraftType(draft({ translucencyLevel: 65 }), { fontSans: "inter", fontSize: 16 });
-    const after = mergeDesignIntoDraft(before, design());
+describe("the chat's merge (three-way)", () => {
+  // Hex halves so "the model echoed the snapshot" is expressible exactly —
+  // describeDraft shows the model cssColorToHex(value), and the merge compares
+  // through the same serialisation.
+  const HEX_LIGHT = Object.fromEntries(THEME_TOKENS.map((token) => [token, "#dddddd"])) as StudioDraft["theme"]["light"];
+  const HEX_DARK = Object.fromEntries(THEME_TOKENS.map((token) => [token, "#222222"])) as StudioDraft["theme"]["dark"];
+  const hexDraft = (overrides: Partial<StudioDraft> = {}) => draft({ theme: { light: { ...HEX_LIGHT }, dark: { ...HEX_DARK } }, ...overrides });
 
-    expect(after.label).toBe("Cedar Dusk");
-    expect(after.theme.light.background).toBe("#fdfaf6");
-    expect(after.theme.dark.background).toBe("#171310");
-    expect(after.fontSans).toBe("inter");
-    expect(after.fontSize).toBe(16);
-    expect(after.translucencyLevel).toBe(65);
-    expect(after.id).toBe(before.id);
+  /** A design that echoes the snapshot verbatim except where overridden. */
+  const echo = (overrides: { light?: Partial<StudioDraft["theme"]["light"]>; dark?: Partial<StudioDraft["theme"]["dark"]>; label?: string } = {}): DesignSuccess => ({
+    definition: {
+      label: overrides.label ?? "Working draft",
+      light: { ...HEX_LIGHT, ...overrides.light },
+      dark: { ...HEX_DARK, ...overrides.dark },
+    },
   });
 
-  test("an accent lands only when the model named one", () => {
-    expect(mergeDesignIntoDraft(draft(), design({ accent: "amber" })).accent).toBe("amber");
-    expect(mergeDesignIntoDraft(patchDraftAccent(draft(), "plum"), design()).accent).toBe("plum");
+  test("only tokens the model moved land; the rest keep the current draft's values", () => {
+    const snapshot = hexDraft();
+    // The reader hand-edited the border while the model was thinking.
+    const current = patchDraftToken(snapshot, "light", "border", "#123456");
+    const after = mergeDesignIntoDraft(current, snapshot, echo({ light: { background: "#fdfaf6" } }));
+
+    expect(after.theme.light.background).toBe("#fdfaf6"); // the model's change
+    expect(after.theme.light.border).toBe("#123456"); // the reader's, kept
+    expect(after.theme.dark).toEqual(HEX_DARK);
+    expect(after.id).toBe(current.id);
+  });
+
+  test("an echoed label keeps the reader's title; a changed one lands", () => {
+    const snapshot = hexDraft();
+    const renamed = setDraftLabel(snapshot, "My Deep Sea");
+    expect(mergeDesignIntoDraft(renamed, snapshot, echo()).label).toBe("My Deep Sea");
+    expect(mergeDesignIntoDraft(renamed, snapshot, echo({ label: "Cedar Dusk" })).label).toBe("Cedar Dusk");
+  });
+
+  test("an accent lands only when it differs from what the model was shown", () => {
+    const snapshot = hexDraft();
+    // The reader picked plum mid-flight; the model echoed the snapshot's indigo.
+    const current = patchDraftAccent(snapshot, "plum");
+    expect(mergeDesignIntoDraft(current, snapshot, { ...echo(), accent: "indigo" }).accent).toBe("plum");
+    expect(mergeDesignIntoDraft(current, snapshot, { ...echo(), accent: "amber" }).accent).toBe("amber");
+  });
+
+  test("type lands when offered and stays put when not", () => {
+    const snapshot = hexDraft();
+    const before = patchDraftType(snapshot, { fontSans: "inter", fontSize: 16 });
+    const kept = mergeDesignIntoDraft(before, snapshot, echo());
+    expect(kept.fontSans).toBe("inter");
+    expect(kept.fontSize).toBe(16);
+    const moved = mergeDesignIntoDraft(before, snapshot, { ...echo(), fontMono: "jetbrains", fontSize: 17 });
+    expect(moved.fontMono).toBe("jetbrains");
+    expect(moved.fontSize).toBe(17);
   });
 
   test("a drafted backdrop becomes a custom gradient carrying its own CSS", () => {
-    const after = mergeDesignIntoDraft(draft(), design({ backdropSpec: { light: { type: "linear", angle: 160, stops: ["#eeeeee", "#cccccc"] }, dark: { type: "linear", angle: 160, stops: ["#222222", "#000000"] } } }));
+    const snapshot = hexDraft();
+    const after = mergeDesignIntoDraft(snapshot, snapshot, { ...echo(), backdropSpec: { light: { type: "linear", angle: 160, stops: ["#eeeeee", "#cccccc"] }, dark: { type: "linear", angle: 160, stops: ["#222222", "#000000"] } } });
     expect(after.backdrop.kind).toBe("custom-gradient");
     if (after.backdrop.kind !== "custom-gradient") throw new Error("unreachable");
     expect(after.backdrop.light).toContain("#eeeeee");
@@ -256,15 +386,17 @@ describe("the chat's merge", () => {
     expect(after.backdrop.resolved.dark).toBe(after.backdrop.dark);
   });
 
-  test("declining a backdrop KEEPS the draft's — this is an edit, not a restart", () => {
-    const withScene = replaceDraftBackdrop(draft(), scenePresetBackdrop(PRESET_ID, 100)!);
-    expect(mergeDesignIntoDraft(withScene, design()).backdrop).toEqual(withScene.backdrop);
+  test("keeping a backdrop keeps it; removing one clears it", () => {
+    const withScene = replaceDraftBackdrop(hexDraft(), scenePresetBackdrop(PRESET_ID, 100)!);
+    expect(mergeDesignIntoDraft(withScene, withScene, echo()).backdrop).toEqual(withScene.backdrop);
+    expect(mergeDesignIntoDraft(withScene, withScene, { ...echo(), removeBackdrop: true }).backdrop).toEqual({ kind: "none" });
   });
 
   test("the summary names the theme and only what actually changed", () => {
     expect(designSummary(design())).toBe("Drafted “Cedar Dusk” — new palette.");
     const full = designSummary(design({ accent: "amber", backdropSpec: { light: { type: "linear", angle: 0, stops: ["#fff", "#eee"] }, dark: { type: "linear", angle: 0, stops: ["#111", "#000"] } } }));
     expect(full).toBe("Drafted “Cedar Dusk” — new palette, a fresh gradient backdrop, amber accent.");
+    expect(designSummary({ ...design(), removeBackdrop: true, fontSize: 15 })).toBe("Drafted “Cedar Dusk” — new palette, backdrop cleared, 15px text.");
   });
 });
 

@@ -32,9 +32,16 @@ import {
   type MonoFont,
   type SansFont,
 } from "./appearance";
-import { composeGradient } from "./backdrop-presets";
+import { isGradientValue, MAX_BACKDROP_BLUR, MAX_BACKDROP_DIM, type BackdropFit } from "./backdrop";
+import {
+  backdropPresetById,
+  composeGradient,
+  DEFAULT_CUSTOM_GRADIENT,
+  parseGradient,
+  type CustomGradientSpec,
+} from "./backdrop-presets";
 import { captureLook, parseLook, type Look, type LookBackdrop } from "./looks";
-import { composeScene, SCENE_LIMITS, type Scene } from "./scene-composer";
+import { composeScene, pruneSceneImages, SCENE_LIMITS, type Scene } from "./scene-composer";
 import { concreteHalf, cssColorToHex, THEME_TOKENS, type ThemeDefinition, type ThemeToken } from "./theme-palettes";
 import type { DesignSuccess } from "./theme-designer";
 
@@ -201,12 +208,14 @@ export function replaceDraftBackdrop(draft: StudioDraft, backdrop: LookBackdrop)
 }
 
 /**
- * The studio's Scene tool writes a ONE-LAYER scene, not a gradient choice: the
- * settings pane's composer edits `kind: "scene"` and nothing else, so a studio
- * that wrote `kind: "gradient"` would hand the reader a look the full composer
- * refuses to open. Returns undefined when the preset is not one this build has
- * — composeScene's own refusal, passed straight through rather than written as
- * a backdrop that paints nothing.
+ * A preset as a ONE-LAYER SCENE rather than as a gradient choice — the shape a
+ * compact preset grid wants, where every pick has to be reopenable by the full
+ * composer. The Backdrop tool's own gallery writes `kind: "gradient"` instead
+ * (see presetBackdrop below), because there a preset IS the whole choice and
+ * Compose is a tab away; this stays for grids that only offer presets.
+ * Returns undefined when the preset is not one this build has — composeScene's
+ * own refusal, passed straight through rather than written as a backdrop that
+ * paints nothing.
  */
 export function scenePresetBackdrop(presetId: string, opacity: number): LookBackdrop | undefined {
   const scene: Scene = {
@@ -229,27 +238,160 @@ export function draftScenePreset(draft: StudioDraft): { presetId: string; opacit
   return { presetId: only.presetId, opacity: only.opacity };
 }
 
+/* --------------------------------------- the backdrop tool's constructors */
+
+/**
+ * THE FOUR WAYS TO BUILD A BACKDROP, as pure functions.
+ *
+ * The backdrop editors are CONTROLLED: they are handed a LookBackdrop and hand
+ * one back, and nothing they touch writes a store. That only works if every
+ * kind can be built in one go — the choice, the RESOLVED CSS the preview and
+ * the pre-paint script paint from, and any payload (an image, a scene's
+ * layers) that lives nowhere else. So the constructors live here, beside the
+ * draft they feed, rather than inside a component where they could not be
+ * tested without a DOM.
+ *
+ * THEY REFUSE RATHER THAN RETURN SOMETHING BLANK. Every one of them ends at
+ * the store's own gate — isGradientValue, isSceneValue via composeScene, or
+ * the `data:image/` prefix — and returns undefined when the value would not
+ * pass. A caller that gets undefined leaves the backdrop already on screen
+ * alone, which is the only outcome that is never a surprise.
+ */
+
+/** A crafted preset. Its two halves ARE the resolved CSS — backdrop-presets.ts
+ *  authors finished `background-image` values — so nothing is composed here;
+ *  the id rides along so the gallery still shows which tile is chosen. */
+export function presetBackdrop(presetId: string): LookBackdrop | undefined {
+  const preset = backdropPresetById(presetId);
+  if (!preset || !isGradientValue(preset.light) || !isGradientValue(preset.dark)) return undefined;
+  return { kind: "gradient", id: preset.id, resolved: { light: preset.light, dark: preset.dark } };
+}
+
+/** BOTH halves of a hand-rolled gradient. The editor only shows one half at a
+ *  time (the pane's Light/Dark toggle decides which), but a backdrop choice is
+ *  a pair — the scheme can flip under it — so both are always carried. */
+export type GradientPair = { light: CustomGradientSpec; dark: CustomGradientSpec };
+
+export function customGradientBackdrop(pair: GradientPair): LookBackdrop | undefined {
+  const light = composeGradient(pair.light);
+  const dark = composeGradient(pair.dark);
+  if (!isGradientValue(light) || !isGradientValue(dark)) return undefined;
+  // The choice and the resolved layers are the same two strings for this kind;
+  // both are stored because applyLook writes them to two different keys.
+  return { kind: "custom-gradient", light, dark, resolved: { light, dark } };
+}
+
+/** The stops a draft's custom gradient is made of, so the editor reopens on
+ *  what is painted rather than on its defaults. parseGradient recognises only
+ *  composeGradient's own output, so anything else — a preset, a hand-edited
+ *  value — opens on the defaults instead. */
+export function draftGradientPair(backdrop: LookBackdrop): GradientPair {
+  if (backdrop.kind !== "custom-gradient") return { ...DEFAULT_CUSTOM_GRADIENT };
+  return {
+    light: parseGradient(backdrop.light) ?? DEFAULT_CUSTOM_GRADIENT.light,
+    dark: parseGradient(backdrop.dark) ?? DEFAULT_CUSTOM_GRADIENT.dark,
+  };
+}
+
+/** A little dim by default: an untouched photograph behind text is a
+ *  legibility problem, and 20% is the smallest amount that reliably is not. */
+export const DEFAULT_IMAGE_DIM = 20;
+
+/**
+ * A photograph, as a data URL INSIDE the draft — not in BACKDROP_IMAGE_KEY.
+ * That is the whole difference from the old live picker: a draft nobody has
+ * applied must not have already replaced the image the reader is wearing, so
+ * the pixels travel in the value and only reach storage through applyLook.
+ * Replacing a picture KEEPS its tuning: you chose that blur for a reason.
+ */
+export function imageBackdrop(image: string, previous?: LookBackdrop): LookBackdrop | undefined {
+  if (!image.startsWith("data:image/")) return undefined;
+  const kept = previous?.kind === "image" ? previous : undefined;
+  return { kind: "image", image, fit: kept?.fit ?? "cover", blur: kept?.blur ?? 0, dim: kept?.dim ?? DEFAULT_IMAGE_DIM };
+}
+
+/** Fit, blur and dim, clamped to the bounds the backdrop store enforces — a
+ *  draft that could hold a 90px blur would only be clamped later. A patch
+ *  against any other kind is a no-op rather than a coercion. */
+export function patchImageBackdrop(
+  backdrop: LookBackdrop,
+  patch: Partial<{ fit: BackdropFit; blur: number; dim: number }>,
+): LookBackdrop {
+  if (backdrop.kind !== "image") return backdrop;
+  return {
+    ...backdrop,
+    ...(patch.fit ? { fit: patch.fit } : {}),
+    ...(patch.blur !== undefined ? { blur: clampInt(patch.blur, 0, MAX_BACKDROP_BLUR, backdrop.blur) } : {}),
+    ...(patch.dim !== undefined ? { dim: clampInt(patch.dim, 0, MAX_BACKDROP_DIM, backdrop.dim) } : {}),
+  };
+}
+
+/** A composed stack. The images are PRUNED to what the layers still refer to,
+ *  because a draft carries its images by value and a removed layer's megabyte
+ *  would otherwise ride along in every save and every export. */
+export function sceneBackdrop(scene: Scene, images: Record<string, string>): LookBackdrop | undefined {
+  const kept = pruneSceneImages(scene, images);
+  const resolved = composeScene(scene, kept);
+  return resolved ? { kind: "scene", scene, images: kept, resolved } : undefined;
+}
+
+/**
+ * The stack the composer opens on. A scene is itself; a GRADIENT PRESET
+ * becomes the single bottom layer it already is, so moving a preset into
+ * Compose starts from the picture you were looking at rather than from a blank
+ * stage. Everything else opens empty — an empty stack composes to nothing, so
+ * the draft's backdrop is left alone until a layer is actually added.
+ */
+export function draftSceneStack(backdrop: LookBackdrop): { scene: Scene; images: Record<string, string> } {
+  if (backdrop.kind === "scene") return { scene: backdrop.scene, images: backdrop.images };
+  if (backdrop.kind === "gradient") {
+    return { scene: { layers: [{ type: "gradient", presetId: backdrop.id, opacity: SCENE_LIMITS.opacity.max }] }, images: {} };
+  }
+  return { scene: { layers: [] }, images: {} };
+}
+
 /* ------------------------------------------------- the chat's merge */
 
 /**
- * A validated design folded INTO the draft rather than over it.
+ * A validated design folded into the draft as a THREE-WAY MERGE.
  *
- * The chat iterates: "warmer", "now try it at night" are edits to something
- * that already exists. So the palette and the label always land (they are what
- * the model was asked for), the accent and the backdrop land only when the
- * model offered one — `applyDesign` already degrades both to absent rather
- * than failing — and the members no design run can speak to (the typefaces,
- * the text size, the translucency strength) are never touched. Declining a
- * backdrop therefore KEEPS the draft's, which is the iterating reading of
- * "leave the backdrop alone"; clearing one is the Scene tool's job.
+ * The model was shown a SNAPSHOT of the draft and answered with a complete
+ * theme; by the time the answer lands (five to sixty seconds later) the reader
+ * may have hand-edited tokens, renamed the look, or swapped the backdrop. The
+ * old merge overwrote all of that with the model's copy — the model's answer
+ * silently reverted every edit made during the wait, and every turn clobbered
+ * the label. So each member now lands only where the model actually CHANGED
+ * it relative to the snapshot it saw:
+ *
+ *   token: model's value ≠ what the snapshot showed it → the model meant to
+ *   move it, take the model's; otherwise keep whatever `current` holds — the
+ *   unchanged original, or the reader's mid-flight edit.
+ *
+ * Tokens are compared through the same hex serialisation the prompt used
+ * (`describeDraft` shows the model hex), so an untouched oklch token is not
+ * mistaken for a change merely because the model echoed it back as hex.
  */
-export function mergeDesignIntoDraft(draft: StudioDraft, outcome: DesignSuccess): StudioDraft {
-  const merged: StudioDraft = {
-    ...draft,
-    label: outcome.definition.label,
-    theme: { light: { ...outcome.definition.light }, dark: { ...outcome.definition.dark } },
-    ...(outcome.accent ? { accent: outcome.accent } : {}),
+export function mergeDesignIntoDraft(current: StudioDraft, snapshot: StudioDraft, outcome: DesignSuccess): StudioDraft {
+  const half = (mode: StudioMode): Look["theme"]["light"] => {
+    const merged = { ...current.theme[mode] };
+    for (const token of THEME_TOKENS) {
+      const answered = outcome.definition[mode][token];
+      if (answered.toLowerCase() !== cssColorToHex(snapshot.theme[mode][token]).toLowerCase()) merged[token] = answered;
+    }
+    return merged;
   };
+  const merged: StudioDraft = {
+    ...current,
+    theme: { light: half("light"), dark: half("dark") },
+    // The label moves only when the model renamed it — a look the reader
+    // titled in the header keeps that title through "warmer".
+    ...(outcome.definition.label !== snapshot.label ? { label: outcome.definition.label } : {}),
+    ...(outcome.accent && outcome.accent !== snapshot.accent ? { accent: outcome.accent } : {}),
+    ...(outcome.fontSans ? { fontSans: outcome.fontSans } : {}),
+    ...(outcome.fontMono ? { fontMono: outcome.fontMono } : {}),
+    ...(outcome.fontSize !== undefined ? { fontSize: outcome.fontSize } : {}),
+  };
+  if (outcome.removeBackdrop) return { ...merged, backdrop: { kind: "none" } };
   if (!outcome.backdropSpec) return merged;
   const light = composeGradient(outcome.backdropSpec.light);
   const dark = composeGradient(outcome.backdropSpec.dark);
@@ -261,7 +403,10 @@ export function mergeDesignIntoDraft(draft: StudioDraft, outcome: DesignSuccess)
 export function designSummary(outcome: DesignSuccess): string {
   const notes: string[] = ["new palette"];
   if (outcome.backdropSpec) notes.push("a fresh gradient backdrop");
+  if (outcome.removeBackdrop) notes.push("backdrop cleared");
   if (outcome.accent) notes.push(`${outcome.accent} accent`);
+  if (outcome.fontSans || outcome.fontMono) notes.push("new type");
+  if (outcome.fontSize !== undefined) notes.push(`${outcome.fontSize}px text`);
   return `Drafted “${outcome.definition.label}” — ${notes.join(", ")}.`;
 }
 
@@ -279,31 +424,59 @@ export function describeDraft(draft: StudioDraft): string {
       ? "none"
       : draft.backdrop.kind === "image"
         ? "a photograph (leave it alone unless asked to replace it)"
-        : `${draft.backdrop.kind}: ${draft.backdrop.resolved.light}`;
+        : `${draft.backdrop.kind} — light: ${draft.backdrop.resolved.light} | dark: ${draft.backdrop.resolved.dark}`;
+  const fonts = `${draft.fontSans === "custom" ? draft.fontSansCustom || "custom" : draft.fontSans} / ${draft.fontMono === "custom" ? draft.fontMonoCustom || "custom" : draft.fontMono} mono`;
   return [
     `Name: ${draft.label}`,
     `Accent: ${draft.accent}`,
+    `Type: ${fonts}, ${draft.fontSize}px root`,
     `Light half: ${half("light")}`,
     `Dark half: ${half("dark")}`,
     `Backdrop: ${backdrop}`,
   ].join("\n");
 }
 
+/** What the studio can add around the brief: which scheme the reader is
+ *  judging the draft in, and the recent conversation. */
+export type StudioPromptContext = {
+  mode?: StudioMode;
+  /** Recent transcript lines, oldest first — what gives "like the last one
+   *  but colder" something to refer to. */
+  history?: StudioChatLine[];
+};
+
+/** How much conversation rides along. Enough to refer back a few turns;
+ *  bounded because the daemon caps the whole prompt at 20k characters. */
+const HISTORY_LINES = 10;
+const HISTORY_LINE_CHARS = 300;
+
 /**
- * The designer's brief, plus the draft it is editing.
+ * The designer's brief, plus the draft it is editing, plus the conversation
+ * so far.
  *
  * `buildDesignPrompt` is reused verbatim — one brief describing what the
- * sixteen tokens mean, one set of lightness rules — and the studio adds only
- * the thing that makes this a CONVERSATION rather than a series of unrelated
- * one-shots: the current draft, and an instruction to change it rather than
- * start over. The instruction rides in as the brief so a first message with no
- * draft history still reads exactly like the settings pane's designer.
+ * sixteen tokens mean, one set of lightness rules — and the studio adds what
+ * makes this a CONVERSATION rather than a series of unrelated one-shots: the
+ * current draft, the recent transcript (standing constraints like "keep the
+ * borders hairline" used to evaporate every turn because the model only ever
+ * saw the pixels), and which scheme the reader is looking at.
  */
-export function buildStudioPrompt(draft: StudioDraft, instruction: string, buildBase: (brief: string) => string): string {
+export function buildStudioPrompt(
+  draft: StudioDraft,
+  instruction: string,
+  buildBase: (brief: string) => string,
+  context: StudioPromptContext = {},
+): string {
+  const history = (context.history ?? [])
+    .filter((line) => line.kind !== "trouble")
+    .slice(-HISTORY_LINES)
+    .map((line) => `${line.kind === "you" ? "READER" : "YOU"}: ${line.text.slice(0, HISTORY_LINE_CHARS)}`);
   return [
     buildBase(instruction),
     "",
-    "YOU ARE EDITING AN EXISTING DRAFT, NOT STARTING OVER. Below is the draft as it stands. Apply the brief as a CHANGE to it: keep everything the brief does not speak to — hues, relative lightnesses, the backdrop — and answer with the complete edited theme (the schema still requires every token).",
+    "YOU ARE EDITING AN EXISTING DRAFT, NOT STARTING OVER. Below is the draft as it stands. Apply the brief as a CHANGE to it: keep everything the brief does not speak to — hues, relative lightnesses, the name, the backdrop — and answer with the complete edited theme (the schema still requires every token). Instructions from earlier in the conversation still stand unless the reader reverses them.",
+    ...(context.mode ? ["", `The reader is judging the draft in its ${context.mode} half right now.`] : []),
+    ...(history.length > 0 ? ["", "THE CONVERSATION SO FAR:", ...history] : []),
     "",
     describeDraft(draft),
   ].join("\n");
