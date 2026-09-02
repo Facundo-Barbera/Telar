@@ -1176,7 +1176,7 @@ export function Composer({
           A stash that quietly refused is a paragraph the person thinks they
           still have. */}
       {note && (
-        <div className="flex items-start gap-1.5 rounded-lg bg-destructive/10 px-2 py-1.5 text-[11px] leading-snug text-destructive">
+        <div className="flex items-start gap-1.5 rounded-lg bg-destructive/10 px-2 py-1.5 text-[0.6875rem] leading-snug text-destructive">
           <TriangleAlertIcon aria-hidden className="mt-px size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">{note}</span>
           <button type="button" aria-label="Dismiss" onClick={() => setNote(undefined)} className="shrink-0 rounded p-0.5">
