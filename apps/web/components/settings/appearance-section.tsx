@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
+import { LooksSection } from "./looks-section";
 import { ThemeLibrary } from "./theme-library";
 import { ThemeDesigner } from "./theme-designer";
 import { BackdropSection } from "./backdrop-section";
@@ -142,6 +143,10 @@ export function AppearanceSection() {
           control={<AccentSwatches value={appearance.accent} onChange={(accent) => setAppearance({ accent })} />}
         />
       </SettingsGroup>
+
+      {/* First, because a Look is the biggest unit here: the whole appearance
+          at once. Everything below is how one gets built. */}
+      <LooksSection />
 
       <ThemeLibrary />
 
