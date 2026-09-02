@@ -56,6 +56,7 @@ import {
   newLookId,
   upsertLook,
   useLooks,
+  readLooks as readLooksNow,
   writeLooks,
   type Look,
 } from "@/lib/looks";
@@ -74,6 +75,7 @@ import {
   type StudioMode,
 } from "@/lib/studio-draft";
 import { isStarterLook } from "@/lib/starter-looks";
+import { mergeById, readAppearanceHome } from "@/lib/appearance-home";
 import { clearPreview, previewLook } from "@/lib/studio-preview";
 import { matchThemeHalf, THEME_TOKENS, useThemeLibrary, type ThemeDefinition } from "@/lib/theme-palettes";
 import { ThemeControl } from "@/components/theme-control";
@@ -180,6 +182,44 @@ export function AppearanceSection() {
     // setAppearance is stable; run once per bridge discovery.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasBridge]);
+
+  /**
+   * PULL WHAT THE FILES SAY, ONCE, ON ARRIVAL.
+   *
+   * The appearance home is the record and localStorage is the pre-paint cache
+   * (lib/appearance-home.ts). Anything written there by another author — a
+   * person with an editor, or a config session — is invisible until something
+   * reads it, and the moment this pane opens is when it matters. Merged, never
+   * replaced: an id in both takes the file's copy, an id in only one survives.
+   *
+   * A machine with no engine reads an empty home and nothing moves, which is
+   * exactly what a cache with an absent source should do.
+   */
+  const [homeNotice, setHomeNotice] = useState<string>();
+  useEffect(() => {
+    const abort = new AbortController();
+    void readAppearanceHome(abort.signal).then((home) => {
+      if (abort.signal.aborted) return;
+      for (const theme of home.themes) saveCustom(theme);
+      if (home.looks.length > 0) {
+        const merged = mergeById(readLooksNow(), home.looks);
+        writeLooks(merged);
+      }
+      // NAMED, not swallowed. Someone hunting for a theme that never appeared
+      // is owed the filename, and this is the only surface that can tell them.
+      if (home.unreadable.length > 0) {
+        const [first] = home.unreadable;
+        setHomeNotice(
+          home.unreadable.length === 1
+            ? `${first!.file} could not be read — ${first!.reason}.`
+            : `${home.unreadable.length} files in the appearance folder could not be read; the first is ${first!.file}.`,
+        );
+      }
+    });
+    return () => abort.abort();
+    // saveCustom is stable; this is an arrival, not a subscription.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // A draft left behind by the last visit — same id, same shelf card, same
   // conversation. Restored once on mount; a one-shot setState here cannot
@@ -446,6 +486,7 @@ export function AppearanceSection() {
       </div>
 
       {notice && <p className="text-xs text-warning">{notice}</p>}
+      {homeNotice && <p className="text-xs text-warning">{homeNotice}</p>}
 
       {/* THE DIVISION AT THE TOP. Two sittings, named, before anything else. */}
       <div className="flex">

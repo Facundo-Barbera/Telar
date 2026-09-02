@@ -350,6 +350,66 @@ export class EngineClient {
     };
   }
 
+  /**
+   * THE APPEARANCE HOME — the files, not the mailbox.
+   *
+   * Returned RAW rather than parsed into Looks and Themes. The home is a
+   * directory two authors edit by hand, so "what is on disk" and "what this
+   * build can wear" are different questions: the caller parses with the
+   * vocabulary it paints with, and decides for itself what to do with an entry
+   * it does not understand. `skipped` names the files that were not even JSON.
+   */
+  async appearanceHome(): Promise<{
+    settings: Record<string, unknown> | null;
+    themes: Record<string, unknown>[];
+    looks: Record<string, unknown>[];
+    images: string[];
+    skipped: { file: string; reason: string }[];
+  }> {
+    const raw = await this.request<Record<string, unknown>>("GET", "/v2/appearance/home");
+    const list = (value: unknown): Record<string, unknown>[] =>
+      Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null && !Array.isArray(entry)) : [];
+    return {
+      settings: typeof raw["settings"] === "object" && raw["settings"] !== null && !Array.isArray(raw["settings"]) ? (raw["settings"] as Record<string, unknown>) : null,
+      themes: list(raw["themes"]),
+      looks: list(raw["looks"]),
+      images: Array.isArray(raw["images"]) ? raw["images"].filter((name): name is string => typeof name === "string") : [],
+      skipped: list(raw["skipped"]).map((entry) => ({ file: String(entry["file"] ?? ""), reason: String(entry["reason"] ?? "") })),
+    };
+  }
+
+  async putAppearanceEntry(kind: "themes" | "looks", id: string, value: Record<string, unknown>): Promise<void> {
+    await this.request("PUT", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`, value);
+  }
+
+  async deleteAppearanceEntry(kind: "themes" | "looks", id: string): Promise<void> {
+    await this.request("DELETE", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * A stored picture's bytes. Shaped exactly like `projectIcon` because it is
+   * the same job — the engine holds a file, the cockpit streams it — and a
+   * second idiom for "fetch binary from the engine" is how two of them drift
+   * on error handling.
+   */
+  async appearanceImage(name: string): Promise<{ data: Uint8Array; contentType: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/appearance/home/images/${encodeURIComponent(name)}`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.discovery.token}` },
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+    }
+    if (!response.ok) throw new EngineClientError(response.status === 404 ? "not_found" : "engine_unavailable", "no such image");
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+  }
+
+  async putAppearanceSettings(settings: Record<string, unknown>): Promise<void> {
+    await this.request("PUT", "/v2/appearance/home/settings", settings);
+  }
+
   /** Replaces the published look wholesale — a snapshot, never a patch, because
    *  two publishers' merged halves would describe a look neither of them wears.
    *  `updatedAt` and `etag` come back so a publisher can tell its own write
