@@ -6,7 +6,7 @@
 // from theme tokens only; nothing hard-codes a palette.
 import type { ComponentType, ReactNode } from "react";
 import Link from "next/link";
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -215,73 +215,128 @@ export function SettingsShell({
           </div>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={cn("mx-auto w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
+          <div className={cn("w-full px-5 py-5", wide ? "max-w-[1400px]" : "max-w-2xl")}>{children}</div>
         </div>
       </div>
     </div>
   );
 }
 
-// A titled block of setting rows inside the content pane.
+/**
+ * A TITLED BLOCK OF FIELDS — and, since this rebuild, NOT A CARD.
+ *
+ * It used to wrap its rows in `rounded-xl bg-card ring-1`, which put every
+ * setting inside a raised slab. Two costs: on a pane that already frames
+ * regions with `Panel` (components/ui/panel.tsx) it was a card inside a card,
+ * and on its own it made a list of decisions read as an object to be handled
+ * rather than a page to be read. The reference this pane now follows separates
+ * fields with SPACE and a hairline, and lets the title carry the structure.
+ *
+ * `action` is the control that belongs to the whole group rather than to any
+ * one field — an "Advanced" switch, a reset.
+ */
 export function SettingsGroup({
   title,
   description,
+  action,
   children,
 }: {
   title?: ReactNode;
   description?: ReactNode;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className="mb-6 last:mb-0">
-      {(title || description) && (
-        <div className="mb-2.5">
-          {title && <h4 className="text-sm font-medium text-foreground">{title}</h4>}
-          {description && (
-            <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-          )}
+    <section className="mb-7 last:mb-0">
+      {(title || description || action) && (
+        <div className="mb-2.5 flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            {title && <h4 className="font-heading text-sm font-semibold tracking-tight text-foreground">{title}</h4>}
+            {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
+          </div>
+          {action && <div className="shrink-0">{action}</div>}
         </div>
       )}
-      <div className="divide-y divide-border overflow-hidden rounded-xl bg-card text-card-foreground ring-1 ring-foreground/10">
-        {children}
-      </div>
+      <div className="divide-y divide-border/60">{children}</div>
     </section>
   );
 }
 
-// One dense row: label + hint on the left, a control on the right.
+/**
+ * ONE FIELD: what it is, what it does, and the control that changes it.
+ *
+ * THE DESCRIPTION IS PART OF THE FIELD, not a footnote. A settings page that
+ * explains itself in a paragraph above the controls makes the reader hold the
+ * paragraph in their head while they look for the switch; a sentence sitting
+ * under its own label is read at the moment it is needed and ignored the rest
+ * of the time. That is the whole reason `hint` survived the copy cull.
+ *
+ * `onRevert` appears only when the value is not the default — an affordance
+ * that costs nothing when there is nothing to undo, and saves a reader who
+ * changed something an hour ago from having to remember what it was.
+ *
+ * THE CONTROL COLUMN NEVER SQUEEZES THE LABEL. Both sides declare their own
+ * width and the row wraps on a narrow pane rather than compressing the label
+ * into a ribbon of one word per line — which is exactly what happened when a
+ * caller handed `control` three buttons.
+ */
 export function Row({
   label,
   hint,
   icon: Icon,
   control,
+  onRevert,
   children,
 }: {
   label: ReactNode;
   hint?: ReactNode;
   icon?: ComponentType<{ className?: string }>;
   control?: ReactNode;
+  /** Shown as a revert arrow beside the label; omit when the value is default. */
+  onRevert?: () => void;
   children?: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-4 px-4 py-3">
-      {Icon && (
-        <span className="flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
-          <Icon className="size-4" />
-        </span>
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>}
-        {children}
+    <div className="flex flex-wrap items-start gap-x-4 gap-y-2 py-3 first:pt-0 last:pb-0">
+      <div className="flex min-w-48 flex-1 items-start gap-2.5">
+        {Icon && (
+          <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-muted-foreground/70">
+            <Icon className="size-4" />
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-sm font-medium text-foreground">{label}</span>
+            {onRevert && (
+              <button
+                type="button"
+                title="Back to the default"
+                aria-label="Revert to the default"
+                onClick={onRevert}
+                className="text-muted-foreground/60 transition-colors hover:text-foreground"
+              >
+                <Undo2Icon className="size-3" />
+              </button>
+            )}
+          </div>
+          {hint && <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{hint}</p>}
+          {children}
+        </div>
       </div>
-      {control && <div className="shrink-0">{control}</div>}
+      {control && <div className="flex shrink-0 items-center justify-end">{control}</div>}
     </div>
   );
 }
 
-// Segmented control — the theme / permission-mode picker. Single-tap, reads like
-// the app's button-group idiom but self-contained. Colors are theme tokens only.
+/**
+ * A SEGMENTED CHOICE, WITHOUT THE PILL.
+ *
+ * It was a filled track with a raised, ringed, shadowed thumb — a control with
+ * more chrome than anything it sits beside, and at four or five options it read
+ * as a row of chunky buttons rather than as one field's value. Now it is a
+ * hairline group whose selected segment is a quiet fill: the same information,
+ * at the weight of the rest of the page.
+ */
 export function Segmented<T extends string>({
   value,
   onChange,
@@ -292,19 +347,59 @@ export function Segmented<T extends string>({
   options: { value: T; label: ReactNode }[];
 }) {
   return (
-    <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
+    <div className="inline-flex items-center rounded-md border border-border">
       {options.map((o) => {
         const on = o.value === value;
         return (
           <button
             key={o.value}
             type="button"
+            aria-pressed={on}
             onClick={() => onChange(o.value)}
             className={cn(
-              "flex items-center gap-1.5 rounded-[7px] px-2.5 py-1 text-xs font-medium transition-colors",
-              on
-                ? "bg-background text-foreground shadow-sm ring-1 ring-foreground/10"
-                : "text-muted-foreground hover:text-foreground",
+              "flex items-center gap-1.5 px-2.5 py-1 text-xs transition-colors first:rounded-l-[5px] last:rounded-r-[5px] not-first:border-l not-first:border-border",
+              on ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+            )}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * TABS FOR A PANE THAT HAS MODES — an underline, not a pill.
+ *
+ * The appearance studio's five tools were a Segmented, which made the pane's
+ * primary navigation look like one of its fields. An underlined row is the
+ * idiom every settings surface uses for this, and it reads as "these are
+ * places" rather than "this is a value".
+ */
+export function Tabs<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: ReactNode }[];
+}) {
+  return (
+    <div role="tablist" className="flex items-center gap-4 border-b border-border">
+      {options.map((o) => {
+        const on = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            aria-selected={on}
+            onClick={() => onChange(o.value)}
+            className={cn(
+              "-mb-px flex items-center gap-1.5 border-b-2 px-0.5 pb-2 text-sm transition-colors",
+              on ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
             {o.label}

@@ -242,7 +242,7 @@ export function RemoteSection() {
             />
           )}
           {minted && !expired && matrix && pairingUrl && (
-            <div className="flex flex-col items-start gap-3 px-4 py-3">
+            <div className="flex flex-col items-start gap-3 py-3">
               <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />
               <div className="w-full max-w-md">
                 <CopyCommand command={pairingUrl} />

@@ -44,7 +44,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Row, SettingsGroup } from "./settings-shell";
+import { Row, Segmented, SettingsGroup } from "./settings-shell";
 import { HEALTH_DOT, signInAction, signInSummary, statusFor } from "@/lib/mcp-oauth";
 
 const api = createEngineApi();
@@ -186,7 +186,7 @@ function ServerRow({
         }
       />
       {configuring && (
-        <div className="space-y-2 bg-muted/20 px-4 py-2">
+        <div className="space-y-2 rounded-md bg-muted/20 px-3 py-2">
           {status && (status.connected || status.requiresOAuth) && (
             <p className="text-[0.6875rem] leading-snug text-muted-foreground">
               {signInSummary(status)}
@@ -285,24 +285,14 @@ function AddServerForm({ scope, onAdded }: { scope: McpScope; onAdded: () => voi
           : "Offered to every session on every project, unless a project defines one with the same id."
       }
     >
-      <div className="flex flex-col gap-3 px-4 py-3">
-        <div className="flex flex-wrap gap-1.5">
-          {TRANSPORTS.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => setTransport(option.id)}
-              title={option.hint}
-              className={
-                transport === option.id
-                  ? "rounded-md border border-ring bg-accent px-2.5 py-1 text-xs font-medium"
-                  : "rounded-md border border-input px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              }
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+      <div className="flex flex-col gap-3 py-3">
+        {/* The shared segmented control rather than three loose pills: one kind
+            of "pick one of these" on every settings pane. */}
+        <Segmented<Transport>
+          value={transport}
+          onChange={setTransport}
+          options={TRANSPORTS.map((option) => ({ value: option.id, label: <span title={option.hint}>{option.label}</span> }))}
+        />
         <div className="grid gap-2 sm:grid-cols-2">
           <Input
             value={id}
