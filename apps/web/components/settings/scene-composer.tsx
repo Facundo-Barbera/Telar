@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * THE SCENE COMPOSER — arranging several images over a gradient.
+ * THE SCENE COMPOSER — arranging gradients and images into one stack.
  *
  * Rendered by backdrop-section.tsx when Scene says Compose. It is the image
  * picker's idiom taken plural: pick or drop, tune with sliders, and every
@@ -17,11 +17,12 @@
  *
  * TWO EXCEPTIONS TO "LIVE", both about cost:
  *
- *   - OPACITY LANDS ON RELEASE. It is the one control that cannot be a CSS
- *     value — it is baked into the layer's pixels (see the lib header) — and
- *     re-encoding a megapixel WebP per pointer sample would turn the drag
- *     into a slideshow. The number tracks the thumb live; the picture updates
- *     when you let go.
+ *   - AN IMAGE'S OPACITY LANDS ON RELEASE. It is the one control that cannot
+ *     be a CSS value — it is baked into the layer's pixels (see the lib
+ *     header) — and re-encoding a megapixel WebP per pointer sample would turn
+ *     the drag into a slideshow. The number tracks the thumb live; the picture
+ *     updates when you let go. A GRADIENT's opacity is only string surgery, so
+ *     that slider is live like every other.
  *   - THE IMAGE MAP IS ONLY REWRITTEN WHEN IT CHANGED. Dragging position or
  *     size does not touch the layer data, and re-serialising several
  *     megabytes of data URL forty times a second would be felt.
@@ -34,34 +35,49 @@
  *
  * REORDERING IS ARRAY ORDER. `layers[0]` paints on top (CSS's own rule), so
  * "up" is towards index 0 and the list reads top-of-the-stack first, like a
- * layers palette anywhere else.
+ * layers palette anywhere else. Rows are addressed BY POSITION rather than by
+ * id, because gradient layers have no id to address them with.
+ *
+ * THE BASE GRID IS STILL AT THE BOTTOM, but it no longer stands for a
+ * mandatory base — it writes (or removes) the bottom-most gradient layer, and
+ * its first tile is None. Choosing None leaves the stack ending in
+ * transparency, which is the whole point of the pane inside a translucent
+ * window: the desktop becomes the bottom layer.
  */
 
 import { useCallback, useRef, useState } from "react";
-import { ChevronDownIcon, ChevronUpIcon, ImagePlusIcon, LayersIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, ImagePlusIcon, LayersIcon, PaintbrushIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useBackdrop } from "@/lib/backdrop";
-import { BACKDROP_PRESETS } from "@/lib/backdrop-presets";
+import { backdropPresetById, BACKDROP_PRESETS } from "@/lib/backdrop-presets";
 import { ImageBackdropError } from "@/lib/image-backdrop";
 import {
+  addSceneGradientLayer,
   addSceneLayer,
   bakeLayerOpacity,
   composeScene,
+  countSceneGradients,
+  countSceneImages,
   forgetLayerImages,
+  MAX_SCENE_GRADIENT_LAYERS,
   MAX_SCENE_LAYERS,
-  moveSceneLayer,
+  moveSceneLayerAt,
   newLayerId,
   prepareSceneImage,
   readScene,
   readSceneImages,
-  removeSceneLayer,
+  removeSceneLayerAt,
+  sceneBasePresetId,
   SCENE_LIMITS,
-  updateSceneLayer,
+  setSceneBase,
+  updateSceneLayerAt,
   writeScene,
   writeSceneImages,
   type Scene,
-  type SceneLayer,
+  type SceneGradientLayer,
+  type SceneImageLayer,
+  type SceneLayerPatch,
 } from "@/lib/scene-composer";
 import { Row } from "./settings-shell";
 
@@ -117,6 +133,134 @@ function LayerSlider({
   );
 }
 
+/** The swatch every gradient is shown as, here and in the grids: the light
+ *  half with the dark one folded over its right side, so one tile says what
+ *  the pair looks like. */
+function PresetSwatch({ presetId }: { presetId: string }) {
+  const preset = backdropPresetById(presetId);
+  return (
+    <span className="relative block size-full overflow-hidden rounded-md ring-1 ring-inset ring-foreground/10">
+      <span className="absolute inset-0" style={{ backgroundImage: preset?.light, backgroundSize: "cover" }} />
+      <span className="absolute inset-y-0 right-0 w-1/2" style={{ backgroundImage: preset?.dark, backgroundSize: "cover" }} />
+    </span>
+  );
+}
+
+/**
+ * The preset chooser, used twice: once as the base ("and under everything,
+ * this") where it offers None, and once inside Add gradient where it does
+ * not — you cannot add a layer of nothing.
+ */
+function PresetGrid({ value, onPick, withNone = false }: { value: string | null; onPick: (presetId: string | null) => void; withNone?: boolean }) {
+  return (
+    <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-6">
+      {withNone && (
+        <button
+          key="none"
+          type="button"
+          title="Nothing under the stack — the desktop or the theme's own canvas shows through"
+          aria-pressed={value === null}
+          onClick={() => onPick(null)}
+          className={cn(
+            "flex flex-col gap-1 rounded-lg p-1 text-left ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
+            value === null && "ring-2 ring-primary",
+          )}
+        >
+          <span
+            className="relative block aspect-video w-full overflow-hidden rounded-md ring-1 ring-inset ring-foreground/10"
+            // The chequerboard every editor uses for "there is nothing here".
+            style={{
+              backgroundImage:
+                "linear-gradient(45deg, var(--muted) 25%, transparent 25%), linear-gradient(-45deg, var(--muted) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, var(--muted) 75%), linear-gradient(-45deg, transparent 75%, var(--muted) 75%)",
+              backgroundSize: "8px 8px",
+              backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0px",
+            }}
+          />
+          <span className="truncate px-0.5 text-[10px] font-medium">None</span>
+        </button>
+      )}
+      {BACKDROP_PRESETS.map((preset) => (
+        <button
+          key={preset.id}
+          type="button"
+          title={preset.label}
+          aria-pressed={value === preset.id}
+          onClick={() => onPick(preset.id)}
+          className={cn(
+            "flex flex-col gap-1 rounded-lg p-1 text-left ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
+            value === preset.id && "ring-2 ring-primary",
+          )}
+        >
+          <span className="block aspect-video w-full">
+            <PresetSwatch presetId={preset.id} />
+          </span>
+          <span className="truncate px-0.5 text-[10px] font-medium">{preset.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Reorder and remove, identical for both kinds of row — position in the
+ *  stack is the one thing every layer has. */
+function StackControls({ index, count, onMove, onRemove }: { index: number; count: number; onMove: (delta: number) => void; onRemove: () => void }) {
+  return (
+    <div className="flex items-center gap-0.5">
+      <Button size="icon-sm" variant="ghost" disabled={index === 0} title="Bring forward" aria-label={`Bring layer ${index + 1} forward`} onClick={() => onMove(-1)}>
+        <ChevronUpIcon />
+      </Button>
+      <Button size="icon-sm" variant="ghost" disabled={index === count - 1} title="Send back" aria-label={`Send layer ${index + 1} back`} onClick={() => onMove(1)}>
+        <ChevronDownIcon />
+      </Button>
+      <Button size="icon-sm" variant="ghost" className="text-muted-foreground" title="Remove layer" aria-label={`Remove layer ${index + 1}`} onClick={onRemove}>
+        <Trash2Icon />
+      </Button>
+    </div>
+  );
+}
+
+/** A gradient row is an image row with everything that needs pixels taken
+ *  out: it is full-bleed by definition, so there is no X, Y, size or tile —
+ *  only how much of it you want to see. */
+function GradientCard({
+  layer,
+  index,
+  count,
+  onPatch,
+  onMove,
+  onRemove,
+}: {
+  layer: SceneGradientLayer;
+  index: number;
+  count: number;
+  onPatch: (patch: SceneLayerPatch) => void;
+  onMove: (delta: number) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex gap-3 rounded-lg border border-border p-2.5">
+      <span className="block size-14 shrink-0 self-start">
+        <PresetSwatch presetId={layer.presetId} />
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
+        <span className="truncate text-[11px] font-medium">{backdropPresetById(layer.presetId)?.label ?? "Gradient"}</span>
+        <LayerSlider
+          label="Fade"
+          value={layer.opacity}
+          min={SCENE_LIMITS.opacity.min}
+          max={SCENE_LIMITS.opacity.max}
+          suffix="%"
+          onChange={(opacity) => onPatch({ opacity })}
+        />
+        <span className="text-[10px] text-muted-foreground">Fills the window; anything below shows through as it fades.</span>
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <StackControls index={index} count={count} onMove={onMove} onRemove={onRemove} />
+      </div>
+    </div>
+  );
+}
+
 function LayerCard({
   layer,
   image,
@@ -127,11 +271,11 @@ function LayerCard({
   onMove,
   onRemove,
 }: {
-  layer: SceneLayer;
+  layer: SceneImageLayer;
   image: string | undefined;
   index: number;
   count: number;
-  onPatch: (patch: Partial<Omit<SceneLayer, "id">>) => void;
+  onPatch: (patch: SceneLayerPatch) => void;
   onCommitOpacity: () => void;
   onMove: (delta: number) => void;
   onRemove: () => void;
@@ -168,31 +312,7 @@ function LayerCard({
         />
       </div>
       <div className="flex shrink-0 flex-col items-end gap-1">
-        <div className="flex items-center gap-0.5">
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            disabled={index === 0}
-            title="Bring forward"
-            aria-label={`Bring layer ${index + 1} forward`}
-            onClick={() => onMove(-1)}
-          >
-            <ChevronUpIcon />
-          </Button>
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            disabled={index === count - 1}
-            title="Send back"
-            aria-label={`Send layer ${index + 1} back`}
-            onClick={() => onMove(1)}
-          >
-            <ChevronDownIcon />
-          </Button>
-          <Button size="icon-sm" variant="ghost" className="text-muted-foreground" title="Remove layer" aria-label={`Remove layer ${index + 1}`} onClick={onRemove}>
-            <Trash2Icon />
-          </Button>
-        </div>
+        <StackControls index={index} count={count} onMove={onMove} onRemove={onRemove} />
         <Button
           size="sm"
           variant={layer.tiled ? "secondary" : "ghost"}
@@ -220,18 +340,16 @@ export function SceneComposer() {
   const [error, setError] = useState<string | false>(false);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   const live = backdrop.kind === "scene";
 
   /** The one write path: compose, store (images only when they changed), then
-   *  make it the backdrop. Returns false when nothing was committed. */
+   *  make it the backdrop. Returns false when nothing was PAINTED — which an
+   *  empty stack does not, though the arrangement is still saved. */
   const apply = useCallback(
     (nextScene: Scene, nextImages: Record<string, string>): boolean => {
       const composed = composeScene(nextScene, nextImages);
-      if (!composed) {
-        setError("That scene could not be composed — its base gradient is unknown.");
-        return false;
-      }
       if (nextImages !== images && !writeSceneImages(nextImages)) {
         setError(QUOTA_MESSAGE);
         return false;
@@ -239,6 +357,17 @@ export function SceneComposer() {
       writeScene(nextScene);
       setScene(nextScene);
       setImages(nextImages);
+      if (!composed) {
+        // Emptying the stack is how you start over, not a failure: the edit is
+        // kept and whatever backdrop is up stays up until there is something
+        // to replace it with.
+        setError(
+          nextScene.layers.length === 0
+            ? "This scene is empty — add a gradient or an image, or choose something under the stack."
+            : "That scene could not be composed — one of its gradients is unknown.",
+        );
+        return false;
+      }
       setError(false);
       // `stamp` is what tells the store this is a NEW composition even though
       // the choice ("a scene is on") did not change.
@@ -252,9 +381,9 @@ export function SceneComposer() {
     async (files: FileList | File[] | undefined) => {
       const picked = files ? Array.from(files) : [];
       if (picked.length === 0) return;
-      const room = MAX_SCENE_LAYERS - scene.layers.length;
+      const room = MAX_SCENE_LAYERS - countSceneImages(scene);
       if (room <= 0) {
-        setError(`A scene holds ${MAX_SCENE_LAYERS} layers — remove one to add another.`);
+        setError(`A scene holds ${MAX_SCENE_LAYERS} images — remove one to add another.`);
         return;
       }
       setBusy(true);
@@ -282,13 +411,13 @@ export function SceneComposer() {
     [apply, images, scene],
   );
 
-  /** Position, size and tiling are pure CSS: write them straight through. */
-  const patch = useCallback(
-    (id: string, changes: Partial<Omit<SceneLayer, "id">>) => {
-      const next = updateSceneLayer(scene, id, changes);
-      // Opacity alone changes no CSS — it needs the re-encode below — so the
-      // slider only moves the model until the pointer is released.
-      if (changes.opacity !== undefined && Object.keys(changes).length === 1) setScene(next);
+  /** Position, size and tiling are pure CSS: write them straight through. So
+   *  is a GRADIENT's opacity — only an image's needs the re-encode below. */
+  const patchAt = useCallback(
+    (index: number, changes: SceneLayerPatch) => {
+      const next = updateSceneLayerAt(scene, index, changes);
+      const image = scene.layers[index]?.type === "image";
+      if (image && changes.opacity !== undefined && Object.keys(changes).length === 1) setScene(next);
       else apply(next, images);
     },
     [apply, images, scene],
@@ -296,7 +425,7 @@ export function SceneComposer() {
 
   const commitOpacity = useCallback(
     async (id: string) => {
-      const layer = scene.layers.find((entry) => entry.id === id);
+      const layer = scene.layers.find((entry) => entry.type === "image" && entry.id === id);
       if (!layer) return;
       setBusy(true);
       const baked = await bakeLayerOpacity(images, id, layer.opacity);
@@ -306,7 +435,21 @@ export function SceneComposer() {
     [apply, images, scene],
   );
 
+  const addGradient = useCallback(
+    (presetId: string | null) => {
+      setPicking(false);
+      if (presetId === null) return;
+      const next = addSceneGradientLayer(scene, presetId);
+      if (next === scene) setError(`A scene holds ${MAX_SCENE_GRADIENT_LAYERS} gradients — remove one to add another.`);
+      else apply(next, images);
+    },
+    [apply, images, scene],
+  );
+
   const layerCount = scene.layers.length;
+  const imageCount = countSceneImages(scene);
+  const gradientCount = countSceneGradients(scene);
+  const baseId = sceneBasePresetId(scene);
 
   return (
     <>
@@ -318,7 +461,7 @@ export function SceneComposer() {
             ? error
             : busy
               ? "Working…"
-              : `Images stacked over the gradient below — up to ${MAX_SCENE_LAYERS}, the top one first. ${layerCount} in this scene. Nothing is uploaded.`
+              : `Gradients and images stack together, the top one first — up to ${MAX_SCENE_LAYERS} images and ${MAX_SCENE_GRADIENT_LAYERS} gradients. ${layerCount} ${layerCount === 1 ? "layer" : "layers"} here. With window translucency on, the desktop shows through wherever the stack is transparent. Nothing is uploaded.`
         }
         control={
           <div className="flex items-center gap-2">
@@ -327,12 +470,28 @@ export function SceneComposer() {
                 Use this scene
               </Button>
             )}
-            <Button size="sm" variant="outline" disabled={busy || layerCount >= MAX_SCENE_LAYERS} onClick={() => fileInput.current?.click()}>
+            <Button
+              size="sm"
+              variant={picking ? "secondary" : "outline"}
+              aria-expanded={picking}
+              disabled={busy || gradientCount >= MAX_SCENE_GRADIENT_LAYERS}
+              onClick={() => setPicking((open) => !open)}
+            >
+              <PaintbrushIcon /> Add gradient
+            </Button>
+            <Button size="sm" variant="outline" disabled={busy || imageCount >= MAX_SCENE_LAYERS} onClick={() => fileInput.current?.click()}>
               <UploadIcon /> Add image…
             </Button>
           </div>
         }
       />
+      {picking && (
+        <div className="px-4 pb-1">
+          {/* The same grid the base uses, minus None: adding a layer of
+              nothing is what NOT adding a layer already is. */}
+          <PresetGrid value={null} onPick={addGradient} />
+        </div>
+      )}
       <div className="flex flex-col gap-2 px-4 py-3">
         <input
           ref={fileInput}
@@ -348,19 +507,34 @@ export function SceneComposer() {
             void accept(picked);
           }}
         />
-        {scene.layers.map((layer, index) => (
-          <LayerCard
-            key={layer.id}
-            layer={layer}
-            image={images[`orig:${layer.id}`] ?? images[layer.id]}
-            index={index}
-            count={layerCount}
-            onPatch={(changes) => patch(layer.id, changes)}
-            onCommitOpacity={() => void commitOpacity(layer.id)}
-            onMove={(delta) => apply(moveSceneLayer(scene, layer.id, delta), images)}
-            onRemove={() => apply(removeSceneLayer(scene, layer.id), forgetLayerImages(images, layer.id))}
-          />
-        ))}
+        {scene.layers.map((layer, index) =>
+          layer.type === "gradient" ? (
+            <GradientCard
+              // Gradient layers have no id, so position is the key — and the
+              // preset is in it so swapping one re-mounts rather than animating
+              // a slider from someone else's value.
+              key={`gradient-${index}-${layer.presetId}`}
+              layer={layer}
+              index={index}
+              count={layerCount}
+              onPatch={(changes) => patchAt(index, changes)}
+              onMove={(delta) => apply(moveSceneLayerAt(scene, index, delta), images)}
+              onRemove={() => apply(removeSceneLayerAt(scene, index), images)}
+            />
+          ) : (
+            <LayerCard
+              key={layer.id}
+              layer={layer}
+              image={images[`orig:${layer.id}`] ?? images[layer.id]}
+              index={index}
+              count={layerCount}
+              onPatch={(changes) => patchAt(index, changes)}
+              onCommitOpacity={() => void commitOpacity(layer.id)}
+              onMove={(delta) => apply(moveSceneLayerAt(scene, index, delta), images)}
+              onRemove={() => apply(removeSceneLayerAt(scene, index), forgetLayerImages(images, layer.id))}
+            />
+          ),
+        )}
         <div
           onDragOver={(event) => {
             event.preventDefault();
@@ -378,35 +552,15 @@ export function SceneComposer() {
           )}
         >
           <ImagePlusIcon className="size-4 shrink-0" />
-          {busy ? "Working…" : layerCount >= MAX_SCENE_LAYERS ? "The stack is full — remove a layer to add another." : "Drop images here to add layers."}
+          {busy ? "Working…" : imageCount >= MAX_SCENE_LAYERS ? "The stack is full — remove an image to add another." : "Drop images here to add layers."}
         </div>
       </div>
-      <Row label="Base" hint="The gradient underneath the whole stack. Both halves of the pair come with it, light and dark." />
+      <Row
+        label="Under everything"
+        hint="The gradient at the bottom of the stack — both halves of the pair come with it, light and dark. Choose None to leave the bottom transparent: in a translucent window that is the desktop, and in a browser tab the theme's own canvas."
+      />
       <div className="px-4 pb-3">
-        <div className="grid grid-cols-4 gap-1.5 sm:grid-cols-6">
-          {BACKDROP_PRESETS.map((preset) => {
-            const on = scene.baseId === preset.id;
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                title={preset.label}
-                aria-pressed={on}
-                onClick={() => apply({ ...scene, baseId: preset.id }, images)}
-                className={cn(
-                  "flex flex-col gap-1 rounded-lg p-1 text-left ring-1 ring-foreground/10 transition-colors hover:bg-accent/50",
-                  on && "ring-2 ring-primary",
-                )}
-              >
-                <span className="relative block aspect-video w-full overflow-hidden rounded-md ring-1 ring-inset ring-foreground/10">
-                  <span className="absolute inset-0" style={{ backgroundImage: preset.light, backgroundSize: "cover" }} />
-                  <span className="absolute inset-y-0 right-0 w-1/2" style={{ backgroundImage: preset.dark, backgroundSize: "cover" }} />
-                </span>
-                <span className="truncate px-0.5 text-[10px] font-medium">{preset.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        <PresetGrid value={baseId} withNone onPick={(presetId) => apply(setSceneBase(scene, presetId), images)} />
       </div>
     </>
   );

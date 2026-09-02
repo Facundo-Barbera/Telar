@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * THE SCENE COMPOSER — several images arranged over a gradient, as one CSS value.
+ * THE SCENE COMPOSER — gradients and images stacked, as one CSS value.
  *
  * lib/backdrop.ts can already PAINT a composition: a `scene` choice carries
  * resolved `{light, dark, size, position, repeat}` comma lists straight to
@@ -13,19 +13,27 @@
  * reader, because that is the order CSS itself uses: the first entry in a
  * `background-image` list paints ON TOP of the ones after it. Keeping our
  * array in paint order means composing is a map, not a reverse-and-map, and
- * "move up" in the UI is `index - 1` in both worlds. The base gradient is not
- * a layer — it is a preset id, and it is appended LAST (i.e. underneath
- * everything) at compose time.
+ * "move up" in the UI is `index - 1` in both worlds.
+ *
+ * EVERYTHING IS A LAYER — GRADIENTS INCLUDED. A stack entry is either an
+ * IMAGE (positioned, scaled, tiled) or a GRADIENT (a preset id, painted
+ * full-bleed). There is no separate mandatory base any more: what used to be
+ * `baseId` is just the bottom-most gradient layer, and a stack with no
+ * gradient at the bottom ends in TRANSPARENT — which, inside a translucent
+ * desktop window, means the desktop itself is the bottom layer. Scenes
+ * written by older builds still carry `baseId`; parseScene migrates it to
+ * exactly that bottom gradient layer at 100%.
  *
  * WHY THE LISTS ARE BUILT PER-PROPERTY. `background-size/position/repeat`
  * accept one comma entry per image, and CSS CYCLES a short list against a
  * longer image list. That cycling is a trap here: a preset's `light` is
- * itself four comma-separated gradients, so emitting ONE base entry for it
- * would let a layer's `60% auto` wrap around onto a gradient and paint it in
- * a corner. So the base contributes as many `cover`/`center`/`no-repeat`
- * entries as it has top-level gradients, and — because the two halves share
- * one set of lists — the shorter half is padded with transparent gradients so
- * both halves have the SAME entry count. splitTopLevel does the counting.
+ * itself four comma-separated gradients, so emitting ONE entry for a gradient
+ * layer would let an image layer's `60% auto` wrap around onto a gradient and
+ * paint it in a corner. So a gradient layer contributes as many
+ * `cover`/`center`/`no-repeat` entries as it has top-level gradients, and —
+ * because the two halves share one set of lists — the shorter half is padded
+ * with transparent gradients so both halves have the SAME entry count.
+ * splitTopLevel does the counting.
  *
  * WHY DATA URLs ARE ESCAPED. isSceneValue (the store's gate) refuses any `;`,
  * and every base64 data URL has one in `image/webp;base64`. Rather than store
@@ -37,13 +45,18 @@
  * unescaped form), and the SIX-digit form is used because `\3B` followed by
  * `base64` would swallow `ba` as more hex digits.
  *
- * WHY OPACITY IS BAKED INTO THE PIXELS. CSS has no per-background-layer
- * opacity — `opacity` applies to the whole element and would fade the base
- * with it. So a layer at 60% is a re-encode of its image at globalAlpha 0.6,
- * which is also why layer images are WebP and not the image picker's JPEG:
- * baked opacity is an alpha channel, and JPEG has none. The ORIGINAL is kept
- * beside it under `orig:${id}` so the slider stays lossless — every bake
+ * WHY IMAGE OPACITY IS BAKED INTO THE PIXELS. CSS has no per-background-layer
+ * opacity — `opacity` applies to the whole element and would fade the rest of
+ * the stack with it. So an image layer at 60% is a re-encode at globalAlpha
+ * 0.6, which is also why layer images are WebP and not the image picker's
+ * JPEG: baked opacity is an alpha channel, and JPEG has none. The ORIGINAL is
+ * kept beside it under `orig:${id}` so the slider stays lossless — every bake
  * starts from the original, never from a previously faded copy.
+ *
+ * A GRADIENT LAYER'S OPACITY IS FREE, and so it is not baked: a gradient is
+ * already a string of colours, so fading one is rewriting those colours'
+ * alpha (withGradientAlpha below). Same reason, opposite mechanism — and it
+ * means the gradient slider is live rather than landing on release.
  *
  * DOM AND PURE ARE SPLIT the way image-backdrop.ts splits them: everything
  * that decides anything (parsing, clamping, list building) is pure and
@@ -59,7 +72,8 @@ import { compressImageFile, dataUrlBytes, fitWithin, ImageBackdropError, stepDow
 /** One image in the stack. Positions are `background-position` percentages,
  *  `scale` is the `background-size` WIDTH percentage (height stays `auto`, so
  *  the picture never distorts), and `opacity` is baked into the pixels. */
-export type SceneLayer = {
+export type SceneImageLayer = {
+  type: "image";
   id: string;
   /** 0-100, `background-position` X. */
   x: number;
@@ -72,8 +86,22 @@ export type SceneLayer = {
   tiled: boolean;
 };
 
-/** The composition: a base preset id plus the stack over it, top layer first. */
-export type Scene = { baseId: string; layers: SceneLayer[] };
+/** One preset gradient in the stack, painted full-bleed (cover/center/no-
+ *  repeat). `opacity` is applied in CSS by rewriting the gradient's own colour
+ *  alphas — see withGradientAlpha — so it costs nothing to drag. */
+export type SceneGradientLayer = {
+  type: "gradient";
+  /** A BACKDROP_PRESETS id. */
+  presetId: string;
+  /** 10-100, written into the gradient's colours. */
+  opacity: number;
+};
+
+export type SceneLayer = SceneImageLayer | SceneGradientLayer;
+
+/** The composition: the stack, top layer first. Nothing is implied under it —
+ *  a stack that does not end in a full-bleed gradient ends in transparency. */
+export type Scene = { layers: SceneLayer[] };
 
 /** The Scene JSON. */
 export const SCENE_KEY = "telar-backdrop-scene";
@@ -82,8 +110,13 @@ export const SCENE_IMAGES_KEY = "telar-backdrop-scene-images";
 
 /** Six is where a scene stops being a composition and starts being a collage
  *  nobody can see through — and six 1024px WebPs is already most of what a
- *  localStorage origin will hold. */
+ *  localStorage origin will hold. Images only: this cap is about the quota. */
 export const MAX_SCENE_LAYERS = 6;
+
+/** Gradient layers cost a few hundred bytes each, so their cap is about
+ *  legibility rather than storage — past four full-bleed washes the stack is
+ *  mud whatever the opacities say. */
+export const MAX_SCENE_GRADIENT_LAYERS = 4;
 
 /** Layer images are compressed HARDER than the single-image backdrop: several
  *  of them share one quota, and each is drawn at a fraction of the window. */
@@ -99,11 +132,13 @@ export const SCENE_LIMITS = {
 
 export const DEFAULT_SCENE_BASE: string = BACKDROP_PRESETS[0]?.id ?? "aurora";
 
-/** A fresh layer sits centred at a size that reads as "an object on the
+/** A fresh image layer sits centred at a size that reads as "an object on the
  *  backdrop" rather than as a replacement for it. */
-export const DEFAULT_LAYER: Omit<SceneLayer, "id"> = { x: 50, y: 50, scale: 60, opacity: 100, tiled: false };
+export const DEFAULT_LAYER: Omit<SceneImageLayer, "id"> = { type: "image", x: 50, y: 50, scale: 60, opacity: 100, tiled: false };
 
-export const DEFAULT_SCENE: Scene = { baseId: DEFAULT_SCENE_BASE, layers: [] };
+/** A fresh scene is one gradient and nothing over it — the picture the old
+ *  `baseId`-only model started from. */
+export const DEFAULT_SCENE: Scene = { layers: [{ type: "gradient", presetId: DEFAULT_SCENE_BASE, opacity: 100 }] };
 
 /** Ids are generated, never typed — but they are also JSON keys sharing a map
  *  with the `orig:` prefix, so the parser holds them to this shape and drops
@@ -125,14 +160,27 @@ function clampTo(value: unknown, range: { min: number; max: number }, fallback: 
 
 /* ------------------------------------------------------------ total parsing */
 
+/** A known preset id, or the default — the same forgiveness the old `baseId`
+ *  had: a scene naming a preset this build dropped should change colour, not
+ *  stop composing. */
+function presetIdOr(value: unknown): string {
+  return typeof value === "string" && backdropPresetById(value) ? value : DEFAULT_SCENE_BASE;
+}
+
 /** One layer, or undefined. Every field is clamped into range rather than
  *  refused: a stale scale from an older build should move the slider, not
- *  delete someone's arrangement. Only a missing/malformed id is fatal. */
+ *  delete someone's arrangement. Only a missing/malformed id is fatal — and
+ *  only for image layers, which is also the DEFAULT reading: scenes written
+ *  before gradient layers existed have no `type` member at all. */
 export function parseSceneLayer(value: unknown): SceneLayer | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
+  if (record.type === "gradient") {
+    return { type: "gradient", presetId: presetIdOr(record.presetId), opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
+  }
   if (typeof record.id !== "string" || !ID_SHAPE.test(record.id)) return undefined;
   return {
+    type: "image",
     id: record.id,
     x: clampTo(record.x, SCENE_LIMITS.x, DEFAULT_LAYER.x),
     y: clampTo(record.y, SCENE_LIMITS.y, DEFAULT_LAYER.y),
@@ -142,26 +190,47 @@ export function parseSceneLayer(value: unknown): SceneLayer | undefined {
   };
 }
 
-/** Total, like parseBackdrop: anything unrecognised is the empty default, so
- *  a truncated or hand-edited value can never wedge the composer. */
+/**
+ * Total, like parseBackdrop: anything unrecognised is the default, so a
+ * truncated or hand-edited value can never wedge the composer.
+ *
+ * MIGRATION. A stored `baseId` is the old mandatory base; it becomes the
+ * BOTTOM gradient layer at full opacity, which is the same picture. Its
+ * absence is meaningful in the new model — an explicit "nothing underneath" —
+ * so it is only supplied when the value has neither a `layers` array nor a
+ * `baseId` at all, i.e. when there is no scene here to read.
+ */
 export function parseScene(raw: string | null): Scene {
   try {
     const parsed: unknown = JSON.parse(raw ?? "null");
-    if (typeof parsed !== "object" || parsed === null) return DEFAULT_SCENE;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return DEFAULT_SCENE;
     const record = parsed as Record<string, unknown>;
-    const baseId = typeof record.baseId === "string" && backdropPresetById(record.baseId) ? record.baseId : DEFAULT_SCENE_BASE;
+    const stored = record.layers;
+    const hasBase = typeof record.baseId === "string";
+    if (!Array.isArray(stored) && !hasBase) return DEFAULT_SCENE;
     const layers: SceneLayer[] = [];
     const seen = new Set<string>();
-    if (Array.isArray(record.layers)) {
-      for (const entry of record.layers) {
+    let images = 0;
+    let gradients = 0;
+    if (Array.isArray(stored)) {
+      for (const entry of stored) {
         const layer = parseSceneLayer(entry);
-        if (!layer || seen.has(layer.id)) continue;
-        seen.add(layer.id);
+        if (!layer) continue;
+        if (layer.type === "image") {
+          if (seen.has(layer.id) || images >= MAX_SCENE_LAYERS) continue;
+          seen.add(layer.id);
+          images += 1;
+        } else {
+          if (gradients >= MAX_SCENE_GRADIENT_LAYERS) continue;
+          gradients += 1;
+        }
         layers.push(layer);
-        if (layers.length === MAX_SCENE_LAYERS) break;
       }
     }
-    return { baseId, layers };
+    if (hasBase && gradients < MAX_SCENE_GRADIENT_LAYERS) {
+      layers.push({ type: "gradient", presetId: presetIdOr(record.baseId), opacity: SCENE_LIMITS.opacity.max });
+    }
+    return { layers };
   } catch {
     return DEFAULT_SCENE;
   }
@@ -184,45 +253,118 @@ export function parseSceneImages(raw: string | null): Record<string, string> {
 
 /* ----------------------------------------------------------- pure editing */
 
+/** What a slider can change about a layer. Fields the layer's kind does not
+ *  have are ignored rather than refused — a gradient row only ever sends
+ *  `opacity`, and nothing else should have to know that twice. */
+export type SceneLayerPatch = { x?: number; y?: number; scale?: number; opacity?: number; tiled?: boolean };
+
+export function countSceneImages(scene: Scene): number {
+  return scene.layers.reduce((total, layer) => total + (layer.type === "image" ? 1 : 0), 0);
+}
+
+export function countSceneGradients(scene: Scene): number {
+  return scene.layers.length - countSceneImages(scene);
+}
+
 export function addSceneLayer(scene: Scene, id: string): Scene {
-  if (scene.layers.length >= MAX_SCENE_LAYERS || scene.layers.some((layer) => layer.id === id)) return scene;
+  if (countSceneImages(scene) >= MAX_SCENE_LAYERS || scene.layers.some((layer) => layer.type === "image" && layer.id === id)) return scene;
   // New layers land on TOP — you just added it, you want to see it.
-  return { ...scene, layers: [{ id, ...DEFAULT_LAYER }, ...scene.layers] };
+  return { layers: [{ id, ...DEFAULT_LAYER }, ...scene.layers] };
 }
 
-export function removeSceneLayer(scene: Scene, id: string): Scene {
-  return { ...scene, layers: scene.layers.filter((layer) => layer.id !== id) };
+/** A gradient lands on top too, at full opacity: you can always fade it, but
+ *  a new layer you cannot see reads as a broken button. */
+export function addSceneGradientLayer(scene: Scene, presetId: string): Scene {
+  if (countSceneGradients(scene) >= MAX_SCENE_GRADIENT_LAYERS || !backdropPresetById(presetId)) return scene;
+  return { layers: [{ type: "gradient", presetId, opacity: SCENE_LIMITS.opacity.max }, ...scene.layers] };
 }
 
-export function updateSceneLayer(scene: Scene, id: string, patch: Partial<Omit<SceneLayer, "id">>): Scene {
+/* --- the bottom of the stack, which the UI still calls "the base" --------- */
+
+/** The preset painted UNDER everything, or null for "nothing — let whatever
+ *  is behind the app show through". Only the bottom-most layer counts: a
+ *  gradient with an image below it is a wash, not a base. */
+export function sceneBasePresetId(scene: Scene): string | null {
+  const bottom = scene.layers[scene.layers.length - 1];
+  return bottom !== undefined && bottom.type === "gradient" ? bottom.presetId : null;
+}
+
+/** Set (or clear) that bottom gradient. Clearing is what "None (transparent)"
+ *  writes, and it is a REMOVAL, not a transparent entry: no trailing entries
+ *  at all is what lets the desktop be the bottom layer. */
+export function setSceneBase(scene: Scene, presetId: string | null): Scene {
+  const layers = scene.layers.slice();
+  const bottom = layers[layers.length - 1];
+  const based = bottom !== undefined && bottom.type === "gradient";
+  if (presetId === null) {
+    if (!based) return scene;
+    layers.pop();
+    return { layers };
+  }
+  if (!backdropPresetById(presetId)) return scene;
+  if (based) {
+    layers[layers.length - 1] = { ...(bottom as SceneGradientLayer), presetId };
+    return { layers };
+  }
+  if (countSceneGradients(scene) >= MAX_SCENE_GRADIENT_LAYERS) return scene;
+  layers.push({ type: "gradient", presetId, opacity: SCENE_LIMITS.opacity.max });
+  return { layers };
+}
+
+/* --- editing by position, because gradient layers carry no id ------------- */
+
+export function removeSceneLayerAt(scene: Scene, index: number): Scene {
+  if (index < 0 || index >= scene.layers.length) return scene;
+  return { layers: scene.layers.filter((_, at) => at !== index) };
+}
+
+export function updateSceneLayerAt(scene: Scene, index: number, patch: SceneLayerPatch): Scene {
+  if (index < 0 || index >= scene.layers.length) return scene;
   return {
-    ...scene,
-    layers: scene.layers.map((layer) =>
-      layer.id === id
-        ? {
-            ...layer,
-            x: patch.x === undefined ? layer.x : clampTo(patch.x, SCENE_LIMITS.x, layer.x),
-            y: patch.y === undefined ? layer.y : clampTo(patch.y, SCENE_LIMITS.y, layer.y),
-            scale: patch.scale === undefined ? layer.scale : clampTo(patch.scale, SCENE_LIMITS.scale, layer.scale),
-            opacity: patch.opacity === undefined ? layer.opacity : clampTo(patch.opacity, SCENE_LIMITS.opacity, layer.opacity),
-            tiled: patch.tiled === undefined ? layer.tiled : patch.tiled === true,
-          }
-        : layer,
-    ),
+    layers: scene.layers.map((layer, at) => {
+      if (at !== index) return layer;
+      const opacity = patch.opacity === undefined ? layer.opacity : clampTo(patch.opacity, SCENE_LIMITS.opacity, layer.opacity);
+      if (layer.type === "gradient") return { ...layer, opacity };
+      return {
+        ...layer,
+        x: patch.x === undefined ? layer.x : clampTo(patch.x, SCENE_LIMITS.x, layer.x),
+        y: patch.y === undefined ? layer.y : clampTo(patch.y, SCENE_LIMITS.y, layer.y),
+        scale: patch.scale === undefined ? layer.scale : clampTo(patch.scale, SCENE_LIMITS.scale, layer.scale),
+        opacity,
+        tiled: patch.tiled === undefined ? layer.tiled : patch.tiled === true,
+      };
+    }),
   };
 }
 
 /** `delta` is a step in ARRAY order, which is paint order: -1 moves the layer
  *  towards the front. A move off either end is a no-op, not a wrap. */
-export function moveSceneLayer(scene: Scene, id: string, delta: number): Scene {
-  const from = scene.layers.findIndex((layer) => layer.id === id);
-  if (from < 0) return scene;
-  const to = from + Math.trunc(delta);
-  if (to < 0 || to >= scene.layers.length || to === from) return scene;
+export function moveSceneLayerAt(scene: Scene, index: number, delta: number): Scene {
+  if (index < 0 || index >= scene.layers.length) return scene;
+  const to = index + Math.trunc(delta);
+  if (to < 0 || to >= scene.layers.length || to === index) return scene;
   const layers = scene.layers.slice();
-  const [moved] = layers.splice(from, 1);
+  const [moved] = layers.splice(index, 1);
   layers.splice(to, 0, moved);
-  return { ...scene, layers };
+  return { layers };
+}
+
+/* --- and by id, which only image layers have ----------------------------- */
+
+function imageIndex(scene: Scene, id: string): number {
+  return scene.layers.findIndex((layer) => layer.type === "image" && layer.id === id);
+}
+
+export function removeSceneLayer(scene: Scene, id: string): Scene {
+  return removeSceneLayerAt(scene, imageIndex(scene, id));
+}
+
+export function updateSceneLayer(scene: Scene, id: string, patch: SceneLayerPatch): Scene {
+  return updateSceneLayerAt(scene, imageIndex(scene, id), patch);
+}
+
+export function moveSceneLayer(scene: Scene, id: string, delta: number): Scene {
+  return moveSceneLayerAt(scene, imageIndex(scene, id), delta);
 }
 
 /** Drop a layer's images — both the baked one and its original. */
@@ -237,7 +379,7 @@ export function forgetLayerImages(images: Record<string, string>, id: string): R
 /** Images no layer refers to any more — what a removal leaves behind, and
  *  what a scene restored from a half-written storage write can accumulate. */
 export function pruneSceneImages(scene: Scene, images: Record<string, string>): Record<string, string> {
-  const live = new Set(scene.layers.map((layer) => layer.id));
+  const live = new Set(scene.layers.flatMap((layer) => (layer.type === "image" ? [layer.id] : [])));
   const next: Record<string, string> = {};
   for (const [key, value] of Object.entries(images)) {
     const id = key.startsWith("orig:") ? key.slice(5) : key;
@@ -288,56 +430,131 @@ export function sceneImageUrl(dataUrl: string): string | null {
   return `url("${dataUrl.replace(/;/g, "\\00003B")}")`;
 }
 
+/* ------------------------------------------------------- gradient opacity */
+
+/** `0.5` → `50%`, at two decimals and with no trailing zeros, because these
+ *  strings are stored six times over and `50%` reads better than `50.00%`. */
+function alphaText(alpha: number): string {
+  return `${Number((Math.min(1, Math.max(0, alpha)) * 100).toFixed(2))}%`;
+}
+
+/** An existing alpha, from either notation CSS allows (`/ 60%` or `/ 0.6`). */
+function alphaValue(text: string): number {
+  const trimmed = text.trim();
+  const number = trimmed.endsWith("%") ? Number(trimmed.slice(0, -1)) / 100 : Number(trimmed);
+  return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
+}
+
+function hexPair(alpha: number): string {
+  return Math.round(Math.min(1, Math.max(0, alpha)) * 255)
+    .toString(16)
+    .padStart(2, "0");
+}
+
+/**
+ * FADE A GRADIENT WITHOUT AN `opacity` PROPERTY — by rewriting the alpha of
+ * every colour in it. CSS gives a background layer no opacity of its own
+ * (`opacity` would fade the whole element, the layers under it included), and
+ * these values are just strings, so the honest move is to edit the colours.
+ *
+ * The two forms that actually appear here are handled, and nothing else is
+ * invented: `oklch(…)` (every preset stop) gains or MULTIPLIES a `/ N%`
+ * alpha, and `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa` (what the custom-gradient
+ * editor's colour inputs produce) becomes an 8-digit hex. `transparent` is
+ * left alone — it is already invisible, and fading it is a no-op that would
+ * only make the string longer.
+ *
+ * Multiplying rather than overwriting is what makes this composable: a
+ * half-transparent stop inside a layer at 50% ends up at 25%, which is what
+ * stacking two translucent things means everywhere else.
+ *
+ * The output is still gradient syntax with no `;`, `}` or `url(` in it, so it
+ * passes isGradientValue and isSceneValue exactly as the input did.
+ */
+export function withGradientAlpha(css: string, opacity: number): string {
+  const factor = Math.min(1, Math.max(0, (Number.isFinite(opacity) ? opacity : 100) / 100));
+  if (factor >= 1) return css;
+  return css
+    .replace(/oklch\(([^()]*)\)/gi, (_match, body: string) => {
+      const slash = body.lastIndexOf("/");
+      const head = (slash < 0 ? body : body.slice(0, slash)).trim();
+      const existing = slash < 0 ? 1 : alphaValue(body.slice(slash + 1));
+      return `oklch(${head} / ${alphaText(existing * factor)})`;
+    })
+    .replace(/#([0-9a-fA-F]+)\b/g, (match, hex: string) => {
+      const short = hex.length === 3 || hex.length === 4;
+      const long = hex.length === 6 || hex.length === 8;
+      if (!short && !long) return match;
+      const rgb = short ? hex.slice(0, 3).replace(/./g, (char) => char + char) : hex.slice(0, 6);
+      const tail = short ? hex.slice(3) : hex.slice(6);
+      const existing = tail.length === 0 ? 1 : parseInt(short ? tail + tail : tail, 16) / 255;
+      return `#${rgb}${hexPair(existing * factor)}`;
+    });
+}
+
 /**
  * THE COMPILER — a Scene plus its images becomes the resolved lists the store
- * paints. Pure, and the only place the layer order and the base's cycling
+ * paints. Pure, and the only place layer order and the gradient cycling
  * problem are reasoned about.
  *
- * Layers come first (topmost first, matching the array), then the base's own
- * gradients. A layer whose image is missing — cleared storage, a failed write
- * — is SKIPPED rather than left as a gap: the lists are positional, and a gap
+ * Entries come out in array order, topmost first, mixing images and gradients
+ * freely; NOTHING is appended underneath, so a stack that does not end in a
+ * full-bleed gradient ends in transparency and the desktop (or the theme's
+ * own canvas) is what shows there.
+ *
+ * An image layer whose image is missing — cleared storage, a failed write —
+ * is SKIPPED rather than left as a gap: the lists are positional, and a gap
  * would shift every entry after it onto the wrong picture. Returns null when
- * the base preset is unknown, or when the result somehow fails the store's
- * gate, so a caller never writes something that silently paints nothing.
+ * a gradient layer names a preset this build does not have, when the stack
+ * composes to nothing at all, or when the result somehow fails the store's
+ * gate — so a caller never writes something that silently paints nothing.
  */
 export function composeScene(
   scene: Scene,
   images: Record<string, string>,
   presetLookup: (id: string) => BackdropPreset | undefined = backdropPresetById,
 ): BackdropLayers | null {
-  const base = presetLookup(scene.baseId);
-  if (!base) return null;
-
-  const imageEntries: string[] = [];
+  const lightEntries: string[] = [];
+  const darkEntries: string[] = [];
   const size: string[] = [];
   const position: string[] = [];
   const repeat: string[] = [];
 
   for (const layer of scene.layers) {
-    const data = images[layer.id];
-    if (typeof data !== "string") continue;
-    const url = sceneImageUrl(data);
-    if (!url) continue;
-    imageEntries.push(url);
-    size.push(`${layer.scale}% auto`);
-    position.push(`${layer.x}% ${layer.y}%`);
-    repeat.push(layer.tiled ? "repeat" : "no-repeat");
+    if (layer.type === "image") {
+      const data = images[layer.id];
+      if (typeof data !== "string") continue;
+      const url = sceneImageUrl(data);
+      if (!url) continue;
+      lightEntries.push(url);
+      darkEntries.push(url);
+      size.push(`${layer.scale}% auto`);
+      position.push(`${layer.x}% ${layer.y}%`);
+      repeat.push(layer.tiled ? "repeat" : "no-repeat");
+      continue;
+    }
+    const preset = presetLookup(layer.presetId);
+    if (!preset) return null;
+    const fade = (value: string) => (layer.opacity >= SCENE_LIMITS.opacity.max ? value : withGradientAlpha(value, layer.opacity));
+    // A gradient layer contributes one entry per gradient it holds, and both
+    // halves are padded to a common count so the shared lists stay aligned.
+    const lightParts = splitTopLevel(fade(preset.light));
+    const darkParts = splitTopLevel(fade(preset.dark));
+    const count = Math.max(lightParts.length, darkParts.length, 1);
+    const pad = (parts: string[]) => parts.concat(Array.from({ length: count - parts.length }, () => TRANSPARENT_ENTRY));
+    lightEntries.push(...pad(lightParts));
+    darkEntries.push(...pad(darkParts));
+    for (let index = 0; index < count; index += 1) {
+      size.push("cover");
+      position.push("center");
+      repeat.push("no-repeat");
+    }
   }
 
-  // The base contributes one entry per gradient it holds, and both halves are
-  // padded to a common count so the shared lists stay aligned.
-  const lightParts = splitTopLevel(base.light);
-  const darkParts = splitTopLevel(base.dark);
-  const baseCount = Math.max(lightParts.length, darkParts.length, 1);
-  const pad = (parts: string[]) => parts.concat(Array.from({ length: baseCount - parts.length }, () => TRANSPARENT_ENTRY));
-  for (let index = 0; index < baseCount; index += 1) {
-    size.push("cover");
-    position.push("center");
-    repeat.push("no-repeat");
-  }
-
-  const light = imageEntries.concat(pad(lightParts)).join(", ");
-  const dark = imageEntries.concat(pad(darkParts)).join(", ");
+  const light = lightEntries.join(", ");
+  const dark = darkEntries.join(", ");
+  // An empty stack is a real state of the editor, but not a paintable value —
+  // the composer says so in its hint rather than writing an empty declaration.
   if (!isSceneValue(light) || !isSceneValue(dark)) return null;
   return { light, dark, size: size.join(", "), position: position.join(", "), repeat: repeat.join(", ") };
 }
