@@ -94,7 +94,7 @@ const subscribeToNothing = () => () => {};
 const bridgeIsPresent = () => desktopAppearance() !== undefined;
 const noBridgeOnTheServer = () => false;
 
-type Tab = "colour" | "backdrop" | "type" | "designer";
+type Tab = "colour" | "backdrop" | "type" | "window" | "designer";
 
 /** How long a gap between edits starts a NEW undo step. Inside it, edits
  *  coalesce — a colour-picker drag is one step, not ninety. */
@@ -365,6 +365,7 @@ export function AppearanceSection() {
             { value: "colour", label: <><PaletteIcon className="size-3.5" /> Colour</> },
             { value: "backdrop", label: <><ImageIcon className="size-3.5" /> Backdrop</> },
             { value: "type", label: <><TypeIcon className="size-3.5" /> Type</> },
+            { value: "window", label: <><MonitorIcon className="size-3.5" /> Window</> },
             { value: "designer", label: <><SparklesIcon className="size-3.5" /> Designer</> },
           ]}
         />
@@ -399,69 +400,75 @@ export function AppearanceSection() {
         )}
 
         {tab === "type" && current && (
-          <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
-            <Panel>
-              <PanelHeader icon={<TypeIcon />} label="Type" />
-              <PanelBody>
-                <TypeTool draft={current} onDraft={edit} />
-              </PanelBody>
-            </Panel>
+          <Panel>
+            <PanelHeader icon={<TypeIcon />} label="Type" />
+            <PanelBody>
+              <TypeTool draft={current} onDraft={edit} />
+            </PanelBody>
+          </Panel>
+        )}
 
-            {/* THE WINDOW, not the look: which half this window wears, and — in
-                the desktop shell — how much desktop shows through it. None of
-                it travels in a Look. */}
-            <Panel>
-              <PanelHeader icon={<MonitorIcon />} label="Window" />
-              <PanelBody>
-                <Row label="Colour scheme" control={<ThemeControl />} />
-                {hasBridge && windowSupported && (
-                  <>
-                    <ToggleRow
-                      label="Translucency"
-                      hint="Rebuilds the window."
-                      checked={appearance.translucent}
-                      onCheckedChange={setTranslucent}
+        {/* THE WINDOW IS NOT A LOOK, so it is not a look tool. It lived under
+            "Type" for no reason anyone could reconstruct, which is the kind of
+            filing that teaches a reader the grouping is arbitrary. None of it
+            travels in a Look: the scheme is which half THIS window wears, and
+            translucency is a property of the machine — macOS only, stored by
+            the shell, and turning it on rebuilds the window. */}
+        {tab === "window" && (
+          <Panel>
+            <PanelHeader icon={<MonitorIcon />} label="Window" />
+            <PanelBody>
+              <Row label="Colour scheme" control={<ThemeControl />} />
+              {hasBridge && windowSupported ? (
+                <>
+                  <ToggleRow
+                    label="Translucency"
+                    hint="Rebuilds the window."
+                    checked={appearance.translucent}
+                    onCheckedChange={setTranslucent}
+                  />
+                  {appearance.translucent && (
+                    <Row
+                      label="Glass"
+                      control={
+                        <Segmented<Frost>
+                          value={appearance.frost}
+                          onChange={setFrost}
+                          options={[
+                            { value: "blur", label: "Blur" },
+                            { value: "clear", label: "Clear" },
+                          ]}
+                        />
+                      }
                     />
-                    {appearance.translucent && (
-                      <>
-                        <Row
-                          label="Glass"
-                          control={
-                            <Segmented<Frost>
-                              value={appearance.frost}
-                              onChange={setFrost}
-                              options={[
-                                { value: "blur", label: "Blur" },
-                                { value: "clear", label: "Clear" },
-                              ]}
-                            />
-                          }
-                        />
-                        <Row
-                          label="Desktop show-through"
-                          control={
-                            <div className="flex items-center gap-2.5">
-                              <input
-                                type="range"
-                                min={MIN_TRANSLUCENCY}
-                                max={MAX_TRANSLUCENCY}
-                                step={5}
-                                value={appearance.translucencyLevel}
-                                onChange={(event) => setAppearance({ translucencyLevel: Number(event.target.value) })}
-                                className="w-36 accent-primary"
-                                aria-label="Translucency strength"
-                              />
-                              <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{appearance.translucencyLevel}%</span>
-                            </div>
-                          }
-                        />
-                      </>
-                    )}
-                  </>
-                )}
-              </PanelBody>
-            </Panel>
-          </div>
+                  )}
+                  {appearance.translucent && (
+                    <Row
+                      label="Desktop show-through"
+                      hint="Also thins a backdrop, so the desktop reaches you through it."
+                      control={
+                        <div className="flex items-center gap-2.5">
+                          <input
+                            type="range"
+                            min={MIN_TRANSLUCENCY}
+                            max={MAX_TRANSLUCENCY}
+                            step={5}
+                            value={appearance.translucencyLevel}
+                            onChange={(event) => setAppearance({ translucencyLevel: Number(event.target.value) })}
+                            className="w-36 accent-primary"
+                            aria-label="Translucency strength"
+                          />
+                          <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">{appearance.translucencyLevel}%</span>
+                        </div>
+                      }
+                    />
+                  )}
+                </>
+              ) : (
+                <p className="px-3 pb-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
+              )}
+            </PanelBody>
+          </Panel>
         )}
 
         {tab === "designer" && current && <DesignerChat draft={current} onDraft={edit} mode={mode} className="h-[24rem]" />}
