@@ -1,5 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { turnActivity } from "./transcript";
 import { describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
 
@@ -24,6 +26,63 @@ describe("session workspace presentation", () => {
       state: "ambiguous",
       prompt: "Review this implementation",
     })).toEqual({ runId: "uncertain_run", state: "ambiguous", input: "Review this implementation" });
+  });
+});
+
+describe("an unsent draft belongs to the composer it was typed in", () => {
+  /**
+   * ASSERTED AS SOURCE TEXT because the claim is about ORDERING, and there is no
+   * DOM harness in this app to observe it. The bug this pins was never visible
+   * in a rendered frame: the canvas draft key was removed by a 400ms debounce
+   * that the new session's id CANCELLED on its way in, so the message you sent
+   * stayed in storage and was restored into the next conversation you started.
+   * A render test sees an empty box in both the broken and the fixed build.
+   *
+   * Same reasoning as `spool/idiom.test.ts` — a rule a future edit could break
+   * silently is worth reading off the file.
+   */
+  const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
+  const submit = source.slice(source.indexOf("const submit = async ()"), source.indexOf("const withdraw = async ("));
+  const clear = submit.indexOf('writeDraft(sessionId, projectId, "")');
+
+  test("sending clears the stored draft under the id it was typed under", () => {
+    expect(submit).toContain('setDraft("")');
+    expect(clear).toBeGreaterThan(-1);
+  });
+
+  test("and clears it BEFORE the session it is creating gets an id", () => {
+    // The whole bug is in this gap. Once `setCreatedSessionId` runs, the save
+    // effect is keyed on a different session and the pending clear is torn
+    // down unflushed — leaving `telar:draft:new:<project>` holding a sent
+    // message, which is the one slot every new conversation reads on open.
+    expect(clear).toBeLessThan(submit.indexOf("setCreatedSessionId("));
+  });
+
+  test("a session being born is a handover, not a change of composer", () => {
+    // The restore effect empties the box whenever the composer changes hands,
+    // which is how clicking a draft row loads that draft over whatever was on
+    // screen. Creating a session changes the id WITHOUT changing the box, so
+    // ownership is handed over explicitly first — otherwise a follow-up typed
+    // during the create round trip is wiped the moment the id lands.
+    const handover = submit.indexOf("owner.current = { sessionId: target, projectId }");
+    expect(handover).toBeGreaterThan(-1);
+    expect(handover).toBeLessThan(submit.indexOf("setCreatedSessionId("));
+  });
+});
+
+describe("a draft belongs to one composer and does not follow you out of it", () => {
+  const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
+
+  test("switching conversations saves the outgoing text before loading the incoming", () => {
+    // Both halves were missing, and each was its own lost paragraph: the
+    // debounced save is CANCELLED rather than flushed when the id changes, and
+    // the restore could only fill an empty box — so a half-written message
+    // stayed on screen in the next conversation while its own slot went stale.
+    const restore = source.slice(source.indexOf("const owner = useRef<"), source.indexOf("// The session record carries"));
+    const save = restore.indexOf("writeDraft(leaving.sessionId, leaving.projectId, draftText.current)");
+    const load = restore.indexOf("setDraft(readDraft(sessionId, projectId))");
+    expect(save).toBeGreaterThan(-1);
+    expect(load).toBeGreaterThan(save);
   });
 });
 
