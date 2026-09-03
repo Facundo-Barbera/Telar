@@ -122,6 +122,14 @@ import Observation
         hosts.first.flatMap { api(for: $0.id) }
     }
 
+    /// Where this phone keeps what a Mac last said (SnapshotCache). Nil in
+    /// tests and previews that build settings without a disk.
+    var snapshots: SnapshotCache? = .default
+
+    func snapshotCache(for id: HostID) -> HostSnapshotCache? {
+        snapshots.map { HostSnapshotCache(cache: $0, hostId: id) }
+    }
+
     static func normalize(host: String, port: String) -> String {
         let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }

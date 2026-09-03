@@ -9,6 +9,11 @@ protocol EngineAPI: Sendable {
     func liveSessions() async throws -> LiveSessions
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
     func events(_ id: EngineID, after: Int) async throws -> EventPage
+    /// THE SAME TWO READS, AS BYTES — what the phone keeps for when the Mac is
+    /// away (SnapshotCache). The wire types decode only, so the durable form
+    /// is the cockpit's own JSON; these hand it over unparsed.
+    func sessionData(_ id: EngineID) async throws -> Data
+    func liveSessionsData() async throws -> Data
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
     func stop(_ id: EngineID, runId: String?) async throws
     func resolveRequest(
@@ -215,6 +220,14 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/sessions/\(escape(id))/events", query: [URLQueryItem(name: "after", value: String(after))])
     }
 
+    func sessionData(_ id: EngineID) async throws -> Data {
+        try await raw(makeRequest(url("api/sessions/\(escape(id))")))
+    }
+
+    func liveSessionsData() async throws -> Data {
+        try await raw(makeRequest(url("api/sessions/live")))
+    }
+
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]? = nil) async throws -> TurnSubmissionResult {
         // 202 fresh and 200 replayed are BOTH success — the idempotent retry.
         var body: [String: AnyEncodable] = ["runId": AnyEncodable(runId), "input": AnyEncodable(input)]
@@ -398,6 +411,22 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+        let (data, status) = try await raw(request)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw EngineAPIError.incompatible(status: status)
+        }
+    }
+
+    private func raw(_ request: URLRequest) async throws -> Data {
+        try await raw(request).0
+    }
+
+    /// The transport half of `perform`: the bytes of a 2xx, or the engine's
+    /// typed error. Split out so the snapshot cache can keep what the cockpit
+    /// sent without parsing it.
+    private func raw(_ request: URLRequest) async throws -> (Data, Int) {
         let data: Data
         let response: URLResponse
         do {
@@ -412,11 +441,7 @@ struct HTTPEngineAPI: EngineAPI {
             }
             throw EngineAPIError.badResponse(status: status)
         }
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            throw EngineAPIError.incompatible(status: status)
-        }
+        return (data, status)
     }
 }
 
