@@ -23,6 +23,11 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
  * that does not parse is refused here rather than stored for somebody else to
  * choke on; a GET is re-parsed on the client (`EngineClient.appearance`).
  *
+ * WHO READS IT. A remote browser window wears it automatically until its
+ * person customises (components/host-look-follower.tsx). Every OTHER client —
+ * the iOS app, another desktop — is offered the same `GET` and decides for
+ * itself what to do with it; nothing is pushed onto a device that did not ask.
+ *
  * PAIRED-ONLY, DELIBERATELY. This is a description of somebody's machine, and
  * it is NOT in `EXEMPT_API_PATHS`: an unpaired stranger has no business
  * learning what this cockpit looks like, and a client that wants to match the

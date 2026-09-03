@@ -35,6 +35,7 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CheckIcon, DownloadIcon, LayersIcon, MonitorSmartphoneIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { createEngineApi } from "@/lib/engine/client";
+import { useFollowHost } from "@/lib/host-follow";
 import { isHostWindow } from "@/lib/host-window";
 import {
   lookFilename,
@@ -65,6 +66,7 @@ function sameScene(look: Look["backdrop"], worn: Backdrop): boolean {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelBody, PanelHeader, PanelRow } from "@/components/ui/panel";
+import { Switch } from "@/components/ui/switch";
 import { LookThumb } from "./look-thumb";
 
 /** The one word the HOST row still needs — a row has no thumbnail to say it
@@ -206,23 +208,27 @@ function LookCard({
 }
 
 /**
- * THE HOST'S LOOK — the first thing that ever READ what the cockpit publishes.
+ * THE HOST'S LOOK — what a remote window wears, and the switch that decides.
  *
  * A window reached over tailscale is the same app with its own localStorage, so
- * it starts with an empty shelf and the default palette while the machine it is
- * driving wears something deliberate. The engine has known what the host looks
- * like for a while and nothing had ever asked. This row asks.
+ * it used to start with an empty shelf and the default palette while the
+ * machine it was driving wore something deliberate. It now FOLLOWS the host
+ * (components/host-look-follower.tsx) until its person customises anything on
+ * this pane, at which point it detaches and keeps its own taste. This row is
+ * where that state is visible and reversible: the switch is the follow mode
+ * (lib/host-follow.ts), and re-enabling it wears the host's current look at
+ * once.
  *
- * IT LOADS INTO THE DRAFT, LIKE EVERY OTHER SOURCE. The published blob parses
- * into a `Look` — the same type a shelf card holds — so opening it goes through
- * the same `onOpen` an import or a card does: previewed on the real app,
- * undoable, worn only on Apply. There is deliberately no "wear it now" path;
- * somebody else's taste is a starting point, not a command.
+ * DETACHED, THE ROW IS STILL A SOURCE. The published blob parses into a `Look`
+ * — the same type a shelf card holds — so "Open" loads it into the draft like
+ * an import or a card does: previewed on the real app, undoable, worn only on
+ * Apply. Following, the look is already on; Open would preview what is worn.
  *
  * ONLY WHERE IT IS NOT A REFLECTION. The host publishes; showing the host its
- * own published look would be a card of what it is already wearing. The gate is
- * lib/host-window.ts, the same one the publisher uses, so the two can never
- * disagree about which window is which.
+ * own published look would be a card of what it is already wearing, and a
+ * host that "followed" itself would be a two-second loop. The gate is
+ * lib/host-window.ts, the same one the publisher and the follower use, so the
+ * three can never disagree about which window is which.
  *
  * EVERY OUTCOME IS A HINT LINE, this file's idiom for "three different things
  * to do about it": nothing published yet, an engine that would not answer, and
@@ -240,6 +246,8 @@ const HOST_LOOK_HINT: Record<"loading" | "empty" | "failed" | "invalid", string>
 };
 
 function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
+  const { mode, detach, follow } = useFollowHost();
+  const following = mode === "follow";
   const [state, setState] = useState<HostLookState>({ status: "loading" });
   /** Retry is a NEW ASK, not a re-render of the old one — bumping this is what
    *  re-runs the effect, so the fetch stays in the effect where its cleanup
@@ -282,20 +290,29 @@ function HostLookRow({ onOpen }: { onOpen: (look: Look) => void }) {
         </span>
       )}
       <div className="min-w-0 flex-1">
-        <div className="font-medium">Host&apos;s look</div>
+        <div className="font-medium">{following ? "Following the host's look" : "Host's look"}</div>
         <div className="truncate text-xs text-muted-foreground">
-          {state.status === "ready" ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}` : HOST_LOOK_HINT[state.status]}
+          {state.status === "ready"
+            ? `“${state.look.label}” — ${BACKDROP_LABEL[state.look.backdrop.kind]}${following ? " · changing anything here stops following" : ""}`
+            : HOST_LOOK_HINT[state.status]}
         </div>
       </div>
-      {state.status === "ready" ? (
+      {state.status === "ready" && !following && (
         <Button size="sm" variant="outline" onClick={() => onOpen(state.look)}>
           Open
         </Button>
-      ) : (
+      )}
+      {state.status !== "ready" && (
         <Button size="sm" variant="ghost" disabled={state.status === "loading"} onClick={retry}>
           {state.status === "loading" ? "Loading…" : "Retry"}
         </Button>
       )}
+      <Switch
+        checked={following}
+        onCheckedChange={(next) => (next ? follow() : detach())}
+        aria-label="Follow the host's look"
+        title={following ? "Stop following the host's look" : "Wear the host's look, and keep wearing it as it changes"}
+      />
     </PanelRow>
   );
 }
