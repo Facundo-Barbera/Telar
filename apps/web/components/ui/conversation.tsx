@@ -10,6 +10,12 @@
  * "Stick to bottom" rather than "scroll on every append": the viewport follows
  * new content only while the reader is ALREADY at the bottom. Scrolling up to
  * read something during a long turn must not be undone by the next token.
+ *
+ * The FIRST placement is instant, not animated. A session opens at its end
+ * the way a chat does — an animated scroll from the top through seventy turns
+ * was a stall waiting to happen, and on a long transcript it stalled halfway,
+ * leaving the reader to finish the trip by hand. Only growth while reading
+ * (a streaming answer) animates.
  */
 
 import type { ComponentProps } from "react";
@@ -24,7 +30,7 @@ export type ConversationViewportProps = ComponentProps<typeof StickToBottom>;
 export const ConversationViewport = ({ className, ...props }: ConversationViewportProps) => (
   <StickToBottom
     className={cn("relative flex-1 overflow-y-hidden", className)}
-    initial="smooth"
+    initial="instant"
     resize="smooth"
     role="log"
     {...props}
