@@ -48,6 +48,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { ImageIcon, MonitorIcon, PaletteIcon, TypeIcon, Undo2Icon } from "lucide-react";
 import { MAX_TRANSLUCENCY, MIN_TRANSLUCENCY, useAppearance, type Frost } from "@/lib/appearance";
 import { desktopAppearance } from "@/lib/desktop-appearance";
+import { detachFromHost } from "@/lib/host-follow";
 import {
   applyLook,
   LOOKS_FULL_MESSAGE,
@@ -352,6 +353,9 @@ export function AppearanceSection() {
    *  stores — which now hold exactly what the preview was showing. */
   const apply = () => {
     if (!draft) return;
+    // A person choosing a look is the moment a remote window stops
+    // following the host's (lib/host-follow.ts). Every wear path says so.
+    detachFromHost();
     const worn = applyLook(draft, { saveCustom, setActive, themes }, setAppearance);
     history.current = [];
     setUndoDepth(0);
@@ -393,6 +397,7 @@ export function AppearanceSection() {
       if (history.current.length > MAX_UNDO) history.current.shift();
       setUndoDepth(history.current.length);
       lastEditAt.current = 0;
+      detachFromHost();
       const worn = applyLook(look, { saveCustom, setActive, themes }, setAppearance);
       setDraft(undefined);
       writeStudioDraft(undefined);

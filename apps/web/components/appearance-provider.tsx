@@ -9,6 +9,7 @@
 
 import { useEffect } from "react";
 import { AppearancePublisher } from "@/components/appearance-publisher";
+import { HostLookFollower } from "@/components/host-look-follower";
 import { applyAppearance, applyWindowChrome, useAppearance } from "@/lib/appearance";
 import { applyBackdrop, useBackdrop } from "@/lib/backdrop";
 import { isPreviewActive } from "@/lib/studio-preview";
@@ -41,12 +42,14 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
   // Not gated on the preview: the preview element sits after this one and
   // wins ties, so a stale telar-theme is refreshed harmlessly beneath it.
   useEffect(() => applyThemeCss(), [activeId, themes]);
-  // Renders null. It watches the same three stores and tells the engine what
-  // this window resolved to, so a paired client can wear the same look — see
-  // appearance-publisher.tsx for why a BROWSER is the one that has to say it.
+  // Both render null. The publisher watches the same three stores and tells
+  // the engine what this window resolved to; the follower is its mirror, and
+  // wears what the HOST published when this is a remote window. Each is gated
+  // by lib/host-window.ts, so exactly one of them is ever live in a window.
   return (
     <>
       <AppearancePublisher />
+      <HostLookFollower />
       {children}
     </>
   );
