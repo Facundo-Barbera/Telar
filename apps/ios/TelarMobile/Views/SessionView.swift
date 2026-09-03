@@ -222,6 +222,7 @@ struct ComposerView: View {
     @FocusState private var focused: Bool
     @State private var managingQueue = false
     @State private var pickedPhotos: [PhotosPickerItem] = []
+    @State private var pickingPhotos = false
     @Environment(\.colorScheme) private var scheme
 
     private var isRunning: Bool { store.hasRunningTurn }
@@ -240,6 +241,7 @@ struct ComposerView: View {
         }
         .animation(.linear(duration: 0.22), value: focused)
         .animation(.linear(duration: 0.18), value: queued.count)
+        .photosPicker(isPresented: $pickingPhotos, selection: $pickedPhotos, maxSelectionCount: 8, matching: .images)
         .onChange(of: pickedPhotos) { _, items in
             guard !items.isEmpty else { return }
             pickedPhotos = []
@@ -347,7 +349,17 @@ struct ComposerView: View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
+                    // A BUTTON, NOT AN INLINE PhotosPicker. The picker used to
+                    // live here, inside a toolbar that only exists while the
+                    // field is focused. Presenting it dropped focus → the
+                    // toolbar (and the picker with it) unmounted → the sheet
+                    // closed and re-opened on remount, every time, so a photo
+                    // could never be sent. The sheet is now presented from the
+                    // composer's root (see `.photosPicker` on `body`), which
+                    // outlives focus.
+                    Button {
+                        pickingPhotos = true
+                    } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 16))
                             .foregroundStyle(Theme.text)
