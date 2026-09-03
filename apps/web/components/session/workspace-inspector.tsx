@@ -36,7 +36,7 @@ import {
   GlobeIcon,
   TerminalIcon,
 } from "lucide-react";
-import type { GitOverview, Session, Task } from "@telar/engine-client";
+import { isBackgroundWork, type GitOverview, type Session, type Task } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -170,8 +170,10 @@ export function WorkspaceInspector({
     };
   }, [load]);
 
-  const processes = tasks.filter((task) => task.kind === "background" && (task.state === "running" || task.state === "pending"));
-  const agents = tasks.filter((task) => task.kind !== "background" && (task.state === "running" || task.state === "pending"));
+  // Split by what outlives the turn, not by kind: a detached agent belongs
+  // with the work a human may need to stop after the turn has ended.
+  const processes = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending"));
+  const agents = tasks.filter((task) => !isBackgroundWork(task) && (task.state === "running" || task.state === "pending"));
   const browserTabs = browser?.tabs ?? [];
   const activityRunning = processes.length + agents.length > 0;
   const needsAttention = tasks.some((task) => task.state === "waiting" || task.state === "failed");

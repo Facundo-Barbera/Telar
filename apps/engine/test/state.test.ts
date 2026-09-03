@@ -1322,6 +1322,56 @@ test("a session with live background work is not idle, and says which kind", () 
   expect(store.getSession("session_one").activityAt).toBeUndefined();
 });
 
+test("a backgrounded agent outlives its turn, and a later report cannot resurrect what was closed", () => {
+  /**
+   * TWO HALVES OF ONE SCREENSHOT. Three Explore agents launched detached; the
+   * turn ended; all three rows went red with "the turn ended before this agent
+   * reported back" while they were still running. Then, worse: their progress
+   * lines kept arriving through the NEXT turn, the fold spread the closed
+   * record under a `running` seed, and each row read Failed AND spinning —
+   * `state: "running"` with `failure` and `completedAt` both set.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_detached", kind: "agent", backgrounded: true, state: "running", title: "Explore, detached" } },
+    { kind: "task.started", task: { id: "task_attached", kind: "agent", state: "running", title: "Explore, attached" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Launched them" });
+
+  const after = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  // The attached agent is swept — no process reports for it any more. The
+  // detached one is spared exactly as a background shell would be, and it
+  // keeps the session working, not merely monitoring.
+  expect(after.get("task_attached")).toMatchObject({ state: "failed" });
+  expect(after.get("task_detached")).toMatchObject({ state: "running", kind: "agent", backgrounded: true });
+  expect(after.get("task_detached")?.failure).toBeUndefined();
+  expect(store.getSession("session_one").activity).toBe("working");
+
+  // The next turn's driver has never heard of the sweep and reports the
+  // ATTACHED agent (now closed) as still running. The first ending is the
+  // ending: the record stays failed, and the event says so rather than
+  // announcing progress on a corpse.
+  store.submitTurn("session_one", { runId: "run_two", input: "Carry on" });
+  const second = store.claimNextTurn("worker_one")!;
+  const secondToken = second.turn.claim!.token;
+  store.markRunning("session_one", "run_two", secondToken);
+  store.ingestObservations("session_one", "run_two", secondToken, [
+    { kind: "task.progress", task: { id: "task_attached", kind: "agent", state: "running" }, message: "Reading a file" },
+    { kind: "task.progress", task: { id: "task_detached", kind: "agent", backgrounded: true, state: "running" }, message: "Reading a file" },
+  ]);
+  const later = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  expect(later.get("task_attached")).toMatchObject({ state: "failed", failure: "the turn ended before this agent reported back" });
+  expect(later.get("task_attached")?.completedAt).toBeDefined();
+  expect(store.readEvents("session_one").at(-2)?.type).toBe("task.completed");
+  // The live one is live, still, with no failure riding along.
+  expect(later.get("task_detached")).toMatchObject({ state: "running" });
+  expect(later.get("task_detached")?.completedAt).toBeUndefined();
+});
+
 test("the inbox policy is one document, defaulted rather than absent", () => {
   // THE POLICY HALF OF SETTLING. The per-session pin says "not this one"; this
   // says how long anything stays in the list at all — and it is on the engine

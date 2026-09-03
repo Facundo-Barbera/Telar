@@ -109,6 +109,18 @@ export const Task = z.object({
   runId: Id,
   kind: TaskKind,
   state: TaskState,
+  /**
+   * DETACHED FROM ITS TURN — it outlives the turn, whatever its kind.
+   *
+   * `kind` says what a task IS; this says how it was LAUNCHED. A sub-agent
+   * spawned in the background is still an agent (its own context, its own
+   * turns, an agent's row in the roster) — but like a background shell it
+   * keeps running after the turn that started it ends. Mirrors the SDK's
+   * `is_backgrounded`. Measured: every backgrounded Explore agent was swept
+   * to "failed" the moment its turn ended, then kept reporting from inside a
+   * red row. See `isBackgroundWork`.
+   */
+  backgrounded: z.boolean().optional(),
 
   title: z.string().optional(),
   /** The agent's role/persona when the launcher named one. */
@@ -161,6 +173,16 @@ export const TaskSeed = Task.omit({
   completedAt: true,
 });
 export type TaskSeed = z.infer<typeof TaskSeed>;
+
+/**
+ * Whether a task outlives the turn that started it — the one question every
+ * turn-end sweep asks. A background shell does by definition; a backgrounded
+ * agent does by launch. Spelled once here so the driver's sweep, the store's
+ * sweeps and the cockpit's "still working" chip cannot disagree.
+ */
+export function isBackgroundWork(task: Pick<Task, "kind" | "backgrounded">): boolean {
+  return task.kind === "background" || task.backgrounded === true;
+}
 
 /**
  * Whether a session should read as "still working" when no turn is running.

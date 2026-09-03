@@ -11,6 +11,7 @@ import {
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
+  isBackgroundWork,
   livenessOf,
   DEFAULT_INBOX_POLICY,
   DEFAULT_SESSION_DEFAULTS,
@@ -5514,8 +5515,11 @@ export class EngineStore {
     const closedTasks: Task[] = [];
     for (const [id, task] of tasks) {
       if (options.runId !== undefined && task.runId !== options.runId) continue;
-      if (!options.includeBackground && task.kind === "background") continue;
-      if (options.onlyBackground && task.kind !== "background") continue;
+      // `isBackgroundWork`, not `kind`: an agent launched detached outlives
+      // its turn exactly as a shell does, and was being swept here as failed
+      // while it was still reporting.
+      if (!options.includeBackground && isBackgroundWork(task)) continue;
+      if (options.onlyBackground && !isBackgroundWork(task)) continue;
       if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
       // `failed` RATHER THAN `stopped` by default, matching the driver's own
       // choice for the same situation: two spellings for one cause would
@@ -5650,7 +5654,19 @@ export class EngineStore {
     if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
       const seed = observation.task;
       const known = projection.tasks.get(seed.id);
-      const terminal = seed.state === "completed" || seed.state === "failed" || seed.state === "stopped";
+      /**
+       * THE FIRST ENDING IS THE ENDING — the driver's own rule (`emitTask`),
+       * restated at the store because the store outlives the driver's
+       * turn-scoped memory. A task this store already closed (a sweep, a
+       * stop) can be reported on again by a LATER turn's driver, which never
+       * heard of the closing: a backgrounded agent's progress lines arrive
+       * through the next turn's pump. Without this the fold spread the closed
+       * record under a `running` seed and produced a row that was running
+       * AND carried a failure — red, spinning, and wrong twice.
+       */
+      const settled = known !== undefined && (known.state === "completed" || known.state === "failed" || known.state === "stopped");
+      const state = settled ? known.state : seed.state;
+      const terminal = state === "completed" || state === "failed" || state === "stopped";
       /**
        * THE SEED IS FOLDED OVER WHAT IS ALREADY STORED, not swapped for it.
        * Providers report tasks incrementally — Claude's `task_updated` carries
@@ -5678,22 +5694,26 @@ export class EngineStore {
          * to a killed process reading as a clean "Done".
          */
         kind: known?.kind ?? seed.kind,
-        state: seed.state,
+        state,
         sessionId,
         // A background task belongs to the turn that STARTED it even after that
         // turn settles, which is the whole meaning of background.
         runId: known?.runId ?? turn.runId,
         startedAt: known?.startedAt ?? at,
         updatedAt: at,
-        ...(terminal ? { completedAt: at } : known?.completedAt ? { completedAt: known.completedAt } : {}),
+        ...(settled ? { completedAt: known.completedAt ?? at } : terminal ? { completedAt: at } : {}),
       };
       projection.tasks.set(task.id, task);
       projection.tasksTouched = true;
+      // The EVENT follows the state, not the message that carried it (the
+      // driver's rule again): a late progress line about a settled task is
+      // announced as its completion, not as a resumption.
+      const announced = observation.kind === "task.started" ? "task.started" : terminal ? "task.completed" : "task.progress";
       this.appendEvent(
         sessionId,
-        observation.kind === "task.progress"
-          ? { type: "task.progress", task, ...(observation.message ? { message: observation.message } : {}) }
-          : { type: observation.kind === "task.started" ? "task.started" : "task.completed", task },
+        announced === "task.progress"
+          ? { type: "task.progress", task, ...(observation.kind === "task.progress" && observation.message ? { message: observation.message } : {}) }
+          : { type: announced, task },
         turn.runId,
       );
       return;

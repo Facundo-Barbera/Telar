@@ -33,6 +33,7 @@ import type {
 // in engine-client. Every client renders these names too.
 import {
   displayToolName,
+  isBackgroundWork,
   isTelarMcpServer,
   parseToolName,
   qualifyTelarTool,
@@ -1778,6 +1779,7 @@ export function createClaudeDriver(
             description?: string;
             subagent_type?: string;
             task_type?: string;
+            is_backgrounded?: boolean;
             workflow_name?: string;
             summary?: string;
             status?: string;
@@ -1872,6 +1874,8 @@ export function createClaudeDriver(
               {
                 state: "running",
                 kind: taskKindForType(str(item.task_type)),
+                // Launched detached: it outlives this turn, whatever it is.
+                ...(item.is_backgrounded === true ? { backgrounded: true } : {}),
                 ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
                 ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
                 ...(str(item.workflow_name)
@@ -1916,6 +1920,17 @@ export function createClaudeDriver(
             const status = str(item.patch?.status);
             const state = taskStateForStatus(status);
             const terminal = state === "completed" || state === "failed" || state === "stopped";
+            /**
+             * MOVED TO THE BACKGROUND MID-FLIGHT (Ctrl+B, or the SDK's own
+             * decision). A task this turn already announced keeps its kind —
+             * an agent sent to the background is still an agent — and only
+             * gains `backgrounded`. A task NEVER announced is the foreground
+             * Bash case: a blocking shell announces no `task_started` at all
+             * and first appears here, so its only honest classification is
+             * "a backgrounded shell".
+             */
+            const backgrounded = item.patch?.is_backgrounded === true;
+            const known = knownTasks.has(taskIdFor(str(item.task_id), undefined));
             emitTask(
               terminal ? "task.completed" : "task.progress",
               str(item.task_id),
@@ -1923,7 +1938,8 @@ export function createClaudeDriver(
                 state,
                 ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
                 ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
-                ...(item.patch?.is_backgrounded === true ? { kind: "background" as const } : {}),
+                ...(backgrounded ? { backgrounded: true } : {}),
+                ...(backgrounded && !known ? { kind: "background" as const } : {}),
               },
               undefined,
             );
@@ -2188,11 +2204,13 @@ export function createClaudeDriver(
          * state to answer "is this session still working", and a sub-agent
          * stuck at `running` makes a finished detached session claim it is
          * still busy — forever, with no live stream to correct it and nothing
-         * for a human to stop. A BACKGROUND task is left alone: outliving its
-         * turn is what background means.
+         * for a human to stop. BACKGROUND WORK is left alone: outliving its
+         * turn is what background means — and that includes an agent that was
+         * launched detached, which is still running inside the live process
+         * and will report through the next turn's pump.
          */
         for (const [id, task] of knownTasks) {
-          if (task.kind === "background") continue;
+          if (isBackgroundWork(task)) continue;
           if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
           emit({ kind: "task.completed", task: { ...task, id, state: "failed", failure: "the turn ended before this agent reported back" } });
         }
