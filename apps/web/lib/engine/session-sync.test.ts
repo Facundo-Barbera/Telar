@@ -1,7 +1,15 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { EngineEvent, Item, Session, Turn } from "@telar/engine-client";
-import { hydrateSession, needsSessionSnapshot, tailSession } from "./session-sync";
+import type { EngineEvent, Item, Session, SnapshotWindow, Task, Turn } from "@telar/engine-client";
+import {
+  INITIAL_TURNS,
+  OLDER_PAGE_TURNS,
+  hydrateSession,
+  loadOlderTurns,
+  mergeOlderPage,
+  needsSessionSnapshot,
+  tailSession,
+} from "./session-sync";
 
 const session: Session = {
   id: "session_1",
@@ -102,6 +110,48 @@ describe("session hydration", () => {
     expect(result.cursor).toBe(2);
   });
 
+  test("the window rides through hydrate and the tail's companion snapshot", async () => {
+    const windows: (SnapshotWindow | undefined)[] = [];
+    const api = {
+      events: async () => ({ events: [] as EngineEvent[] }),
+      session: async (_sessionId: string, window?: SnapshotWindow) => {
+        windows.push(window);
+        return { cursor: 1, session, turns: [], items, requests: [], tasks: [] };
+      },
+    };
+    await hydrateSession(api, session.id, { turns: INITIAL_TURNS });
+    expect(windows).toEqual([{ turns: INITIAL_TURNS }]);
+
+    windows.length = 0;
+    await tailSession({ ...api, events: async () => ({ events: [started] }) }, session.id, 1, { turns: INITIAL_TURNS });
+    expect(windows).toEqual([{ turns: INITIAL_TURNS }]);
+  });
+
+  test("loadOlderTurns asks for one page above the cursor", async () => {
+    const windows: (SnapshotWindow | undefined)[] = [];
+    const older = await loadOlderTurns(
+      {
+        events: async () => ({ events: [] }),
+        session: async (_sessionId: string, window?: SnapshotWindow) => {
+          windows.push(window);
+          return {
+            cursor: 9,
+            session,
+            turns: [turn],
+            items,
+            requests: [],
+            tasks: [],
+            page: { before: null, more: false },
+          };
+        },
+      },
+      session.id,
+      "run_5",
+    );
+    expect(windows).toEqual([{ turns: OLDER_PAGE_TURNS, before: "run_5" }]);
+    expect(older).toEqual({ turns: [turn], items: [], tasks: [], page: { before: null, more: false } });
+  });
+
   test("high-frequency item and delta events do NOT trigger a snapshot refetch", async () => {
     // The load-bearing half of this predicate. A streaming turn emits one delta
     // per token; refetching a snapshot for each would turn streaming into a
@@ -126,5 +176,66 @@ describe("session hydration", () => {
         },
       ]),
     ).toBeFalse();
+  });
+});
+
+describe("mergeOlderPage", () => {
+  const makeTurn = (runId: string, sequence: number): Turn => ({ ...turn, runId, sequence });
+  const makeItem = (id: string, runId: string): Item => ({
+    id,
+    runId,
+    sessionId: "session_1",
+    status: "completed",
+    startedAt: 1,
+    detail: { type: "assistant_message", text: id },
+  });
+  const makeTask = (id: string): Task => ({
+    id,
+    sessionId: "session_1",
+    runId: "run_1",
+    kind: "agent",
+    state: "running",
+    startedAt: 1,
+    updatedAt: 1,
+  });
+
+  test("prepends the older page: oldest-first after merge, items and tasks included", () => {
+    const current = {
+      turns: [makeTurn("run_3", 3), makeTurn("run_4", 4)],
+      items: [makeItem("i_3", "run_3")],
+      tasks: [makeTask("t_new")],
+    };
+    const page = {
+      turns: [makeTurn("run_1", 1), makeTurn("run_2", 2)],
+      items: [makeItem("i_1", "run_1")],
+      tasks: [makeTask("t_old")],
+    };
+    const merged = mergeOlderPage(current, page);
+    expect(merged.turns.map((t) => t.runId)).toEqual(["run_1", "run_2", "run_3", "run_4"]);
+    expect(merged.items.map((i) => i.id)).toEqual(["i_1", "i_3"]);
+    expect(merged.tasks.map((t) => t.id)).toEqual(["t_old", "t_new"]);
+  });
+
+  test("an overlapping page is not duplicated — the already-loaded row wins", () => {
+    const freshRun2 = { ...makeTurn("run_2", 2), state: "completed" as const };
+    const current = { turns: [freshRun2, makeTurn("run_3", 3)], items: [makeItem("i_2", "run_2")], tasks: [] };
+    const page = {
+      turns: [makeTurn("run_1", 1), makeTurn("run_2", 2)],
+      items: [makeItem("i_1", "run_1"), makeItem("i_2", "run_2")],
+      tasks: [],
+    };
+    const merged = mergeOlderPage(current, page);
+    expect(merged.turns.map((t) => t.runId)).toEqual(["run_1", "run_2", "run_3"]);
+    // The row that stays is CURRENT's — the fresher read of a settling turn.
+    expect(merged.turns[1]).toBe(freshRun2);
+    expect(merged.items.map((i) => i.id)).toEqual(["i_1", "i_2"]);
+  });
+
+  test("is pure — neither input is mutated", () => {
+    const current = { turns: [makeTurn("run_2", 2)], items: [], tasks: [] };
+    const page = { turns: [makeTurn("run_1", 1)], items: [], tasks: [] };
+    mergeOlderPage(current, page);
+    expect(current.turns.map((t) => t.runId)).toEqual(["run_2"]);
+    expect(page.turns.map((t) => t.runId)).toEqual(["run_1"]);
   });
 });

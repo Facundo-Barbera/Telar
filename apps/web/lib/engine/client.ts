@@ -48,13 +48,14 @@ import type {
   RuntimeMode,
   Session,
   SessionSnapshot,
+  SnapshotWindow,
   Turn,
   TurnSubmissionResult,
   WorkspaceFile,
   WorkspaceListing,
   WorkspaceWriteResult,
 } from "@telar/engine-client";
-import { forgeQuery } from "@telar/engine-client";
+import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 
 /**
  * DERIVED FROM THE CONTRACT, not re-listed beside it. This union used to be ten
@@ -265,8 +266,8 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
     // The contract's own snapshot type, not a hand-copied structural twin: this
     // route proxies the engine verbatim, so a field the engine adds is already
     // arriving and a local re-declaration only hides it.
-    session: (sessionId: string) =>
-      request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}`),
+    session: (sessionId: string, window?: SnapshotWindow) =>
+      request<SessionSnapshot>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`),
     /** Rename, change the model, or change what the session may do without
      *  asking. The model must belong to the session's provider instance — the
      *  engine rejects anything else, because a turn is routed by that instance
