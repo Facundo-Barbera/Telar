@@ -5583,7 +5583,22 @@ export class EngineStore {
         ...known,
         ...definedOnly(seed),
         id: seed.id,
-        kind: seed.kind,
+        /**
+         * THE FIRST CLASSIFICATION IS THE CLASSIFICATION, for the same reason
+         * `runId` and `startedAt` below take the stored value: kind is a fact
+         * about what a task IS, and nothing that happens later changes it.
+         *
+         * It cannot be `?? `-ed against an absent field, because `TaskSeed.kind`
+         * is required — a provider seam with nothing to say still has to say
+         * something, and the contract's denylist posture makes that "agent"
+         * (protocol/tasks.ts). The Claude seam's `knownTasks` is TURN-SCOPED, so
+         * a backgrounded shell reaped at teardown is reported in the FOLLOWING
+         * turn by a `task_notification` carrying no `task_type`, against a map
+         * that has never heard of it. Taking the seed there moved every such
+         * shell onto the Agents surface — a delegate that never reported, next
+         * to a killed process reading as a clean "Done".
+         */
+        kind: known?.kind ?? seed.kind,
         state: seed.state,
         sessionId,
         // A background task belongs to the turn that STARTED it even after that
