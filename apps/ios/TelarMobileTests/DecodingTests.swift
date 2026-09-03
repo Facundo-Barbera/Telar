@@ -132,4 +132,27 @@ func fixture(_ name: String) throws -> Data {
         #expect(fields.first?.choices == ["red", "blue"])
         #expect(request.isOpen)
     }
+
+    @Test func secretAccessRequestDecodesCandidates() throws {
+        // The 1Password fill card: metadata only, by contract — origin,
+        // field kinds, and domain-matched candidates. Approving it sends
+        // answers.item back; the values never reach this app.
+        let data = Data("""
+        {"id":"req_2","runId":"run_1","sessionId":"s","state":"open","openedAt":1,
+         "detail":{"kind":"secret_access","secret":{
+           "origin":"https://github.com",
+           "fields":[{"kind":"username"},{"kind":"password"}],
+           "candidates":[{"id":"item_gh","title":"GitHub","vault":"Personal","domain":"github.com"}],
+           "hint":"github"}}}
+        """.utf8)
+        let request = try JSONDecoder().decode(EngineRequest.self, from: data)
+        guard case .secretAccess(let secret) = request.detail else {
+            Issue.record("expected secret_access"); return
+        }
+        #expect(secret.origin == "https://github.com")
+        #expect(secret.fields.map(\.kind) == ["username", "password"])
+        #expect(secret.candidates.first?.title == "GitHub")
+        #expect(secret.candidates.first?.domain == "github.com")
+        #expect(request.isOpen)
+    }
 }

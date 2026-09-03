@@ -62,9 +62,12 @@ describe("browser permission classification", () => {
     expect(isReadOnlyBrowserCall("browser_handle_dialog")).toBe(false);
   });
 
-  test("the mutating set and the tool schemas are the same fourteen tools", () => {
+  test("the mutating set and the tool schemas are the same fifteen tools", () => {
+    // Fourteen Playwright-backed tools plus browser_fill_secret, which the
+    // socket routes above the runtime (secret-fill.ts) but which must still
+    // carry a schema and a mutating classification like everything else.
     const schemaNames = BROWSER_TOOLS.map((tool) => String(tool.name));
-    expect(new Set(schemaNames).size).toBe(14);
+    expect(new Set(schemaNames).size).toBe(15);
     // A tool that can mutate but has no schema is a tool the engine gates and
     // then cannot describe; a schema with no classification is worse.
     for (const name of MUTATING_TOOLS) expect(schemaNames).toContain(name);

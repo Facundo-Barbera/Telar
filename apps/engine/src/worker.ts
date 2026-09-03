@@ -2,7 +2,9 @@ import crypto from "node:crypto";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
+import { runSecretFill } from "./browser/secret-fill";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type TurnDriver } from "./driver";
+import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
 
@@ -104,6 +106,13 @@ export type EngineWorkerOptions = {
    */
   browserSocket?: BrowserToolSocket;
   /**
+   * The password-manager read path for `browser_fill_secret`. Defaults to the
+   * real `op` CLI adapter; injected by tests so no suite ever spawns one. The
+   * default degrades cleanly on a machine without `op` — a sentence, not a
+   * crash — so this is safe to construct unconditionally.
+   */
+  secrets?: SecretsProvider;
+  /**
    * HOW MANY TURNS THIS WORKER RUNS AT ONCE. The engine already refuses two
    * concurrent turns of the SAME session (`claimTurn` skips a session with a
    * claimed or running turn), so this cap only decides how many DIFFERENT
@@ -128,6 +137,8 @@ export class EngineWorker {
   private stopped = false;
   private readonly active = new Map<string, AbortController>();
   private connectionLost = false;
+  /** Lazily built default `op` adapter — one per worker, never per turn. */
+  private secrets: SecretsProvider | undefined;
   /**
    * Approvals this worker is blocked on, keyed by request id.
    *
@@ -166,7 +177,17 @@ export class EngineWorker {
    */
   private readonly browserLeases = new Map<
     string,
-    { lease: BrowserSocketLease; refs: { gate: NonNullable<BrowserRunBinding["gate"]>; onNavigated: NonNullable<BrowserRunBinding["onNavigated"]> } }
+    {
+      lease: BrowserSocketLease;
+      refs: {
+        gate: NonNullable<BrowserRunBinding["gate"]>;
+        onNavigated: NonNullable<BrowserRunBinding["onNavigated"]>;
+        /** Per-turn like the gate — its `ask` opens a `secret_access` request
+         *  against THIS turn's claim, so a stale one must be refused, not
+         *  answered by a ghost. */
+        fillSecret: NonNullable<BrowserRunBinding["fillSecret"]>;
+      };
+    }
   >();
 
   constructor(private readonly options: EngineWorkerOptions) {
@@ -360,6 +381,32 @@ export class EngineWorker {
           .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
           .catch(() => undefined);
       };
+      /**
+       * `browser_fill_secret`, wired per turn like the gate: the orchestrator
+       * gets the socket's own scope-bound browser, the `op` adapter, and an
+       * `ask` that opens a `secret_access` request through the SAME askEngine
+       * as every other gate — so an abort settles it, and the heartbeat
+       * carries back the human's item pick in `answers.item`. The values live
+       * inside `runSecretFill` and the fill call it makes; nothing of them
+       * reaches this closure's return value or the journal.
+       */
+      const fillSecretForTurn: NonNullable<BrowserRunBinding["fillSecret"]> = (args, callBrowser) =>
+        runSecretFill(
+          {
+            callBrowser,
+            secrets: this.options.secrets ?? (this.secrets ??= createOnePasswordSecrets()),
+            ask: async (secret) => {
+              const outcome = await askEngine({
+                kind: "secret_access",
+                detail: { kind: "secret_access", secret },
+                toolUseId: `${TELAR_BROWSER_MCP_SERVER}_fill_secret_${crypto.randomUUID().slice(0, 8)}`,
+              });
+              const item = outcome.answers?.item;
+              return { decision: outcome.decision, ...(typeof item === "string" ? { itemId: item } : {}) };
+            },
+          },
+          args,
+        );
       // AFTER `markTurnRunning`, NOT BEFORE, and the ordering is load-bearing:
       // `failTurn` only settles a turn that is RUNNING, so a worker with no
       // driver for this provider that threw here first would leave the turn
@@ -381,15 +428,17 @@ export class EngineWorker {
       if (cached) {
         cached.refs.gate = gateForTurn;
         cached.refs.onNavigated = onNavigatedForTurn;
+        cached.refs.fillSecret = fillSecretForTurn;
         lease = cached.lease;
       } else if (this.options.browserSocket) {
-        const refs = { gate: gateForTurn, onNavigated: onNavigatedForTurn };
+        const refs = { gate: gateForTurn, onNavigated: onNavigatedForTurn, fillSecret: fillSecretForTurn };
         lease = await this.options.browserSocket.bind({
           // Sessions are the browser's natural boundary: two sessions must not
           // share a tab, and a session's tabs must survive between its turns.
           scopeKey: sessionId,
           gate: (input) => refs.gate(input),
           onNavigated: (state) => refs.onNavigated(state),
+          fillSecret: (args, callBrowser) => refs.fillSecret(args, callBrowser),
         });
         this.browserLeases.set(sessionId, { lease, refs });
       }

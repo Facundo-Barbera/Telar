@@ -286,3 +286,61 @@ test("the socket serves ONE path — anything else is 404, even with a valid tok
   });
   expect(other.status).toBe(404);
 });
+
+// ── browser_fill_secret routing ────────────────────────────────────────────
+
+const fillSecretTool = {
+  name: "browser_fill_secret",
+  description: "fill",
+  input: z.object({ fields: z.array(z.object({ target: z.string(), kind: z.string() })) }),
+};
+
+test("browser_fill_secret routes to the binding's handler — NEVER through the generic gate or the capability", async () => {
+  const gateSaw: string[] = [];
+  const capabilitySaw: string[] = [];
+  const handlerSaw: Record<string, unknown>[] = [];
+  const socket = makeSocket(
+    fakeCapability({
+      tools: [fillSecretTool],
+      call: async (_scope, name) => {
+        capabilitySaw.push(name);
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    }),
+  );
+  const lease = await socket.bind({
+    scopeKey: "s",
+    gate: async ({ name }) => {
+      gateSaw.push(name);
+      return true;
+    },
+    fillSecret: async (args, callBrowser) => {
+      handlerSaw.push(args);
+      // The handler's browser reaches the SAME capability, scope-bound.
+      await callBrowser("browser_list_tabs", {});
+      return { content: [{ type: "text", text: "Filled username from “GitHub” on https://github.com." }] };
+    },
+  });
+  const answer = (await (
+    await rpc(lease.url, lease.token, call("browser_fill_secret", { fields: [{ target: "e1", kind: "username" }] }))
+  ).json()) as { result: { isError?: boolean; content: { text?: string }[] } };
+
+  expect(answer.result.isError).toBeUndefined();
+  expect(answer.result.content[0]?.text).toContain("Filled username");
+  expect(handlerSaw).toHaveLength(1);
+  // The generic yes/no gate never heard about it: the handler opens its own
+  // `secret_access` request, which carries the item pick a boolean cannot.
+  expect(gateSaw).toEqual([]);
+  // The capability heard only the handler's own browsing, never the fill tool.
+  expect(capabilitySaw).toEqual(["browser_list_tabs"]);
+});
+
+test("without a handler, browser_fill_secret answers a sentence — not a hang, not a crash", async () => {
+  const socket = makeSocket(fakeCapability({ tools: [fillSecretTool] }));
+  const lease = await socket.bind({ scopeKey: "s" });
+  const answer = (await (
+    await rpc(lease.url, lease.token, call("browser_fill_secret", { fields: [{ target: "e1", kind: "username" }] }))
+  ).json()) as { result: { isError?: boolean; content: { text?: string }[] } };
+  expect(answer.result.isError).toBe(true);
+  expect(answer.result.content[0]?.text).toContain("not available");
+});

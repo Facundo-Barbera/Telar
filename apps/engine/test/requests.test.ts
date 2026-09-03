@@ -253,3 +253,73 @@ test("a stop while a human is deciding settles the driver instead of hanging the
   await eventually(() => expect(seen).toBe("cancel"));
   expect((await client.session("session_one")).turns[0]?.state).toBe("stopped");
 });
+
+// ── secret_access: the kind no mode may resolve ────────────────────────────
+
+const SENTINEL = "SENTINEL-vault-value-77aa";
+
+const secretDetail = {
+  kind: "secret_access" as const,
+  secret: {
+    origin: "https://github.com",
+    fields: [{ kind: "username" as const }, { kind: "password" as const }],
+    candidates: [{ id: "item_gh", title: "GitHub", vault: "Personal", domain: "github.com" }],
+  },
+};
+
+test("secret_access PARKS in full-access — the one kind besides user_input that policy may never answer", () => {
+  const { store, parked } = readyStore("full-access");
+  const token = runningTurn(store);
+  const opened = store.openRequest("session_one", "run_one", token, {
+    requestId: "req_secret",
+    kind: "secret_access",
+    detail: secretDetail,
+  });
+  expect(opened).toMatchObject({ state: "open", notified: true });
+  expect(parked).toEqual(["req_secret"]);
+});
+
+test("resolving a secret_access carries the item pick in answers, and the journal never holds a value", () => {
+  const { store } = readyStore("full-access");
+  const token = runningTurn(store);
+  store.openRequest("session_one", "run_one", token, {
+    requestId: "req_secret",
+    kind: "secret_access",
+    detail: secretDetail,
+  });
+  const resolved = store.resolveRequest("session_one", "req_secret", {
+    decision: "accept",
+    answers: { item: "item_gh" },
+  });
+  expect(resolved.answers).toEqual({ item: "item_gh" });
+  // Worker pickup: the heartbeat query carries the answers through.
+  const forWorker = store.resolutionsForWorker("worker_one");
+  expect(forWorker).toEqual([
+    expect.objectContaining({ requestId: "req_secret", decision: "accept", answers: { item: "item_gh" } }),
+  ]);
+
+  // THE REDACTION SWEEP: everything this session persisted — journal,
+  // requests, queue, session doc — read raw off disk. The detail was built
+  // from metadata (titles, domains, kinds), so no file may hold a vault
+  // value; the sentinel stands in for one and must appear nowhere. What this
+  // pins is the CONTRACT that the fill path hands state nothing but metadata
+  // — the orchestrator-side half lives in secret-fill.test.ts.
+  const sessionDir = path.join(store.paths.sessions, "session_one");
+  const files: string[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else files.push(full);
+    }
+  };
+  walk(sessionDir);
+  expect(files.length).toBeGreaterThan(0);
+  for (const file of files) {
+    expect(fs.readFileSync(file, "utf8"), file).not.toContain(SENTINEL);
+  }
+  // And the candidate metadata IS there — the sweep read the right files.
+  const requestsRaw = fs.readFileSync(path.join(sessionDir, "requests.json"), "utf8");
+  expect(requestsRaw).toContain("item_gh");
+  expect(requestsRaw).toContain("github.com");
+});

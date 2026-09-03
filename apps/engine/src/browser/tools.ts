@@ -84,6 +84,7 @@ export const BrowserToolName = z.enum([
   "browser_take_screenshot",
   "browser_console_messages",
   "browser_network_requests",
+  "browser_fill_secret",
 ]);
 export type BrowserToolName = z.infer<typeof BrowserToolName>;
 
@@ -222,6 +223,30 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     input: z.object({
       static: z.boolean().default(false),
       filter: z.string().optional(),
+    }),
+  },
+  {
+    name: "browser_fill_secret",
+    description:
+      "Fill login fields on the current page from the user's 1Password, without ever seeing the values. Pass snapshot refs and say what each field is (username/password/otp); a human approves and picks the item, Telar fills it, and the secret never enters this conversation. Use this instead of asking the user to paste a password.",
+    input: z.object({
+      fields: z
+        .array(
+          z.object({
+            ...targeted,
+            kind: z.enum(["username", "password", "otp", "field"]),
+            /** The 1Password field label, required in spirit when kind is
+             *  "field" — enforced by the fill path, not the schema, so the
+             *  error can say what to do. */
+            label: z.string().optional(),
+          }),
+        )
+        .min(1),
+      /** Which item, as a hint (title). The human's pick on the approval card
+       *  is what decides; a hint can only reorder the candidates. */
+      item: z.string().optional(),
+      /** Press this after filling — the login button's snapshot ref. */
+      submit: z.object({ ...targeted }).optional(),
     }),
   },
 ];

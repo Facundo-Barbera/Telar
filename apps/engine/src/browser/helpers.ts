@@ -37,6 +37,9 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "browser_hover",
   "browser_select_option",
   "browser_tabs",
+  // Not merely mutating: it also opens a `secret_access` request. Listed here
+  // so nothing can ever classify it as an auto-acceptable read.
+  "browser_fill_secret",
 ]);
 
 /**
