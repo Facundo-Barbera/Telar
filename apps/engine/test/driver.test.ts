@@ -1448,3 +1448,23 @@ describe("the session runtime", () => {
     // A session with no live runtime is an honest false, not a throw.
     expect(await driver.stopTask?.("session_unknown", "whatever")).toBe(false);
   });
+
+test("a user message echoed with STRING content does not fail the turn", async () => {
+  /**
+   * MEASURED TWICE ON THE DOGFOOD APP: `((intermediate value) ?? []).map is
+   * not a function`, once right after a /compact and once right after a model
+   * switch. `message.content` is `string | ContentBlockParam[]`; the pump read
+   * only the array arm, and a user message echoed as plain text — a steered
+   * sentence, a compaction re-injection, a model switch's re-init — took the
+   * whole turn down with it.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "user", message: { role: "user", content: "a plain-string echo" } };
+      yield { type: "assistant", message: { content: "also a plain string" } };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await expect(run(driver).result).resolves.toMatchObject({ text: expect.stringContaining("hello") });
+});

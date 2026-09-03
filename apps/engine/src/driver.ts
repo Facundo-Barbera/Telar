@@ -730,6 +730,23 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+/**
+ * A message's content as BLOCKS, whatever shape it arrived in.
+ *
+ * `message.content` is the API's own union, `string | ContentBlockParam[]` —
+ * the same union `SdkUserMessage` below documents for OUTBOUND messages. The
+ * pump assumed the array arm for INBOUND ones, and a `user` message echoed
+ * with plain-string content (a steered sentence, a compaction re-injection, a
+ * model switch's re-init) failed the whole turn with
+ * `(... ?? []).map is not a function`. Measured twice on this very app. A
+ * string is one text block; anything else is no blocks.
+ */
+function contentBlocks(content: unknown): unknown[] {
+  if (Array.isArray(content)) return content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return [];
+}
+
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -2030,7 +2047,7 @@ export function createClaudeDriver(
                 emit({ kind: "usage", usage: usage! });
               }
             }
-            for (const raw of item.message?.content ?? []) {
+            for (const raw of contentBlocks(item.message?.content)) {
               const block = asRecord(raw);
               if (block.type === "tool_use") {
                 const name = str(block.name) ?? "tool";
@@ -2105,7 +2122,7 @@ export function createClaudeDriver(
 
           // ── tool results ──────────────────────────────────────────────
           if (item.type === "user") {
-            const results = (item.message?.content ?? []).map(asRecord).filter((block) => block.type === "tool_result");
+            const results = contentBlocks(item.message?.content).map(asRecord).filter((block) => block.type === "tool_result");
             /**
              * `tool_use_result` IS PER MESSAGE, NOT PER BLOCK.
              *
