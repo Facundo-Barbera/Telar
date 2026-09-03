@@ -1168,6 +1168,49 @@ test("a turn that ends takes its sub-agents with it, however it ended", () => {
   expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
 });
 
+test("a task's kind is decided once, and a later turn's partial report cannot downgrade it", () => {
+  /**
+   * THE CROSS-TURN CASE. `knownTasks` in the Claude seam is TURN-SCOPED, and a
+   * backgrounded shell reaped at teardown is reported in the FOLLOWING turn:
+   * `task_notification` with no `task_type` of its own, against a map that has
+   * never heard of the task. `taskKindForType(undefined)` is "agent" by the
+   * contract's denylist posture, so the seam fabricates `kind: "agent"` — it
+   * has nothing better to say.
+   *
+   * The projection does know better, because it is the durable record. Kind is
+   * a fact about what a task IS and cannot change after the report that
+   * established it; letting a partial report overwrite it moved backgrounded
+   * shells onto the Agents surface. Measured: four shells reaped at teardown
+   * each landed under Agents, while the one stopped inside its own turn stayed
+   * correctly under Processes.
+   *
+   * This is the same rule as `runId` and `startedAt` immediately around it —
+   * the seed is folded OVER what is stored, never swapped for it.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Start the dev server" });
+  const first = store.claimNextTurn("worker_one")!;
+  const firstToken = first.turn.claim!.token;
+  store.markRunning("session_one", "run_one", firstToken);
+  store.ingestObservations("session_one", "run_one", firstToken, [
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Start the dev server" } },
+  ]);
+  store.completeTurn("session_one", "run_one", firstToken, { text: "Started it" });
+  expect(store.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
+
+  // The next turn. The seam has no memory of task_b and says "agent".
+  store.submitTurn("session_one", { runId: "run_two", input: "anything" });
+  const second = store.claimNextTurn("worker_one")!;
+  const secondToken = second.turn.claim!.token;
+  store.markRunning("session_one", "run_two", secondToken);
+  store.ingestObservations("session_one", "run_two", secondToken, [
+    { kind: "task.completed", task: { id: "task_b", kind: "agent", state: "completed" } },
+  ]);
+
+  // A shell does not become a delegate by being reported late.
+  expect(store.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
+});
+
 test("stop with nothing running settles lingering background work", () => {
   /**
    * THE RETROACTIVE CURE. A background task orphaned before the process-death
