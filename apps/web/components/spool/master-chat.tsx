@@ -635,6 +635,9 @@ export function MasterChat({
             placeholder="Say what you're working on, or dump something and it'll get filed…"
             onSubmit={submit}
             onStop={stop}
+            // The master chat runs no background tasks (backgroundTasks={0}), so
+            // the chip never renders and this never fires.
+            onStopBackground={() => undefined}
             onWithdraw={withdraw}
             onRecall={(item) => {
               withdraw(item.runId);

@@ -1422,3 +1422,49 @@ describe("the session runtime", () => {
     }).result;
     expect(queryCalls).toBe(2);
   });
+
+  test("stopTask reaches into the session's live runtime and stops one background task by provider id", async () => {
+    const stopped: string[] = [];
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        const generator = (async function* () {
+          for await (const message of prompt) {
+            void message;
+            yield { type: "result", subtype: "success" };
+          }
+        })();
+        return Object.assign(generator, {
+          stopTask: async (taskId: string) => {
+            stopped.push(taskId);
+          },
+        });
+      },
+    }) as never);
+    // A turn creates the live runtime; then the task is stopped between turns.
+    await run(driver, { sessionId: "session_kill" }).result;
+    const took = await driver.stopTask?.("session_kill", "bqo5yo8lm");
+    expect(took).toBe(true);
+    expect(stopped).toEqual(["bqo5yo8lm"]);
+    // A session with no live runtime is an honest false, not a throw.
+    expect(await driver.stopTask?.("session_unknown", "whatever")).toBe(false);
+  });
+
+test("a user message echoed with STRING content does not fail the turn", async () => {
+  /**
+   * MEASURED TWICE ON THE DOGFOOD APP: `((intermediate value) ?? []).map is
+   * not a function`, once right after a /compact and once right after a model
+   * switch. `message.content` is `string | ContentBlockParam[]`; the pump read
+   * only the array arm, and a user message echoed as plain text — a steered
+   * sentence, a compaction re-injection, a model switch's re-init — took the
+   * whole turn down with it.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "user", message: { role: "user", content: "a plain-string echo" } };
+      yield { type: "assistant", message: { content: "also a plain string" } };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "hello" }] } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  await expect(run(driver).result).resolves.toMatchObject({ text: expect.stringContaining("hello") });
+});

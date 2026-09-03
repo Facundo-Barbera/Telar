@@ -2359,6 +2359,18 @@ export class EngineStore {
   private readonly canvas = new SpoolCanvas();
   private canvasInFlight: AbortController | undefined;
 
+  /**
+   * BACKGROUND TASKS THE USER STOPPED, awaiting the actual process kill —
+   * keyed by session, holding provider task ids. In memory for the same
+   * reason the canvas is: the target is a live provider process, and a
+   * process does not outlive this engine (an engine restart disposes every
+   * runtime, so a pending kill would target something already gone). The
+   * heartbeat drains this to whichever worker holds the runtime; the
+   * projection is already `stopped`, so this is best-effort enforcement, not
+   * the source of truth. See `stopBackgroundTasks` / `drainStopTasks`.
+   */
+  private readonly pendingStopTasks = new Map<string, Set<string>>();
+
   spoolCanvas(): SpoolCanvasState {
     return this.canvas.read();
   }
@@ -4761,25 +4773,24 @@ export class EngineStore {
       // lingering background work. Settle it — this is also the retroactive
       // cure for tasks orphaned before the sweeps below existed, which
       // otherwise report "monitoring" forever with a Stop that no-ops.
-      const at = this.now();
-      const swept = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", { includeBackground: true, state: "stopped" });
-      if (swept > 0) this.touchSession(sessionId, at);
+      const swept = this.stopBackgroundTasks(sessionId);
       return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
     }
     const at = this.now();
-    const wasLive = turn.state === "running" || turn.state === "claimed";
     turn.state = "stopped";
     turn.completedAt = at;
     turn.updatedAt = at;
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
     this.writeQueue(sessionId, queue);
-    if (wasLive) {
-      // Stopping a live turn kills the provider process — and every
-      // background shell it hosted dies with it, whichever turn started them.
-      this.closeLiveTasks(sessionId, at, "the agent's process was stopped before this task finished", { includeBackground: true });
-    } else {
-      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
-    }
+    // STOPPING A TURN SPARES BACKGROUND WORK. Since the session runtime
+    // landed (#126) a turn Stop is the provider's own `interrupt()`, declared
+    // with `perTaskStopAffordance` so the live process — and every background
+    // shell inside it — survives the interrupt. So only the turn's own agents
+    // are closed here, whether or not it was live; a background task keeps
+    // running and is stopped through its own path (`stopBackgroundTasks`). The
+    // pre-runtime code closed background tasks here because the stop killed the
+    // process; that assumption no longer holds.
+    this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -5470,13 +5481,14 @@ export class EngineStore {
     sessionId: string,
     at: number,
     failure: string,
-    options: { runId?: string; includeBackground: boolean; state?: "failed" | "stopped" },
-  ): number {
+    options: { runId?: string; includeBackground: boolean; onlyBackground?: boolean; state?: "failed" | "stopped" },
+  ): Task[] {
     const tasks = this.readTasks(sessionId);
-    let changed = 0;
+    const closedTasks: Task[] = [];
     for (const [id, task] of tasks) {
       if (options.runId !== undefined && task.runId !== options.runId) continue;
       if (!options.includeBackground && task.kind === "background") continue;
+      if (options.onlyBackground && task.kind !== "background") continue;
       if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
       // `failed` RATHER THAN `stopped` by default, matching the driver's own
       // choice for the same situation: two spellings for one cause would
@@ -5486,10 +5498,50 @@ export class EngineStore {
       const closed: Task = { ...task, state: options.state ?? "failed", failure, updatedAt: at, completedAt: at };
       tasks.set(id, closed);
       this.appendEvent(sessionId, { type: "task.completed", task: closed }, task.runId);
-      changed += 1;
+      closedTasks.push(closed);
     }
-    if (changed > 0) this.writeTasks(sessionId, tasks);
-    return changed;
+    if (closedTasks.length > 0) this.writeTasks(sessionId, tasks);
+    return closedTasks;
+  }
+
+  /**
+   * STOP THE SESSION'S LINGERING BACKGROUND TASKS — the "N tasks still
+   * working" chip's Stop. Distinct from `stopTurn`: a background task outlives
+   * its turn, so there may be no turn to stop, and stopping the turn would be
+   * the wrong verb even if there were one. Marks each task `stopped` in the
+   * projection (so the roster is right at once) AND queues the actual process
+   * kill for the worker holding the runtime. Returns how many it stopped.
+   */
+  stopBackgroundTasks(sessionId: string): number {
+    const at = this.now();
+    const closed = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", {
+      includeBackground: true,
+      onlyBackground: true,
+      state: "stopped",
+    });
+    if (closed.length === 0) return 0;
+    const pending = this.pendingStopTasks.get(sessionId) ?? new Set<string>();
+    for (const task of closed) if (task.providerTaskId) pending.add(task.providerTaskId);
+    if (pending.size > 0) this.pendingStopTasks.set(sessionId, pending);
+    this.touchSession(sessionId, at);
+    return closed.length;
+  }
+
+  /**
+   * The pending background-task kills, drained. Rides the heartbeat like
+   * `cancel` — but drain-on-read rather than derived-from-state, because once
+   * the projection is `stopped` there is nothing left in the durable state to
+   * re-derive the intent from. A single embedded worker holds every runtime,
+   * so this broadcasts to the caller rather than routing by worker; the worker
+   * whose runtime lacks the session simply no-ops.
+   */
+  drainStopTasks(): WorkerStatus["stopTask"] {
+    const drained: WorkerStatus["stopTask"] = [];
+    for (const [sessionId, providerTaskIds] of this.pendingStopTasks) {
+      for (const providerTaskId of providerTaskIds) drained.push({ sessionId, providerTaskId });
+    }
+    this.pendingStopTasks.clear();
+    return drained;
   }
 
   private readRequests(sessionId: string): Map<string, EngineRequest> {

@@ -2430,6 +2430,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             cancel: store.cancellationsForWorker(workerId),
             resolved: store.resolutionsForWorker(workerId),
             steer: store.steerForWorker(workerId),
+            stopTask: store.drainStopTasks(),
           };
           writeJson(response, 200, status);
         } else {
@@ -2704,6 +2705,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
           writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));
+          return;
+        }
+        // The "N tasks still working" chip's Stop. Names no turn — a background
+        // task outlives its turn, so this is a different verb from /stop.
+        if (request.method === "POST" && session.tail === "/stop-background") {
+          writeJson(response, 200, { stopped: store.stopBackgroundTasks(session.sessionId) });
           return;
         }
       }

@@ -232,6 +232,15 @@ export type TurnDriver = {
    * it on stop so a shutdown does not orphan a CLI per open session.
    */
   dispose?(): void;
+  /**
+   * Stop ONE lingering background task inside a session's live process, by its
+   * provider task id — the id the task's `task.started` carried as
+   * `providerTaskId`. OPTIONAL for the same reason as `dispose`: only the
+   * Claude driver holds a live process a task can linger inside. Resolves
+   * `true` when a live runtime took the request, `false` when there is none
+   * (the process is already gone, so the task is too).
+   */
+  stopTask?(sessionId: string, providerTaskId: string): Promise<boolean>;
 };
 
 export class ProviderUnavailableError extends Error {
@@ -457,6 +466,17 @@ type ClaudeSdk = {
        *  blocks — "enough for a heartbeat counter", in its own words. A nested
        *  transcript needs the text and the thinking too. */
       forwardSubagentText: true;
+      /**
+       * DECLARES THAT WE STOP TASKS ONE AT A TIME — and the effect that matters
+       * here: with this true, an `interrupt()` (a turn Stop) SPARES running
+       * background tasks and aborts only the turn. Its ABSENCE fails closed the
+       * other way — the SDK kills every background task on interrupt, so the
+       * user is never left with a runaway they cannot stop. That default
+       * silently undoes the whole point of the session runtime (a turn Stop
+       * would take the background work with it), so we opt in and provide the
+       * per-task stop (`query.stopTask`) the flag promises.
+       */
+      perTaskStopAffordance?: boolean;
       resume?: string;
       canUseTool?: SdkCanUseTool;
       mcpServers?: Record<string, SdkMcpServer>;
@@ -708,6 +728,23 @@ function oneLine(value: string, max = 120): string {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * A message's content as BLOCKS, whatever shape it arrived in.
+ *
+ * `message.content` is the API's own union, `string | ContentBlockParam[]` —
+ * the same union `SdkUserMessage` below documents for OUTBOUND messages. The
+ * pump assumed the array arm for INBOUND ones, and a `user` message echoed
+ * with plain-string content (a steered sentence, a compaction re-injection, a
+ * model switch's re-init) failed the whole turn with
+ * `(... ?? []).map is not a function`. Measured twice on this very app. A
+ * string is one text block; anything else is no blocks.
+ */
+function contentBlocks(content: unknown): unknown[] {
+  if (Array.isArray(content)) return content;
+  if (typeof content === "string") return [{ type: "text", text: content }];
+  return [];
 }
 
 function str(value: unknown): string | undefined {
@@ -1004,6 +1041,7 @@ export function createClaudeDriver(
   const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings>();
   return {
     dispose: () => runtimes.destroyAll(),
+    stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
     async run({
       prompt,
       sessionId,
@@ -1536,6 +1574,9 @@ export function createClaudeDriver(
             abortController: processController,
             includePartialMessages: true,
             forwardSubagentText: true,
+            // Spare background tasks on a turn Stop, and get `stopTask` for the
+            // per-task control the UI's "N tasks still working" chip needs.
+            perTaskStopAffordance: true,
             ...(model ? { model } : {}),
             ...(sdkEffort ? { effort: sdkEffort } : {}),
             // Absent unless asked for: a settings override is a request for
@@ -2006,7 +2047,7 @@ export function createClaudeDriver(
                 emit({ kind: "usage", usage: usage! });
               }
             }
-            for (const raw of item.message?.content ?? []) {
+            for (const raw of contentBlocks(item.message?.content)) {
               const block = asRecord(raw);
               if (block.type === "tool_use") {
                 const name = str(block.name) ?? "tool";
@@ -2081,7 +2122,7 @@ export function createClaudeDriver(
 
           // ── tool results ──────────────────────────────────────────────
           if (item.type === "user") {
-            const results = (item.message?.content ?? []).map(asRecord).filter((block) => block.type === "tool_result");
+            const results = contentBlocks(item.message?.content).map(asRecord).filter((block) => block.type === "tool_result");
             /**
              * `tool_use_result` IS PER MESSAGE, NOT PER BLOCK.
              *

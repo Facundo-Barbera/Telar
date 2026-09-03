@@ -424,6 +424,7 @@ export function Composer({
   onDraftChange,
   onSubmit,
   onStop,
+  onStopBackground,
   onWithdraw,
   onRecall,
   onSendNow,
@@ -513,6 +514,9 @@ export function Composer({
   onDraftChange: (draft: string) => void;
   onSubmit: () => void;
   onStop: () => void;
+  /** Stop the lingering background tasks — the "N tasks still working" chip.
+   *  Separate from `onStop` (which ends the turn and spares them). */
+  onStopBackground: () => void;
   onWithdraw: (runId: string) => void;
   /** Pull a queued message back into the box to re-edit it. Withdrawing it
    *  is the caller's job — the composer only asks for the text. */
@@ -1169,7 +1173,7 @@ export function Composer({
         </div>
       )}
 
-      <BackgroundPresence count={backgroundTasks} onStop={onStop} />
+      <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} />
 
       {/* WHY IT DID NOT HAPPEN, above the box rather than in a toast — the
           same choice, for the same reason, as the file editor's save notice.

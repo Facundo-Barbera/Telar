@@ -1044,6 +1044,25 @@ export function SessionCockpit({
       setSending(false);
     }
   };
+  /**
+   * Stop the lingering background tasks — the "N tasks still working" chip.
+   * DELIBERATELY NOT `stop()`: that one bails when no turn is running, which is
+   * exactly when background work is what is left to stop, and a background task
+   * is not stopped by stopping a turn (the turn may have finished long ago).
+   */
+  const stopBackground = async () => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await api.stopBackgroundTasks(sessionId);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the background tasks."));
+    } finally {
+      setSending(false);
+    }
+  };
   /** SEND NOW: the engine promotes; the strip's chip goes spinner via the
    *  next hydrate. Failures surface like any other action's. */
   const promote = async (runId: string) => {
@@ -1550,6 +1569,7 @@ export function SessionCockpit({
           }}
           onSubmit={() => void submit()}
           onStop={() => void stop()}
+          onStopBackground={() => void stopBackground()}
           onWithdraw={(runId) => void withdraw(runId)}
           {...(running ? { onSendNow: (runId: string) => void promote(runId) } : {})}
           sendNowDisabled={compacting || openRequests.length > 0}

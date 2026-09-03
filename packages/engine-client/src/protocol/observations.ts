@@ -241,6 +241,18 @@ export const WorkerStatus = z.object({
       }),
     )
     .default([]),
+  /**
+   * STOP ONE LINGERING BACKGROUND TASK. Unlike `cancel`, this names no turn:
+   * the task outlives its turn (that is what background means), so the worker
+   * reaches into the session's live provider process and stops the task by its
+   * provider id. Drain-on-read — the engine has already marked the projection
+   * `stopped`, so a delivery that never lands only leaves a zombie the
+   * process's own death will reap. `.default([])` for the same forward
+   * courtesy the other channels extend to an older worker.
+   */
+  stopTask: z
+    .array(z.object({ sessionId: Id, providerTaskId: z.string().min(1) }))
+    .default([]),
 });
 export type WorkerStatus = z.infer<typeof WorkerStatus>;
 
