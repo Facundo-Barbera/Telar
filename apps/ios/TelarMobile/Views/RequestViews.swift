@@ -47,6 +47,17 @@ struct RequestCardView: View {
                 UserInputFormView(prompt: prompt, fields: fields) { answers in
                     Task { await store.resolve(request, decision: .accept, answers: answers) }
                 }
+            case .secretAccess(let secret):
+                header("Fill login from 1Password", icon: "key.fill")
+                SecretAccessCardView(secret: secret) { decision, itemId in
+                    Task {
+                        if let itemId {
+                            await store.resolve(request, decision: decision, answers: ["item": .text(itemId)])
+                        } else {
+                            await store.resolve(request, decision: decision)
+                        }
+                    }
+                }
             case .unknown(let kind):
                 header("Approval needed (\(kind))", icon: "questionmark.diamond")
                 Text("This build doesn't know this request kind — you can still answer it.")
@@ -153,6 +164,65 @@ struct GhostButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(RowButtonStyle())
+    }
+}
+
+/// The 1Password fill card. NO "Always allow": a credential leaving the vault
+/// is approved one fill at a time, in every runtime mode — the engine's
+/// `autoResolution` refuses this kind unconditionally, and the phone is very
+/// often the approval device that rule exists for. The human picks an ITEM;
+/// values never pass through this app.
+struct SecretAccessCardView: View {
+    let secret: SecretAccessDetail
+    let decide: (RequestDecision, String?) -> Void
+
+    @State private var itemId: String?
+
+    private var chosen: String? { itemId ?? secret.candidates.first?.id }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(secret.origin)
+                .font(Theme.monoSmall)
+                .foregroundStyle(Theme.textMuted)
+                .lineLimit(1)
+            ForEach(secret.candidates) { candidate in
+                Button {
+                    itemId = candidate.id
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(candidate.title)
+                            .font(Theme.body)
+                            .foregroundStyle(Theme.text)
+                        Spacer(minLength: 0)
+                        // The matched domain — the human verifies the same
+                        // binding the engine enforced.
+                        Text(candidate.domain)
+                            .font(Theme.monoSmall)
+                            .foregroundStyle(Theme.textMuted)
+                        if chosen == candidate.id {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(chosen == candidate.id ? Theme.messageSurface : .clear)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusRow))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Text("Telar fills the values directly — they never enter the conversation.")
+                .font(Theme.metaSmall)
+                .foregroundStyle(Theme.textMuted)
+            HStack(spacing: 4) {
+                Spacer(minLength: 0)
+                GhostButton("Decline", tint: Theme.statusRed) { decide(.decline, nil) }
+                GhostButton("Fill", tint: Theme.text) { decide(.accept, chosen) }
+            }
+        }
     }
 }
 

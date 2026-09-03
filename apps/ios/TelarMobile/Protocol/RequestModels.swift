@@ -23,12 +23,36 @@ struct UserInputField: Codable, Identifiable, Equatable {
     var id: String { key }
 }
 
+/// One password-manager item a `secret_access` request may fill from.
+/// Metadata only, by contract — the values never leave the engine's worker.
+struct SecretCandidate: Codable, Identifiable, Equatable {
+    var id: String
+    var title: String
+    var vault: String?
+    var domain: String
+}
+
+struct SecretAccessField: Codable, Equatable {
+    var kind: String // username | password | otp | field
+    var label: String?
+}
+
+/// A credential fill awaiting approval. Never auto-resolved in ANY runtime
+/// mode — this card is exactly why the phone renders open requests.
+struct SecretAccessDetail: Codable, Equatable {
+    var origin: String
+    var fields: [SecretAccessField]
+    var candidates: [SecretCandidate]
+    var hint: String?
+}
+
 enum RequestDetail: Equatable {
     case commandExecution(CommandExecutionDetail)
     case fileChange(FileChangeDetail)
     case fileRead(FileReadDetail)
     case toolCall(ToolCallDetail)
     case userInput(prompt: String, fields: [UserInputField])
+    case secretAccess(SecretAccessDetail)
     /// An approval kind this build does not know. Still renders a card that
     /// can accept or decline — parking the session silently would be worse.
     case unknown(kind: String)
@@ -36,7 +60,7 @@ enum RequestDetail: Equatable {
 
 extension RequestDetail: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case kind, command, change, read, call, prompt, fields
+        case kind, command, change, read, call, prompt, fields, secret
     }
 
     init(from decoder: Decoder) throws {
@@ -59,6 +83,8 @@ extension RequestDetail: Decodable {
             } else {
                 self = fallback()
             }
+        case "secret_access":
+            self = (try? c.decode(SecretAccessDetail.self, forKey: .secret)).map { .secretAccess($0) } ?? fallback()
         default:
             self = fallback()
         }
