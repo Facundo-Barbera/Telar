@@ -20,8 +20,15 @@ actor RecordingEngineAPI: EngineAPI {
     func health() async throws -> EngineHealth { fatalError("unused") }
     func liveSessions() async throws -> LiveSessions { fatalError("unused") }
 
-    func session(_ id: EngineID) async throws -> SessionSnapshot {
-        calls.append("session")
+    func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
+        // The window is part of the recorded shape: a hydrate that silently
+        // dropped it would fetch the whole history again.
+        if let window {
+            let before = window.before.map { ",before:\($0)" } ?? ""
+            calls.append("session(turns:\(window.turns)\(before))")
+        } else {
+            calls.append("session")
+        }
         return snapshots.removeFirst()
     }
 
@@ -56,14 +63,23 @@ private func page(_ json: String) -> EventPage {
     try! JSONDecoder().decode(EventPage.self, from: Data(json.utf8))
 }
 
-private func snapshot(cursor: Int? = nil) -> SessionSnapshot {
+private func snapshot(cursor: Int? = nil, turns: String = "[]", items: String = "[]", page: String? = nil) -> SessionSnapshot {
     let stamp = cursor.map { "\"cursor\":\($0)," } ?? ""
+    let paged = page.map { "\"page\":\($0)," } ?? ""
     return try! JSONDecoder().decode(SessionSnapshot.self, from: Data("""
-    {\(stamp)"session":{"id":"s","projectId":"p","title":"T","state":"active",
+    {\(stamp)\(paged)"session":{"id":"s","projectId":"p","title":"T","state":"active",
       "createdAt":1,"updatedAt":2,"driver":"claude",
       "workspace":{"mode":"local","path":"/x"},"runtimeMode":"auto","detached":false},
-     "turns":[],"items":[],"requests":[],"tasks":[]}
+     "turns":\(turns),"items":\(items),"requests":[],"tasks":[]}
     """.utf8))
+}
+
+private func turnJSON(_ runId: String, _ sequence: Int, state: String = "completed") -> String {
+    #"{"runId":"\#(runId)","sessionId":"s","sequence":\#(sequence),"state":"\#(state)","input":"T\#(sequence)","acceptedAt":1,"updatedAt":1}"#
+}
+
+private func itemJSON(_ id: String, _ runId: String) -> String {
+    #"{"id":"\#(id)","runId":"\#(runId)","sessionId":"s","status":"completed","startedAt":1,"detail":{"type":"assistant_message","text":"\#(id)"}}"#
 }
 
 @Suite struct SessionSyncTests {
@@ -128,6 +144,59 @@ private func snapshot(cursor: Int? = nil) -> SessionSnapshot {
             let tail = try await tailSession(api, "s", after: 10)
             #expect(tail.snapshot != nil)
         }
+    }
+
+    @Test func theWindowRidesThroughHydrateAndTheTailCompanionSnapshot() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [page(#"{"events":[],"cursor":7,"more":false}"#)],
+            snapshots: [snapshot(cursor: 7, page: #"{"before":"run_4","more":true}"#)]
+        )
+        let hydrated = try await hydrateSession(api, "s", window: SnapshotWindow(turns: 10))
+        #expect(await api.recorded() == ["session(turns:10)", "events(7)"])
+        #expect(hydrated.snapshot.page?.before == "run_4")
+        #expect(hydrated.snapshot.page?.more == true)
+
+        let tailAPI = RecordingEngineAPI(
+            eventPages: [page(#"{"events":[{"id":12,"at":1,"sessionId":"s","runId":"r","type":"turn.completed","resultText":""}],"cursor":12,"more":false}"#)],
+            snapshots: [snapshot()]
+        )
+        _ = try await tailSession(tailAPI, "s", after: 10, window: SnapshotWindow(turns: 10))
+        #expect(await tailAPI.recorded() == ["events(10)", "session(turns:10)"])
+    }
+
+    @Test func loadOlderTurnsAsksForOnePageAboveTheCursor() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [],
+            snapshots: [snapshot(turns: "[\(turnJSON("run_1", 1))]", page: #"{"before":null,"more":false}"#)]
+        )
+        let older = try await loadOlderTurns(api, "s", before: "run_5")
+        #expect(await api.recorded() == ["session(turns:20,before:run_5)"])
+        #expect(older.turns.map(\.runId) == ["run_1"])
+        // JSON null `before` decodes as nil — the session's start.
+        #expect(older.page?.before == nil)
+        #expect(older.page?.more == false)
+    }
+
+    @Test func mergeOlderPagePrependsWithoutDuplicatingTheOverlap() async throws {
+        // Current holds run_2..run_3; the older page overlaps on run_2.
+        let current = snapshot(
+            turns: "[\(turnJSON("run_2", 2, state: "completed")),\(turnJSON("run_3", 3))]",
+            items: "[\(itemJSON("i_2", "run_2"))]"
+        )
+        let olderSnapshot = snapshot(
+            turns: "[\(turnJSON("run_1", 1)),\(turnJSON("run_2", 2, state: "running"))]",
+            items: "[\(itemJSON("i_1", "run_1")),\(itemJSON("i_2", "run_2"))]"
+        )
+        let older = OlderPage(
+            turns: olderSnapshot.turns, items: olderSnapshot.items,
+            tasks: [], page: SnapshotPage(before: nil, more: false)
+        )
+        let merged = mergeOlderPage(current: current, page: older)
+        // Oldest-first after merge, no duplicate for the overlap — and the
+        // CURRENT row wins it (the fresher read of a settling turn).
+        #expect(merged.turns.map(\.runId) == ["run_1", "run_2", "run_3"])
+        #expect(merged.turns[1].state == .completed)
+        #expect(merged.items.map(\.id) == ["i_1", "i_2"])
     }
 
     @Test func cursorNeverRegressesOnAnEmptyPage() async throws {
