@@ -120,6 +120,14 @@ export * from "./protocol";
  */
 export * from "./look";
 
+/** `?turns=N[&before=runId]`, or nothing — spelled once for every caller. */
+export function snapshotQuery(window?: SnapshotWindow): string {
+  if (!window) return "";
+  const params = new URLSearchParams({ turns: String(window.turns) });
+  if (window.before !== undefined) params.set("before", window.before);
+  return `?${params.toString()}`;
+}
+
 export class EngineClientError extends Error {
   readonly code: EngineErrorCode;
   readonly status?: number;
@@ -138,6 +146,22 @@ export class EngineClientError extends Error {
  *  import here is a hard Turbopack error. */
 export type FetchLike = typeof fetch;
 
+/** Where a windowed snapshot stands in the session's history. */
+export type SnapshotPage = {
+  /** Oldest settled turn on this page — the `before` for the next page up. */
+  before: string | null;
+  /** Are there settled turns above this page? */
+  more: boolean;
+};
+
+/** How much of a session to read. Omit for the whole thing. */
+export type SnapshotWindow = {
+  /** Newest N settled turns (unsettled ones always ride along). */
+  turns: number;
+  /** Page cursor from a previous read's `page.before`. */
+  before?: string;
+};
+
 /** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
  *  so it does not have to replay the journal from zero. */
 export type SessionSnapshot = {
@@ -149,6 +173,13 @@ export type SessionSnapshot = {
    * engine older than this field, in which case a client has to ask.
    */
   cursor?: number;
+  /**
+   * Present when the read was windowed (`session(id, { turns })`): the page
+   * above this one is `session(id, { turns, before })`, and `null` once the
+   * window reaches the session's first turn. Every unsettled turn is on the
+   * first page whatever the limit; `requests` are never windowed.
+   */
+  page?: SnapshotPage;
   session: Session;
   turns: Turn[];
   items: Item[];
@@ -1389,8 +1420,8 @@ export class EngineClient {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }
 
-  session(sessionId: string): Promise<SessionSnapshot> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}`);
+  session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`);
   }
 
   events(sessionId: string, after = 0): Promise<{ events: EngineEvent[]; cursor: number; more: boolean }> {

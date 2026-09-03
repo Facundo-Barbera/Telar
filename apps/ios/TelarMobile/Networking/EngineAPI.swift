@@ -7,7 +7,7 @@ import Foundation
 protocol EngineAPI: Sendable {
     func health() async throws -> EngineHealth
     func liveSessions() async throws -> LiveSessions
-    func session(_ id: EngineID) async throws -> SessionSnapshot
+    func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
     func events(_ id: EngineID, after: Int) async throws -> EventPage
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
     func stop(_ id: EngineID, runId: String?) async throws
@@ -45,6 +45,27 @@ protocol EngineAPI: Sendable {
     func revokeDevice(_ id: String) async throws
     /// Revoke every device except this one (the server keeps the caller).
     func revokeOtherDevices() async throws -> Int
+}
+
+/// Mirror of `SnapshotWindow` in packages/engine-client: how much of a
+/// session to read. Nil = the whole thing.
+struct SnapshotWindow: Sendable {
+    /// Newest N settled turns (unsettled ones always ride along).
+    var turns: Int
+    /// Page cursor from a previous read's `page.before`.
+    var before: EngineID?
+
+    init(turns: Int, before: EngineID? = nil) {
+        self.turns = turns
+        self.before = before
+    }
+}
+
+extension EngineAPI {
+    /// The unwindowed read older call sites mean.
+    func session(_ id: EngineID) async throws -> SessionSnapshot {
+        try await session(id, window: nil)
+    }
 }
 
 struct InboxPolicy: Decodable, Equatable {
@@ -179,8 +200,15 @@ struct HTTPEngineAPI: EngineAPI {
         try await get("api/sessions/live")
     }
 
-    func session(_ id: EngineID) async throws -> SessionSnapshot {
-        try await get("api/sessions/\(escape(id))")
+    func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
+        var query: [URLQueryItem] = []
+        if let window {
+            query.append(URLQueryItem(name: "turns", value: String(window.turns)))
+            if let before = window.before {
+                query.append(URLQueryItem(name: "before", value: before))
+            }
+        }
+        return try await get("api/sessions/\(escape(id))", query: query)
     }
 
     func events(_ id: EngineID, after: Int) async throws -> EventPage {

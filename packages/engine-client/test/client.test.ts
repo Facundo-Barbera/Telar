@@ -52,6 +52,25 @@ test("client exposes the authenticated ambiguous-turn discard action", async () 
   }]);
 });
 
+test("a windowed session read carries the window as query parameters", async () => {
+  const urls: string[] = [];
+  const client = new EngineClient(
+    { version: 2, daemonId: "daemon", host: "127.0.0.1", port: 4010, token: "x".repeat(32), startedAt: 1 },
+    (async (url) => {
+      urls.push(String(url));
+      return Response.json({ session: { id: "s" }, turns: [], items: [], requests: [], tasks: [] });
+    }) as typeof fetch,
+  );
+  await client.session("s", { turns: 10, before: "run_x" });
+  await client.session("s", { turns: 10 });
+  await client.session("s");
+  expect(urls).toEqual([
+    "http://127.0.0.1:4010/v2/sessions/s?turns=10&before=run_x",
+    "http://127.0.0.1:4010/v2/sessions/s?turns=10",
+    "http://127.0.0.1:4010/v2/sessions/s",
+  ]);
+});
+
 test("the root export is browser-safe: no node builtins reachable from it", async () => {
   /**
    * THE REGRESSION THIS PINS, and it shipped: `discoverEngine` sat in

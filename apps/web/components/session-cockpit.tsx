@@ -13,6 +13,7 @@ import {
   type ProviderDriverKind,
   type RuntimeMode,
   type Session,
+  type SnapshotPage,
   type Task,
   type Turn,
   type TurnState,
@@ -28,7 +29,7 @@ import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
-import { hydrateSession, tailSession } from "@/lib/engine/session-sync";
+import { INITIAL_TURNS, hydrateSession, loadOlderTurns, mergeRows, tailSession } from "@/lib/engine/session-sync";
 import { Composer } from "./composer";
 import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, RightPanel, type PanelTab, type TaskFocus } from "./right-panel";
@@ -641,6 +642,14 @@ export function SessionCockpit({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  /**
+   * The paging cursor of the WINDOWED transcript — where "Load earlier turns"
+   * continues from. Owned by hydrate and by that button alone: a companion
+   * snapshot (windowed to the same size) must not touch it, because its page
+   * describes the sliding newest window, not how far the reader has paged.
+   */
+  const [page, setPage] = useState<SnapshotPage>();
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [requests, setRequests] = useState<EngineRequest[]>([]);
   const [events, setEvents] = useState<EngineEvent[]>([]);
   const [draft, setDraft] = useState("");
@@ -682,13 +691,17 @@ export function SessionCockpit({
       enqueueSync(async () => {
         // Nothing to read before the first message creates the session.
         if (!sessionId) return;
-        const hydrated = await hydrateSession(api, sessionId);
+        // WINDOWED: the last ten user turns, not the whole history. Opening a
+        // 76-turn session used to fetch 4.5 MB of settled transcript; the rest
+        // stays on the engine behind "Load earlier turns".
+        const hydrated = await hydrateSession(api, sessionId, { turns: INITIAL_TURNS });
         setSession(hydrated.session);
         setTurns(hydrated.turns);
         setItems(hydrated.items);
         setTasks(hydrated.tasks);
         setRequests(hydrated.requests);
         setEvents(hydrated.events);
+        setPage(hydrated.page);
         cursor.current = hydrated.cursor;
       }),
     [enqueueSync, sessionId],
@@ -697,7 +710,10 @@ export function SessionCockpit({
     () =>
       enqueueSync(async () => {
         if (!sessionId) return;
-        const update = await tailSession(api, sessionId, cursor.current);
+        // The companion snapshot is windowed to the SAME size as hydrate's —
+        // a queue event on a long session must not refetch the whole history
+        // the window existed to avoid.
+        const update = await tailSession(api, sessionId, cursor.current, { turns: INITIAL_TURNS });
         if (update.events.length === 0) return;
         cursor.current = update.cursor;
         setEvents((current) => appendJournalEvents(current, update.events));
@@ -712,15 +728,37 @@ export function SessionCockpit({
           .find((event): event is Extract<EngineEvent, { type: "session.updated" }> => event.type === "session.updated");
         if (patched) setSession(patched.session);
         if (update.snapshot) {
-          setSession(update.snapshot.session);
-          setTurns(update.snapshot.turns);
-          setItems(update.snapshot.items);
-          setTasks(update.snapshot.tasks);
-          setRequests(update.snapshot.requests);
+          const snapshot = update.snapshot;
+          setSession(snapshot.session);
+          // A UNION, NOT A REPLACEMENT. The snapshot only carries the newest
+          // window, so a reader who paged older turns in would lose them to
+          // the first queue event. Fresh rows win the ids they carry; loaded
+          // older rows survive above them. `page` is deliberately untouched —
+          // see its declaration.
+          setTurns((current) => mergeRows(current, snapshot.turns, (turn) => turn.runId));
+          setItems((current) => mergeRows(current, snapshot.items, (item) => item.id));
+          setTasks((current) => mergeRows(current, snapshot.tasks, (task) => task.id));
+          setRequests(snapshot.requests);
         }
       }),
     [enqueueSync, sessionId],
   );
+  /** One page of settled turns above the transcript, on an explicit click —
+   *  never on scroll, so reading the top of the window stays free. */
+  const loadOlder = useCallback(() => {
+    const before = page?.before;
+    if (!sessionId || !before || loadingOlder) return;
+    setLoadingOlder(true);
+    void enqueueSync(async () => {
+      const older = await loadOlderTurns(api, sessionId, before);
+      setTurns((current) => mergeRows(older.turns, current, (turn) => turn.runId));
+      setItems((current) => mergeRows(older.items, current, (item) => item.id));
+      setTasks((current) => mergeRows(older.tasks, current, (task) => task.id));
+      setPage(older.page);
+    })
+      .catch((cause) => setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not load earlier turns.")))
+      .finally(() => setLoadingOlder(false));
+  }, [enqueueSync, sessionId, page, loadingOlder]);
 
   /**
    * Restore this session's panel AFTER mount, never during render.
@@ -1512,6 +1550,22 @@ export function SessionCockpit({
                 middle of the screen and is the whole interface; an empty-state
                 card above it would be a second thing competing to be read. */}
             {!error && !fresh && shown.length === 0 && <EmptyTranscript loading={loading} />}
+            {/* AN EXPLICIT CLICK, NOT A SCROLL TRIGGER. The reader asking for
+                history is the only thing that should fetch it — reaching the
+                top of the window to re-read something must stay free. */}
+            {page?.more && (
+              <div className="mx-auto w-full max-w-[50rem]">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  disabled={loadingOlder}
+                  onClick={loadOlder}
+                >
+                  {loadingOlder ? "Loading earlier turns…" : "Load earlier turns"}
+                </Button>
+              </div>
+            )}
             {shown.map((turn) => (
               <SessionTurn
                 key={turn.runId}

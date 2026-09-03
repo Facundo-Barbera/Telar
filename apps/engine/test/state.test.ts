@@ -118,6 +118,43 @@ test("the event cursor is the last journal id, read without the journal", () => 
   expect(store.eventCursor("session_one")).toBe(big.id);
 });
 
+test("a windowed snapshot is the newest settled turns plus everything unsettled, paged by runId", () => {
+  const { store } = readyStore();
+  for (const n of [1, 2, 3, 4, 5]) {
+    const runId = `run_${n}`;
+    store.submitTurn("session_one", { runId, input: `Turn ${n}` });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", runId, token);
+    store.ingestObservations("session_one", runId, token, [
+      { kind: "item.started", item: { id: `i_${n}`, detail: { type: "assistant_message", text: `Answer ${n}` } } },
+      { kind: "item.completed", itemId: `i_${n}`, status: "completed" },
+    ]);
+    store.completeTurn("session_one", runId, token, { text: `Answer ${n}` });
+  }
+  store.submitTurn("session_one", { runId: "run_live", input: "Now" }); // queued — unsettled
+
+  const first = store.snapshotWindow("session_one", { limit: 2 });
+  expect(first.turns.map((turn) => turn.runId)).toEqual(["run_4", "run_5", "run_live"]);
+  expect(first.page).toEqual({ before: "run_4", more: true });
+  // Items follow their turns — the window is what makes the read small.
+  expect(first.items.map((item) => item.id).sort()).toEqual(["i_4", "i_5"]);
+
+  const older = store.snapshotWindow("session_one", { limit: 2, before: "run_4" });
+  expect(older.turns.map((turn) => turn.runId)).toEqual(["run_2", "run_3"]);
+  expect(older.page).toEqual({ before: "run_2", more: true });
+
+  const oldest = store.snapshotWindow("session_one", { limit: 2, before: "run_2" });
+  expect(oldest.turns.map((turn) => turn.runId)).toEqual(["run_1"]);
+  expect(oldest.page).toEqual({ before: null, more: false });
+
+  // A limit past the start is the whole history, first page, no cursor.
+  const whole = store.snapshotWindow("session_one", { limit: 50 });
+  expect(whole.turns).toHaveLength(6);
+  expect(whole.page).toEqual({ before: null, more: false });
+
+  expect(() => store.snapshotWindow("session_one", { limit: 2, before: "run_nope" })).toThrow(EngineStateError);
+});
+
 test("stop is durable and idempotent", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
