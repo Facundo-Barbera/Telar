@@ -51,6 +51,7 @@ import {
   LayoutGridIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
+  MonitorIcon,
   MoreHorizontalIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
@@ -78,9 +79,12 @@ import {
   SESSION_PAGE_SIZE,
   SETTLED_PAGE_SIZE,
   sessionHref,
+  sessionKey,
   toSidebarSession,
   type SidebarSession,
 } from "@/lib/session-list";
+import { hostFetcher } from "@/lib/hosts/client";
+import type { PublicHost } from "@/lib/hosts/store";
 import {
   Sidebar,
   SidebarContent,
@@ -326,9 +330,9 @@ function SessionShelf({
         <SidebarGroupContent className="space-y-0.5">
           {(limit === undefined ? rows : rows.slice(0, limit)).map((session) => (
             <SessionRow
-              key={session.id}
+              key={sessionKey(session)}
               session={session}
-              active={session.id === activeSessionId}
+              active={sessionKey(session) === activeSessionId}
               showProject={showProject}
               // A SHELF IS OFF THE LIST — history behind you or work deferred
               // ahead of you — so its rows give their space back, one dim line
@@ -398,6 +402,16 @@ function SidebarBody() {
   const [sessionLimit, setSessionLimit] = useState(SESSION_PAGE_SIZE);
   const [settledLimit, setSettledLimit] = useState(SETTLED_PAGE_SIZE);
   const [unavailable, setUnavailable] = useState(false);
+  /**
+   * THE OTHER MACS, and which of them did not answer on the last read. The
+   * book is re-read on every poll (it is one small local file) so a Mac
+   * paired from Settings shows up on the next tick without a reload. A host
+   * that is away keeps its name in the rail — a line under its last rows —
+   * rather than vanishing, which would read as "those conversations are
+   * gone" when they are merely out of reach.
+   */
+  const [hosts, setHosts] = useState<PublicHost[]>([]);
+  const [unreachable, setUnreachable] = useState<Set<string>>(() => new Set());
   const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
 
@@ -407,45 +421,66 @@ function SidebarBody() {
     if (isMobile) setOpenMobile(false);
   }, [isMobile, setOpenMobile]);
 
-  const loadAll = useCallback(async () => {
-    try {
-      const result = await api.projects();
-      const names = new Map(result.projects.map((project) => [project.id, project.name]));
-      // The checkout's current branch, for the local sessions that share it —
-      // they have no branch of their own. Derived per project by the engine.
-      const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
-      const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
-      setProjects(result.projects);
-      setUnavailable(false);
-      // One request per project, in parallel, because the engine lists sessions
-      // per project and this rail's default scope is "all of them".
-      // `allSettled`, not `all`: one unreachable project must not blank the
-      // whole list — the sessions that did answer are still worth showing.
-      const pages = await Promise.allSettled(result.projects.map((project) => api.sessions(project.id)));
-      setSessions(
-        pages.flatMap((page) =>
-          page.status === "fulfilled"
-            ? page.value.sessions.map((session) =>
-                // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
-                // project-scoped list and the Spool's master chat is a
-                // destination, not a conversation in it — the engine's reads
-                // already exclude it, and this keeps that true if one ever
-                // arrives by another path.
-                toSidebarSession(
-                  session,
-                  session.projectId ? names.get(session.projectId) : undefined,
-                  session.projectId ? branches.get(session.projectId) : undefined,
-                  session.projectId ? icons.get(session.projectId) : undefined,
-                ),
-              )
-            : [],
-        ),
-      );
-      setRenderedAt(Date.now());
-    } catch {
-      setUnavailable(true);
-    }
+  /**
+   * One Mac's rows: its projects, then one session read per project, in
+   * parallel, because the engine lists sessions per project and this rail's
+   * default scope is "all of them". `allSettled`, not `all`: one unreachable
+   * project must not blank the whole list — the sessions that did answer are
+   * still worth showing. Local and remote go through the same function; the
+   * only difference is the fetcher, which decides which Mac answers.
+   */
+  const loadHost = useCallback(async (host: { id: string; name: string } | undefined) => {
+    const hostApi = host ? createEngineApi(hostFetcher(host.id)) : api;
+    const result = await hostApi.projects();
+    const names = new Map(result.projects.map((project) => [project.id, project.name]));
+    // The checkout's current branch, for the local sessions that share it —
+    // they have no branch of their own. Derived per project by the engine.
+    const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
+    const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
+    const pages = await Promise.allSettled(result.projects.map((project) => hostApi.sessions(project.id)));
+    const sessions = pages.flatMap((page) =>
+      page.status === "fulfilled"
+        ? page.value.sessions.map((session) =>
+            // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
+            // project-scoped list and the Spool's master chat is a
+            // destination, not a conversation in it — the engine's reads
+            // already exclude it, and this keeps that true if one ever
+            // arrives by another path.
+            toSidebarSession(
+              session,
+              session.projectId ? names.get(session.projectId) : undefined,
+              session.projectId ? branches.get(session.projectId) : undefined,
+              session.projectId ? icons.get(session.projectId) : undefined,
+              host,
+            ),
+          )
+        : [],
+    );
+    return { projects: result.projects, sessions };
   }, []);
+
+  const loadAll = useCallback(async () => {
+    // The book first, and never fatal: a cockpit with no remotes (or one whose
+    // pairing store is unreadable) is the ordinary local cockpit.
+    const book = await api.hosts().then((answer) => answer.hosts).catch(() => [] as PublicHost[]);
+    setHosts(book);
+    const [local, ...remotes] = await Promise.allSettled([loadHost(undefined), ...book.map((host) => loadHost({ id: host.id, name: host.name }))]);
+    if (local.status !== "fulfilled") {
+      setUnavailable(true);
+      return;
+    }
+    setUnavailable(false);
+    setProjects(local.value.projects);
+    const away = new Set<string>();
+    const remoteSessions = remotes.flatMap((page, index) => {
+      if (page.status === "fulfilled") return page.value.sessions;
+      away.add(book[index]!.id);
+      return [];
+    });
+    setUnreachable(away);
+    setSessions([...local.value.sessions, ...remoteSessions]);
+    setRenderedAt(Date.now());
+  }, [loadHost]);
 
   useEffect(() => {
     const task = window.setTimeout(() => void loadAll(), 0);
@@ -605,7 +640,7 @@ function SidebarBody() {
    */
   const composerProjectId =
     selectedScope ??
-    sessions.find((session) => session.id === activeSessionId)?.projectId ??
+    sessions.find((session) => sessionKey(session) === activeSessionId)?.projectId ??
     [...sessions].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.projectId ??
     projects[0]?.id;
 
@@ -838,9 +873,9 @@ function SidebarBody() {
             <SidebarGroupContent className="space-y-0.5">
               {list.pinned.map((session) => (
                 <SessionRow
-                  key={session.id}
+                  key={sessionKey(session)}
                   session={session}
-                  active={session.id === activeSessionId}
+                  active={sessionKey(session) === activeSessionId}
                   showProject={showProject}
                   variant="card"
                   band="pinned"
@@ -892,9 +927,9 @@ function SidebarBody() {
             ) : (
               list.sessions.map((session, index) => (
                 <SessionRow
-                  key={session.id}
+                  key={sessionKey(session)}
                   session={session}
-                  active={session.id === activeSessionId}
+                  active={sessionKey(session) === activeSessionId}
                   showProject={showProject}
                   // A SEARCH RESULT IS ALREADY THE ANSWER to a question you
                   // asked, so every row in it is equally relevant and density
@@ -922,6 +957,18 @@ function SidebarBody() {
                 Show more
               </button>
             )}
+            {/* A MAC THAT DID NOT ANSWER IS NAMED, NOT DROPPED. Its rows are
+                simply absent from this read (the next tick retries), and a
+                list that silently shrank would read as "those conversations
+                are gone". One quiet line per away Mac says what happened. */}
+            {hosts
+              .filter((host) => unreachable.has(host.id))
+              .map((host) => (
+                <div key={host.id} className="flex items-center gap-1.5 px-2 py-1.5 text-[0.6875rem] text-muted-foreground" role="status">
+                  <MonitorIcon className="size-3 shrink-0" />
+                  <span className="min-w-0 truncate">{host.name} did not answer — retrying</span>
+                </div>
+              ))}
           </SidebarGroupContent>
         </SidebarGroup>
 

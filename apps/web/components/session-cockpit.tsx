@@ -18,7 +18,8 @@ import {
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
-import { canvasHref } from "@/lib/session-list";
+import { canvasHref, sessionHref } from "@/lib/session-list";
+import { hostFromPathname } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { useSessionDefaults } from "@/lib/session-defaults";
@@ -108,6 +109,7 @@ function SessionProblem({ error }: { error: EngineApiError }) {
  */
 function SessionMasthead({
   projectId,
+  hostId,
   projectName,
   session,
   sending,
@@ -116,6 +118,8 @@ function SessionMasthead({
   readOnly = false,
 }: {
   projectId: string;
+  /** Which Mac the project is on — the breadcrumb's link must stay there. */
+  hostId: string;
   /** Resolved from the project record. Absent until it loads — the breadcrumb
    *  falls back to the id rather than showing a gap, but an opaque
    *  `project_1a1649…` is addressing, not a name a person navigates by. */
@@ -187,7 +191,7 @@ function SessionMasthead({
             looks like. It pointed at the retired `/projects` table, which named
             every project and therefore answered a question nobody had asked. */}
         <Link
-          href={canvasHref(projectId)}
+          href={canvasHref(projectId, hostId)}
           className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {projectName ?? session?.projectId ?? projectId}
@@ -549,7 +553,12 @@ export function SessionCockpit({
    * in-place rewrite: on the canvas path there is no session, whatever this
    * component created a moment ago.
    */
-  const onCanvas = usePathname() === canvasHref(projectId);
+  const pathname = usePathname();
+  // WHICH MAC THIS SCREEN IS ABOUT — the address bar says (lib/hosts/client.ts).
+  // Every link this component builds carries it, so a remote session's
+  // breadcrumb and its post-creation rewrite stay on the remote.
+  const hostId = hostFromPathname(pathname);
+  const onCanvas = pathname === canvasHref(projectId, hostId);
   const sessionId = routeSessionId ?? (onCanvas ? undefined : createdSessionId);
   /** No session yet: the composer is the whole screen and nothing is polled. */
   const fresh = !sessionId;
@@ -1249,7 +1258,7 @@ export function SessionCockpit({
         setCreatedSessionId(target);
         // Only when the patch did not already give us a newer record.
         if (Object.keys(creationPatch).length === 0) setSession(created.session);
-        window.history.replaceState(null, "", `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(target)}`);
+        window.history.replaceState(null, "", sessionHref({ id: target, projectId, hostId }));
       }
       /**
        * ATTACHMENTS UPLOAD AT SEND, NOT AT PICK.
@@ -1463,6 +1472,7 @@ export function SessionCockpit({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <SessionMasthead
           projectId={projectId}
+          hostId={hostId}
           projectName={projectName}
           session={session}
           sending={sending}

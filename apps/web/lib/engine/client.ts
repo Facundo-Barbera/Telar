@@ -55,6 +55,10 @@ import type {
   WorkspaceWriteResult,
 } from "@telar/engine-client";
 import { forgeQuery } from "@telar/engine-client";
+import { pathnameFetcher } from "@/lib/hosts/client";
+// Type-only, like `Channel` above: the store reads the filesystem and must not
+// follow into the browser bundle.
+import type { PublicHost } from "@/lib/hosts/store";
 
 /**
  * DERIVED FROM THE CONTRACT, not re-listed beside it. This union used to be ten
@@ -106,7 +110,14 @@ async function request<T>(fetcher: Fetcher, method: string, pathname: string, bo
   return payload as T;
 }
 
-export function createEngineApi(fetcher: Fetcher = fetch) {
+/**
+ * THE DEFAULT FETCHER FOLLOWS THE ADDRESS BAR (lib/hosts/client.ts): a screen
+ * under `/hosts/:id/…` is about another Mac, and every call this api makes
+ * from it is routed through that Mac's proxy. Callers that know which host
+ * they mean regardless of the URL — the sidebar fanning out over all of them
+ * — pass `hostFetcher(id)` instead.
+ */
+export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
   return {
     health: () => request<EngineHealth>(fetcher, "GET", "/api/health"),
     /** Which build this is, what it looks like, and where its state lives.
@@ -120,6 +131,13 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
         "/api/about",
       ),
     projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
+    /** The other Macs this cockpit is paired with — always THIS cockpit's book,
+     *  whichever host the fetcher points at (lib/hosts/client.ts). */
+    hosts: () => request<{ hosts: PublicHost[] }>(fetcher, "GET", "/api/hosts"),
+    addHost: (input: { pairingUrl: string; name?: string }) => request<{ host: PublicHost }>(fetcher, "POST", "/api/hosts", input),
+    renameHost: (hostId: string, name: string) =>
+      request<{ host: PublicHost }>(fetcher, "PATCH", `/api/hosts/${encodeURIComponent(hostId)}`, { name }),
+    removeHost: (hostId: string) => request<{ ok: boolean }>(fetcher, "DELETE", `/api/hosts/${encodeURIComponent(hostId)}`),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     /** How this machine's inbox bands — the auto-settle window, or `null` for

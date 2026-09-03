@@ -4,6 +4,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { URL } from "node:url";
 import {
@@ -483,9 +484,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
   workerPruner.unref();
 
+  // Read once: it names the Mac to another cockpit (`.local` dropped — it is
+  // mDNS's suffix, not the name), and a name that flickered per request
+  // would be a row that renames itself.
+  const hostname = os.hostname().replace(/\.local$/i, "") || undefined;
   const health = (): EngineHealth => ({
     version: ENGINE_PROTOCOL_VERSION,
     daemonId,
+    ...(hostname ? { hostname } : {}),
     startedAt,
     ...(() => {
       pruneWorkers();

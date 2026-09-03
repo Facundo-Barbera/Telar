@@ -33,6 +33,7 @@ import { McpSection } from "./mcp-section";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
+import { OtherMacsSection } from "./other-macs-section";
 import { TextGenSection } from "./textgen-section";
 import { UpdatesSection } from "./updates-section";
 import { WorkspaceSection } from "./workspace-section";
@@ -197,7 +198,12 @@ export function SettingsPage() {
         </>
       )}
 
-      {active === "remote" && <RemoteSection />}
+      {active === "remote" && (
+        <>
+          <RemoteSection />
+          <OtherMacsSection />
+        </>
+      )}
 
       {active === "providers" && <ProvidersSection />}
 
