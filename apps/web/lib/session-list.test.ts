@@ -9,11 +9,13 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  activeSessionFromPathname,
   canvasProjectFromPathname,
   bandOf,
   canvasHref,
   deriveSessionList,
   sessionHref,
+  sessionKey,
   SETTLED_AFTER_MS,
   settlingActivity,
   toSidebarSession,
@@ -282,6 +284,33 @@ describe("canvasHref", () => {
     expect(canvasHref("a/b")).toBe("/projects/a%2Fb/sessions/new");
     // And it must not be mistaken for a session by the sidebar's own reader.
     expect(sessionHref({ id: "s1", projectId: "project_a" })).not.toBe(canvasHref("project_a"));
+  });
+});
+
+describe("sessions on another Mac", () => {
+  test("a remote session's route carries its host, and reads back as a scoped key", () => {
+    const href = sessionHref({ id: "s1", projectId: "project_a", hostId: "host_ab" });
+    expect(href).toBe("/hosts/host_ab/projects/project_a/sessions/s1");
+    // Two Macs can mint the same session id; the open one is matched by
+    // host AND id, so a local s1 is not lit up by a remote s1.
+    expect(activeSessionFromPathname(href)).toBe("host_ab:s1");
+    expect(activeSessionFromPathname("/projects/project_a/sessions/s1")).toBe("s1");
+    expect(sessionKey({ id: "s1", hostId: "host_ab" })).toBe("host_ab:s1");
+    expect(sessionKey({ id: "s1" })).toBe("s1");
+  });
+
+  test("the remote canvas round-trips like the local one", () => {
+    expect(canvasHref("project_a", "host_ab")).toBe("/hosts/host_ab/projects/project_a/sessions/new");
+    expect(canvasHref("project_a", "local")).toBe("/projects/project_a/sessions/new");
+    expect(canvasProjectFromPathname(canvasHref("project_a", "host_ab"))).toBe("project_a");
+  });
+
+  test("the row you are reading survives paging on its own host only", () => {
+    const rows = [row("s1", "Local one"), row("s1", "Remote one", { hostId: "host_ab", hostName: "Mini" })];
+    const list = deriveSessionList({ sessions: rows, activeSessionId: "host_ab:s1", now: NOW, limit: 1 });
+    // Page size one: the local s1 fills the page, and the remote s1 is pulled
+    // in as the survivor — by its scoped key, not by a bare id that both share.
+    expect(list.sessions.map((session) => sessionKey(session))).toEqual(["s1", "host_ab:s1"]);
   });
 });
 

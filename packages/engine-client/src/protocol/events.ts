@@ -218,6 +218,13 @@ export type EngineDiscovery = z.infer<typeof EngineDiscovery>;
 export const EngineHealth = z.object({
   version: z.literal(2),
   daemonId: Id,
+  /**
+   * THE MACHINE'S OWN NAME — what another cockpit calls this one before a
+   * person renames it. `daemonId` is minted fresh every start, so it can say
+   * "same engine as before" but never "which Mac". Optional because an engine
+   * from before this field never sends it and a client must not fail on it.
+   */
+  hostname: z.string().min(1).optional(),
   startedAt: Timestamp,
   worker: z.object({
     registered: z.boolean(),

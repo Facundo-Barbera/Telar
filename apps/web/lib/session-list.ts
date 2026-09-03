@@ -28,6 +28,7 @@
  */
 import { DEFAULT_AUTO_SETTLE_HOURS, type Session, type SessionActivity } from "@telar/engine-client";
 import { isSettled, isSnoozed, type SettlingActivity, type SettlingOptions } from "./session-settling";
+import { hostPrefix } from "./hosts/client";
 
 export const SESSION_PAGE_SIZE = 20;
 /** The settled shelf's own page. Smaller than the live list's, because the
@@ -47,6 +48,15 @@ export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_HOURS * 60 * 60 * 1000;
 export type SidebarSession = {
   id: string;
   title: string;
+  /**
+   * WHICH MAC. Absent for the local engine — the common case, and the one
+   * every existing caller already has. A remote session carries the host's
+   * id (its routes live under `/hosts/:id/…`) and the label a row shows. Two
+   * Macs can mint the same session id, so `id` alone is not a key once these
+   * are present; see `sessionKey`.
+   */
+  hostId?: string;
+  hostName?: string;
   /**
    * OPTIONAL, and the rail never receives one without it today.
    *
@@ -104,10 +114,17 @@ export type SidebarSession = {
 };
 
 /** The engine record, flattened into what the rail actually reads. */
-export function toSidebarSession(session: Session, projectName?: string, projectBranch?: string, projectIcon?: string): SidebarSession {
+export function toSidebarSession(
+  session: Session,
+  projectName?: string,
+  projectBranch?: string,
+  projectIcon?: string,
+  host?: { id: string; name: string },
+): SidebarSession {
   return {
     id: session.id,
     title: session.title,
+    ...(host ? { hostId: host.id, hostName: host.name } : {}),
     projectId: session.projectId,
     ...(projectName ? { projectName } : {}),
     ...(projectBranch ? { projectBranch } : {}),
@@ -218,14 +235,21 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
   return isSettled(session, activity, options) ? "settled" : "active";
 }
 
+/** A session's identity across every Mac in the rail: two engines can mint
+ *  the same id, so the host rides in front. Local sessions keep their bare
+ *  id, which is what every URL and every existing comparison already uses. */
+export function sessionKey(session: Pick<SidebarSession, "id" | "hostId">): string {
+  return session.hostId ? `${session.hostId}:${session.id}` : session.id;
+}
+
 function pageWithActive(
   rows: readonly SidebarSession[],
   limit: number,
   activeSessionId?: string,
 ): { rows: SidebarSession[]; hasMore: boolean } {
   const visible = rows.slice(0, limit);
-  const active = activeSessionId ? rows.find((row) => row.id === activeSessionId) : undefined;
-  if (active && !visible.some((row) => row.id === active.id)) visible.push(active);
+  const active = activeSessionId ? rows.find((row) => sessionKey(row) === activeSessionId) : undefined;
+  if (active && !visible.some((row) => sessionKey(row) === sessionKey(active))) visible.push(active);
   return { rows: visible, hasMore: rows.length > limit };
 }
 
@@ -285,9 +309,9 @@ export function deriveSessionList({
   // list, undoing the settle nobody asked to undo. Settled is a decision (or an
   // aged-out fact), and merely READING a session is neither — the row stays on
   // its shelf, highlighted there, until the person presses "Return to the list".
-  const activeSnoozed = activeSessionId ? snoozed.find((session) => session.id === activeSessionId) : undefined;
+  const activeSnoozed = activeSessionId ? snoozed.find((session) => sessionKey(session) === activeSessionId) : undefined;
   const currentWithSurvivor = activeSnoozed ? [...current, activeSnoozed].sort(createdNewestFirst) : current;
-  const snoozedRest = activeSnoozed ? snoozed.filter((session) => session.id !== activeSnoozed.id) : snoozed;
+  const snoozedRest = activeSnoozed ? snoozed.filter((session) => sessionKey(session) !== sessionKey(activeSnoozed)) : snoozed;
 
   const currentPage = pageWithActive(currentWithSurvivor, limit, activeSessionId);
   // `activeSessionId` threaded so the settled row you are READING stays on the
@@ -349,13 +373,13 @@ export function recentSessionsForCommandKeys(
 
 /** The route a session's own row links to — spelled once so every caller
  *  resolves to the exact same URL a click on the row would. */
-export function sessionHref(session: Pick<SidebarSession, "id" | "projectId">): string {
+export function sessionHref(session: Pick<SidebarSession, "id" | "projectId" | "hostId">): string {
   // A SESSION WITH NO PROJECT IS THE SPOOL'S MASTER CHAT, and its address is the
   // Spool itself — there is no `/projects/<id>/...` URL to build for it, and
   // composing one with `undefined` in the path would 404 in a way that looks
   // like a routing bug rather than a session that lives somewhere else.
   if (!session.projectId) return "/spool";
-  return `/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
+  return `${hostPrefix(session.hostId)}/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}`;
 }
 
 /**
@@ -364,18 +388,27 @@ export function sessionHref(session: Pick<SidebarSession, "id" | "projectId">): 
  * is showing a canvas or a session by COMPARING the pathname to this string, so
  * a second spelling anywhere would be a screen that never resets.
  */
-export function canvasHref(projectId: string): string {
-  return `/projects/${encodeURIComponent(projectId)}/sessions/new`;
+export function canvasHref(projectId: string, hostId?: string): string {
+  return `${hostPrefix(hostId)}/projects/${encodeURIComponent(projectId)}/sessions/new`;
 }
 
+/**
+ * Which session is open — on whichever Mac. Answers the same `sessionKey` a
+ * row carries, so a remote session you are reading is matched against its
+ * own host and not against a local session that happens to share the id.
+ */
 export function activeSessionFromPathname(pathname: string): string | undefined {
-  const match = /^\/projects\/[^/]+\/sessions\/([^/?#]+)/.exec(pathname);
+  const match = /^(?:\/hosts\/([^/]+))?\/projects\/[^/]+\/sessions\/([^/?#]+)/.exec(pathname);
   if (!match) return undefined;
-  try {
-    return decodeURIComponent(match[1]);
-  } catch {
-    return match[1];
-  }
+  const decode = (raw: string) => {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  };
+  const id = decode(match[2]);
+  return match[1] ? `${decode(match[1])}:${id}` : id;
 }
 
 /**
@@ -388,7 +421,7 @@ export function activeSessionFromPathname(pathname: string): string | undefined 
  * session route the draft rows are all elsewhere and none of them is current.
  */
 export function canvasProjectFromPathname(pathname: string): string | undefined {
-  const match = /^\/projects\/([^/]+)\/sessions\/new\/?$/.exec(pathname);
+  const match = /^(?:\/hosts\/[^/]+)?\/projects\/([^/]+)\/sessions\/new\/?$/.exec(pathname);
   if (!match) return undefined;
   try {
     return decodeURIComponent(match[1]);

@@ -35,6 +35,7 @@ import {
   CircleDotIcon,
   ClockIcon,
   GitBranchIcon,
+  MonitorIcon,
   PinIcon,
   UndoIcon,
 } from "lucide-react";
@@ -369,6 +370,20 @@ export function SessionRow({
     ) : null;
 
   /**
+   * WHICH MAC, when it is not this one. A remote row says so on its header
+   * line, after the project, in the same weight — it is an address, not a
+   * status. Local rows carry nothing: the local engine is the default, and
+   * a chip reading "This Mac" on every row would be the "Claude on every
+   * card" failure the third line already learned from.
+   */
+  const hostMark = session.hostName ? (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-[0.625rem] leading-4 text-sidebar-foreground/60" title={`On ${session.hostName}`}>
+      <MonitorIcon className="size-2.5" />
+      <span className="max-w-24 truncate">{session.hostName}</span>
+    </span>
+  ) : null;
+
+  /**
    * THE CARD: three lines, and each answers a different question.
    *   project + status  — whose is this, and what is it doing
    *   title             — the only thing anyone scans for
@@ -394,6 +409,7 @@ export function SessionRow({
         ) : (
           <span className="flex-1" />
         )}
+        {hostMark}
         {statusSlot}
       </span>
       <span className="flex min-w-0 items-center gap-1.5">
