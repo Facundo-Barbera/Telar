@@ -1391,3 +1391,34 @@ describe("the session runtime", () => {
     expect(ended).toBe(true);
   });
 });
+
+  test("a re-stamped MCP server record does not cold-start the process — only id and spec are identity", async () => {
+    /**
+     * MEASURED ON THE DEV APP: the engine re-registers the Computer Use
+     * server each turn with fresh createdAt/updatedAt, and a fingerprint
+     * hashing the whole record cold-started a new CLI per turn — killing the
+     * background work the session runtime exists to keep alive.
+     */
+    let queryCalls = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        queryCalls += 1;
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const serverAt = (at: number) => [
+      { id: "mac", label: "Computer Use (Mac)", enabled: true, createdAt: at, updatedAt: at, spec: { transport: "stdio", command: "cua", args: ["mcp"] } },
+    ];
+    await run(driver, { sessionId: "session_stamped", mcpServers: serverAt(1) }).result;
+    await run(driver, { sessionId: "session_stamped", mcpServers: serverAt(2) }).result;
+    expect(queryCalls).toBe(1);
+    // A change to the SPEC is real identity and still recreates.
+    await run(driver, {
+      sessionId: "session_stamped",
+      mcpServers: [{ id: "mac", label: "Computer Use (Mac)", enabled: true, createdAt: 3, updatedAt: 3, spec: { transport: "stdio", command: "elsewhere", args: ["mcp"] } }],
+    }).result;
+    expect(queryCalls).toBe(2);
+  });

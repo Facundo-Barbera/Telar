@@ -1407,7 +1407,15 @@ export function createClaudeDriver(
         effort: sdkEffort ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
-        servers: userMcpServers ?? null,
+        /**
+         * ID AND SPEC ONLY, never the whole record. Measured on the dev app:
+         * the auto-registered Computer Use server is re-stamped
+         * (`createdAt`/`updatedAt`) on every turn, and hashing those
+         * timestamps cold-started a new process per turn — killing the very
+         * background work this runtime exists to keep alive. Only what shapes
+         * the spawned process belongs here.
+         */
+        servers: userMcpServers?.map((server) => ({ id: server.id, enabled: server.enabled, spec: server.spec })) ?? null,
         browser: browserSocket ?? null,
         spool: Boolean(spool),
         sessions: Boolean(sessions),
@@ -1593,6 +1601,10 @@ export function createClaudeDriver(
        */
       const persistent = streaming;
       let claimed = persistent ? runtimes.claim(sessionId, fingerprint) : undefined;
+      // Field diagnosis only: which fingerprint field broke reuse. Off unless asked.
+      if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
+        console.error(`[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} fp=${fingerprint}`);
+      }
       if (claimed && claimed.model !== model) {
         // The one knob a live query can turn. A query that cannot (a fake
         // SDK, an older CLI) is replaced instead of patched.
