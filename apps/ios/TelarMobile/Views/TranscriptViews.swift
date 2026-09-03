@@ -8,7 +8,13 @@ struct TranscriptView: View {
     let turns: [JournalTurn]
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 16) {
+        // EAGER, not lazy. A LazyVStack only estimates the height of rows it
+        // has not built, so "scroll to the bottom edge" resolves against a
+        // fiction: on a long transcript it parked the viewport in a region
+        // where nothing had been materialised and the screen came up BLANK.
+        // A transcript is bounded (and PR 2 windows it further), so paying for
+        // real heights up front is what makes the tail a real place.
+        VStack(alignment: .leading, spacing: 16) {
             ForEach(turns) { turn in
                 TurnView(turn: turn)
             }

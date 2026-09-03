@@ -7,6 +7,17 @@ struct SessionView: View {
     @State private var renaming = false
     @State private var renameDraft = ""
     @State private var showChanges = false
+    /// Stick-to-bottom (t3's `use-stick-to-bottom`), the native iOS 18 way: a
+    /// position pinned to an EDGE rather than an offset stays on that edge as
+    /// the content grows, which is the whole behaviour. `isPositionedByUser`
+    /// flips the moment the reader scrolls, and that is what "let them go"
+    /// keys on. `.defaultScrollAnchor` cannot do this job — it is solved once,
+    /// when the ScrollView first appears, and the transcript is still EMPTY
+    /// then (the snapshot lands a poll later), so it anchors nothing.
+    @State private var position = ScrollPosition(edge: .bottom)
+    /// Geometry's answer to "parked at the tail?" — only meaningful once the
+    /// reader has taken control; before that the pin is the truth.
+    @State private var isAtBottom = true
     private let api: any EngineAPI
     private let sessionId: EngineID
     @Environment(\.scenePhase) private var scenePhase
@@ -18,26 +29,69 @@ struct SessionView: View {
         _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId))
     }
 
+    /// Queued and steering messages live in the strip under the composer; a
+    /// STEERED one's content already appears inside the host turn as a
+    /// user_message item — rendering the turn too is the double bubble.
+    /// (Web rule, 1:1.)
+    private var visibleTurns: [JournalTurn] {
+        store.sync.turns.filter {
+            $0.state != .queued && $0.state != .steering && $0.state != .steered
+        }
+    }
+
+    /// What can change the transcript's HEIGHT, and nothing else. Keying the
+    /// follow on `lastActivityAt` was the scroll loop: it moves on every
+    /// `content.delta` (~once per poll), so each tick started a fresh animated
+    /// scroll against a target the LazyVStack was still re-measuring.
+    private var contentFingerprint: String {
+        let turns = visibleTurns
+        guard let last = turns.last else { return "empty" }
+        let lastItem = last.items.last
+        return [
+            String(turns.count),
+            String(last.items.count),
+            String(last.tasks.count),
+            lastItem?.id ?? "-",
+            String(lastItem?.streamedText.count ?? 0),
+            last.state.rawValue,
+        ].joined(separator: "/")
+    }
+
+    /// The button is for a reader who walked away, so it needs BOTH: they took
+    /// control, and they are not at the tail. Geometry alone showed it on open,
+    /// while the first fill was still settling and nobody had scrolled.
+    private var showsJumpButton: Bool {
+        position.isPositionedByUser && !isAtBottom
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    // Queued messages live below the composer (t3's queue
-                    // line), not in the transcript.
-                    // Queued and steering messages live in the strip under
-                    // the composer; a STEERED one's content already appears
-                    // inside the host turn as a user_message item — rendering
-                    // the turn too is the double bubble. (Web rule, 1:1.)
-                    TranscriptView(turns: store.sync.turns.filter {
-                        $0.state != .queued && $0.state != .steering && $0.state != .steered
-                    })
-                        .padding(.vertical, 12)
-                    Color.clear.frame(height: 1).id("bottom")
-                }
-                .defaultScrollAnchor(.bottom)
-                .onChange(of: store.sync.turns.last?.lastActivityAt) {
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
-                }
+            ScrollView {
+                // Queued messages live below the composer (t3's queue line),
+                // not in the transcript.
+                TranscriptView(turns: visibleTurns)
+                    .padding(.vertical, 12)
+            }
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height
+                    >= geometry.contentSize.height - 40
+            } action: { _, atBottom in
+                isAtBottom = atBottom
+            }
+            // THE CASE THAT WAS BROKEN: the transcript arrives a poll after the
+            // view does, so the first non-empty fill is the real "open", and
+            // that is when the tail has to be re-pinned.
+            .onChange(of: visibleTurns.isEmpty) { _, isEmpty in
+                guard !isEmpty else { return }
+                followTail()
+            }
+            .onChange(of: contentFingerprint) { followTail() }
+            .overlay(alignment: .bottomTrailing) {
+                jumpToBottomButton()
+                    .opacity(showsJumpButton ? 1 : 0)
+                    .allowsHitTesting(showsJumpButton)
+                    .animation(.easeInOut(duration: 0.15), value: showsJumpButton)
             }
             footer
         }
@@ -62,6 +116,42 @@ struct SessionView: View {
             Button("Rename") { Task { await store.rename(renameDraft) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// Re-pin to the tail, unless the reader has taken the scroll — scrolled
+    /// away means scrolled away, and nothing here yanks them back.
+    /// No animation: following should read as content growing under a fixed
+    /// viewport, and an animation per delta is what made it visibly pump.
+    private func followTail() {
+        guard !position.isPositionedByUser else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            position.scrollTo(edge: .bottom)
+        }
+    }
+
+    /// The way back to the tail once you've read up. This one DOES animate —
+    /// a deliberate tap, not a follow.
+    private func jumpToBottomButton() -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.2)) {
+                position.scrollTo(edge: .bottom)
+            }
+        } label: {
+            Image(systemName: "arrow.down")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.text)
+                .frame(width: 36, height: 36)
+                .background(Theme.card)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+                .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+        }
+        .buttonStyle(.plain)
+        .padding(.trailing, 16)
+        .padding(.bottom, 12)
+        .accessibilityLabel("Scroll to the newest message")
     }
 
     /// t3's sticky overlay: pending cards above, then the composer on a

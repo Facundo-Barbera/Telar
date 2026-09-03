@@ -35,22 +35,51 @@ const accepted: EngineEvent = { ...envelope, id: 1, type: "turn.accepted", turn,
 const started: EngineEvent = { ...envelope, id: 2, at: 2, type: "turn.started" };
 
 describe("session hydration", () => {
-  test("closes the snapshot/journal gap without dropping a running transition", async () => {
+  test("opens on the snapshot and tails from its cursor — never from zero", async () => {
     const calls: string[] = [];
     const api = {
       events: async (_sessionId: string, after: number) => {
         calls.push(`events:${after}`);
-        return after === 0 ? { events: [accepted] } : { events: [started] };
+        return { events: after === 0 ? [accepted, started] : [started] };
       },
       session: async () => {
         calls.push("session");
-        return { session, turns: [{ ...turn, state: "running" as const }], items, requests: [], tasks: [] };
+        return { cursor: 1, session, turns: [{ ...turn, state: "running" as const }], items, requests: [], tasks: [] };
       },
     };
     const result = await hydrateSession(api, session.id);
-    expect(calls).toEqual(["events:0", "session", "events:1", "session"]);
-    expect(result.events).toEqual([accepted, started]);
+    expect(calls).toEqual(["session", "events:1"]);
+    expect(result.events).toEqual([started]);
     expect(result.turns).toEqual([{ ...turn, state: "running" }]);
+    expect(result.cursor).toBe(2);
+  });
+
+  test("a quiet session's cursor is the snapshot's, not zero", async () => {
+    // Nothing after the stamp: the next tail must ask from 7, not restart.
+    const result = await hydrateSession(
+      {
+        events: async () => ({ events: [] }),
+        session: async () => ({ cursor: 7, session, turns: [], items, requests: [], tasks: [] }),
+      },
+      session.id,
+    );
+    expect(result.cursor).toBe(7);
+  });
+
+  test("an engine without the stamp falls back to asking the journal where it ends", async () => {
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: after === 0 ? [accepted, started] : [] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { session, turns: [turn], items, requests: [], tasks: [] };
+      },
+    };
+    const result = await hydrateSession(api, session.id);
+    expect(calls).toEqual(["session", "events:0", "events:2"]);
     expect(result.cursor).toBe(2);
   });
 
