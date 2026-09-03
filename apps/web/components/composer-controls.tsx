@@ -1185,7 +1185,7 @@ export function ContextPill({
         render={
           <button
             type="button"
-            className="relative flex size-8 items-center justify-center rounded-full text-[0.5625rem] font-medium tabular-nums text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
+            className="relative flex size-8 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted aria-expanded:text-foreground"
             aria-label={`Context window${unknown ? ", size not reported" : usedPct === null ? "" : ` ${usedPct.toFixed(1)}% used`}`}
             title="Context window"
           />
@@ -1206,7 +1206,11 @@ export function ContextPill({
             className={critical ? "text-destructive" : "text-primary"}
           />
         </svg>
-        <span>{unknown ? "—" : usedPct === null ? compactTokens(used) : `${Math.round(usedPct)}%`}</span>
+        {/* THE RING IS THE READING. There used to be a figure in the middle —
+            a percentage when the window was known, a raw token count while
+            the turn was still reporting — and a 32px circle cannot hold
+            "38.7k" without overflowing it. The arc says how full at a glance;
+            the exact numbers are one click away in the card. */}
       </PopoverTrigger>
       <PopoverContent align="end" side="top" sideOffset={8} className="w-auto gap-0 bg-transparent p-0 shadow-none ring-0">
         <div className="w-[min(19rem,calc(100vw-2rem))] rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-lg">
