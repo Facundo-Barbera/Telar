@@ -226,6 +226,10 @@ function requestTitle(detail: RequestDetail): string {
       return detail.call.name;
     case "user_input":
       return detail.prompt;
+    case "secret_access":
+      // Origin and nothing else: the notification body may land on a lock
+      // screen, and even item TITLES are more than a passer-by should read.
+      return `Fill login from 1Password — ${detail.secret.origin}`;
   }
 }
 

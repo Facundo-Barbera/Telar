@@ -153,6 +153,17 @@ export class BrowserRuntime {
     if (!scope) throw new Error("A browser session scope is required.");
     if (this.closed) throw new Error("The browser runtime is closed.");
 
+    // The one engine-defined tool the transport must never see: it is handled
+    // entirely above this runtime (socket → secret-fill), and Playwright MCP
+    // would answer "unknown tool" with the arguments echoed back — arguments
+    // that, on THIS name, may only ever contain refs, never values. Refused
+    // here so a future caller cannot route it low by mistake.
+    if (name === "browser_fill_secret") {
+      return {
+        content: [{ type: "text", text: "browser_fill_secret is handled by the session socket, not the browser runtime." }],
+        isError: true,
+      };
+    }
     const normalized = normalizeBrowserToolCall(name, args);
     // Validated before the lease so a typo cannot spawn a Chromium.
     const input = parseBrowserToolInput(normalized.name, normalized.args);

@@ -55,6 +55,18 @@ export type BrowserRunBinding = {
    */
   gate?(input: { name: string; args: Record<string, unknown>; readOnly: boolean }): Promise<boolean>;
   /**
+   * The credential-fill handler, `browser_fill_secret`'s whole implementation
+   * — see `secret-fill.ts`. Provided by the worker (it owns the `op` adapter
+   * and the engine gate); the socket hands it a scope-bound `callBrowser` so
+   * the fill drives the same browser this binding is leased to. ABSENT MEANS
+   * THE TOOL ANSWERS "not available" rather than being hidden: a model that
+   * read the tool list should get a sentence, not a vanishing tool.
+   */
+  fillSecret?(
+    args: Record<string, unknown>,
+    callBrowser: (name: string, args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
+  ): Promise<{ content: unknown[]; isError?: boolean }>;
+  /**
    * Fired with fresh state after any successful call that CHANGED the tab set
    * — the socket re-reads after every success and reports only when the tabs
    * differ from the last report, so a read-only-only session still surfaces
@@ -231,6 +243,23 @@ export class BrowserToolSocket {
       // The toolkit declares zod objects; the socket wants a raw shape.
       shape: ((definition.input as { shape?: Record<string, unknown> }).shape ?? {}) as Record<string, unknown>,
       run: async (args) => {
+        if (definition.name === "browser_fill_secret") {
+          /**
+           * NOT GATED HERE, AND THAT IS THE POINT: the generic gate answers
+           * yes/no about a tool call, while a credential fill needs a
+           * `secret_access` request that also carries the human's item pick.
+           * The handler opens that request itself; `autoResolution` refuses
+           * to resolve the kind in EVERY mode, so there is no path from this
+           * branch to a fill without a human. The values travel inside the
+           * handler and never through this socket's results.
+           */
+          if (!binding.fillSecret) {
+            return { content: [{ type: "text", text: "Credential fill is not available for this session." }], isError: true };
+          }
+          const result = await binding.fillSecret(args, (name, callArgs) => this.capability.call(binding.scopeKey, name, callArgs));
+          if (!result.isError) this.reportState(binding.scopeKey);
+          return result;
+        }
         const readOnly = this.capability.isReadOnly(definition.name, args);
         if (binding.gate && !(await this.consultGate(binding, definition.name, args, readOnly))) {
           // A DECLINE IS A RESULT, NEVER A THROW. A thrown handler reads to the
