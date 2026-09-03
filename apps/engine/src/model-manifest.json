@@ -1,0 +1,27 @@
+{
+  "$comment": "Facts about models the installed CLI does not publish. See model-manifest.ts for the rules; bundled, no network. Update by shipping a build.",
+  "version": 1,
+  "claude": {
+    "profiles": {
+      "fable-5": { "longWindow": true },
+      "opus-5": { "longWindow": true },
+      "sonnet-5": { "longWindow": true },
+      "haiku-4-5": { "longWindow": false }
+    },
+    "models": {
+      "claude-fable-5-1": "fable-5",
+      "claude-fable-5": "fable-5",
+      "claude-opus-5": "opus-5",
+      "claude-sonnet-5": "sonnet-5",
+      "claude-haiku-4-5": "haiku-4-5"
+    },
+    "declare": [
+      {
+        "id": "claude-fable-5-1",
+        "label": "Fable 5.1",
+        "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks",
+        "efforts": ["low", "medium", "high", "xhigh", "max"]
+      }
+    ]
+  }
+}
