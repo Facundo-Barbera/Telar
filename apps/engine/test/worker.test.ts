@@ -344,7 +344,16 @@ const fakeBrowserSocket = () =>
     state: async () => ({ provider: "headless", tabs: [{ id: "0", url: "http://x", title: "X", active: true }] }),
   });
 
-test("each claimed turn gets its OWN lease, and the lease dies with the turn", async () => {
+test("a session keeps ONE browser lease across its turns, revoked when the worker stops", async () => {
+  /**
+   * REVERSED FROM "the lease dies with the turn", deliberately. The lease's
+   * url+token are baked into the provider's live process at creation, and
+   * that process now OUTLIVES the turn (see ./claude-runtime.ts) — a per-run
+   * token would invalidate the process's browser access the moment its first
+   * turn settled. The validity window is now the SESSION's, ended by the
+   * worker's own stop; per-turn authority lives in the gate, which is
+   * re-pointed at each turn's claim.
+   */
   const leases: Array<{ url: string; token: string }> = [];
   const driver: TurnDriver = {
     async run({ browserSocket }) {
@@ -362,14 +371,22 @@ test("each claimed turn gets its OWN lease, and the lease dies with the turn", a
     await worker.tick();
     await eventually(async () => expect((await client.session(sessionId)).turns[1]?.state).toBe("completed"));
 
-    // Two turns of the SAME session: same endpoint, DIFFERENT credentials —
-    // the token's validity window is the turn's, not the session's.
+    // Two turns of the SAME session: same endpoint, SAME credential — the
+    // live provider process holds this token for the session's whole life.
     expect(leases).toHaveLength(2);
     expect(leases[0]!.url).toBe(leases[1]!.url);
-    expect(leases[0]!.token).not.toBe(leases[1]!.token);
+    expect(leases[0]!.token).toBe(leases[1]!.token);
 
-    // A settled turn's token is a 401 — release IS revocation, and a provider
-    // subprocess that outlived its run holds nothing.
+    // Between turns the token still authenticates…
+    const between = await fetch(leases[1]!.url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${leases[1]!.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(between.status).toBe(200);
+
+    // …and the worker's stop is the revocation.
+    await worker.stop();
     const stale = await fetch(leases[1]!.url, {
       method: "POST",
       headers: { authorization: `Bearer ${leases[1]!.token}`, "content-type": "application/json" },

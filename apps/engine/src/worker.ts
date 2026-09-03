@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
-import type { BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
+import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type TurnDriver } from "./driver";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
@@ -153,6 +153,21 @@ export class EngineWorker {
    */
   private readonly steering = new Map<string, { mailbox: SteerMailbox; pendingAck: Array<{ sessionId: string; steerRunId: string; claimToken: string }> }>();
   private readonly pushedSteers = new Set<string>();
+  /**
+   * Each session's browser binding, KEPT ACROSS TURNS. The lease's url+token
+   * are baked into the Claude session runtime's MCP config at process
+   * creation (driver.ts), so a per-turn token would force a new provider
+   * process every turn — the exact lifetime this store exists to avoid. The
+   * gate and observation sink still belong to a TURN (they ride a claim
+   * token), so they delegate through `refs`, re-pointed at the top of every
+   * turn. Between turns the stale gate asks the engine against a settled
+   * claim and is refused — a browser call from lingering background work is
+   * denied rather than approved by a ghost.
+   */
+  private readonly browserLeases = new Map<
+    string,
+    { lease: BrowserSocketLease; refs: { gate: NonNullable<BrowserRunBinding["gate"]>; onNavigated: NonNullable<BrowserRunBinding["onNavigated"]> } }
+  >();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -169,6 +184,21 @@ export class EngineWorker {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     for (const controller of this.active.values()) controller.abort(new Error("worker stopped"));
+    // The session-lived state dies with the WORKER, not with any turn: the
+    // browser tokens are revoked and every lingering provider process — the
+    // ones deliberately kept alive between turns — is closed.
+    for (const { lease } of this.browserLeases.values()) lease.release();
+    this.browserLeases.clear();
+    const selector = this.options.driver;
+    if (typeof selector === "function") {
+      try {
+        selector("claude")?.dispose?.();
+      } catch {
+        // A deployment with no Claude driver has nothing to dispose.
+      }
+    } else {
+      selector.dispose?.();
+    }
   }
 
   /** Exposed for deterministic tests and embedded supervisors. */
@@ -287,6 +317,39 @@ export class EngineWorker {
     };
     let lease: BrowserSocketLease | undefined;
     try {
+      /**
+       * THIS TURN'S gate and observation sink — swapped into the session's
+       * long-lived browser binding below. Both close over this turn's claim,
+       * which is why the binding itself cannot capture them.
+       */
+      const gateForTurn: NonNullable<BrowserRunBinding["gate"]> = async ({ name, args, readOnly }) => {
+        const { decision } = await askEngine({
+          // A CLASSIFICATION, NOT A BYPASS — the same rule TELAR_READ_TOOLS
+          // states in driver.ts. A read-only browser call changes nothing,
+          // so it is declared as a read and the mode ladder's existing
+          // auto-accept does its job; a mutation stays `tool_call` and
+          // parks where the mode says to park.
+          kind: readOnly ? "file_read" : "tool_call",
+          // The QUALIFIED name, so the approval and the timeline row name
+          // the same tool. A client shortens it for display
+          // (`displayToolName`); the data does not lie about which server
+          // it belongs to.
+          detail: {
+            kind: "tool_call",
+            call: { name: qualifyTelarTool(name, TELAR_BROWSER_MCP_SERVER), server: TELAR_BROWSER_MCP_SERVER, input: args },
+          },
+          toolUseId: `${TELAR_BROWSER_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
+        });
+        return decision === "accept" || decision === "acceptForSession";
+      };
+      const onNavigatedForTurn: NonNullable<BrowserRunBinding["onNavigated"]> = (state) => {
+        // A stop is terminal the moment the engine records it — same guard
+        // as `onObservations` below, for the same conflict.
+        if (controller.signal.aborted) return;
+        void this.options.client
+          .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
+          .catch(() => undefined);
+      };
       // AFTER `markTurnRunning`, NOT BEFORE, and the ordering is load-bearing:
       // `failTurn` only settles a turn that is RUNNING, so a worker with no
       // driver for this provider that threw here first would leave the turn
@@ -295,46 +358,34 @@ export class EngineWorker {
       await this.options.client.markTurnRunning(sessionId, runId, claimToken);
       const driver = this.driverFor(driverKind);
       /**
-       * THE TURN'S BROWSER LEASE. One token per claimed run, released in the
-       * `finally` below — the token is handed to a provider subprocess, and
-       * per-run is what keeps its validity window equal to the window in which
-       * this turn's browser scope is legitimately reachable.
+       * THE SESSION'S BROWSER LEASE, one binding per session rather than one
+       * per run. The lease's url+token are baked into the provider's live
+       * process at creation, and that process now OUTLIVES the turn — a
+       * per-run token would invalidate the process's browser access the
+       * moment its first turn settled. Per-turn authority still holds: the
+       * gate delegates through `refs`, re-pointed here every turn, and a call
+       * arriving between turns is asked against a settled claim and refused.
+       * Released in `stop()`, when the provider processes die too.
        */
-      lease = await this.options.browserSocket?.bind({
-        // Sessions are the browser's natural boundary: two sessions must not
-        // share a tab, and a session's tabs must survive between its turns.
-        scopeKey: sessionId,
-        gate: async ({ name, args, readOnly }) => {
-          const { decision } = await askEngine({
-            // A CLASSIFICATION, NOT A BYPASS — the same rule TELAR_READ_TOOLS
-            // states in driver.ts. A read-only browser call changes nothing,
-            // so it is declared as a read and the mode ladder's existing
-            // auto-accept does its job; a mutation stays `tool_call` and
-            // parks where the mode says to park.
-            kind: readOnly ? "file_read" : "tool_call",
-            // The QUALIFIED name, so the approval and the timeline row name
-            // the same tool. A client shortens it for display
-            // (`displayToolName`); the data does not lie about which server
-            // it belongs to.
-            detail: {
-              kind: "tool_call",
-              call: { name: qualifyTelarTool(name, TELAR_BROWSER_MCP_SERVER), server: TELAR_BROWSER_MCP_SERVER, input: args },
-            },
-            toolUseId: `${TELAR_BROWSER_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
-          });
-          return decision === "accept" || decision === "acceptForSession";
-        },
-        onNavigated: (state) => {
-          // A stop is terminal the moment the engine records it — same guard
-          // as `onObservations` below, for the same conflict.
-          if (controller.signal.aborted) return;
-          void this.options.client
-            .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
-            .catch(() => undefined);
-        },
-      });
+      const cached = this.browserLeases.get(sessionId);
+      if (cached) {
+        cached.refs.gate = gateForTurn;
+        cached.refs.onNavigated = onNavigatedForTurn;
+        lease = cached.lease;
+      } else if (this.options.browserSocket) {
+        const refs = { gate: gateForTurn, onNavigated: onNavigatedForTurn };
+        lease = await this.options.browserSocket.bind({
+          // Sessions are the browser's natural boundary: two sessions must not
+          // share a tab, and a session's tabs must survive between its turns.
+          scopeKey: sessionId,
+          gate: (input) => refs.gate(input),
+          onNavigated: (state) => refs.onNavigated(state),
+        });
+        this.browserLeases.set(sessionId, { lease, refs });
+      }
       const result = await driver.run({
         prompt,
+        sessionId,
         cwd,
         signal: controller.signal,
         // Spread rather than passed as possibly-undefined: `exactOptionalPropertyTypes`
@@ -505,9 +556,9 @@ export class EngineWorker {
         if (!(settleError instanceof EngineClientError && settleError.code === "conflict")) throw settleError;
       }
     } finally {
-      // The lease dies with the turn: a provider subprocess that outlives its
-      // run holds a token that now answers 401, which is the revocation.
-      lease?.release();
+      // The lease is deliberately NOT released here — it is the session's
+      // now (see the cache above), revoked in `stop()` alongside the
+      // provider processes that hold its token.
       steer.close();
       // An undrained delivery was never delivered: forget it here so the
       // heartbeat's re-carry (after the engine's sweep requeues it) is not
