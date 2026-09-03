@@ -272,6 +272,36 @@ describe("toSidebarSession", () => {
     expect(projected.archived).toBe(true);
     expect(projected.driver).toBe("codex");
   });
+
+  // `stale` is a fact about the READ, not about the session, so the projection
+  // of a live record can never carry one — and a row that does carry one is
+  // still banded on what it says, because a Mac being away does not settle,
+  // snooze or unpin anything.
+  test("a projected row is never stale, and a stale row bands as itself", () => {
+    const projected = toSidebarSession(
+      {
+        id: "s3",
+        projectId: "p1",
+        environmentId: "local",
+        title: "Live",
+        state: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+        providerInstanceId: "claude:default",
+        driver: "claude",
+        workspace: { mode: "local", path: "/repo" },
+        envMode: "local",
+        runtimeMode: "auto",
+        interactionMode: "default",
+        detached: false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- structural fixture, not a wire payload
+      } as any,
+    );
+    expect(projected.stale).toBeUndefined();
+    expect(bandOf(row("s1", "Remembered", { stale: NOW - HOUR }), opts)).toBe("active");
+    expect(bandOf(row("s2", "Kept", { stale: NOW - HOUR, settledOverride: "active" }), opts)).toBe("pinned");
+    expect(bandOf(row("s3", "Old", { stale: NOW - HOUR, updatedAt: NOW - SETTLED_AFTER_MS - 1 }), opts)).toBe("settled");
+  });
 });
 
 describe("canvasHref", () => {

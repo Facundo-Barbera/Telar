@@ -17,6 +17,8 @@ import { useCallback, useEffect, useState } from "react";
 import { MonitorIcon, XIcon } from "lucide-react";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import type { PublicHost } from "@/lib/hosts/store";
+import { forgetRows, readSidebarCache, writeSidebarCache } from "@/lib/sidebar-cache";
+import { snapshotStore } from "@/lib/snapshot-cache";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Row, SettingsGroup } from "./settings-shell";
@@ -65,6 +67,17 @@ export function OtherMacsSection() {
 
   const remove = async (id: string) => {
     await api.removeHost(id).catch(() => undefined);
+    // FORGETTING A MAC FORGETS WHAT IT SAID. Its remembered rail rows and its
+    // recorded session snapshots go with the pairing — kept, they would sit
+    // dimmed forever for a host that can never answer again.
+    writeSidebarCache(forgetRows(readSidebarCache(), id));
+    const store = snapshotStore();
+    if (store) {
+      void store
+        .keys(`${id}:`)
+        .then((keys) => Promise.all(keys.map((key) => store.remove(key))))
+        .catch(() => undefined);
+    }
     await load();
   };
 

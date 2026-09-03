@@ -23,10 +23,10 @@ struct SessionView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
-    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil) {
+    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil, cache: HostSnapshotCache? = nil) {
         self.api = api
         self.sessionId = sessionId
-        _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId))
+        _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId, cache: cache))
     }
 
     /// Queued and steering messages live in the strip under the composer; a
@@ -193,7 +193,11 @@ struct SessionView: View {
                 StatusCard(tint: Theme.statusAmber) {
                     HStack(spacing: 6) {
                         Image(systemName: "wifi.exclamationmark").font(.system(size: 11))
-                        Text(message).font(.system(size: 13)).lineLimit(2)
+                        // WHAT IS ON SCREEN, when it is the phone's own copy:
+                        // the transcript stays, and the card says how old it
+                        // is instead of pretending it is the Mac's answer.
+                        Text(store.sync.recordedAt.map { "Showing what was recorded at \(recordedAtLabel($0)) — reconnecting…" } ?? message)
+                            .font(.system(size: 13)).lineLimit(2)
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(Theme.statusAmber)

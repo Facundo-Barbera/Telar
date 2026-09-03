@@ -31,7 +31,10 @@ struct InboxView: View {
                 HStack(spacing: 6) {
                     Image(systemName: failure.needsPairing ? "lock.circle" : "wifi.exclamationmark")
                         .font(.system(size: 11))
-                    Text(multiHost ? "\(hostName(failure.hostId)) — \(failure.message)" : failure.message)
+                    // With a copy on the phone the rows stay and this line
+                    // says how old they are; without one it says what went
+                    // wrong, because the failure is all there is to show.
+                    Text(failureLine(failure))
                         .font(.system(size: 13))
                 }
                 .foregroundStyle(failure.needsPairing ? Theme.statusRed : Theme.statusAmber)
@@ -46,6 +49,9 @@ struct InboxView: View {
                     projectName: inbox.projectName(hosted),
                     hostLabel: multiHost ? hostName(hosted.hostId) : nil
                 )
+                    // The phone's own copy of a Mac that is away: still a
+                    // row, still tappable, visibly not the Mac's answer.
+                    .opacity(inbox.staleHosts.contains(hosted.hostId) ? 0.55 : 1)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparatorTint(Theme.borderSubtle)
@@ -154,6 +160,14 @@ struct InboxView: View {
 
     private func hostName(_ id: HostID) -> String {
         settings.host(id)?.name ?? "Mac"
+    }
+
+    private func failureLine(_ failure: MergedInbox.Failure) -> String {
+        let name = multiHost ? hostName(failure.hostId) : "The Mac"
+        if let recordedAt = failure.recordedAt, !failure.needsPairing {
+            return "\(name) — showing what was recorded at \(recordedAtLabel(recordedAt)), retrying"
+        }
+        return multiHost ? "\(name) — \(failure.message)" : failure.message
     }
 
     @ViewBuilder private func row(_ label: String, selected: Bool) -> some View {

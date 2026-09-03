@@ -85,6 +85,8 @@ import {
 } from "@/lib/session-list";
 import { hostFetcher } from "@/lib/hosts/client";
 import type { PublicHost } from "@/lib/hosts/store";
+import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "@/lib/sidebar-cache";
+import { LOCAL_HOST } from "@/lib/snapshot-cache";
 import {
   Sidebar,
   SidebarContent,
@@ -412,6 +414,9 @@ function SidebarBody() {
    */
   const [hosts, setHosts] = useState<PublicHost[]>([]);
   const [unreachable, setUnreachable] = useState<Set<string>>(() => new Set());
+  /** An away Mac's remembered rows, dimmed under its retry line. Filled by
+   *  `loadAll` from the sidebar cache; empty for a host never read. */
+  const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
   const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
 
@@ -460,6 +465,10 @@ function SidebarBody() {
   }, []);
 
   const loadAll = useCallback(async () => {
+    // localStorage is synchronous and this runs off the render path, so the
+    // cache is read fresh per pass rather than held in state — nothing else
+    // writes it, and a stale copy here would be the one bug this feature has.
+    const cache = typeof window === "undefined" ? {} : readSidebarCache();
     // The book first, and never fatal: a cockpit with no remotes (or one whose
     // pairing store is unreadable) is the ordinary local cockpit.
     const book = await api.hosts().then((answer) => answer.hosts).catch(() => [] as PublicHost[]);
@@ -467,16 +476,43 @@ function SidebarBody() {
     const [local, ...remotes] = await Promise.allSettled([loadHost(undefined), ...book.map((host) => loadHost({ id: host.id, name: host.name }))]);
     if (local.status !== "fulfilled") {
       setUnavailable(true);
+      // WHAT WAS THERE A MOMENT AGO, dimmed, rather than an empty rail. The
+      // empty state below still speaks for a browser that never got a read in.
+      const remembered = staleRows(cache, LOCAL_HOST);
+      if (remembered.length > 0) {
+        setSessions(remembered);
+        // The bands need a clock; without one every remembered row would date
+        // from the epoch and land on the settled shelf.
+        setRenderedAt(Date.now());
+      }
       return;
     }
     setUnavailable(false);
     setProjects(local.value.projects);
     const away = new Set<string>();
-    const remoteSessions = remotes.flatMap((page, index) => {
-      if (page.status === "fulfilled") return page.value.sessions;
-      away.add(book[index]!.id);
-      return [];
+    const remoteSessions: SidebarSession[] = [];
+    // Each Mac's last read, kept so a host going away dims its rows instead
+    // of vanishing them. The local engine writes under LOCAL_HOST; every
+    // remote writes under its own id — one host's rows never touch another's.
+    let next = rememberRows(cache, LOCAL_HOST, local.value.sessions);
+    remotes.forEach((page, index) => {
+      const host = book[index]!;
+      if (page.status === "fulfilled") {
+        next = rememberRows(next, host.id, page.value.sessions);
+        remoteSessions.push(...page.value.sessions);
+      } else {
+        away.add(host.id);
+      }
     });
+    writeSidebarCache(next);
+    // A host that did not answer keeps its LAST rows, dimmed under its retry
+    // line — read out of the cache on the pass that noticed it was away.
+    const remembered = new Map<string, SidebarSession[]>();
+    for (const id of away) {
+      const rows = staleRows(cache, id);
+      if (rows.length > 0) remembered.set(id, rows);
+    }
+    setStaleByHost(remembered);
     setUnreachable(away);
     setSessions([...local.value.sessions, ...remoteSessions]);
     setRenderedAt(Date.now());
@@ -569,6 +605,10 @@ function SidebarBody() {
     limit: sessionLimit,
     settledLimit,
   });
+  // The engine is not answering AND the rail kept its last read — so the list
+  // renders dimmed under a line saying so, and "Engine unavailable" is left for
+  // the browser that has nothing cached to show instead.
+  const showingStale = unavailable && sessions.length > 0;
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
@@ -909,9 +949,16 @@ function SidebarBody() {
         */}
         <SidebarGroup className="min-h-0 flex-1">
           <SidebarGroupContent id="sidebar-session-results" role={query ? "listbox" : undefined} className="min-h-0 space-y-0.5 overflow-y-auto">
-            {unavailable ? (
+            {showingStale ? (
+              <p className="px-2 pb-1 pt-0.5 text-[0.6875rem] leading-4 text-sidebar-foreground/55">
+                The engine did not answer — retrying. Showing the last read.
+              </p>
+            ) : null}
+            {unavailable && !showingStale ? (
               <SidebarEmpty icon={MessageSquareIcon} title="Engine unavailable" detail="Start the local engine, then this list refills itself." />
-            ) : projects.length === 0 ? (
+            ) : // A rail showing a remembered list has projects; it just could not
+            // ask for them this pass, and the registry is the engine's to answer.
+            !showingStale && projects.length === 0 ? (
               <SidebarEmpty icon={FolderPlusIcon} title="No projects yet" detail="Register a project to start a session." />
             ) : list.sessions.length === 0 &&
               // Empty only when nothing is anywhere. A rail whose every row is
@@ -964,9 +1011,27 @@ function SidebarBody() {
             {hosts
               .filter((host) => unreachable.has(host.id))
               .map((host) => (
-                <div key={host.id} className="flex items-center gap-1.5 px-2 py-1.5 text-[0.6875rem] text-muted-foreground" role="status">
-                  <MonitorIcon className="size-3 shrink-0" />
-                  <span className="min-w-0 truncate">{host.name} did not answer — retrying</span>
+                <div key={host.id}>
+                  <div className="flex items-center gap-1.5 px-2 py-1.5 text-[0.6875rem] text-muted-foreground" role="status">
+                    <MonitorIcon className="size-3 shrink-0" />
+                    <span className="min-w-0 truncate">{host.name} did not answer — retrying</span>
+                  </div>
+                  {/* THE LAST ROWS THAT MAC ANSWERED WITH, dimmed (each is
+                      stamped `stale`, see sidebar-cache.ts) — under the line
+                      that says why, rather than mixed into the live list with
+                      a clock they cannot honour. */}
+                  {(staleByHost.get(host.id) ?? []).map((session) => (
+                    <SessionRow
+                      key={sessionKey(session)}
+                      session={session}
+                      active={sessionKey(session) === activeSessionId}
+                      showProject={showProject}
+                      variant="slim"
+                      band={bandFor(session)}
+                      renderedAt={renderedAt}
+                      onRefresh={() => void loadAll()}
+                    />
+                  ))}
                 </div>
               ))}
           </SidebarGroupContent>

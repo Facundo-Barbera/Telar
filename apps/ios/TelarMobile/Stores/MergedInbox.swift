@@ -50,7 +50,17 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         let hostId: HostID
         var message: String
         var needsPairing: Bool
+        /// When that Mac's rows on screen were recorded, if they are the
+        /// phone's own copy rather than a live answer. Nil: nothing cached,
+        /// the failure is the only thing to show for it.
+        var recordedAt: Timestamp?
         var id: HostID { hostId }
+    }
+
+    /// The Macs whose rows are the phone's copy right now — a row can dim
+    /// itself by asking.
+    var staleHosts: Set<HostID> {
+        Set(stores.compactMap { id, store in store.recordedAt == nil ? nil : id })
     }
 
     var sections: MergedSections {
@@ -60,7 +70,7 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
     var failures: [Failure] {
         order.compactMap { id in
             guard let store = stores[id], let message = store.lastError else { return nil }
-            return Failure(hostId: id, message: message, needsPairing: store.unauthorized)
+            return Failure(hostId: id, message: message, needsPairing: store.unauthorized, recordedAt: store.recordedAt)
         }
     }
 
@@ -86,7 +96,7 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
                 next[host.id] = existing
             } else if let api = settings.api(for: host.id) {
                 stores[host.id]?.stop()
-                let store = InboxStore(api: api, hostId: host.id)
+                let store = InboxStore(api: api, hostId: host.id, cache: settings.snapshotCache(for: host.id))
                 store.start()
                 next[host.id] = store
             }
@@ -95,6 +105,8 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         for (id, store) in stores where next[id] == nil {
             store.stop()
             fingerprints[id] = nil
+            // Forgetting a Mac forgets what it said.
+            settings.snapshotCache(for: id)?.cache.dropHost(id)
         }
         stores = next
         if let filter, !order.contains(filter) { self.filter = nil }

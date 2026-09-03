@@ -30,7 +30,7 @@ struct RootView: View {
                     .navigationTitle("Telar")
                     .navigationDestination(for: ScopedSessionID.self) { ref in
                         if let hostApi = settings.api(for: ref.hostId) {
-                            SessionView(api: hostApi, sessionId: ref.sessionId, hostId: ref.hostId)
+                            SessionView(api: hostApi, sessionId: ref.sessionId, hostId: ref.hostId, cache: settings.snapshotCache(for: ref.hostId))
                                 .id(settings.apiFingerprint(ref.hostId))
                         } else {
                             ContentUnavailableView(

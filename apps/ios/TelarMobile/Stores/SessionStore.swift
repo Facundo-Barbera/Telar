@@ -37,11 +37,11 @@ import Observation
         return "telar.pendingSend.\(sessionId)"
     }
 
-    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil) {
+    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil, cache: HostSnapshotCache? = nil) {
         self.api = api
         self.sessionId = sessionId
         self.hostId = hostId
-        sync = SessionSyncEngine(api: api, sessionId: sessionId)
+        sync = SessionSyncEngine(api: api, sessionId: sessionId, cache: cache)
         if let data = UserDefaults.standard.data(forKey: pendingKey) {
             pendingSend = try? JSONDecoder().decode(PendingSend.self, from: data)
         }
