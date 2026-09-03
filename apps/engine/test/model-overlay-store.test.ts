@@ -114,7 +114,10 @@ test("an edit reaches the next catalogue with no refresh and no second CLI spawn
       ],
     };
   };
-  const engine = new EngineStore(root(), () => 100, { models: catalogue });
+  // An EMPTY manifest: this test is about the overlay, and the bundled manifest
+  // declares `claude-fable-5-1` — the very id the custom entry below types —
+  // which would pre-empt it by design (see the precedence test further down).
+  const engine = new EngineStore(root(), () => 100, { models: catalogue, manifest: { version: 1 } });
 
   return (async () => {
     const before = await engine.modelCatalogue("claude");
@@ -133,5 +136,36 @@ test("an edit reaches the next catalogue with no refresh and no second CLI spawn
     const other = await engine.modelCatalogue("claude", { instanceId: "claude_work" });
     expect(spawns).toBe(1);
     expect(other.models.map((model) => model.id)).toEqual(["sonnet", "opus[1m]"]);
+  })();
+});
+
+test("a manifest declaration pre-empts a hand-typed custom row for the same id — one row, the declared one", () => {
+  /**
+   * THE COLLISION THE BUNDLED MANIFEST CREATES. Someone typed `claude-fable-5-1`
+   * into the Models tab back when the CLI did not list it; now the manifest
+   * declares it. The overlay's own `published` check treats the declared row
+   * as published, so the custom entry goes quiet — exactly as it would if the
+   * CLI itself had started listing the id — and the reader gets the declared
+   * row's real label and efforts rather than the bare id.
+   */
+  const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => ({
+    driver,
+    source: "provider",
+    readAt: now(),
+    models: [{ id: "sonnet", label: "Sonnet", isDefault: true, hidden: false, hiddenByUser: false, efforts: [], fastMode: false, source: "provider" }],
+  });
+  const engine = new EngineStore(root(), () => 100, {
+    models: catalogue,
+    manifest: {
+      version: 1,
+      claude: { profiles: { f: { longWindow: false } }, models: { "claude-fable-5-1": "f" }, declare: [{ id: "claude-fable-5-1", label: "Fable 5.1", efforts: ["high"] }] },
+    },
+  });
+  engine.setModelOverlay("claude", { hidden: [], order: [], custom: [{ id: "claude-fable-5-1" }] });
+  return (async () => {
+    const { models } = await engine.modelCatalogue("claude");
+    const rows = models.filter((model) => model.id === "claude-fable-5-1");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ label: "Fable 5.1", source: "provider", efforts: ["high"] });
   })();
 });

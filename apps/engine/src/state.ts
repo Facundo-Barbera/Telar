@@ -208,6 +208,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
+import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 
@@ -1018,6 +1019,7 @@ export class EngineStore {
   /** See the constructor: the real subprocess handshake unless a test says
    *  otherwise. */
   private readonly readModels: typeof readModelCatalogue;
+  private readonly manifest: ModelManifest;
   private readonly git: GitRunner;
   private readonly gh: GhRunner;
   /**
@@ -3316,10 +3318,15 @@ export class EngineStore {
        *  wants to prove an overlay reaches a menu should not have to spawn a
        *  `codex app-server` to do it. */
       models?: typeof readModelCatalogue;
+      /** The model manifest (./model-manifest.ts). INJECTED BY TESTS ONLY —
+       *  the default is the bundled one, and a test about the overlay should
+       *  not have to know which models the manifest declares this week. */
+      manifest?: ModelManifest;
     } = {},
   ) {
     this.notifier = options.notifier;
     this.readModels = options.models ?? readModelCatalogue;
+    this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.gh = options.gh ?? defaultGhRunner;
@@ -3488,7 +3495,16 @@ export class EngineStore {
      */
     const instanceId = options.instanceId ?? defaultInstanceIdForDriver(driver);
     const overlay = this.getModelOverlay(instanceId);
-    return { ...raw, instanceId, models: applyModelOverlay(raw.models, overlay) };
+    /**
+     * MANIFEST BEFORE OVERLAY, both outside the cache. The manifest fills in
+     * rows the provider left out (a `[1m]` variant the CLI does not list — see
+     * ./model-manifest.ts); the overlay is the reader's curation of the
+     * resulting list. Applied after the cache for the same reason the overlay
+     * is: the cache holds what the provider said, and `source` promises that.
+     * Claude-only today; Codex publishes no windows to fill in.
+     */
+    const listed = driver === "claude" ? applyModelManifest(raw.models, this.manifest) : raw.models;
+    return { ...raw, instanceId, models: applyModelOverlay(listed, overlay) };
   }
 
   /**
