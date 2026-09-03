@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EyeIcon, FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
+  isBackgroundWork,
   type EngineEvent,
   type EngineRequest,
   type RequestDecision,
@@ -1441,7 +1442,7 @@ export function SessionCockpit({
   const newestUsage = [...transcript].reverse().find((turn) => turn.usage)?.usage;
   /** Background work outlives the turn that started it, so it is counted over
    *  every task rather than over the active turn's. */
-  const backgroundTasks = tasks.filter((task) => task.kind === "background" && (task.state === "running" || task.state === "pending")).length;
+  const backgroundTasks = tasks.filter((task) => isBackgroundWork(task) && (task.state === "running" || task.state === "pending")).length;
 
   return (
     /**

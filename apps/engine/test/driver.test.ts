@@ -914,6 +914,45 @@ test("an agent still running when the turn ends is failed, so the session stops 
   expect(closed[0]?.kind === "task.completed" && closed[0].task.state).toBe("failed");
 });
 
+test("a sub-agent launched in the BACKGROUND outlives its turn, and stays an agent", async () => {
+  /**
+   * MEASURED, off a real cockpit session: three Explore agents spawned with
+   * `run_in_background` announced `task_started{task_type: "local_agent",
+   * is_backgrounded: true}`. Classified by type alone they were agents, and
+   * the turn-end sweep closed every one as "the turn ended before this agent
+   * reported back" — while all three were still running inside the live
+   * process and two of them later delivered. Detached is a fact about the
+   * LAUNCH; it must not change what the task is, and it must spare the sweep.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "system",
+        subtype: "task_started",
+        task_id: "t1",
+        tool_use_id: "toolu_a",
+        description: "Explore the connection model",
+        subagent_type: "Explore",
+        task_type: "local_agent",
+        is_backgrounded: true,
+      };
+      // A foreground agent sent to the background mid-flight (Ctrl+B) keeps
+      // its kind and gains the flag.
+      yield { type: "system", subtype: "task_started", task_id: "t2", tool_use_id: "toolu_b", description: "Audit the parser", task_type: "local_agent" };
+      yield { type: "system", subtype: "task_updated", task_id: "t2", patch: { is_backgrounded: true } };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const started = sink.observations.find((o) => o.kind === "task.started");
+  expect(started?.kind === "task.started" && started.task).toMatchObject({ kind: "agent", backgrounded: true, role: "Explore" });
+  const moved = sink.observations.filter((o) => o.kind === "task.progress").at(-1);
+  expect(moved?.kind === "task.progress" && moved.task).toMatchObject({ id: "task_toolu_b", kind: "agent", backgrounded: true });
+  // Neither is swept: nothing completed, nothing failed.
+  expect(sink.observations.filter((o) => o.kind === "task.completed")).toHaveLength(0);
+});
+
 test("a finished task is not resurrected by the SDK still talking about it", async () => {
   /**
    * THE REAL SEQUENCE, off a measured turn: a backgrounded `sleep 90` reported
