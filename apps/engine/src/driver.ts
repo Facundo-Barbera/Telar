@@ -40,12 +40,20 @@ import {
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
+import {
+  ClaudeRuntimeStore,
+  MessageFeed,
+  type ClaudeSessionRuntime,
+  type FeedMessage,
+  type RuntimeBindings,
+  type RuntimeQuery,
+} from "./claude-runtime";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
-import { TurnBoundary, type SteerMailbox } from "./steering";
+import type { SteerMailbox } from "./steering";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 
 export type { SpoolCapability, SessionsCapability };
@@ -82,6 +90,15 @@ export function normalizeOutcome(value: RequestDecision | DriverRequestOutcome):
 
 export type DriverRun = {
   prompt: string;
+  /**
+   * WHICH SESSION THIS TURN BELONGS TO — the key the Claude driver holds its
+   * live runtime under (see ./claude-runtime.ts). Without it every turn is an
+   * island and nothing a turn leaves running can survive the turn's end,
+   * which was precisely the bug: one SDK query per turn meant one CLI process
+   * per turn, and backgrounded shells, monitors and sub-agents all died with
+   * their parent at every turn boundary.
+   */
+  sessionId: string;
   cwd: string;
   signal: AbortSignal;
   /**
@@ -209,6 +226,12 @@ export type DriverResult = {
 
 export type TurnDriver = {
   run(input: DriverRun): Promise<DriverResult>;
+  /**
+   * Close every live provider process this driver holds. OPTIONAL because
+   * only the Claude driver keeps any (its session runtimes); the worker calls
+   * it on stop so a shutdown does not orphan a CLI per open session.
+   */
+  dispose?(): void;
 };
 
 export class ProviderUnavailableError extends Error {
@@ -307,35 +330,48 @@ export function claudeStreamingInputEnabled(env: NodeJS.ProcessEnv = process.env
   return env.TELAR_CLAUDE_STREAMING_INPUT?.trim() !== "0";
 }
 
+/** One user message and the stream closes: the kill-switch turn with
+ *  attachments still needs the block form, and nothing else does. The
+ *  streaming path's input is the session runtime's own MessageFeed. */
+async function* singleUserMessage(content: string | Array<Record<string, unknown>>): AsyncGenerator<SdkUserMessage> {
+  yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
+}
+
 /**
- * The turn's input stream: the initial message, then anything a human sends
- * now, at each turn boundary — warp's `steeredPrompt`, one level up. A turn
- * nobody steers waits at one boundary, finds the mailbox empty, and returns:
- * the SDK sees a one-message stream that closed, which ends the session
- * exactly as the plain string did.
- *
- * `onSteered` fires per injected message so the run loop can journal it as a
- * `user_message` row — without that, a steered sentence would change the
- * agent's behaviour with nothing in the transcript to explain why.
+ * The per-turn half of a session runtime — everything the once-created query
+ * reaches through `bindings.current`, swapped whole at the top of every run.
+ * The query outlives the turn (see ./claude-runtime.ts); these do not: the
+ * permission gate is bound to a claim token that dies with the turn, the
+ * spool and sessions capabilities to the worker client that assembled them,
+ * and the warp spawn to this turn's model and login.
  */
-async function* claudePrompt(
-  prompt: string,
-  attachments: TurnAttachment[],
-  steer: SteerMailbox | undefined,
-  boundary: TurnBoundary,
-  onSteered: (text: string) => void,
-): AsyncGenerator<SdkUserMessage> {
-  yield { type: "user", message: { role: "user", content: claudeInitialContent(prompt, attachments) }, parent_tool_use_id: null };
-  if (!steer) return;
-  while (await boundary.next()) {
-    const queued = steer.drain();
-    if (queued.length === 0) return;
-    // Joined rather than yielded one at a time: they arrived while a single
-    // turn was running, so they are one interruption with several sentences.
-    const text = queued.join("\n\n");
-    onSteered(text);
-    yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
-  }
+type ClaudeTurnBindings = {
+  signal: AbortSignal;
+  canUseTool: SdkCanUseTool | undefined;
+  spool: SpoolCapability | undefined;
+  sessions: SessionsCapability | undefined;
+  warpSpawn: WarpSpawn;
+  onWarpTask: (seed: TaskSeed) => void;
+};
+
+/**
+ * A capability that reads through to THE CURRENT TURN'S instance on every
+ * property access. The Telar MCP tools are registered once per session
+ * runtime, but each turn arrives with its own capability object — one
+ * captured at creation would call back into a turn that has already settled.
+ */
+function delegatingCapability<T extends object>(get: () => T | undefined): T {
+  return new Proxy({} as T, {
+    get(_, prop) {
+      const current = get();
+      if (!current) throw new Error("this capability is not bound to a running turn");
+      return Reflect.get(current, prop);
+    },
+    has(_, prop) {
+      const current = get();
+      return current ? Reflect.has(current, prop) : false;
+    },
+  });
 }
 
 /**
@@ -504,9 +540,12 @@ function warpTool(
      *  kind each is — it is the party that knows what it has already announced. */
     onTask: (seed: TaskSeed) => void;
     instanceId?: string;
-    /** The turn's own signal. A human pressing Stop stops the fan-out; without
-     *  this the turn would settle while four children kept spending. */
-    signal: AbortSignal;
+    /** The turn's own signal, READ AT INVOCATION TIME. A getter rather than a
+     *  signal because the tool is registered once per session runtime while
+     *  turns come and go — a captured signal would be the first turn's
+     *  forever. A human pressing Stop stops the fan-out; without this the
+     *  turn would settle while four children kept spending. */
+    signal: () => AbortSignal;
     concurrency?: number;
   },
 ): unknown | undefined {
@@ -548,15 +587,16 @@ function warpTool(
         ...(deps.instanceId ? { instanceId: deps.instanceId } : {}),
         ...(input.args === undefined ? {} : { args: input.args }),
       });
+      const signal = deps.signal();
       const stop = () => run.stop("the turn was stopped");
-      if (deps.signal.aborted) stop();
-      else deps.signal.addEventListener("abort", stop, { once: true });
+      if (signal.aborted) stop();
+      else signal.addEventListener("abort", stop, { once: true });
 
       let snapshot;
       try {
         snapshot = await run.done;
       } finally {
-        deps.signal.removeEventListener("abort", stop);
+        signal.removeEventListener("abort", stop);
       }
 
       const failed = snapshot.agents.filter((agent) => agent.state === "failed");
@@ -959,9 +999,14 @@ export function createClaudeDriver(
   } = {},
 ): TurnDriver {
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
+  /** sessionId → live query. Owned per driver instance so every test gets
+   *  isolation and each worker deployment owns exactly its own processes. */
+  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings>();
   return {
+    dispose: () => runtimes.destroyAll(),
     async run({
       prompt,
+      sessionId,
       cwd,
       signal,
       model,
@@ -990,10 +1035,6 @@ export function createClaudeDriver(
       }
       const sdkEffort = claudeEffort(effort);
       const userServers = claudeMcpServers(userMcpServers);
-      const controller = new AbortController();
-      const abort = () => controller.abort(signal.reason);
-      if (signal.aborted) abort();
-      else signal.addEventListener("abort", abort, { once: true });
 
       let finalText = "";
       let receivedPartialText = false;
@@ -1307,21 +1348,110 @@ export function createClaudeDriver(
        * Its approval gate rides the socket's binding, which is why `canUseTool`
        * above waves its calls through.
        */
-      const telarTools: unknown[] = [];
+      const onSteered = (text: string) => {
+        const id = itemId();
+        emit({ kind: "item.started", item: { id, detail: { type: "user_message", text }, title: "Sent now" } });
+        emit({ kind: "item.completed", itemId: id, status: "completed" });
+      };
 
       /**
-       * THE SPOOL, WHEN THE TURN CARRIES ONE — CAP-12's "tasks are a
-       * Telar-wide substrate", which is only true if an ordinary project
-       * session can reach them.
+       * A WARP CHILD IS A REAL `claude` PROCESS, spawned with this turn's own
+       * checkout, login and binary — so a warp inherits everything the session
+       * was configured with rather than a default the driver invents.
        *
-       * NO APPROVAL GATE ON ANY OF THESE, and that is the same judgement the
-       * legacy server made about the same four verbs: none of them is a commit.
-       * Filing a task starts nothing, and the two things a human must decide —
-       * a verdict, and a sub-task's promotion — have no tool input that can
-       * spell them. The one gate that matters here is structural, not
-       * interactive.
+       * `mcpServers` is the USER's only: Telar's own server is withheld, or a
+       * child could call `warp` and recurse without bound, and four children
+       * would fight over one browser scope. `canUseTool` is passed, because a
+       * session that asks before editing asks for a child's edits too.
+       *
+       * BUILT PER TURN, REACHED THROUGH THE BINDINGS: the `warp` tool itself
+       * is registered once per session runtime, but a spawn must carry THIS
+       * turn's model and permission gate, not the first turn's.
        */
-      if (spool && sdk.tool) telarTools.push(...spoolTools(sdk.tool, spool));
+      const executable = resolveExecutable(binaryPath);
+      const warpSpawn = createWarpSpawn({
+        sdk,
+        cwd,
+        ...(model ? { model } : {}),
+        ...(sdkEffort ? { effort: sdkEffort } : {}),
+        ...(fastMode === undefined ? {} : { fastMode }),
+        ...(env ? { env } : {}),
+        ...(userServers ? { mcpServers: userServers } : {}),
+        ...(canUseTool ? { canUseTool } : {}),
+        ...(executable ? { executable } : {}),
+      });
+
+      /** This turn's half of the runtime, swapped in whole below whether the
+       *  runtime is fresh or reused — see `ClaudeTurnBindings`. */
+      const turnBindings: ClaudeTurnBindings = {
+        signal,
+        canUseTool,
+        spool,
+        sessions,
+        warpSpawn,
+        onWarpTask,
+      };
+
+      const streaming = claudeStreamingInputEnabled();
+
+      /**
+       * EVERYTHING THE QUERY BAKES IN AT CREATION. A turn whose fingerprint
+       * differs from the live runtime's cannot reuse it — the options below
+       * are fixed for the life of the process — so the store destroys the old
+       * one and this turn cold-starts. `model` is deliberately absent: it is
+       * the one knob a live query can turn (`setModel`).
+       */
+      const fingerprint = JSON.stringify({
+        cwd,
+        env: env ?? null,
+        effort: sdkEffort ?? null,
+        fastMode: fastMode ?? null,
+        executable: executable ?? null,
+        /**
+         * ID AND SPEC ONLY, never the whole record. Measured on the dev app:
+         * the auto-registered Computer Use server is re-stamped
+         * (`createdAt`/`updatedAt`) on every turn, and hashing those
+         * timestamps cold-started a new process per turn — killing the very
+         * background work this runtime exists to keep alive. Only what shapes
+         * the spawned process belongs here.
+         */
+        servers: userMcpServers?.map((server) => ({ id: server.id, enabled: server.enabled, spec: server.spec })) ?? null,
+        browser: browserSocket ?? null,
+        spool: Boolean(spool),
+        sessions: Boolean(sessions),
+        gate: Boolean(canUseTool),
+        instance: providerInstanceId ?? null,
+      });
+
+      const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings> => {
+        const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
+
+        /** The permission gate the QUERY holds: a stable wrapper over the
+         *  current turn's `canUseTool`, because the worker's gate is bound to
+         *  a claim token that dies with each turn while the query lives on. */
+        const gate: SdkCanUseTool | undefined = canUseTool
+          ? (toolName, input, options) => {
+              const current = bindings.current.canUseTool;
+              if (!current) return Promise.resolve({ behavior: "allow" as const });
+              return current(toolName, input, options);
+            }
+          : undefined;
+
+        const telarTools: unknown[] = [];
+
+        /**
+         * THE SPOOL, WHEN THE TURN CARRIES ONE — CAP-12's "tasks are a
+         * Telar-wide substrate", which is only true if an ordinary project
+         * session can reach them.
+         *
+         * NO APPROVAL GATE ON ANY OF THESE, and that is the same judgement the
+         * legacy server made about the same four verbs: none of them is a commit.
+         * Filing a task starts nothing, and the two things a human must decide —
+         * a verdict, and a sub-task's promotion — have no tool input that can
+         * spell them. The one gate that matters here is structural, not
+         * interactive.
+         */
+        if (spool && sdk.tool) telarTools.push(...spoolTools(sdk.tool, delegatingCapability(() => bindings.current.spool)));
 
       /**
        * THE SESSIONS TOOLKIT, WHEN THE TURN CARRIES ONE.
@@ -1339,96 +1469,71 @@ export function createClaudeDriver(
        * in `WARP_CHILD_DISALLOWED_TOOLS` on top of that, because
        * `sessions_create` is fan-out wearing another hat.
        */
-      if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, sessions));
+        if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
 
-      const warp = warpTool(sdk, {
+        const warp = warpTool(sdk, {
+          // Both delegate through the bindings — the tool is registered once
+          // per session runtime, the spawn and the task sink change per turn.
+          spawn: (input) => bindings.current.warpSpawn(input),
+          onTask: (seed) => bindings.current.onWarpTask(seed),
+          ...(providerInstanceId ? { instanceId: providerInstanceId } : {}),
+          signal: () => bindings.current.signal,
+        });
+        if (warp) telarTools.push(warp);
+
+        const telarServer =
+          telarTools.length > 0 && sdk.createSdkMcpServer
+            ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
+            : undefined;
+
+        // The worker-hosted browser socket, in the SDK's own http shape — the
+        // same entry `claudeMcpServers` builds for a user's http server. The
+        // token rides a header; the URL is loopback and the credential is
+        // per-SESSION (the worker keeps one binding per session so this
+        // baked-in entry stays valid for the life of the runtime).
+        const telarBrowserServer = browserSocket
+          ? {
+              [TELAR_BROWSER_MCP_SERVER]: {
+                type: "http" as const,
+                url: browserSocket.url,
+                headers: { Authorization: `Bearer ${browserSocket.token}` },
+              },
+            }
+          : undefined;
+
         /**
-         * A CHILD IS A REAL `claude` PROCESS, spawned with this turn's own
-         * checkout, login and binary — so a warp inherits everything the session
-         * was configured with rather than a default the driver invents.
-         *
-         * `mcpServers` is the USER's only: Telar's own server is withheld, or a
-         * child could call `warp` and recurse without bound, and four children
-         * would fight over one browser scope. `canUseTool` is passed, because a
-         * session that asks before editing asks for a child's edits too.
+         * TELAR'S SERVERS AND THE USER'S, IN ONE RECORD — and Telar's are applied
+         * LAST on purpose. The keys become the `mcp__<key>__<tool>` addressing
+         * every client parses, so a user server called `telar` would shadow the
+         * engine's own capabilities and route their approvals to the generic arm.
+         * Losing a colliding user server is the better failure of the two, and it
+         * is the one the naming standard in ./protocol/tools.ts already assumes.
          */
-        spawn: createWarpSpawn({
-          sdk,
-          cwd,
-          ...(model ? { model } : {}),
-          ...(sdkEffort ? { effort: sdkEffort } : {}),
-          ...(fastMode === undefined ? {} : { fastMode }),
-          ...(env ? { env } : {}),
-          ...(userServers ? { mcpServers: userServers } : {}),
-          ...(canUseTool ? { canUseTool } : {}),
-          ...(() => {
-            const executable = resolveExecutable(binaryPath);
-            return executable ? { executable } : {};
-          })(),
-        }),
-        onTask: onWarpTask,
-        ...(providerInstanceId ? { instanceId: providerInstanceId } : {}),
-        signal: controller.signal,
-      });
-      if (warp) telarTools.push(warp);
+        const mcpServers =
+          userServers || telarServer || telarBrowserServer
+            ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarServer ?? {}) }
+            : undefined;
 
-      const telarServer =
-        telarTools.length > 0 && sdk.createSdkMcpServer
-          ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
-          : undefined;
-
-      // The worker-hosted browser socket, in the SDK's own http shape — the
-      // same entry `claudeMcpServers` builds for a user's http server. The
-      // token rides a header; the URL is loopback and the credential is
-      // per-turn, so nothing here outlives the run that minted it.
-      const telarBrowserServer = browserSocket
-        ? {
-            [TELAR_BROWSER_MCP_SERVER]: {
-              type: "http" as const,
-              url: browserSocket.url,
-              headers: { Authorization: `Bearer ${browserSocket.token}` },
-            },
-          }
-        : undefined;
-
-      /**
-       * TELAR'S SERVERS AND THE USER'S, IN ONE RECORD — and Telar's are applied
-       * LAST on purpose. The keys become the `mcp__<key>__<tool>` addressing
-       * every client parses, so a user server called `telar` would shadow the
-       * engine's own capabilities and route their approvals to the generic arm.
-       * Losing a colliding user server is the better failure of the two, and it
-       * is the one the naming standard in ./protocol/tools.ts already assumes.
-       */
-      const mcpServers =
-        userServers || telarServer || telarBrowserServer
-          ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarServer ?? {}) }
-          : undefined;
-
-      /**
-       * The input stream's plumbing. `boundary.mark()` fires at each result
-       * message; the generator then drains the mailbox — empty ends the
-       * stream (the unsteered common case), text becomes another user turn.
-       * The kill switch restores the plain string, at the cost of send-now.
-       */
-      const boundary = new TurnBoundary();
-      const onSteered = (text: string) => {
-        const id = itemId();
-        emit({ kind: "item.started", item: { id, detail: { type: "user_message", text }, title: "Sent now" } });
-        emit({ kind: "item.completed", itemId: id, status: "completed" });
-      };
-      const streaming = claudeStreamingInputEnabled();
-      const promptInput =
-        streaming || (attachments?.length ?? 0) > 0
-          ? claudePrompt(prompt, attachments ?? [], streaming ? steer : undefined, boundary, onSteered)
-          : prompt;
-
-      try {
-        for await (const message of sdk.query({
-          prompt: promptInput,
+        const feed = new MessageFeed();
+        /** Ends the PROCESS, never a turn — aborted only by `destroy`. */
+        const processController = new AbortController();
+        const query = sdk.query({
+          /**
+           * THE INPUT STREAM IS THE SESSION'S LIFETIME. The feed's generator
+           * parks between turns, which is exactly what keeps the CLI process
+           * alive — the SDK reads a closed input stream as "the session is
+           * over" and tears everything down, background work included. The
+           * kill switch keeps the old one-shot forms.
+           */
+          prompt: streaming
+            ? (feed.stream() as AsyncIterable<SdkUserMessage>)
+            : (attachments?.length ?? 0) > 0
+              ? singleUserMessage(claudeInitialContent(prompt, attachments ?? []))
+              : prompt,
           options: {
             cwd,
             permissionMode: "default",
-            abortController: controller,
+            abortController: processController,
             includePartialMessages: true,
             forwardSubagentText: true,
             ...(model ? { model } : {}),
@@ -1437,8 +1542,11 @@ export function createClaudeDriver(
             // non-default behaviour, and inventing one would make every session
             // inherit a choice nobody made.
             ...(fastMode === undefined ? {} : { settings: { fastMode } }),
+            // COLD START ONLY. Continuity between turns is now the live
+            // process's own; `resume` is what a NEW process uses to pick up a
+            // conversation an old one carried.
             ...(providerSessionId ? { resume: providerSessionId } : {}),
-            ...(canUseTool ? { canUseTool } : {}),
+            ...(gate ? { canUseTool: gate } : {}),
             ...(mcpServers ? { mcpServers } : {}),
             // WHOLE, NOT A PATCH, because that is what the SDK's option means:
             // "when omitted the subprocess inherits process.env", so supplying
@@ -1447,15 +1555,152 @@ export function createClaudeDriver(
             // from — and a key patched to `undefined` genuinely disappears,
             // which is how a configured instance stops inheriting a credential.
             ...(env ? { env: { ...process.env, ...env } } : {}),
-            // Resolved per turn rather than per process: the CLI can upgrade
-            // itself between two turns of the same session, and the resolver's
-            // cache is keyed on (path, mtime) so noticing that costs nothing.
-            ...(() => {
-              const executable = resolveExecutable(binaryPath);
-              return executable ? { pathToClaudeCodeExecutable: executable } : {};
-            })(),
+            // Part of the fingerprint: a CLI that upgraded itself between two
+            // turns changes the resolved path, and the runtime is recreated.
+            ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
           },
-        })) {
+        }) as RuntimeQuery;
+
+        // An EXPLICIT iterator, held for the runtime's life. `for await`
+        // would call `.return()` on any break — the SDK's cue to shut the
+        // process down, which is the exact teardown this store exists to
+        // avoid. `.return()` is reserved for `destroy` below.
+        const iterator = query[Symbol.asyncIterator]();
+
+        return {
+          sessionId,
+          fingerprint,
+          feed,
+          query,
+          iterator,
+          bindings,
+          destroy: () => {
+            feed.end();
+            if (typeof query.close === "function") query.close();
+            else processController.abort(new Error("the session runtime was destroyed"));
+            // The one place `.return()` is allowed: it runs the generator's
+            // own cleanup for implementations without `close` (fake SDKs).
+            // Swallowed because a generator busy at a yield point rejects the
+            // return and there is nobody left to care.
+            void Promise.resolve()
+              .then(() => iterator.return?.(undefined))
+              .catch(() => undefined);
+          },
+          model,
+          busy: true,
+          lastUsedAt: Date.now(),
+        };
+      };
+
+      /**
+       * THE RUNTIME: with streaming input, ONE LIVE QUERY PER SESSION — the
+       * whole point of ./claude-runtime.ts. Background shells, monitors and
+       * backgrounded sub-agents live inside that process, so a turn ending
+       * must not end it. The kill switch restores a process per turn, at the
+       * cost of send-now and of anything outliving its turn.
+       */
+      const persistent = streaming;
+      let claimed = persistent ? runtimes.claim(sessionId, fingerprint) : undefined;
+      // Field diagnosis only: which fingerprint field broke reuse. Off unless asked.
+      if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
+        console.error(`[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} fp=${fingerprint}`);
+      }
+      if (claimed && claimed.model !== model) {
+        // The one knob a live query can turn. A query that cannot (a fake
+        // SDK, an older CLI) is replaced instead of patched.
+        const setModel = claimed.query.setModel?.bind(claimed.query);
+        let switched = false;
+        if (setModel) {
+          try {
+            await setModel(model);
+            claimed.model = model;
+            switched = true;
+          } catch {
+            switched = false;
+          }
+        }
+        if (!switched) {
+          runtimes.destroy(sessionId);
+          claimed = undefined;
+        }
+      }
+      const runtime = claimed ?? buildRuntime();
+      if (persistent && !claimed) runtimes.adopt(runtime);
+      runtime.bindings.current = turnBindings;
+
+      if (persistent) {
+        // The turn begins as one message pushed into the open stream.
+        runtime.feed.push({
+          type: "user",
+          message: { role: "user", content: claudeInitialContent(prompt, attachments ?? []) },
+          parent_tool_use_id: null,
+        });
+      }
+
+      /**
+       * SEND NOW, DELIVERED THE MOMENT IT ARRIVES. The old shape drained the
+       * mailbox at the turn's END — a delivery window of effectively zero,
+       * which is why every steer silently degraded into a requeued turn. With
+       * the stream open for the session there is nothing to wait for: the
+       * text goes straight in, mid-turn, exactly as typing at a running
+       * Claude Code does. After the turn's result the pump stops taking;
+       * anything later is the engine sweep's to requeue.
+       */
+      let turnDone = false;
+      if (persistent && steer) {
+        void (async () => {
+          for (;;) {
+            await steer.wake();
+            if (turnDone) return;
+            const queued = steer.drain();
+            if (queued.length > 0) {
+              // Joined rather than pushed one at a time: they arrived while a
+              // single turn was running, so they are one interruption with
+              // several sentences.
+              const text = queued.join("\n\n");
+              onSteered(text);
+              runtime.feed.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
+              await flush();
+            }
+            if (steer.isClosed) return;
+          }
+        })().catch(() => undefined);
+      }
+
+      /**
+       * STOP ENDS THE TURN, NOT THE PROCESS. `interrupt()` is what pressing
+       * Esc does in Claude Code: the current work stops, the process — and
+       * everything backgrounded inside it — survives. The escalation below is
+       * for an interrupt the CLI never answers: this worker runs one turn at
+       * a time, so a pump parked forever would park the whole worker.
+       */
+      let streamEnded = false;
+      let interruptEscalation: ReturnType<typeof setTimeout> | undefined;
+      const onAbort = () => {
+        if (!persistent) {
+          runtime.destroy();
+          return;
+        }
+        const interrupted = runtime.query.interrupt?.();
+        if (!interrupted) {
+          runtimes.destroy(sessionId);
+          return;
+        }
+        interrupted.catch(() => runtimes.destroy(sessionId));
+        interruptEscalation = setTimeout(() => runtimes.destroy(sessionId), 10_000);
+        interruptEscalation.unref?.();
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        for (;;) {
+          const step = await runtime.iterator.next();
+          if (step.done) {
+            streamEnded = true;
+            break;
+          }
+          const message = step.value;
           const item = message as {
             type?: string;
             subtype?: string;
@@ -1654,19 +1899,22 @@ export function createClaudeDriver(
             usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {
+              // An interrupt surfaces as a non-success result; the human's
+              // stop must read as a stop, never as a provider failure.
+              if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
             completed = true;
-            /**
-             * A RESULT IS A BOUNDARY, NOT THE END. The prompt generator wakes
-             * here, drains the mailbox, and either ends the stream (nothing
-             * steered — the loop then falls out on stream close as always) or
-             * yields a steered message and a further result arrives later,
-             * overwriting `usage` with the newer figures. Either way
-             * `completed` stays true.
-             */
-            boundary.mark();
             await flush();
+            /**
+             * A RESULT ENDS THE TURN AND NOTHING ELSE. The pump stops HERE,
+             * with the stream open and the process alive — that is the whole
+             * design (see ./claude-runtime.ts); the next turn resumes pumping
+             * this same iterator. On the kill-switch path the input stream is
+             * already exhausted, so the loop instead runs on to the stream's
+             * natural close, exactly as it always did.
+             */
+            if (persistent) break;
             continue;
           }
 
@@ -1900,11 +2148,24 @@ export function createClaudeDriver(
           ...(reportedSessionId ? { providerSessionId: reportedSessionId } : {}),
           ...(usage ? { usage } : {}),
         };
+      } catch (error) {
+        /**
+         * DOES THE PROCESS SURVIVE THE FAILED TURN? Only for a stop that
+         * interrupted cleanly — the stream is still open and ALIGNED, because
+         * the interrupted turn's own result was consumed above (or never
+         * will arrive, in which case the escalation already destroyed the
+         * runtime and `streamEnded` says so). Anything else — stream death, a
+         * non-success result, an SDK throw — leaves a process this driver
+         * cannot vouch for, so the next turn cold-starts from `resume`.
+         */
+        if (persistent && (!signal.aborted || streamEnded)) runtimes.destroy(sessionId);
+        throw error;
       } finally {
-        // A generator parked at `boundary.next()` when the stream dies (abort,
-        // SDK error) must be released or it leaks with the closure.
-        boundary.close();
-        signal.removeEventListener("abort", abort);
+        turnDone = true;
+        if (interruptEscalation !== undefined) clearTimeout(interruptEscalation);
+        signal.removeEventListener("abort", onAbort);
+        if (persistent) runtimes.release(sessionId);
+        else runtime.destroy();
       }
     },
   };

@@ -38,12 +38,18 @@ function recorder() {
   };
 }
 
+/** UNIQUE PER CALL unless a test opts into sharing: the driver now keys a
+ *  live runtime by sessionId, and two unrelated runs accidentally sharing an
+ *  id would share a query — the exact behaviour only the session tests below
+ *  mean to exercise, and they pass their own id to say so. */
+let runSequence = 0;
 const run = (driver: ReturnType<typeof createClaudeDriver>, extra: Record<string, unknown> = {}) => {
   const sink = recorder();
   return {
     sink,
     result: driver.run({
       prompt: "prompt",
+      sessionId: `session_test_${(runSequence += 1)}`,
       cwd: "/tmp",
       signal: new AbortController().signal,
       onObservations: sink.onObservations,
@@ -998,14 +1004,15 @@ test("an image attachment reaches Claude as pixels; anything else reaches it as 
     ],
   }).result;
 
-  // The async-iterable form is what carries content blocks; a turn with no
-  // attachment must stay a plain string, which the tests above already assert
-  // by passing one through untouched.
+  // The async-iterable form is what carries content blocks. THE STREAM IS
+  // NOT DRAINED TO ITS END any more: it is the session runtime's own feed,
+  // which stays open after the turn precisely so the process survives —
+  // draining it would wait forever for a session that is merely idle. One
+  // explicit pull reads the one message the turn pushed.
   expect(typeof prompt).toBe("object");
-  const messages: unknown[] = [];
-  for await (const message of prompt as AsyncIterable<unknown>) messages.push(message);
-  expect(messages).toHaveLength(1);
-  const content = (messages[0] as { message: { content: Array<Record<string, unknown>> } }).message.content;
+  const first = await (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]().next();
+  expect(first.done).toBe(false);
+  const content = (first.value as { message: { content: Array<Record<string, unknown>> } }).message.content;
   expect(content[0]).toEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } });
   // The non-image is NAMED WITH ITS PATH rather than inlined: the agent has a
   // Read tool and a file it can reopen beats a copy it cannot.
@@ -1152,18 +1159,26 @@ describe("the Spool's reads are reads", () => {
   });
 });
 
-test("a steered message becomes a second user turn, journalled as a user_message row", async () => {
-  // The fake SDK CONSUMES the prompt stream the way the real one does in
-  // streaming-input mode: one result per user message. The mailbox is filled
-  // before the first boundary, so the generator drains it and yields a second
-  // turn; an empty mailbox at the next boundary ends the stream.
+test("a steered message is injected MID-TURN, journalled as a user_message row", async () => {
+  /**
+   * THE DELIVERY WINDOW USED TO BE ZERO: the old prompt generator drained the
+   * mailbox only at the turn's own boundary — the instant the turn was
+   * already ending — so in practice every steer missed and degraded into a
+   * requeued turn ("stuck in sending", measured on this very app). With the
+   * session runtime the input stream is open for the session's life, so the
+   * text goes straight in while the turn runs. The fake models a turn in
+   * progress: it reads TWO user messages before answering, which only ever
+   * completes if the steer really is delivered mid-turn.
+   */
   const heard: unknown[] = [];
   const driver = createClaudeDriver(async () => ({
     async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
       for await (const message of prompt) {
         heard.push(message.message.content);
-        yield { type: "assistant", message: { content: [{ type: "text", text: `answer:${heard.length} ` }] } };
+        if (heard.length < 2) continue; // still "working": the steer arrives while no result has been produced
+        yield { type: "assistant", message: { content: [{ type: "text", text: "answer " }] } };
         yield { type: "result", subtype: "success" };
+        return;
       }
     },
   }) as never);
@@ -1172,8 +1187,7 @@ test("a steered message becomes a second user turn, journalled as a user_message
   const { sink, result } = run(driver, { steer });
   const resolved = await result;
   expect(heard).toEqual(["prompt", "also do this"]);
-  // Both answers accumulate into the turn's final text.
-  expect(resolved.text).toBe("answer:1 answer:2 ");
+  expect(resolved.text).toBe("answer ");
   // The injected sentence is a transcript row — without it, the agent's
   // change of direction would have no visible cause.
   const userRows = sink.observations.filter(
@@ -1200,3 +1214,211 @@ test("TELAR_CLAUDE_STREAMING_INPUT=0 restores the plain-string prompt — the fi
     else process.env.TELAR_CLAUDE_STREAMING_INPUT = previous;
   }
 });
+
+// ── the session runtime: one live query per session ──────────────────────────
+
+describe("the session runtime", () => {
+  test("two turns of one session share ONE live query — the process outlives the turn", async () => {
+    /**
+     * THE CORE INVERSION, measured before the fix on this very app: one query
+     * per turn meant one CLI process per turn, and everything the agent left
+     * running — backgrounded shells, monitors, sub-agents — died at every
+     * turn boundary. Now the second turn is a message pushed into the FIRST
+     * turn's still-open stream; `query` must be entered exactly once.
+     */
+    let queryCalls = 0;
+    const heard: unknown[] = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+        queryCalls += 1;
+        for await (const message of prompt) {
+          heard.push(message.message.content);
+          yield { type: "assistant", message: { content: [{ type: "text", text: `answer:${heard.length}` }] } };
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const first = await run(driver, { sessionId: "session_shared" }).result;
+    const second = await run(driver, { sessionId: "session_shared", prompt: "second prompt" }).result;
+    expect(queryCalls).toBe(1);
+    expect(heard).toEqual(["prompt", "second prompt"]);
+    expect(first.text).toBe("answer:1");
+    expect(second.text).toBe("answer:2");
+  });
+
+  test("stop INTERRUPTS the turn; the session survives and answers the next turn", async () => {
+    /**
+     * What the user reported as "I stopped the turn and the agent died":
+     * abort used to kill the process, taking every background task with it.
+     * Now a stop maps to the SDK's own `interrupt()` — Esc in Claude Code —
+     * and the same live query serves the following turn.
+     */
+    let queryCalls = 0;
+    let interrupts = 0;
+    let release: (() => void) | undefined;
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+        const generator = (async function* () {
+          queryCalls += 1;
+          const input = prompt[Symbol.asyncIterator]();
+          // Turn 1: read the prompt, then stay "working" until interrupted.
+          await input.next();
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          yield { type: "result", subtype: "error_during_execution" };
+          // Turn 2, same process: answer normally.
+          await input.next();
+          yield { type: "assistant", message: { content: [{ type: "text", text: "after stop" }] } };
+          yield { type: "result", subtype: "success" };
+        })();
+        return Object.assign(generator, {
+          interrupt: async () => {
+            interrupts += 1;
+            release?.();
+          },
+        });
+      },
+    }) as never);
+
+    const controller = new AbortController();
+    const sink = recorder();
+    const firstTurn = driver.run({
+      prompt: "prompt",
+      sessionId: "session_stoppable",
+      cwd: "/tmp",
+      signal: controller.signal,
+      onObservations: sink.onObservations,
+    });
+    // Wait until the fake is genuinely mid-turn, then stop it.
+    while (!release) await new Promise((resolve) => setTimeout(resolve, 1));
+    controller.abort(new Error("the human pressed stop"));
+    await expect(firstTurn).rejects.toThrow("the human pressed stop");
+    expect(interrupts).toBe(1);
+
+    const second = await run(driver, { sessionId: "session_stoppable", prompt: "carry on" }).result;
+    expect(second.text).toBe("after stop");
+    expect(queryCalls).toBe(1);
+  });
+
+  test("a config change recreates the process, resuming the conversation from the cursor", async () => {
+    // The fingerprint holds everything the query bakes in at creation. A turn
+    // that arrives with a different cwd cannot reuse the live process — and
+    // the NEW process picks the conversation up via `resume`, which is now a
+    // cold-start-only concern rather than an every-turn one.
+    let queryCalls = 0;
+    const resumes: unknown[] = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { resume?: string } }) {
+        queryCalls += 1;
+        resumes.push(options.resume);
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_moving" }).result;
+    await run(driver, { sessionId: "session_moving", cwd: "/tmp/elsewhere", providerSessionId: "prov-abc" }).result;
+    expect(queryCalls).toBe(2);
+    expect(resumes).toEqual([undefined, "prov-abc"]);
+  });
+
+  test("a failed turn destroys the runtime; the next turn cold-starts instead of pumping a corpse", async () => {
+    let queryCalls = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        queryCalls += 1;
+        for await (const message of prompt) {
+          void message;
+          if (queryCalls === 1) {
+            yield { type: "result", subtype: "error_during_execution" };
+            return;
+          }
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    await expect(run(driver, { sessionId: "session_flaky" }).result).rejects.toThrow("error_during_execution");
+    await run(driver, { sessionId: "session_flaky" }).result;
+    expect(queryCalls).toBe(2);
+  });
+
+  test("a model change on a live runtime goes through setModel, not a new process", async () => {
+    let queryCalls = 0;
+    const modelsSet: unknown[] = [];
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        const generator = (async function* () {
+          queryCalls += 1;
+          for await (const message of prompt) {
+            void message;
+            yield { type: "result", subtype: "success" };
+          }
+        })();
+        return Object.assign(generator, {
+          setModel: async (model?: string) => {
+            modelsSet.push(model);
+          },
+        });
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_switching", model: "opus" }).result;
+    await run(driver, { sessionId: "session_switching", model: "haiku" }).result;
+    expect(queryCalls).toBe(1);
+    expect(modelsSet).toEqual(["haiku"]);
+  });
+
+  test("dispose closes every live runtime — the worker's stop is the session's end", async () => {
+    let ended = false;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        try {
+          for await (const message of prompt) {
+            void message;
+            yield { type: "result", subtype: "success" };
+          }
+        } finally {
+          ended = true;
+        }
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_disposable" }).result;
+    expect(ended).toBe(false);
+    driver.dispose?.();
+    // Ending the feed lets the fake's for-await fall out; give it a beat.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(ended).toBe(true);
+  });
+});
+
+  test("a re-stamped MCP server record does not cold-start the process — only id and spec are identity", async () => {
+    /**
+     * MEASURED ON THE DEV APP: the engine re-registers the Computer Use
+     * server each turn with fresh createdAt/updatedAt, and a fingerprint
+     * hashing the whole record cold-started a new CLI per turn — killing the
+     * background work the session runtime exists to keep alive.
+     */
+    let queryCalls = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        queryCalls += 1;
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const serverAt = (at: number) => [
+      { id: "mac", label: "Computer Use (Mac)", enabled: true, createdAt: at, updatedAt: at, spec: { transport: "stdio", command: "cua", args: ["mcp"] } },
+    ];
+    await run(driver, { sessionId: "session_stamped", mcpServers: serverAt(1) }).result;
+    await run(driver, { sessionId: "session_stamped", mcpServers: serverAt(2) }).result;
+    expect(queryCalls).toBe(1);
+    // A change to the SPEC is real identity and still recreates.
+    await run(driver, {
+      sessionId: "session_stamped",
+      mcpServers: [{ id: "mac", label: "Computer Use (Mac)", enabled: true, createdAt: 3, updatedAt: 3, spec: { transport: "stdio", command: "elsewhere", args: ["mcp"] } }],
+    }).result;
+    expect(queryCalls).toBe(2);
+  });
