@@ -5,10 +5,15 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(_request: Request, context: Context) {
+export async function GET(request: Request, context: Context) {
   try {
     const { sessionId } = await context.params;
-    return Response.json(await (await engineClient()).session(sessionId));
+    // The window rides through as given; the engine validates it.
+    const params = new URL(request.url).searchParams;
+    const turns = params.get("turns");
+    const before = params.get("before");
+    const window = turns === null ? undefined : { turns: Number(turns), ...(before === null ? {} : { before }) };
+    return Response.json(await (await engineClient()).session(sessionId, window));
   } catch (error) {
     return engineErrorResponse(error);
   }
