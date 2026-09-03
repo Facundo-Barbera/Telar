@@ -29,6 +29,7 @@ import {
   ProviderInstanceId,
   ProviderRefs,
   Timestamp,
+  TurnAttachment,
   UsageSnapshot,
 } from "./common";
 import { Turn } from "./entities";
@@ -238,6 +239,13 @@ export const WorkerStatus = z.object({
         claimToken: Id,
         steerRunId: Id,
         text: z.string().min(1),
+        /**
+         * The files the human attached to the steered message. The engine wrote
+         * them and owns the paths, exactly as for a queued turn's attachments;
+         * this channel used to carry text alone, so an image sent mid-turn was
+         * stored and never delivered — measured on the dogfood app.
+         */
+        attachments: z.array(TurnAttachment).optional(),
       }),
     )
     .default([]),

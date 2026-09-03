@@ -39,6 +39,7 @@ import {
   ListTodoIcon,
   Loader2Icon,
   Minimize2Icon,
+  PaperclipIcon,
   PencilIcon,
   SearchIcon,
   TerminalIcon,
@@ -390,9 +391,29 @@ function CompactionRow({ item }: { item: JournalItem }) {
  * would have no visible cause.
  */
 function SteeredMessageRow({ item }: { item: JournalItem }) {
+  const attachments = item.detail.type === "user_message" ? (item.detail.attachments ?? []) : [];
   return (
     <div className="flex justify-end py-1">
-      <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">{itemText(item)}</p>
+      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">
+        <p className="whitespace-pre-wrap">{itemText(item)}</p>
+        {/* WHAT WAS SENT, not what the model made of it — the same rule the
+            queued turn's bubble follows. Named rather than rendered: the bytes
+            live beside the session on the engine's disk. */}
+        {attachments.length > 0 && (
+          <ul className="mt-1.5 flex flex-wrap gap-1.5">
+            {attachments.map((attachment) => (
+              <li
+                key={attachment.id}
+                title={attachment.path}
+                className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-0.5 text-[0.6875rem] text-muted-foreground"
+              >
+                <PaperclipIcon className="size-3 shrink-0" />
+                <span className="max-w-48 truncate">{attachment.name}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }

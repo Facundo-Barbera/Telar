@@ -9,6 +9,8 @@
  * and the driver must not import from `warp/`.
  */
 
+import type { TurnAttachment } from "@telar/engine-client";
+
 /**
  * A turn boundary the prompt generator can wait on.
  *
@@ -64,16 +66,22 @@ export class TurnBoundary {
  * the undelivered message as its own turn — losing it silently is the one
  * failure this whole channel exists to prevent.
  */
+/** One steered message: the words, and the files the human attached to them.
+ *  The engine wrote the files and owns the paths, exactly as for a queued
+ *  turn's attachments. */
+export type SteerMessage = { text: string; attachments?: TurnAttachment[] };
+
 export class SteerMailbox {
-  private queue: string[] = [];
+  private queue: SteerMessage[] = [];
   private closed = false;
   private wakers: Array<() => void> = [];
 
-  /** True when the text was accepted; false after close, when the engine's
-   *  requeue sweep is the delivery path instead. */
-  push(text: string): boolean {
+  /** True when the message was accepted; false after close, when the engine's
+   *  requeue sweep is the delivery path instead. A bare string is the
+   *  text-only form the tests and the warp runner still use. */
+  push(message: string | SteerMessage): boolean {
     if (this.closed) return false;
-    this.queue.push(text);
+    this.queue.push(typeof message === "string" ? { text: message } : message);
     const waiting = this.wakers;
     this.wakers = [];
     for (const wake of waiting) wake();
@@ -81,7 +89,7 @@ export class SteerMailbox {
   }
 
   /** Everything queued right now, removed. Non-blocking, never throws. */
-  drain(): string[] {
+  drain(): SteerMessage[] {
     const queued = this.queue;
     this.queue = [];
     // Fired AFTER the take: a listener acking delivery must only hear about

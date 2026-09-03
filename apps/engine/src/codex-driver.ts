@@ -750,9 +750,27 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                   if (steer.isClosed) return;
                   continue;
                 }
-                const text = queued.join("\n\n");
+                // Codex's `turn/steer` takes text. An attached file is named
+                // by its path so the agent can still open it — the same
+                // fallback the Claude seam uses for non-image files — rather
+                // than dropped, which is what the old text-only channel did.
+                const text = queued
+                  .map((message) => {
+                    const files = message.attachments ?? [];
+                    if (files.length === 0) return message.text;
+                    return `${message.text}\n\nAttached files:\n${files.map((file) => `- ${file.name} (${file.mediaType}) at ${file.path}`).join("\n")}`;
+                  })
+                  .join("\n\n");
+                const attachments = queued.flatMap((message) => message.attachments ?? []);
                 const rowId = itemIdFor(`steer-${crypto.randomUUID().slice(0, 8)}`);
-                emit({ kind: "item.started", item: { id: rowId, detail: { type: "user_message", text }, title: "Sent now" } });
+                emit({
+                  kind: "item.started",
+                  item: {
+                    id: rowId,
+                    detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}) },
+                    title: "Sent now",
+                  },
+                });
                 emit({ kind: "item.completed", itemId: rowId, status: "completed" });
                 try {
                   await client.request("turn/steer", {
