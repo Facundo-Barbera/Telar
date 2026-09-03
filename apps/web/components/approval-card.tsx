@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { FileIcon, MessageCircleQuestionIcon, PencilIcon, ShieldIcon, TerminalIcon, WrenchIcon } from "lucide-react";
-import { displayToolName, type EngineRequest, type RequestDecision, type UserInputField } from "@telar/engine-client";
+import { FileIcon, KeyRoundIcon, MessageCircleQuestionIcon, PencilIcon, ShieldIcon, TerminalIcon, WrenchIcon } from "lucide-react";
+import { displayToolName, type EngineRequest, type RequestDecision, type SecretAccessDetail, type UserInputField } from "@telar/engine-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -44,6 +44,7 @@ const KIND_ICON = {
   file_read: FileIcon,
   tool_call: WrenchIcon,
   user_input: MessageCircleQuestionIcon,
+  secret_access: KeyRoundIcon,
 } as const;
 
 export function describeRequest(detail: EngineRequest["detail"]): { eyebrow: string; verb: string; argument?: string } {
@@ -60,6 +61,8 @@ export function describeRequest(detail: EngineRequest["detail"]): { eyebrow: str
       return { eyebrow: "tool call", verb: displayToolName(detail.call.name) };
     case "user_input":
       return { eyebrow: "question", verb: detail.prompt };
+    case "secret_access":
+      return { eyebrow: "1password", verb: `Fill login on ${detail.secret.origin}` };
   }
 }
 
@@ -166,6 +169,80 @@ function QuestionCard({
   );
 }
 
+/**
+ * The 1Password fill card. THREE deliberate absences: no "Always allow" (a
+ * credential leaving the vault is approved one fill at a time — the engine's
+ * `autoResolution` refuses this kind in every mode, and the card must not
+ * offer what the engine would not honour the spirit of), no free-typed value
+ * (the human picks an ITEM; values never pass through this UI), and no
+ * candidate outside the engine's domain-matched list (the radio group IS the
+ * domain binding, rendered).
+ */
+function SecretAccessCard({
+  request,
+  secret,
+  sending,
+  onDecide,
+}: {
+  request: EngineRequest;
+  secret: SecretAccessDetail;
+  sending: boolean;
+  onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
+}) {
+  const [itemId, setItemId] = useState(secret.candidates[0]?.id ?? "");
+  const kinds = secret.fields.map((field) => (field.kind === "field" ? `“${field.label ?? ""}”` : field.kind)).join(" + ");
+
+  return (
+    <section className={CARD} aria-label="Fill from 1Password — approval required">
+      <p className={EYEBROW}>1password</p>
+      <p className="flex items-center gap-1.5 text-sm font-medium">
+        <KeyRoundIcon className="size-3.5 shrink-0 text-warning" />
+        Fill {kinds} on <span className="font-mono">{secret.origin}</span>
+      </p>
+
+      <div className="flex flex-col gap-1" role="radiogroup" aria-label="1Password item">
+        {secret.candidates.map((candidate) => (
+          <label
+            key={candidate.id}
+            className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm has-checked:border-warning/60"
+          >
+            <input
+              type="radio"
+              name={`secret-item-${request.id}`}
+              value={candidate.id}
+              checked={itemId === candidate.id}
+              onChange={() => setItemId(candidate.id)}
+            />
+            <span className="font-medium">{candidate.title}</span>
+            <span className="ml-auto flex items-center gap-2 font-mono text-[0.625rem] text-muted-foreground">
+              {candidate.vault && <span>{candidate.vault}</span>}
+              {/* The matched domain, shown so the human verifies the same
+                  binding the engine enforced. */}
+              <span>{candidate.domain}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+
+      <p className="text-xs text-muted-foreground">
+        Telar fills the values directly — they never enter the conversation, the journal, or the model.
+      </p>
+      {request.notified === false && (
+        <p className="text-xs text-muted-foreground">Parked with nobody watching — no notification was sent.</p>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" disabled={sending || !itemId} onClick={() => onDecide(request.id, "accept", { answers: { item: itemId } })}>
+          Fill from 1Password
+        </Button>
+        <Button variant="ghost" disabled={sending} onClick={() => onDecide(request.id, "decline")} className="text-destructive hover:text-destructive">
+          Deny
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 export function ApprovalCard({
   request,
   sending,
@@ -177,6 +254,9 @@ export function ApprovalCard({
 }) {
   if (request.detail.kind === "user_input") {
     return <QuestionCard request={request} prompt={request.detail.prompt} fields={request.detail.fields} sending={sending} onDecide={onDecide} />;
+  }
+  if (request.detail.kind === "secret_access") {
+    return <SecretAccessCard request={request} secret={request.detail.secret} sending={sending} onDecide={onDecide} />;
   }
 
   const { eyebrow, verb, argument } = describeRequest(request.detail);
