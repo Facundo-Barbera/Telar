@@ -1422,3 +1422,29 @@ describe("the session runtime", () => {
     }).result;
     expect(queryCalls).toBe(2);
   });
+
+  test("stopTask reaches into the session's live runtime and stops one background task by provider id", async () => {
+    const stopped: string[] = [];
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        const generator = (async function* () {
+          for await (const message of prompt) {
+            void message;
+            yield { type: "result", subtype: "success" };
+          }
+        })();
+        return Object.assign(generator, {
+          stopTask: async (taskId: string) => {
+            stopped.push(taskId);
+          },
+        });
+      },
+    }) as never);
+    // A turn creates the live runtime; then the task is stopped between turns.
+    await run(driver, { sessionId: "session_kill" }).result;
+    const took = await driver.stopTask?.("session_kill", "bqo5yo8lm");
+    expect(took).toBe(true);
+    expect(stopped).toEqual(["bqo5yo8lm"]);
+    // A session with no live runtime is an honest false, not a throw.
+    expect(await driver.stopTask?.("session_unknown", "whatever")).toBe(false);
+  });

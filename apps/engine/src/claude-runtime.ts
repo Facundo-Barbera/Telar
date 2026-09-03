@@ -78,8 +78,12 @@ export class MessageFeed {
  * implement none of these. Every use is optional-chained for the same reason.
  */
 export type RuntimeQuery = AsyncIterable<unknown> & {
-  /** Ends the CURRENT turn; the process and the stream survive. */
+  /** Ends the CURRENT turn; the process and the stream survive. With
+   *  `perTaskStopAffordance`, this spares running background tasks. */
   interrupt?(): Promise<unknown>;
+  /** Stops ONE background task by its provider id; the process survives and a
+   *  `task_notification` with status 'stopped' follows. */
+  stopTask?(taskId: string): Promise<void>;
   /** Ends the process. stdin closes, then SIGTERM escalating to SIGKILL. */
   close?(): void;
   setModel?(model?: string): Promise<void>;
@@ -164,6 +168,19 @@ export class ClaudeRuntimeStore<T = unknown> {
     for (const evicted of idle.slice(0, Math.max(0, idle.length - MAX_IDLE_RUNTIMES))) {
       this.destroy(evicted.sessionId);
     }
+  }
+
+  /**
+   * Stop ONE background task inside a session's live runtime, by its provider
+   * id. Returns false when there is no live runtime for the session (its
+   * process already gone, nothing to stop) or the SDK cannot — the caller
+   * turns that into an honest "already gone" rather than a hang.
+   */
+  async stopTask(sessionId: string, providerTaskId: string): Promise<boolean> {
+    const runtime = this.runtimes.get(sessionId);
+    if (!runtime || typeof runtime.query.stopTask !== "function") return false;
+    await runtime.query.stopTask(providerTaskId);
+    return true;
   }
 
   /** The turn is over; the runtime lingers, eligible for eviction. */

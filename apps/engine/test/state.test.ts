@@ -1133,13 +1133,16 @@ test("a session reports when its last turn ended, and whether it ended badly", (
   expect(failed.lastTurnFailed).toBe(true);
 });
 
-test("a turn that ends takes its sub-agents with it, however it ended", () => {
+test("stopping a turn sweeps its sub-agents but SPARES background work", () => {
   /**
-   * FOUND IN REAL DOGFOOD DATA, not by a test: one session had an `agent` task
-   * sitting at `running` long after its turn was discarded — a roster showing a
-   * live sub-agent that no process anywhere was running. The driver sweeps its
-   * own happy path and says why in a comment; what it cannot cover is a turn
-   * ended by a HUMAN after recovery, which has no driver attached at all.
+   * THE SESSION-RUNTIME CONTRACT. A sub-agent left at `running` after its turn
+   * ends is a roster lie — found in real dogfood data — so the turn's own
+   * agents are swept. A background task is the opposite: outliving its turn is
+   * the DEFINITION of background, and since the session runtime landed a turn
+   * Stop is the provider's own `interrupt()` (declared with
+   * `perTaskStopAffordance`), which spares the live process and everything
+   * backgrounded inside it. The pre-runtime code killed the process on stop
+   * and closed background tasks here; that assumption no longer holds.
    */
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
@@ -1148,8 +1151,6 @@ test("a turn that ends takes its sub-agents with it, however it ended", () => {
   store.markRunning("session_one", "run_one", token);
   store.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { id: "task_a", kind: "agent", state: "running", title: "Explore" } },
-    // Outliving its turn is the DEFINITION of background, so this one is not
-    // swept — the contract says so on `TaskKind`.
     { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
   ]);
   expect(store.getSession("session_one").activity).toBe("working");
@@ -1157,15 +1158,47 @@ test("a turn that ends takes its sub-agents with it, however it ended", () => {
   store.stopTurn("session_one", "run_one");
 
   const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  // The turn's own agent is swept — no process is running it any more.
   expect(byId.get("task_a")).toMatchObject({ state: "failed" });
-  // THE BACKGROUND TASK DIES TOO — outliving its TURN is the definition of
-  // background, but stopping a LIVE turn kills the provider process, and
-  // every shell it hosted dies with it. Leaving it at `running` made the
-  // session claim "monitoring" forever, with a Stop button that no-opped.
-  expect(byId.get("task_b")).toMatchObject({ state: "failed" });
-  // The journal carries the closure, so a live client is not left rendering a
-  // sub-agent the store has already given up on.
+  // The background task SURVIVES the turn Stop, exactly as it survives a normal
+  // turn end — the interrupt spared it.
+  expect(byId.get("task_b")).toMatchObject({ state: "running" });
   expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
+});
+
+test("stopBackgroundTasks ends lingering background work and queues the real kill", () => {
+  /**
+   * THE "N tasks still working" CHIP. A background task outlives its turn, so
+   * there is no turn to stop; this verb marks it `stopped` in the projection
+   * (the roster is right at once) and queues the actual process kill for the
+   * worker to drain off the heartbeat.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Tail" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    {
+      kind: "task.started",
+      task: { id: "task_b", kind: "background", state: "running", title: "Tail the log", providerTaskId: "bqo5yo8lm" },
+    },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "started" });
+
+  // The task lingers past its completed turn — this is the feature.
+  expect(store.tasks("session_one").find((t) => t.id === "task_b")).toMatchObject({ state: "running" });
+
+  const stopped = store.stopBackgroundTasks("session_one");
+  expect(stopped).toBe(1);
+  expect(store.tasks("session_one").find((t) => t.id === "task_b")).toMatchObject({ state: "stopped" });
+
+  // The real kill is queued for the worker — by PROVIDER id, the handle the
+  // live CLI process knows the task by.
+  const drained = store.drainStopTasks();
+  expect(drained).toEqual([{ sessionId: "session_one", providerTaskId: "bqo5yo8lm" }]);
+  // Drain-on-read: a second heartbeat carries nothing.
+  expect(store.drainStopTasks()).toEqual([]);
 });
 
 test("a task's kind is decided once, and a later turn's partial report cannot downgrade it", () => {

@@ -232,6 +232,15 @@ export type TurnDriver = {
    * it on stop so a shutdown does not orphan a CLI per open session.
    */
   dispose?(): void;
+  /**
+   * Stop ONE lingering background task inside a session's live process, by its
+   * provider task id — the id the task's `task.started` carried as
+   * `providerTaskId`. OPTIONAL for the same reason as `dispose`: only the
+   * Claude driver holds a live process a task can linger inside. Resolves
+   * `true` when a live runtime took the request, `false` when there is none
+   * (the process is already gone, so the task is too).
+   */
+  stopTask?(sessionId: string, providerTaskId: string): Promise<boolean>;
 };
 
 export class ProviderUnavailableError extends Error {
@@ -457,6 +466,17 @@ type ClaudeSdk = {
        *  blocks — "enough for a heartbeat counter", in its own words. A nested
        *  transcript needs the text and the thinking too. */
       forwardSubagentText: true;
+      /**
+       * DECLARES THAT WE STOP TASKS ONE AT A TIME — and the effect that matters
+       * here: with this true, an `interrupt()` (a turn Stop) SPARES running
+       * background tasks and aborts only the turn. Its ABSENCE fails closed the
+       * other way — the SDK kills every background task on interrupt, so the
+       * user is never left with a runaway they cannot stop. That default
+       * silently undoes the whole point of the session runtime (a turn Stop
+       * would take the background work with it), so we opt in and provide the
+       * per-task stop (`query.stopTask`) the flag promises.
+       */
+      perTaskStopAffordance?: boolean;
       resume?: string;
       canUseTool?: SdkCanUseTool;
       mcpServers?: Record<string, SdkMcpServer>;
@@ -1004,6 +1024,7 @@ export function createClaudeDriver(
   const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings>();
   return {
     dispose: () => runtimes.destroyAll(),
+    stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
     async run({
       prompt,
       sessionId,
@@ -1536,6 +1557,9 @@ export function createClaudeDriver(
             abortController: processController,
             includePartialMessages: true,
             forwardSubagentText: true,
+            // Spare background tasks on a turn Stop, and get `stopTask` for the
+            // per-task control the UI's "N tasks still working" chip needs.
+            perTaskStopAffordance: true,
             ...(model ? { model } : {}),
             ...(sdkEffort ? { effort: sdkEffort } : {}),
             // Absent unless asked for: a settings override is a request for

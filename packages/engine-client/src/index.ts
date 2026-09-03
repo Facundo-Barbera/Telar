@@ -1600,6 +1600,16 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
   }
 
+  /**
+   * Stop the session's lingering background tasks — the "N tasks still
+   * working" chip. A DIFFERENT verb from `stopTurn`: background work outlives
+   * its turn, so there may be no turn to stop, and the turn Stop deliberately
+   * spares it. `stopped` is how many tasks it ended.
+   */
+  stopBackgroundTasks(sessionId: string): Promise<{ stopped: number }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
+  }
+
   /** End a session and free its worktree. The branch survives — it is the
    *  session's output, and destroying it is a separate human decision. */
   archiveSession(sessionId: string): Promise<{ session: Session }> {

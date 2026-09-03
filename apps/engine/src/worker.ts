@@ -221,6 +221,16 @@ export class EngineWorker {
         // driver as a bare decision.
         settle({ decision: resolution.decision, ...(resolution.answers ? { answers: resolution.answers } : {}) });
       }
+      // Stop lingering background tasks the user asked to end. The task lives
+      // in the session's live provider process, which this worker's driver
+      // holds — no turn, no claim token, just the session and the provider id.
+      // Best-effort: the engine has already marked the projection stopped, so
+      // a driver that no longer has the runtime (false) simply means the
+      // process is gone and the task with it.
+      for (const kill of status.stopTask ?? []) {
+        const driver = this.driverFor("claude");
+        void driver.stopTask?.(kill.sessionId, kill.providerTaskId).catch(() => undefined);
+      }
       // Deliver send-now messages into their running turns' mailboxes. The
       // ack fires later, from the mailbox's drain hook — see `steering`.
       for (const delivery of status.steer ?? []) {

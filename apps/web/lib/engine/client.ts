@@ -541,6 +541,10 @@ export function createEngineApi(fetcher: Fetcher = fetch) {
       ),
     stopTurn: (sessionId: string, runId?: string) =>
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
+    /** Stop the session's lingering background tasks — the "N tasks still
+     *  working" chip. Separate from `stopTurn`, which spares them. */
+    stopBackgroundTasks: (sessionId: string) =>
+      request<{ stopped: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop-background`, {}),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
     /** SEND NOW: promote a queued message into the running turn. */
