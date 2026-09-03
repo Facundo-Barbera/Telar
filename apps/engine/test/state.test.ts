@@ -129,7 +129,7 @@ test("a windowed snapshot is the newest settled turns plus everything unsettled,
       { kind: "item.started", item: { id: `i_${n}`, detail: { type: "assistant_message", text: `Answer ${n}` } } },
       { kind: "item.completed", itemId: `i_${n}`, status: "completed" },
     ]);
-    store.completeTurn("session_one", runId, token, { resultText: `Answer ${n}` });
+    store.completeTurn("session_one", runId, token, { text: `Answer ${n}` });
   }
   store.submitTurn("session_one", { runId: "run_live", input: "Now" }); // queued — unsettled
 
