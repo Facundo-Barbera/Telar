@@ -302,6 +302,14 @@ function definedOnly<T extends object>(value: T): Partial<T> {
 
 const ID = /^[A-Za-z0-9_-]+$/;
 const MAX_TEXT_LENGTH = 200_000;
+/**
+ * A turn that is not yet history: waiting, running, or mid-promotion. The
+ * snapshot window keeps every one of these on the first page whatever the
+ * limit — the queue strip and the send path read turns, and an unsettled
+ * turn hidden behind a page would be a message the composer did not know
+ * it had. `steered` is terminal (its words live inside the run it joined).
+ */
+const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running", "steering"]);
 
 export class EngineStateError extends Error {
   constructor(
@@ -4472,6 +4480,51 @@ export class EngineStore {
   turns(sessionId: string): Turn[] {
     this.getSession(sessionId);
     return structuredClone(this.readQueue(sessionId).turns);
+  }
+
+  /**
+   * THE NEWEST `limit` TURNS, and everything filed under them — t3code's
+   * windowed thread snapshot. A 70-turn session is megabytes of settled
+   * items a reader opening on its tail will never scroll to; the window is
+   * what makes opening cost what the tail costs, and `before` is how the
+   * reader asks for the page above it.
+   *
+   * Every UNSETTLED turn rides along regardless of the window: the queue
+   * strip, "is this session working", and the send path all read turns, and
+   * a queued message hidden behind a page would be a message the composer
+   * did not know it had. `page.before` is the oldest settled turn in the
+   * window; `null` once the page reaches the session's first turn.
+   *
+   * Pages are read by turn position in queue order (append order), so the
+   * cursor is just a runId — no timestamp ties, no index.
+   */
+  snapshotWindow(sessionId: string, window: { limit: number; before?: string }): {
+    turns: Turn[];
+    items: Item[];
+    tasks: Task[];
+    page: { before: string | null; more: boolean };
+  } {
+    this.getSession(sessionId);
+    const all = this.readQueue(sessionId).turns;
+    let end = all.length;
+    if (window.before !== undefined) {
+      end = all.findIndex((turn) => turn.runId === window.before);
+      if (end === -1) throw new EngineStateError("not_found", "page cursor names no turn in this session");
+    }
+    const settled = all.slice(0, end).filter((turn) => !ACTIVE_TURN_STATES.has(turn.state));
+    const start = Math.max(0, settled.length - window.limit);
+    const paged = settled.slice(start);
+    // The active tail is never paged out — but only on the FIRST page; an
+    // older page is history and must not repeat rows the client already has.
+    const active = window.before === undefined ? all.filter((turn) => ACTIVE_TURN_STATES.has(turn.state)) : [];
+    const chosen = new Set([...paged, ...active].map((turn) => turn.runId));
+    const turns = all.filter((turn) => chosen.has(turn.runId));
+    return structuredClone({
+      turns,
+      items: [...this.readItems(sessionId).values()].filter((item) => chosen.has(item.runId)),
+      tasks: [...this.readTasks(sessionId).values()].filter((task) => chosen.has(task.runId)),
+      page: { before: start > 0 ? (paged[0]?.runId ?? null) : null, more: start > 0 },
+    });
   }
 
   items(sessionId: string): Item[] {
