@@ -810,7 +810,7 @@ export function ReasoningControl({
   const { family, levels, fastMode, window: activeWindow, windows } = selectionOf(models, choice);
   const readOnly = !onChange;
   const effort = effortLabel(choice.effort);
-  const suffix = windowSuffix(activeWindow);
+  const suffix = windowSuffix(activeWindow, windows);
   /** `Extra high · 1M`. The window rides on the LABEL rather than in `detail`,
    *  which the pill hides at anything but the narrowest width — a fact you can
    *  only see by opening a menu is the thing this row exists to avoid. */
@@ -885,6 +885,10 @@ export function ReasoningControl({
                 <CompactRow
                   key={option}
                   label={WINDOW_LABEL[option]}
+                  // The provider's own default window for this model — a fact
+                  // to read, never a choice made for you: picking the model
+                  // still sends the row you pick.
+                  {...(row?.defaultWindow ? { hint: "Default" } : {})}
                   selected={activeWindow === option}
                   disabled={readOnly || !row}
                   onSelect={() => row && pick(withModel(choice, row))}
@@ -1039,6 +1043,7 @@ export function ComposerOverflowMenu({
                 return (
                   <DropdownMenuItem key={option} onClick={() => row && onChange(withModel(choice, row))}>
                     <span className="flex-1">{WINDOW_LABEL[option]}</span>
+                    {row?.defaultWindow && <span className="shrink-0 text-[0.625rem] text-muted-foreground">Default</span>}
                     {activeWindow === option && <CheckIcon className="size-3.5 text-primary" />}
                   </DropdownMenuItem>
                 );

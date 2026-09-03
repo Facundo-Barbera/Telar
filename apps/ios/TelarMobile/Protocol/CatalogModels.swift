@@ -15,6 +15,10 @@ struct ProviderModel: Decodable, Identifiable, Equatable {
     /// match a stored wire id back to its row.
     var resolves: String?
     var fastMode: Bool
+    /// This row is the model's default WINDOW — a fact to show beside it,
+    /// never a choice made for you. Optional: absent on every row written
+    /// before the model manifest existed.
+    var defaultWindow: Bool?
 }
 
 struct ModelCatalogue: Decodable {

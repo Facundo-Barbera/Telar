@@ -185,11 +185,16 @@ describe("windows", () => {
     expect(rowFor(sonnet, "long")?.id).toBe("sonnet[1m]");
   });
 
-  test("only the long window is printed on the pill", () => {
-    expect(windowSuffix("long")).toBe("1M");
-    // "Standard" on every pill forever is a word that never tells anybody
-    // anything; absence reads as standard, the way it does for fast mode.
-    expect(windowSuffix("standard")).toBeUndefined();
+  test("the pill names the window wherever there is a choice, and says nothing where there is none", () => {
+    // Bare `High` on a model with a 1M variant read as "already 1M" to a
+    // person who was on 200k — measured on the dogfood app. So both windows
+    // are printed, by number.
+    expect(windowSuffix("long", ["standard", "long"])).toBe("1M");
+    expect(windowSuffix("standard", ["standard", "long"])).toBe("200k");
+    // A single-window model prints nothing — absence means "no choice", the
+    // way it does for fast mode.
+    expect(windowSuffix("standard", ["standard"])).toBeUndefined();
+    expect(windowSuffix("long", ["long"])).toBeUndefined();
   });
 });
 

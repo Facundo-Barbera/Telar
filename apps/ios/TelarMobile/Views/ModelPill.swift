@@ -67,11 +67,14 @@ struct ModelPillView: View {
         selectedRow.map { ModelFamilies.contextWindow(of: $0) } ?? .standard
     }
 
-    /// "Opus 4.6 · High · 1M" — the standard window is never printed.
+    /// "Opus 4.6 · High · 1M" / "Fable 5.1 · High · 200k" — the window is
+    /// named whenever there is a choice, the same rule the web pill follows:
+    /// bare "High" on a model with a 1M variant read as "already 1M" to a
+    /// person who was on 200k. A single-window model still prints nothing.
     private var label: String {
         var parts: [String] = [selectedFamily?.label ?? "Model"]
         if let effort = choice.effort { parts.append(ModelFamilies.effortLabel(effort)) }
-        if window == .long { parts.append("1M") }
+        if ModelFamilies.windows(of: selectedFamily).count > 1 { parts.append(window.label) }
         if choice.fastMode == true { parts.append("Fast") }
         return parts.joined(separator: " · ")
     }
@@ -99,10 +102,14 @@ struct ModelPillView: View {
                 if windows.count > 1 {
                     Section("Context window") {
                         ForEach(windows, id: \.self) { option in
+                            let row = ModelFamilies.row(for: family, window: option)
                             Button {
-                                if let row = ModelFamilies.row(for: family, window: option) { select(row, driver: choice.driver) }
+                                if let row { select(row, driver: choice.driver) }
                             } label: {
-                                check(option.label, window == option)
+                                // "1M · Default" — the provider's own default window
+                                // for this model, a fact to read; the tap still
+                                // sends the row you pick.
+                                check(row?.defaultWindow == true ? "\(option.label) · Default" : option.label, window == option)
                             }
                         }
                     }

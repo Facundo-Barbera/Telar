@@ -10,7 +10,8 @@ import Foundation
 enum ModelFamilies {
     enum ContextWindow: String, CaseIterable {
         case standard, long
-        var label: String { self == .long ? "1M" : "Standard" }
+        /// The number, not the word — `200k | 1M`, matching the web pill.
+        var label: String { self == .long ? "1M" : "200k" }
     }
 
     struct Family: Identifiable, Equatable {

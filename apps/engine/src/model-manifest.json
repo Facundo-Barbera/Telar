@@ -3,7 +3,7 @@
   "version": 1,
   "claude": {
     "profiles": {
-      "fable-5": { "longWindow": true },
+      "fable-5": { "longWindow": true, "defaultLong": true },
       "opus-5": { "longWindow": true },
       "sonnet-5": { "longWindow": true },
       "haiku-4-5": { "longWindow": false }
