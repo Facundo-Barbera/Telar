@@ -20,13 +20,23 @@ enum SyncConnectionState: Equatable {
     private(set) var turns: [JournalTurn] = []
     private(set) var openRequests: [EngineRequest] = []
     private(set) var connection: SyncConnectionState = .idle
+    /// A fetch of earlier turns is in flight — the button's spinner state.
+    private(set) var loadingOlder = false
 
     private let api: any EngineAPI
     private let sessionId: EngineID
     private var snapshot: SessionSnapshot?
+    /// The paging cursor of the WINDOWED transcript — where "Load earlier
+    /// turns" continues from. Owned by hydrate and by that button alone: a
+    /// tick's companion snapshot must not touch it, because its page describes
+    /// the sliding newest window, not how far the reader has paged.
+    private var page: SnapshotPage?
     private var events: [EngineEvent] = []
     private var cursor = 0
     private var loop: Task<Void, Never>?
+
+    /// Whether "Load earlier turns" has anything to load.
+    var hasOlderTurns: Bool { page?.more == true }
 
     /// 1s while a turn streams, 3s when the session idles, capped exponential
     /// backoff while the cockpit is unreachable.
@@ -70,8 +80,11 @@ enum SyncConnectionState: Equatable {
     private func hydrate() async {
         if connection == .idle { connection = .hydrating }
         do {
-            let hydrated = try await hydrateSession(api, sessionId)
+            // WINDOWED: the last ten user turns, not the whole history — the
+            // rest stays on the engine behind "Load earlier turns".
+            let hydrated = try await hydrateSession(api, sessionId, window: SnapshotWindow(turns: initialTurns))
             snapshot = hydrated.snapshot
+            page = hydrated.snapshot.page
             events = hydrated.events
             cursor = hydrated.cursor
             refold()
@@ -84,8 +97,29 @@ enum SyncConnectionState: Equatable {
 
     private func tick() async {
         do {
-            let tail = try await tailSession(api, sessionId, after: cursor)
-            if let fresh = tail.snapshot { snapshot = fresh }
+            // The companion snapshot is windowed to the SAME size as
+            // hydrate's — a queue event on a long session must not refetch
+            // the whole history the window existed to avoid.
+            let tail = try await tailSession(api, sessionId, after: cursor, window: SnapshotWindow(turns: initialTurns))
+            if let fresh = tail.snapshot {
+                // A UNION, NOT A REPLACEMENT. The snapshot only carries the
+                // newest window, so a reader who paged older turns in would
+                // lose them to the first queue event. Fresh rows win the ids
+                // they carry; loaded older rows survive above them. `page` is
+                // deliberately untouched — see its declaration.
+                if var held = snapshot {
+                    held.cursor = fresh.cursor
+                    held.session = fresh.session
+                    held.requests = fresh.requests
+                    held.turns = mergeRows(older: held.turns, fresh: fresh.turns) { $0.runId }
+                    held.items = mergeRows(older: held.items, fresh: fresh.items) { $0.id }
+                    held.tasks = mergeRows(older: held.tasks, fresh: fresh.tasks) { $0.id }
+                    snapshot = held
+                } else {
+                    snapshot = fresh
+                    page = fresh.page
+                }
+            }
             if !tail.events.isEmpty || tail.snapshot != nil {
                 events = appendJournalEvents(events, tail.events)
                 refold()
@@ -93,6 +127,24 @@ enum SyncConnectionState: Equatable {
             cursor = tail.cursor
             connection = .live
             backoff = .seconds(1)
+        } catch {
+            fail(error)
+        }
+    }
+
+    /// One page of settled turns above the transcript, on an explicit tap —
+    /// never on scroll, so reading the top of the window stays free.
+    func loadOlderTurns() async {
+        guard let before = page?.before, !loadingOlder else { return }
+        loadingOlder = true
+        defer { loadingOlder = false }
+        do {
+            let older = try await TelarMobile.loadOlderTurns(api, sessionId, before: before)
+            if let held = snapshot {
+                snapshot = mergeOlderPage(current: held, page: older)
+            }
+            page = older.page
+            refold()
         } catch {
             fail(error)
         }

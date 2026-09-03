@@ -67,10 +67,21 @@ struct SessionView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                // Queued messages live below the composer (t3's queue line),
-                // not in the transcript.
-                TranscriptView(turns: visibleTurns)
-                    .padding(.vertical, 12)
+                VStack(spacing: 0) {
+                    // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
+                    // asking for history is the only thing that fetches it.
+                    // Prepending does not re-pin the tail: `contentFingerprint`
+                    // reads only the LAST turn (plus the count, which changes,
+                    // but `followTail` defers to `isPositionedByUser`, and a
+                    // reader at this button has scrolled).
+                    if store.sync.hasOlderTurns {
+                        loadEarlierButton
+                    }
+                    // Queued messages live below the composer (t3's queue
+                    // line), not in the transcript.
+                    TranscriptView(turns: visibleTurns)
+                        .padding(.vertical, 12)
+                }
             }
             .scrollPosition($position)
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -129,6 +140,26 @@ struct SessionView: View {
         withTransaction(transaction) {
             position.scrollTo(edge: .bottom)
         }
+    }
+
+    /// "Load earlier turns" — a quiet pill at the transcript's top, in the
+    /// toolbar-pill vocabulary (subtle fill, hairline, capsule).
+    private var loadEarlierButton: some View {
+        Button {
+            Task { await store.sync.loadOlderTurns() }
+        } label: {
+            Text(store.sync.loadingOlder ? "Loading earlier turns…" : "Load earlier turns")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Theme.textMuted)
+                .padding(.horizontal, 14)
+                .frame(height: 32)
+                .background(Theme.subtle)
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(store.sync.loadingOlder)
+        .padding(.top, 12)
     }
 
     /// The way back to the tail once you've read up. This one DOES animate —

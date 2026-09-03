@@ -145,22 +145,37 @@ struct EngineHealth: Decodable {
     var worker: Worker
 }
 
+/// Mirror of `SnapshotPage` in packages/engine-client: where a windowed read
+/// continues. `before` is JSON `null` once the page reaches the session's
+/// start — decodeIfPresent maps both null and absent to nil, which is right,
+/// because either way there is nothing above.
+struct SnapshotPage: Decodable {
+    /// Oldest settled turn on this page — the `before` for the next page up.
+    var before: EngineID?
+    /// Are there settled turns above this page?
+    var more: Bool
+}
+
 /// `GET /api/sessions/:id` — snapshot plus everything the fold seeds from.
 struct SessionSnapshot: Decodable {
     /// The journal position this snapshot reflects — where a client tails
     /// from. Absent from an engine older than the field.
     var cursor: Int?
+    /// Present when the read was windowed (`?turns=N`); absent from an older
+    /// engine or an unwindowed read.
+    var page: SnapshotPage?
     var session: Session
     var turns: [Turn]
     var items: [Item]
     var requests: [EngineRequest]
     var tasks: [AgentTask]
 
-    private enum CodingKeys: String, CodingKey { case cursor, session, turns, items, requests, tasks }
+    private enum CodingKeys: String, CodingKey { case cursor, page, session, turns, items, requests, tasks }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         cursor = try c.decodeIfPresent(Int.self, forKey: .cursor)
+        page = try? c.decodeIfPresent(SnapshotPage.self, forKey: .page)
         session = try c.decode(Session.self, forKey: .session)
         turns = try c.decode([Skippable<Turn>].self, forKey: .turns).compactMap(\.value)
         items = try c.decode([Skippable<Item>].self, forKey: .items).compactMap(\.value)
