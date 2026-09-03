@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EyeIcon, FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { ClockIcon, EyeIcon, FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -13,6 +13,7 @@ import {
   type ProviderDriverKind,
   type RuntimeMode,
   type Session,
+  type SessionSnapshot,
   type SnapshotPage,
   type Task,
   type Turn,
@@ -30,6 +31,8 @@ import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
 import { INITIAL_TURNS, hydrateSession, loadOlderTurns, mergeRows, tailSession } from "@/lib/engine/session-sync";
+import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
+import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
 import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, RightPanel, type PanelTab, type TaskFocus } from "./right-panel";
@@ -658,6 +661,19 @@ export function SessionCockpit({
   const [attachments, setAttachments] = useState<File[]>([]);
   const [draftRunId, setDraftRunId] = useState<string>();
   const [error, setError] = useState<EngineApiError>();
+  /**
+   * WHEN WHAT IS ON SCREEN WAS LAST TRUE — set only while the engine is not
+   * answering and the transcript being shown came out of the browser's own
+   * recording (or was live until a moment ago). `undefined` is the ordinary
+   * case: this is live. See lib/snapshot-cache.ts and lib/stale-state.ts.
+   */
+  const [stale, setStale] = useState<number>();
+  /** The same value, readable from callbacks that must not re-subscribe the
+   *  polling effect every time it changes. */
+  const staleAt = useRef<number | undefined>(undefined);
+  /** When the last successful read landed — the date a live transcript wears
+   *  once the engine goes away under it. */
+  const lastLiveAt = useRef<number | undefined>(undefined);
   /** Seeded from whether there is anything to load at all — a fresh canvas has
    *  no transcript to hydrate, so it must never paint a loading state. */
   const [loading, setLoading] = useState(Boolean(routeSessionId));
@@ -686,6 +702,61 @@ export function SessionCockpit({
     syncQueue.current = next.catch(() => undefined);
     return next;
   }, []);
+  /** The engine answered — whatever it said. Drops the banner and dates the
+   *  content, which is why an empty tail counts: it is proof of reachability,
+   *  and without it a recovery with no new events never cleared the banner. */
+  const live = useCallback(() => {
+    lastLiveAt.current = Date.now();
+    if (staleAt.current === undefined) return;
+    staleAt.current = undefined;
+    setStale(undefined);
+  }, []);
+  /** …and the snapshot the NEXT outage will show. Written from the freshly
+   *  fetched values rather than from state, which has not committed yet. */
+  const remember = useCallback((id: string, snapshot: SessionSnapshot) => {
+    live();
+    const store = snapshotStore();
+    if (!store) return;
+    // KEYED BY THE MAC THIS SCREEN IS ABOUT — two hosts can mint the same
+    // session id, and one Mac's recording must never answer for another's.
+    // `page` rides along so a cached open can still offer "Load earlier
+    // turns" from where the recorded window ended; the journal (`events`,
+    // `cursor`) is deliberately not photographed — the fold works from turns
+    // and items alone, and hydrate replaces all of it.
+    void saveSnapshot(store, hostId ?? LOCAL_HOST, id, {
+      session: snapshot.session,
+      turns: snapshot.turns,
+      items: snapshot.items,
+      tasks: snapshot.tasks,
+      requests: snapshot.requests,
+      ...(snapshot.page ? { page: snapshot.page } : {}),
+    }).catch(() => undefined);
+  }, [live, hostId]);
+  /**
+   * A read failed. An unreachable engine under a transcript is a BANNER — the
+   * conversation stays, wearing the time it was last true — and everything
+   * else is the error card it always was. The rule itself is in
+   * lib/stale-state.ts; refs rather than state so this callback is stable and
+   * the polling effect below does not re-subscribe on every render.
+   */
+  const fail = useCallback((cause: unknown, fallback: string) => {
+    const failure = cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", fallback);
+    const at = decideStale({
+      code: failure.code,
+      hasContent: staleAt.current !== undefined || lastLiveAt.current !== undefined,
+      ...(staleAt.current === undefined ? {} : { cachedAt: staleAt.current }),
+      ...(lastLiveAt.current === undefined ? {} : { lastLiveAt: lastLiveAt.current }),
+    });
+    if (at === undefined) {
+      setError(failure);
+      return;
+    }
+    // The banner replaces the card rather than sitting under it — including
+    // the one a first read may have set before the recording finished loading.
+    setError(undefined);
+    staleAt.current = at;
+    setStale(at);
+  }, []);
   const hydrate = useCallback(
     () =>
       enqueueSync(async () => {
@@ -703,8 +774,9 @@ export function SessionCockpit({
         setEvents(hydrated.events);
         setPage(hydrated.page);
         cursor.current = hydrated.cursor;
+        remember(sessionId, hydrated);
       }),
-    [enqueueSync, sessionId],
+    [enqueueSync, sessionId, remember],
   );
   const tail = useCallback(
     () =>
@@ -714,6 +786,8 @@ export function SessionCockpit({
         // a queue event on a long session must not refetch the whole history
         // the window existed to avoid.
         const update = await tailSession(api, sessionId, cursor.current, { turns: INITIAL_TURNS });
+        // A quiet tail is still an answer — see `live`.
+        live();
         if (update.events.length === 0) return;
         cursor.current = update.cursor;
         setEvents((current) => appendJournalEvents(current, update.events));
@@ -739,9 +813,12 @@ export function SessionCockpit({
           setItems((current) => mergeRows(current, snapshot.items, (item) => item.id));
           setTasks((current) => mergeRows(current, snapshot.tasks, (task) => task.id));
           setRequests(snapshot.requests);
+          // No debounce: a snapshot only rides a queue-changing event, so this
+          // is a handful of writes per turn rather than one per delta.
+          remember(sessionId, snapshot);
         }
       }),
-    [enqueueSync, sessionId],
+    [enqueueSync, sessionId, remember, live],
   );
   /** One page of settled turns above the transcript, on an explicit click —
    *  never on scroll, so reading the top of the window stays free. */
@@ -984,22 +1061,49 @@ export function SessionCockpit({
     // effect body, and the answer is known before the first render anyway.
     if (!sessionId) return;
     let cancelled = false;
+    // Another session's liveness says nothing about this one.
+    lastLiveAt.current = undefined;
+    staleAt.current = undefined;
+    /**
+     * THE LAST THING RECORDED, painted while the real read is in flight — so a
+     * cockpit opened against a dead engine shows the conversation with a
+     * banner instead of an error card. Only until something live arrives:
+     * `hydrate` below overwrites all of it and drops the banner.
+     *
+     * `events([])` because the journal is not photographed — the transcript
+     * folds fine from turns and items alone, and the fold is what is on screen.
+     */
+    void snapshotStore()
+      ?.read(snapshotKey(hostId ?? LOCAL_HOST, sessionId))
+      .then((cached) => {
+        if (!cached || cancelled || lastLiveAt.current !== undefined) return;
+        setSession(cached.session);
+        setTurns(cached.turns);
+        setItems(cached.items);
+        setTasks(cached.tasks);
+        setRequests(cached.requests);
+        // The recorded window's own paging cursor, so "Load earlier turns"
+        // works from a cached open once the engine answers again.
+        setPage(cached.page);
+        setEvents([]);
+        staleAt.current = cached.savedAt;
+        setStale(cached.savedAt);
+        setLoading(false);
+      }, () => undefined);
     void hydrate()
       .then(
         () => !cancelled && setError(undefined),
-        (cause) => !cancelled && setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not hydrate this session.")),
+        (cause) => !cancelled && fail(cause, "Could not hydrate this session."),
       )
       .finally(() => !cancelled && setLoading(false));
     const interval = window.setInterval(() => {
-      void tail().catch(
-        (cause) => !cancelled && setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not tail the session journal.")),
-      );
+      void tail().catch((cause) => !cancelled && fail(cause, "Could not tail the session journal."));
     }, 1_000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [hydrate, tail, sessionId]);
+  }, [hydrate, tail, sessionId, hostId, fail]);
 
   /**
    * NO SESSION, NO JOURNAL. Ordinarily a canvas has nothing to project anyway —
@@ -1545,7 +1649,19 @@ export function SessionCockpit({
                 <AlertDescription>This URL’s project does not match the engine-owned session record.</AlertDescription>
               </Alert>
             )}
-            {error && <SessionProblem error={error} />}
+            {/* A RECORDING IS NOT A FAILURE, so it is not dressed as one: the
+                conversation below is real, it is simply not being updated, and
+                the destructive card would say the opposite of what the screen
+                is doing. See lib/stale-state.ts for when this wins. */}
+            {stale !== undefined ? (
+              <Alert className="mx-auto max-w-[50rem]">
+                <ClockIcon />
+                <AlertTitle>Showing what was recorded at {new Date(stale).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</AlertTitle>
+                <AlertDescription>The engine is not answering — reconnecting…</AlertDescription>
+              </Alert>
+            ) : (
+              error && <SessionProblem error={error} />
+            )}
             {/* A fresh canvas shows NOTHING here. The composer is lifted to the
                 middle of the screen and is the whole interface; an empty-state
                 card above it would be a second thing competing to be read. */}

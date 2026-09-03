@@ -111,6 +111,15 @@ export type SidebarSession = {
    *  early-wake rule is made of. See `settlingActivity`. */
   lastTurnEndedAt?: number;
   lastTurnFailed?: boolean;
+  /**
+   * WHEN THIS ROW WAS LAST READ FROM ITS HOST, and only on a row whose host has
+   * since stopped answering — see `lib/sidebar-cache.ts`. A live row never
+   * carries it, which is why `toSidebarSession` cannot produce one: it is a
+   * fact about the READ, not about the session. The row dims itself and says so
+   * on hover; the bands treat it like any other row, because a Mac being away
+   * does not change what its sessions are doing.
+   */
+  stale?: number;
 };
 
 /** The engine record, flattened into what the rail actually reads. */

@@ -490,9 +490,14 @@ export function SessionRow({
      */
     <div
       ref={rowRef}
+      // A ROW WHOSE HOST STOPPED ANSWERING IS A PHOTOGRAPH, so it recedes the
+      // same way an archived one does — the list is still there, it just is not
+      // being told anything. The hover title carries the only fact that is
+      // actually different about it: when it was last true.
+      title={session.stale === undefined ? undefined : `Last read ${fmtAgo(session.stale, renderedAt)}`}
       className={`group/session relative flex items-center rounded-md ${
         active || searchSelected ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/70"
-      } ${session.archived ? "opacity-60" : ""} ${
+      } ${session.archived || session.stale !== undefined ? "opacity-60" : ""} ${
         badge && variant === "card"
           ? `before:absolute before:inset-y-1.5 before:left-0 before:w-0.5 before:rounded-full ${
               badge.tone === "attention" ? "before:bg-warning" : "before:bg-primary"
