@@ -56,9 +56,10 @@ private func page(_ json: String) -> EventPage {
     try! JSONDecoder().decode(EventPage.self, from: Data(json.utf8))
 }
 
-private func snapshot() -> SessionSnapshot {
-    try! JSONDecoder().decode(SessionSnapshot.self, from: Data("""
-    {"session":{"id":"s","projectId":"p","title":"T","state":"active",
+private func snapshot(cursor: Int? = nil) -> SessionSnapshot {
+    let stamp = cursor.map { "\"cursor\":\($0)," } ?? ""
+    return try! JSONDecoder().decode(SessionSnapshot.self, from: Data("""
+    {\(stamp)"session":{"id":"s","projectId":"p","title":"T","state":"active",
       "createdAt":1,"updatedAt":2,"driver":"claude",
       "workspace":{"mode":"local","path":"/x"},"runtimeMode":"auto","detached":false},
      "turns":[],"items":[],"requests":[],"tasks":[]}
@@ -66,20 +67,40 @@ private func snapshot() -> SessionSnapshot {
 }
 
 @Suite struct SessionSyncTests {
-    @Test func hydrateIssuesTheFourCallsInOrder() async throws {
-        // events(0) → session (DISCARDED — it orders the reads) →
-        // events(cursor) → session.
+    @Test func hydrateOpensOnTheSnapshotAndTailsFromItsCursor() async throws {
+        // session (stamped 7) → events(7). Never events(0).
+        let api = RecordingEngineAPI(
+            eventPages: [
+                page(#"{"events":[{"id":9,"at":2,"sessionId":"s","type":"turn.completed","resultText":"ok"}],"cursor":9,"more":false}"#),
+            ],
+            snapshots: [snapshot(cursor: 7)]
+        )
+        let hydrated = try await hydrateSession(api, "s")
+        #expect(await api.recorded() == ["session", "events(7)"])
+        #expect(hydrated.cursor == 9)
+        #expect(hydrated.events.map(\.id) == [9])
+    }
+
+    @Test func aQuietSessionKeepsTheSnapshotCursor() async throws {
+        let api = RecordingEngineAPI(
+            eventPages: [page(#"{"events":[],"cursor":0,"more":false}"#)],
+            snapshots: [snapshot(cursor: 7)]
+        )
+        let hydrated = try await hydrateSession(api, "s")
+        #expect(hydrated.cursor == 7)
+    }
+
+    @Test func anOlderEngineWithoutTheStampIsAskedWhereTheJournalEnds() async throws {
         let api = RecordingEngineAPI(
             eventPages: [
                 page(#"{"events":[{"id":7,"at":1,"sessionId":"s","type":"turn.started"}],"cursor":7,"more":false}"#),
-                page(#"{"events":[{"id":9,"at":2,"sessionId":"s","type":"turn.completed","resultText":"ok"}],"cursor":9,"more":false}"#),
+                page(#"{"events":[],"cursor":7,"more":false}"#),
             ],
-            snapshots: [snapshot(), snapshot()]
+            snapshots: [snapshot()]
         )
         let hydrated = try await hydrateSession(api, "s")
-        #expect(await api.recorded() == ["events(0)", "session", "events(7)", "session"])
-        #expect(hydrated.cursor == 9)
-        #expect(hydrated.events.map(\.id) == [7, 9])
+        #expect(await api.recorded() == ["session", "events(0)", "events(7)"])
+        #expect(hydrated.cursor == 7)
     }
 
     @Test func tailFetchesSnapshotOnlyOnQueueChangingEvents() async throws {

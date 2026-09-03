@@ -98,6 +98,26 @@ test("submitting a stable run id is idempotent and a session has only one active
   expect(queued.turn.state).toBe("queued");
 });
 
+test("the event cursor is the last journal id, read without the journal", () => {
+  const { store, root: stateRoot } = readyStore();
+  expect(store.eventCursor("session_one")).toBe(1); // session.created
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  store.stopTurn("session_one", "run_one");
+  const whole = store.readEvents("session_one");
+  expect(store.eventCursor("session_one")).toBe(whole.at(-1)!.id);
+
+  // A crash mid-append leaves an unterminated last line; the cursor names the
+  // last COMPLETE record, the same one readJournal keeps after its repair.
+  const file = path.join(stateRoot, "sessions", "session_one", "events.ndjson");
+  fs.appendFileSync(file, '{"id":99,"at":1,"sessionId":"session_one","type":"turn.st');
+  expect(store.eventCursor("session_one")).toBe(whole.at(-1)!.id);
+
+  // A record far larger than the first read window is still found.
+  const big = { id: whole.at(-1)!.id + 1, at: 1, sessionId: "session_one", type: "note", text: "x".repeat(20_000) };
+  fs.writeFileSync(file, `${whole.map((event) => JSON.stringify(event)).join("\n")}\n${JSON.stringify(big)}\n`);
+  expect(store.eventCursor("session_one")).toBe(big.id);
+});
+
 test("stop is durable and idempotent", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });

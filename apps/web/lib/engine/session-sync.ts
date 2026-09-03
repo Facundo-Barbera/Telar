@@ -42,18 +42,24 @@ export function needsSessionSnapshot(events: EngineEvent[]): boolean {
 }
 
 /**
- * A journal page and a session snapshot cannot be read atomically.  Reading
- * journal → snapshot → journal tail → snapshot closes both directions of that
- * gap: transitions are reflected by their event and a new accepted turn gains
- * its prompt from a snapshot even though `turn.accepted` intentionally omits it.
+ * OPEN ON THE SNAPSHOT, TAIL FROM ITS CURSOR.
+ *
+ * The snapshot already says everything a settled turn will ever say; the
+ * journal only adds what is still streaming. Reading the journal from zero to
+ * learn what the snapshot already carried was the whole cost of opening a
+ * long session — nine megabytes of events for one that needed a few hundred
+ * kilobytes of tail. The engine stamps the snapshot with the id of the last
+ * event it reflects (read BEFORE the snapshot, so the overlap is a replay the
+ * fold absorbs, never a gap), and the client tails from there.
+ *
+ * An engine older than the stamp answers without one; then the journal has to
+ * be asked where it ends. That read is the old cost, kept only for that case.
  */
 export async function hydrateSession(api: SessionSyncApi, sessionId: string): Promise<HydratedSession> {
-  const journal = await api.events(sessionId, 0);
-  await api.session(sessionId);
-  const catchup = await api.events(sessionId, journalCursor(journal.events));
-  const events = appendJournalEvents(journal.events, catchup.events);
   const snapshot = await api.session(sessionId);
-  return { ...snapshot, events, cursor: journalCursor(events) };
+  const from = snapshot.cursor ?? journalCursor((await api.events(sessionId, 0)).events);
+  const tail = await api.events(sessionId, from);
+  return { ...snapshot, events: tail.events, cursor: Math.max(from, journalCursor(tail.events)) };
 }
 
 export async function tailSession(api: SessionSyncApi, sessionId: string, after: number): Promise<{

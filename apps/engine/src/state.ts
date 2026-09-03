@@ -978,6 +978,51 @@ function readJournal(file: string): EngineEvent[] {
 }
 
 /**
+ * The last complete record's id without parsing the file. A 9 MB journal is
+ * ordinary for a long session; reading it whole to learn one integer is the
+ * cost this exists to avoid. Reads a window from the end, widening until a
+ * complete line is inside it; an interrupted final record (no trailing
+ * newline) is skipped, exactly as `readJournal` would repair it.
+ */
+function lastEventId(file: string): number {
+  let handle: number;
+  try {
+    handle = fs.openSync(file, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  try {
+    const size = fs.fstatSync(handle).size;
+    let window = 4096;
+    while (true) {
+      const start = Math.max(0, size - window);
+      const buffer = Buffer.alloc(size - start);
+      fs.readSync(handle, buffer, 0, buffer.length, start);
+      const text = buffer.toString("utf8");
+      const lines = text.split("\n");
+      // A trailing newline means the last element is "", and the record before
+      // it is complete; otherwise the last element is an unterminated append.
+      lines.pop();
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index]!;
+        if (!line) continue;
+        // The first line of the window may be a partial record unless the
+        // window reaches the start of the file.
+        if (index === 0 && start > 0) break;
+        const id = (JSON.parse(line) as { id?: unknown }).id;
+        if (!Number.isSafeInteger(id) || (id as number) < 1) throw new Error("invalid event journal");
+        return id as number;
+      }
+      if (start === 0) return 0;
+      window *= 4;
+    }
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+/**
  * Told when a request parks with nobody watching.
  *
  * IT RETURNS WHETHER A HUMAN WAS ACTUALLY REACHED, and that boolean is stored
@@ -5206,6 +5251,17 @@ export class EngineStore {
     this.getSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
     return readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
+  }
+
+  /**
+   * The id of the last event on the journal — "now", for a client that wants
+   * to tail from the snapshot it just read rather than replay from zero.
+   * Journals are append-only with strictly increasing ids, so the last complete
+   * line is the answer; only its tail is read.
+   */
+  eventCursor(sessionId: string): number {
+    this.getSession(sessionId);
+    return lastEventId(eventsFile(this.paths, sessionId));
   }
 
   recover(): { requeued: string[]; ambiguous: string[] } {

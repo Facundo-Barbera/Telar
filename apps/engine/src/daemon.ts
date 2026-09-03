@@ -2529,6 +2529,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (session) {
         if (request.method === "GET" && session.tail === "") {
           writeJson(response, 200, {
+            // READ FIRST. The snapshot below is what the client renders; the
+            // cursor says which events it already reflects. A cursor read
+            // after the snapshot could name an event whose effect the
+            // snapshot does not carry, and the client would skip it forever.
+            // Read before, the worst case is one event replayed onto a
+            // snapshot that already has it — which the fold is built for.
+            cursor: store.eventCursor(session.sessionId),
             session: store.getSession(session.sessionId),
             turns: store.turns(session.sessionId),
             items: store.items(session.sessionId),

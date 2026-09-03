@@ -141,6 +141,14 @@ export type FetchLike = typeof fetch;
 /** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
  *  so it does not have to replay the journal from zero. */
 export type SessionSnapshot = {
+  /**
+   * The journal position this snapshot reflects — the id of the last event
+   * the engine had written when it was read. A client tails from here;
+   * replaying the journal from zero to learn what the snapshot already
+   * says was the whole cost of opening a long session. Absent from an
+   * engine older than this field, in which case a client has to ask.
+   */
+  cursor?: number;
   session: Session;
   turns: Turn[];
   items: Item[];

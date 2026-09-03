@@ -31,18 +31,25 @@ struct TailResult {
     var snapshot: SessionSnapshot?
 }
 
-/// A journal page and a snapshot cannot be read atomically. Reading
-/// journal → snapshot → journal tail → snapshot closes both directions of the
-/// gap: transitions are reflected by their event, and a newly accepted turn
-/// gains its prompt from a snapshot even though `turn.accepted` omits it.
-/// THE DISCARDED FIRST SNAPSHOT IS LOAD-BEARING — it orders the reads.
+/// OPEN ON THE SNAPSHOT, TAIL FROM ITS CURSOR. The snapshot already says
+/// everything a settled turn will ever say; the journal only adds what is
+/// still streaming. The engine stamps the snapshot with the last event id it
+/// reflects (read BEFORE the snapshot, so any overlap is a replay the fold
+/// absorbs, never a gap). Reading the journal from zero — nine megabytes on a
+/// long session, over a phone's radio — was the whole cost of opening one.
+///
+/// An engine older than the stamp answers without one; then the journal has
+/// to be asked where it ends. The old cost, kept only for that case.
 func hydrateSession(_ api: some EngineAPI, _ sessionId: EngineID) async throws -> HydratedSession {
-    let journal = try await api.events(sessionId, after: 0)
-    _ = try await api.session(sessionId)
-    let catchup = try await api.events(sessionId, after: journalCursor(journal.events))
-    let events = appendJournalEvents(journal.events, catchup.events)
     let snapshot = try await api.session(sessionId)
-    return HydratedSession(snapshot: snapshot, events: events, cursor: journalCursor(events))
+    let from: Int
+    if let cursor = snapshot.cursor {
+        from = cursor
+    } else {
+        from = journalCursor(try await api.events(sessionId, after: 0).events)
+    }
+    let tail = try await api.events(sessionId, after: from)
+    return HydratedSession(snapshot: snapshot, events: tail.events, cursor: max(from, journalCursor(tail.events)))
 }
 
 func tailSession(_ api: some EngineAPI, _ sessionId: EngineID, after: Int) async throws -> TailResult {
