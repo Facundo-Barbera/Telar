@@ -32,9 +32,14 @@ import type { ProviderModel } from "@telar/engine-client";
 
 export type ContextWindow = "standard" | "long";
 
-/** What the pill and the menu call each window. "Standard" is never printed on
- *  the pill — see `windowSuffix`. */
-export const WINDOW_LABEL: Record<ContextWindow, string> = { standard: "Standard", long: "1M" };
+/**
+ * What the pill and the menu call each window. THE NUMBER, NOT THE WORD:
+ * this read `Standard | 1M` and a person on Fable 5.1 — whose pill showed bare
+ * `High` — could not tell they were on 200k and thought they were already on
+ * 1M. Measured on the dogfood app. T3 Code prints `200k | 1M` for the same
+ * reason.
+ */
+export const WINDOW_LABEL: Record<ContextWindow, string> = { standard: "200k", long: "1M" };
 
 /**
  * `[1m]`, AND NOTHING ELSE COUNTS.
@@ -259,13 +264,16 @@ export function pickInFamily(family: ModelFamily, window: ContextWindow): Provid
 }
 
 /**
- * What the reasoning pill adds after the effort — `Extra high · 1M`.
+ * What the reasoning pill adds after the effort — `High · 200k`, `High · 1M`.
  *
- * NOTHING FOR THE STANDARD WINDOW, and the asymmetry is deliberate: the long
- * window is the exception worth stating and "Standard" on every pill forever is
- * a word that never tells anybody anything. Absence reads as standard the same
- * way it does for fast mode.
+ * SHOWN WHENEVER THERE IS A CHOICE. This used to print nothing for the
+ * standard window, on the theory that "Standard" on every pill tells nobody
+ * anything. It told somebody something the day it was absent: on a model with
+ * a 1M variant, bare `High` gave no sign the session was on 200k, and the
+ * reader assumed 1M. A window is only worth naming where it can be changed, so
+ * a single-window model (Haiku, Codex) still shows nothing — absence there
+ * means "no choice", the same way it does for fast mode.
  */
-export function windowSuffix(window: ContextWindow): string | undefined {
-  return window === "long" ? WINDOW_LABEL.long : undefined;
+export function windowSuffix(window: ContextWindow, windows: readonly ContextWindow[]): string | undefined {
+  return windows.length > 1 ? WINDOW_LABEL[window] : undefined;
 }

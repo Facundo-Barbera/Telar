@@ -19,7 +19,7 @@
  * the UI needs one renderer rather than one per provider.
  */
 import { z } from "zod";
-import { Id, ProviderRefs, Timestamp } from "./common";
+import { Id, ProviderRefs, Timestamp, TurnAttachment } from "./common";
 
 /**
  * The subset of item types that represent a tool doing something. These are the
@@ -175,7 +175,14 @@ export type ErrorDetail = z.infer<typeof ErrorDetail>;
  * event.data.text === "string"` at the point of use.
  */
 export const ItemDetail = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("user_message"), text: z.string() }),
+  z.object({
+    type: z.literal("user_message"),
+    text: z.string(),
+    /** The files sent with a mid-turn message, so the transcript can show
+     *  them the way it shows a queued turn's. Absent on every row written
+     *  before the steer channel carried attachments. */
+    attachments: z.array(TurnAttachment).optional(),
+  }),
   z.object({ type: z.literal("assistant_message"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),
   z.object({ type: z.literal("plan"), plan: PlanDetail }),

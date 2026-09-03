@@ -238,7 +238,7 @@ export class EngineWorker {
         const entry = this.steering.get(delivery.claimToken);
         // No mailbox (or closed): this worker cannot deliver — leave the
         // turn `steering`; the engine's settlement sweep requeues it.
-        if (!entry?.mailbox.push(delivery.text)) continue;
+        if (!entry?.mailbox.push({ text: delivery.text, ...(delivery.attachments?.length ? { attachments: delivery.attachments } : {}) })) continue;
         this.pushedSteers.add(delivery.steerRunId);
         entry.pendingAck.push({ sessionId: delivery.sessionId, steerRunId: delivery.steerRunId, claimToken: delivery.claimToken });
       }

@@ -44,7 +44,9 @@ import bundled from "./model-manifest.json" with { type: "json" };
 export type ModelManifest = {
   version: number;
   claude?: {
-    profiles: Record<string, { longWindow: boolean }>;
+    /** `defaultLong`: the provider ships this profile 1M by default, so the
+     *  synthesized `[1m]` row is marked as the model's default window. */
+    profiles: Record<string, { longWindow: boolean; defaultLong?: boolean }>;
     /** Canonical wire id (no `[1m]`, no dated build) → profile key. */
     models: Record<string, string>;
     /** Models to list even when the CLI does not. Keyed on the canonical id;
@@ -113,6 +115,8 @@ export function applyModelManifest(models: readonly ProviderModel[], manifest: M
       // The standard row keeps the provider's default flag; the synthesized
       // one is a variant of it, never the default in its own right.
       isDefault: false,
+      // A fact for the picker to show, not a choice made on anyone's behalf.
+      ...(profile.defaultLong ? { defaultWindow: true } : {}),
     });
   }
   return out;

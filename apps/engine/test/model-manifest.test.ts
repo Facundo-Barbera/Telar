@@ -87,3 +87,18 @@ describe("declared models", () => {
     expect(out[0]!.label).toBe("Fable (live)");
   });
 });
+
+test("a profile shipped 1M by default marks its synthesized [1m] row as the default WINDOW — a fact, not a choice", () => {
+  // The picker shows `Default` beside 1M for Fable 5.1 (per Claude Code's own
+  // changelog) and still sends whichever row you pick; `isDefault` — which
+  // decides what runs when no model is named — stays on the standard row.
+  const listed = [row("claude-fable-5-1", { resolves: "claude-fable-5-1", isDefault: true })];
+  const out = applyModelManifest(listed, BUNDLED_MANIFEST);
+  const long = out.find((m) => m.id === "claude-fable-5-1[1m]")!;
+  expect(long.defaultWindow).toBe(true);
+  expect(long.isDefault).toBe(false);
+  expect(out.find((m) => m.id === "claude-fable-5-1")!.defaultWindow).toBeUndefined();
+  // A long-window profile NOT shipped 1M by default gets no mark.
+  const sonnet = applyModelManifest([row("sonnet", { resolves: "claude-sonnet-5" })], BUNDLED_MANIFEST).find((m) => m.id === "sonnet[1m]")!;
+  expect(sonnet.defaultWindow).toBeUndefined();
+});

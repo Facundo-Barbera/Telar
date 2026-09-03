@@ -5186,7 +5186,18 @@ export class EngineStore {
         if (turn.state !== "steering" || !turn.steer) return [];
         const claimToken = claimed.get(turn.steer.intoRunId);
         if (!claimToken) return [];
-        return [{ sessionId: session.id, runId: turn.steer.intoRunId, claimToken, steerRunId: turn.runId, text: turn.input }];
+        return [
+          {
+            sessionId: session.id,
+            runId: turn.steer.intoRunId,
+            claimToken,
+            steerRunId: turn.runId,
+            text: turn.input,
+            // The attachments ride with the words — a steered image used to be
+            // stored here and never delivered.
+            ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
+          },
+        ];
       });
     });
   }

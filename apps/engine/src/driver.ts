@@ -1386,9 +1386,16 @@ export function createClaudeDriver(
        * Its approval gate rides the socket's binding, which is why `canUseTool`
        * above waves its calls through.
        */
-      const onSteered = (text: string) => {
+      const onSteered = (text: string, attachments: TurnAttachment[]) => {
         const id = itemId();
-        emit({ kind: "item.started", item: { id, detail: { type: "user_message", text }, title: "Sent now" } });
+        emit({
+          kind: "item.started",
+          item: {
+            id,
+            detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}) },
+            title: "Sent now",
+          },
+        });
         emit({ kind: "item.completed", itemId: id, status: "completed" });
       };
 
@@ -1697,10 +1704,17 @@ export function createClaudeDriver(
             if (queued.length > 0) {
               // Joined rather than pushed one at a time: they arrived while a
               // single turn was running, so they are one interruption with
-              // several sentences.
-              const text = queued.join("\n\n");
-              onSteered(text);
-              runtime.feed.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
+              // several sentences — and one set of attachments, built into
+              // the message exactly as a queued turn's are (images as pixels,
+              // everything else as a path).
+              const text = queued.map((message) => message.text).join("\n\n");
+              const attachments = queued.flatMap((message) => message.attachments ?? []);
+              onSteered(text, attachments);
+              runtime.feed.push({
+                type: "user",
+                message: { role: "user", content: claudeInitialContent(text, attachments) },
+                parent_tool_use_id: null,
+              });
               await flush();
             }
             if (steer.isClosed) return;

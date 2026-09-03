@@ -772,6 +772,15 @@ export const ProviderModel = z.object({
    */
   resolves: z.string().min(1).optional(),
   /**
+   * THIS ROW IS THE MODEL'S DEFAULT WINDOW — a fact to read, never a choice
+   * made for you. Set on the `[1m]` row of a family whose provider ships it 1M
+   * by default (Fable 5.1, per Claude Code's own changelog), from the model
+   * manifest; the picker marks the row `Default` and still sends whichever
+   * row you pick. Absent means nobody said, which is what every row was
+   * before the manifest existed.
+   */
+  defaultWindow: z.boolean().optional(),
+  /**
    * Whether THIS model offers fast mode. Per model, not per provider: of the six
    * rows the installed Claude Code reports, two support it. A toggle offered on
    * a model that does not is a control that silently does nothing.

@@ -1468,3 +1468,36 @@ test("a user message echoed with STRING content does not fail the turn", async (
   }));
   await expect(run(driver).result).resolves.toMatchObject({ text: expect.stringContaining("hello") });
 });
+
+test("a steered message carries its attachments — an image sent mid-turn arrives as pixels", async () => {
+  /**
+   * MEASURED ON THE DOGFOOD APP: a screenshot sent mid-turn was stored beside
+   * the session and never delivered, because the steer channel carried text
+   * alone. It now builds the message exactly as a queued turn's is built —
+   * images inlined as base64 blocks, everything else named by path.
+   */
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-steer-")), "shot.png");
+  fs.writeFileSync(file, Buffer.from([137, 80, 78, 71]));
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      for await (const message of prompt) {
+        heard.push(message.message.content);
+        if (heard.length < 2) continue;
+        yield { type: "result", subtype: "success" };
+        return;
+      }
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  steer.push({ text: "look at this", attachments: [{ id: "att_1", name: "shot.png", mediaType: "image/png", bytes: 4, path: file }] });
+  const { sink } = run(driver, { steer });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const steered = heard[1] as Array<Record<string, unknown>>;
+  expect(Array.isArray(steered)).toBe(true);
+  expect(steered[0]).toEqual({ type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } });
+  expect(String((steered[1] as { text: string }).text)).toContain("look at this");
+  // The journal row names the file too, so the transcript can show what was sent.
+  const rowItem = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(rowItem && rowItem.kind === "item.started" && rowItem.item.detail.type === "user_message" ? rowItem.item.detail.attachments?.[0]?.name : undefined).toBe("shot.png");
+});

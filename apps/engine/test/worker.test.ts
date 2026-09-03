@@ -437,7 +437,7 @@ test("a send-now delivery lands in the driver's mailbox and the promoted turn go
   const driver: TurnDriver = {
     async run({ steer }) {
       await steer!.wake();
-      return { text: `heard:${steer!.drain().join("|")}` };
+      return { text: `heard:${steer!.drain().map((message) => message.text).join("|")}` };
     },
   };
   const { client, sessionId, worker } = await setup(driver);
