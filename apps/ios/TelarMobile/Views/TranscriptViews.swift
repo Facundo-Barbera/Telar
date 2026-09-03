@@ -37,9 +37,16 @@ struct TurnView: View {
         let (activity, closing) = split
         VStack(alignment: .leading, spacing: 10) {
             UserBubble(text: turn.prompt)
-            ActivityGroupView(items: activity, tasks: turn.tasks, live: turn.state.isActive)
-            ForEach(closing) { item in
-                ItemRowView(item: item)
+            // LIVE, THE WHOLE TIMELINE IS CUT AT ITS SEAMS — each run of work
+            // folds to its tally as the agent moves past it. The prose split
+            // is for a FINISHED turn: only then is the last message the answer.
+            if turn.state.isActive {
+                LiveActivityView(items: turn.items, tasks: turn.tasks)
+            } else {
+                ActivityGroupView(items: activity, tasks: turn.tasks, live: false)
+                ForEach(closing) { item in
+                    ItemRowView(item: item)
+                }
             }
             switch turn.state {
             case .failed:
@@ -57,6 +64,68 @@ struct TurnView: View {
             default:
                 EmptyView()
             }
+        }
+    }
+}
+
+/// A live turn's timeline, cut at its seams — the web's `segmentActivity`.
+/// Prose, a steer, a plan and a compaction are rows the reader sees as they
+/// land; everything between two of them is a run of work.
+enum ActivitySegment: Equatable, Identifiable {
+    case run([JournalItem])
+    case row(JournalItem)
+
+    /// A run is keyed by its FIRST item so the fold's open state survives
+    /// rows appending to it.
+    var id: EngineID {
+        switch self {
+        case .run(let items): items[0].id
+        case .row(let item): item.id
+        }
+    }
+}
+
+func segmentActivity(_ items: [JournalItem]) -> [ActivitySegment] {
+    var segments: [ActivitySegment] = []
+    for item in items {
+        switch item.detail {
+        case .assistantMessage, .userMessage, .plan, .contextCompaction:
+            segments.append(.row(item))
+        default:
+            if case .run(var run)? = segments.last {
+                run.append(item)
+                segments[segments.count - 1] = .run(run)
+            } else {
+                segments.append(.run([item]))
+            }
+        }
+    }
+    return segments
+}
+
+/// Before this, a live turn had ONE window over everything before its last
+/// narration and stacked every tool call after it as a flat row, folding only
+/// when the turn finished. Now a run compacts to its tally the moment the
+/// agent moves past it; only the run still being written keeps the window.
+struct LiveActivityView: View {
+    let items: [JournalItem]
+    let tasks: [JournalTask]
+
+    var body: some View {
+        let segments = segmentActivity(items)
+        let tail = segments.indices.last
+        ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
+            switch segment {
+            case .row(let item):
+                ItemRowView(item: item)
+            case .run(let run):
+                ActivityGroupView(items: run, tasks: index == tail ? tasks : [], live: index == tail)
+            }
+        }
+        // Sub-agents hang off the tail. When the tail is prose there is no
+        // run to carry them, so an empty live group draws just the chips.
+        if case .run? = segments.last {} else {
+            ActivityGroupView(items: [], tasks: tasks, live: true)
         }
     }
 }

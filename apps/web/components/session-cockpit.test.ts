@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { transcriptTasks, turnActivity } from "./transcript";
+import { segmentActivity, transcriptTasks, turnActivity } from "./transcript";
 import { describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
 
 describe("session workspace presentation", () => {
@@ -83,6 +83,44 @@ describe("a draft belongs to one composer and does not follow you out of it", ()
     const load = restore.indexOf("setDraft(readDraft(sessionId, projectId))");
     expect(save).toBeGreaterThan(-1);
     expect(load).toBeGreaterThan(save);
+  });
+});
+
+describe("a live turn folds as it works", () => {
+  const item = (id: string, type: string) => ({ id, detail: { type } }) as never;
+
+  test("runs of work are cut at prose, steers, plans and compactions", () => {
+    /**
+     * THE BUG THIS PINS: a live turn had one window over everything before its
+     * last narration and dumped every tool call after it flat, so "one sentence,
+     * then twenty commands" stacked twenty rows until the turn ended. Each run
+     * is now its own group; only the last one is the live window.
+     */
+    const segments = segmentActivity([
+      item("a", "command_execution"),
+      item("b", "file_read"),
+      item("c", "assistant_message"),
+      item("d", "command_execution"),
+      item("e", "user_message"),
+      item("f", "plan"),
+      item("g", "context_compaction"),
+      item("h", "file_change"),
+    ]);
+    expect(segments.map((s) => (s.kind === "row" ? s.item.id : s.items.map((i) => i.id).join("")))).toEqual([
+      "ab", "c", "d", "e", "f", "g", "h",
+    ]);
+  });
+
+  test("reasoning and spawns stay inside the run they happened in", () => {
+    // Thinking is work, not a seam; a `task` item is the spawn itself and
+    // ActivityGroup already knows not to count it.
+    const segments = segmentActivity([item("a", "reasoning"), item("b", "task"), item("c", "command_execution")]);
+    expect(segments).toHaveLength(1);
+    expect(segments[0]?.kind).toBe("run");
+  });
+
+  test("an empty timeline has no segments", () => {
+    expect(segmentActivity([])).toEqual([]);
   });
 });
 

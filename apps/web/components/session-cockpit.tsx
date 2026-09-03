@@ -28,7 +28,7 @@ import { readDraft, writeDraft } from "@/lib/composer-draft";
 import type { ModelChoice } from "@/lib/models";
 import { hydrateSession, tailSession } from "@/lib/engine/session-sync";
 import { Composer } from "./composer";
-import { ActivityGroup, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, RightPanel, type PanelTab, type TaskFocus } from "./right-panel";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { PromptText } from "./session/prompt-text";
@@ -414,12 +414,22 @@ export function SessionTurn({
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}
-          {!folded && (
-            <ActivityGroup items={activity} tasks={turn.tasks} live={live} {...(onOpenAgent ? { onOpenAgent } : {})} />
+          {/* LIVE, THE WHOLE TIMELINE IS CUT AT ITS SEAMS — each run of work
+              folds to its tally as the agent moves past it (see `LiveActivity`).
+              The prose/closing split below is for a turn that has FINISHED:
+              only then is "the last message" known to be the answer. */}
+          {live ? (
+            <LiveActivity items={turn.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
+          ) : (
+            <>
+              {!folded && (
+                <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+              )}
+              {closing.map((item) => (
+                <TranscriptItem key={item.id} item={item} />
+              ))}
+            </>
           )}
-          {closing.map((item) => (
-            <TranscriptItem key={item.id} item={item} />
-          ))}
           {!streamedAnswer && turn.resultText && <MessageResponse>{turn.resultText}</MessageResponse>}
           {turn.failure && <Marker attention>{turn.failure}</Marker>}
           {turn.state === "stopped" && <Marker>stopped — kept what arrived</Marker>}

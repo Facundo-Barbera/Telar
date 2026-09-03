@@ -500,6 +500,68 @@ export function transcriptTasks(tasks: readonly JournalTask[]): JournalTask[] {
 }
 
 /**
+ * A live turn, cut at its SEAMS.
+ *
+ * Prose, a steer, a plan and a compaction are rows the reader is meant to see
+ * as they land; everything between two of them is a run of work. Before this,
+ * a live turn had ONE window over everything before its last narration and
+ * dumped every tool call after that narration as a flat row — so a turn that
+ * said one sentence mid-way then ran twenty commands stacked twenty rows, and
+ * only folded them when it finished. The fold now happens as the turn works:
+ * a run is compacted to its tally the moment the agent moves past it, and only
+ * the run still being written keeps the rolling window. A settled turn is
+ * still one fold (see `SessionTurn`); this is the same tally, applied earlier.
+ */
+export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "row"; item: JournalItem };
+
+const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction"]);
+
+export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[] {
+  const segments: ActivitySegment[] = [];
+  for (const item of items) {
+    if (SEAM.has(item.detail.type)) {
+      segments.push({ kind: "row", item });
+      continue;
+    }
+    const last = segments.at(-1);
+    if (last?.kind === "run") last.items.push(item);
+    else segments.push({ kind: "run", items: [item] });
+  }
+  return segments;
+}
+
+export function LiveActivity({
+  items,
+  tasks,
+  onOpenAgent,
+}: {
+  items: JournalItem[];
+  tasks: JournalTask[];
+  onOpenAgent?: (taskId: string) => void;
+}) {
+  const segments = segmentActivity(items);
+  const tail = segments.length - 1;
+  const open = onOpenAgent ? { onOpenAgent } : {};
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.kind === "row" ? (
+          <TranscriptItem key={segment.item.id} item={segment.item} />
+        ) : (
+          // Keyed by the run's FIRST item so the fold's open state survives
+          // rows appending to it, and so a run that just settled keeps the
+          // same element when its neighbour opens.
+          <ActivityGroup key={segment.items[0]!.id} items={segment.items} tasks={index === tail ? tasks : []} live={index === tail} {...open} />
+        ),
+      )}
+      {/* Sub-agents hang off the tail. When the tail is prose there is no run
+          to carry them, so an empty live group draws just the chips. */}
+      {segments[tail]?.kind !== "run" && <ActivityGroup items={[]} tasks={tasks} live {...open} />}
+    </>
+  );
+}
+
+/**
  * A run of activity rows: a rolling window while live, a tally once settled.
  * Both are the same sentence at two scales, so the grammar is learned once.
  */
