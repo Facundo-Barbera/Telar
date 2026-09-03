@@ -41,6 +41,12 @@ export const RequestKind = z.enum([
   /** The agent is asking a question, not asking permission. Never auto-resolved
    *  in any mode — an invented answer is worse than a parked session. */
   "user_input",
+  /** The agent wants a credential filled from the user's password manager.
+   *  Never auto-resolved in any mode, `full-access` included: a secret leaving
+   *  the vault is the one capability no runtime mode may hand out on its own.
+   *  The human's answer also PICKS the item (`answers.item`), so policy has
+   *  nothing it could even resolve with. */
+  "secret_access",
 ]);
 export type RequestKind = z.infer<typeof RequestKind>;
 
@@ -71,6 +77,47 @@ export const UserInputField = z.object({
 export type UserInputField = z.infer<typeof UserInputField>;
 
 /**
+ * One password-manager item a `secret_access` request may fill from.
+ *
+ * METADATA ONLY, BY CONSTRUCTION. This shape crosses the journal, the cockpit,
+ * and the phone, so it may never grow a field that could carry a value: id,
+ * title, vault and matched domain are what 1Password itself shows on a locked
+ * list. The values stay behind the resolver until the human has accepted.
+ */
+export const SecretCandidate = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  vault: z.string().optional(),
+  /** The registrable domain that matched the tab's origin — shown so the human
+   *  verifies the same binding the engine enforced. */
+  domain: z.string().min(1),
+});
+export type SecretCandidate = z.infer<typeof SecretCandidate>;
+
+/** Which parts of an item a `secret_access` request wants to fill. `field`
+ *  names a specific 1Password field by its label. */
+export const SecretFieldKind = z.enum(["username", "password", "otp", "field"]);
+export type SecretFieldKind = z.infer<typeof SecretFieldKind>;
+
+/**
+ * What a `secret_access` request shows the human: where the fill lands, which
+ * kinds of values are wanted, and which items qualify. The human's pick comes
+ * back as `answers.item` (a candidate `id`).
+ */
+export const SecretAccessDetail = z.object({
+  /** The tab origin the fill is bound to, e.g. `https://github.com`. Read by
+   *  the engine from its own tab state, never from model input. */
+  origin: z.string().min(1),
+  fields: z.array(z.object({ kind: SecretFieldKind, label: z.string().optional() })).min(1),
+  /** Domain-matched items only. Never empty — zero matches refuse the call
+   *  before a request is opened. */
+  candidates: z.array(SecretCandidate).min(1),
+  /** The agent's item hint, surfaced so the human sees what was asked for. */
+  hint: z.string().optional(),
+});
+export type SecretAccessDetail = z.infer<typeof SecretAccessDetail>;
+
+/**
  * What exactly is being asked for, per kind. Discriminated so a client
  * rendering an approval card gets the fields that kind has and no others —
  * a command approval needs the command text, a file change needs the diff.
@@ -81,6 +128,7 @@ export const RequestDetail = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("file_read"), read: FileReadDetail }),
   z.object({ kind: z.literal("tool_call"), call: ToolCallDetail }),
   z.object({ kind: z.literal("user_input"), prompt: z.string(), fields: z.array(UserInputField) }),
+  z.object({ kind: z.literal("secret_access"), secret: SecretAccessDetail }),
 ]);
 export type RequestDetail = z.infer<typeof RequestDetail>;
 
@@ -117,7 +165,8 @@ export const EngineRequest = z.object({
    *  can adapt rather than simply retrying the same thing. */
   reason: z.string().optional(),
 
-  /** Answers to a `user_input` request, keyed by `UserInputField.key`. */
+  /** Answers to a `user_input` request, keyed by `UserInputField.key` — and
+   *  the item pick of a `secret_access` request, under the key `item`. */
   answers: z.record(z.string(), z.unknown()).optional(),
 
   providerRefs: ProviderRefs.optional(),
@@ -142,10 +191,13 @@ export type EngineRequest = z.infer<typeof EngineRequest>;
  *   full-access        nothing asks
  *
  * `user_input` NEVER auto-resolves. It is the one kind where the engine has no
- * defensible answer to invent, in any mode.
+ * defensible answer to invent, in any mode. `secret_access` shares the rule for
+ * a different reason: a mode may widen what the AGENT can do, never what the
+ * VAULT gives up — and the resolution carries the human's item pick, which no
+ * policy could invent either.
  */
 export function autoResolution(mode: RuntimeMode, kind: RequestKind): RequestDecision | null {
-  if (kind === "user_input") return null;
+  if (kind === "user_input" || kind === "secret_access") return null;
   switch (mode) {
     case "full-access":
       return "accept";

@@ -252,6 +252,17 @@ describe("autoResolution — the policy that decides if detached runs work", () 
     }
   });
 
+  test("secret_access NEVER auto-resolves, in any mode — full-access included", () => {
+    // A mode widens what the AGENT may do, never what the VAULT gives up. A
+    // credential fill also carries the human's item pick in its resolution,
+    // which no policy could invent. This is the load-bearing assertion of the
+    // 1Password design: if it goes red, secrets can leave the vault unasked.
+    for (const mode of RuntimeMode.options) {
+      expect(autoResolution(mode, "secret_access"), mode).toBeNull();
+      expect(requiresHuman(mode, "secret_access"), mode).toBe(true);
+    }
+  });
+
   test("the ladder only ever widens — no mode asks about more than a stricter one", () => {
     // Ordered least to most permissive. A change that made `auto` stricter
     // than `auto-accept-edits` for some kind would be a UI lie, since the
