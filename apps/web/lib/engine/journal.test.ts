@@ -325,5 +325,19 @@ describe("browser control rows", () => {
       "The browser was handed back to the agent",
     ]);
     expect(projected!.items.every((row) => row.status === "completed")).toBe(true);
+    // The transcript renders through itemLabel — it must say the sentence,
+    // not the wire type. This is what printed "unknown" on screen.
+    expect(projected!.items.map(itemLabel)).toEqual(["You took the browser", "The browser was handed back to the agent"]);
+  });
+
+  test("a tab opened by the agent is a labeled row, and reads as one", () => {
+    const [projected] = projectJournal([turn], [], [
+      { ...envelope, id: 5, type: "browser.state.changed", provider: "attached", tabs: [{ id: "0", url: "https://example.com/", title: "Example Domain", active: true }] },
+      { ...envelope, id: 6, type: "browser.state.changed", provider: "attached", tabs: [
+        { id: "0", url: "https://example.com/", title: "Example Domain", active: false },
+        { id: "1", url: "https://news.ycombinator.com/", title: "Hacker News", active: true },
+      ] },
+    ]);
+    expect(projected!.items.map(itemLabel)).toEqual(["Opened a tab — Hacker News"]);
   });
 });

@@ -412,6 +412,11 @@ export function itemLabel(item: JournalItem): string {
       return item.detail.query;
     case "error":
       return item.detail.error.message;
+    // The label IS the row for a one-line notice ("You took the browser",
+    // "Opened a tab — …"). Falling through to the type name printed the word
+    // "unknown" three times under a real answer.
+    case "unknown":
+      return item.detail.label ?? item.detail.type;
     default:
       return item.detail.type;
   }
