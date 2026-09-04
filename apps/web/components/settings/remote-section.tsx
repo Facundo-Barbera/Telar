@@ -115,9 +115,9 @@ function PairingCode({ code }: { code: string }) {
             // No clipboard on an insecure origin: the digits are on screen.
           });
       }}
-      className="group flex items-center gap-4 rounded-lg border border-border/70 bg-muted/40 px-5 py-3 text-left transition-colors hover:bg-muted/70"
+      className="group flex shrink-0 items-center gap-3 rounded-lg border border-border/70 bg-muted/40 px-4 py-2.5 text-left transition-colors hover:bg-muted/70"
     >
-      <span className="font-mono text-3xl tracking-[0.2em] tabular-nums">{spaced(code)}</span>
+      <span className="font-mono text-2xl tracking-[0.15em] whitespace-nowrap tabular-nums">{spaced(code)}</span>
       {copied ? <CheckIcon className="size-4 text-success" /> : <CopyIcon className="size-4 text-muted-foreground/70 group-hover:text-foreground" />}
     </button>
   );
@@ -442,9 +442,9 @@ export function RemoteSection() {
                     across a room and types on a phone. The QR and the link
                     below carry the SAME eight digits — a way to enter the
                     code, not a second secret. */}
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <PairingCode code={minted.code} />
-                  <span className="text-xs text-muted-foreground">Type it into the pairing page on the other device.</span>
+                  <span className="min-w-0 text-xs text-muted-foreground">Type it into the pairing page on the other device.</span>
                 </div>
                 {endpoints.length > 1 && (
                   <div className="flex flex-col gap-1.5">
