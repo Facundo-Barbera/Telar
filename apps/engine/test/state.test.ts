@@ -263,6 +263,48 @@ test("observations become durable items and deltas, and only under a live claim"
   ]);
 });
 
+test("a report against a SETTLED turn is a typed conflict that says the turn ended, not a claim mix-up", () => {
+  /**
+   * THE RACE WINDOW CAN NEVER BE FULLY ZERO: a provider tool call can land
+   * moments after its turn settles. What the store owes that caller is a
+   * TYPED refusal a worker can key off (`conflict` — the code its settle
+   * paths already treat as "drop, don't fail the turn") with a message that
+   * reads as LATE, so the daemon log diagnoses the premature-completion bug
+   * instead of suggesting a foreign worker stole the claim. The terminal turn
+   * itself stays immutable — nothing is accepted, nothing lands after
+   * `turn.completed`.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  const token = claimed.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.completeTurn("session_one", "run_one", token, { text: "done" });
+
+  const late = () =>
+    store.ingestObservations("session_one", "run_one", token, [
+      { kind: "item.started", item: { id: "i_late", detail: { type: "command_execution", command: { command: "echo late" } } } },
+    ]);
+  expect(late).toThrow(EngineStateError);
+  expect(late).toThrow(/already settled \(completed\)/);
+  try {
+    late();
+  } catch (error) {
+    expect(error).toBeInstanceOf(EngineStateError);
+    expect((error as EngineStateError).code).toBe("conflict");
+  }
+  // Refused means refused: the settled turn's journal gained nothing.
+  expect(store.items("session_one").some((item) => item.id === "i_late")).toBe(false);
+
+  // A WRONG token against the same settled turn stays the generic claim
+  // refusal — "settled" is only claimed for the worker that really ran it.
+  expect(() =>
+    store.ingestObservations("session_one", "run_one", "not-the-token-at-all", [
+      { kind: "item.started", item: { id: "i_late", detail: { type: "assistant_message", text: "" } } },
+    ]),
+  ).toThrow(/not running under this worker claim/);
+});
+
 test("a follow-up may be QUEUED while a turn runs, and drains in the order it was typed", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "First" });

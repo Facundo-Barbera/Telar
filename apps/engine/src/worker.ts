@@ -318,12 +318,27 @@ export class EngineWorker {
      * the driver's own `onRequest`, and the browser socket's per-call gate.
      * Factored rather than duplicated so an abort settles BOTH the same way.
      */
+    /**
+     * ONE LINE PER TURN when the engine refuses a tool request because the
+     * turn already settled. This is the signature of the premature-completion
+     * bug (a `result` consumed while tool calls were still running): every
+     * refusal after the first says nothing new, and the driver already turns
+     * each into a deny the model can read — but with zero log lines the
+     * failure was undiagnosable from the daemon log alone.
+     */
+    let lateRefusalLogged = false;
     const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<DriverRequestOutcome> => {
       const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
       const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
         requestId,
         kind,
         detail,
+      }).catch((error: unknown) => {
+        if (!lateRefusalLogged && error instanceof EngineClientError && error.code === "conflict") {
+          lateRefusalLogged = true;
+          console.error(`[worker] tool request refused for ${runId}: ${error.message}`);
+        }
+        throw error;
       });
       // Auto-resolved by the session's runtime mode — no human involved,
       // no wait. This is the common path in a detached session. (`user_input`
