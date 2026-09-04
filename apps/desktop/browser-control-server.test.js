@@ -53,3 +53,27 @@ describe("desktop browser control server", () => {
     }
   });
 });
+
+describe("control state over the wire", () => {
+  test("/state relays the manager's controller so the engine can route around a human", async () => {
+    const { DesktopBrowserManager } = require("./browser-manager");
+    const manager = new DesktopBrowserManager(
+      { isDestroyed: () => true, webContents: { send: () => {} }, contentView: { addChildView: () => {}, removeChildView: () => {} } },
+      { createView: () => { throw new Error("no views needed"); }, now: () => 0 },
+    );
+    manager.noteHumanInput("session-a", { force: true });
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => manager,
+    });
+    try {
+      const state = await fetch(`http://127.0.0.1:${control.port}/state?scopeKey=session-a`, {
+        headers: { Authorization: "Bearer secret" },
+      });
+      expect(await state.json()).toMatchObject({ scopeKey: "session-a", controller: "human" });
+    } finally {
+      await control.close();
+    }
+  });
+});

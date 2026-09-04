@@ -7,6 +7,32 @@ const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 const MAX_LIVE_VIEWS = 6;
 
+// --- The shared-browser control model (§6, docs/browser-v2-plan.md) ---------
+// Agent-synthesized CDP input raises the SAME DOM events a human's hands do,
+// so attribution is temporal: input seen while an agent call is in flight, or
+// within this many ms of agent-dispatched input, belongs to the agent. The
+// race window means a human click inside it can be missed ONCE — the next
+// input flips control. Chosen over a marker protocol because the marker would
+// have to survive every page's own event handling.
+const HUMAN_ATTRIBUTION_GRACE_MS = 400;
+
+const HUMAN_HOLDS_BROWSER =
+  "The human took the browser — wait for it back. You can still look (snapshot, screenshot, console, network) to see what they are doing.";
+
+// The reads an agent keeps during human control: watching is the point of a
+// SHARED browser. Everything else — anything that changes the page or the tab
+// set — waits for the handback.
+const READ_TOOLS = new Set([
+  "browser_snapshot",
+  "browser_take_screenshot",
+  "browser_console_messages",
+  "browser_network_requests",
+]);
+
+function isReadTool(name, args) {
+  return READ_TOOLS.has(name) || (name === "browser_tabs" && args?.action === "list");
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -161,6 +187,72 @@ class DesktopBrowserManager {
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.activeToolCalls = new Map();
+    // scope → "agent" | "human"; absent means idle. See the § above the
+    // constants: three states, explicit handback, epoch preemption.
+    this.controllers = new Map();
+    // Bumped on every human takeover. An agent action that started under an
+    // older epoch returns an error instead of its result — t3code's trick,
+    // with the interruption REPORTED to the model rather than swallowed.
+    this.controlEpochs = new Map();
+    this.lastAgentInputAt = new Map();
+    this.now = dependencies.now || Date.now;
+    // The shell forwards these to the engine journal (browser.control.changed)
+    // and the renderer hears them through the ordinary state push.
+    this.onControlChanged = dependencies.onControlChanged || null;
+  }
+
+  controllerOf(scopeKey) {
+    return this.controllers.get(this.requireScope(scopeKey)) || "idle";
+  }
+
+  setController(scopeKey, controller) {
+    const scope = this.requireScope(scopeKey);
+    const current = this.controllers.get(scope) || "idle";
+    if (current === controller) return;
+    if (controller === "idle") this.controllers.delete(scope);
+    else this.controllers.set(scope, controller);
+    if (controller === "human") {
+      this.controlEpochs.set(scope, (this.controlEpochs.get(scope) || 0) + 1);
+    }
+    if (this.onControlChanged) {
+      try {
+        this.onControlChanged({ scopeKey: scope, controller, at: new Date(this.now()).toISOString() });
+      } catch {
+        // The journal hook must never break the browser under it.
+      }
+    }
+    this.emitState(scope);
+  }
+
+  /**
+   * A human's hands landed in this scope's page. `force` is for input that is
+   * human BY CONSTRUCTION — the cockpit's URL bar and tab strip — and skips
+   * the temporal attribution that in-page events need (see the constant).
+   * Returns whether the input was attributed to the human.
+   */
+  noteHumanInput(scopeKey, options = {}) {
+    const scope = this.requireScope(scopeKey);
+    if (!options.force) {
+      const busy = (this.activeToolCalls.get(scope) || 0) > 0;
+      const recent = this.now() - (this.lastAgentInputAt.get(scope) || 0) < HUMAN_ATTRIBUTION_GRACE_MS;
+      if (busy || recent) return false;
+    }
+    this.setController(scope, "human");
+    return true;
+  }
+
+  /** The ipc path: a tab preload reported input and all we hold is the sender. */
+  noteHumanInputFromWebContents(webContents) {
+    const tab = this.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
+    if (tab) this.noteHumanInput(tab.scopeKey);
+  }
+
+  /** The explicit affordance — the ONLY way the agent gets the browser back.
+   *  A human handing back is a decision, never a timeout. */
+  handBack(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    this.setController(scope, "agent");
+    return this.state(scope);
   }
 
   requireScope(scopeKey) {
@@ -183,6 +275,7 @@ class DesktopBrowserManager {
       available: true,
       running: true,
       provider: "desktop",
+      controller: this.controllers.get(scope) || "idle",
       tabs: tabs.map((tab, index) => ({
         index,
         id: tab.id,
@@ -270,6 +363,9 @@ class DesktopBrowserManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // The human-input reporter (see browser-tab-preload.js) — how a click
+        // in the page becomes a control-model takeover in the main process.
+        preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
       },
     });
     // Let the themed renderer host show through while a page is navigating.
@@ -516,7 +612,20 @@ class DesktopBrowserManager {
     this.emitState(scope);
   }
 
+  /**
+   * The IPC surface behind the cockpit's own chrome — URL bar, tab strip,
+   * back/forward — which is a human's hand by construction. Typing an address
+   * IS taking the browser (§6): the agent hears about it on its next mutating
+   * call and waits for the handback. The agent's own `browser_navigate_back`
+   * goes through `performAction` below and never touches control.
+   */
   async action(scopeKey, action) {
+    const scope = this.requireScope(scopeKey);
+    this.noteHumanInput(scope, { force: true });
+    return this.performAction(scope, action);
+  }
+
+  async performAction(scopeKey, action) {
     const scope = this.requireScope(scopeKey);
     switch (action?.action) {
       case "new":
@@ -812,6 +921,21 @@ class DesktopBrowserManager {
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
+    const read = isReadTool(name, args);
+    // While the human holds the browser the agent may LOOK — that is what
+    // makes this a shared browser rather than a lock — but not touch. The
+    // refusal is a sentence the model can narrate, not a throw it retries.
+    if (!read && this.controllerOf(scope) === "human") {
+      return errorResult(new Error(HUMAN_HOLDS_BROWSER));
+    }
+    // A mutating call is the agent's hand on the wheel: claim control (from
+    // idle — never from human, refused above) and remember the epoch so a
+    // takeover DURING the action turns its result into the same sentence.
+    const epochAtStart = this.controlEpochs.get(scope) || 0;
+    if (!read) {
+      this.setController(scope, "agent");
+      this.lastAgentInputAt.set(scope, this.now());
+    }
     this.activeToolCalls.set(scope, (this.activeToolCalls.get(scope) || 0) + 1);
     let timeoutId;
     const timeout = new Promise((_, reject) => {
@@ -830,7 +954,7 @@ class DesktopBrowserManager {
           await this.navigateTab(tab, args.url);
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
-        case "browser_navigate_back": await this.action(scope, { action: "back" }); return okText("Navigated back.");
+        case "browser_navigate_back": await this.performAction(scope, { action: "back" }); return okText("Navigated back.");
         case "browser_snapshot": return this.snapshot(await this.wakeTab(this.activeTab(scope)));
         case "browser_click": return this.click(await this.wakeTab(this.activeTab(scope)), args);
         case "browser_type": return this.type(await this.wakeTab(this.activeTab(scope)), args);
@@ -862,11 +986,20 @@ class DesktopBrowserManager {
       }
     })();
     try {
-      return await Promise.race([operation, timeout]);
+      const result = await Promise.race([operation, timeout]);
+      // The human preempted mid-action (epoch bumped): the action may or may
+      // not have landed, and saying so honestly beats returning a result that
+      // implies the agent still drives. t3code interrupts silently; Telar
+      // tells the model, so it narrates and waits instead of fighting.
+      if (!read && (this.controlEpochs.get(scope) || 0) !== epochAtStart) {
+        return errorResult(new Error(HUMAN_HOLDS_BROWSER));
+      }
+      return result;
     } catch (error) {
       return errorResult(error);
     } finally {
       clearTimeout(timeoutId);
+      if (!read) this.lastAgentInputAt.set(scope, this.now());
       const remaining = Math.max(0, (this.activeToolCalls.get(scope) || 1) - 1);
       if (remaining) this.activeToolCalls.set(scope, remaining);
       else this.activeToolCalls.delete(scope);
@@ -880,6 +1013,9 @@ class DesktopBrowserManager {
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
     if (destroy && !this.scopeTabs(scope).length) this.activeTabIds.delete(scope);
+    // A destroyed scope's controller is nobody. A merely-hibernated one keeps
+    // its state: the human who took the browser still holds it when it wakes.
+    if (destroy) this.setController(scope, "idle");
     this.emitState(scope);
   }
 

@@ -149,6 +149,8 @@ function makeHarness(options = {}) {
       waits.push(milliseconds);
     }),
     maxLiveViews: options.maxLiveViews,
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
   });
   return { children, manager, messages, views, waits };
 }
@@ -393,5 +395,120 @@ describe("desktop shell development contracts", () => {
     expect(source).toContain('app.setPath("userData", E2E_USER_DATA)');
     expect(source).toContain("app.requestSingleInstanceLock()");
     expect(e2e).toContain("TELAR_DESKTOP_E2E_USER_DATA: desktopUserData");
+  });
+});
+
+describe("the shared-browser control model (§6)", () => {
+  function controlHarness() {
+    const clock = { t: 1_000_000 };
+    const changes = [];
+    const harness = makeHarness({
+      now: () => clock.t,
+      onControlChanged: (change) => changes.push(change),
+    });
+    return { ...harness, clock, changes };
+  }
+
+  test("an agent mutation claims an idle scope; reads never do", async () => {
+    const { manager, changes } = controlHarness();
+    await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(manager.controllerOf("s")).toBe("idle");
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    expect(manager.controllerOf("s")).toBe("agent");
+    expect(changes.map((change) => change.controller)).toEqual(["agent"]);
+    expect(manager.state("s").controller).toBe("agent");
+  });
+
+  test("human input flips agent → human, and a later agent MUTATION is refused while reads keep working", async () => {
+    const { manager, clock, changes } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    // Past the attribution grace: this is a real human's click.
+    clock.t += 10_000;
+    expect(manager.noteHumanInput("s")).toBe(true);
+    expect(manager.controllerOf("s")).toBe("human");
+    expect(changes.map((change) => change.controller)).toEqual(["agent", "human"]);
+
+    const refused = await manager.callTool("s", "browser_navigate", { url: "https://example.org" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("The human took the browser");
+    // Watching stays allowed — that is what makes it SHARED.
+    const looked = await manager.callTool("s", "browser_take_screenshot", {});
+    expect(looked.isError).toBeUndefined();
+    const listed = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(listed.isError).toBeUndefined();
+  });
+
+  test("input during or right after an agent action is attributed to the AGENT, not the human", async () => {
+    const { manager, clock } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    // Within the grace window: agent-synthesized DOM events look identical.
+    clock.t += 100;
+    expect(manager.noteHumanInput("s")).toBe(false);
+    expect(manager.controllerOf("s")).toBe("agent");
+    // The cockpit's own chrome is human BY CONSTRUCTION and skips the window.
+    expect(manager.noteHumanInput("s", { force: true })).toBe(true);
+    expect(manager.controllerOf("s")).toBe("human");
+  });
+
+  test("a takeover MID-ACTION turns the in-flight result into the takeover sentence", async () => {
+    const { manager, views } = controlHarness();
+    await manager.createTab("s", "localhost:3000");
+    let release;
+    views[0].webContents.loadGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // The human grabs the tab strip while the navigation is in flight.
+    manager.noteHumanInput("s", { force: true });
+    release();
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("The human took the browser");
+  });
+
+  test("handback is explicit, flips to agent, and mutations run again", async () => {
+    const { manager, clock, changes } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    manager.noteHumanInput("s");
+    const state = manager.handBack("s");
+    expect(state.controller).toBe("agent");
+    expect(changes.map((change) => change.controller)).toEqual(["agent", "human", "agent"]);
+    const resumed = await manager.callTool("s", "browser_navigate", { url: "https://example.org" });
+    expect(resumed.isError).toBeUndefined();
+  });
+
+  test("the cockpit's URL bar and tab strip ARE human input; the agent's own back-navigation is not", async () => {
+    const { manager, clock } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    await manager.action("s", { action: "navigate", url: "https://example.org" });
+    expect(manager.controllerOf("s")).toBe("human");
+    manager.handBack("s");
+    await manager.callTool("s", "browser_navigate_back", {});
+    expect(manager.controllerOf("s")).toBe("agent");
+  });
+
+  test("destroying a scope returns its controller to idle; hibernation keeps it", async () => {
+    const { manager, clock, changes } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    manager.noteHumanInput("s");
+    manager.releaseScope("s", false);
+    expect(manager.controllerOf("s")).toBe("human");
+    manager.releaseScope("s", true);
+    expect(manager.controllerOf("s")).toBe("idle");
+    expect(changes.at(-1).controller).toBe("idle");
+  });
+
+  test("human input reported from a tab's own webContents finds its scope", async () => {
+    const { manager, views, clock } = controlHarness();
+    await manager.createTab("s", "localhost:3000");
+    clock.t += 10_000;
+    manager.noteHumanInputFromWebContents(views[0].webContents);
+    expect(manager.controllerOf("s")).toBe("human");
+    // A webContents the manager does not own is ignored, not an error.
+    manager.noteHumanInputFromWebContents({ unknown: true });
   });
 });

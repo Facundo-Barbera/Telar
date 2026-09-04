@@ -323,3 +323,19 @@ test("resolving a secret_access carries the item pick in answers, and the journa
   expect(requestsRaw).toContain("item_gh");
   expect(requestsRaw).toContain("github.com");
 });
+
+// ── the shared-browser control journal ─────────────────────────────────────
+
+test("recordBrowserControl journals transitions once each and refuses unknown sessions", () => {
+  const { store } = readyStore("full-access");
+  store.recordBrowserControl("session_one", "agent");
+  store.recordBrowserControl("session_one", "human");
+  store.recordBrowserControl("session_one", "human"); // the shell re-reporting
+  store.recordBrowserControl("session_one", "agent");
+  const rows = store
+    .readEvents("session_one")
+    .filter((event) => event.type === "browser.control.changed")
+    .map((event) => (event as { controller: string }).controller);
+  expect(rows).toEqual(["agent", "human", "agent"]);
+  expect(() => store.recordBrowserControl("session_missing", "human")).toThrow();
+});

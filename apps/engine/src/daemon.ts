@@ -2647,6 +2647,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        if (request.method === "POST" && session.tail === "/browser/control") {
+          // The desktop shell reporting whose hands are on the shared browser
+          // — see EngineStore.recordBrowserControl. Idempotent by dedupe.
+          const input = await body(request);
+          const controller = stringValue(input.controller, "controller")!;
+          if (controller !== "agent" && controller !== "human" && controller !== "idle") {
+            throw new HttpError(400, "invalid_request", "controller must be agent, human or idle");
+          }
+          store.recordBrowserControl(session.sessionId, controller);
+          writeJson(response, 200, {});
+          return;
+        }
         if (request.method === "POST" && session.tail === "/attachments") {
           const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
           const header = request.headers["x-telar-attachment-name"];

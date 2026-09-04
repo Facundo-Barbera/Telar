@@ -732,7 +732,7 @@ function createWindow(url) {
   // Captured, not read from the global at close time: during a translucency
   // rebuild the OLD window closes after the NEW one exists, and destroying
   // whatever the global points to then would kill the replacement's manager.
-  const manager = new DesktopBrowserManager(win);
+  const manager = new DesktopBrowserManager(win, { onControlChanged: reportBrowserControl });
   browserManager = manager;
   // The window's own URL is what "the app's own UI" means — it is the same
   // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
@@ -867,6 +867,56 @@ ipcMain.handle("telar:browser:release-scope", (_event, input) =>
 ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
   requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
+// The explicit handback — the only way the agent gets the browser back (§6).
+ipcMain.handle("telar:browser:hand-back", (_event, input) => requireBrowserManager().handBack(input?.scopeKey));
+// A tab preload heard a human's hands in the page; all we hold is the sender.
+ipcMain.on("telar:browser:human-input", (event) => {
+  try {
+    browserManager?.noteHumanInputFromWebContents(event.sender);
+  } catch {
+    // A report from a view mid-teardown must not crash the shell.
+  }
+});
+
+/**
+ * FORWARD CONTROL CHANGES INTO THE ENGINE JOURNAL. The shell is the only
+ * process that can see a human's click land in the native view; the engine is
+ * where the transcript lives. Best-effort by design — a change the engine
+ * missed (it was restarting) costs a journal row, not correctness: the
+ * manager's own state is what gates agent calls.
+ */
+let engineDiscovery = null;
+let discoveryReadAt = 0;
+function reportBrowserControl(change) {
+  // In dev mode (TELAR_DESKTOP_URL) the shell never booted the engine itself,
+  // so discovery is read off disk lazily — same file waitForEngine proves.
+  if (!engineDiscovery && Date.now() - discoveryReadAt > 5_000) {
+    discoveryReadAt = Date.now();
+    try {
+      engineDiscovery = JSON.parse(fs.readFileSync(path.join(telarHome(), "engine", "engine.json"), "utf8"));
+    } catch {
+      /* no engine on this machine right now */
+    }
+  }
+  const discovery = engineDiscovery;
+  if (!discovery?.port || !discovery?.token) return;
+  const payload = JSON.stringify({ controller: change.controller });
+  const request = http.request({
+    host: discovery.host || "127.0.0.1",
+    port: discovery.port,
+    path: `/v2/sessions/${encodeURIComponent(change.scopeKey)}/browser/control`,
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${discovery.token}`,
+      "content-length": Buffer.byteLength(payload),
+    },
+    timeout: 2_000,
+  });
+  request.on("error", () => {});
+  request.on("timeout", () => request.destroy());
+  request.end(payload);
+}
 
 // --- Native folder picker -----------------------------------------------------
 //
@@ -1340,7 +1390,7 @@ async function runSmoke() {
       // fail to boot — a bad import in the bundled graph, a store it cannot
       // open. `/v2/health` answering is the difference between "the file
       // shipped" and "the app has a back end".
-      await waitForEngine(home);
+      engineDiscovery = await waitForEngine(home);
       console.log("ENGINE_OK");
       port = await findFreePort();
       startServer(port, home);
@@ -1466,7 +1516,7 @@ if (SMOKE) {
           // people report as "it opens empty sometimes".
           const home = telarHome();
           startEngineChild(home);
-          await waitForEngine(home);
+          engineDiscovery = await waitForEngine(home);
           const port = await getStablePort();
           startServer(port, home);
           await waitForServer(port);

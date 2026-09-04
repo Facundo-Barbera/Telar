@@ -1129,9 +1129,26 @@ export class EngineStore {
    *  In memory like the caches above: it only exists to stop repeated `start`
    *  reads writing identical `browser.state.changed` rows. */
   private readonly browserJournalSignature = new Map<string, string>();
+  /** The last journalled controller per session — same dedupe job as the
+   *  signature above, for `browser.control.changed`. In memory: a duplicate
+   *  row after a restart is noise, not a lie. */
+  private readonly browserControlLast = new Map<string, string>();
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
+  }
+
+  /**
+   * Record whose hands are on the session's shared browser (§6). Reported by
+   * the DESKTOP SHELL — the only process that can see a human's click land in
+   * the native view — over the engine's own HTTP API, and deduped here so a
+   * shell that re-reports the standing state journals nothing new.
+   */
+  recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle"): void {
+    this.getSession(sessionId);
+    if (this.browserControlLast.get(sessionId) === controller) return;
+    this.browserControlLast.set(sessionId, controller);
+    this.appendEvent(sessionId, { type: "browser.control.changed", controller });
   }
 
   /**
