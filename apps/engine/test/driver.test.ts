@@ -1734,3 +1734,108 @@ test("a steered message carries its attachments — an image sent mid-turn arriv
   const rowItem = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
   expect(rowItem && rowItem.kind === "item.started" && rowItem.item.detail.type === "user_message" ? rowItem.item.detail.attachments?.[0]?.name : undefined).toBe("shot.png");
 });
+
+describe("a turn the CLI started by itself is not this turn", () => {
+  /**
+   * THE JUMBLE, REPRODUCED AGAINST CLI 2.1.259 AND OFF A MEASURED SESSION
+   * (session_7657b2ef…, turns 96–98): a background shell fires between two
+   * engine turns; the CLI injects a `task-notification` message of its own and
+   * runs a whole model turn on it — prose, a `result` — into the shared
+   * iterator, where it sits until the next engine turn pumps. That turn then
+   * took the wake-up's prose as its answer and the wake-up's `result` as its
+   * own end, and the real reply landed on the turn AFTER. The CLI marks its
+   * own turns: frames answering OUR send echo the uuid we pushed as
+   * `user_message_uuid`; a CLI-originated result carries `origin` instead.
+   */
+  const wakeUp = (prose: string) => [
+    { type: "system", subtype: "task_notification", task_id: "bg1", tool_use_id: "toolu_bg", summary: "WOKE" },
+    { type: "stream_event", event: { type: "message_start" } },
+    { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: prose } } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+    { type: "assistant", message: { content: [{ type: "text", text: prose }] } },
+    { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } },
+  ];
+  const reply = (uuid: string, prose: string) => [
+    { type: "stream_event", event: { type: "message_start" }, user_message_uuid: uuid },
+    { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
+    { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: prose } } },
+    { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+    { type: "assistant", message: { content: [{ type: "text", text: prose }] } },
+    { type: "result", subtype: "success", stop_reason: "end_turn", user_message_uuid: uuid },
+  ];
+
+  test("a buffered wake-up is filed under its task, and the turn ends at ITS OWN result", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        let turns = 0;
+        for await (const message of prompt) {
+          turns += 1;
+          if (turns === 1) {
+            yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+            yield* reply(message.uuid!, "started");
+            // The shell fires between turns: the CLI's own turn lands on the
+            // iterator before the next engine turn's reply.
+            yield* wakeUp("Background task completed (WOKE).");
+          } else {
+            yield* reply(message.uuid!, "ok2");
+          }
+        }
+      },
+    }) as never);
+    const first = run(driver, { sessionId: "session_woken" });
+    await expect(first.result).resolves.toMatchObject({ text: "started" });
+
+    const second = run(driver, { sessionId: "session_woken" });
+    const resolved = await second.result;
+    // The second turn's answer is ITS answer — not the wake-up's prose, and
+    // not "started" twice.
+    expect(resolved.text).toBe("ok2");
+    // The wake-up's prose is on the transcript, filed under the shell that
+    // fired it rather than as the assistant's reply.
+    const rows = second.sink.observations.filter((o) => o.kind === "item.started" && o.item.detail.type === "assistant_message");
+    const foreign = rows.find((o) => o.kind === "item.started" && o.item.taskId === "task_toolu_bg");
+    expect(foreign).toBeDefined();
+    const own = rows.filter((o) => o.kind === "item.started" && !o.item.taskId);
+    expect(own).toHaveLength(1);
+    // The notification itself closed the task.
+    const closed = second.sink.observations.find((o) => o.kind === "task.completed");
+    expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "WOKE" });
+  });
+
+  test("a wake-up whose task never announced is dropped, not shown as an answer", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        let turns = 0;
+        for await (const message of prompt) {
+          turns += 1;
+          if (turns === 1) {
+            yield* reply(message.uuid!, "first");
+            // No task_notification precedes it — the CLI's turn has no task
+            // this driver can name.
+            yield* wakeUp("orphan prose").filter((m) => m.subtype !== "task_notification");
+          } else {
+            yield* reply(message.uuid!, "second");
+          }
+        }
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_orphan" }).result;
+    const second = run(driver, { sessionId: "session_orphan" });
+    await expect(second.result).resolves.toMatchObject({ text: "second" });
+    const prose = second.sink.observations.filter((o) => o.kind === "item.started" && o.item.detail.type === "assistant_message");
+    expect(prose).toHaveLength(1);
+  });
+
+  test("an older producer that never echoes the uuid still ends the turn at its result", async () => {
+    // No `user_message_uuid` and no `origin` anywhere: nothing says foreign,
+    // so the first result is the turn's — exactly as before.
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "assistant", message: { content: [{ type: "text", text: "plain" }] } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    await expect(run(driver).result).resolves.toMatchObject({ text: "plain" });
+  });
+});
