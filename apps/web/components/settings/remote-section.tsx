@@ -456,8 +456,19 @@ export function RemoteSection() {
                 )}
                 {pairingUrl && <CopyCommand command={pairingUrl} />}
               </div>
-              {/* No QR for loopback: a phone dialling 127.0.0.1 reaches itself. */}
-              {matrix && <QrCodeView matrix={matrix} className="size-44 shrink-0 rounded-md border border-border/70" />}
+              {/* THE QR KEEPS ITS PLACE WHEN IT HAS NOTHING TO SHOW. Loopback
+                  has no QR — a phone dialling 127.0.0.1 reaches itself — but
+                  removing the element made the card reflow on every pick. So
+                  it dims and says why, at exactly the size the code takes. */}
+              <div className="relative size-44 shrink-0">
+                {matrix ? (
+                  <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />
+                ) : (
+                  <div className="flex size-44 items-center justify-center rounded-md border border-dashed border-border/60 p-4 text-center text-[0.6875rem] leading-snug text-muted-foreground/70">
+                    Nothing to scan — a phone dialling this machine's address would reach itself.
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <Row
