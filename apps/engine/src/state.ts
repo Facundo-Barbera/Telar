@@ -5874,6 +5874,25 @@ export class EngineStore {
       const state = settled ? known.state : seed.state;
       const terminal = state === "completed" || state === "failed" || state === "stopped";
       /**
+       * A SETTLED TASK THAT LEARNS NOTHING NEW IS NOT RE-ANNOUNCED. The fold
+       * above keeps the stored state, but it still appended a `task.completed`
+       * per report — measured: 58 tasks in one session with two or more
+       * closes, and one closed a third time under a turn that had started
+       * zero seconds earlier, because the new turn's pump replayed the CLI's
+       * buffered frames about it. A tailing client folds those as fresh
+       * completions. Only a report that ADDS something (the notification's
+       * summary arriving after a sweep already closed the row) is worth a
+       * row; a bare restatement of the ending is dropped here.
+       */
+      if (settled) {
+        const additions = definedOnly(seed);
+        const informative = Object.entries(additions).some(([key, value]) => {
+          if (key === "id" || key === "state" || key === "kind" || key === "providerTaskId") return false;
+          return JSON.stringify(known[key as keyof Task]) !== JSON.stringify(value);
+        });
+        if (!informative) return;
+      }
+      /**
        * THE SEED IS FOLDED OVER WHAT IS ALREADY STORED, not swapped for it.
        * Providers report tasks incrementally — Claude's `task_updated` carries
        * a PATCH with only the changed fields, so a straight replace would erase
