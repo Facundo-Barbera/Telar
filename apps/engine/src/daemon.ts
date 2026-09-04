@@ -82,19 +82,6 @@ export type EngineDaemonOptions = {
    */
   gh?: GhRunner;
   /**
-   * HOW MANY LIVE SESSIONS THE `sessions` TOOLKIT MAY HAVE CREATED AT ONCE.
-   *
-   * The toolkit has no depth rule and no parent/child link by design, so this
-   * plain count is the only structural thing between a session that creates
-   * sessions and forty worktrees. Enforced in `EngineStore.createSession` — not
-   * at the tool wall and not at this HTTP edge — so an in-process caller meets
-   * it too.
-   *
-   * INJECTED so a test that wants to see the refusal does not have to CUT
-   * EIGHT WORKTREES to reach it. Set it to 2 and the third create refuses.
-   */
-  sessionsBudget?: number;
-  /**
    * Run a worker inside the daemon process.
    *
    * WHY THIS EXISTS: without it, `startEngine()` produces a control plane that
@@ -439,7 +426,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const store = new EngineStore(root, options.now, {
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
-    ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -571,14 +557,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     /**
      * EVERY MEMBER DELEGATES TO A `store.*` METHOD THAT ALREADY EXISTS, exactly
      * as the spool socket's capability does. There is no validation here and
-     * there must not be: `createSession` owns the budget, the env-mode rule and
-     * the driver check; `submitTurn` owns the backlog cap; `readEvents` owns
-     * the cursor check. A check written at this seam would protect the socket
+     * there must not be: `createSession` owns the env-mode rule and the
+     * driver check; `submitTurn` owns the backlog cap; `readEvents` owns the
+     * cursor check. A check written at this seam would protect the socket
      * and nothing else.
      *
      * `origin: "session"` IS DECLARED BY THIS CODE, never by a caller: no tool
      * shape on the wall carries it. It is the same construction the spool's
-     * `source: "session"` uses, and it is what makes the budget countable.
+     * `source: "session"` uses — provenance a list can show, nothing more.
      */
     const capability: SessionsCapability = {
       list: async () => store.liveSessions(),
@@ -633,8 +619,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        * THE SESSIONS SOCKET — beside the spool's, and before the bearer check
        * for the identical reason: it answers to its OWN secret in both
        * directions. The engine token does not open it, and its secret opens no
-       * other route — including, deliberately, the archive and delete verbs
-       * that would let a client free its own create budget.
+       * other route — including, deliberately, the archive and delete verbs,
+       * which stay a person's: a chat client that could archive a session
+       * could erase another agent's work.
        *
        * IT MUST STAY ABOVE `sessionPath`, which would otherwise read
        * `/v2/sessions/mcp` as a session whose id is "mcp" and answer 404. That
@@ -2397,13 +2384,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // `driver` when this is present rather than refusing the pair.
             ...(typeof input.providerInstanceId === "string" ? { providerInstanceId: input.providerInstanceId } : {}),
             /**
-             * WHO ASKED — provenance, and the only value that spends the
-             * `sessions` budget. Forwarded rather than ignored because the
+             * WHO ASKED — provenance. Forwarded rather than ignored because the
              * OUT-OF-PROCESS worker reaches this route to build the toolkit's
              * `create`, exactly as it reaches `/v2/spool/items` to build the
              * spool's: the capability is assembled out of client calls in one
              * deployment and out of `store.*` calls in the other, and both must
-             * meet the same cap.
+             * stamp the same provenance.
              *
              * ONLY `"session"` IS HONOURED. Anything else — including a literal
              * "human" — falls through to absent, which IS human; two spellings

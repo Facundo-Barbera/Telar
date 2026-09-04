@@ -273,18 +273,6 @@ const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "dr
  */
 const MAX_QUEUED_TURNS = 16;
 
-/**
- * How many LIVE sessions may exist that an agent asked for.
- *
- * EIGHT, and the number is a judgement rather than a measurement: a worktree
- * session is a whole checkout, and eight of them is already more than a person
- * can read. It is deliberately generous enough that no honest use of the
- * `sessions` toolkit meets it and tight enough that a loop meets it in seconds.
- * Injectable through `EngineDaemonOptions.sessionsBudget` so a test can state
- * the ceiling it means instead of creating eight worktrees to reach one.
- */
-const DEFAULT_SESSIONS_BUDGET = 8;
-
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
  *  rather than written to disk and failing later inside `autoResolution`. */
 const RUNTIME_MODES = new Set<RuntimeMode>(["approval-required", "auto-accept-edits", "auto", "full-access"]);
@@ -1089,17 +1077,6 @@ export class EngineStore {
   private readonly manifest: ModelManifest;
   private readonly git: GitRunner;
   private readonly gh: GhRunner;
-  /**
-   * HOW MANY LIVE SESSIONS AN AGENT MAY HAVE CREATED AT ONCE.
-   *
-   * The `sessions` toolkit has no depth rule and no parent/child link BY
-   * DESIGN, so this plain count is the only thing between a session that
-   * creates sessions and forty worktrees on somebody's disk. It counts LIVE
-   * agent-made sessions (`origin: "session"`, `state: "active"`) across every
-   * project — not a fan-out width, not a depth, and not a relationship to
-   * whoever asked.
-   */
-  private readonly sessionsBudget: number;
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
   private readonly githubCache = new Map<string, GitHubSnapshot>();
@@ -3411,7 +3388,6 @@ export class EngineStore {
       notifier?: EngineNotifier;
       git?: GitRunner;
       gh?: GhRunner;
-      sessionsBudget?: number;
       /** Resolves Telar's computer-use backend (cua-driver, or Sky). INJECTED
        *  BY THE DAEMON, absent by default — so tests never read the real
        *  machine's installs, and a store without it simply has no computer use. */
@@ -3433,7 +3409,6 @@ export class EngineStore {
     this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
     this.gh = options.gh ?? defaultGhRunner;
-    this.sessionsBudget = Math.max(0, Math.floor(options.sessionsBudget ?? DEFAULT_SESSIONS_BUDGET));
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
@@ -4072,10 +4047,13 @@ export class EngineStore {
     branchName?: string;
     workspace?: { path: string; branch: string; baseRef?: string };
     /**
-     * WHO ASKED — provenance, not a link. `"session"` means this came through
-     * the `sessions` toolkit or its socket, and it is the ONLY value that
-     * spends the budget below. Absent (or `"human"`) is a person's own click
-     * and is never capped: a human with forty worktrees chose forty worktrees.
+     * WHO ASKED — provenance, not a link and not a count. `"session"` means
+     * this came through the `sessions` toolkit or its socket, so a list can
+     * say an agent asked for it; absent (or `"human"`) is a person's own
+     * click. NOTHING IS CAPPED ON IT: there used to be a live-session budget
+     * here, and it was removed when a session was allowed to orchestrate
+     * many — how many sessions an agent may hold open is a rule for the
+     * agent's own instructions, not a number in the store.
      *
      * DECLARED BY THE CALLER'S OWN CODE, never by a model argument — no tool
      * shape on the wall carries it, exactly as `SpoolItem.source` works.
@@ -4084,28 +4062,6 @@ export class EngineStore {
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
-    /**
-     * THE BUDGET, CHECKED BEFORE ANYTHING IS CUT.
-     *
-     * IN THE STORE AND NOT ON THE TOOL WALL, so an in-process caller hits the
-     * same wall an HTTP one does — and BEFORE `createSessionWorktree`, because
-     * a refusal that had already cut a checkout would leave the very thing the
-     * cap exists to prevent lying on disk.
-     *
-     * THE SENTENCE NAMES THE CAP AND THE NEXT MOVE. A model that reads "limit
-     * reached" retries; one that reads which sessions are holding the budget
-     * and how to free one can actually act.
-     */
-    if (input.origin === "session") {
-      const live = this.readSessions().filter((session) => session.origin === "session" && session.state === "active");
-      if (live.length >= this.sessionsBudget) {
-        throw new EngineStateError(
-          "conflict",
-          `${live.length} of a maximum ${this.sessionsBudget} live sessions created by a session already exist, so this one was not created. ` +
-            `Archive or delete one you are finished with — sessions_list shows every live session — and try again.`,
-        );
-      }
-    }
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
     const existing = readJson(metadata);
@@ -4499,9 +4455,8 @@ export class EngineStore {
    * way to tell staleness from truth. The `sessions` toolkit needs both halves
    * on every call anyway — a project id is what `sessions_create` takes.
    *
-   * LIVE MEANS `state: "active"`. An archived session is finished; listing it
-   * would make the toolkit's own budget sentence unverifiable, because the
-   * count the store refuses on is exactly this filter.
+   * LIVE MEANS `state: "active"`. An archived session is finished, and a
+   * toolkit that listed it would offer a model something it cannot drive.
    *
    * NO BRANCH DERIVATION, unlike `listProjects`: that costs a `git rev-parse`
    * per project and nothing in this answer renders a branch.

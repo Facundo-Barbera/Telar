@@ -10,8 +10,8 @@
  *     or delete, and the socket's secret opens NOTHING else on the engine;
  *   · a dedicated secret, minted once, persisted, and DISTINCT from the spool
  *     socket's as well as from the management token;
- *   · the store's guards ride along too — the live-session budget refuses a
- *     chat client exactly as it refuses a session, in the same sentence.
+ *   · the store's guards ride along too — an argument the wall's schema
+ *     refuses never reaches a handler, whichever door it came through.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
@@ -46,12 +46,9 @@ function repo(): string {
   return root;
 }
 
-async function engine(options: { engineRoot?: string; sessionsBudget?: number } = {}): Promise<EngineDaemon> {
+async function engine(options: { engineRoot?: string } = {}): Promise<EngineDaemon> {
   const directory = options.engineRoot ?? tmp("telar-sessions-socket-");
-  const daemon = await startEngine({
-    engineRoot: directory,
-    ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
-  });
+  const daemon = await startEngine({ engineRoot: directory });
   daemons.push(daemon);
   return daemon;
 }
@@ -215,26 +212,6 @@ describe("the protocol surface", () => {
       params: { name: "sessions_archive", arguments: { sessionId: made.id } },
     });
     expect(((await missing.json()) as { error: { code: number } }).error.code).toBe(-32602);
-  });
-
-  test("the store's budget refuses a chat client in the same sentence it refuses a session", async () => {
-    // THE GUARD IS THE STORE'S, so it cannot be routed around by coming in
-    // through a different door — which is the whole reason it is not on the
-    // tool wall.
-    const daemon = await engine({ sessionsBudget: 1 });
-    const client = new EngineClient(daemon.discovery);
-    const { mcp } = await client.sessionsMcpInfo();
-    const { project } = await client.registerProject({ name: "aurora", root: repo() });
-
-    expect((await callTool(daemon, mcp.secret, "sessions_create", { projectId: project.id, envMode: "local" })).isError).toBe(false);
-    const refused = await callTool(daemon, mcp.secret, "sessions_create", { projectId: project.id, envMode: "local" });
-    expect(refused.isError).toBe(true);
-    expect(refused.text).toContain("1 of a maximum 1");
-    expect(refused.text).toContain("Archive or delete one");
-
-    // …and a HUMAN create over the ordinary API is untouched by it.
-    const byHand = await client.createSession({ projectId: project.id, title: "a person's own" });
-    expect(byHand.session.origin).toBeUndefined();
   });
 
   test("an argument the wall's schema refuses never reaches a handler", async () => {
