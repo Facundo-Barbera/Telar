@@ -254,6 +254,103 @@ test("a tool whose result never arrives is closed as failed, not left spinning",
   expect(completed[0]?.kind === "item.completed" && completed[0].status).toBe("failed");
 });
 
+test("a result while tool calls still run does NOT end the turn; the turn ends at the FINAL result", async () => {
+  /**
+   * THE BUG THIS PINS, reproduced on a live orchestration session
+   * (session_7657b2ef…, events 15479–15560): the CLI emitted a `result` for
+   * the assistant's text while a tool_use from that same response was still
+   * executing. The pump broke at that result, the worker completed the turn,
+   * and every subsequent tool call hit "turn is not running under this worker
+   * claim" until the daemon was restarted. The result's `stop_reason:
+   * "tool_use"` is the CLI saying "I stopped to run tools and will continue"
+   * — the turn ends at the first result whose stop reason is NOT tool_use.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Working on it." },
+            { type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 20 && echo late" } },
+          ],
+          stop_reason: "tool_use",
+        },
+      };
+      yield { type: "result", subtype: "success", stop_reason: "tool_use" };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "late" }] } };
+      yield { type: "assistant", message: { content: [{ type: "text", text: " done" }], stop_reason: "end_turn" } };
+      yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const resolved = await result;
+  // The run settles ONCE, after the second result: the final text carries the
+  // continuation the first result would have cut off.
+  expect(resolved.text).toBe("Working on it. done");
+  // The tool row closed from its real tool_result — under the old behaviour
+  // the pump had already stopped, and the end-of-turn sweep closed it FAILED.
+  const toolClose = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_t1");
+  expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
+});
+
+test("a result with NO stop reason stated but main-loop tools unresolved also holds the turn open", async () => {
+  // The same premature completion on a producer that attributes no stop
+  // reason (`stop_reason: null`): the pending top-level tool_use is the only
+  // evidence left, and it is enough. An ABSENT field (older SDKs, the fakes
+  // in this very file) still means "the result is the end" — see the test
+  // above this block for the tool-never-answered case that relies on it.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 40" } }] } };
+      yield { type: "result", subtype: "success", stop_reason: null };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] } };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "after the sleep" }], stop_reason: "end_turn" } };
+      yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  const resolved = await result;
+  expect(resolved.text).toBe("after the sleep");
+  const toolClose = sink.observations.find((o) => o.kind === "item.completed" && o.itemId === "item_t1");
+  expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
+});
+
+test("a sub-agent's result never completes the parent turn", async () => {
+  // Every message produced inside a sub-agent carries `parent_tool_use_id`.
+  // A child's result completing the PARENT would end a turn whose main loop
+  // is still mid-thought — with the session runtime that means every later
+  // tool call in the turn asks against a settled claim and is refused.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "toolu_task", name: "Task", input: { description: "child" } }] },
+      };
+      yield { type: "result", subtype: "success", parent_tool_use_id: "toolu_task", stop_reason: "end_turn" };
+      yield { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "toolu_task", content: "child done" }] } };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "parent answer" }], stop_reason: "end_turn" } };
+      yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+    },
+  }));
+  const { result } = run(driver);
+  await expect(result).resolves.toMatchObject({ text: "parent answer" });
+});
+
+test("a sub-agent's FAILED result does not fail the parent turn either", async () => {
+  // The other half of the discrimination: a child that died is the child's
+  // task row's problem. Before the guard, `subtype: "error_during_execution"`
+  // from a sub-agent threw and failed the whole turn.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "result", subtype: "error_during_execution", parent_tool_use_id: "toolu_task" };
+      yield { type: "assistant", message: { content: [{ type: "text", text: "parent survived" }], stop_reason: "end_turn" } };
+      yield { type: "result", subtype: "success", stop_reason: "end_turn" };
+    },
+  }));
+  await expect(run(driver).result).resolves.toMatchObject({ text: "parent survived" });
+});
+
 test("usage and cost are reported from the result message", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {

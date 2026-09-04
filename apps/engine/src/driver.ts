@@ -1122,6 +1122,16 @@ export function createClaudeDriver(
       /** Tool rows keyed by `tool_use_id`, so a later `tool_result` closes the
        *  row its call opened rather than opening a second one. */
       const openTools = new Map<string, { id: string; detail: ItemDetail }>();
+      /**
+       * The MAIN LOOP'S tool calls whose `tool_result` has not arrived yet — a
+       * subset of `openTools` (which also tracks sub-agent tools). Kept apart
+       * because this set is an END-OF-TURN signal: a `result` that arrives
+       * while it is non-empty and states no stop reason is the CLI pausing
+       * around in-flight tool work, not the turn ending (see the result arm).
+       * Sub-agent tools must not hold the turn — a backgrounded agent's rows
+       * legitimately outlive it.
+       */
+      const openTopLevelTools = new Set<string>();
 
       /**
        * Sub-agents, keyed by the SDK's own `task_id`.
@@ -1774,6 +1784,11 @@ export function createClaudeDriver(
             /** Set on everything a sub-agent produced: the id of the `Task`
              *  call that launched it. `null` on the main loop's own messages. */
             parent_tool_use_id?: string | null;
+            /** Result messages: the final assistant message's stop reason.
+             *  `"tool_use"` means the model stopped to run tools and will
+             *  continue after their results — the turn is NOT over. Absent on
+             *  older producers and the fake SDKs. */
+            stop_reason?: string | null;
             task_id?: string;
             tool_use_id?: string;
             description?: string;
@@ -1966,6 +1981,18 @@ export function createClaudeDriver(
           }
 
           if (item.type === "result") {
+            /**
+             * A SUB-AGENT'S RESULT IS THE SUB-AGENT'S, NEVER THE TURN'S. The
+             * SDK types say results are main-loop only, but this pump takes
+             * whatever arrives — and a result carrying `parent_tool_use_id`
+             * completing the PARENT turn (or, worse, a child's non-success
+             * result FAILING it) would end a turn whose main loop is still
+             * mid-thought. Discriminate before touching usage or completion.
+             */
+            if (parentToolUseId) {
+              await flush();
+              continue;
+            }
             contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
             usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
             if (usage) emit({ kind: "usage", usage });
@@ -1975,15 +2002,41 @@ export function createClaudeDriver(
               if (signal.aborted) throw signal.reason ?? new Error("driver cancelled");
               throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
             }
+            /**
+             * IS THE QUERY ACTUALLY DONE? Reproduced on a live orchestration
+             * session (session_7657b2ef…, events 15479–15560): the CLI can
+             * emit a `result` for the assistant's text while tool_use blocks
+             * from that same response are STILL EXECUTING — their tool_results
+             * arrive afterwards and the model continues. Completing the engine
+             * turn here settled the worker's claim, so every subsequent tool
+             * call in the same response hit "turn is not running under this
+             * worker claim" until the daemon was restarted.
+             *
+             * The result's own `stop_reason` is the discriminator the SDK
+             * gives us: `"tool_use"` means the model stopped to run tools and
+             * WILL continue — keep pumping to the next result. A `null` stop
+             * reason with main-loop tool calls still unresolved is the same
+             * situation stated less clearly (older CLIs), so it holds too. An
+             * ABSENT field is an older producer (or a fake SDK) that never
+             * says: for those the result stays what it always was, the end of
+             * the turn — which also keeps a tool whose result never arrives
+             * closing as failed rather than parking the pump forever.
+             */
+            const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
+            const toolsStillRunning = stopReason === "tool_use" || (stopReason === null && openTopLevelTools.size > 0);
+            if (persistent && toolsStillRunning) {
+              await flush();
+              continue;
+            }
             completed = true;
             await flush();
             /**
-             * A RESULT ENDS THE TURN AND NOTHING ELSE. The pump stops HERE,
-             * with the stream open and the process alive — that is the whole
-             * design (see ./claude-runtime.ts); the next turn resumes pumping
-             * this same iterator. On the kill-switch path the input stream is
-             * already exhausted, so the loop instead runs on to the stream's
-             * natural close, exactly as it always did.
+             * A FINAL RESULT ENDS THE TURN AND NOTHING ELSE. The pump stops
+             * HERE, with the stream open and the process alive — that is the
+             * whole design (see ./claude-runtime.ts); the next turn resumes
+             * pumping this same iterator. On the kill-switch path the input
+             * stream is already exhausted, so the loop instead runs on to the
+             * stream's natural close, exactly as it always did.
              */
             if (persistent) break;
             continue;
@@ -2127,6 +2180,7 @@ export function createClaudeDriver(
                   providerRefs: { itemId: useId },
                 };
                 openTools.set(useId, { id: seed.id, detail });
+                if (!ownerTaskId) openTopLevelTools.add(useId);
                 emit({ kind: "item.started", item: seed });
                 continue;
               }
@@ -2169,6 +2223,7 @@ export function createClaudeDriver(
               const open = useId ? openTools.get(useId) : undefined;
               if (!open || !useId) continue;
               openTools.delete(useId);
+              openTopLevelTools.delete(useId);
               const failed = block.is_error === true;
               const output = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
               emit({

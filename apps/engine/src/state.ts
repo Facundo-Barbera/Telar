@@ -5493,6 +5493,26 @@ export class EngineStore {
     const turn = queue.turns.find((candidate) => candidate.runId === runId);
     if (!turn) throw new EngineStateError("not_found", "turn does not exist");
     if (turn.state !== "running" || turn.claim?.token !== claimToken) {
+      /**
+       * NAME THE ACTUAL SITUATION. The right claim token against a settled
+       * turn is not a foreign worker — it is THIS turn's provider reporting
+       * late (a tool call still running when the turn completed). The code
+       * stays `conflict` deliberately: the worker's settle paths key off that
+       * code to drop late reports instead of failing the turn, and a new code
+       * would turn every late report into a spurious `turn.failed`. The
+       * message is what changes, so a daemon log reads as "late", not as a
+       * claim mix-up. Late observations are REFUSED rather than accepted
+       * within a grace window: a terminal turn is immutable — recovery,
+       * projections and tailing clients all rely on nothing landing after
+       * `turn.completed` — and the driver now holds the turn open until its
+       * tool calls settle, which removes the systematic case. What remains is
+       * a true race measured in milliseconds, not worth weakening the
+       * invariant for.
+       */
+      const settled = turn.state === "completed" || turn.state === "failed";
+      if (settled && turn.claim?.token === claimToken) {
+        throw new EngineStateError("conflict", `turn has already settled (${turn.state}); this report arrived after the turn ended`);
+      }
       throw new EngineStateError("conflict", "turn is not running under this worker claim");
     }
     return turn;
