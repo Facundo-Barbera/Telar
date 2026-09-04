@@ -67,6 +67,7 @@ import {
   type TurnModelSelection,
   type ProviderDriverKind,
   type Task,
+  type TaskSeed,
   type Project,
   type EngineRequest,
   type RequestDecision,
@@ -858,6 +859,14 @@ function storedSession(
  */
 function isLiveTask(task: Task): boolean {
   return task.state === "pending" || task.state === "running" || task.state === "waiting";
+}
+
+/** A stored row as the seed a worker may hold: the five engine-minted fields
+ *  (`TaskSeed`'s omissions) stripped, so a claim never hands a worker something
+ *  it must not mint back. */
+function taskSeedOf(task: Task): TaskSeed {
+  const { sessionId: _sessionId, runId: _runId, startedAt: _startedAt, updatedAt: _updatedAt, completedAt: _completedAt, ...seed } = task;
+  return seed;
 }
 
 function lastEndedTurn(turns: readonly Turn[]): Turn | undefined {
@@ -4799,6 +4808,13 @@ export class EngineStore {
           return name ? { project: name } : {};
         })(),
         ...(resumeCursor ? { resumeCursor } : {}),
+        // The session's LIVE task rows, so a provider process built cold
+        // files a still-running shell's report on the row that exists rather
+        // than minting a second one. Settled rows have nothing to report on.
+        ...(() => {
+          const live = [...this.readTasks(session.id).values()].filter(isLiveTask).map(taskSeedOf);
+          return live.length > 0 ? { tasks: live } : {};
+        })(),
         turn,
       };
     }

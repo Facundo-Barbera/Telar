@@ -109,7 +109,37 @@ export type RuntimeQuery = AsyncIterable<unknown> & {
  */
 export type RuntimeBindings<T> = { current: T };
 
-export type ClaudeSessionRuntime<T = unknown> = {
+/**
+ * WHAT THIS PROCESS KNOWS ABOUT ITS TASKS, kept for the process's life.
+ *
+ * A task's identity is the `tool_use_id` of the call that launched it; the
+ * SDK's own `task_id` is what every LATER frame about it carries — and a
+ * `task_notification` for a shell that fires between turns arrives in a later
+ * turn with the `task_id` alone. Kept per TURN (the first shape), that later
+ * turn had never heard of the id and minted a second row, `task_<task_id>`,
+ * with no title and the wrong kind: seven such ghosts in one measured session.
+ * The process is what launched the task, so the process is what remembers it.
+ *
+ * Seeded on a cold start from the store's projection (`DriverRun.tasks`), so
+ * a runtime rebuilt after a restart still knows the row a notification
+ * belongs to. `known` is the last whole seed per row, the thing a partial
+ * report is folded onto; `bySdkId` is the join.
+ */
+export type TaskMemory<Seed extends { id: string; providerTaskId?: string }> = {
+  readonly bySdkId: Map<string, string>;
+  readonly known: Map<string, Seed>;
+};
+
+export function taskMemoryFrom<Seed extends { id: string; providerTaskId?: string }>(seeds: Iterable<Seed>): TaskMemory<Seed> {
+  const memory: TaskMemory<Seed> = { bySdkId: new Map(), known: new Map() };
+  for (const seed of seeds) {
+    memory.known.set(seed.id, seed);
+    if (seed.providerTaskId) memory.bySdkId.set(seed.providerTaskId, seed.id);
+  }
+  return memory;
+}
+
+export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; providerTaskId?: string } = { id: string; providerTaskId?: string }> = {
   readonly sessionId: string;
   /** Everything about the query that cannot change without a new process.
    *  A mismatch on lookup destroys and recreates — never patches. */
@@ -124,6 +154,8 @@ export type ClaudeSessionRuntime<T = unknown> = {
    */
   readonly iterator: AsyncIterator<unknown>;
   readonly bindings: RuntimeBindings<T>;
+  /** Every task this process launched or was told about — see `TaskMemory`. */
+  readonly tasks: TaskMemory<Seed>;
   /** Kills the process outright. Idempotent; used by eviction and dispose. */
   readonly destroy: () => void;
   /** The model `setModel` last confirmed, so a turn can skip the round trip. */
@@ -155,8 +187,8 @@ const MAX_IDLE_RUNTIMES = 3;
  * cap) and eagerly on `destroyAll()`. A timer here would keep the worker
  * process — and every test that touches the driver — alive for its tick.
  */
-export class ClaudeRuntimeStore<T = unknown> {
-  private readonly runtimes = new Map<string, ClaudeSessionRuntime<T>>();
+export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; providerTaskId?: string } = { id: string; providerTaskId?: string }> {
+  private readonly runtimes = new Map<string, ClaudeSessionRuntime<T, Seed>>();
   private readonly idleWaiters = new Map<string, Array<() => void>>();
 
   /**
@@ -188,7 +220,7 @@ export class ClaudeRuntimeStore<T = unknown> {
   /** The live runtime for this session — IF its fingerprint still matches.
    *  A mismatch means the turn's config changed (env, cwd, mcp, effort…):
    *  the old process is destroyed here and the caller cold-starts a new one. */
-  claim(sessionId: string, fingerprint: string): ClaudeSessionRuntime<T> | undefined {
+  claim(sessionId: string, fingerprint: string): ClaudeSessionRuntime<T, Seed> | undefined {
     const runtime = this.runtimes.get(sessionId);
     if (!runtime) return undefined;
     if (runtime.fingerprint !== fingerprint) {
@@ -202,7 +234,7 @@ export class ClaudeRuntimeStore<T = unknown> {
 
   /** Register a freshly created runtime, evicting the oldest idle ones beyond
    *  the cap. The newcomer arrives busy — it is about to run a turn. */
-  adopt(runtime: ClaudeSessionRuntime<T>): void {
+  adopt(runtime: ClaudeSessionRuntime<T, Seed>): void {
     this.destroy(runtime.sessionId);
     runtime.busy = true;
     runtime.lastUsedAt = Date.now();

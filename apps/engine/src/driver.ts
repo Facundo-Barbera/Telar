@@ -48,6 +48,7 @@ import {
   type FeedMessage,
   type RuntimeBindings,
   type RuntimeQuery,
+  taskMemoryFrom,
 } from "./claude-runtime";
 import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 import { createWarpRunner, type WarpSpawn } from "./warp/runner";
@@ -208,6 +209,16 @@ export type DriverRun = {
   browserSocket?: { url: string; token: string };
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
+  /**
+   * THE SESSION'S TASK ROWS AS THE ENGINE HAS THEM, for a runtime that has to
+   * be built cold. A live runtime remembers every task its process launched
+   * (`TaskMemory`); a runtime rebuilt after a restart or an eviction knows
+   * nothing, and the first `task_notification` a still-running shell sends it
+   * would mint a ghost row for a task the store already has. Carried on the
+   * claim like `resumeCursor`, and for the same reason: the worker holds no
+   * store handle. Absent (an older engine, a test) means an empty memory.
+   */
+  tasks?: TaskSeed[];
   /** Batched back to the engine. Never called after the run settles. */
   onObservations(observations: TurnObservation[]): Promise<void>;
   /**
@@ -1063,7 +1074,7 @@ export function createClaudeDriver(
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
-  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings>();
+  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>();
   return {
     dispose: () => runtimes.destroyAll(),
     stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
@@ -1087,6 +1098,7 @@ export function createClaudeDriver(
       spool,
       sessions,
       steer,
+      tasks: seededTasks,
     }) {
       let sdk: ClaudeSdk;
       try {
@@ -1175,10 +1187,17 @@ export function createClaudeDriver(
       /** The turn's single plan row, once TodoWrite has opened one. */
       let planItemId: string | undefined;
 
-      const taskIdsBySdkId = new Map<string, string>();
+      /**
+       * THE PROCESS'S TASK MEMORY, NOT THE TURN'S. Assigned once the runtime
+       * is claimed or built below; declared here because `emitTask` and the
+       * warp sink close over it. Held on the runtime because a task launched
+       * in one turn reports in a later one under its SDK id alone — see
+       * `TaskMemory` in ./claude-runtime.ts for the measured ghost rows.
+       */
+      let taskIdsBySdkId: Map<string, string> = new Map();
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
-      const knownTasks = new Map<string, TaskSeed>();
+      let knownTasks: Map<string, TaskSeed> = new Map();
       /** SDK task ids that are not rows: `ambient` housekeeping, and shells
        *  that block their turn (`isForegroundShell`). Remembered, so the
        *  progress/notification edges of the same task cannot re-create the row
@@ -1200,6 +1219,9 @@ export function createClaudeDriver(
       const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
         if (toolUseId) return `task_${toolUseId}`;
         if (sdkTaskId && taskIdsBySdkId.has(sdkTaskId)) return taskIdsBySdkId.get(sdkTaskId)!;
+        // A task this process never launched and the store never told it
+        // about: the SDK id is the only handle, and the row it mints is
+        // anonymous. Named so the journal says which case produced it.
         return `task_${sdkTaskId ?? crypto.randomUUID().replaceAll("-", "")}`;
       };
 
@@ -1524,7 +1546,7 @@ export function createClaudeDriver(
         instance: providerInstanceId ?? null,
       });
 
-      const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings> => {
+      const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
 
         /** The permission gate the QUERY holds: a stable wrapper over the
@@ -1678,6 +1700,12 @@ export function createClaudeDriver(
           query,
           iterator,
           bindings,
+          // Seeded from the store's live rows so a process built cold — after
+          // a restart, an eviction, a config change — still files a shell's
+          // notification on the row the store already has. Settled rows are
+          // deliberately absent: nothing left to report on, and a stale
+          // terminal seed would only tempt the level signal to re-close it.
+          tasks: taskMemoryFrom((seededTasks ?? []).filter((seed) => !isTerminalTaskState(seed.state))),
           destroy: () => {
             feed.end();
             if (typeof query.close === "function") query.close();
@@ -1742,6 +1770,9 @@ export function createClaudeDriver(
       const runtime = claimed ?? buildRuntime();
       if (persistent && !claimed) runtimes.adopt(runtime);
       runtime.bindings.current = turnBindings;
+      // From here on the turn reads and writes the PROCESS's task memory.
+      taskIdsBySdkId = runtime.tasks.bySdkId;
+      knownTasks = runtime.tasks.known;
 
       /**
        * THIS TURN'S JOIN KEY. The CLI echoes it as `user_message_uuid` on the
