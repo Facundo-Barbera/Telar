@@ -219,6 +219,19 @@ export type DriverRun = {
    * store handle. Absent (an older engine, a test) means an empty memory.
    */
   tasks?: TaskSeed[];
+  /**
+   * THE SESSION'S DOOR FOR WHAT HAPPENS BETWEEN TURNS. The Claude process
+   * outlives the turn and keeps talking after it: a monitor reports, a shell
+   * ends, and — the important case — the CLI wakes the model on that ending
+   * and runs a whole turn of its own. With this present the driver keeps
+   * reading the stream after `run()` returns, files task frames through
+   * `onTasks`, and opens a real turn through `onProviderTurn` for the
+   * CLI's own — with a gate and an observation sink of that turn's own, so
+   * its tool calls are decided rather than refused against a settled claim.
+   * Absent (an older worker, a test) means the stream is read only while a
+   * turn pumps it, exactly as before.
+   */
+  session?: DriverSessionHooks;
   /** Batched back to the engine. Never called after the run settles. */
   onObservations(observations: TurnObservation[]): Promise<void>;
   /**
@@ -234,6 +247,30 @@ export type DriverResult = {
   text: string;
   providerSessionId?: string;
   usage?: UsageSnapshot;
+};
+
+/**
+ * What a turn the PROVIDER started needs from the engine: the same three
+ * things a human turn's claim carries. Returned by `onProviderTurn.open`,
+ * handed back whole at `close`.
+ */
+export type ProviderTurnBinding = {
+  runId: string;
+  onObservations(observations: TurnObservation[]): Promise<void>;
+  onRequest?(request: DriverRequest): Promise<RequestDecision | DriverRequestOutcome>;
+  /** Settle the turn. `text` is the model's final prose; a failure ends it failed. */
+  close(result: DriverResult | { failure: string }): Promise<void>;
+};
+
+export type DriverSessionHooks = {
+  /** Task frames read between turns — the level signal, a notification, a Ctrl+B. */
+  onTasks(observations: TurnObservation[]): Promise<void>;
+  /**
+   * The CLI began a turn of its own. Resolves with the binding the driver
+   * pumps that turn through, or `undefined` if the engine refused (a human
+   * turn claimed the session first — the frames are then that turn's).
+   */
+  onProviderTurn(input: { input: string; reason: { kind: "task_notification" | "unknown"; taskId?: string } }): Promise<ProviderTurnBinding | undefined>;
 };
 
 export type TurnDriver = {
@@ -1099,6 +1136,7 @@ export function createClaudeDriver(
       sessions,
       steer,
       tasks: seededTasks,
+      session: sessionHooks,
     }) {
       let sdk: ClaudeSdk;
       try {
@@ -1202,8 +1240,9 @@ export function createClaudeDriver(
        *  that block their turn (`isForegroundShell`). Remembered, so the
        *  progress/notification edges of the same task cannot re-create the row
        *  through `emitTask`'s fold-or-invent path. A foreground shell leaves
-       *  the set the moment the CLI backgrounds it (Ctrl+B). */
-      const suppressedTasks = new Set<string>();
+       *  the set the moment the CLI backgrounds it (Ctrl+B). On the runtime's
+       *  memory like the rows — see `TaskMemory`. */
+      let suppressedTasks: Set<string> = new Set();
       /** The turn the pump is reading is one the CLI started on its own (a
        *  background task's wake-up), not this engine turn — see the
        *  `message_start` check in the loop. Its rows are filed under the task
@@ -1212,9 +1251,6 @@ export function createClaudeDriver(
       /** Our reply's first frame has arrived (`user_message_uuid` = ours).
        *  Until then a sender-less turn is not ours; after, it is. */
       let ownTurnOpen = false;
-      /** The last task a `task_notification` spoke for: the shell whose
-       *  ending the CLI is about to wake the model over. */
-      let lastWokenTaskId: string | undefined;
 
       const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
         if (toolUseId) return `task_${toolUseId}`;
@@ -1224,6 +1260,14 @@ export function createClaudeDriver(
         // anonymous. Named so the journal says which case produced it.
         return `task_${sdkTaskId ?? crypto.randomUUID().replaceAll("-", "")}`;
       };
+
+      /**
+       * WHERE OBSERVATIONS GO. A turn's own go to its `onObservations`; a
+       * PROVIDER turn's (a wake-up the pump is reading) go to the binding the
+       * engine opened for it; and task frames read BETWEEN turns go to the
+       * session's `onTasks`. Swapped by the pump, read by `emit`/`flush`.
+       */
+      let sink: (observations: TurnObservation[]) => Promise<void> = onObservations;
 
       /** Fold a partial report onto what this task was last known to be, then
        *  emit it whole — the repetition ./tasks.ts requires of every event. */
@@ -1285,6 +1329,238 @@ export function createClaudeDriver(
         return { tokens: { input: 0, output: usage.total_tokens, cacheRead: 0, cacheCreate: 0 } };
       };
 
+      /** The frame shape both pumps read; declared once so `handleTaskFrame`
+       *  and the turn loop agree on it. */
+      type SdkFrame = {
+        type?: string;
+        subtype?: string;
+        session_id?: string;
+        total_cost_usd?: number;
+        usage?: unknown;
+        /** Result messages only: per-model usage, where `contextWindow`
+         *  lives. Tokens in it are cumulative — see `contextMaxFrom`. */
+        modelUsage?: unknown;
+        compact_result?: string;
+        compact_metadata?: unknown;
+        message?: { content?: unknown[]; usage?: unknown };
+        /** The tool's full structured Output — where `structuredPatch` lives. */
+        tool_use_result?: unknown;
+        /** Set on everything a sub-agent produced: the id of the `Task`
+         *  call that launched it. `null` on the main loop's own messages. */
+        parent_tool_use_id?: string | null;
+        /** Result messages: the final assistant message's stop reason.
+         *  `"tool_use"` means the model stopped to run tools and will
+         *  continue after their results — the turn is NOT over. Absent on
+         *  older producers and the fake SDKs. */
+        stop_reason?: string | null;
+        /** The join key of the send this frame answers — see `turnUuid`. On
+         *  the first stream frame and the result of a turn only. */
+        user_message_uuid?: string;
+        /** Set on a turn the CLI started by ITSELF (a background task's
+         *  notification, an auto-continuation); absent on a human send. */
+        origin?: { kind?: string };
+        task_id?: string;
+        tool_use_id?: string;
+        description?: string;
+        subagent_type?: string;
+        task_type?: string;
+        is_backgrounded?: boolean;
+        workflow_name?: string;
+        summary?: string;
+        status?: string;
+        /** `task_started` only: housekeeping the CLI does not surface as
+         *  user work — the SDK says to exclude it from activity. */
+        ambient?: boolean;
+        /** `background_tasks_changed` only: every live background task
+         *  after the change, with REPLACE semantics. */
+        tasks?: unknown;
+        patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
+        event?: {
+          type?: string;
+          index?: number;
+          content_block?: { type?: string };
+          delta?: { type?: string; text?: string; thinking?: string };
+        };
+      };
+
+      /**
+       * The five task frames, folded into rows. Returns true when the frame
+       * was one of them (handled, whether or not it emitted). Shared by the
+       * turn pump and the idle pump: a `task_notification` means the same
+       * thing whichever of them reads it, and the idle pump is the one that
+       * hears a monitor's ending when it happens rather than at the next
+       * human message.
+       */
+      const handleTaskFrame = async (item: SdkFrame): Promise<boolean> => {
+        if (item.type !== "system") return false;
+        if (item.subtype === "task_started") {
+          /**
+           * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
+           * them itself and says what to do ("hosts should exclude them from
+           * activity indicators"); surfaced as a row, an auto-started
+           * live-update watcher would make `livenessOf` report the session
+           * as monitoring over work no human asked for and none can stop.
+           */
+          if (item.ambient === true || isForegroundShell(str(item.task_type), item.is_backgrounded)) {
+            if (str(item.task_id)) suppressedTasks.add(item.task_id!);
+            return true;
+          }
+          emitTask(
+            "task.started",
+            str(item.task_id),
+            {
+              state: "running",
+              kind: taskKindForType(str(item.task_type)),
+              // Launched detached: it outlives this turn, whatever it is.
+              ...(item.is_backgrounded === true ? { backgrounded: true } : {}),
+              ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
+              ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
+              ...(str(item.workflow_name)
+                ? { warp: { warpRunId: str(item.task_id) ?? "warp", warpName: item.workflow_name! } }
+                : {}),
+            },
+            str(item.tool_use_id),
+          );
+          return true;
+        }
+        if (item.subtype === "task_progress") {
+          if (str(item.task_id) && suppressedTasks.has(item.task_id!)) return true;
+          /**
+           * A PROGRESS DESCRIPTION DOES NOT RENAME THE TASK.
+           *
+           * Measured against the real SDK: `task_started` carried "Find
+           * top-level .ts files non-recursively" and the progress messages
+           * that followed carried "Running Find top-level .ts files
+           * non-recursively". Taking the later one as the title makes a
+           * roster row read as status prose, and makes it churn while the
+           * agent runs. The start event names the task; progress reports on
+           * it. A task that never announced a start still takes one, because
+           * an ugly title beats an anonymous row.
+           */
+          const known = knownTasks.get(taskIdFor(str(item.task_id), str(item.tool_use_id)));
+          emitTask(
+            "task.progress",
+            str(item.task_id),
+            {
+              state: "running",
+              ...(!known?.title && str(item.description) ? { title: oneLine(item.description!) } : {}),
+              ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
+              ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
+            },
+            str(item.tool_use_id),
+            str(item.summary),
+          );
+          return true;
+        }
+        if (item.subtype === "task_updated") {
+          if (str(item.task_id) && suppressedTasks.has(item.task_id!)) {
+            // Ctrl+B on a blocking shell: from here on it IS background work
+            // and earns the row the never-announced branch below mints.
+            if (item.patch?.is_backgrounded !== true) return true;
+            suppressedTasks.delete(item.task_id!);
+          }
+          const status = str(item.patch?.status);
+          const state = taskStateForStatus(status);
+          const terminal = state === "completed" || state === "failed" || state === "stopped";
+          /**
+           * MOVED TO THE BACKGROUND MID-FLIGHT (Ctrl+B, or the SDK's own
+           * decision). A task this turn already announced keeps its kind —
+           * an agent sent to the background is still an agent — and only
+           * gains `backgrounded`. A task NEVER announced is the foreground
+           * Bash case: a blocking shell announces no `task_started` at all
+           * and first appears here, so its only honest classification is
+           * "a backgrounded shell".
+           */
+          const backgrounded = item.patch?.is_backgrounded === true;
+          const known = knownTasks.has(taskIdFor(str(item.task_id), undefined));
+          emitTask(
+            terminal ? "task.completed" : "task.progress",
+            str(item.task_id),
+            {
+              state,
+              ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
+              ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
+              ...(backgrounded ? { backgrounded: true } : {}),
+              ...(backgrounded && !known ? { kind: "background" as const } : {}),
+            },
+            undefined,
+          );
+          return true;
+        }
+        if (item.subtype === "task_notification") {
+          if (str(item.task_id) && suppressedTasks.has(item.task_id!)) return true;
+          const id = taskIdFor(str(item.task_id), str(item.tool_use_id));
+          // Remembered on the PROCESS: the wake-up this notification triggers
+          // may be read by the idle pump, or by the next turn's pump, and
+          // either has to name the shell that spoke.
+          if (runtimeRef) runtimeRef.tasks.lastWokenTaskId = id;
+          emitTask(
+            "task.completed",
+            str(item.task_id),
+            {
+              // A NOTIFICATION IS AN ENDING. Its default is `completed` rather
+              // than the shared `running`, because "the task is over and here
+              // is what it produced" is the only thing this message means —
+              // see `taskStateForStatus`.
+              state: taskStateForStatus(str(item.status), "completed"),
+              ...(str(item.summary) ? { resultText: item.summary! } : {}),
+              ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
+            },
+            str(item.tool_use_id),
+          );
+          return true;
+        }
+        if (item.subtype === "background_tasks_changed") {
+          /**
+           * THE LEVEL SIGNAL, CONSUMED BESIDE THE EDGE BOOKENDS. The SDK's
+           * own doc on this message is the design brief: it carries EVERY
+           * live background task after each membership change, with REPLACE
+           * semantics, "so a missed bookend cannot wedge a stale running
+           * indicator". That wedge is measured, not hypothetical: a Monitor
+           * stream announced `task_started`, its ending edge never arrived,
+           * and `tasks.json` kept it `running` — the session claimed to be
+           * monitoring forever, and the only cure was a human pressing Stop.
+           *
+           * A task this process announced that is background work, not yet
+           * settled, and ABSENT from the payload has therefore ended. It is
+           * closed as `completed` with no failure and no resultText — the
+           * notification that carried the summary may simply have been lost,
+           * and inventing one would be fabrication. If that notification
+           * limps in later anyway, `emitTask`'s "first ending is the ending"
+           * keeps the state and still folds the summary in.
+           *
+           * ONLY background, and ONLY tasks whose SDK id THIS process minted
+           * or was seeded with (`taskIdsBySdkId`): an agent missing from a
+           * background-membership list means nothing — closing agents is the
+           * turn-end sweep's job — and a warp's ids never appear in this
+           * payload at all. The SDK says the level is per-process ("reset to
+           * the empty set whenever the session's CLI process (re)starts"),
+           * which is exactly the memory's lifetime.
+           *
+           * Membership is tested against ALL entries, ambient included: an
+           * ambient entry never becomes a row, but treating its presence as
+           * absence would close a real task the payload still lists.
+           */
+          const live = new Set(
+            (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
+              const id = str(asRecord(raw).task_id);
+              return id ? [id] : [];
+            }),
+          );
+          for (const task of [...knownTasks.values()]) {
+            if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
+            const sdkId = task.providerTaskId;
+            if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
+            emitTask("task.completed", sdkId, { state: "completed" });
+          }
+          return true;
+        }
+        return false;
+      };
+      /** The live runtime once claimed or built; `handleTaskFrame` writes the
+       *  woken-task id to its memory. */
+      let runtimeRef: ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> | undefined;
+
       const pending: TurnObservation[] = [];
       /**
        * FLUSHES ARE SERIALISED, and that became load-bearing the moment a warp
@@ -1304,10 +1580,13 @@ export function createClaudeDriver(
        */
       let flushQueue: Promise<unknown> = Promise.resolve();
       const flush = (): Promise<void> => {
+        // The sink is read at FLUSH time, not at emit: `emit` then `flush`
+        // are always adjacent, and the pump swaps the sink between frames.
+        const target = sink;
         const next = flushQueue.then(async () => {
           if (pending.length === 0) return;
           const batch = pending.splice(0, pending.length);
-          await onObservations(batch);
+          await target(batch);
         });
         // The CHAIN must survive a rejection or every later flush inherits it;
         // the caller still sees the failure on the promise it was handed.
@@ -1327,8 +1606,10 @@ export function createClaudeDriver(
        * report it. Any failure here therefore becomes an explicit `deny`
        * carrying the reason, which is recoverable, rather than a hang.
        */
-      const canUseTool: SdkCanUseTool | undefined = onRequest
-        ? async (toolName, input, options) => {
+      /** The gate, built around whichever `onRequest` a turn carries — this
+       *  turn's, or a provider turn's own (see the idle pump). */
+      const gateFor = (onRequest: NonNullable<DriverRun["onRequest"]>): SdkCanUseTool =>
+        async (toolName, input, options) => {
             // THE BROWSER SOCKET IS THE DECIDER for its own tools. The gate
             // bound to this turn's lease already asked the engine before the
             // call ran; answering again here would put two cards in front of
@@ -1411,8 +1692,8 @@ export function createClaudeDriver(
             } catch (error) {
               return { behavior: "deny", message: error instanceof Error ? error.message : "permission request failed" };
             }
-          }
-        : undefined;
+          };
+      const canUseTool: SdkCanUseTool | undefined = onRequest ? gateFor(onRequest) : undefined;
 
       /**
        * THE KEY IS WHAT NAMES THE SERVER, not `createSdkMcpServer`'s `name`.
@@ -1706,6 +1987,10 @@ export function createClaudeDriver(
           // deliberately absent: nothing left to report on, and a stale
           // terminal seed would only tempt the level signal to re-close it.
           tasks: taskMemoryFrom((seededTasks ?? []).filter((seed) => !isTerminalTaskState(seed.state))),
+          pendingStep: undefined,
+          parked: [],
+          idlePump: undefined,
+          streamEnded: false,
           destroy: () => {
             feed.end();
             if (typeof query.close === "function") query.close();
@@ -1770,9 +2055,11 @@ export function createClaudeDriver(
       const runtime = claimed ?? buildRuntime();
       if (persistent && !claimed) runtimes.adopt(runtime);
       runtime.bindings.current = turnBindings;
+      runtimeRef = runtime;
       // From here on the turn reads and writes the PROCESS's task memory.
       taskIdsBySdkId = runtime.tasks.bySdkId;
       knownTasks = runtime.tasks.known;
+      suppressedTasks = runtime.tasks.suppressed;
 
       /**
        * THIS TURN'S JOIN KEY. The CLI echoes it as `user_message_uuid` on the
@@ -1858,63 +2145,23 @@ export function createClaudeDriver(
 
       try {
         for (;;) {
-          const step = await runtime.iterator.next();
+          /**
+           * FRAMES THE IDLE PUMP PARKED COME FIRST. A wake-up's opening frame
+           * that arrived between turns, right as this turn was claimed, was
+           * read by the idle pump and could not be handled idly (the engine
+           * refused the provider turn because THIS turn had the session). It
+           * is this turn's stream now; nothing is lost.
+           */
+          const step = runtime.parked.length > 0
+            ? { done: false as const, value: runtime.parked.shift()! }
+            : await ClaudeRuntimeStore.takeStep(runtime);
           if (step.done) {
             streamEnded = true;
+            runtime.streamEnded = true;
             break;
           }
           const message = step.value;
-          const item = message as {
-            type?: string;
-            subtype?: string;
-            session_id?: string;
-            total_cost_usd?: number;
-            usage?: unknown;
-            /** Result messages only: per-model usage, where `contextWindow`
-             *  lives. Tokens in it are cumulative — see `contextMaxFrom`. */
-            modelUsage?: unknown;
-            compact_result?: string;
-            compact_metadata?: unknown;
-            message?: { content?: unknown[]; usage?: unknown };
-            /** The tool's full structured Output — where `structuredPatch` lives. */
-            tool_use_result?: unknown;
-            /** Set on everything a sub-agent produced: the id of the `Task`
-             *  call that launched it. `null` on the main loop's own messages. */
-            parent_tool_use_id?: string | null;
-            /** Result messages: the final assistant message's stop reason.
-             *  `"tool_use"` means the model stopped to run tools and will
-             *  continue after their results — the turn is NOT over. Absent on
-             *  older producers and the fake SDKs. */
-            stop_reason?: string | null;
-            /** The join key of the send this frame answers — see `turnUuid`. On
-             *  the first stream frame and the result of a turn only. */
-            user_message_uuid?: string;
-            /** Set on a turn the CLI started by ITSELF (a background task's
-             *  notification, an auto-continuation); absent on a human send. */
-            origin?: { kind?: string };
-            task_id?: string;
-            tool_use_id?: string;
-            description?: string;
-            subagent_type?: string;
-            task_type?: string;
-            is_backgrounded?: boolean;
-            workflow_name?: string;
-            summary?: string;
-            status?: string;
-            /** `task_started` only: housekeeping the CLI does not surface as
-             *  user work — the SDK says to exclude it from activity. */
-            ambient?: boolean;
-            /** `background_tasks_changed` only: every live background task
-             *  after the change, with REPLACE semantics. */
-            tasks?: unknown;
-            patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
-            event?: {
-              type?: string;
-              index?: number;
-              content_block?: { type?: string };
-              delta?: { type?: string; text?: string; thinking?: string };
-            };
-          };
+          const item = message as SdkFrame;
 
           if (str(item.session_id) && item.session_id !== reportedSessionId) {
             reportedSessionId = item.session_id;
@@ -1968,15 +2215,12 @@ export function createClaudeDriver(
               // Another sender's turn, or — on a producer known to echo the
               // key — a turn with no sender at all before ours has begun:
               // the CLI's own. Its message_start carries no uuid (measured).
-              foreignTurn = { taskId: lastWokenTaskId };
-            }
-          }
-          if (foreignTurn && (item.type === "assistant" || item.type === "stream_event" || item.type === "user") && !parentToolUseId) {
-            if (!foreignTurn.taskId) {
-              // A wake-up whose task never announced: still not ours, and
-              // with nowhere to file its rows they are dropped rather than
-              // shown as the answer to a question nobody asked.
-              continue;
+              // Filed under the shell that spoke; a wake-up with no task to
+              // name still keeps its rows, under no owner, rather than being
+              // dropped — the idle pump is the path that gives it a turn of
+              // its own, and this one is merely the fallback for a wake-up
+              // that landed in a human turn's window.
+              foreignTurn = { taskId: runtime.tasks.lastWokenTaskId };
             }
           }
           if (item.type === "result" && !parentToolUseId) {
@@ -1994,12 +2238,19 @@ export function createClaudeDriver(
               foreignTurn !== undefined || (sender !== undefined && sender !== turnUuid) || str(item.origin?.kind) !== undefined;
             if (foreignResult) {
               foreignTurn = undefined;
+              runtime.tasks.lastWokenTaskId = undefined;
               await flush();
               continue;
             }
           }
 
           const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : foreignTurn?.taskId;
+          /** The MAIN LOOP OF OUR TURN — not a sub-agent's, not the CLI's own
+           *  turn. Only this contributes to `finalText`, holds the turn open
+           *  through `openTopLevelTools`, and moves the usage meter. A foreign
+           *  turn with no task to name still shows its rows, but never as
+           *  the answer to a question nobody asked. */
+          const ours = !parentToolUseId && foreignTurn === undefined;
 
           // ── compaction, announced then bounded ────────────────────────
           if (item.type === "system" && item.subtype === "status") {
@@ -2072,167 +2323,9 @@ export function createClaudeDriver(
           }
 
           // ── sub-agents and background work ────────────────────────────
-          if (item.type === "system" && item.subtype === "task_started") {
-            /**
-             * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
-             * them itself and says what to do ("hosts should exclude them from
-             * activity indicators"); surfaced as a row, an auto-started
-             * live-update watcher would make `livenessOf` report the session
-             * as monitoring over work no human asked for and none can stop.
-             */
-            if (item.ambient === true || isForegroundShell(str(item.task_type), item.is_backgrounded)) {
-              if (str(item.task_id)) suppressedTasks.add(item.task_id!);
-              continue;
-            }
-            emitTask(
-              "task.started",
-              str(item.task_id),
-              {
-                state: "running",
-                kind: taskKindForType(str(item.task_type)),
-                // Launched detached: it outlives this turn, whatever it is.
-                ...(item.is_backgrounded === true ? { backgrounded: true } : {}),
-                ...(str(item.description) ? { title: oneLine(item.description!) } : {}),
-                ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
-                ...(str(item.workflow_name)
-                  ? { warp: { warpRunId: str(item.task_id) ?? "warp", warpName: item.workflow_name! } }
-                  : {}),
-              },
-              str(item.tool_use_id),
-            );
-            await flush();
-            continue;
-          }
-          if (item.type === "system" && item.subtype === "task_progress") {
-            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
-            /**
-             * A PROGRESS DESCRIPTION DOES NOT RENAME THE TASK.
-             *
-             * Measured against the real SDK: `task_started` carried "Find
-             * top-level .ts files non-recursively" and the progress messages
-             * that followed carried "Running Find top-level .ts files
-             * non-recursively". Taking the later one as the title makes a
-             * roster row read as status prose, and makes it churn while the
-             * agent runs. The start event names the task; progress reports on
-             * it. A task that never announced a start still takes one, because
-             * an ugly title beats an anonymous row.
-             */
-            const known = knownTasks.get(taskIdFor(str(item.task_id), str(item.tool_use_id)));
-            emitTask(
-              "task.progress",
-              str(item.task_id),
-              {
-                state: "running",
-                ...(!known?.title && str(item.description) ? { title: oneLine(item.description!) } : {}),
-                ...(str(item.subagent_type) ? { role: item.subagent_type! } : {}),
-                ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
-              },
-              str(item.tool_use_id),
-              str(item.summary),
-            );
-            await flush();
-            continue;
-          }
-          if (item.type === "system" && item.subtype === "task_updated") {
-            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) {
-              // Ctrl+B on a blocking shell: from here on it IS background work
-              // and earns the row the never-announced branch below mints.
-              if (item.patch?.is_backgrounded !== true) continue;
-              suppressedTasks.delete(item.task_id!);
-            }
-            const status = str(item.patch?.status);
-            const state = taskStateForStatus(status);
-            const terminal = state === "completed" || state === "failed" || state === "stopped";
-            /**
-             * MOVED TO THE BACKGROUND MID-FLIGHT (Ctrl+B, or the SDK's own
-             * decision). A task this turn already announced keeps its kind —
-             * an agent sent to the background is still an agent — and only
-             * gains `backgrounded`. A task NEVER announced is the foreground
-             * Bash case: a blocking shell announces no `task_started` at all
-             * and first appears here, so its only honest classification is
-             * "a backgrounded shell".
-             */
-            const backgrounded = item.patch?.is_backgrounded === true;
-            const known = knownTasks.has(taskIdFor(str(item.task_id), undefined));
-            emitTask(
-              terminal ? "task.completed" : "task.progress",
-              str(item.task_id),
-              {
-                state,
-                ...(str(item.patch?.description) ? { title: oneLine(item.patch!.description!) } : {}),
-                ...(str(item.patch?.error) ? { failure: item.patch!.error! } : {}),
-                ...(backgrounded ? { backgrounded: true } : {}),
-                ...(backgrounded && !known ? { kind: "background" as const } : {}),
-              },
-              undefined,
-            );
-            await flush();
-            continue;
-          }
-          if (item.type === "system" && item.subtype === "task_notification") {
-            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
-            lastWokenTaskId = taskIdFor(str(item.task_id), str(item.tool_use_id));
-            emitTask(
-              "task.completed",
-              str(item.task_id),
-              {
-                // A NOTIFICATION IS AN ENDING. Its default is `completed` rather
-                // than the shared `running`, because "the task is over and here
-                // is what it produced" is the only thing this message means —
-                // see `taskStateForStatus`.
-                state: taskStateForStatus(str(item.status), "completed"),
-                ...(str(item.summary) ? { resultText: item.summary! } : {}),
-                ...(taskUsage(item.usage) ? { usage: taskUsage(item.usage)! } : {}),
-              },
-              str(item.tool_use_id),
-            );
-            await flush();
-            continue;
-          }
-          if (item.type === "system" && item.subtype === "background_tasks_changed") {
-            /**
-             * THE LEVEL SIGNAL, CONSUMED BESIDE THE EDGE BOOKENDS. The SDK's
-             * own doc on this message is the design brief: it carries EVERY
-             * live background task after each membership change, with REPLACE
-             * semantics, "so a missed bookend cannot wedge a stale running
-             * indicator". That wedge is measured, not hypothetical: a Monitor
-             * stream announced `task_started`, its ending edge never arrived,
-             * and `tasks.json` kept it `running` — the session claimed to be
-             * monitoring forever, and the only cure was a human pressing Stop.
-             *
-             * A task this process announced that is background work, not yet
-             * settled, and ABSENT from the payload has therefore ended. It is
-             * closed as `completed` with no failure and no resultText — the
-             * notification that carried the summary may simply have been lost,
-             * and inventing one would be fabrication. If that notification
-             * limps in later anyway, `emitTask`'s "first ending is the ending"
-             * keeps the state and still folds the summary in.
-             *
-             * ONLY background, and ONLY tasks whose SDK id the edge stream of
-             * THIS process minted (`taskIdsBySdkId` is fed by nothing else):
-             * an agent missing from a background-membership list means nothing
-             * — closing agents is the turn-end sweep's job — and a warp's ids
-             * never appear in this payload at all. The SDK says the level is
-             * per-process ("reset to the empty set whenever the session's CLI
-             * process (re)starts"); this handler gets that for free, because
-             * every `run()` spawns its own CLI and starts from empty state.
-             *
-             * Membership is tested against ALL entries, ambient included: an
-             * ambient entry never becomes a row, but treating its presence as
-             * absence would close a real task the payload still lists.
-             */
-            const live = new Set(
-              (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
-                const id = str(asRecord(raw).task_id);
-                return id ? [id] : [];
-              }),
-            );
-            for (const task of [...knownTasks.values()]) {
-              if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
-              const sdkId = task.providerTaskId;
-              if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
-              emitTask("task.completed", sdkId, { state: "completed" });
-            }
+          // One handler, shared with the idle pump — the frames are the same
+          // whether a turn is reading or the session is between turns.
+          if (await handleTaskFrame(item)) {
             await flush();
             continue;
           }
@@ -2342,10 +2435,10 @@ export function createClaudeDriver(
               const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
               if (typeof text !== "string" || text.length === 0) continue;
               open.text += text;
-              if (open.kind === "text" && !ownerTaskId) {
-                receivedPartialText = true;
-                finalText += text;
-              }
+              // The producer streams, whoever the text belongs to: the
+              // envelope's own text is a repeat and must not become a row.
+              if (open.kind === "text") receivedPartialText = true;
+              if (open.kind === "text" && ours) finalText += text;
               emit({
                 kind: "content.delta",
                 itemId: open.id,
@@ -2372,7 +2465,7 @@ export function createClaudeDriver(
             // A sub-agent's usage is reported on its own task, not folded into
             // the parent's running total, or the turn would double-count it
             // against the `result` message's authoritative figure.
-            if (!ownerTaskId) {
+            if (ours) {
               const snapshot = usageFrom(item.message?.usage, undefined);
               if (snapshot) {
                 contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
@@ -2437,7 +2530,7 @@ export function createClaudeDriver(
                   providerRefs: { itemId: useId },
                 };
                 openTools.set(useId, { id: seed.id, detail });
-                if (!ownerTaskId) openTopLevelTools.add(useId);
+                if (ours) openTopLevelTools.add(useId);
                 emit({ kind: "item.started", item: seed });
                 continue;
               }
@@ -2448,7 +2541,7 @@ export function createClaudeDriver(
               if (block.type === "text" && !receivedPartialText) {
                 const text = str(block.text);
                 if (!text) continue;
-                if (!ownerTaskId) finalText += text;
+                if (ours) finalText += text;
                 const id = itemId();
                 emit({
                   kind: "item.started",
@@ -2550,11 +2643,222 @@ export function createClaudeDriver(
         turnDone = true;
         if (interruptEscalation !== undefined) clearTimeout(interruptEscalation);
         signal.removeEventListener("abort", onAbort);
-        if (persistent) runtimes.release(sessionId);
-        else runtime.destroy();
+        if (persistent) {
+          runtimes.release(sessionId);
+          // The turn is over; the process is not. Keep reading it.
+          if (sessionHooks && !runtime.streamEnded) startIdlePump(runtime, sessionHooks);
+        } else runtime.destroy();
+      }
+
+      /**
+       * THE IDLE PUMP: what reads the stream when no turn does.
+       *
+       * Between turns the CLI keeps talking. Task frames (a monitor's tick,
+       * a shell's ending, the level signal) go straight to the session's
+       * `onTasks`, so a row closes when its shell exits instead of at the
+       * next human message — the ten-hour "Wait for CI" row, measured. And
+       * when the CLI wakes the model on a notification and runs a turn of its
+       * own, the pump asks the engine for a PROVIDER TURN and reads that turn
+       * through a binding of its own: a gate that decides its tool calls, a
+       * sink its rows land in, a completion of its own. Before this, those
+       * frames sat buffered until the next human turn, were read as a
+       * stranger's, and their tool calls were refused against a settled
+       * claim — the agent could wake but not act, and nobody saw it.
+       *
+       * Ends the moment a turn claims the runtime (`claim` calls `stop`); the
+       * `next()` it was parked on is handed to that turn via `pendingStep`.
+       */
+      function startIdlePump(idleRuntime: ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed>, hooks: DriverSessionHooks): void {
+        if (idleRuntime.idlePump) return;
+        let stopped = false;
+        idleRuntime.idlePump = { stop: () => { stopped = true; } };
+        void (async () => {
+          // A wake-up in flight, once the engine has opened a turn for it.
+          let wake: { binding: ProviderTurnBinding; text: string; gate: SdkCanUseTool | undefined; blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined;
+          const idleSink = (observations: TurnObservation[]) => hooks.onTasks(observations);
+          sink = idleSink;
+          /** The engine refused a wake-up: a human turn has the session and
+           *  will claim this runtime any moment. Everything read from here
+           *  on is that turn's, in order — parked, not handled. */
+          let parkingForTurn = false;
+          const endWake = async (result: { text: string } | { failure: string }) => {
+            if (!wake) return;
+            const current = wake;
+            wake = undefined;
+            for (const [, open] of current.tools) emit({ kind: "item.completed", itemId: open.id, status: "failed" });
+            for (const [, open] of current.blocks) emit(closeBlock(open));
+            await flush();
+            sink = idleSink;
+            idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: undefined };
+            await current.binding.close("failure" in result ? result : { text: result.text }).catch(() => undefined);
+          };
+          try {
+            for (;;) {
+              if (stopped) return;
+              // NOT `takeStep`: a pump told to stop while parked must leave
+              // the frame on `pendingStep` for the turn that stopped it —
+              // the turn may not have awaited the promise yet.
+              const step = idleRuntime.pendingStep ?? (idleRuntime.pendingStep = idleRuntime.iterator.next());
+              const result = await step;
+              if (stopped) return;
+              if (idleRuntime.pendingStep === step) idleRuntime.pendingStep = undefined;
+              if (result.done) {
+                idleRuntime.streamEnded = true;
+                await endWake({ failure: "the provider process ended" });
+                return;
+              }
+              const item = result.value as SdkFrame;
+              if (parkingForTurn) {
+                idleRuntime.parked.push(item);
+                continue;
+              }
+              const parentToolUseId = str(item.parent_tool_use_id ?? undefined);
+              if (str(item.session_id)) reportedSessionId = item.session_id;
+
+              if (await handleTaskFrame(item)) {
+                await flush();
+                continue;
+              }
+              // Sub-agent frames between turns: a backgrounded agent still
+              // working. Filed under its task like inside a turn.
+              const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
+
+              if (!wake) {
+                // Anything the main loop says with no turn open is the CLI
+                // starting one of its own. Open a real turn for it.
+                const opens = (item.type === "stream_event" && item.event?.type === "message_start") || item.type === "assistant" || (item.type === "user" && !parentToolUseId);
+                if (!opens && !ownerTaskId) continue;
+                if (ownerTaskId) {
+                  // Sub-agent output with no turn: stays visible on its task.
+                  sink = idleSink;
+                  if (await pumpFrame(item, ownerTaskId, undefined)) await flush();
+                  continue;
+                }
+                const wokenTask = idleRuntime.tasks.lastWokenTaskId;
+                const text = item.type === "user" ? userText(item.message?.content) : undefined;
+                const binding = await hooks.onProviderTurn({
+                  input: text ?? "",
+                  reason: wokenTask ? { kind: "task_notification", taskId: wokenTask } : { kind: "unknown" },
+                });
+                if (!binding) {
+                  // A human turn took the session first. Park this and every
+                  // frame after it for that turn; the pump ends when the turn
+                  // claims the runtime.
+                  parkingForTurn = true;
+                  idleRuntime.parked.push(item);
+                  continue;
+                }
+                idleRuntime.tasks.lastWokenTaskId = undefined;
+                wake = { binding, text: "", gate: binding.onRequest ? gateFor(binding.onRequest) : undefined, blocks: new Map(), tools: new Map() };
+                sink = (observations) => binding.onObservations(observations);
+                idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
+                // The CLI's injected notification message is the turn's input
+                // — already on the turn; not a row.
+                if (item.type === "user" && !parentToolUseId && text !== undefined) continue;
+              }
+
+              if (item.type === "result" && !parentToolUseId) {
+                const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
+                if (stopReason === "tool_use" || (stopReason === null && wake.tools.size > 0)) continue;
+                const failed = item.subtype !== "success";
+                await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });
+                continue;
+              }
+              const text = await pumpFrame(item, ownerTaskId, wake);
+              if (text) wake.text += text;
+              await flush();
+            }
+          } catch {
+            await endWake({ failure: "the provider stream failed between turns" }).catch(() => undefined);
+            runtimes.destroy(idleRuntime.sessionId);
+          } finally {
+            if (idleRuntime.idlePump?.stop === undefined || stopped) idleRuntime.idlePump = undefined;
+          }
+        })();
+      }
+
+      /**
+       * One frame of assistant output — text, thinking, tool calls, tool
+       * results — into rows, for the idle pump. The turn pump has its own
+       * inlined copy of this logic with more state (usage, compaction, the
+       * plan row); this is the subset a wake-up produces. Returns the
+       * main-loop text the frame added, so the turn's `resultText` can be
+       * built; true-ish when it emitted anything.
+       */
+      async function pumpFrame(
+        item: SdkFrame,
+        ownerTaskId: string | undefined,
+        wake: { blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined,
+      ): Promise<string> {
+        const blocks = wake?.blocks ?? new Map<string, { id: string; kind: "text" | "thinking"; text: string }>();
+        const tools = wake?.tools ?? new Map<string, { id: string; detail: ItemDetail }>();
+        let added = "";
+        if (item.type === "stream_event") {
+          const event = item.event ?? {};
+          const index = `${ownerTaskId ?? ""}#${typeof event.index === "number" ? event.index : -1}`;
+          if (event.type === "content_block_start") {
+            const blockType = event.content_block?.type;
+            if (blockType === "text" || blockType === "thinking") {
+              const id = itemId();
+              blocks.set(index, { id, kind: blockType, text: "" });
+              emit({ kind: "item.started", item: { id, detail: blockType === "text" ? { type: "assistant_message", text: "" } : { type: "reasoning", text: "" }, ...(ownerTaskId ? { taskId: ownerTaskId } : {}) } });
+            }
+          } else if (event.type === "content_block_delta") {
+            const open = blocks.get(index);
+            const text = event.delta?.type === "text_delta" ? event.delta.text : event.delta?.thinking;
+            if (open && typeof text === "string" && text.length > 0) {
+              open.text += text;
+              if (open.kind === "text" && !ownerTaskId) added += text;
+              emit({ kind: "content.delta", itemId: open.id, stream: open.kind === "text" ? "assistant_text" : "reasoning_text", text });
+            }
+          } else if (event.type === "content_block_stop") {
+            const open = blocks.get(index);
+            if (open) {
+              blocks.delete(index);
+              emit(closeBlock(open));
+            }
+          }
+          return added;
+        }
+        if (item.type === "assistant") {
+          for (const raw of contentBlocks(item.message?.content)) {
+            const block = asRecord(raw);
+            if (block.type !== "tool_use") continue;
+            const name = str(block.name) ?? "tool";
+            const useId = str(block.id) ?? itemId();
+            const isTask = name === "Task" || name === "Agent";
+            const detail: ItemDetail = isTask ? { type: "task", taskId: `task_${useId}` } : itemDetailForToolCall(name, block.input);
+            const title = isTask ? oneLine(str(asRecord(block.input).description) ?? str(asRecord(block.input).subagent_type) ?? name) : titleForToolCall(name, detail);
+            tools.set(useId, { id: `item_${useId}`, detail });
+            emit({ kind: "item.started", item: { id: `item_${useId}`, detail, title, ...(ownerTaskId ? { taskId: ownerTaskId } : {}), providerRefs: { itemId: useId } } });
+          }
+          return added;
+        }
+        if (item.type === "user") {
+          const results = contentBlocks(item.message?.content).map(asRecord).filter((block) => block.type === "tool_result");
+          const structured = results.length === 1 ? item.tool_use_result : undefined;
+          for (const block of results) {
+            const useId = str(block.tool_use_id);
+            const open = useId ? tools.get(useId) : undefined;
+            if (!open || !useId) continue;
+            tools.delete(useId);
+            const output = typeof block.content === "string" ? block.content : JSON.stringify(block.content ?? null);
+            emit({ kind: "item.completed", itemId: open.id, status: block.is_error === true ? "failed" : "completed", detail: withToolResult(open.detail, output, structured) });
+          }
+        }
+        return added;
       }
     },
   };
+}
+
+/** The plain text of a user message's content — the CLI's own injected
+ *  notification, when it wakes the model. */
+function userText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  const text = content.map(asRecord).filter((block) => block.type === "text").map((block) => str(block.text) ?? "").join("\n");
+  return text.length > 0 ? text : undefined;
 }
 
 /**

@@ -128,10 +128,17 @@ export type RuntimeBindings<T> = { current: T };
 export type TaskMemory<Seed extends { id: string; providerTaskId?: string }> = {
   readonly bySdkId: Map<string, string>;
   readonly known: Map<string, Seed>;
+  /** SDK task ids that are not rows — ambient housekeeping and shells that
+   *  block their turn. Process-lived for the same reason the rows are: the
+   *  frames that would resurrect one arrive in any turn, or between turns. */
+  readonly suppressed: Set<string>;
+  /** The row the last `task_notification` spoke for: the shell whose ending
+   *  the CLI is about to wake the model over. Names the wake-up's reason. */
+  lastWokenTaskId: string | undefined;
 };
 
 export function taskMemoryFrom<Seed extends { id: string; providerTaskId?: string }>(seeds: Iterable<Seed>): TaskMemory<Seed> {
-  const memory: TaskMemory<Seed> = { bySdkId: new Map(), known: new Map() };
+  const memory: TaskMemory<Seed> = { bySdkId: new Map(), known: new Map(), suppressed: new Set(), lastWokenTaskId: undefined };
   for (const seed of seeds) {
     memory.known.set(seed.id, seed);
     if (seed.providerTaskId) memory.bySdkId.set(seed.providerTaskId, seed.id);
@@ -156,6 +163,29 @@ export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; provide
   readonly bindings: RuntimeBindings<T>;
   /** Every task this process launched or was told about — see `TaskMemory`. */
   readonly tasks: TaskMemory<Seed>;
+  /**
+   * THE ONE IN-FLIGHT `iterator.next()`, whoever started it.
+   *
+   * Between turns the driver's IDLE PUMP reads the stream (so a monitor's
+   * ending is heard when it happens, not at the next human message); a turn
+   * then takes the stream over. A pending `next()` cannot be cancelled, so it
+   * is handed over instead: the pump that stops leaves its promise here, and
+   * the pump that starts awaits this before calling `next()` itself. Whoever
+   * finds `pendingStep` still equal to the promise it awaited owns the frame;
+   * a pump told to stop returns before claiming it. Exactly one consumer per
+   * frame, no frame lost, no `next()` ever called twice concurrently.
+   */
+  pendingStep: Promise<IteratorResult<unknown>> | undefined;
+  /**
+   * Frames the idle pump read but could not handle idly — the first frames of
+   * a turn the CLI started on its own. Drained by the next turn's pump before
+   * it touches the iterator, so a wake-up's opening frame is never lost.
+   */
+  readonly parked: unknown[];
+  /** The idle pump's stop handle while one is reading. */
+  idlePump: { stop: () => void } | undefined;
+  /** The stream reported `done` — the process is over. */
+  streamEnded: boolean;
   /** Kills the process outright. Idempotent; used by eviction and dispose. */
   readonly destroy: () => void;
   /** The model `setModel` last confirmed, so a turn can skip the round trip. */
@@ -227,9 +257,25 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
       this.destroy(sessionId);
       return undefined;
     }
+    // The turn takes the stream: the idle pump lets go (its in-flight
+    // `next()` stays on `pendingStep` for the turn to await).
+    runtime.idlePump?.stop();
+    runtime.idlePump = undefined;
     runtime.busy = true;
     runtime.lastUsedAt = Date.now();
     return runtime;
+  }
+
+  /**
+   * Take the next frame — the pending one if a pump left it, else a fresh
+   * `next()`. The handoff rule from `pendingStep`, in one place.
+   */
+  static async takeStep(runtime: { iterator: AsyncIterator<unknown>; pendingStep: Promise<IteratorResult<unknown>> | undefined }): Promise<IteratorResult<unknown>> {
+    const step = runtime.pendingStep ?? runtime.iterator.next();
+    runtime.pendingStep = step;
+    const result = await step;
+    if (runtime.pendingStep === step) runtime.pendingStep = undefined;
+    return result;
   }
 
   /** Register a freshly created runtime, evicting the oldest idle ones beyond
@@ -272,6 +318,8 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     if (!runtime) return;
     this.runtimes.delete(sessionId);
     this.wakeIdle(sessionId);
+    runtime.idlePump?.stop();
+    runtime.idlePump = undefined;
     runtime.feed.end();
     try {
       runtime.destroy();
