@@ -908,6 +908,103 @@ test("an agent still running when the turn ends is failed, so the session stops 
   expect(closed[0]?.kind === "task.completed" && closed[0].task.state).toBe("failed");
 });
 
+test("a background task missing from the SDK's level signal is closed, so a lost bookend cannot wedge the session", async () => {
+  /**
+   * THE REPRODUCED BUG (session_7657b2ef…, journal event 16581): a Monitor
+   * announced `task_started {task_type in the background set}`, its stream
+   * ended two turns later, and the `task_notification` bookend NEVER arrived.
+   * `tasks.json` kept it `running`, `session.activity` stayed busy forever,
+   * and the only cure was a human calling stop-background by hand.
+   *
+   * The SDK's `background_tasks_changed` exists for exactly this: a LEVEL
+   * signal with REPLACE semantics, "so a missed bookend cannot wedge a stale
+   * running indicator". A running background task of this process that is
+   * absent from the payload has ended, whether or not its edge ever said so.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "b8t21ys02", tool_use_id: "toolu_mon", description: "tick test", task_type: "local_bash", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "b8t21ys02", task_type: "local_bash", description: "tick test" }] };
+      // The monitor's stream ends. The notification that should bookend it is
+      // LOST — only the membership change says anything.
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.filter((o) => o.kind === "task.completed");
+  expect(closed).toHaveLength(1);
+  expect(closed[0]?.kind === "task.completed" && closed[0].task).toMatchObject({
+    id: "task_toolu_mon",
+    kind: "background",
+    state: "completed",
+  });
+  // No failure (nothing went wrong) and no invented summary (the notification
+  // that carried it may simply have been lost — fabricating one would lie).
+  expect(closed[0]?.kind === "task.completed" && closed[0].task.failure).toBeUndefined();
+  expect(closed[0]?.kind === "task.completed" && closed[0].task.resultText).toBeUndefined();
+});
+
+test("a background task still in the level signal outlives the turn untouched", async () => {
+  // The guard against over-closing: membership PRESENT means the work is
+  // live, and outliving its turn is the definition of background.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_a", description: "a log tail", task_type: "local_bash", is_backgrounded: true };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "t1", task_type: "local_bash", description: "a log tail" }] };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  expect(sink.observations.filter((o) => o.kind === "task.completed")).toHaveLength(0);
+});
+
+test("the level signal closes only background work; a missing agent is the turn-end sweep's business", async () => {
+  // An agent is by definition absent from a BACKGROUND membership list, so
+  // reading its absence as an ending would close every live sub-agent the
+  // moment any shell started or stopped.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_a", description: "Audit the parser", task_type: "subagent" };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const closed = sink.observations.filter((o) => o.kind === "task.completed");
+  // Exactly one closure, and it is the SWEEP's (failed at turn end) — the
+  // level signal contributed nothing.
+  expect(closed).toHaveLength(1);
+  expect(closed[0]?.kind === "task.completed" && closed[0].task).toMatchObject({
+    id: "task_toolu_a",
+    state: "failed",
+    failure: "the turn ended before this agent reported back",
+  });
+});
+
+test("an ambient task is the CLI's housekeeping and never becomes a row", async () => {
+  // The SDK marks its own auto-started watchers `ambient` and says "hosts
+  // should exclude them from activity indicators". Suppressed at the start
+  // edge and REMEMBERED, so the later edges cannot re-invent the row through
+  // emitTask's fold-or-create path.
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "amb1", description: "live-update watcher", task_type: "local_bash", is_backgrounded: true, ambient: true, skip_transcript: true };
+      yield { type: "system", subtype: "task_progress", task_id: "amb1", description: "Running live-update watcher" };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "amb1", task_type: "local_bash", description: "live-update watcher", ambient: true }] };
+      yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+      yield { type: "system", subtype: "task_notification", task_id: "amb1", summary: "watcher wound down" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  expect(sink.observations.filter((o) => o.kind.startsWith("task."))).toHaveLength(0);
+});
+
 test("a finished task is not resurrected by the SDK still talking about it", async () => {
   /**
    * THE REAL SEQUENCE, off a measured turn: a backgrounded `sleep 90` reported

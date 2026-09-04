@@ -1061,6 +1061,10 @@ export function createClaudeDriver(
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
       const knownTasks = new Map<string, TaskSeed>();
+      /** SDK task ids announced as `ambient` housekeeping. Never rows — and
+       *  remembered, so the progress/notification edges of the same task
+       *  cannot re-create the row through `emitTask`'s fold-or-invent path. */
+      const suppressedTasks = new Set<string>();
 
       const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
         if (toolUseId) return `task_${toolUseId}`;
@@ -1481,6 +1485,12 @@ export function createClaudeDriver(
             workflow_name?: string;
             summary?: string;
             status?: string;
+            /** `task_started` only: housekeeping the CLI does not surface as
+             *  user work — the SDK says to exclude it from activity. */
+            ambient?: boolean;
+            /** `background_tasks_changed` only: every live background task
+             *  after the change, with REPLACE semantics. */
+            tasks?: unknown;
             patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
             event?: {
               type?: string;
@@ -1566,6 +1576,17 @@ export function createClaudeDriver(
 
           // ── sub-agents and background work ────────────────────────────
           if (item.type === "system" && item.subtype === "task_started") {
+            /**
+             * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
+             * them itself and says what to do ("hosts should exclude them from
+             * activity indicators"); surfaced as a row, an auto-started
+             * live-update watcher would make `livenessOf` report the session
+             * as monitoring over work no human asked for and none can stop.
+             */
+            if (item.ambient === true) {
+              if (str(item.task_id)) suppressedTasks.add(item.task_id!);
+              continue;
+            }
             emitTask(
               "task.started",
               str(item.task_id),
@@ -1584,6 +1605,7 @@ export function createClaudeDriver(
             continue;
           }
           if (item.type === "system" && item.subtype === "task_progress") {
+            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
             /**
              * A PROGRESS DESCRIPTION DOES NOT RENAME THE TASK.
              *
@@ -1613,6 +1635,7 @@ export function createClaudeDriver(
             continue;
           }
           if (item.type === "system" && item.subtype === "task_updated") {
+            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
             const status = str(item.patch?.status);
             const state = taskStateForStatus(status);
             const terminal = state === "completed" || state === "failed" || state === "stopped";
@@ -1631,6 +1654,7 @@ export function createClaudeDriver(
             continue;
           }
           if (item.type === "system" && item.subtype === "task_notification") {
+            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
             emitTask(
               "task.completed",
               str(item.task_id),
@@ -1645,6 +1669,53 @@ export function createClaudeDriver(
               },
               str(item.tool_use_id),
             );
+            await flush();
+            continue;
+          }
+          if (item.type === "system" && item.subtype === "background_tasks_changed") {
+            /**
+             * THE LEVEL SIGNAL, CONSUMED BESIDE THE EDGE BOOKENDS. The SDK's
+             * own doc on this message is the design brief: it carries EVERY
+             * live background task after each membership change, with REPLACE
+             * semantics, "so a missed bookend cannot wedge a stale running
+             * indicator". That wedge is measured, not hypothetical: a Monitor
+             * stream announced `task_started`, its ending edge never arrived,
+             * and `tasks.json` kept it `running` — the session claimed to be
+             * monitoring forever, and the only cure was a human pressing Stop.
+             *
+             * A task this process announced that is background work, not yet
+             * settled, and ABSENT from the payload has therefore ended. It is
+             * closed as `completed` with no failure and no resultText — the
+             * notification that carried the summary may simply have been lost,
+             * and inventing one would be fabrication. If that notification
+             * limps in later anyway, `emitTask`'s "first ending is the ending"
+             * keeps the state and still folds the summary in.
+             *
+             * ONLY background, and ONLY tasks whose SDK id the edge stream of
+             * THIS process minted (`taskIdsBySdkId` is fed by nothing else):
+             * an agent missing from a background-membership list means nothing
+             * — closing agents is the turn-end sweep's job — and a warp's ids
+             * never appear in this payload at all. The SDK says the level is
+             * per-process ("reset to the empty set whenever the session's CLI
+             * process (re)starts"); this handler gets that for free, because
+             * every `run()` spawns its own CLI and starts from empty state.
+             *
+             * Membership is tested against ALL entries, ambient included: an
+             * ambient entry never becomes a row, but treating its presence as
+             * absence would close a real task the payload still lists.
+             */
+            const live = new Set(
+              (Array.isArray(item.tasks) ? item.tasks : []).flatMap((raw) => {
+                const id = str(asRecord(raw).task_id);
+                return id ? [id] : [];
+              }),
+            );
+            for (const task of [...knownTasks.values()]) {
+              if (task.kind !== "background" || isTerminalTaskState(task.state)) continue;
+              const sdkId = task.providerTaskId;
+              if (!sdkId || !taskIdsBySdkId.has(sdkId) || live.has(sdkId)) continue;
+              emitTask("task.completed", sdkId, { state: "completed" });
+            }
             await flush();
             continue;
           }
