@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 type PairState = { phase: "idle" } | { phase: "pairing" } | { phase: "paired" } | { phase: "failed"; message: string };
 
 /**
- * A code as a person might paste it: the bare token, or a whole pairing link
- * with the token in its fragment. Anything else is returned as-is and the
- * server says what is wrong with it.
+ * A code as a person might paste it: eight digits with or without a space,
+ * the long `tlr_…` token, or a whole pairing link with the token in its
+ * fragment. Anything else is returned as-is and the server says what is
+ * wrong with it.
  */
 export function codeFromInput(raw: string): string {
   const trimmed = raw.trim();
@@ -22,6 +23,15 @@ export function codeFromInput(raw: string): string {
   return trimmed;
 }
 
+/** Eight digits look like a code the moment they are typed; the field shows
+ *  them as "4812 9037" and sends them bare. Anything with letters is left
+ *  alone — it is a token or a link, and those are not reformatted. */
+export function formatTyped(raw: string): string {
+  const digitsOnly = raw.replace(/[\s-]/g, "");
+  if (!/^\d{0,8}$/.test(digitsOnly)) return raw;
+  return digitsOnly.length > 4 ? `${digitsOnly.slice(0, 4)} ${digitsOnly.slice(4)}` : digitsOnly;
+}
+
 /**
  * Reads `#token=…`, STRIPS THE FRAGMENT FIRST (so back-button, screenshots
  * and referrers cannot carry it), exchanges it for a device cookie, and
@@ -30,9 +40,9 @@ export function codeFromInput(raw: string): string {
  * AND A WAY IN BY HAND. A link can fail for reasons that have nothing to do
  * with the code — a fragment lost by a chat app, a QR that would not scan,
  * a browser that opened the link without its hash — and before this the
- * page's only answer was "generate a fresh one". The code is still on the
- * Settings card of the machine that minted it; a field to paste it (or the
- * whole link) is the recovery, and the same exchange runs either way.
+ * page's only answer was "generate a fresh one". The eight-digit code on the
+ * Settings card of the machine that minted it is the recovery: type it here
+ * and the same exchange runs.
  */
 export function PairClient() {
   const router = useRouter();
@@ -87,6 +97,7 @@ export function PairClient() {
 
   const canType = state.phase === "idle" || state.phase === "failed";
   const code = codeFromInput(typed);
+  const looksNumeric = /^[\d\s-]*$/.test(typed);
 
   return (
     /* `app-ground`: this page's own full-height canvas. Without the opt-in a
@@ -100,7 +111,7 @@ export function PairClient() {
         {state.phase === "failed" && <p className="max-w-72 text-center text-sm text-destructive">{state.message}</p>}
         {state.phase === "idle" && (
           <p className="max-w-72 text-center text-sm text-muted-foreground">
-            Paste the pairing code from Settings → Remote access on the machine running Telar.
+            Enter the eight-digit code from Settings → Remote access on the machine running Telar.
           </p>
         )}
         {canType && (
@@ -114,16 +125,18 @@ export function PairClient() {
             <Input
               autoFocus
               value={typed}
-              onChange={(event) => setTyped(event.target.value)}
-              placeholder="tlr_… or the whole pairing link"
+              onChange={(event) => setTyped(formatTyped(event.target.value))}
+              placeholder="0000 0000"
               aria-label="Pairing code"
-              autoComplete="off"
+              autoComplete="one-time-code"
+              inputMode={looksNumeric ? "numeric" : "text"}
               spellCheck={false}
-              className="font-mono text-xs"
+              className={looksNumeric ? "h-12 text-center font-mono text-2xl tracking-[0.25em] tabular-nums" : "font-mono text-xs"}
             />
             <Button type="submit" size="sm" disabled={!code}>
               Pair
             </Button>
+            <p className="text-center text-[0.6875rem] text-muted-foreground">A whole pairing link pastes here too.</p>
           </form>
         )}
       </div>

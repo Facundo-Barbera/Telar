@@ -10,6 +10,8 @@ import {
   matchDevice,
   mintDeviceToken,
   mintPairing,
+  normalisePairingCode,
+  PAIRING_MAX_ATTEMPTS,
   readRemote,
   remoteHome,
   renameDevice,
@@ -102,6 +104,41 @@ describe("remote store", () => {
     const second = mintPairing(2000);
     expect(consumePairing(first.token, 3000)).toBe("mismatch");
     expect(consumePairing(second.token, 3000)).toBe(true);
+  });
+
+  test("the eight-digit code pairs too, however it is spaced, and is one-time with the token", () => {
+    freshHome();
+    const { code, token } = mintPairing(1000);
+    expect(code).toMatch(/^\d{8}$/);
+    expect(normalisePairingCode(`${code.slice(0, 4)} ${code.slice(4)}`)).toBe(code);
+    expect(normalisePairingCode(`${code.slice(0, 4)}-${code.slice(4)}`)).toBe(code);
+    expect(normalisePairingCode("1234567")).toBeUndefined();
+    expect(normalisePairingCode("12345678a")).toBeUndefined();
+    expect(consumePairing(`${code.slice(0, 4)} ${code.slice(4)}`, 2000)).toBe(true);
+    // ONE SLOT: the token that came with the code is spent with it.
+    expect(consumePairing(token, 2000)).toBe("none-pending");
+  });
+
+  test("five wrong guesses burn the code, whichever form the guesser tries", () => {
+    freshHome();
+    const { code } = mintPairing(1000);
+    const wrong = code === "00000000" ? "00000001" : "00000000";
+    for (let n = 1; n < PAIRING_MAX_ATTEMPTS; n++) {
+      expect(consumePairing(n % 2 ? wrong : "tlr_not-it", 2000)).toBe("mismatch");
+    }
+    expect(consumePairing(wrong, 2000)).toBe("burned");
+    // Burned means gone: even the right code no longer pairs.
+    expect(consumePairing(code, 2000)).toBe("none-pending");
+  });
+
+  test("a pending pairing from before short codes still answers to its token", () => {
+    freshHome();
+    const { token } = mintPairing(1000);
+    const file = readRemote();
+    delete file.pairing!.codeHash;
+    writeRemote(file);
+    expect(consumePairing("12345678", 2000)).toBe("mismatch");
+    expect(consumePairing(token, 2000)).toBe(true);
   });
 
   test("touchDevice throttles writes and never throws", () => {

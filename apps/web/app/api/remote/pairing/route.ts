@@ -19,13 +19,15 @@ function webPort(): number {
  */
 export function POST() {
   try {
-    const { token, expiresAt } = mintPairing();
+    // The CODE is what a person types; the TOKEN is what the QR and the link
+    // carry. Both are raw here and nowhere else.
+    const { token, code, expiresAt } = mintPairing();
     const qrByUrl: Record<string, QrMatrix> = {};
     for (const endpoint of listEndpoints(webPort())) {
       if (!endpoint.qrSafe) continue;
       qrByUrl[endpoint.url] = encodeQr(`${endpoint.url}/pair#token=${token}`);
     }
-    return Response.json({ token, expiresAt, qrByUrl }, { headers: { "cache-control": "no-store" } });
+    return Response.json({ token, code, expiresAt, qrByUrl }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return remoteErrorResponse(error);
   }

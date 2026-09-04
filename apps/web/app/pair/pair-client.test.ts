@@ -1,6 +1,17 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { codeFromInput } from "./pair-client";
+import { codeFromInput, formatTyped } from "./pair-client";
+
+describe("formatTyped", () => {
+  test("digits are grouped 4+4 as they are typed; letters are left alone", () => {
+    expect(formatTyped("4812")).toBe("4812");
+    expect(formatTyped("48129")).toBe("4812 9");
+    expect(formatTyped("4812 9037")).toBe("4812 9037");
+    expect(formatTyped("4812-9037")).toBe("4812 9037");
+    expect(formatTyped("tlr_abc")).toBe("tlr_abc");
+    expect(formatTyped("http://h/pair#token=tlr_x")).toBe("http://h/pair#token=tlr_x");
+  });
+});
 
 describe("codeFromInput", () => {
   test("a bare code is itself, trimmed", () => {

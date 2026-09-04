@@ -77,9 +77,14 @@ const KIND_ICONS: Record<string, typeof MonitorIcon> = {
 
 interface MintedPairing {
   token: string;
+  /** Eight digits, for typing by hand — the QR and the link carry `token`. */
+  code: string;
   expiresAt: number;
   qrByUrl: Record<string, QrMatrix>;
 }
+
+/** "48129037" → "4812 9037": the way a person reads eight digits off a screen. */
+const spaced = (code: string) => `${code.slice(0, 4)} ${code.slice(4)}`;
 
 export function RemoteSection() {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
@@ -303,7 +308,7 @@ export function RemoteSection() {
       {status.requireAuth && (
         <SettingsGroup
           title="Pair a device"
-          description="A pairing code is one-time and lives ten minutes. Each browser pairs per address — the tailnet IP and a ts.net name are different origins."
+          description="A pairing code is one-time, lives five minutes, and is destroyed after five wrong tries. Each browser pairs per address — the tailnet IP and a ts.net name are different origins."
         >
           <Row
             label="Pairing code"
@@ -311,7 +316,7 @@ export function RemoteSection() {
               minted
                 ? expired
                   ? "Expired — mint a new one."
-                  : "Scan from the Telar iOS app or any phone browser."
+                  : "Type it into the pairing page on the other device, or scan the QR below."
                 : "Codes are shown once and never stored."
             }
             control={
@@ -321,15 +326,17 @@ export function RemoteSection() {
             }
           />
           {minted && !expired && (
-            <Row
-              label="Code"
-              hint="The bare code, for typing into the pairing page by hand when a link or a scan will not take."
-              control={
-                <div className="w-full max-w-md">
-                  <CopyCommand command={minted.token} />
-                </div>
-              }
-            />
+            <div className="flex items-center gap-3 py-3">
+              {/* THE CODE, BIG. It is the thing a person reads across the room
+                  and types on a phone; everything else on this card is a
+                  convenience for when a scan or a paste is possible. */}
+              <div className="rounded-lg border border-border/70 bg-muted/40 px-5 py-3 font-mono text-3xl tracking-[0.2em] tabular-nums select-all">
+                {spaced(minted.code)}
+              </div>
+              <div className="min-w-0 flex-1">
+                <CopyCommand command={minted.code} />
+              </div>
+            </div>
           )}
           {minted && !expired && endpoints.length > 1 && (
             <Row

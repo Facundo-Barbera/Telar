@@ -60,6 +60,15 @@ export interface PairedDevice {
 
 export interface PendingPairing {
   tokenHash: string;
+  /**
+   * THE SHORT CODE'S HASH — eight digits, for typing by hand. Absent in a
+   * file written before short codes existed; such a pairing answers to its
+   * long token only.
+   */
+  codeHash?: string;
+  /** Wrong guesses so far. Eight digits is 26 bits, which only holds up if
+   *  a guesser gets a handful of tries — see `PAIRING_MAX_ATTEMPTS`. */
+  attempts?: number;
   createdAt: number;
   expiresAt: number;
 }
@@ -89,7 +98,19 @@ export interface RemoteFile {
   pairing?: PendingPairing;
 }
 
-export const PAIRING_TTL_MS = 10 * 60 * 1000;
+/**
+ * FIVE MINUTES, DOWN FROM TEN, because the code got short. A 256-bit token
+ * could sit in a QR all day; an eight-digit code is what a person types off
+ * a screen, and the window it lives in is part of what keeps 10⁸ guesses
+ * out of reach — the other part is `PAIRING_MAX_ATTEMPTS`.
+ */
+export const PAIRING_TTL_MS = 5 * 60 * 1000;
+
+/** Wrong guesses before the pending code is burned. Five is what a person
+ *  mistyping needs; a guesser needs millions. */
+export const PAIRING_MAX_ATTEMPTS = 5;
+
+export const PAIRING_CODE_DIGITS = 8;
 
 /**
  * The same home discipline as engineRootFromWebEnv (lib/engine/engine-server.ts),
@@ -287,15 +308,36 @@ export function touchDevice(id: string, nowMs: number = Date.now(), address?: st
   }
 }
 
-/** Mints a pairing token, replacing any pending one. Returns the RAW token —
- *  the only moment it exists outside a QR/clipboard. */
-export function mintPairing(nowMs: number = Date.now(), ttlMs: number = PAIRING_TTL_MS): { token: string; expiresAt: number } {
+/**
+ * An eight-digit code from the CSPRNG, uniform over 10⁸ — `randomInt` rather
+ * than `random() * 1e8`, and zero-padded so "00123456" is as likely as any.
+ */
+export function mintPairingCode(): string {
+  return String(crypto.randomInt(0, 10 ** PAIRING_CODE_DIGITS)).padStart(PAIRING_CODE_DIGITS, "0");
+}
+
+/** What a person typed, normalised: digits only, so "4812 9037" and
+ *  "4812-9037" are the same code. Anything else is not a code. */
+export function normalisePairingCode(raw: string): string | undefined {
+  const digits = raw.replace(/\D/g, "");
+  return digits.length === PAIRING_CODE_DIGITS && raw.replace(/[\s-]/g, "") === digits ? digits : undefined;
+}
+
+/**
+ * Mints a pairing, replacing any pending one. Returns the RAW token and the
+ * RAW code — the only moment either exists outside a QR, a clipboard or a
+ * screen. TWO SECRETS FOR ONE SLOT: the long token rides the QR and the link,
+ * where there is no reason to be short; the code is for a person's fingers.
+ * Either consumes the pairing.
+ */
+export function mintPairing(nowMs: number = Date.now(), ttlMs: number = PAIRING_TTL_MS): { token: string; code: string; expiresAt: number } {
   const file = readRemote();
   const token = mintDeviceToken();
+  const code = mintPairingCode();
   const expiresAt = nowMs + ttlMs;
-  file.pairing = { tokenHash: hashToken(token), createdAt: nowMs, expiresAt };
+  file.pairing = { tokenHash: hashToken(token), codeHash: hashToken(code), createdAt: nowMs, expiresAt };
   writeRemote(file);
-  return { token, expiresAt };
+  return { token, code, expiresAt };
 }
 
 export function clearPairing(): void {
@@ -309,7 +351,7 @@ export function clearPairing(): void {
  * One-time by construction: a successful consume deletes the pending pairing
  * before returning, so a replayed token meets an empty slot.
  */
-export type PairingRefusal = "none-pending" | "expired" | "mismatch";
+export type PairingRefusal = "none-pending" | "expired" | "mismatch" | "burned";
 
 /**
  * WHY IT FAILED, NOT JUST THAT IT DID.
@@ -325,18 +367,39 @@ export type PairingRefusal = "none-pending" | "expired" | "mismatch";
  *   expired       minted here, ten minutes passed
  *   mismatch      a real code, but not this cockpit's — the usual cause is
  *                 two instances open and the code coming from the other one
+ *   burned        too many wrong guesses; the pending code was destroyed
  *
  * Still one-time by construction: a successful consume deletes the pending
  * pairing before returning, so a replayed token meets an empty slot.
+ *
+ * WRONG GUESSES ARE COUNTED AND THE FIFTH BURNS THE CODE. The long token
+ * never needed this; the eight-digit code does — without a cap, 10⁸ guesses
+ * inside the TTL is a laptop's afternoon on a LAN. Counted on every
+ * mismatch, whichever form was tried, so a guesser cannot alternate.
  */
 export function consumePairing(raw: string, nowMs: number = Date.now()): true | PairingRefusal {
   const file = readRemote();
   const pairing = file.pairing;
   if (!pairing) return "none-pending";
   if (nowMs >= pairing.expiresAt) return "expired";
-  const stored = Buffer.from(pairing.tokenHash, "hex");
-  const candidate = Buffer.from(hashToken(raw), "hex");
-  if (stored.length !== candidate.length || !crypto.timingSafeEqual(stored, candidate)) return "mismatch";
+  const same = (hashHex: string | undefined, value: string) => {
+    if (!hashHex) return false;
+    const stored = Buffer.from(hashHex, "hex");
+    const candidate = Buffer.from(hashToken(value), "hex");
+    return stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate);
+  };
+  const code = normalisePairingCode(raw);
+  const matched = same(pairing.tokenHash, raw) || (code !== undefined && same(pairing.codeHash, code));
+  if (!matched) {
+    pairing.attempts = (pairing.attempts ?? 0) + 1;
+    if (pairing.attempts >= PAIRING_MAX_ATTEMPTS) {
+      delete file.pairing;
+      writeRemote(file);
+      return "burned";
+    }
+    writeRemote(file);
+    return "mismatch";
+  }
   delete file.pairing;
   writeRemote(file);
   return true;
