@@ -1374,6 +1374,60 @@ test("an engine restart stops every session's background work — the idle-with-
   expect(restarted.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
 });
 
+test("a provider turn is born running under a claim, and a human message sent meanwhile is steered into it", () => {
+  const { store } = readyStore();
+  const turn = store.openProviderTurn("session_one", {
+    workerId: "worker_one",
+    input: "Background task completed (DONE).",
+    reason: { kind: "task_notification", taskId: "task_toolu_bg" },
+  });
+  expect(turn).toMatchObject({ state: "running", origin: "provider", providerReason: { kind: "task_notification", taskId: "task_toolu_bg" } });
+  expect(turn.claim?.workerId).toBe("worker_one");
+  expect(store.getSession("session_one").activity).toBe("working");
+  expect(store.readEvents("session_one").slice(-3).map((event) => event.type)).toEqual(["turn.accepted", "turn.claimed", "turn.started"]);
+  // A second one cannot open while this runs — one turn per session.
+  expect(() => store.openProviderTurn("session_one", { workerId: "worker_one", input: "x", reason: { kind: "unknown" } })).toThrow("live turn");
+  // The usual routes work under its claim.
+  store.ingestObservations("session_one", turn.runId, turn.claim!.token, [
+    { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "merging" } } },
+  ]);
+  // A human message while it runs goes where a message during any running
+  // turn goes: queued, and promotable into it.
+  store.submitTurn("session_one", { runId: "run_human", input: "also check the docs" });
+  expect(store.promoteTurn("session_one", "run_human")).toMatchObject({ state: "steering", steer: { intoRunId: turn.runId } });
+  store.completeTurn("session_one", turn.runId, turn.claim!.token, { text: "merged" });
+  const turns = new Map(store.turns("session_one").map((candidate) => [candidate.runId, candidate]));
+  expect(turns.get(turn.runId)).toMatchObject({ state: "completed", resultText: "merged", origin: "provider" });
+  // The steered message was not delivered before the turn settled: back to
+  // the queue, where it runs as the next human turn.
+  expect(turns.get("run_human")?.state).toBe("queued");
+});
+
+test("task reports between turns fold onto the rows they name, and open nothing", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claimNextTurn("worker_one")!;
+  const token = first.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_toolu_bg", providerTaskId: "bg1", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Watching" });
+  expect(store.getSession("session_one").activity).toBe("monitoring");
+
+  // The shell ends while the session is idle: no claim, no turn.
+  const accepted = store.reportSessionTasks("session_one", "worker_one", [
+    { kind: "task.completed", task: { id: "task_toolu_bg", providerTaskId: "bg1", kind: "background", state: "completed", resultText: "green" } },
+    // A row nobody opened is not minted here.
+    { kind: "task.started", task: { id: "task_ghost", kind: "agent", state: "running" } },
+  ]);
+  expect(accepted).toEqual({ accepted: 1 });
+  expect(store.tasks("session_one")).toHaveLength(1);
+  expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "green", runId: "run_one" });
+  expect(store.getSession("session_one").activity).toBe("idle");
+  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "task.completed", runId: "run_one" });
+});
+
 test("a claim carries the session's live task rows, and only those, as seeds", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
