@@ -289,6 +289,9 @@ type SdkUserMessage = {
    */
   message: { role: "user"; content: string | Array<Record<string, unknown>> };
   parent_tool_use_id: null;
+  /** The send's join key — echoed back as `user_message_uuid` on the reply
+   *  it triggers. See `FeedMessage.uuid` in ./claude-runtime.ts. */
+  uuid?: string;
 };
 
 /** The image types the Anthropic API accepts as an image block. Anything else
@@ -1155,6 +1158,17 @@ export function createClaudeDriver(
        *  remembered, so the progress/notification edges of the same task
        *  cannot re-create the row through `emitTask`'s fold-or-invent path. */
       const suppressedTasks = new Set<string>();
+      /** The turn the pump is reading is one the CLI started on its own (a
+       *  background task's wake-up), not this engine turn — see the
+       *  `message_start` check in the loop. Its rows are filed under the task
+       *  that fired it; its result ends nothing. */
+      let foreignTurn: { taskId: string | undefined } | undefined;
+      /** Our reply's first frame has arrived (`user_message_uuid` = ours).
+       *  Until then a sender-less turn is not ours; after, it is. */
+      let ownTurnOpen = false;
+      /** The last task a `task_notification` spoke for: the shell whose
+       *  ending the CLI is about to wake the model over. */
+      let lastWokenTaskId: string | undefined;
 
       const taskIdFor = (sdkTaskId: string | undefined, toolUseId: string | undefined): string => {
         if (toolUseId) return `task_${toolUseId}`;
@@ -1652,6 +1666,7 @@ export function createClaudeDriver(
           model,
           busy: true,
           lastUsedAt: Date.now(),
+          echoesUserMessageUuid: false,
         };
       };
 
@@ -1691,12 +1706,22 @@ export function createClaudeDriver(
       if (persistent && !claimed) runtimes.adopt(runtime);
       runtime.bindings.current = turnBindings;
 
+      /**
+       * THIS TURN'S JOIN KEY. The CLI echoes it as `user_message_uuid` on the
+       * first stream frame of the reply and on the `result` that ends it — and
+       * on nothing it starts by itself. That last part is what the pump below
+       * needs: a background task finishing between turns wakes the model for a
+       * turn of the CLI's own, whose frames sit buffered on the shared iterator
+       * until the next engine turn pumps them out.
+       */
+      const turnUuid = crypto.randomUUID();
       if (persistent) {
         // The turn begins as one message pushed into the open stream.
         runtime.feed.push({
           type: "user",
           message: { role: "user", content: claudeInitialContent(prompt, attachments ?? []) },
           parent_tool_use_id: null,
+          uuid: turnUuid,
         });
       }
 
@@ -1793,6 +1818,12 @@ export function createClaudeDriver(
              *  continue after their results — the turn is NOT over. Absent on
              *  older producers and the fake SDKs. */
             stop_reason?: string | null;
+            /** The join key of the send this frame answers — see `turnUuid`. On
+             *  the first stream frame and the result of a turn only. */
+            user_message_uuid?: string;
+            /** Set on a turn the CLI started by ITSELF (a background task's
+             *  notification, an auto-continuation); absent on a human send. */
+            origin?: { kind?: string };
             task_id?: string;
             tool_use_id?: string;
             description?: string;
@@ -1836,7 +1867,65 @@ export function createClaudeDriver(
            * five agents talking at once instead of the main loop's answer.
            */
           const parentToolUseId = str(item.parent_tool_use_id ?? undefined);
-          const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : undefined;
+
+          /**
+           * A TURN THE CLI STARTED BY ITSELF IS NOT THIS TURN.
+           *
+           * MEASURED (session_7657b2ef…, turns 96–98, and reproduced against
+           * CLI 2.1.259): a background shell or monitor that fires between
+           * engine turns makes the CLI inject its own `task-notification` user
+           * message and run a whole model turn on it — assistant text, tool
+           * calls, a `result` — into the shared iterator, where it sits until
+           * the next engine turn pumps. That next turn then read the wake-up's
+           * prose as its own answer, its `result` as its own end (a `/compact`
+           * turn "answered" with "Tick 1 arrived"), and the real reply landed
+           * on the turn after. The CLI marks its own turns two ways: the
+           * frames that answer OUR send carry `user_message_uuid` = the key we
+           * pushed, and a CLI-originated result carries `origin`. A frame is
+           * foreign from the first frame that names a different sender until
+           * the result that closes it. Its rows are filed under the task that
+           * fired it (the last notification, or the wake-up itself) so they
+           * appear beside the shell that spoke, not as the assistant's reply.
+           */
+          if (item.type === "stream_event" && item.event?.type === "message_start" && !parentToolUseId) {
+            const sender = str(item.user_message_uuid);
+            if (sender === turnUuid) {
+              // Our reply has begun. Later message_starts INSIDE it (the
+              // continuation after a tool round) carry no uuid — measured —
+              // and are ours by position.
+              ownTurnOpen = true;
+              foreignTurn = undefined;
+              runtime.echoesUserMessageUuid = true;
+            } else if (sender !== undefined || (runtime.echoesUserMessageUuid && !ownTurnOpen)) {
+              // Another sender's turn, or — on a producer known to echo the
+              // key — a turn with no sender at all before ours has begun:
+              // the CLI's own. Its message_start carries no uuid (measured).
+              foreignTurn = { taskId: lastWokenTaskId };
+            }
+          }
+          if (foreignTurn && (item.type === "assistant" || item.type === "stream_event" || item.type === "user") && !parentToolUseId) {
+            if (!foreignTurn.taskId) {
+              // A wake-up whose task never announced: still not ours, and
+              // with nowhere to file its rows they are dropped rather than
+              // shown as the answer to a question nobody asked.
+              continue;
+            }
+          }
+          if (item.type === "result" && !parentToolUseId) {
+            const sender = str(item.user_message_uuid);
+            const foreignResult =
+              foreignTurn !== undefined ||
+              (sender !== undefined && sender !== turnUuid) ||
+              str(item.origin?.kind) !== undefined ||
+              (sender === undefined && runtime.echoesUserMessageUuid && !ownTurnOpen);
+            if (foreignResult) {
+              foreignTurn = undefined;
+              await flush();
+              continue;
+            }
+          }
+
+          const ownerTaskId = parentToolUseId ? `task_${parentToolUseId}` : foreignTurn?.taskId;
 
           // ── compaction, announced then bounded ────────────────────────
           if (item.type === "system" && item.subtype === "status") {
@@ -1986,6 +2075,7 @@ export function createClaudeDriver(
           }
           if (item.type === "system" && item.subtype === "task_notification") {
             if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
+            lastWokenTaskId = taskIdFor(str(item.task_id), str(item.tool_use_id));
             emitTask(
               "task.completed",
               str(item.task_id),

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ClockIcon, EyeIcon, FolderGit2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -384,6 +384,30 @@ export function SessionTurn({
    *  one answer was made is a glance, not a mode. */
   const [workShown, setWorkShown] = useState(false);
   const folded = quiet && !live;
+
+  /**
+   * THE COMPACTION GESTURE IS NOT A MESSAGE. A press of the Compact button
+   * used to render as the human typing "/compact" in a bubble, and the CLI's
+   * reply to it (a status pair) drew a second, empty assistant message. One
+   * quiet system line says what happened; its `context_compaction` row
+   * carries the numbers.
+   */
+  if (turn.kind === "compact") {
+    return (
+      <div className="flex flex-col gap-2">
+        {turn.items.filter((item) => item.detail.type === "context_compaction").map((item) => (
+          <TranscriptItem key={item.id} item={item} />
+        ))}
+        {turn.items.every((item) => item.detail.type !== "context_compaction") && (
+          <p className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Minimize2Icon className="size-3.5 shrink-0" />
+            <span>{isActiveTurn(turn.state) ? "Compacting context…" : turn.state === "failed" ? "Compaction failed" : "Context compaction requested"}</span>
+          </p>
+        )}
+        {turn.state === "failed" && turn.failure && <p className="text-xs text-destructive">{turn.failure}</p>}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-8">
@@ -1247,7 +1271,10 @@ export function SessionCockpit({
     if (!sessionId) return;
     setSending(true);
     try {
-      await api.submitTurn(sessionId, { runId: newRunId(), input: "/compact" });
+      // `kind: "compact"` is what makes it a gesture rather than a sentence:
+      // the transcript draws a system row, and the engine refuses a second
+      // one while this one is in flight.
+      await api.submitTurn(sessionId, { runId: newRunId(), input: "/compact", kind: "compact" });
       await hydrate();
       setError(undefined);
     } catch (cause) {

@@ -528,6 +528,16 @@ export const Turn = z.object({
   /** What the human asked for. */
   input: z.string(),
   /**
+   * WHAT KIND OF TURN THIS IS. Absent means a message — the human said
+   * something. `compact` is the context-compaction gesture: the cockpit's
+   * button, not a sentence, and the transcript renders it as a system row
+   * rather than a bubble. It was submitted as the literal text "/compact"
+   * before, so the history read as the human typing a slash command — three
+   * times in a row, on one measured session, because nothing refused a
+   * second one while the first was in flight.
+   */
+  kind: z.enum(["message", "compact"]).optional(),
+  /**
    * Files sent WITH this message.
    *
    * ON THE TURN RATHER THAN THE SESSION, because that is what they are: an

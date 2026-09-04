@@ -332,7 +332,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** `model` rides with THIS message — queue three with different models and
      *  each runs on the one it was written under. It cannot name a provider
      *  instance, so the session's provider is fixed for its whole life. */
-    submitTurn: (sessionId: string, input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] }) =>
+    submitTurn: (sessionId: string, input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] }) =>
       request<TurnSubmissionResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns`, input),
     /**
      * Put a file where the session's provider can reach it.

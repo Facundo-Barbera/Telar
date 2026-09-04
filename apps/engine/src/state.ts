@@ -4583,10 +4583,11 @@ export class EngineStore {
 
   submitTurn(
     sessionId: string,
-    input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] },
+    input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
     assertText(input.input);
+    const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
     const known = queue.turns.find((turn) => turn.runId === input.runId);
@@ -4612,12 +4613,22 @@ export class EngineStore {
     if (queue.turns.some((turn) => turn.state === "ambiguous")) {
       throw new EngineStateError("conflict", "session has an ambiguous turn that must be resolved first");
     }
+    /**
+     * ONE COMPACTION AT A TIME. The gesture is idempotent in meaning — "squeeze
+     * the context" — so a second press while the first is queued or running
+     * has nothing to add, and letting it through is how one session ended up
+     * with three "/compact" turns in a row.
+     */
+    if (kind === "compact" && queue.turns.some((turn) => turn.kind === "compact" && ACTIVE_TURN_STATES.has(turn.state))) {
+      throw new EngineStateError("conflict", "a compaction is already queued or running on this session");
+    }
     const at = this.now();
     const turn: Turn = {
       runId: input.runId,
       sessionId,
       sequence: queue.nextSequence++,
       input: input.input,
+      ...(kind ? { kind } : {}),
       state: "queued",
       acceptedAt: at,
       updatedAt: at,
@@ -5798,7 +5809,20 @@ export class EngineStore {
     }
     if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
       const seed = observation.task;
-      const known = projection.tasks.get(seed.id);
+      /**
+       * BY CONTRACT ID, THEN BY PROVIDER ID. A task announced in one turn
+       * under `task_<tool_use_id>` is reported on in a LATER turn by the
+       * CLI's `task_notification`, which carries `task_id` and no
+       * `tool_use_id` — so that turn's driver mints `task_<task_id>` for the
+       * same shell. Measured on session_7657b2ef…: monitor b7ohaj89n ended as
+       * `task_toolu_01FD…` (background, stopped) and was then re-created as
+       * `task_b7ohaj89n` (agent, completed) — a second row, on the Agents
+       * surface, for a shell that was already closed. The provider id is the
+       * one handle both turns share.
+       */
+      const known =
+        projection.tasks.get(seed.id) ??
+        (seed.providerTaskId ? [...projection.tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
       /**
        * THE FIRST ENDING IS THE ENDING — the driver's own rule (`emitTask`),
        * restated at the store because the store outlives the driver's
@@ -5822,7 +5846,9 @@ export class EngineStore {
       const task: Task = {
         ...known,
         ...definedOnly(seed),
-        id: seed.id,
+        // The row's own id, when a provider-id match found one: the later
+        // turn's minted id names the same shell and must not open a second row.
+        id: known?.id ?? seed.id,
         /**
          * THE FIRST CLASSIFICATION IS THE CLASSIFICATION, for the same reason
          * `runId` and `startedAt` below take the stored value: kind is a fact

@@ -1435,7 +1435,7 @@ export class EngineClient {
    */
   submitTurn(
     sessionId: string,
-    input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] },
+    input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
   ): Promise<TurnSubmissionResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns`, input);
   }

@@ -33,6 +33,8 @@ struct Turn: Codable, Identifiable, Equatable {
     var sequence: Int
     var state: TurnState
     var input: String
+    /// "compact" when the turn is the compaction gesture, not a message.
+    var kind: String?
     var model: ModelSelection?
     var acceptedAt: Timestamp
     var updatedAt: Timestamp

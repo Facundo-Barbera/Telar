@@ -27,6 +27,15 @@ export type FeedMessage = {
   type: "user";
   message: { role: "user"; content: unknown };
   parent_tool_use_id: null;
+  /**
+   * THE JOIN KEY between a send and the reply it triggers. The CLI echoes it
+   * as `user_message_uuid` on the turn's first stream frame and on its
+   * `result` — and on NOTHING it starts by itself (a background task's
+   * notification wakes the model for a turn of the CLI's own, whose result
+   * carries `origin` instead). Without it the pump cannot tell its own turn's
+   * end from a buffered stranger's.
+   */
+  uuid?: string;
 };
 
 /**
@@ -119,6 +128,13 @@ export type ClaudeSessionRuntime<T = unknown> = {
   readonly destroy: () => void;
   /** The model `setModel` last confirmed, so a turn can skip the round trip. */
   model: string | undefined;
+  /**
+   * This process has echoed a send's `uuid` back as `user_message_uuid` at
+   * least once — so a main-loop turn that begins WITHOUT one, before ours has,
+   * is the CLI's own (a background task's wake-up), not an older producer
+   * that never says. Learned per process, never assumed.
+   */
+  echoesUserMessageUuid: boolean;
   /** A turn is pumping right now — never evict. */
   busy: boolean;
   lastUsedAt: number;

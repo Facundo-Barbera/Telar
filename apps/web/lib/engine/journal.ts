@@ -28,6 +28,9 @@ export type JournalTask = Task & { items: JournalItem[] };
 export type JournalTurn = {
   runId: string;
   prompt: string;
+  /** `compact` when the turn is the compaction gesture, not a message — the
+   *  transcript draws a system row instead of a bubble. */
+  kind?: "message" | "compact";
   /** Files sent WITH this message. On the turn because that is what they
    *  describe — a transcript that showed the words and not the screenshot has
    *  lost half of what was said. */
@@ -114,6 +117,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       {
         runId: turn.runId,
         prompt: turn.input,
+        ...(turn.kind ? { kind: turn.kind } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
         items: [],
@@ -202,6 +206,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
           byRun.set(event.turn.runId, {
             runId: event.turn.runId,
             prompt: event.turn.input,
+            ...(event.turn.kind ? { kind: event.turn.kind } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
             items: [],

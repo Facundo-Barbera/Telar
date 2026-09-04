@@ -1695,3 +1695,51 @@ test("the published appearance is an opaque blob, capped, and survives a restart
   fs.writeFileSync(path.join(stateRoot, "appearance.json"), "not json at all");
   expect(store.getAppearance()).toBeNull();
 });
+
+test("a compaction is a kind of turn, and only one may be in flight", () => {
+  const { store } = readyStore();
+  const first = store.submitTurn("session_one", { runId: "run_c1", input: "/compact", kind: "compact" });
+  expect(first.turn.kind).toBe("compact");
+  // A second press while the first is queued: refused, not queued behind it.
+  expect(() => store.submitTurn("session_one", { runId: "run_c2", input: "/compact", kind: "compact" })).toThrow(
+    "a compaction is already queued or running",
+  );
+  // An ordinary message is still welcome behind it.
+  const message = store.submitTurn("session_one", { runId: "run_m1", input: "hello" });
+  expect(message.turn.kind).toBeUndefined();
+  // Once the compaction settles, another may be asked for.
+  const claim = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_c1", claim.turn.claim!.token);
+  store.completeTurn("session_one", "run_c1", claim.turn.claim!.token, { text: "" });
+  expect(store.submitTurn("session_one", { runId: "run_c3", input: "/compact", kind: "compact" }).turn.kind).toBe("compact");
+});
+
+test("a later turn's report on a task it knows only by provider id folds onto the existing row", () => {
+  /**
+   * MEASURED: monitor b7ohaj89n was announced under `task_toolu_01FD…`
+   * (background) and, after the cockpit stopped it, the NEXT turn's driver saw
+   * its `task_notification` — which carries `task_id` and no `tool_use_id` —
+   * and minted `task_b7ohaj89n`, kind agent, state completed. Two rows for
+   * one shell, the second on the Agents surface reading "Done".
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch" });
+  const first = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_one", first.turn.claim!.token);
+  store.ingestObservations("session_one", "run_one", first.turn.claim!.token, [
+    { kind: "task.started", task: { id: "task_toolu_mon", kind: "background", state: "running", title: "Monitor", providerTaskId: "b7ohaj89n", backgrounded: true } },
+  ]);
+  store.completeTurn("session_one", "run_one", first.turn.claim!.token, { text: "armed" });
+  expect(store.stopBackgroundTasks("session_one")).toBe(1);
+
+  store.submitTurn("session_one", { runId: "run_two", input: "Next" });
+  const second = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_two", second.turn.claim!.token);
+  store.ingestObservations("session_one", "run_two", second.turn.claim!.token, [
+    { kind: "task.completed", task: { id: "task_b7ohaj89n", kind: "agent", state: "completed", providerTaskId: "b7ohaj89n", resultText: "stream ended" } },
+  ]);
+  const tasks = store.tasks("session_one");
+  expect(tasks).toHaveLength(1);
+  // The stopped ending stands; the kind stands; the summary still folds in.
+  expect(tasks[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "stream ended" });
+});

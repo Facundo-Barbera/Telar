@@ -2680,6 +2680,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const accepted = store.submitTurn(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,
             input: stringValue(input.input, "turn input")!,
+            ...(input.kind === "compact" ? { kind: "compact" as const } : {}),
             ...(model.success ? { model: model.data } : {}),
             ...(Array.isArray(input.attachments) ? { attachments: input.attachments.map((id) => stringValue(id, "attachment id")!) } : {}),
           });
