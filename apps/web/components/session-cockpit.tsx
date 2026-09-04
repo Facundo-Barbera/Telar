@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -334,10 +334,35 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
  * shows the provider's own notification text (the turn's `prompt`), which is
  * what the model was actually woken with.
  */
+/**
+ * A WAKE-UP SAYS WHAT HAPPENED, not that the model woke. "Woke up · Explore"
+ * told the reader nothing they could act on; "Explore agent finished" does —
+ * it is the event the model is about to react to, phrased like the tool rows
+ * around it (verb first, then the title in mono). The verb comes from the
+ * task's kind and state: an agent finishes or fails, a background command
+ * exits, a still-running one (a monitor's tick) reported.
+ */
+function wakeUpLabel(task: JournalTask | undefined): { verb: string; Icon: typeof ClockIcon } {
+  if (!task) return { verb: "Woke up on a background task", Icon: ClockIcon };
+  const subject = task.kind === "agent" ? (task.role ? `${task.role} agent` : "Sub-agent") : "Background command";
+  const Icon = task.kind === "agent" ? BotIcon : TerminalIcon;
+  switch (task.state) {
+    case "completed":
+      return { verb: `${subject} ${task.kind === "agent" ? "finished" : "exited"}`, Icon };
+    case "failed":
+      return { verb: `${subject} failed`, Icon };
+    case "stopped":
+      return { verb: `${subject} was stopped`, Icon };
+    default:
+      return { verb: `${subject} reported`, Icon };
+  }
+}
+
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
   const task = turn.wokenBy ? roster.find((candidate) => candidate.id === turn.wokenBy) : undefined;
-  const label = task?.title ?? task?.role ?? (turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : "a background task");
+  const { verb, Icon } = wakeUpLabel(task);
+  const label = task?.title ?? (task ? undefined : turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : undefined);
   const body = turn.prompt.trim();
   return (
     <div className="rounded-md">
@@ -349,9 +374,9 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
           aria-expanded={body ? open : undefined}
           onClick={() => setOpen((current) => !current)}
         >
-          <ClockIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="shrink-0">Woke up</span>
-          <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{label}</span>
+          <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="shrink-0">{verb}</span>
+          {label && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{label}</span>}
           {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
         </button>
         {onOpen && task && (
