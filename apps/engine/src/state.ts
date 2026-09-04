@@ -5375,6 +5375,14 @@ export class EngineStore {
           // running these agents did not survive the restart, whatever we
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
+          // BACKGROUND WORK DIES WITH ITS PROCESS TOO — the same position
+          // `failTurn` and a live stop already take: outliving its TURN is the
+          // definition of background, outliving its PROCESS is impossible.
+          // Unfiltered by runId for the same reason theirs is ("whichever turn
+          // started them"): the dead CLI hosted every shell of the session. A
+          // session that was idle-with-monitoring at the restart is left
+          // alone — no turn was running, so no process of ours died.
+          this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
           changed = true;
         } else if (turn.state === "steering") {
           // Delivery is unknowable across a restart; requeue is the side the
@@ -5430,6 +5438,10 @@ export class EngineStore {
           // turn reached the provider is still undecided; whether its agents
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
+          // And the CLI process was the worker's child, so the session's
+          // background work is gone with it — process-death, not turn-end,
+          // which is why `completeTurn` still leaves background alone.
+          this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
           // A promoted message aimed at this turn was never delivered by the
           // vanished worker; back to the queue rather than gone.
           for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
