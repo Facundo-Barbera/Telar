@@ -490,11 +490,18 @@ function startEngineChild(home) {
  * cockpit will need a moment later — a stale document from a previous run is
  * caught here rather than as a mystifying 503 on the first page load.
  */
+/**
+ * The engine's discovery document. The subdirectory `engineRootFromEnv`
+ * composes in apps/engine/src/state.ts, and the same one the cockpit reads.
+ * Three places know this name; a test in this app pins that they agree — and
+ * THIS is the shell's only spelling of it (AD-5: one composition per file).
+ */
+function engineDiscoveryFile(home) {
+  return path.join(home, "engine", "engine.json");
+}
+
 function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150 } = {}) {
-  // The subdirectory `engineRootFromEnv` composes in apps/engine/src/state.ts,
-  // and the same one the cockpit reads. Three places know this name; a test in
-  // this app pins that they agree.
-  const discoveryFile = path.join(home, "engine", "engine.json");
+  const discoveryFile = engineDiscoveryFile(home);
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const tick = () => {
@@ -893,7 +900,7 @@ function reportBrowserControl(change) {
   if (!engineDiscovery && Date.now() - discoveryReadAt > 5_000) {
     discoveryReadAt = Date.now();
     try {
-      engineDiscovery = JSON.parse(fs.readFileSync(path.join(telarHome(), "engine", "engine.json"), "utf8"));
+      engineDiscovery = JSON.parse(fs.readFileSync(engineDiscoveryFile(telarHome()), "utf8"));
     } catch {
       /* no engine on this machine right now */
     }
