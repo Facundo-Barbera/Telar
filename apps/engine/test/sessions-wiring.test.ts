@@ -108,6 +108,15 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     diff: async () => {
       throw new Error("this test does not diff");
     },
+    subscribe: async () => {
+      throw new Error("this test does not subscribe");
+    },
+    unsubscribe: async () => false,
+    subscriptions: async () => [],
+    requests: async () => [],
+    resolveRequest: async () => {
+      throw new Error("this test does not resolve");
+    },
   };
 
   await claudeDriver(sdk).run({
@@ -126,6 +135,11 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_status",
     "sessions_stop",
     "sessions_diff",
+    "sessions_subscribe",
+    "sessions_unsubscribe",
+    "sessions_subscriptions",
+    "sessions_requests",
+    "sessions_resolve_request",
     "warp",
   ]);
 
@@ -224,10 +238,54 @@ test("the worker cannot archive, delete or accept anything — the client it hol
   // because a Pick widened by accident is exactly the change nobody notices.
   const { sawCapability } = await turnWith(async (sessions) => {
     const surface = Object.keys(sessions).sort();
-    expect(surface).toEqual(["create", "diff", "list", "read", "send", "status", "stop"]);
+    expect(surface).toEqual([
+      "create", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+    ]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);
     }
   });
   expect(sawCapability).toBe(true);
+});
+
+test("a turn's capability knows who it is, and a subscription made mid-turn wakes the host over the wire", async () => {
+  // THE WORKER SEAM FOR SUBSCRIPTIONS: `self` is the claim's own session id,
+  // closed over by the worker's code; the subscription goes through the
+  // client; and when the made session finishes a turn — completed here by the
+  // ordinary API, as a worker would — the engine queues a wake on the host.
+  let made: Session | undefined;
+  let self = "";
+  const { client, hostId } = await turnWith(async (sessions) => {
+    self = sessions.self!.sessionId;
+    const { projects } = await sessions.list();
+    made = await sessions.create({ projectId: projects[0]!.id, title: "a worker", envMode: "local" });
+    await sessions.subscribe(self, { targetSessionId: made.id, events: ["turn_completed"] });
+  });
+  expect(self).toBe(hostId);
+  expect((await client.subscriptions(hostId)).subscriptions).toHaveLength(1);
+
+  await client.submitTurn(made!.id, { runId: "run_made", input: "work" });
+  const worker = new EngineWorker({
+    client,
+    workerId: "worker_two",
+    driver: { async run() { return { text: "all done here" }; } },
+    pollMs: 60_000,
+  });
+  workers.push(worker);
+  await worker.start();
+  await worker.tick();
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if ((await client.session(made!.id)).turns[0]?.state === "completed") break;
+    await Bun.sleep(5);
+  }
+
+  const { turns } = await client.session(hostId);
+  const wake = turns.find((turn) => turn.origin === "session");
+  expect(wake).toBeDefined();
+  expect(wake!.wakeReason).toEqual({ kind: "turn_completed", sessionId: made!.id, runId: "run_made" });
+  expect(wake!.input).toContain("[wake]");
+  expect(wake!.input).toContain("all done here");
+  // A REAL TURN: the worker on this daemon may already have claimed and run
+  // it by the time we look — which is the point. Queued or done, never lost.
+  expect(["queued", "claimed", "running", "completed"]).toContain(wake!.state);
 });

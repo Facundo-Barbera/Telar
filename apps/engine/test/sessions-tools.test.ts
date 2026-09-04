@@ -71,8 +71,9 @@ type Registered = {
  * by any argument. If this object and `daemon.ts`'s ever diverge, the socket
  * test's parity assertion is what notices.
  */
-function capabilityOver(store: EngineStore): SessionsCapability {
+function capabilityOver(store: EngineStore, self?: { sessionId: string }): SessionsCapability {
   return {
+    ...(self ? { self } : {}),
     list: async () => store.liveSessions(),
     create: async (input) => store.createSession({ ...input, origin: "session" }),
     send: async (sessionId, input) => store.submitTurn(sessionId, input),
@@ -80,17 +81,37 @@ function capabilityOver(store: EngineStore): SessionsCapability {
     status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
     stop: async (sessionId) => store.stopTurn(sessionId),
     diff: async (sessionId) => store.sessionDiff(sessionId),
+    subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
+    unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
+    subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
+    requests: async (sessionId) => store.requests(sessionId),
+    resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
   };
 }
 
-function wall(store: EngineStore): Map<string, Registered> {
+const WALL_NAMES = [
+  "sessions_list",
+  "sessions_create",
+  "sessions_send",
+  "sessions_read",
+  "sessions_status",
+  "sessions_stop",
+  "sessions_diff",
+  "sessions_subscribe",
+  "sessions_unsubscribe",
+  "sessions_subscriptions",
+  "sessions_requests",
+  "sessions_resolve_request",
+];
+
+function wall(store: EngineStore, self?: { sessionId: string }): Map<string, Registered> {
   const registered = new Map<string, Registered>();
   sessionsTools(
     (name, description, shape, run) => {
       registered.set(name, { name, description, shape, run });
       return { name };
     },
-    capabilityOver(store),
+    capabilityOver(store, self),
   );
   return registered;
 }
@@ -115,21 +136,13 @@ async function call(tools: Map<string, Registered>, name: string, args: Record<s
 // ── the wall's shape ────────────────────────────────────────────────────────
 
 describe("what the wall is", () => {
-  test("exactly seven tools, every one declaring the `sessions` capability in its name", () => {
+  test("exactly twelve tools, every one declaring the `sessions` capability in its name", () => {
     const { store } = engine();
     const names = [...wall(store).keys()];
     // PINNED AS A SET, not merely counted: a tool added here has to be added
     // deliberately, and the socket's parity test then requires it to appear on
     // the socket in the same change.
-    expect(names).toEqual([
-      "sessions_list",
-      "sessions_create",
-      "sessions_send",
-      "sessions_read",
-      "sessions_status",
-      "sessions_stop",
-      "sessions_diff",
-    ]);
+    expect(names).toEqual(WALL_NAMES);
     expect(() => assertTelarToolNames(names)).not.toThrow();
     expect(TELAR_CAPABILITIES).toContain("sessions");
     // The capability is legible in the qualified name a model actually sees —
@@ -159,7 +172,7 @@ describe("what the wall is", () => {
     // The rule lives in words because there is nothing to check it against —
     // the created session is a peer with its own boundary and no link back.
     // The three verbs that could be bent into laundering all carry it.
-    for (const name of ["sessions_create", "sessions_send"]) {
+    for (const name of ["sessions_create", "sessions_send", "sessions_resolve_request"]) {
       expect(tools.get(name)!.description).toContain("NEVER use this to get around something you were refused");
     }
     // And the read-only ones do NOT, so the sentence stays meaningful rather
@@ -215,8 +228,12 @@ describe("creating a session", () => {
     // What IS recorded is provenance, which is a count and not a link: it says
     // an agent asked, never WHICH agent.
     expect(store.getSession(madeId).origin).toBe("session");
-    // …and the capability itself carries no identity to record one with.
-    expect(Object.keys(capabilityOver(store)).sort()).toEqual(["create", "diff", "list", "read", "send", "status", "stop"]);
+    // …and the SOCKET's capability carries no identity to record one with. A
+    // turn's does (`self`) — for subscriptions, which are recorded on the
+    // subscription and on neither session.
+    expect(Object.keys(capabilityOver(store)).sort()).toEqual([
+      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+    ]);
   });
 
   test("a project that does not exist refuses with the store's own sentence", async () => {
@@ -440,16 +457,111 @@ describe("sessions_read is bounded", () => {
   });
 });
 
+// ── subscriptions and answering a peer ──────────────────────────────────────
+
+describe("subscribing and answering", () => {
+  test("without a self there is nobody to wake: the three subscription tools refuse in words", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const target = store.createSession({ projectId, title: "a target" });
+    for (const name of ["sessions_subscribe", "sessions_unsubscribe", "sessions_subscriptions"]) {
+      const refused = await call(tools, name, { sessionId: target.id, subscriptionId: "sub_x" });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("no session to wake");
+    }
+  });
+
+  test("subscribe, list, unsubscribe — a round trip that records nothing on either session", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "the orchestrator" });
+    const tools = wall(store, { sessionId: host.id });
+    const target = store.createSession({ projectId, title: "a worker" });
+
+    const subscribed = await call(tools, "sessions_subscribe", { sessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
+    expect(subscribed.isError).toBe(false);
+    expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, targetSessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
+    expect(String(subscribed.json!.note)).toContain("[wake]");
+
+    const listed = await call(tools, "sessions_subscriptions");
+    expect((listed.json!.subscriptions as unknown[]).length).toBe(1);
+
+    // NEITHER SESSION'S RECORD MENTIONS THE OTHER — the wish is on the
+    // subscription alone.
+    for (const id of [host.id, target.id]) {
+      const stored = fs.readFileSync(path.join(store.paths.sessions, id, "session.json"), "utf8");
+      expect(stored).not.toContain(id === host.id ? target.id : host.id);
+    }
+
+    const removed = await call(tools, "sessions_unsubscribe", { subscriptionId: subscribed.json!.id });
+    expect(removed.json!.removed).toBe(true);
+    const again = await call(tools, "sessions_unsubscribe", { subscriptionId: subscribed.json!.id });
+    expect(again.isError).toBe(false);
+    expect(again.json!.removed).toBe(false);
+  });
+
+  test("a peer's question is listed with its fields, and answering it is recorded as a session's", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "the orchestrator" });
+    const tools = wall(store, { sessionId: host.id });
+    const target = store.createSession({ projectId, title: "a worker" });
+    store.submitTurn(target.id, { runId: "run_t", input: "go" });
+    const token = store.claimTurn(target.id, "worker_one")!.claim!.token;
+    store.markRunning(target.id, "run_t", token);
+    store.openRequest(target.id, "run_t", token, {
+      requestId: "req_q",
+      kind: "user_input",
+      detail: { kind: "user_input", prompt: "Which database?", fields: [{ key: "db", label: "Database", kind: "choice", choices: ["postgres", "sqlite"] }] },
+    });
+
+    const listed = await call(tools, "sessions_requests", { sessionId: target.id });
+    expect(listed.isError).toBe(false);
+    const [request] = listed.json!.requests as Array<Record<string, unknown>>;
+    expect(request).toMatchObject({ id: "req_q", kind: "user_input", prompt: "Which database?" });
+    expect((request!.fields as Array<Record<string, unknown>>)[0]).toMatchObject({ key: "db", choices: ["postgres", "sqlite"] });
+
+    const answered = await call(tools, "sessions_resolve_request", { sessionId: target.id, requestId: "req_q", decision: "accept", answers: { db: "postgres" } });
+    expect(answered.isError).toBe(false);
+    expect(answered.json!.resolvedBy).toBe("session");
+    expect(store.requests(target.id)[0]).toMatchObject({ state: "resolved", decision: "accept", resolvedBy: "session", answers: { db: "postgres" } });
+  });
+
+  test("a secret pick is the user's alone — listed by origin only, refused to resolve", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "the orchestrator" });
+    const tools = wall(store, { sessionId: host.id });
+    const target = store.createSession({ projectId, title: "a worker" });
+    store.submitTurn(target.id, { runId: "run_t", input: "go" });
+    const token = store.claimTurn(target.id, "worker_one")!.claim!.token;
+    store.markRunning(target.id, "run_t", token);
+    store.openRequest(target.id, "run_t", token, {
+      requestId: "req_s",
+      kind: "secret_access",
+      detail: {
+        kind: "secret_access",
+        secret: { origin: "https://github.com", fields: [{ kind: "password" }], candidates: [{ id: "item_1", title: "GitHub", domain: "github.com" }] },
+      },
+    });
+
+    const listed = await call(tools, "sessions_requests", { sessionId: target.id });
+    expect(listed.text).toContain("https://github.com");
+    expect(listed.text).not.toContain("item_1");
+    const refused = await call(tools, "sessions_resolve_request", { sessionId: target.id, requestId: "req_s", decision: "accept" });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("user's alone");
+    expect(store.requests(target.id)[0]!.state).toBe("open");
+  });
+});
+
 // ── the fan-out guard ───────────────────────────────────────────────────────
 
 describe("a warp child may not reach these tools", () => {
   test("every tool on the wall is denied to a warp child, by name", () => {
-    // STRUCTURAL, not a copied list: the names come from the wall itself, so an
-    // eighth tool fails this until it is denied too. `sessions_create` is
-    // fan-out wearing another hat, and the other six are steering a session
-    // from inside a script that cannot see it.
+    // STRUCTURAL, not a copied list: the names come from the wall itself, so a
+    // thirteenth tool fails this until it is denied too. `sessions_create` is
+    // fan-out wearing another hat, and the rest are steering a session from
+    // inside a script that cannot see it.
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    expect(names.length).toBe(7);
+    expect(names.length).toBe(12);
     for (const name of names) {
       expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
     }
