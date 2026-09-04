@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -20,7 +20,7 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
+import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { canvasHref, sessionHref } from "@/lib/session-list";
 import { hostFromPathname } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
@@ -327,11 +327,49 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
  * chips, the activity fold, the live step window and the ambiguous-turn recovery
  * are all decided in this function. A copy would start identical and drift.
  */
-/** What woke a provider turn: the task's title when this turn (or the
- *  snapshot) knows the row, else the row id's tail. */
-function wokenByLabel(turn: JournalTurn): string {
-  const task = turn.tasks.find((candidate) => candidate.id === turn.wokenBy);
-  return task?.title ?? task?.role ?? (turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : "a background task");
+/**
+ * THE WAKE-UP, AS A ROW. The task that fired lives on the turn that STARTED
+ * it, not on this one, so it is looked up in the session roster — the same
+ * list the Agents panel reads — and the row names it by title. Expanding
+ * shows the provider's own notification text (the turn's `prompt`), which is
+ * what the model was actually woken with.
+ */
+function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const task = turn.wokenBy ? roster.find((candidate) => candidate.id === turn.wokenBy) : undefined;
+  const label = task?.title ?? task?.role ?? (turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : "a background task");
+  const body = turn.prompt.trim();
+  return (
+    <div className="rounded-md">
+      <div className="flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          disabled={!body}
+          aria-expanded={body ? open : undefined}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <ClockIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="shrink-0">Woke up</span>
+          <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{label}</span>
+          {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
+        </button>
+        {onOpen && task && (
+          <button
+            type="button"
+            onClick={() => onOpen(task.id)}
+            title={task.kind === "background" ? "Open in the Processes panel" : "Open in the Agents panel"}
+            className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          >
+            Open ▸
+          </button>
+        )}
+      </div>
+      {open && body && (
+        <pre className="ml-3 max-h-40 overflow-auto border-l border-border/70 py-1 pr-1.5 pl-3 font-mono text-[0.6875rem] whitespace-pre-wrap text-muted-foreground">{body}</pre>
+      )}
+    </div>
+  );
 }
 
 export function SessionTurn({
@@ -346,6 +384,7 @@ export function SessionTurn({
   onDiscard,
   onOpenAgent,
   onOpenTab,
+  roster = [],
 }: {
   /**
    * CONVERSATION FIRST, TELEMETRY BEHIND A FOLD. The Spool's chat sets this:
@@ -366,6 +405,9 @@ export function SessionTurn({
    *  the person who wrote it. */
   onOpenTab?: (tab: PanelTab) => void;
   turn: JournalTurn;
+  /** The session's whole task roster, for a wake-up row: the task that woke
+   *  a provider turn belongs to the turn that started it, not to this one. */
+  roster?: readonly JournalTask[];
   sending: boolean;
   /** This turn is the one currently executing. Drives the live step window. */
   live: boolean;
@@ -418,15 +460,7 @@ export function SessionTurn({
 
   return (
     <div className="flex flex-col gap-8">
-      {turn.origin === "provider" ? (
-        /* A TURN THE PROVIDER STARTED — a background task's ending woke the
-           model. No human typed anything, so no bubble: one quiet line that
-           says what woke it, then the assistant's turn exactly as usual. */
-        <p className="flex items-center gap-2 text-xs text-muted-foreground">
-          <ClockIcon className="size-3.5 shrink-0" />
-          <span>Woke up{turn.wokenBy ? ` — ${wokenByLabel(turn)}` : ""}</span>
-        </p>
-      ) : (
+      {turn.origin !== "provider" && (
       <Message from="user">
         <MessageContent from="user">
           {/* THE SAME CHIPS THE COMPOSER DREW. This was `{turn.prompt}` in a
@@ -461,6 +495,13 @@ export function SessionTurn({
 
       <Message from="assistant">
         <MessageContent from="assistant">
+          {/* A TURN THE PROVIDER STARTED — a background task's ending woke the
+              model. No human typed anything, so no bubble: the wake-up is a
+              row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
+              turn's work follows it exactly as after any other row. */}
+          {turn.origin === "provider" && (
+            <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
+          )}
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}
@@ -1730,6 +1771,7 @@ export function SessionCockpit({
               <SessionTurn
                 key={turn.runId}
                 turn={turn}
+                roster={roster}
                 live={turn.runId === active?.runId}
                 now={now}
                 requests={openRequests.filter((request) => request.runId === turn.runId && request.id !== composerQuestion?.id)}
