@@ -1888,6 +1888,63 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "WOKE" });
   });
 
+  test("a notification in a LATER turn lands on the row its tool-use opened — no ghost row", async () => {
+    /**
+     * MEASURED: seven `task.completed` events in one session for ids like
+     * `task_b7ohaj89n` that never had a `task.started` — the SDK id of a shell
+     * whose row was `task_toolu_01FD…`. The second turn's driver had a fresh,
+     * empty map; the notification carries `task_id` and no `tool_use_id`, so
+     * `taskIdFor` minted the SDK id as a new row with `kind: agent` and no
+     * title. The process launched the task; the process remembers it.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        let turns = 0;
+        for await (const message of prompt) {
+          turns += 1;
+          if (turns === 1) {
+            yield { type: "system", subtype: "task_started", task_id: "b7ohaj89n", tool_use_id: "toolu_mon", description: "Monitor the log", task_type: "local_bash", is_backgrounded: true };
+            yield* reply(message.uuid!, "watching");
+          } else {
+            // The CLI reports on it by SDK id alone, in the next turn.
+            yield { type: "system", subtype: "task_updated", task_id: "b7ohaj89n", patch: { status: "killed" } };
+            yield { type: "system", subtype: "task_notification", task_id: "b7ohaj89n", summary: "stream ended" };
+            yield* reply(message.uuid!, "ok2");
+          }
+        }
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_remembers" }).result;
+    const second = run(driver, { sessionId: "session_remembers" });
+    await second.result;
+    const taskEvents = second.sink.observations.filter((o) => o.kind === "task.completed" || o.kind === "task.progress" || o.kind === "task.started");
+    expect(taskEvents.map((o) => (o.kind === "task.completed" || o.kind === "task.progress" || o.kind === "task.started") && o.task.id)).toEqual(["task_toolu_mon", "task_toolu_mon"]);
+    const last = taskEvents.at(-1);
+    expect(last?.kind === "task.completed" && last.task).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", title: "Monitor the log", resultText: "stream ended" });
+  });
+
+  test("a runtime built cold is seeded with the store's live rows, so a restart does not orphan a shell's report", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        for await (const message of prompt) {
+          // The very first thing the fresh process hears about is a task it
+          // never launched — the store did, under a process that is gone.
+          yield { type: "system", subtype: "task_notification", task_id: "b7ohaj89n", status: "completed", summary: "CI is green" };
+          yield* reply(message.uuid!, "ok");
+        }
+      },
+    }) as never);
+    const { sink, result } = run(driver, {
+      sessionId: "session_cold",
+      tasks: [{ id: "task_toolu_ci", providerTaskId: "b7ohaj89n", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" }],
+    });
+    await result;
+    const closed = sink.observations.filter((o) => o.kind === "task.completed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.kind === "task.completed" && closed[0].task).toMatchObject({ id: "task_toolu_ci", kind: "background", state: "completed", title: "Wait for CI", resultText: "CI is green" });
+    expect(sink.observations.some((o) => o.kind === "task.started")).toBe(false);
+  });
+
   test("a wake-up whose task never announced is dropped, not shown as an answer", async () => {
     const driver = createClaudeDriver(async () => ({
       async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {

@@ -1374,6 +1374,26 @@ test("an engine restart stops every session's background work — the idle-with-
   expect(restarted.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
 });
 
+test("a claim carries the session's live task rows, and only those, as seeds", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claimNextTurn("worker_one")!;
+  const token = first.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_toolu_ci", providerTaskId: "b7ohaj89n", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" } },
+    { kind: "task.started", task: { id: "task_toolu_done", providerTaskId: "x1", kind: "agent", state: "completed", title: "Explore" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Watching" });
+
+  store.submitTurn("session_one", { runId: "run_two", input: "Next" });
+  const second = store.claimNextTurn("worker_one")!;
+  // The seed is a `TaskSeed`: the engine-minted fields are stripped.
+  expect(second.tasks).toEqual([
+    { id: "task_toolu_ci", providerTaskId: "b7ohaj89n", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" },
+  ]);
+});
+
 test("a settled task is not re-announced by a report that adds nothing", () => {
   /**
    * MEASURED: 58 tasks in one session with two or more `task.completed`
