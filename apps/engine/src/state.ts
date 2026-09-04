@@ -5410,14 +5410,6 @@ export class EngineStore {
           // running these agents did not survive the restart, whatever we
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
-          // BACKGROUND WORK DIES WITH ITS PROCESS TOO — the same position
-          // `failTurn` and a live stop already take: outliving its TURN is the
-          // definition of background, outliving its PROCESS is impossible.
-          // Unfiltered by runId for the same reason theirs is ("whichever turn
-          // started them"): the dead CLI hosted every shell of the session. A
-          // session that was idle-with-monitoring at the restart is left
-          // alone — no turn was running, so no process of ours died.
-          this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
           changed = true;
         } else if (turn.state === "steering") {
           // Delivery is unknowable across a restart; requeue is the side the
@@ -5430,11 +5422,25 @@ export class EngineStore {
           changed = true;
         }
       }
+      /**
+       * BACKGROUND WORK DIES WITH ITS PROCESS — the same position `failTurn`
+       * and a live stop already take: outliving its TURN is the definition of
+       * background, outliving its PROCESS is impossible. And EVERY session's
+       * process is gone: since #126 the CLI lives in the worker for the whole
+       * session, turn or no turn, and the worker restarted with the engine.
+       * The earlier shape swept only under a `running` turn and "left an
+       * idle-with-monitoring session alone — no process of ours died", which
+       * was false: measured, session_9b43ceec… reported `monitoring` for five
+       * days over a shell whose process ended at a restart. Unfiltered by
+       * runId for the same reason `failTurn`'s is: the dead CLI hosted every
+       * shell of the session, whichever turn started them.
+       */
+      const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
       if (changed) {
         this.writeQueue(session.id, queue);
       }
-      if (changed || metadataChanged) {
-        if (changed && !metadataChanged) this.touchSession(session.id, at);
+      if (changed || metadataChanged || swept.length > 0) {
+        if (!metadataChanged) this.touchSession(session.id, at);
         else atomicWrite(sessionMetadataFile(this.paths, session.id), storedSession(session));
       }
       if (changed) {
@@ -5455,6 +5461,17 @@ export class EngineStore {
       const queue = this.readQueue(session.id);
       const at = this.now();
       let changed = false;
+      /**
+       * THE WORKER HELD EVERY SESSION'S PROCESS, not only the ones it had a
+       * turn running in: a runtime lingers in the worker between turns (that is
+       * how background work survives a turn), so a vanished worker took the
+       * idle sessions' shells with it too. One embedded worker per engine
+       * makes "every session" exact; with several, a session whose runtime
+       * lived elsewhere is swept a little early and re-announces on its next
+       * turn — duplication over a row that is wrong for days.
+       */
+      const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
+      if (swept.length > 0) this.touchSession(session.id, at);
       for (const turn of queue.turns) {
         if (turn.claim?.workerId !== workerId) continue;
         if (turn.state === "claimed") {
@@ -5473,10 +5490,6 @@ export class EngineStore {
           // turn reached the provider is still undecided; whether its agents
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
-          // And the CLI process was the worker's child, so the session's
-          // background work is gone with it — process-death, not turn-end,
-          // which is why `completeTurn` still leaves background alone.
-          this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
           // A promoted message aimed at this turn was never delivered by the
           // vanished worker; back to the queue rather than gone.
           for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
