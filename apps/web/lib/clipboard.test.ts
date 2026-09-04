@@ -55,7 +55,7 @@ describe("installClipboardShim", () => {
 
   test("a refused copy rejects, so a caller can leave the text selectable", async () => {
     insecureOrigin();
-    (globalThis.document as { execCommand: () => boolean }).execCommand = () => false;
+    (globalThis.document as unknown as { execCommand: () => boolean }).execCommand = () => false;
     installClipboardShim();
     await expect(navigator.clipboard.writeText("x")).rejects.toThrow();
   });
