@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { segmentActivity, transcriptTasks, turnActivity } from "./transcript";
+import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "./transcript";
 import { describeTurnState, retryInputForJournalTurn } from "./session-cockpit";
 
 describe("session workspace presentation", () => {
@@ -121,6 +121,38 @@ describe("a live turn folds as it works", () => {
 
   test("an empty timeline has no segments", () => {
     expect(segmentActivity([])).toEqual([]);
+  });
+});
+
+describe("a sub-agent is a row where it was spawned, and never folds while it is out", () => {
+  /**
+   * THE BUG THIS PINS: agents were CHIPS appended to the tail of the current
+   * fold — at the bottom while the turn worked, at the top of the tally once
+   * it settled — floating away from the moment the agent was reached for.
+   * They are rows in the run now, at the spawn item's own position; and a
+   * settled run is cut around any spawn whose agent is still live, so the
+   * fleet stays visible instead of vanishing behind "12 steps".
+   */
+  const item = (id: string, type: string, taskId?: string) => ({ id, detail: taskId ? { type, taskId } : { type } }) as never;
+  const task = (id: string, state = "running") => ({ id, kind: "agent", state, items: [] }) as never;
+
+  test("a settled run is cut around a spawn whose agent is still running", () => {
+    const cuts = cutAroundLiveAgents(
+      [item("a", "command_execution"), item("b", "task", "t1"), item("c", "file_read"), item("d", "task", "t2"), item("e", "command_execution")],
+      [task("t1", "running"), task("t2", "completed")],
+    );
+    expect(cuts.map((cut) => (cut.kind === "agent" ? `agent:${cut.item.id}` : cut.items.map((i) => i.id).join("")))).toEqual(["a", "agent:b", "cde"]);
+  });
+
+  test("a spawn whose agent has settled folds with the rest of the run", () => {
+    const cuts = cutAroundLiveAgents([item("a", "command_execution"), item("b", "task", "t1")], [task("t1", "completed")]);
+    expect(cuts).toHaveLength(1);
+    expect(cuts[0]?.kind).toBe("run");
+  });
+
+  test("a spawn whose task has not reported yet folds — nothing live to protect", () => {
+    const cuts = cutAroundLiveAgents([item("b", "task", "t9")], []);
+    expect(cuts.map((cut) => cut.kind)).toEqual(["run"]);
   });
 });
 
