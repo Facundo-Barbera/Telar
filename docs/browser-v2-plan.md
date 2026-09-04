@@ -316,3 +316,65 @@ mistakes).
 - [1Password browser security](https://support.1password.com/1password-browser-security/) · [signed-Chromium refusal](https://www.1password.community/discussions/1password/connect-to-additional-browsers-signed-chromium/83421)
 - [op CLI app integration](https://developer.1password.com/docs/cli/app-integration/) · [biometric unlock](https://developer.1password.com/docs/cli/use-biometric-unlock/)
 - [1Password × Codex (Environments MCP)](https://1password.com/blog/1password-trusted-access-layer-for-openai-codex) · [Secure Agentic Autofill](https://www.1password.dev/agentic-autofill) · [Browserbase partnership](https://siliconangle.com/2025/10/08/1password-tackles-ai-credential-risks-new-agentic-autofill-integration-browserbase/) · [openai/codex#32081](https://github.com/openai/codex/issues/32081)
+
+## §6. The shared browser: how others do it (researched 2026-09-03, for PR4)
+
+**t3code** (`/tmp/t3code-ref`): the browser IS the client's `<webview>` — always visible,
+always directly clickable. `apps/desktop/src/preview/Manager.ts` keeps a per-tab controller
+(`"human" | "agent" | "none"`, `packages/contracts/src/ipc.ts:577`) plus a **control epoch**:
+any human input bumps the epoch (~line 1783) and an in-flight agent action whose epoch no
+longer matches fails with `PreviewAutomationControlInterruptedError` — preemption, not
+queueing. `AgentBrowserCursor.tsx` renders the agent's pointer with move/click phases;
+`PreviewView.tsx:790` shows the badge ("Agent controlling browser" / "Human control").
+**What it lacks**: no handback — the agent just tries again and silently reclaims; nothing
+is journalled; the human is never told the agent was interrupted.
+
+**Old Telar** (`bd6a1059^:apps/web_old/…/browser-surface.tsx`, `use-controlled-browser.ts`):
+tab strip + URL bar + back/forward over the native `WebContentsView`, with
+`useDesktopBrowserViewport` syncing DOM rect → `setBounds` on scroll/resize. Did well: the
+page was REAL — clickable, scrollable, the human's cookies. Did badly: no controller state
+at all — human and agent input interleaved on the same tab with neither side told.
+
+**Claude in Chrome**: sidecar chat beside the user's real Chrome; injected **Stop** overlay
+as kill-switch; risky actions pause for approval ([Anthropic help](https://support.claude.com/en/articles/12902428-use-claude-in-chrome-safely),
+[CHEQ teardown](https://cheq.ai/blog/the-cyborg-session-reversing-detecting-claude-ai-agent-chrome-extension/)).
+**ChatGPT Agent / Operator**: the strongest handoff precedent — the agent **pauses and asks
+the human to take over** for logins; *while the human controls, screenshots are not
+captured*; the human hands back explicitly ([OpenAI help](https://help.openai.com/en/articles/11752874-chatgpt-agent),
+[Operator](https://openai.com/index/introducing-operator/)). **Perplexity Comet**: blue
+outline around the controlled tab, visible click/scroll indicators, stop + guide buttons,
+permission-first ([Comet blog](https://www.perplexity.ai/hub/blog/comet-assistant-puts-you-in-control)).
+**Playwright MCP / Browser Use**: headed mode is the whole story — no control model; only
+third-party `playwriter` has "pause and attach" ([survey](https://bug0.com/blog/playwright-mcp-servers-ai-testing)).
+**Dia**: little public documentation of its agent control model; not a usable reference.
+
+### The control model (DECIDED)
+
+Per scope (= session), three states, journalled on every transition
+(`browser.control.changed {controller}`):
+
+| state | agent may | human may | cockpit shows |
+|---|---|---|---|
+| `idle` | anything (first mutating call → `agent`) | anything (input → `human`) | plain viewport |
+| `agent` | everything | watch; ANY input (click/key/scroll/URL bar) preempts → `human` | "Agent is browsing" badge + agent cursor |
+| `human` | **reads only** (snapshot/screenshot/console/network/list) — mutations return `isError` "The human took the browser — wait for it back" | everything | "You have the browser" + **Hand back** button |
+
+- Preemption is t3code's epoch trick: human input bumps the scope's epoch; an in-flight
+  agent action returns `isError` naming the takeover instead of its result, so the model
+  narrates and waits rather than fighting.
+- **Handback is explicit** (Operator's rule, t3code's gap): only the human's "Hand back"
+  flips `human → agent`. The agent never reclaims on its own.
+- **Reads stay allowed during `human`** — DECIDED, against Operator's blackout: the point
+  is collaboration ("show the agent what you mean"), the takeover is journalled so the
+  transcript says whose hands were on the wheel, and the sanctioned path for secrets is the
+  1Password card (a human typing a password into a page the agent can screenshot is exactly
+  what `browser_fill_secret` exists to replace). Revisit if it bites.
+- Attribution: human input is detected by a partition preload (pointerdown/keydown/wheel,
+  capture phase); agent-synthesized CDP input fires the same DOM events, so input during an
+  in-flight agent call (or within 400 ms of one) is attributed to the agent. DECIDED — the
+  race window means a human click in that window may be missed once; the next input flips.
+
+Substrate unchanged: engine-owned headless Chromium for detached sessions; the desktop
+Electron host becomes the preferred surface when reachable (`TELAR_DESKTOP_BROWSER_CONTROL_*`,
+consumed at last), provider `attached`, with the cockpit embedding the live viewport and the
+screenshot poll remaining the remote/phone fallback.
