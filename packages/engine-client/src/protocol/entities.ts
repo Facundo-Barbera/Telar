@@ -538,6 +538,24 @@ export const Turn = z.object({
    */
   kind: z.enum(["message", "compact"]).optional(),
   /**
+   * WHO STARTED THIS TURN. Absent means a human (or another session) sent a
+   * message. `provider` is a turn the CLI started ON ITS OWN — a background
+   * task or monitor fired between engine turns, the CLI injected its
+   * notification as a user message and ran the model on it. Such a turn has
+   * no `input` a human typed; `input` carries the provider's own notification
+   * text, and `providerReason` names the task that woke it. Transcripts draw
+   * it as a wake-up rather than a bubble, and a message a human sends while
+   * one runs is steered into it rather than queued behind it.
+   */
+  origin: z.enum(["user", "provider"]).optional(),
+  providerReason: z
+    .object({
+      kind: z.enum(["task_notification", "unknown"]),
+      /** The row (`task_<tool_use_id>`) whose ending woke the model, when known. */
+      taskId: Id.optional(),
+    })
+    .optional(),
+  /**
    * Files sent WITH this message.
    *
    * ON THE TURN RATHER THAN THE SESSION, because that is what they are: an
