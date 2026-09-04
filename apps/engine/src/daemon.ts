@@ -15,6 +15,8 @@ import {
   SessionTaskReport,
   resolveMcpServers,
   TurnModelSelection,
+  WakeKind as WakeKindSchema,
+  type WakeKind,
   type EngineDiscovery,
   type EngineErrorCode,
   type EngineHealth,
@@ -334,6 +336,14 @@ function requestPath(pathname: string): { sessionId: string; requestId: string }
   return { sessionId: decodeURIComponent(match[1]), requestId: decodeURIComponent(match[2]) };
 }
 
+/** `DELETE /v2/subscriptions/:id` — top-level, because a subscription spans
+ *  two sessions and belongs to neither path. */
+function subscriptionPath(pathname: string): { subscriptionId: string } | undefined {
+  const match = /^\/v2\/subscriptions\/([A-Za-z0-9_-]+)$/.exec(pathname);
+  if (!match) return undefined;
+  return { subscriptionId: decodeURIComponent(match[1]) };
+}
+
 /**
  * What each http server's sign-in looks like right now.
  *
@@ -567,6 +577,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
      * `source: "session"` uses — provenance a list can show, nothing more.
      */
     const capability: SessionsCapability = {
+      // NO `self`: a chat client on this socket is not a session and has
+      // nowhere to be woken. The subscription tools refuse, in words.
       list: async () => store.liveSessions(),
       create: async (input) => store.createSession({ ...input, origin: "session" }),
       send: async (sessionId, input) => store.submitTurn(sessionId, input),
@@ -574,6 +586,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
       stop: async (sessionId) => store.stopTurn(sessionId),
       diff: async (sessionId) => store.sessionDiff(sessionId),
+      subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
+      unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
+      subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
+      requests: async (sessionId) => store.requests(sessionId),
+      resolveRequest: async (sessionId, requestId, input) => store.resolveRequest(sessionId, requestId, { ...input, resolvedBy: "session" }),
     };
     sessionsToolsCache = collectSessionsWallTools(capability);
     return sessionsToolsCache;
@@ -2514,8 +2531,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             decision: decision as "accept" | "acceptForSession" | "decline" | "cancel",
             reason: stringValue(input.reason, "reason", true),
             ...(input.answers && typeof input.answers === "object" ? { answers: input.answers as Record<string, unknown> } : {}),
+            // ONLY `"session"` IS HONOURED — the out-of-process worker names
+            // it when the `sessions` toolkit answers on a peer's behalf.
+            // Anything else falls through to absent, which IS human; the
+            // same construction as `origin` on session creation.
+            ...(input.resolvedBy === "session" ? { resolvedBy: "session" as const } : {}),
           }),
         });
+        return;
+      }
+
+      const subscription = subscriptionPath(url.pathname);
+      if (subscription && request.method === "DELETE") {
+        const input = await body(request);
+        const subscriber = stringValue(input.subscriberSessionId, "subscriber session id", true);
+        writeJson(response, 200, { removed: store.unsubscribe(subscription.subscriptionId, subscriber) });
         return;
       }
 
@@ -2669,9 +2699,28 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        if (request.method === "POST" && session.tail === "/subscriptions") {
+          const input = await body(request);
+          const events = Array.isArray(input.events) ? input.events.filter((each): each is WakeKind => WakeKindSchema.safeParse(each).success) : undefined;
+          writeJson(response, 201, {
+            subscription: store.subscribe(session.sessionId, {
+              targetSessionId: stringValue(input.targetSessionId, "target session id")!,
+              ...(events && events.length > 0 ? { events } : {}),
+              ...(input.once === true ? { once: true } : {}),
+            }),
+          });
+          return;
+        }
+        if (request.method === "GET" && session.tail === "/subscriptions") {
+          writeJson(response, 200, { subscriptions: store.subscriptionsFor(session.sessionId) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/turns") {
           pruneWorkers();
           if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
+          // `origin` and `wakeReason` are DELIBERATELY NOT READ from the body:
+          // a wake is the engine's own, queued by `fireSubscriptions`, and a
+          // cockpit body that could forge one could impersonate a peer.
           const input = await body(request);
           const model = TurnModelSelection.safeParse(input.model);
           if (input.model !== undefined && !model.success) {

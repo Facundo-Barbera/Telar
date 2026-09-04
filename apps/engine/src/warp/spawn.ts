@@ -170,6 +170,11 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar__sessions_status",
   "mcp__telar__sessions_stop",
   "mcp__telar__sessions_diff",
+  "mcp__telar__sessions_subscribe",
+  "mcp__telar__sessions_unsubscribe",
+  "mcp__telar__sessions_subscriptions",
+  "mcp__telar__sessions_requests",
+  "mcp__telar__sessions_resolve_request",
 ] as const;
 
 const userMessage = (text: string): WarpUserMessage => ({

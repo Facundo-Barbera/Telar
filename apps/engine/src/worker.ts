@@ -62,6 +62,15 @@ type WorkerClient = Pick<
   | "session"
   | "stopTurn"
   | "sessionDiff"
+  // Subscriptions and answering a peer's request. `resolveRequest` reaches
+  // the same gate a human's answer does; the WALL narrows it — no `cancel`
+  // (that is `stopTurn`), no `secret_access` (a vault pick nobody but the
+  // person may make) — and stamps `resolvedBy: "session"` so the trail says
+  // an agent answered.
+  | "subscribe"
+  | "unsubscribe"
+  | "subscriptions"
+  | "resolveRequest"
 >;
 
 /**
@@ -486,6 +495,14 @@ export class EngineWorker {
          * `source: "session"`.
          */
         sessions: {
+          /**
+           * THE ONE SCOPED THING ON THIS CAPABILITY: who is asking, so a
+           * subscription can name the session to wake. Closed over the claim
+           * exactly as the spool's `project` is. The daemon's socket builds
+           * this same capability WITHOUT it — a chat client has no session
+           * to be woken in — and the wall refuses to subscribe there.
+           */
+          self: { sessionId },
           list: () => this.options.client.liveSessions(),
           create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
           send: async (id, input) => {
@@ -499,6 +516,12 @@ export class EngineWorker {
           },
           stop: (id) => this.options.client.stopTurn(id),
           diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
+          subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
+          unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
+          subscriptions: async (subscriber) => (await this.options.client.subscriptions(subscriber)).subscriptions,
+          requests: async (id) => (await this.options.client.session(id)).requests,
+          resolveRequest: async (id, requestId, input) =>
+            (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
         },
         onRequest: askEngine,
         onObservations: async (observations) => {

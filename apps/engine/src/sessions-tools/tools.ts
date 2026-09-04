@@ -7,19 +7,26 @@
  * than here.
  *
  * ── WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT ───────────────────────────
- * It is a proof of concept for a larger design, and the shape of the proof is
- * mostly its ABSENCES. There is NO ATTACHMENT, NO PARENT AND NO CHILD here. A
- * session that calls `sessions_create` gets back a session it has no
- * relationship to whatsoever: nothing links the two, nothing records which one
- * asked, no depth is tracked, and the new session reports to nobody. They are
- * peers, and every one of the seven tools below treats every session the same
- * way regardless of who created it.
+ * There is NO PARENT AND NO CHILD here. A session that calls `sessions_create`
+ * gets back a session it has no relationship to: nothing links the two,
+ * nothing records which one asked on either session, no depth is tracked.
+ * They are peers, and every tool below treats every session the same way
+ * regardless of who created it.
  *
- * That is not an oversight to be filled in later — it is the thing being
- * tested. Hand-running "one session drives another" over a flat peer model is
- * how the product owner intends to find out what parent/child semantics would
- * actually need to mean before any are committed to. A link modelled here now
- * would answer that question by assumption.
+ * WHAT A SESSION CAN HAVE INSTEAD IS A SUBSCRIPTION: an explicit, revocable,
+ * one-directional wish to be WOKEN when a peer finishes a turn, fails, is
+ * stopped, or parks a request. It is recorded on the subscription and on
+ * neither session, it is the subscriber's to remove, and it makes no claim
+ * about who owns whom — an orchestrator subscribed to ten workers and a
+ * worker subscribed to its orchestrator are the same shape. The wake is a
+ * real turn in the subscriber's own session (`Turn.origin: "session"`), so an
+ * orchestrator that ended its turn is woken by the engine rather than left
+ * polling.
+ *
+ * AND A SESSION CAN ANSWER A PEER'S PARKED REQUEST — a question, an approval
+ * — through `sessions_resolve_request`, recorded as answered by a session so
+ * the audit trail never says a person did. The one thing it cannot answer is
+ * a secret pick: that is a vault item the answering session cannot see.
  *
  * ── THE ABSENCES THAT ARE RULES RATHER THAN SCOPE ───────────────────────────
  *   · NOTHING ACCEPT-SHAPED. INV-1 (`packages/core/test/invariants.test.ts`)
@@ -50,7 +57,7 @@
  */
 import crypto from "node:crypto";
 import { z } from "zod";
-import type { EngineEvent, EnvMode, ProviderDriverKind, Session, SessionDiff, Turn } from "@telar/engine-client";
+import type { EngineEvent, EngineRequest, EnvMode, ProviderDriverKind, Session, SessionDiff, Subscription, Turn, WakeKind } from "@telar/engine-client";
 
 /**
  * What the toolkit may do.
@@ -86,6 +93,24 @@ export type SessionsCapability = {
   status(sessionId: string): Promise<{ session: Session; turns: Turn[] }>;
   stop(sessionId: string): Promise<{ turn?: Turn; stopped: boolean }>;
   diff(sessionId: string): Promise<SessionDiff>;
+  /**
+   * WHO IS ASKING — present inside a turn, ABSENT on the outward socket. A
+   * subscription needs a session to wake; a chat client on the socket is not
+   * one, and the three subscription tools refuse there in words rather than
+   * subscribing nobody.
+   */
+  self?: { sessionId: string };
+  subscribe(subscriberSessionId: string, input: { targetSessionId: string; events?: WakeKind[]; once?: boolean }): Promise<Subscription>;
+  unsubscribe(subscriptionId: string, subscriberSessionId: string): Promise<boolean>;
+  subscriptions(subscriberSessionId: string): Promise<Subscription[]>;
+  /** Every request a session has, open or resolved; the wall keeps the open ones. */
+  requests(sessionId: string): Promise<EngineRequest[]>;
+  /** The implementation stamps `resolvedBy: "session"`; no shape carries it. */
+  resolveRequest(
+    sessionId: string,
+    requestId: string,
+    input: { decision: "accept" | "acceptForSession" | "decline"; reason?: string; answers?: Record<string, string> },
+  ): Promise<EngineRequest>;
 };
 
 /** Just enough of the SDK to register a tool — the same seam the browser and
@@ -127,11 +152,30 @@ const CREATE = `Start a NEW session on a project, with no relationship to this o
 
 envMode is the choice that matters. "worktree" gives it a git checkout of its own, so it can edit files without colliding with anything else working on that project — this is what you want for anything that writes code. "local" points it at the project's own checkout, which it then SHARES with every other local session and with the user's own editor.
 
-There is no cap on how many sessions you may create, so the discipline is yours: sessions do not clean themselves up — one you started stays live until a human archives it — and every worktree session is a whole checkout on the user's disk. Create what the work needs and nothing more. ${NOT_A_BYPASS}`;
+There is no cap on how many sessions you may create, so the discipline is yours: sessions do not clean themselves up — one you started stays live until a human archives it — and every worktree session is a whole checkout on the user's disk. Create what the work needs and nothing more. To be told when it finishes, sessions_subscribe to it. ${NOT_A_BYPASS}`;
 
 const SEND = `Give a session one message, exactly as a person typing to it would. It is queued and runs when a worker picks it up — this returns as soon as it is accepted, NOT when the turn is finished, so read the answer with sessions_read or watch for it with sessions_status rather than assuming it happened. A session can hold a short backlog, so a second message while one is running is queued behind it rather than interrupting.
 
-Say everything the session needs in the message itself. It cannot see this conversation, does not know who you are, and has no memory of anything you have not told it. ${NOT_A_BYPASS}`;
+Say everything the session needs in the message itself. It cannot see this conversation, does not know who you are, and has no memory of anything you have not told it. To be told when it finishes instead of polling, sessions_subscribe to it first. ${NOT_A_BYPASS}`;
+
+const NO_SELF =
+  "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
+
+const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake]" that names the session, what happened, and enough of the outcome to act on — so you can end your turn now and be woken later rather than polling. It queues behind whatever you are running; one wake per event; if sixteen turns are already queued on you, a wake is dropped and your journal says so.
+
+events narrows what wakes you (default: all four). once removes the subscription after its first wake. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
+
+const UNSUBSCRIBE = `Stop being woken by a session. Takes the subscription id sessions_subscribe returned (sessions_subscriptions lists them). Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
+
+const SUBSCRIPTIONS = `Every subscription this session holds: which sessions will wake it, for which events, and whether once. Read this before subscribing again, and to find an id for sessions_unsubscribe.`;
+
+const REQUESTS = `What a session is WAITING on: its open requests — a question it asked (with the fields and choices), a command, a file change or a tool call it wants approved. Each carries the id sessions_resolve_request takes. A request is a question to a HUMAN by default; you are seeing it because you subscribed or asked, and answering it is you taking responsibility for the answer.
+
+A secret-access request is listed by its origin only, with no candidates: choosing a vault item is the user's alone, and sessions_resolve_request refuses it.`;
+
+const RESOLVE_REQUEST = `Answer a session's open request on the user's behalf. decision is accept, acceptForSession (accept this and every later request of the same kind in that session), or decline; answers fills a question's fields, keyed exactly as sessions_requests listed them. Recorded as answered BY A SESSION, never as the user's own decision.
+
+Accepting an approval on another session's behalf is you taking responsibility for it. Never accept what you were yourself refused. Only answer a question you actually know the answer to; decline, or leave it for the user, otherwise. A secret-access request cannot be answered here at all. ${NOT_A_BYPASS}`;
 
 const READ = `Read what a session has done since a point in its journal: its messages, its tool calls, its answers. Pass no cursor to start from the beginning and the cursor you got back to continue — that is how you follow a session as it works.
 
@@ -488,5 +532,172 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
         });
       },
     ),
+    /**
+     * THE SUBSCRIPTION TOOLS — appended after the original seven so the
+     * pinned name list in the tests grows rather than reorders. Each begins
+     * by asking whether there IS a self: on the outward socket there is not,
+     * and the refusal is the tool's whole answer there.
+     */
+    tool(
+      "sessions_subscribe",
+      SUBSCRIBE,
+      {
+        sessionId: z.string().min(1).describe("The session to be woken by, from sessions_list or sessions_create."),
+        events: z
+          .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
+          .optional()
+          .describe("Which happenings wake you. Omit for all four."),
+        once: z.boolean().optional().describe("Remove the subscription after its first wake."),
+      },
+      async (args) => {
+        if (!capability.self) return err(NO_SELF);
+        const targetSessionId = String(args.sessionId ?? "");
+        const events = Array.isArray(args.events) ? (args.events.filter((each) => typeof each === "string") as WakeKind[]) : undefined;
+        try {
+          const subscription = await capability.subscribe(capability.self.sessionId, {
+            targetSessionId,
+            ...(events && events.length > 0 ? { events } : {}),
+            ...(args.once === true ? { once: true } : {}),
+          });
+          return json({
+            ...subscription,
+            note: `You will be woken with a "[wake]" turn when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. End your turn whenever you like; the wake queues.`,
+          });
+        } catch (error) {
+          return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);
+        }
+      },
+    ),
+    tool(
+      "sessions_unsubscribe",
+      UNSUBSCRIBE,
+      { subscriptionId: z.string().min(1).describe("The id sessions_subscribe returned.") },
+      async (args) => {
+        if (!capability.self) return err(NO_SELF);
+        const subscriptionId = String(args.subscriptionId ?? "");
+        try {
+          const removed = await capability.unsubscribe(subscriptionId, capability.self.sessionId);
+          return json({ subscriptionId, removed, ...(removed ? {} : { note: "No subscription of yours has that id — it was already removed, or it was never yours." }) });
+        } catch (error) {
+          return err(`Could not unsubscribe "${subscriptionId}": ${failure(error)}`);
+        }
+      },
+    ),
+    tool("sessions_subscriptions", SUBSCRIPTIONS, {}, async () => {
+      if (!capability.self) return err(NO_SELF);
+      try {
+        const subscriptions = await capability.subscriptions(capability.self.sessionId);
+        return json({
+          subscriptions,
+          ...(subscriptions.length === 0 ? { note: "This session is not subscribed to anything." } : {}),
+        });
+      } catch (error) {
+        return err(`Could not list subscriptions: ${failure(error)}`);
+      }
+    }),
+    tool(
+      "sessions_requests",
+      REQUESTS,
+      { sessionId: z.string().min(1).describe("The session whose open requests to read.") },
+      async (args) => {
+        const sessionId = String(args.sessionId ?? "");
+        let requests: EngineRequest[];
+        try {
+          requests = (await capability.requests(sessionId)).filter((request) => request.state === "open");
+        } catch (error) {
+          return err(`Could not read requests of "${sessionId}": ${failure(error)}`);
+        }
+        return json({
+          sessionId,
+          requests: requests.map(describeRequest),
+          ...(requests.length === 0 ? { note: "This session is not waiting on anything." } : {}),
+        });
+      },
+    ),
+    tool(
+      "sessions_resolve_request",
+      RESOLVE_REQUEST,
+      {
+        sessionId: z.string().min(1).describe("The session that opened the request."),
+        requestId: z.string().min(1).describe("The request id, from sessions_requests or the wake that told you about it."),
+        decision: z
+          .enum(["accept", "acceptForSession", "decline"])
+          .describe('"accept" this once; "acceptForSession" this and every later request of the same kind in that session; "decline".'),
+        answers: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe("For a question: each field's answer, keyed exactly as sessions_requests listed the field."),
+        reason: z.string().optional().describe("One sentence the session and the user will read beside the decision."),
+      },
+      async (args) => {
+        const sessionId = String(args.sessionId ?? "");
+        const requestId = String(args.requestId ?? "");
+        const decision = args.decision === "acceptForSession" ? "acceptForSession" : args.decision === "decline" ? "decline" : "accept";
+        // THE ONE REFUSAL THE WALL MAKES ITSELF: a vault pick. The store
+        // would accept it — resolving is resolving — but the answer names an
+        // item the deciding session cannot see, and nothing here should let
+        // a model choose a password by index.
+        try {
+          const open = (await capability.requests(sessionId)).find((request) => request.id === requestId);
+          if (open && open.detail.kind === "secret_access") {
+            return err(`Request "${requestId}" is a secret-access request. Choosing a vault item is the user's alone; leave it for them.`);
+          }
+        } catch (error) {
+          return err(`Could not read requests of "${sessionId}": ${failure(error)}`);
+        }
+        const answers =
+          args.answers && typeof args.answers === "object"
+            ? Object.fromEntries(Object.entries(args.answers as Record<string, unknown>).map(([key, value]) => [key, String(value)]))
+            : undefined;
+        try {
+          const request = await capability.resolveRequest(sessionId, requestId, {
+            decision,
+            ...(typeof args.reason === "string" && args.reason.trim() ? { reason: args.reason } : {}),
+            ...(answers ? { answers } : {}),
+          });
+          return json({
+            ...describeRequest(request),
+            decision: request.decision,
+            resolvedBy: request.resolvedBy,
+            note: "Recorded as answered by a session. The session that asked continues with this answer.",
+          });
+        } catch (error) {
+          return err(`Could not resolve request "${requestId}" on "${sessionId}": ${failure(error)}`);
+        }
+      },
+    ),
   ];
+}
+
+/**
+ * A request as a model should see it: enough to answer, and for a secret
+ * pick, deliberately less — origin only, never the candidates.
+ */
+function describeRequest(request: EngineRequest): Record<string, unknown> {
+  const base = { id: request.id, runId: request.runId, kind: request.detail.kind, state: request.state, openedAt: request.openedAt };
+  const detail = request.detail;
+  switch (detail.kind) {
+    case "user_input":
+      return {
+        ...base,
+        prompt: detail.prompt,
+        fields: detail.fields.map((field) => ({
+          key: field.key,
+          label: field.label,
+          kind: field.kind,
+          ...(field.choices && field.choices.length > 0 ? { choices: field.choices } : {}),
+          ...(field.required ? { required: true } : {}),
+        })),
+      };
+    case "command_execution":
+      return { ...base, command: detail.command.command };
+    case "file_change":
+      return { ...base, change: `${detail.change.kind} ${detail.change.path}` };
+    case "file_read":
+      return { ...base, path: detail.read.path };
+    case "tool_call":
+      return { ...base, tool: detail.call.name };
+    case "secret_access":
+      return { ...base, origin: detail.secret.origin, note: "A vault pick — the user's alone. sessions_resolve_request refuses it." };
+  }
 }

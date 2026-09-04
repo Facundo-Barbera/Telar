@@ -62,8 +62,10 @@ export const RequestDecision = z.enum([
 export type RequestDecision = z.infer<typeof RequestDecision>;
 
 /** Who answered. `policy` means no human was involved — the runtime mode
- *  resolved it — and that distinction is what makes an audit trail honest. */
-export const RequestResolver = z.enum(["human", "policy", "timeout", "cancelled"]);
+ *  resolved it — and that distinction is what makes an audit trail honest.
+ *  `session` means ANOTHER SESSION answered, through `sessions_resolve_request`:
+ *  an agent, not a person, and the trail must say so for the same reason. */
+export const RequestResolver = z.enum(["human", "policy", "timeout", "cancelled", "session"]);
 export type RequestResolver = z.infer<typeof RequestResolver>;
 
 /** One field the agent wants filled in. Only present on `user_input`. */

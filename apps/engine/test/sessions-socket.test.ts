@@ -167,7 +167,7 @@ describe("the protocol surface", () => {
     // so a tool added to the toolkit appears here in the same change or this
     // fails.
     expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-    expect(result.tools.length).toBe(7);
+    expect(result.tools.length).toBe(12);
     for (const tool of result.tools) {
       expect(tool.name).not.toMatch(/accept|approve|merge|land|archive|delete|promote|finish|complete/);
       expect(tool.description.length).toBeGreaterThan(0);
@@ -212,6 +212,26 @@ describe("the protocol surface", () => {
       params: { name: "sessions_archive", arguments: { sessionId: made.id } },
     });
     expect(((await missing.json()) as { error: { code: number } }).error.code).toBe(-32602);
+  });
+
+  test("a chat client has no session to wake: the subscription tools refuse, in words, and the rest still work", async () => {
+    // The socket's capability carries no `self` — a chat client is not a
+    // session — so subscribing there would be subscribing nobody. The wall
+    // says so rather than silently succeeding; the other tools are unaffected.
+    const daemon = await engine();
+    const client = new EngineClient(daemon.discovery);
+    const { mcp } = await client.sessionsMcpInfo();
+    const { project } = await client.registerProject({ name: "aurora", root: repo() });
+    const { session } = await client.createSession({ projectId: project.id, title: "a target" });
+
+    for (const name of ["sessions_subscribe", "sessions_unsubscribe", "sessions_subscriptions"]) {
+      const refused = await callTool(daemon, mcp.secret, name, { sessionId: session.id, subscriptionId: "sub_x" });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("no session to wake");
+    }
+    const requests = await callTool(daemon, mcp.secret, "sessions_requests", { sessionId: session.id });
+    expect(requests.isError).toBe(false);
+    expect(requests.text).toContain("not waiting on anything");
   });
 
   test("an argument the wall's schema refuses never reaches a handler", async () => {

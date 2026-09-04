@@ -31,6 +31,7 @@ import {
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
   Session as SessionSchema,
+  Subscription as SubscriptionSchema,
   Task as TaskSchema,
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
@@ -78,9 +79,12 @@ import {
   type RuntimeMode,
   type Session,
   type SessionOrigin,
+  type Subscription,
   type Turn,
   type TurnFailureCode,
   type TurnObservation,
+  type WakeKind,
+  type WakeReason,
   type SpoolAperture,
   type SpoolArea,
   type SpoolBrief,
@@ -215,6 +219,61 @@ import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
+/**
+ * THE WAKE TEXT — what an orchestrator reads when a peer does something. It
+ * begins with `[wake]` so a model can tell it from a person, names the peer
+ * and the turn, carries enough of the outcome to act on, and ends with the
+ * tool that gets the rest. A request's fields are spelt out so the answer
+ * can be composed without a second read; a secret pick is NOT — the wall
+ * refuses to resolve those, and listing candidates here would offer the
+ * model something it may not touch.
+ */
+function wakeMessage(
+  kind: WakeKind,
+  target: Session,
+  turn: Turn,
+  context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
+): string {
+  const who = `Session ${target.id} "${target.title}"`;
+  const lines: string[] = [];
+  switch (kind) {
+    case "turn_completed": {
+      lines.push(`[wake] ${who} — turn ${turn.runId} completed.`);
+      const text = (context.resultText ?? "").trim();
+      if (text) {
+        const clipped = text.length > MAX_WAKE_RESULT_CHARS;
+        lines.push(clipped ? `Result (first ${MAX_WAKE_RESULT_CHARS} chars):` : "Result:", clipped ? text.slice(0, MAX_WAKE_RESULT_CHARS) : text);
+      } else {
+        lines.push("It ended with no answer text.");
+      }
+      break;
+    }
+    case "turn_failed":
+      lines.push(`[wake] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code}): ${context.failure.message}` : "."}`);
+      break;
+    case "turn_stopped":
+      lines.push(`[wake] ${who} — turn ${turn.runId} was stopped.`);
+      break;
+    case "request_opened": {
+      const request = context.request!;
+      lines.push(`[wake] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${requestTitle(request.detail)}`);
+      if (request.detail.kind === "user_input") {
+        for (const field of request.detail.fields) {
+          const choices = field.choices && field.choices.length > 0 ? ` [choices: ${field.choices.join(" | ")}]` : "";
+          lines.push(`- ${field.key} (${field.kind}): ${field.label}${choices}`);
+        }
+      }
+      lines.push(
+        "—",
+        `Answer with sessions_resolve_request(sessionId: "${target.id}", requestId: "${request.id}", decision, answers?). Only answer what you actually know; decline or leave it for the user otherwise.`,
+      );
+      return lines.join("\n");
+    }
+  }
+  lines.push("—", `Read more with sessions_read(sessionId: "${target.id}"); its diff with sessions_diff.`);
+  return lines.join("\n");
+}
+
 function requestTitle(detail: RequestDetail): string {
   switch (detail.kind) {
     case "command_execution":
@@ -272,6 +331,20 @@ const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "dr
  * turn transition.
  */
 const MAX_QUEUED_TURNS = 16;
+
+/**
+ * How many sessions one session may be subscribed to at once. The file is
+ * rewritten whole on every change, and a loop that subscribed forever would
+ * make every terminal transition on the engine slower — the same reasoning as
+ * `MAX_QUEUED_TURNS`. Sixty-four is far past any honest orchestration.
+ */
+const MAX_SUBSCRIPTIONS_PER_SESSION = 64;
+
+/** How much of a finished turn's answer rides in the wake that announces it.
+ *  The whole answer is one `sessions_read` away; the wake is a summons. */
+const MAX_WAKE_RESULT_CHARS = 2_000;
+
+const ALL_WAKE_KINDS: readonly WakeKind[] = ["turn_completed", "turn_failed", "turn_stopped", "request_opened"];
 
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
  *  rather than written to disk and failing later inside `autoResolution`. */
@@ -417,6 +490,9 @@ export type EngineStatePaths = {
    * the same session in two different bands depending on which window you opened.
    */
   inbox: string;
+  /** Which sessions want to be woken by which — engine-wide, because a
+   *  subscription spans two sessions and belongs to neither's directory. */
+  subscriptions: string;
   /** Who writes generated titles and branch names — see `TextGenPolicy`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   textGen: string;
@@ -516,6 +592,7 @@ export function statePaths(root: string): EngineStatePaths {
     mcpOAuth: path.join(resolved, "mcp-oauth.json"),
     mcpOAuthPending: path.join(resolved, "mcp-oauth-pending.json"),
     inbox: path.join(resolved, "inbox.json"),
+    subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
     appearance: path.join(resolved, "appearance.json"),
@@ -4571,10 +4648,26 @@ export class EngineStore {
 
   submitTurn(
     sessionId: string,
-    input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
+    input: {
+      runId: string;
+      input: string;
+      kind?: "message" | "compact";
+      model?: TurnModelSelection;
+      attachments?: string[];
+      /**
+       * A WAKE, not a message. Set together by `fireSubscriptions` and by
+       * nobody else: the HTTP route never reads either from a body, so a
+       * cockpit cannot forge one. One without the other is refused.
+       */
+      origin?: "session";
+      wakeReason?: WakeReason;
+    },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
     assertText(input.input);
+    if ((input.origin === "session") !== (input.wakeReason !== undefined)) {
+      throw new EngineStateError("invalid_request", "a session-origin turn carries a wake reason, and only such a turn does");
+    }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
@@ -4617,6 +4710,7 @@ export class EngineStore {
       sequence: queue.nextSequence++,
       input: input.input,
       ...(kind ? { kind } : {}),
+      ...(input.origin === "session" && input.wakeReason ? { origin: "session" as const, wakeReason: input.wakeReason } : {}),
       state: "queued",
       acceptedAt: at,
       updatedAt: at,
@@ -4939,6 +5033,7 @@ export class EngineStore {
       turn.runId,
     );
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+    this.fireSubscriptions(sessionId, "turn_completed", turn, { resultText: input.text });
     return structuredClone(turn);
   }
 
@@ -4966,6 +5061,7 @@ export class EngineStore {
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+    this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
     return structuredClone(turn);
   }
 
@@ -5000,6 +5096,7 @@ export class EngineStore {
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+    this.fireSubscriptions(sessionId, "turn_stopped", turn, {});
     return { turn: structuredClone(turn), stopped: true };
   }
 
@@ -5158,6 +5255,7 @@ export class EngineStore {
     session.updatedAt = at;
     atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     this.appendEvent(sessionId, { type: "session.archived" });
+    this.dropSubscriptionsOf(sessionId);
     return structuredClone(session);
   }
 
@@ -5207,7 +5305,183 @@ export class EngineStore {
     // this session is told why its stream ended rather than simply losing it.
     this.appendEvent(sessionId, { type: "session.archived" });
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
+    this.dropSubscriptionsOf(sessionId);
     return true;
+  }
+
+  // ── Subscriptions — one session asking to be woken by another ─────────────
+
+  /**
+   * SUBSCRIBE. Both sessions must be live: an archived subscriber has nowhere
+   * to be woken, and an archived target has nothing left to do. IDEMPOTENT ON
+   * THE PAIR — a retried tool call returns the one subscription, with the
+   * events merged, rather than minting a second that would wake twice.
+   */
+  subscribe(subscriberSessionId: string, input: { targetSessionId: string; events?: WakeKind[]; once?: boolean }): Subscription {
+    assertId(input.targetSessionId, "target session id");
+    if (subscriberSessionId === input.targetSessionId) {
+      throw new EngineStateError("invalid_request", "a session cannot subscribe to itself");
+    }
+    const subscriber = this.getSession(subscriberSessionId);
+    const target = this.getSession(input.targetSessionId);
+    if (subscriber.state !== "active") throw new EngineStateError("conflict", "an archived session cannot be woken");
+    if (target.state !== "active") throw new EngineStateError("conflict", "an archived session will do nothing worth waking for");
+    const events = input.events && input.events.length > 0 ? [...new Set(input.events)] : [...ALL_WAKE_KINDS];
+    const all = this.readSubscriptions();
+    const existing = all.find((each) => each.subscriberSessionId === subscriberSessionId && each.targetSessionId === input.targetSessionId);
+    if (existing) {
+      existing.events = [...new Set([...existing.events, ...events])];
+      if (input.once !== undefined) {
+        if (input.once) existing.once = true;
+        else delete existing.once;
+      }
+      this.writeSubscriptions(all);
+      return structuredClone(existing);
+    }
+    const mine = all.filter((each) => each.subscriberSessionId === subscriberSessionId).length;
+    if (mine >= MAX_SUBSCRIPTIONS_PER_SESSION) {
+      throw new EngineStateError(
+        "conflict",
+        `this session is already subscribed to ${mine} sessions, the most it may be. Unsubscribe from ones you are finished with — sessions_subscriptions lists them.`,
+      );
+    }
+    const subscription: Subscription = {
+      id: `sub_${crypto.randomUUID().replaceAll("-", "")}`,
+      subscriberSessionId,
+      targetSessionId: input.targetSessionId,
+      events,
+      ...(input.once ? { once: true } : {}),
+      createdAt: this.now(),
+    };
+    all.push(subscription);
+    this.writeSubscriptions(all);
+    return structuredClone(subscription);
+  }
+
+  /** With `subscriberSessionId`, another session's subscription reads as
+   *  absent — a session may not remove what it did not ask for. */
+  unsubscribe(subscriptionId: string, subscriberSessionId?: string): boolean {
+    assertId(subscriptionId, "subscription id");
+    const all = this.readSubscriptions();
+    const index = all.findIndex(
+      (each) => each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId),
+    );
+    if (index < 0) return false;
+    all.splice(index, 1);
+    this.writeSubscriptions(all);
+    return true;
+  }
+
+  /** What this session has asked to be woken by. */
+  subscriptionsFor(subscriberSessionId: string): Subscription[] {
+    this.getSession(subscriberSessionId);
+    return structuredClone(this.readSubscriptions().filter((each) => each.subscriberSessionId === subscriberSessionId));
+  }
+
+  private readSubscriptions(): Subscription[] {
+    const stored = readJson(this.paths.subscriptions) as { subscriptions?: unknown } | undefined;
+    const parsed = SubscriptionSchema.array().safeParse(stored?.subscriptions ?? []);
+    // A corrupt file costs the subscriptions, not the engine — same rule as
+    // the attachments index.
+    return parsed.success ? parsed.data : [];
+  }
+
+  private writeSubscriptions(subscriptions: Subscription[]): void {
+    atomicWrite(this.paths.subscriptions, { version: STATE_VERSION, subscriptions });
+  }
+
+  /** A session that is gone can neither wake nor be woken: both directions go. */
+  private dropSubscriptionsOf(sessionId: string): void {
+    const all = this.readSubscriptions();
+    const kept = all.filter((each) => each.subscriberSessionId !== sessionId && each.targetSessionId !== sessionId);
+    if (kept.length !== all.length) this.writeSubscriptions(kept);
+  }
+
+  /**
+   * THE WAKE. Called at the end of every terminal turn transition and when a
+   * request parks — after the target's own queue and events are written, so
+   * a wake that fails can never fail the transition that caused it.
+   *
+   * A WAKE IS A QUEUED TURN ON THE SUBSCRIBER, through `submitTurn` and no
+   * other path: it waits behind whatever the subscriber is running, the
+   * worker claims it like any message, and the transcript draws it. There is
+   * no event bus in this engine to ride instead, and `openProviderTurn` is
+   * for a process that is already talking — a subscriber sitting idle has no
+   * such process to inject into.
+   *
+   * A WAKE'S OWN ENDING WAKES NOBODY. Two sessions subscribed to each other
+   * would otherwise ping-pong forever: A finishes → B is woken → B's wake
+   * turn finishes → A is woken → … The turn whose ending is being announced
+   * is checked for `origin: "session"` and skipped.
+   *
+   * ONE FILE READ PER TRANSITION, returning at once when nothing matches —
+   * the common case on an engine with no orchestrator.
+   */
+  private fireSubscriptions(
+    targetSessionId: string,
+    kind: WakeKind,
+    turn: Turn,
+    context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
+  ): void {
+    if (turn.origin === "session") return;
+    const all = this.readSubscriptions();
+    const hits = all.filter((each) => each.targetSessionId === targetSessionId && each.events.includes(kind));
+    if (hits.length === 0) return;
+    let target: Session;
+    try {
+      target = this.getSession(targetSessionId);
+    } catch {
+      return;
+    }
+    let changed = false;
+    const remove = (subscription: Subscription) => {
+      const index = all.indexOf(subscription);
+      if (index >= 0) all.splice(index, 1);
+      changed = true;
+    };
+    for (const subscription of hits) {
+      const subscriberId = subscription.subscriberSessionId;
+      if (subscriberId === targetSessionId) continue;
+      let subscriber: Session | undefined;
+      try {
+        subscriber = this.getSession(subscriberId);
+      } catch {
+        subscriber = undefined;
+      }
+      if (!subscriber || subscriber.state !== "active") {
+        // The subscriber is gone; its wish goes with it.
+        remove(subscription);
+        continue;
+      }
+      const wakeReason: WakeReason = {
+        kind,
+        sessionId: targetSessionId,
+        runId: turn.runId,
+        ...(context.request ? { requestId: context.request.id } : {}),
+      };
+      try {
+        this.submitTurn(subscriberId, {
+          runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+          input: wakeMessage(kind, target, turn, context),
+          origin: "session",
+          wakeReason,
+        });
+        if (subscription.once) remove(subscription);
+      } catch (error) {
+        // A full backlog or an ambiguous turn on the subscriber is that
+        // session's own state, and a wake is not worth breaking it for. Said
+        // on the subscriber's journal, where the person reading it will look.
+        if (error instanceof EngineStateError && error.code === "conflict") {
+          this.appendEvent(subscriberId, {
+            type: "runtime.warning",
+            message: `a wake from session ${targetSessionId} (${kind}) was dropped: ${error.message}`,
+          });
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (changed) this.writeSubscriptions(all);
   }
 
   requests(sessionId: string): EngineRequest[] {
@@ -5287,6 +5561,7 @@ export class EngineStore {
       return { state: "resolved", requestId: request.id, decision: automatic, resolvedBy: "policy" };
     }
     this.touchSession(sessionId, at);
+    this.fireSubscriptions(sessionId, "request_opened", turn, { request });
     return { state: "open", requestId: request.id, notified: request.notified ?? false };
   }
 
@@ -5652,6 +5927,10 @@ export class EngineStore {
    * kind of noise a person settled the row to stop hearing about. Clients still
    * raise a snoozed row's hand for things that outrank a snooze — that is a
    * question about presentation and it is answered on their side.
+   *
+   * A WAKE COUNTS AS THE SESSION'S OWN WORK. An orchestrator asked to be told
+   * when its peers finish; the telling is work it queued, one step removed,
+   * and a snooze that silenced it would silence the whole point.
    */
   private wakeSessionForNewWork(sessionId: string): void {
     const session = this.getSession(sessionId);
