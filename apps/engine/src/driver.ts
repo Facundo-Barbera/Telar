@@ -869,6 +869,14 @@ export function titleForToolCall(name: string, detail: ItemDetail): string {
  * foreground announces NO TASK AT ALL. So a `local_bash` task is a shell that
  * was backgrounded, which is the definition this list is drawing.
  *
+ * THAT SECOND PROBE NO LONGER HOLDS. Measured on CLI 2.1.259
+ * (session_7657b2ef…, tasks.json): 232 `local_bash` rows with NO
+ * `is_backgrounded`, i.e. ordinary blocking Bash calls, each announced as a
+ * task and normally closed one event later by its own tool result. Six of them
+ * never were — a turn stopped between the two — and sat at `running` for hours,
+ * reporting "monitoring" over a shell that had long exited. See
+ * `isForegroundShell` for the rule that keeps those off the roster.
+ *
  * Filed as an agent it was worse than mislabelled: the sweep at the end of a run
  * closes every live AGENT as failed and deliberately leaves background work
  * alone, so a `sleep` that outlived its turn — the entire point of backgrounding
@@ -878,6 +886,19 @@ const BACKGROUND_TASK_TYPES = new Set(["background_shell", "background_bash", "l
 
 export function taskKindForType(taskType: string | undefined): TaskKind {
   return taskType && BACKGROUND_TASK_TYPES.has(taskType) ? "background" : "agent";
+}
+
+/**
+ * A SHELL THAT BLOCKS ITS TURN IS A TOOL CALL, NOT A TASK. The `Bash` tool_use
+ * already produced a `command_execution` item for it; a task row on top is a
+ * second row for the same command, and — the measured harm — one that only
+ * closes if the CLI's follow-up frame arrives before the turn ends. What makes a
+ * shell a TASK is that it was launched detached (`is_backgrounded`), and the
+ * only other way it earns a row is being sent to the background later
+ * (`task_updated{is_backgrounded: true}`, Ctrl+B), which the caller handles.
+ */
+export function isForegroundShell(taskType: string | undefined, backgrounded: boolean | undefined): boolean {
+  return taskKindForType(taskType) === "background" && backgrounded !== true;
 }
 
 /**
@@ -1158,9 +1179,11 @@ export function createClaudeDriver(
       /** Last seed per task, so `task_updated`'s PATCH can be folded onto
        *  something rather than sent as a task with no title or kind. */
       const knownTasks = new Map<string, TaskSeed>();
-      /** SDK task ids announced as `ambient` housekeeping. Never rows — and
-       *  remembered, so the progress/notification edges of the same task
-       *  cannot re-create the row through `emitTask`'s fold-or-invent path. */
+      /** SDK task ids that are not rows: `ambient` housekeeping, and shells
+       *  that block their turn (`isForegroundShell`). Remembered, so the
+       *  progress/notification edges of the same task cannot re-create the row
+       *  through `emitTask`'s fold-or-invent path. A foreground shell leaves
+       *  the set the moment the CLI backgrounds it (Ctrl+B). */
       const suppressedTasks = new Set<string>();
       /** The turn the pump is reading is one the CLI started on its own (a
        *  background task's wake-up), not this engine turn — see the
@@ -2026,7 +2049,7 @@ export function createClaudeDriver(
              * live-update watcher would make `livenessOf` report the session
              * as monitoring over work no human asked for and none can stop.
              */
-            if (item.ambient === true) {
+            if (item.ambient === true || isForegroundShell(str(item.task_type), item.is_backgrounded)) {
               if (str(item.task_id)) suppressedTasks.add(item.task_id!);
               continue;
             }
@@ -2080,7 +2103,12 @@ export function createClaudeDriver(
             continue;
           }
           if (item.type === "system" && item.subtype === "task_updated") {
-            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) continue;
+            if (str(item.task_id) && suppressedTasks.has(item.task_id!)) {
+              // Ctrl+B on a blocking shell: from here on it IS background work
+              // and earns the row the never-announced branch below mints.
+              if (item.patch?.is_backgrounded !== true) continue;
+              suppressedTasks.delete(item.task_id!);
+            }
             const status = str(item.patch?.status);
             const state = taskStateForStatus(status);
             const terminal = state === "completed" || state === "failed" || state === "stopped";
