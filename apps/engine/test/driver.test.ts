@@ -455,6 +455,21 @@ test("a boundary with no announcement still produces a row, and an unfinished co
   await second.result;
   const swept = second.sink.observations.find((o) => o.kind === "item.completed");
   expect(swept?.kind === "item.completed" && swept.status).toBe("failed");
+
+  // Announced, succeeded, but the boundary never came: the turn's end closes
+  // the row as what the CLI said it was — completed, not failed.
+  const unmeasured = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "status", status: "compacting" };
+      yield { type: "system", subtype: "status", status: null, compact_result: "success" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const third = run(unmeasured);
+  await third.result;
+  const closedByTurn = third.sink.observations.filter((o) => o.kind === "item.completed");
+  expect(closedByTurn).toHaveLength(1);
+  expect(closedByTurn[0]?.kind === "item.completed" && closedByTurn[0].status).toBe("completed");
 });
 
 test("the Claude seam never turns an unsuccessful result into a completed turn", async () => {
@@ -1534,6 +1549,43 @@ describe("the session runtime", () => {
     expect(queryCalls).toBe(1);
   });
 
+  test("a turn claimed while the stopped one is still parked WAITS for it — one pump per session", async () => {
+    /**
+     * MEASURED (session_7657b2ef…, turns 112–113): stop → interrupt the CLI
+     * never answered → the next turn pushed its prompt into the same runtime
+     * while the old pump was still parked → the 10 s escalation destroyed
+     * the process under the new turn: "Claude ended without a successful
+     * result" four seconds after the user typed.
+     */
+    let release: (() => void) | undefined;
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+        const generator = (async function* () {
+          const input = prompt[Symbol.asyncIterator]();
+          await input.next();
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          yield { type: "result", subtype: "error_during_execution" };
+          await input.next();
+          yield { type: "assistant", message: { content: [{ type: "text", text: "after stop" }] } };
+          yield { type: "result", subtype: "success" };
+        })();
+        // An interrupt that takes a while to be honoured.
+        return Object.assign(generator, { interrupt: async () => setTimeout(() => release?.(), 50) });
+      },
+    }) as never);
+
+    const controller = new AbortController();
+    const first = driver.run({ prompt: "prompt", sessionId: "session_parked", cwd: "/tmp", signal: controller.signal, onObservations: recorder().onObservations });
+    while (!release) await new Promise((resolve) => setTimeout(resolve, 1));
+    controller.abort(new Error("the human pressed stop"));
+    // Claimed BEFORE the stopped turn has let go of the runtime.
+    const second = run(driver, { sessionId: "session_parked", prompt: "carry on" });
+    await expect(first).rejects.toThrow("the human pressed stop");
+    await expect(second.result).resolves.toMatchObject({ text: "after stop" });
+  });
+
   test("a config change recreates the process, resuming the conversation from the cursor", async () => {
     // The fingerprint holds everything the query bakes in at creation. A turn
     // that arrives with a different cwd cannot reuse the live process — and
@@ -1825,6 +1877,45 @@ describe("a turn the CLI started by itself is not this turn", () => {
     await expect(second.result).resolves.toMatchObject({ text: "second" });
     const prose = second.sink.observations.filter((o) => o.kind === "item.started" && o.item.detail.type === "assistant_message");
     expect(prose).toHaveLength(1);
+  });
+
+  test("a local command's result — no message_start, no uuid, no origin — ends OUR turn", async () => {
+    /**
+     * MEASURED against CLI 2.1.259: `/compact` answers with a `status:
+     * compacting`, a `compact_result`, a fresh `init`, and a `result` that
+     * carries NEITHER `user_message_uuid` NOR `origin`. The first cut of the
+     * foreign-result rule read "no sender on a producer that echoes" as a
+     * stranger's result and parked the pump on a finished compaction for 35
+     * minutes (session_7657b2ef…, turn 112).
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        let turns = 0;
+        for await (const message of prompt) {
+          turns += 1;
+          if (turns === 1) {
+            yield* reply(message.uuid!, "first");
+          } else {
+            yield { type: "system", subtype: "status", status: "compacting" };
+            yield { type: "system", subtype: "status", status: null, compact_result: "success" };
+            yield { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 358_700, post_tokens: 9_400 } };
+            yield { type: "system", subtype: "init" };
+            yield { type: "result", subtype: "success", stop_reason: null, num_turns: 0 };
+          }
+        }
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_compact" }).result;
+    const second = run(driver, { sessionId: "session_compact", prompt: "/compact" });
+    await expect(second.result).resolves.toMatchObject({ text: "" });
+    // One compaction row, opened by the announcement and closed by the
+    // boundary that carries the numbers — not a second "Compacted context".
+    const rows = second.sink.observations.filter((o) => o.kind === "item.started");
+    expect(rows).toHaveLength(1);
+    const closed = second.sink.observations.filter((o) => o.kind === "item.completed");
+    expect(closed).toHaveLength(1);
+    expect(closed[0]?.kind === "item.completed" && closed[0].status).toBe("completed");
+    expect(closed[0]?.kind === "item.completed" && closed[0].detail).toMatchObject({ preTokens: 358_700, postTokens: 9_400 });
   });
 
   test("an older producer that never echoes the uuid still ends the turn at its result", async () => {

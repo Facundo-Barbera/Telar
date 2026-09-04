@@ -1101,6 +1101,10 @@ export function createClaudeDriver(
             };
       /** The open "Compacting context" row, when the provider announced one. */
       let compactionItemId: string | undefined;
+      /** `compact_result: "success"` seen; the row waits for its boundary. */
+      let compactionSucceeded = false;
+      /** The open row's `compact_boundary` (the numbers) has arrived. */
+      let compactionMeasured = false;
 
       /**
        * Streaming blocks keyed by the provider's content-block index.
@@ -1678,6 +1682,16 @@ export function createClaudeDriver(
        * cost of send-now and of anything outliving its turn.
        */
       const persistent = streaming;
+      /**
+       * ONE PUMP PER SESSION, EVER. Measured (session_7657b2ef…, turns
+       * 112–113): a stopped turn's pump can stay parked on the iterator for up
+       * to the interrupt escalation (10 s). A turn claimed in that window
+       * pushed its prompt into the SAME runtime, and the escalation then
+       * destroyed the process under it — "Claude ended without a successful
+       * result" four seconds after the user typed. Wait for the previous
+       * turn to let go; a runtime destroyed meanwhile just cold-starts below.
+       */
+      if (persistent) await runtimes.idle(sessionId);
       let claimed = persistent ? runtimes.claim(sessionId, fingerprint) : undefined;
       // Field diagnosis only: which fingerprint field broke reuse. Off unless asked.
       if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
@@ -1912,12 +1926,18 @@ export function createClaudeDriver(
             }
           }
           if (item.type === "result" && !parentToolUseId) {
+            /**
+             * A RESULT WITH NO SENDER IS OURS unless something already said
+             * otherwise. Measured (CLI 2.1.259): a `/compact` turn — and any
+             * local command — answers with NO `message_start` and a `result`
+             * carrying neither `user_message_uuid` nor `origin`. Treating that
+             * as a stranger's parked the pump for 35 minutes on a compaction
+             * that had finished in one second. The CLI's own turns are caught
+             * by their `message_start` (above) or their `origin` (here).
+             */
             const sender = str(item.user_message_uuid);
             const foreignResult =
-              foreignTurn !== undefined ||
-              (sender !== undefined && sender !== turnUuid) ||
-              str(item.origin?.kind) !== undefined ||
-              (sender === undefined && runtime.echoesUserMessageUuid && !ownTurnOpen);
+              foreignTurn !== undefined || (sender !== undefined && sender !== turnUuid) || str(item.origin?.kind) !== undefined;
             if (foreignResult) {
               foreignTurn = undefined;
               await flush();
@@ -1939,18 +1959,30 @@ export function createClaudeDriver(
              */
             if (str(item.status) === "compacting" && !compactionItemId) {
               compactionItemId = itemId();
+              compactionSucceeded = false;
+              compactionMeasured = false;
               emit({
                 kind: "item.started",
                 item: { id: compactionItemId, detail: { type: "context_compaction" }, title: "Compacting context" },
               });
               await flush();
             } else if (item.compact_result !== undefined && compactionItemId) {
-              emit({
-                kind: "item.completed",
-                itemId: compactionItemId,
-                status: item.compact_result === "success" ? "completed" : "failed",
-              });
-              compactionItemId = undefined;
+              if (item.compact_result === "success") {
+                // NOT CLOSED YET unless the numbers are already in. On CLI
+                // 2.1.259 the `compact_boundary` — the one message with the
+                // numbers — arrives AFTER this, and a row already closed made
+                // the boundary open a second one ("Compacted context" twice,
+                // measured). Whichever of the boundary and this comes last
+                // closes the row; the turn's end closes it if neither does.
+                compactionSucceeded = true;
+                if (compactionMeasured) {
+                  emit({ kind: "item.completed", itemId: compactionItemId, status: "completed" });
+                  compactionItemId = undefined;
+                }
+              } else {
+                emit({ kind: "item.completed", itemId: compactionItemId, status: "failed" });
+                compactionItemId = undefined;
+              }
               await flush();
             }
             continue;
@@ -1971,6 +2003,11 @@ export function createClaudeDriver(
             };
             if (compactionItemId) {
               emit({ kind: "item.updated", item: { id: compactionItemId, detail, title: "Compacting context" } });
+              compactionMeasured = true;
+              if (compactionSucceeded) {
+                emit({ kind: "item.completed", itemId: compactionItemId, status: "completed", detail });
+                compactionItemId = undefined;
+              }
             } else {
               const id = itemId();
               emit({ kind: "item.started", item: { id, detail, title: "Compacted context" } });
@@ -2411,8 +2448,9 @@ export function createClaudeDriver(
         for (const [, open] of openBlocks) emit(closeBlock(open));
         // The plan is turn-scoped and has no tool_result to close it.
         if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
-        // A compaction the stream ended inside is over, and it did not finish.
-        if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: "failed" });
+        // A compaction the stream ended inside is over: finished if the CLI
+        // said so and only the boundary never came, failed otherwise.
+        if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: compactionSucceeded ? "completed" : "failed" });
         /**
          * A task left running when the turn ended is closed as failed.
          *
