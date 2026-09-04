@@ -1875,3 +1875,139 @@ test("a later turn's report on a task it knows only by provider id folds onto th
   // The stopped ending stands; the kind stands; the summary still folds in.
   expect(tasks[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "stream ended" });
 });
+
+// ── subscriptions — one session woken by another ────────────────────────────
+
+describe("subscriptions", () => {
+  /** A second session beside `session_one`, and a helper that runs one turn on
+   *  a session to completion the way a worker would. */
+  function pair(): { store: EngineStore } {
+    const { store } = readyStore();
+    store.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
+    return { store };
+  }
+  function runTurn(store: EngineStore, sessionId: string, runId: string, end: "complete" | "fail" | "stop" | "park" = "complete"): void {
+    store.submitTurn(sessionId, { runId, input: "work" });
+    const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
+    store.markRunning(sessionId, runId, token);
+    if (end === "complete") store.completeTurn(sessionId, runId, token, { text: "all done: " + "x".repeat(3_000) });
+    if (end === "fail") store.failTurn(sessionId, runId, token, { code: "driver_failed", message: "the CLI died" });
+    if (end === "stop") store.stopTurn(sessionId, runId);
+    if (end === "park") {
+      store.updateSession(sessionId, { runtimeMode: "approval-required" });
+      store.openRequest(sessionId, runId, token, {
+        requestId: "req_q",
+        kind: "user_input",
+        detail: { kind: "user_input", prompt: "Which database?", fields: [{ key: "db", label: "Database", kind: "choice", choices: ["postgres", "sqlite"] }] },
+      });
+    }
+  }
+  const wakes = (store: EngineStore, sessionId: string) => store.turns(sessionId).filter((turn) => turn.origin === "session");
+
+  test("a completed turn on the target queues a [wake] turn on the subscriber, clipped and pointing at the rest", () => {
+    const { store } = pair();
+    const subscription = store.subscribe("session_one", { targetSessionId: "session_two" });
+    expect(subscription.events).toEqual(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]);
+    runTurn(store, "session_two", "run_w");
+
+    const [wake] = wakes(store, "session_one");
+    expect(wake).toMatchObject({ origin: "session", state: "queued", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
+    expect(wake!.input.startsWith("[wake] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
+    expect(wake!.input).toContain("first 2000 chars");
+    expect(wake!.input).not.toContain("x".repeat(2_500));
+    expect(wake!.input).toContain('sessions_read(sessionId: "session_two")');
+    expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session" } });
+    // The file is at the engine root and outlives the store instance.
+    expect(new EngineStore(store.paths.root, () => 100).subscriptionsFor("session_one")).toHaveLength(1);
+  });
+
+  test("failed, stopped and parked each wake with their own reason; a policy-resolved request wakes nobody", () => {
+    const { store } = pair();
+    store.subscribe("session_one", { targetSessionId: "session_two" });
+    runTurn(store, "session_two", "run_f", "fail");
+    runTurn(store, "session_two", "run_s", "stop");
+    runTurn(store, "session_two", "run_p", "park");
+
+    const kinds = wakes(store, "session_one").map((turn) => turn.wakeReason!.kind);
+    expect(kinds).toEqual(["turn_failed", "turn_stopped", "request_opened"]);
+    const [failed, , parked] = wakes(store, "session_one");
+    expect(failed!.input).toContain("FAILED (driver_failed): the CLI died");
+    expect(parked!.wakeReason).toMatchObject({ requestId: "req_q", runId: "run_p" });
+    expect(parked!.input).toContain("Which database?");
+    expect(parked!.input).toContain("- db (choice): Database [choices: postgres | sqlite]");
+    expect(parked!.input).toContain("sessions_resolve_request");
+
+    // Under `auto`, a command resolves itself — nothing parked, nothing to wake for.
+    store.updateSession("session_two", { runtimeMode: "auto" });
+    const token = store.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
+    store.openRequest("session_two", "run_p", token, { requestId: "req_auto", kind: "file_read", detail: { kind: "file_read", read: { path: "/x" } } });
+    expect(wakes(store, "session_one")).toHaveLength(3);
+  });
+
+  test("events narrows; once fires once; subscribing twice merges into one", () => {
+    const { store } = pair();
+    const first = store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_failed"] });
+    const second = store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"], once: true });
+    expect(second.id).toBe(first.id);
+    expect(second.events.sort()).toEqual(["turn_completed", "turn_failed"]);
+    expect(store.subscriptionsFor("session_one")).toHaveLength(1);
+
+    runTurn(store, "session_two", "run_1", "stop");
+    expect(wakes(store, "session_one")).toHaveLength(0);
+    runTurn(store, "session_two", "run_2");
+    expect(wakes(store, "session_one")).toHaveLength(1);
+    expect(store.subscriptionsFor("session_one")).toHaveLength(0);
+    runTurn(store, "session_two", "run_3");
+    expect(wakes(store, "session_one")).toHaveLength(1);
+  });
+
+  test("a wake's own ending wakes nobody, so two sessions subscribed to each other cannot ping-pong", () => {
+    const { store } = pair();
+    store.subscribe("session_one", { targetSessionId: "session_two" });
+    store.subscribe("session_two", { targetSessionId: "session_one" });
+    runTurn(store, "session_two", "run_w");
+    const [wake] = wakes(store, "session_one");
+    expect(wake).toBeDefined();
+    // Run the wake turn itself to completion: nothing comes back to two.
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", wake!.runId, token);
+    store.completeTurn("session_one", wake!.runId, token, { text: "noted" });
+    expect(wakes(store, "session_two")).toHaveLength(0);
+  });
+
+  test("an archived subscriber is dropped; a full backlog drops the wake with a warning; the target's transition still succeeds", () => {
+    const { store } = pair();
+    store.createSession({ id: "session_three", projectId: "project_one" });
+    store.subscribe("session_one", { targetSessionId: "session_two" });
+    store.subscribe("session_three", { targetSessionId: "session_two" });
+    store.archiveSession("session_three");
+    // Archiving takes the wish with it, in both directions.
+    expect(store.subscriptionsFor("session_one")).toHaveLength(1);
+    expect(new EngineStore(store.paths.root, () => 100).subscriptionsFor("session_one")).toHaveLength(1);
+
+    for (let n = 0; n < 16; n++) store.submitTurn("session_one", { runId: `run_fill_${n}`, input: "queued" });
+    runTurn(store, "session_two", "run_w");
+    expect(store.turns("session_two").at(-1)!.state).toBe("completed");
+    expect(wakes(store, "session_one")).toHaveLength(0);
+    expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "runtime.warning" });
+    expect(String((store.readEvents("session_one").at(-1) as { message: string }).message)).toContain("was dropped");
+  });
+
+  test("the rules: no self-subscribe, no archived target, a wake must carry its reason, and origin cannot be forged through submitTurn alone", () => {
+    const { store } = pair();
+    expect(() => store.subscribe("session_one", { targetSessionId: "session_one" })).toThrow(/cannot subscribe to itself/);
+    store.archiveSession("session_two");
+    expect(() => store.subscribe("session_one", { targetSessionId: "session_two" })).toThrow(/archived/);
+    expect(() => store.submitTurn("session_one", { runId: "run_x", input: "x", origin: "session" })).toThrow(/wake reason/);
+    expect(() => store.unsubscribe("sub_nope")).not.toThrow();
+    expect(store.unsubscribe("sub_nope")).toBe(false);
+  });
+
+  test("a request answered by a session is journaled as such", () => {
+    const { store } = pair();
+    runTurn(store, "session_two", "run_p", "park");
+    const answered = store.resolveRequest("session_two", "req_q", { decision: "accept", resolvedBy: "session", answers: { db: "postgres" } });
+    expect(answered.resolvedBy).toBe("session");
+    expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "request.resolved", resolvedBy: "session" });
+  });
+});
