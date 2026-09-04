@@ -1026,6 +1026,39 @@ test("an agent still running when the turn ends is failed, so the session stops 
   expect(closed[0]?.kind === "task.completed" && closed[0].task.state).toBe("failed");
 });
 
+test("a shell that blocks its turn is a tool call, not a task row — until Ctrl+B makes it one", async () => {
+  /**
+   * MEASURED on CLI 2.1.259: an ordinary Bash call announces `task_started
+   * {task_type: "local_bash"}` with no `is_backgrounded`, then closes it a
+   * frame later. When the turn was stopped between those two frames the row
+   * sat at `running` for hours (task_toolu_01L7QjbY…, "Wait for CI"), and the
+   * session read as monitoring a shell that had long exited. The command
+   * already has its `command_execution` row; the task row is a duplicate that
+   * only sometimes closes.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "system", subtype: "task_started", task_id: "fg1", tool_use_id: "toolu_fg", description: "bun test", task_type: "local_bash" };
+      yield { type: "system", subtype: "task_progress", task_id: "fg1", description: "Running bun test" };
+      yield { type: "system", subtype: "task_notification", task_id: "fg1", status: "completed", summary: "done" };
+      // A second blocking shell, sent to the background mid-flight (Ctrl+B):
+      // from that frame on it is background work and earns a row.
+      yield { type: "system", subtype: "task_started", task_id: "fg2", tool_use_id: "toolu_fg2", description: "tail -f dev.log", task_type: "local_bash" };
+      yield { type: "system", subtype: "task_updated", task_id: "fg2", patch: { is_backgrounded: true } };
+      yield { type: "system", subtype: "task_progress", task_id: "fg2", summary: "line 1" };
+      yield { type: "result", subtype: "success" };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const tasks = sink.observations.filter((o) => o.kind === "task.started" || o.kind === "task.progress" || o.kind === "task.completed");
+  expect(tasks.map((o) => o.kind === "task.started" || o.kind === "task.progress" || o.kind === "task.completed" ? o.task.id : "")).toEqual([
+    "task_fg2",
+    "task_fg2",
+  ]);
+  expect(tasks[0]?.kind === "task.progress" && tasks[0].task).toMatchObject({ kind: "background", backgrounded: true, state: "running" });
+});
+
 test("a sub-agent launched in the BACKGROUND outlives its turn, and stays an agent", async () => {
   /**
    * MEASURED, off a real cockpit session: three Explore agents spawned with
