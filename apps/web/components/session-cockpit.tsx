@@ -358,11 +358,30 @@ function wakeUpLabel(task: JournalTask | undefined): { verb: string; Icon: typeo
   }
 }
 
+/** A wake from ANOTHER SESSION — the engine queued it because a peer this
+ *  one subscribed to did something. The verb names the happening; the label
+ *  names the peer by its id's tail, since the wake text itself carries the
+ *  title on expand. */
+function sessionWakeLabel(reason: NonNullable<JournalTurn["wakeReason"]>): { verb: string; Icon: typeof ClockIcon } {
+  switch (reason.kind) {
+    case "turn_completed":
+      return { verb: "Session finished a turn", Icon: BotIcon };
+    case "turn_failed":
+      return { verb: "Session failed a turn", Icon: BotIcon };
+    case "turn_stopped":
+      return { verb: "Session was stopped", Icon: BotIcon };
+    case "request_opened":
+      return { verb: "Session asked a question", Icon: BotIcon };
+  }
+}
+
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
   const task = turn.wokenBy ? roster.find((candidate) => candidate.id === turn.wokenBy) : undefined;
-  const { verb, Icon } = wakeUpLabel(task);
-  const label = task?.title ?? (task ? undefined : turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : undefined);
+  const { verb, Icon } = turn.wakeReason ? sessionWakeLabel(turn.wakeReason) : wakeUpLabel(task);
+  const label = turn.wakeReason
+    ? `session …${turn.wakeReason.sessionId.slice(-6)}`
+    : (task?.title ?? (task ? undefined : turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : undefined));
   const body = turn.prompt.trim();
   return (
     <div className="rounded-md">
@@ -485,7 +504,7 @@ export function SessionTurn({
 
   return (
     <div className="flex flex-col gap-8">
-      {turn.origin !== "provider" && (
+      {turn.origin !== "provider" && turn.origin !== "session" && (
       <Message from="user">
         <MessageContent from="user">
           {/* THE SAME CHIPS THE COMPOSER DREW. This was `{turn.prompt}` in a
@@ -524,7 +543,7 @@ export function SessionTurn({
               model. No human typed anything, so no bubble: the wake-up is a
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
-          {turn.origin === "provider" && (
+          {(turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
           )}
           {requests.map((request) => (
