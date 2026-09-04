@@ -1168,6 +1168,66 @@ test("a turn that ends takes its sub-agents with it, however it ended", () => {
   expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
 });
 
+test("a vanished worker takes the session's background work with it — a task cannot outlive its process", () => {
+  /**
+   * PROCESS-DEATH, NOT TURN-END. `completeTurn` deliberately leaves background
+   * work alone (outliving its turn is the definition of background), and
+   * `failTurn`/a live stop already close it because the provider process died.
+   * The worker vanishing mid-turn is the same death by another door — before
+   * this, the agent was failed and the SHELL sat at `running` forever, the
+   * exact "still has a background task" wedge.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const claim = store.claimNextTurn("worker_one")!;
+  const token = claim.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_a", kind: "agent", state: "running", title: "Explore" } },
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
+  ]);
+
+  store.recoverInactiveWorker("worker_one");
+
+  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
+  expect(byId.get("task_a")).toMatchObject({ state: "failed", failure: "the worker running this agent disappeared" });
+  expect(byId.get("task_b")).toMatchObject({ state: "stopped", failure: "the process that owned this task is gone" });
+});
+
+test("an engine restart mid-turn stops that session's background work, and leaves a merely monitoring session alone", () => {
+  const { store, root: stateRoot } = readyStore();
+  store.createSession({ id: "session_two", projectId: "project_one" });
+
+  // session_one: RUNNING at the crash — its CLI process died with the engine's
+  // workers, and every shell it hosted died with it.
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_one", "run_one", first.turn.claim!.token);
+  store.ingestObservations("session_one", "run_one", first.turn.claim!.token, [
+    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
+  ]);
+
+  // session_two: idle-with-monitoring at the crash — no turn was running, so
+  // no process of ours died; the watcher may be re-adopted by the next turn.
+  store.submitTurn("session_two", { runId: "run_two", input: "Watch it too" });
+  const second = store.claimNextTurn("worker_one")!;
+  store.markRunning("session_two", "run_two", second.turn.claim!.token);
+  store.ingestObservations("session_two", "run_two", second.turn.claim!.token, [
+    { kind: "task.started", task: { id: "task_c", kind: "background", state: "running", title: "Watch the build" } },
+  ]);
+  store.completeTurn("session_two", "run_two", second.turn.claim!.token, { text: "Watching" });
+
+  const restarted = new EngineStore(stateRoot, () => 200);
+  restarted.recover();
+
+  expect(restarted.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({
+    state: "stopped",
+    failure: "the process that owned this task is gone",
+  });
+  expect(restarted.tasks("session_two").find((task) => task.id === "task_c")).toMatchObject({ state: "running" });
+  expect(restarted.getSession("session_two").activity).toBe("monitoring");
+});
+
 test("a task's kind is decided once, and a later turn's partial report cannot downgrade it", () => {
   /**
    * THE CROSS-TURN CASE. `knownTasks` in the Claude seam is TURN-SCOPED, and a

@@ -4744,7 +4744,7 @@ export class EngineStore {
     this.writeQueue(sessionId, queue);
     // A failed turn means the provider process died — background shells died
     // with it, whichever turn started them.
-    this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
+    this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { kinds: "all" });
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -4762,7 +4762,7 @@ export class EngineStore {
       // cure for tasks orphaned before the sweeps below existed, which
       // otherwise report "monitoring" forever with a Stop that no-ops.
       const at = this.now();
-      const swept = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", { includeBackground: true, state: "stopped" });
+      const swept = this.closeLiveTasks(sessionId, at, "stopped from the cockpit", { kinds: "all", state: "stopped" });
       if (swept > 0) this.touchSession(sessionId, at);
       return { ...(turn ? { turn: structuredClone(turn) } : {}), stopped: swept > 0 };
     }
@@ -4776,7 +4776,7 @@ export class EngineStore {
     if (wasLive) {
       // Stopping a live turn kills the provider process — and every
       // background shell it hosted dies with it, whichever turn started them.
-      this.closeLiveTasks(sessionId, at, "the agent's process was stopped before this task finished", { includeBackground: true });
+      this.closeLiveTasks(sessionId, at, "the agent's process was stopped before this task finished", { kinds: "all" });
     } else {
       this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
     }
@@ -5223,6 +5223,14 @@ export class EngineStore {
           // running these agents did not survive the restart, whatever we
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
+          // BACKGROUND WORK DIES WITH ITS PROCESS TOO — the same position
+          // `failTurn` and a live stop already take: outliving its TURN is the
+          // definition of background, outliving its PROCESS is impossible.
+          // Unfiltered by runId for the same reason theirs is ("whichever turn
+          // started them"): the dead CLI hosted every shell of the session. A
+          // session that was idle-with-monitoring at the restart is left
+          // alone — no turn was running, so no process of ours died.
+          this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { kinds: "background", state: "stopped" });
           changed = true;
         } else if (turn.state === "steering") {
           // Delivery is unknowable across a restart; requeue is the side the
@@ -5278,6 +5286,10 @@ export class EngineStore {
           // turn reached the provider is still undecided; whether its agents
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
+          // And the CLI process was the worker's child, so the session's
+          // background work is gone with it — process-death, not turn-end,
+          // which is why `completeTurn` still leaves background alone.
+          this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { kinds: "background", state: "stopped" });
           // A promoted message aimed at this turn was never delivered by the
           // vanished worker; back to the queue rather than gone.
           for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
@@ -5451,7 +5463,7 @@ export class EngineStore {
    * rather than a second event.
    */
   private closeOrphanedTasks(sessionId: string, runId: string, at: number, failure: string): void {
-    this.closeLiveTasks(sessionId, at, failure, { runId, includeBackground: false });
+    this.closeLiveTasks(sessionId, at, failure, { runId, kinds: "agents" });
   }
 
   /**
@@ -5470,13 +5482,14 @@ export class EngineStore {
     sessionId: string,
     at: number,
     failure: string,
-    options: { runId?: string; includeBackground: boolean; state?: "failed" | "stopped" },
+    options: { runId?: string; kinds: "agents" | "background" | "all"; state?: "failed" | "stopped" },
   ): number {
     const tasks = this.readTasks(sessionId);
     let changed = 0;
     for (const [id, task] of tasks) {
       if (options.runId !== undefined && task.runId !== options.runId) continue;
-      if (!options.includeBackground && task.kind === "background") continue;
+      if (options.kinds === "agents" && task.kind === "background") continue;
+      if (options.kinds === "background" && task.kind !== "background") continue;
       if (task.state === "completed" || task.state === "failed" || task.state === "stopped") continue;
       // `failed` RATHER THAN `stopped` by default, matching the driver's own
       // choice for the same situation: two spellings for one cause would
