@@ -59,13 +59,14 @@ export interface PairedDevice {
 }
 
 export interface PendingPairing {
-  tokenHash: string;
   /**
-   * THE SHORT CODE'S HASH — eight digits, for typing by hand. Absent in a
-   * file written before short codes existed; such a pairing answers to its
-   * long token only.
+   * THE CODE'S HASH — eight digits, the one pairing secret. It is what a
+   * person types, what the QR encodes and what the link carries; there is
+   * no second, longer token any more. Named `tokenHash` still because the
+   * field pre-dates short codes and a pending pairing written by the old
+   * build (a long `tlr_…` token) must keep answering to it.
    */
-  codeHash?: string;
+  tokenHash: string;
   /** Wrong guesses so far. Eight digits is 26 bits, which only holds up if
    *  a guesser gets a handful of tries — see `PAIRING_MAX_ATTEMPTS`. */
   attempts?: number;
@@ -94,6 +95,15 @@ export interface RemoteFile {
   /** Absent in every file written before this existed, and absent means the
    *  safe answer — a loopback bind is what those installs already had. */
   exposure?: ExposureMode;
+  /**
+   * PUBLISH OVER TAILSCALE SERVE — a ts.net HTTPS name with a real
+   * certificate, which is what lets a phone browser reach the cockpit
+   * without an IP and with a secure context. Read by the launchers at
+   * start-up, like `exposure`: the web process never spawns `tailscale`
+   * itself (Mac App Store Tailscale re-prompts consent per spawn), so a
+   * change here asks for a restart rather than pretending it took.
+   */
+  tailscaleServe?: boolean;
   devices: PairedDevice[];
   pairing?: PendingPairing;
 }
@@ -324,20 +334,20 @@ export function normalisePairingCode(raw: string): string | undefined {
 }
 
 /**
- * Mints a pairing, replacing any pending one. Returns the RAW token and the
- * RAW code — the only moment either exists outside a QR, a clipboard or a
- * screen. TWO SECRETS FOR ONE SLOT: the long token rides the QR and the link,
- * where there is no reason to be short; the code is for a person's fingers.
- * Either consumes the pairing.
+ * Mints a pairing, replacing any pending one. Returns the RAW code — the
+ * only moment it exists outside a QR, a clipboard or a screen. ONE SECRET:
+ * the same eight digits are typed, scanned and linked. A first cut kept a
+ * long token beside the code "for the QR"; that showed the person two
+ * different secrets for one act and taught them the short one was the
+ * lesser. The QR is a convenience for entering the code, not a second key.
  */
-export function mintPairing(nowMs: number = Date.now(), ttlMs: number = PAIRING_TTL_MS): { token: string; code: string; expiresAt: number } {
+export function mintPairing(nowMs: number = Date.now(), ttlMs: number = PAIRING_TTL_MS): { code: string; expiresAt: number } {
   const file = readRemote();
-  const token = mintDeviceToken();
   const code = mintPairingCode();
   const expiresAt = nowMs + ttlMs;
-  file.pairing = { tokenHash: hashToken(token), codeHash: hashToken(code), createdAt: nowMs, expiresAt };
+  file.pairing = { tokenHash: hashToken(code), createdAt: nowMs, expiresAt };
   writeRemote(file);
-  return { token, code, expiresAt };
+  return { code, expiresAt };
 }
 
 export function clearPairing(): void {
@@ -372,24 +382,24 @@ export type PairingRefusal = "none-pending" | "expired" | "mismatch" | "burned";
  * Still one-time by construction: a successful consume deletes the pending
  * pairing before returning, so a replayed token meets an empty slot.
  *
- * WRONG GUESSES ARE COUNTED AND THE FIFTH BURNS THE CODE. The long token
- * never needed this; the eight-digit code does — without a cap, 10⁸ guesses
- * inside the TTL is a laptop's afternoon on a LAN. Counted on every
- * mismatch, whichever form was tried, so a guesser cannot alternate.
+ * WRONG GUESSES ARE COUNTED AND THE FIFTH BURNS THE CODE. Eight digits is
+ * 26 bits — without a cap, 10⁸ guesses inside the TTL is a laptop's
+ * afternoon on a LAN. A pending pairing written by the old build holds a
+ * long token; it is tried verbatim, so that install's open QR still works
+ * once after the upgrade.
  */
 export function consumePairing(raw: string, nowMs: number = Date.now()): true | PairingRefusal {
   const file = readRemote();
   const pairing = file.pairing;
   if (!pairing) return "none-pending";
   if (nowMs >= pairing.expiresAt) return "expired";
-  const same = (hashHex: string | undefined, value: string) => {
-    if (!hashHex) return false;
-    const stored = Buffer.from(hashHex, "hex");
+  const same = (value: string) => {
+    const stored = Buffer.from(pairing.tokenHash, "hex");
     const candidate = Buffer.from(hashToken(value), "hex");
     return stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate);
   };
   const code = normalisePairingCode(raw);
-  const matched = same(pairing.tokenHash, raw) || (code !== undefined && same(pairing.codeHash, code));
+  const matched = code !== undefined ? same(code) : same(raw.trim());
   if (!matched) {
     pairing.attempts = (pairing.attempts ?? 0) + 1;
     if (pairing.attempts >= PAIRING_MAX_ATTEMPTS) {
@@ -417,6 +427,19 @@ export function setExposure(exposure: ExposureMode): RemoteFile {
     throw new Error("turn on pairing before opening this cockpit to the network");
   }
   file.exposure = exposure;
+  writeRemote(file);
+  return file;
+}
+
+/** Same gate as `setExposure`, for the same reason: a ts.net name is a door
+ *  onto the tailnet, and it must not open with nothing behind it. */
+export function setTailscaleServe(enabled: boolean): RemoteFile {
+  const file = readRemote();
+  if (enabled && !file.requireAuth) {
+    throw new Error("turn on pairing before publishing this cockpit over Tailscale");
+  }
+  if (enabled) file.tailscaleServe = true;
+  else delete file.tailscaleServe;
   writeRemote(file);
   return file;
 }

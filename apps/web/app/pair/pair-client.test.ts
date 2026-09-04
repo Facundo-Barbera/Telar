@@ -18,8 +18,8 @@ describe("codeFromInput", () => {
     expect(codeFromInput("  tlr_abc123  ")).toBe("tlr_abc123");
   });
 
-  test("a whole pairing link yields the token in its fragment", () => {
-    expect(codeFromInput("http://100.110.136.102:57547/pair#token=tlr_fF2-Be2cfF_E")).toBe("tlr_fF2-Be2cfF_E");
+  test("a whole pairing link yields the code in its fragment", () => {
+    expect(codeFromInput("http://100.110.136.102:57547/pair#token=37410745")).toBe("37410745");
     expect(codeFromInput("http://127.0.0.1:3000/pair#token=tlr_x&other=1")).toBe("tlr_x");
   });
 

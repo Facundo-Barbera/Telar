@@ -18,12 +18,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { TerminalIcon, ServerIcon, GlobeIcon, CircleHelpIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
+import { TerminalIcon, ServerIcon, GlobeIcon, CircleHelpIcon, CheckIcon, CopyIcon, LockIcon, MonitorIcon, SmartphoneIcon, XIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { QrMatrix } from "@/lib/remote/qr";
 import { fmtAgo } from "@/lib/format";
+import { desktopApp } from "@/lib/desktop-app";
+import { cn } from "@/lib/utils";
 import { QrCodeView } from "./qr-code";
 import { CopyCommand } from "./copy-command";
 import { Row, Segmented, SettingsGroup, ToggleRow } from "./settings-shell";
@@ -49,6 +51,7 @@ interface RemoteHost {
 interface RemoteStatus {
   requireAuth: boolean;
   exposure?: "local-only" | "network-accessible";
+  tailscaleServe?: boolean;
   host?: RemoteHost;
   devices: RemoteDevice[];
   callerDeviceId?: string;
@@ -76,8 +79,7 @@ const KIND_ICONS: Record<string, typeof MonitorIcon> = {
 };
 
 interface MintedPairing {
-  token: string;
-  /** Eight digits, for typing by hand — the QR and the link carry `token`. */
+  /** Eight digits — the one pairing secret. Typed, scanned or linked. */
   code: string;
   expiresAt: number;
   qrByUrl: Record<string, QrMatrix>;
@@ -85,6 +87,60 @@ interface MintedPairing {
 
 /** "48129037" → "4812 9037": the way a person reads eight digits off a screen. */
 const spaced = (code: string) => `${code.slice(0, 4)} ${code.slice(4)}`;
+
+/** What each address is for, in the words a person choosing one needs. */
+const ENDPOINT_HINTS: Record<string, string> = {
+  loopback: "Clients on this machine",
+  lan: "Devices on the same network",
+  tailnet: "Devices on your private network",
+  magicdns: "Any device, over HTTPS",
+};
+
+/** The pairing code, big, with its own copy button — the thing a person reads
+ *  across a room or copies into a message. One control, one secret. */
+function PairingCode({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label="Copy pairing code"
+      onClick={() => {
+        navigator.clipboard
+          ?.writeText(code)
+          .then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          })
+          .catch(() => {
+            // No clipboard on an insecure origin: the digits are on screen.
+          });
+      }}
+      className="group flex items-center gap-4 rounded-lg border border-border/70 bg-muted/40 px-5 py-3 text-left transition-colors hover:bg-muted/70"
+    >
+      <span className="font-mono text-3xl tracking-[0.2em] tabular-nums">{spaced(code)}</span>
+      {copied ? <CheckIcon className="size-4 text-success" /> : <CopyIcon className="size-4 text-muted-foreground/70 group-hover:text-foreground" />}
+    </button>
+  );
+}
+
+/** An address as a row you pick, not a segment you squint at — the label
+ *  and what it reaches, selected state as a quiet fill. */
+function EndpointRow({ endpoint, selected, onSelect }: { endpoint: RemoteStatus["endpoints"][number]; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-baseline gap-2 rounded-md border px-3 py-1.5 text-left text-xs transition-colors",
+        selected ? "border-border bg-muted font-medium text-foreground" : "border-border/60 text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+      )}
+    >
+      <span className="shrink-0">{endpoint.label}</span>
+      <span className="min-w-0 truncate font-normal text-muted-foreground">{ENDPOINT_HINTS[endpoint.kind] ?? endpoint.url}</span>
+    </button>
+  );
+}
 
 export function RemoteSection() {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
@@ -194,6 +250,30 @@ export function RemoteSection() {
     [load],
   );
 
+  /** Persisted now, honoured at the next launch — exactly like exposure. */
+  const setTailscaleServe = useCallback(
+    async (next: boolean) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const response = await fetch("/api/remote", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tailscaleServe: next }),
+        });
+        const body = (await response.json()) as { error?: { message?: string } };
+        if (!response.ok) throw new Error(body.error?.message ?? `status ${response.status}`);
+        setRestartNeeded(true);
+        await load();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not change Tailscale HTTPS.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [load],
+  );
+
   const mint = useCallback(async () => {
     setBusy(true);
     try {
@@ -262,7 +342,10 @@ export function RemoteSection() {
   }
 
   const matrix = minted && selectedUrl && selectedEndpoint?.qrSafe ? minted.qrByUrl[selectedUrl] : undefined;
-  const pairingUrl = minted && selectedUrl ? `${selectedUrl}/pair#token=${minted.token}` : null;
+  const pairingUrl = minted && selectedUrl ? `${selectedUrl}/pair#token=${minted.code}` : null;
+  const reachableAt = endpoints.filter((endpoint) => endpoint.kind !== "loopback");
+  const magicdns = endpoints.find((endpoint) => endpoint.kind === "magicdns");
+  const relaunch = desktopApp();
 
   return (
     <>
@@ -279,89 +362,109 @@ export function RemoteSection() {
           checked={status.requireAuth}
           onCheckedChange={(next) => void toggle(next)}
         />
-        {/* WHERE THE SOCKET LISTENS, beside who may reach it — the two halves
-            of the same question. Only offered once pairing is on: binding every
-            interface without a gate would publish an unguarded cockpit to
-            whatever network this machine is attached to. */}
-        {status.requireAuth && (
+      </SettingsGroup>
+
+      {/* WHERE THIS COCKPIT CAN BE REACHED — the environment, beside who may
+          reach it. Only offered once pairing is on: binding every interface,
+          or publishing a ts.net name, without a gate would put an unguarded
+          cockpit on whatever network this machine is attached to. Both are
+          read by the shell at launch, so a change offers a restart rather
+          than pretending it took. */}
+      {status.requireAuth && (
+        <SettingsGroup title="This environment" description="How devices reach this cockpit.">
           <ToggleRow
-            label="Reachable from the network"
+            label="Network access"
             icon={GlobeIcon}
             hint={
-              status.exposure === "network-accessible"
-                ? "Listening on every interface, so a tailnet or LAN address reaches this cockpit. Pairing is what guards it."
-                : "Listening on 127.0.0.1 only. A pairing link that names another address cannot connect — this machine is the only one that can reach it."
+              status.exposure === "network-accessible" ? (
+                reachableAt.length > 0 ? (
+                  <>
+                    Reachable at <span className="font-mono text-foreground">{reachableAt[0]!.url}/</span>
+                    {reachableAt.length > 1 && <span className="ml-1 text-muted-foreground/70">+{reachableAt.length - 1}</span>}
+                  </>
+                ) : (
+                  "Listening on every interface. Pairing is what guards it."
+                )
+              ) : (
+                "Listening on 127.0.0.1 only — this machine is the only one that can reach it."
+              )
             }
             checked={status.exposure === "network-accessible"}
             onCheckedChange={(next) => void setExposure(next ? "network-accessible" : "local-only")}
           />
-        )}
-        {restartNeeded && (
-          <Row
-            label="Restart to apply"
-            hint="The server chooses its address when it starts, so this takes effect on the next launch."
-            control={null}
+          <ToggleRow
+            label="Tailscale HTTPS"
+            icon={LockIcon}
+            hint={
+              magicdns ? (
+                <>
+                  Served at <span className="font-mono text-foreground">{magicdns.url}/</span> — a real certificate, so phone browsers get a secure context.
+                </>
+              ) : status.tailscaleServe ? (
+                "Will publish through Tailscale Serve at the next launch. Needs Tailscale running with HTTPS certificates enabled for your tailnet."
+              ) : (
+                "Use Tailscale Serve to expose this cockpit through a MagicDNS HTTPS URL."
+              )
+            }
+            checked={status.tailscaleServe === true}
+            onCheckedChange={(next) => void setTailscaleServe(next)}
           />
-        )}
-      </SettingsGroup>
+          {restartNeeded && (
+            <Row
+              label="Restart to apply"
+              hint="The server chooses its addresses when it starts, so this takes effect at the next launch."
+              control={
+                relaunch ? (
+                  <Button variant="outline" size="sm" onClick={() => void relaunch.relaunch()}>
+                    Restart Telar
+                  </Button>
+                ) : null
+              }
+            />
+          )}
+        </SettingsGroup>
+      )}
 
       {status.requireAuth && (
         <SettingsGroup
           title="Pair a device"
-          description="A pairing code is one-time, lives five minutes, and is destroyed after five wrong tries. Each browser pairs per address — the tailnet IP and a ts.net name are different origins."
+          description="One code, one device: it lives five minutes and is destroyed after five wrong tries. Each browser pairs per address — the tailnet IP and a ts.net name are different origins."
+          action={
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void mint()}>
+              {minted && !expired ? "New code" : "Show pairing code"}
+            </Button>
+          }
         >
-          <Row
-            label="Pairing code"
-            hint={
-              minted
-                ? expired
-                  ? "Expired — mint a new one."
-                  : "Type it into the pairing page on the other device, or scan the QR below."
-                : "Codes are shown once and never stored."
-            }
-            control={
-              <Button variant="outline" size="sm" disabled={busy} onClick={() => void mint()}>
-                {minted ? "New code" : "Show pairing code"}
-              </Button>
-            }
-          />
-          {minted && !expired && (
-            <div className="flex items-center gap-3 py-3">
-              {/* THE CODE, BIG. It is the thing a person reads across the room
-                  and types on a phone; everything else on this card is a
-                  convenience for when a scan or a paste is possible. */}
-              <div className="rounded-lg border border-border/70 bg-muted/40 px-5 py-3 font-mono text-3xl tracking-[0.2em] tabular-nums select-all">
-                {spaced(minted.code)}
+          {minted && !expired ? (
+            <div className="flex flex-col gap-4 py-3 sm:flex-row sm:items-start sm:gap-6">
+              <div className="flex min-w-0 flex-1 flex-col gap-3">
+                {/* THE CODE, BIG, WITH ITS OWN COPY. It is what a person reads
+                    across a room and types on a phone. The QR and the link
+                    below carry the SAME eight digits — a way to enter the
+                    code, not a second secret. */}
+                <div className="flex items-center gap-3">
+                  <PairingCode code={minted.code} />
+                  <span className="text-xs text-muted-foreground">Type it into the pairing page on the other device.</span>
+                </div>
+                {endpoints.length > 1 && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs text-muted-foreground">Reach this machine via</span>
+                    {endpoints.map((endpoint) => (
+                      <EndpointRow key={endpoint.url} endpoint={endpoint} selected={endpoint.url === selectedUrl} onSelect={() => setEndpointUrl(endpoint.url)} />
+                    ))}
+                  </div>
+                )}
+                {pairingUrl && <CopyCommand command={pairingUrl} />}
               </div>
-              <div className="min-w-0 flex-1">
-                <CopyCommand command={minted.code} />
-              </div>
+              {/* No QR for loopback: a phone dialling 127.0.0.1 reaches itself. */}
+              {matrix && <QrCodeView matrix={matrix} className="size-44 shrink-0 rounded-md border border-border/70" />}
             </div>
-          )}
-          {minted && !expired && endpoints.length > 1 && (
+          ) : (
             <Row
-              label="Address"
-              hint={
-                selectedEndpoint?.kind === "loopback"
-                  ? "For another client on this computer — a second browser, a CLI. Nothing to scan: a phone dialling 127.0.0.1 reaches itself."
-                  : "The address the device will dial. Pick the one it can reach."
-              }
-              control={
-                <Segmented
-                  value={selectedUrl ?? ""}
-                  onChange={(value) => setEndpointUrl(value)}
-                  options={endpoints.map((endpoint) => ({ value: endpoint.url, label: endpoint.label }))}
-                />
-              }
+              label="Pairing code"
+              hint={expired ? "Expired — mint a new one." : "Codes are shown once and never stored."}
+              control={null}
             />
-          )}
-          {minted && !expired && pairingUrl && (
-            <div className="flex flex-col items-start gap-3 py-3">
-              {matrix && <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />}
-              <div className="w-full max-w-md">
-                <CopyCommand command={pairingUrl} />
-              </div>
-            </div>
           )}
         </SettingsGroup>
       )}

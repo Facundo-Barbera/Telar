@@ -119,6 +119,18 @@ function readRequireAuth(telarHome) {
   }
 }
 
+/** The Settings toggle's persisted wish — honoured only with pairing on,
+ *  the same rule the store enforces on write, re-checked here because a
+ *  hand-edited file must not publish an open cockpit onto the tailnet. */
+function readTailscaleServe(telarHome) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(telarHome, "remote", "remote.json"), "utf8"));
+    return parsed?.tailscaleServe === true && parsed?.requireAuth === true;
+  } catch {
+    return false;
+  }
+}
+
 async function probeEngine(engineRoot) {
   try {
     return await (await connectEngine(engineRoot)).health();
@@ -182,7 +194,8 @@ async function main() {
   const webPort = resolveWebPort(env);
   const webHost = resolveWebHost(env);
   const cockpitUrl = makeCockpitUrl(webPort, webHost);
-  const serveRequested = env.TELAR_TAILSCALE_SERVE === "1";
+  // Either the env flag or the Settings toggle asks for a ts.net endpoint.
+  const serveRequested = env.TELAR_TAILSCALE_SERVE === "1" || readTailscaleServe(telarHome);
   await assertWebPortAvailable(webPort, webHost);
   process.stdout.write(`[telar] TELAR_HOME=${telarHome}\n`);
   // Printed BEFORE anything starts listening, and to stderr: a warning about

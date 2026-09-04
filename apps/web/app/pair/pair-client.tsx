@@ -9,9 +9,9 @@ type PairState = { phase: "idle" } | { phase: "pairing" } | { phase: "paired" } 
 
 /**
  * A code as a person might paste it: eight digits with or without a space,
- * the long `tlr_…` token, or a whole pairing link with the token in its
- * fragment. Anything else is returned as-is and the server says what is
- * wrong with it.
+ * or a whole pairing link with the code in its fragment (an older cockpit's
+ * `tlr_…` token rides the same way). Anything else is returned as-is and the
+ * server says what is wrong with it.
  */
 export function codeFromInput(raw: string): string {
   const trimmed = raw.trim();

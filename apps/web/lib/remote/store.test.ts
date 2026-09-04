@@ -21,6 +21,7 @@ import {
   setDeviceRole,
   setExposure,
   setRequireAuth,
+  setTailscaleServe,
   storePath,
   writeRemote,
   touchDevice,
@@ -89,34 +90,32 @@ describe("remote store", () => {
 
   test("pairing is one-time and expires", () => {
     freshHome();
-    const { token } = mintPairing(1000, 600_000);
+    const { code } = mintPairing(1000, 600_000);
     // Replay: first consume wins, second meets an empty slot.
-    expect(consumePairing(token, 2000)).toBe(true);
-    expect(consumePairing(token, 2000)).toBe("none-pending");
+    expect(consumePairing(code, 2000)).toBe(true);
+    expect(consumePairing(code, 2000)).toBe("none-pending");
 
     const expired = mintPairing(1000, 600_000);
-    expect(consumePairing(expired.token, 601_001)).toBe("expired");
+    expect(consumePairing(expired.code, 601_001)).toBe("expired");
   });
 
   test("minting a new pairing replaces the pending one", () => {
     freshHome();
     const first = mintPairing(1000);
     const second = mintPairing(2000);
-    expect(consumePairing(first.token, 3000)).toBe("mismatch");
-    expect(consumePairing(second.token, 3000)).toBe(true);
+    expect(consumePairing(first.code, 3000)).toBe("mismatch");
+    expect(consumePairing(second.code, 3000)).toBe(true);
   });
 
-  test("the eight-digit code pairs too, however it is spaced, and is one-time with the token", () => {
+  test("the code is eight digits and pairs however it is spaced", () => {
     freshHome();
-    const { code, token } = mintPairing(1000);
+    const { code } = mintPairing(1000);
     expect(code).toMatch(/^\d{8}$/);
     expect(normalisePairingCode(`${code.slice(0, 4)} ${code.slice(4)}`)).toBe(code);
     expect(normalisePairingCode(`${code.slice(0, 4)}-${code.slice(4)}`)).toBe(code);
     expect(normalisePairingCode("1234567")).toBeUndefined();
     expect(normalisePairingCode("12345678a")).toBeUndefined();
     expect(consumePairing(`${code.slice(0, 4)} ${code.slice(4)}`, 2000)).toBe(true);
-    // ONE SLOT: the token that came with the code is spent with it.
-    expect(consumePairing(token, 2000)).toBe("none-pending");
   });
 
   test("five wrong guesses burn the code, whichever form the guesser tries", () => {
@@ -131,14 +130,23 @@ describe("remote store", () => {
     expect(consumePairing(code, 2000)).toBe("none-pending");
   });
 
-  test("a pending pairing from before short codes still answers to its token", () => {
+  test("a pending pairing written by the old build still answers to its long token", () => {
     freshHome();
-    const { token } = mintPairing(1000);
+    const old = mintDeviceToken();
     const file = readRemote();
-    delete file.pairing!.codeHash;
+    file.pairing = { tokenHash: hashToken(old), createdAt: 1000, expiresAt: 601_000 };
     writeRemote(file);
     expect(consumePairing("12345678", 2000)).toBe("mismatch");
-    expect(consumePairing(token, 2000)).toBe(true);
+    expect(consumePairing(old, 2000)).toBe(true);
+  });
+
+  test("tailscale serve is persisted only with pairing on, like exposure", () => {
+    freshHome();
+    expect(() => setTailscaleServe(true)).toThrow(/pairing/);
+    setRequireAuth(true);
+    expect(setTailscaleServe(true).tailscaleServe).toBe(true);
+    expect(readRemote().tailscaleServe).toBe(true);
+    expect(setTailscaleServe(false).tailscaleServe).toBeUndefined();
   });
 
   test("touchDevice throttles writes and never throws", () => {

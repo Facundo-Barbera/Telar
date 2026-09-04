@@ -80,6 +80,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // scheme — see main.js.
     setTheme: (theme) => ipcRenderer.invoke("telar:appearance:setTheme", theme),
   },
+  app: {
+    // Settings → Remote access offers this after a change the shell only
+    // reads at launch.
+    relaunch: () => ipcRenderer.invoke("telar:app:relaunch"),
+  },
   updates: {
     check: () => ipcRenderer.invoke("telar:updates:check"),
     install: () => ipcRenderer.invoke("telar:updates:install"),
