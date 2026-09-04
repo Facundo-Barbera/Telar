@@ -1380,10 +1380,10 @@ export class EngineClient {
      *  refuses (never resets) a collision with an existing branch. */
     branchName?: string;
     /**
-     * WHO ASKED — provenance, never a link to anything. `"session"` marks a
-     * session that the `sessions` toolkit created and is the ONLY value the
-     * engine's live-session budget counts; absent is a human's own click and is
-     * never capped. Declared by the calling CODE, never by a model argument.
+     * WHO ASKED — provenance, never a link to anything and never a count.
+     * `"session"` marks a session that the `sessions` toolkit created; absent
+     * is a human's own click. Declared by the calling CODE, never by a model
+     * argument.
      */
     origin?: SessionOrigin;
   }): Promise<{ session: Session }> {

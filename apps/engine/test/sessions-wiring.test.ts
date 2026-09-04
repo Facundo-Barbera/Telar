@@ -12,8 +12,7 @@
  *      `EngineClient` calls, so every rule has to survive a round trip over
  *      loopback rather than being enforced in the same process. The one that
  *      matters most is `origin: "session"` — it is declared by the worker's own
- *      code, and without it the store's budget counts nothing and the cap is a
- *      formality.
+ *      code, and without it a list could not say an agent asked.
  *
  * NOTHING HERE SPENDS ANYTHING. The SDK is a fake with a `tool` factory that
  * remembers names, and the turn driver is a fake that calls the capability it
@@ -152,13 +151,8 @@ test("the sessions toolkit registers under the SAME one server, and only when th
  */
 async function turnWith(
   body: (sessions: SessionsCapability) => Promise<void>,
-  options: { sessionsBudget?: number } = {},
 ): Promise<{ client: EngineClient; hostId: string; projectId: string; sawCapability: boolean }> {
-  const daemon = await startEngine({
-    engineRoot: tmp("telar-sessions-wiring-"),
-    workerLeaseMs: 1_000,
-    ...(options.sessionsBudget === undefined ? {} : { sessionsBudget: options.sessionsBudget }),
-  });
+  const daemon = await startEngine({ engineRoot: tmp("telar-sessions-wiring-"), workerLeaseMs: 1_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const { project } = await client.registerProject({ name: "aurora", root: repo() });
@@ -210,7 +204,7 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   expect(sawCapability).toBe(true);
   expect(made).toBeDefined();
   // THE STAMP, over a real round trip. Declared by the WORKER's own code — no
-  // tool shape carries it — and it is what the store's budget counts.
+  // tool shape carries it.
   expect(made!.origin).toBe("session");
   expect(made!.envMode).toBe("worktree");
   expect(fs.existsSync(path.join(made!.workspace.path, "README.md"))).toBe(true);
@@ -222,26 +216,6 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
   // on it exactly as the one it made is, with nothing linking them.
   expect(listed!.sessions.map((each) => each.id).sort()).toEqual([hostId, made!.id].sort());
   expect(JSON.stringify(session)).not.toContain(hostId);
-});
-
-test("the budget refuses the worker's own path, over HTTP, in the store's sentence", async () => {
-  // The mirror of the in-process assertion: the guard is the STORE's, so it
-  // cannot be walked past by reaching it through the client instead.
-  let refusal = "";
-  await turnWith(
-    async (sessions) => {
-      const { projects } = await sessions.list();
-      await sessions.create({ projectId: projects[0]!.id, envMode: "local" });
-      try {
-        await sessions.create({ projectId: projects[0]!.id, envMode: "local" });
-      } catch (error) {
-        refusal = error instanceof Error ? error.message : String(error);
-      }
-    },
-    { sessionsBudget: 1 },
-  );
-  expect(refusal).toContain("1 of a maximum 1");
-  expect(refusal).toContain("Archive or delete one");
 });
 
 test("the worker cannot archive, delete or accept anything — the client it holds has no such reach", async () => {

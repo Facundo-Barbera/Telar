@@ -30,8 +30,7 @@
  *     readable here and is accepted by a human somewhere else, or not at all.
  *   · NOTHING THAT DELETES OR ARCHIVES. The engine has both verbs and a person
  *     reaches them from a surface they are looking at. An agent that could
- *     archive a session could also free its own budget, which would turn the
- *     one cap in this file into a formality.
+ *     archive a session could erase another agent's work with one call.
  *   · NO PERMISSION LAUNDERING, which is the one rule this wall can only SAY.
  *     See `NOT_A_BYPASS` below: it is stated in the prose of every tool that
  *     could be used for it, because that text is the only voice the wall has
@@ -40,11 +39,14 @@
  *     another name, and `warp/spawn.ts` already denies a warp child the ability
  *     to fan out; these tools join the list it already keeps.
  *
- * ── THE ONE STRUCTURAL GUARD ────────────────────────────────────────────────
- * With no depth rule by design, a plain COUNT is all that stands between a
- * loop and forty worktrees. It lives in `EngineStore.createSession` — not
- * here — so an in-process caller hits it too, and it refuses with a sentence
- * naming the cap and the next move. See `Session.origin`.
+ * ── NO CAP, AND WHY ─────────────────────────────────────────────────────────
+ * There used to be a live-session budget in `EngineStore.createSession`, and
+ * it was removed when a session was allowed to ORCHESTRATE many: an agent
+ * driving ten worktrees is the use, not the abuse. What bounds creation now is
+ * the person — archive and delete are theirs and nobody else's — and the
+ * prose of `sessions_create`, which is the only voice this wall has on a
+ * question no count can settle. See `Session.origin`, which still says who
+ * asked.
  */
 import crypto from "node:crypto";
 import { z } from "zod";
@@ -72,7 +74,7 @@ export type SessionsCapability = {
    *
    * `origin: "session"` is stamped by the implementation of this member, never
    * by a model argument — no shape below carries it — exactly as the spool's
-   * `source: "session"` is. It is what the store's budget counts.
+   * `source: "session"` is. Provenance a list can show; nothing counts it.
    */
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
@@ -119,13 +121,13 @@ const NOT_A_BYPASS =
   "action wearing a different name — it is not a workaround, it is a violation. Take the refusal back to " +
   "the user instead.";
 
-const LIST = `Every session that is alive on this engine right now — its id, its project, its title, whether it is working or waiting on somebody, and whether it has a checkout of its own — plus the projects a session could be created in. Read this before creating anything: the session you want may already exist, and this is also what tells you which sessions are holding the create budget.`;
+const LIST = `Every session that is alive on this engine right now — its id, its project, its title, whether it is working or waiting on somebody, and whether it has a checkout of its own — plus the projects a session could be created in. Read this before creating anything: the session you want may already exist, and what you would otherwise create twice is on this list.`;
 
 const CREATE = `Start a NEW session on a project, with no relationship to this one. It is a PEER, not a child: nothing links the two, it does not report back to you, and you learn what it did only by asking (sessions_read, sessions_status, sessions_diff). It starts with no turn queued — creating a session begins no work; sessions_send is what does.
 
 envMode is the choice that matters. "worktree" gives it a git checkout of its own, so it can edit files without colliding with anything else working on that project — this is what you want for anything that writes code. "local" points it at the project's own checkout, which it then SHARES with every other local session and with the user's own editor.
 
-There is a hard cap on how many live sessions may be created this way, and hitting it is refused with a sentence saying so. Sessions do not clean themselves up: one you started stays live until a human archives it. ${NOT_A_BYPASS}`;
+There is no cap on how many sessions you may create, so the discipline is yours: sessions do not clean themselves up — one you started stays live until a human archives it — and every worktree session is a whole checkout on the user's disk. Create what the work needs and nothing more. ${NOT_A_BYPASS}`;
 
 const SEND = `Give a session one message, exactly as a person typing to it would. It is queued and runs when a worker picks it up — this returns as soon as it is accepted, NOT when the turn is finished, so read the answer with sessions_read or watch for it with sessions_status rather than assuming it happened. A session can hold a short backlog, so a second message while one is running is queued behind it rather than interrupting.
 
@@ -245,8 +247,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       "sessions_list",
       LIST,
       // NO ARGUMENTS. There is nothing a caller could usefully narrow that the
-      // engine does not already know, and the whole live set is small by
-      // construction — the budget is what keeps it so.
+      // engine does not already know, and the live set is small in practice —
+      // bounded by nothing but the person's own tidiness.
       {},
       async () => {
         const { sessions, projects } = await capability.list();
@@ -294,9 +296,11 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           });
         } catch (error) {
           /**
-           * THE STORE'S OWN SENTENCE, CARRIED WHOLE. The budget refusal names
-           * the cap and the next move, and a wall that replaced it with
-           * "could not create session" would delete the only actionable part.
+           * THE STORE'S OWN SENTENCE, CARRIED WHOLE. A missing project, a
+           * repository that cannot take a worktree, a driver that is not
+           * installed — each refusal names its cause, and a wall that replaced
+           * it with "could not create session" would delete the only
+           * actionable part.
            */
           return err(`Could not create a session on "${projectId}": ${failure(error)}`);
         }

@@ -5,8 +5,8 @@
  * There is no fake capability in this file, deliberately. A stub that answered
  * every member with a plausible success would assert that the WALL composes
  * sentences and nothing about whether the rules those sentences describe exist
- * — and the rules are the whole feature: the budget is the store's, the env
- * mode is the store's, the refusal sentences are the store's. So the capability
+ * — and the rules are the whole feature: the env mode is the store's, the
+ * refusal sentences are the store's. So the capability
  * below is the same seven-member object the daemon's socket builds, over an
  * `EngineStore` on a temporary root, and `envMode: "worktree"` cuts an actual
  * worktree off an actual repository. Nothing here starts a session, spawns a
@@ -19,7 +19,7 @@
  *   · nothing accept-shaped, and nothing that archives or deletes (INV-1);
  *   · nothing that records WHO created a session — no parent, no child, no
  *     link, which is the design under test rather than a gap in it;
- *   · a live-session budget that refuses in a sentence naming the cap;
+ *   · NO cap on creation — asserted, not assumed, because the prose says so;
  *   · every one of these tools denied to a warp child.
  */
 import { afterEach, describe, expect, test } from "bun:test";
@@ -96,9 +96,9 @@ function wall(store: EngineStore): Map<string, Registered> {
 }
 
 /** A store on a fresh engine root with one registered project. */
-function engine(options: { sessionsBudget?: number } = {}): { store: EngineStore; projectId: string; projectRoot: string } {
+function engine(): { store: EngineStore; projectId: string; projectRoot: string } {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-sessions-state-"), undefined, options);
+  const store = new EngineStore(tmp("telar-sessions-state-"));
   const project = store.registerProject({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id, projectRoot };
 }
@@ -227,67 +227,33 @@ describe("creating a session", () => {
   });
 });
 
-// ── the budget ──────────────────────────────────────────────────────────────
+// ── no cap ──────────────────────────────────────────────────────────────────
 
-describe("the live-session budget", () => {
-  test("refuses past the cap, in a sentence naming the cap and the way out", async () => {
-    const { store, projectId } = engine({ sessionsBudget: 2 });
+describe("there is no cap on creation", () => {
+  test("twelve agent-made sessions succeed, and the prose promises no cap", async () => {
+    // There used to be a live-session budget of eight. It was removed when a
+    // session was allowed to orchestrate many; this pins that the store no
+    // longer refuses on a count AND that the wall's own description stopped
+    // promising one — a description that lied would teach a model to hoard.
+    const { store, projectId } = engine();
     const tools = wall(store);
-    expect((await call(tools, "sessions_create", { projectId, envMode: "local" })).isError).toBe(false);
-    expect((await call(tools, "sessions_create", { projectId, envMode: "local" })).isError).toBe(false);
-
-    const refused = await call(tools, "sessions_create", { projectId, envMode: "local" });
-    expect(refused.isError).toBe(true);
-    // ACTIONABLE: the count, the cap, and what to do about it. A model that
-    // reads "limit reached" retries; one that reads this can act.
-    expect(refused.text).toContain("2 of a maximum 2");
-    expect(refused.text).toContain("Archive or delete one");
-    expect(refused.text).toContain("sessions_list");
-  });
-
-  test("the cap counts LIVE agent-made sessions only — archiving one frees it", async () => {
-    const { store, projectId } = engine({ sessionsBudget: 2 });
-    const tools = wall(store);
-    const first = await call(tools, "sessions_create", { projectId, envMode: "local" });
-    await call(tools, "sessions_create", { projectId, envMode: "local" });
-    expect((await call(tools, "sessions_create", { projectId, envMode: "local" })).isError).toBe(true);
-
-    // Archiving is a HUMAN verb and is deliberately not on this wall — so the
-    // only way past the cap is somebody deciding a session is finished.
-    store.archiveSession(first.json!.id as string);
-    expect((await call(tools, "sessions_create", { projectId, envMode: "local" })).isError).toBe(false);
-  });
-
-  test("it is a cap on AGENT-MADE sessions, not on sessions — a person is never refused", async () => {
-    // ANTI-VACUITY, and the assertion that stops this being a global session
-    // limit by accident: with the budget already spent, a human create still
-    // works, and the human's sessions never counted towards it in the first
-    // place.
-    const { store, projectId } = engine({ sessionsBudget: 1 });
-    const tools = wall(store);
-    for (let n = 0; n < 5; n++) store.createSession({ projectId, title: `a person's session ${n}` });
-    expect((await call(tools, "sessions_create", { projectId, envMode: "local" })).isError).toBe(false);
-    expect((await call(tools, "sessions_create", { projectId, envMode: "local" })).isError).toBe(true);
-    expect(store.createSession({ projectId, title: "still fine" }).id).toBeTruthy();
-  });
-
-  test("the guard is the STORE's, so an in-process caller meets it too", () => {
-    // The house rule: a check that only ran on the tool wall would protect the
-    // wall and nothing else.
-    const { store, projectId } = engine({ sessionsBudget: 1 });
-    store.createSession({ projectId, origin: "session" });
-    expect(() => store.createSession({ projectId, origin: "session" })).toThrow(/maximum 1 live sessions/);
+    for (let n = 0; n < 12; n++) {
+      expect((await call(tools, "sessions_create", { projectId, envMode: "local", title: `worker ${n}` })).isError).toBe(false);
+    }
+    expect(store.liveSessions().sessions.filter((session) => session.origin === "session")).toHaveLength(12);
+    const create = tools.get("sessions_create")!.description;
+    expect(create).not.toContain("hard cap");
+    expect(create).toContain("no cap");
   });
 
   test("a refused create leaves NO worktree behind", () => {
-    // The order is the guarantee: the budget is checked before anything is
-    // cut, so a refusal cannot leave the very thing the cap exists to prevent
-    // lying on disk.
-    const { store, projectId } = engine({ sessionsBudget: 1 });
+    // A refusal for any reason must not leave a checkout lying on disk. The
+    // one refusal that remains is a project that does not exist.
+    const { store, projectId } = engine();
     store.createSession({ projectId, envMode: "worktree", origin: "session" });
     const worktrees = path.join(store.paths.root, "worktrees");
     const before = fs.readdirSync(worktrees).length;
-    expect(() => store.createSession({ projectId, envMode: "worktree", origin: "session" })).toThrow();
+    expect(() => store.createSession({ projectId: "project_nope", envMode: "worktree", origin: "session" })).toThrow();
     expect(fs.readdirSync(worktrees).length).toBe(before);
   });
 });

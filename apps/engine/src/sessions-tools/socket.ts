@@ -16,10 +16,9 @@
  * delete. `test/sessions-socket.test.ts` asserts the two lists are EQUAL, which
  * is why parity is structural rather than something a person maintains.
  *
- * THE BUDGET RIDES ALONG TOO, and that is worth stating: it lives in
- * `EngineStore.createSession`, so a chat client hammering `sessions_create`
- * over this socket meets the same refusal, with the same sentence, that a
- * session inside the engine meets.
+ * THE STORE'S RULES RIDE ALONG TOO: the env-mode rule, the driver check, the
+ * backlog cap all live in `EngineStore`, so a chat client meets the same
+ * refusal, in the same sentence, that a session inside the engine meets.
  *
  * ── A DEDICATED SECRET, NOT THE MANAGEMENT TOKEN ────────────────────────────
  * The bearer in `engine.json` is engine ADMIN. A client configured with THIS

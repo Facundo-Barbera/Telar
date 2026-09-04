@@ -472,15 +472,14 @@ export class EngineWorker {
          * UNSCOPED, unlike the spool, and that is not an oversight: there is no
          * scope to apply. A session created here is a PEER of the one that
          * asked — no parent, no child, no link recorded anywhere — so there is
-         * nothing about this turn for the capability to be narrowed by. What
-         * bounds it is the store's live-session budget, which is a plain count
-         * and not a relationship.
+         * nothing about this turn for the capability to be narrowed by, and
+         * nothing counts how many it creates.
          *
          * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
          * do: the worker holds no store handle, and routing through the same
          * HTTP surface the cockpit uses means there is exactly one
-         * implementation of every rule about a session — including the budget,
-         * which `createSession` enforces regardless of which door reached it.
+         * implementation of every rule about a session, whichever door
+         * reached it.
          *
          * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
          * on the wall carries it — the same construction as the spool's
