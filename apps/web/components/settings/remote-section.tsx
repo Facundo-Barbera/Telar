@@ -125,16 +125,18 @@ export function RemoteSection() {
     return () => window.clearTimeout(task);
   }, [load]);
 
-  const qrEndpoints = useMemo(() => (status?.endpoints ?? []).filter((endpoint) => endpoint.qrSafe), [status]);
-  /** THIS MACHINE. `qrSafe: false` is right for a QR — scanning 127.0.0.1 with
-   *  a phone reaches the phone — but it is the address a SECOND client on this
-   *  same machine needs, and filtering it out of the panel left that case with
-   *  no pairing path at all. Offered as a link to copy, never as a code to
-   *  scan. */
-  const loopbackEndpoint = useMemo(() => (status?.endpoints ?? []).find((endpoint) => endpoint.kind === "loopback"), [status]);
+  /**
+   * EVERY ADDRESS, ONE AT A TIME. Loopback rides in the same picker as the
+   * shareable ones — it is the address a SECOND client on this machine needs
+   * — but it is never drawn as a QR: scanning 127.0.0.1 with a phone reaches
+   * the phone. The panel shows one link for the picked address, and a QR
+   * only when that address is one a phone can dial.
+   */
+  const endpoints = useMemo(() => status?.endpoints ?? [], [status]);
   // Prefer the most shareable candidate: listEndpoints orders loopback → lan
   // → tailnet → magicdns, so the last qrSafe entry wins.
-  const selectedUrl = endpointUrl ?? qrEndpoints.at(-1)?.url ?? null;
+  const selectedUrl = endpointUrl ?? endpoints.filter((endpoint) => endpoint.qrSafe).at(-1)?.url ?? endpoints.at(-1)?.url ?? null;
+  const selectedEndpoint = endpoints.find((endpoint) => endpoint.url === selectedUrl);
 
   const toggle = useCallback(
     async (next: boolean) => {
@@ -254,7 +256,7 @@ export function RemoteSection() {
     );
   }
 
-  const matrix = minted && selectedUrl ? minted.qrByUrl[selectedUrl] : undefined;
+  const matrix = minted && selectedUrl && selectedEndpoint?.qrSafe ? minted.qrByUrl[selectedUrl] : undefined;
   const pairingUrl = minted && selectedUrl ? `${selectedUrl}/pair#token=${minted.token}` : null;
 
   return (
@@ -318,37 +320,41 @@ export function RemoteSection() {
               </Button>
             }
           />
-          {minted && !expired && qrEndpoints.length > 1 && (
+          {minted && !expired && (
+            <Row
+              label="Code"
+              hint="The bare code, for typing into the pairing page by hand when a link or a scan will not take."
+              control={
+                <div className="w-full max-w-md">
+                  <CopyCommand command={minted.token} />
+                </div>
+              }
+            />
+          )}
+          {minted && !expired && endpoints.length > 1 && (
             <Row
               label="Address"
-              hint="The address the phone will dial. Pick the one it can reach."
+              hint={
+                selectedEndpoint?.kind === "loopback"
+                  ? "For another client on this computer — a second browser, a CLI. Nothing to scan: a phone dialling 127.0.0.1 reaches itself."
+                  : "The address the device will dial. Pick the one it can reach."
+              }
               control={
                 <Segmented
                   value={selectedUrl ?? ""}
                   onChange={(value) => setEndpointUrl(value)}
-                  options={qrEndpoints.map((endpoint) => ({ value: endpoint.url, label: endpoint.label }))}
+                  options={endpoints.map((endpoint) => ({ value: endpoint.url, label: endpoint.label }))}
                 />
               }
             />
           )}
-          {minted && !expired && matrix && pairingUrl && (
+          {minted && !expired && pairingUrl && (
             <div className="flex flex-col items-start gap-3 py-3">
-              <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />
+              {matrix && <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />}
               <div className="w-full max-w-md">
                 <CopyCommand command={pairingUrl} />
               </div>
             </div>
-          )}
-          {minted && !expired && loopbackEndpoint && (
-            <Row
-              label="This machine"
-              hint="For another client on this computer — a second browser, a CLI. The same one-time code, at the loopback address."
-              control={
-                <div className="w-full max-w-md">
-                  <CopyCommand command={`${loopbackEndpoint.url}/pair#token=${minted.token}`} />
-                </div>
-              }
-            />
           )}
         </SettingsGroup>
       )}
