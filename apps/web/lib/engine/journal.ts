@@ -31,6 +31,12 @@ export type JournalTurn = {
   /** `compact` when the turn is the compaction gesture, not a message — the
    *  transcript draws a system row instead of a bubble. */
   kind?: "message" | "compact";
+  /** `provider` when the CLI started this turn on its own — a background
+   *  task's ending woke the model. Drawn as a wake-up line, not a bubble:
+   *  no human typed `prompt`; it is the provider's notification text. */
+  origin?: "user" | "provider";
+  /** For a provider turn: the row whose ending woke it, when known. */
+  wokenBy?: string;
   /** Files sent WITH this message. On the turn because that is what they
    *  describe — a transcript that showed the words and not the screenshot has
    *  lost half of what was said. */
@@ -118,6 +124,8 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         runId: turn.runId,
         prompt: turn.input,
         ...(turn.kind ? { kind: turn.kind } : {}),
+        ...(turn.origin ? { origin: turn.origin } : {}),
+        ...(turn.providerReason?.taskId ? { wokenBy: turn.providerReason.taskId } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
         items: [],
@@ -209,6 +217,8 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             runId: event.turn.runId,
             prompt: event.turn.input,
             ...(event.turn.kind ? { kind: event.turn.kind } : {}),
+            ...(event.turn.origin ? { origin: event.turn.origin } : {}),
+            ...(event.turn.providerReason?.taskId ? { wokenBy: event.turn.providerReason.taskId } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
             items: [],

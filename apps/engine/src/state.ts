@@ -4730,6 +4730,87 @@ export class EngineStore {
     return structuredClone(turn);
   }
 
+  /**
+   * A TURN THE PROVIDER STARTED, opened as a real turn.
+   *
+   * The CLI process lives between turns and can run a model turn of its own
+   * there — a monitor fired, the CLI woke the model on the notification, the
+   * model spoke and called tools. This is what T3 Code calls a synthetic
+   * turn. It is born `running` under a fresh claim: the process is already
+   * talking, so there is nothing to queue and nothing for a worker to pick
+   * up; the claim exists so the turn's requests, observations and completion
+   * ride the very routes a human turn's do, gate included. Refused while any
+   * turn of the session is live — one turn per session is the invariant every
+   * sweep relies on, and a wake-up arriving mid-turn is the running turn's
+   * own stream, not a second one.
+   */
+  openProviderTurn(sessionId: string, input: { workerId: string; input: string; reason: NonNullable<Turn["providerReason"]> }): Turn {
+    assertId(input.workerId, "worker id");
+    const queue = this.readQueue(sessionId);
+    if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) {
+      throw new EngineStateError("conflict", "session already has a live turn");
+    }
+    const at = this.now();
+    const turn: Turn = {
+      runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+      sessionId,
+      sequence: queue.nextSequence++,
+      input: input.input.slice(0, MAX_TEXT_LENGTH),
+      origin: "provider",
+      providerReason: input.reason,
+      state: "running",
+      acceptedAt: at,
+      startedAt: at,
+      updatedAt: at,
+      claim: { workerId: input.workerId, token: crypto.randomUUID(), at },
+    };
+    queue.turns.push(turn);
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    // The same three events a human turn produces, in one breath: tailing
+    // clients fold a provider turn with the code they already have.
+    this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.claimed", workerId: input.workerId }, turn.runId);
+    this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
+   * TASK REPORTS WITH NO TURN TO CLAIM. Between turns the CLI still speaks
+   * about its background work — the level signal, a notification for a shell
+   * that fired, a Ctrl+B — and until the pump read between turns those frames
+   * waited for the next human message (a monitor's ending sat unheard for ten
+   * hours, measured). They fold onto the rows they name exactly as a turn's
+   * would; the `runId` is the stored row's, since a task belongs to the turn
+   * that started it. A report for a row the store has never seen is dropped
+   * rather than minted under no turn at all — the driver's own `task_started`
+   * inside a turn is the only thing that opens a row.
+   */
+  reportSessionTasks(sessionId: string, workerId: string, observations: unknown[]): { accepted: number } {
+    assertId(workerId, "worker id");
+    this.getSession(sessionId);
+    const parsed = TurnObservationSchema.array().safeParse(observations);
+    if (!parsed.success) throw new EngineStateError("invalid_request", "task observations are invalid");
+    const tasks = this.readTasks(sessionId);
+    const projection = { items: this.readItems(sessionId), tasks, tasksTouched: false, turnTouched: false };
+    let accepted = 0;
+    for (const observation of parsed.data) {
+      if (observation.kind !== "task.started" && observation.kind !== "task.progress" && observation.kind !== "task.completed") continue;
+      const seed = observation.task;
+      const known =
+        tasks.get(seed.id) ?? (seed.providerTaskId ? [...tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
+      if (!known) continue;
+      // `journalObservation` takes the owning turn only for its runId.
+      this.journalObservation(sessionId, { runId: known.runId } as Turn, observation, projection);
+      accepted += 1;
+    }
+    if (projection.tasksTouched) {
+      this.writeTasks(sessionId, projection.tasks);
+      this.touchSession(sessionId, this.now());
+    }
+    return { accepted };
+  }
+
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
   claimNextTurn(workerId: string): WorkerClaim | undefined {
     assertId(workerId, "worker id");

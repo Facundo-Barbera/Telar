@@ -430,6 +430,57 @@ test("a mutating socket call journals browser.state onto the turn that made it",
   }
 });
 
+test("a wake-up between turns becomes a PROVIDER TURN on the engine, with its tool call decided under its own claim", async () => {
+  /**
+   * THE ROUND TRIP: driver (between turns) → session door → openProviderTurn
+   * → a real running turn → its tool request opened under ITS claim → its
+   * rows reported → completeTurn. Before this the frames waited for the next
+   * human message and the tool call was refused against a settled claim.
+   */
+  let door: Parameters<TurnDriver["run"]>[0]["session"] | undefined;
+  const driver: TurnDriver = {
+    async run({ session }) {
+      door = session;
+      return { text: "first" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  await client.submitTurn(sessionId, { runId: "run_one", input: "Watch CI" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("completed"));
+  expect(door).toBeDefined();
+
+  // The shell ends between turns: no claim, no turn.
+  await door!.onTasks([{ kind: "task.started", task: { id: "task_toolu_bg", kind: "background", state: "running", title: "Wait for CI" } }]);
+  // (a start for a row nobody opened is dropped — see reportSessionTasks)
+  expect((await client.session(sessionId)).tasks).toHaveLength(0);
+
+  // The CLI wakes the model; the driver asks for a turn.
+  const binding = await door!.onProviderTurn({ input: "Background task completed (green).", reason: { kind: "task_notification", taskId: "task_toolu_bg" } });
+  expect(binding).toBeDefined();
+  const snapshot = await client.session(sessionId);
+  const providerTurn = snapshot.turns.find((turn) => turn.runId === binding!.runId);
+  expect(providerTurn).toMatchObject({ state: "running", origin: "provider", input: "Background task completed (green)." });
+  expect(snapshot.session.activity).toBe("working");
+
+  // Its tool call is asked under ITS claim — and auto-accepted by the
+  // session's default mode, exactly as a human turn's would be.
+  const decision = await binding!.onRequest!({ kind: "file_read", detail: { kind: "file_read", read: { path: "/tmp/x" } }, toolUseId: "toolu_read" });
+  expect(typeof decision === "string" ? decision : decision.decision).toBe("accept");
+  await binding!.onObservations([
+    { kind: "item.started", item: { id: "i_wake", detail: { type: "assistant_message", text: "merging" } } },
+    { kind: "item.completed", itemId: "i_wake", status: "completed" },
+  ]);
+  await binding!.close({ text: "merged" });
+  await eventually(async () => {
+    const after = await client.session(sessionId);
+    expect(after.turns.find((turn) => turn.runId === binding!.runId)).toMatchObject({ state: "completed", resultText: "merged" });
+    expect(after.session.activity).toBe("idle");
+  });
+  const events = (await client.events(sessionId)).events.filter((event) => event.runId === binding!.runId).map((event) => event.type);
+  expect(events).toEqual(["turn.accepted", "turn.claimed", "turn.started", "request.opened", "request.resolved", "item.started", "item.completed", "turn.completed"]);
+});
+
 test("a send-now delivery lands in the driver's mailbox and the promoted turn goes steered", async () => {
   // The driver plays a long turn: it waits for a steered message, drains it,
   // and answers with what it heard — proof the text crossed heartbeat →

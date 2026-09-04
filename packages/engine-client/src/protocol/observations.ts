@@ -210,6 +210,39 @@ export const WorkerClaim = z.object({
 export type WorkerClaim = z.infer<typeof WorkerClaim>;
 
 /**
+ * What a worker sends to open a turn the PROVIDER started.
+ *
+ * The CLI process outlives its turns, and between them it can run a whole
+ * model turn of its own — a background shell or monitor fired, the CLI woke
+ * the model on the notification, and the model spoke and called tools. Before
+ * this existed those frames sat buffered until the next human message, were
+ * then read as a stranger's, and their tool calls were refused against a
+ * settled claim. This opens a REAL turn for them: it is `running` from birth
+ * (the process is already talking), carries a claim like any other so its
+ * requests, observations and completion ride the same routes, and it is
+ * closed by the same `completeTurn`.
+ */
+export const ProviderTurnOpenInput = z.object({
+  workerId: Id,
+  /** The provider's own notification text — what the model was woken with. */
+  input: z.string(),
+  reason: z.object({ kind: z.enum(["task_notification", "unknown"]), taskId: Id.optional() }),
+});
+export type ProviderTurnOpenInput = z.infer<typeof ProviderTurnOpenInput>;
+
+/**
+ * Task reports that arrive BETWEEN turns — the level signal, a notification
+ * for a shell that fired, a Ctrl+B — carried without a claim, because there is
+ * no turn to claim. Worker-authenticated like a heartbeat; the store folds
+ * them onto the rows they name and never opens a turn for them.
+ */
+export const SessionTaskReport = z.object({
+  workerId: Id,
+  observations: z.array(TurnObservation),
+});
+export type SessionTaskReport = z.infer<typeof SessionTaskReport>;
+
+/**
  * The heartbeat reply.
  *
  * IT IS THE ONLY CHANNEL FROM ENGINE TO WORKER, and both fields exist because

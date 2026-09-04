@@ -18,6 +18,8 @@ type WorkerClient = Pick<
   | "openRequest"
   | "completeTurn"
   | "failTurn"
+  | "openProviderTurn"
+  | "reportSessionTasks"
   | "ackSteer"
   // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
   // back over the same loopback socket as everything else here, which is what
@@ -326,102 +328,9 @@ export class EngineWorker {
      * each into a deny the model can read — but with zero log lines the
      * failure was undiagnosable from the daemon log alone.
      */
-    let lateRefusalLogged = false;
-    const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<DriverRequestOutcome> => {
-      const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
-      const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
-        requestId,
-        kind,
-        detail,
-      }).catch((error: unknown) => {
-        if (!lateRefusalLogged && error instanceof EngineClientError && error.code === "conflict") {
-          lateRefusalLogged = true;
-          console.error(`[worker] tool request refused for ${runId}: ${error.message}`);
-        }
-        throw error;
-      });
-      // Auto-resolved by the session's runtime mode — no human involved,
-      // no wait. This is the common path in a detached session. (`user_input`
-      // never auto-resolves — no mode can invent a human's answer.)
-      if (opened.state === "resolved") return { decision: opened.decision };
-
-      // Parked. Wait for the heartbeat to carry an answer, or for the turn
-      // to be aborted. ABORT MUST SETTLE THIS PROMISE: a stop arriving
-      // while a human is deciding would otherwise leave the driver blocked
-      // forever inside canUseTool, and the turn would never end.
-      return new Promise<DriverRequestOutcome>((resolve) => {
-        // The runId in the key mirrors the heartbeat's settle lookup — see
-        // `tick()` for why request-only keying breaks under concurrency.
-        this.awaiting.set(`${runId}:${requestId}`, resolve);
-        const onAbort = () => {
-          if (!this.awaiting.delete(`${runId}:${requestId}`)) return;
-          resolve({ decision: "cancel" });
-        };
-        if (controller.signal.aborted) onAbort();
-        else controller.signal.addEventListener("abort", onAbort, { once: true });
-      });
-    };
+    const { askEngine, gate: gateForTurn, onNavigated: onNavigatedForTurn, fillSecret: fillSecretForTurn } = this.bindTurn(sessionId, runId, claimToken, controller);
     let lease: BrowserSocketLease | undefined;
     try {
-      /**
-       * THIS TURN'S gate and observation sink — swapped into the session's
-       * long-lived browser binding below. Both close over this turn's claim,
-       * which is why the binding itself cannot capture them.
-       */
-      const gateForTurn: NonNullable<BrowserRunBinding["gate"]> = async ({ name, args, readOnly }) => {
-        const { decision } = await askEngine({
-          // A CLASSIFICATION, NOT A BYPASS — the same rule TELAR_READ_TOOLS
-          // states in driver.ts. A read-only browser call changes nothing,
-          // so it is declared as a read and the mode ladder's existing
-          // auto-accept does its job; a mutation stays `tool_call` and
-          // parks where the mode says to park.
-          kind: readOnly ? "file_read" : "tool_call",
-          // The QUALIFIED name, so the approval and the timeline row name
-          // the same tool. A client shortens it for display
-          // (`displayToolName`); the data does not lie about which server
-          // it belongs to.
-          detail: {
-            kind: "tool_call",
-            call: { name: qualifyTelarTool(name, TELAR_BROWSER_MCP_SERVER), server: TELAR_BROWSER_MCP_SERVER, input: args },
-          },
-          toolUseId: `${TELAR_BROWSER_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
-        });
-        return decision === "accept" || decision === "acceptForSession";
-      };
-      const onNavigatedForTurn: NonNullable<BrowserRunBinding["onNavigated"]> = (state) => {
-        // A stop is terminal the moment the engine records it — same guard
-        // as `onObservations` below, for the same conflict.
-        if (controller.signal.aborted) return;
-        void this.options.client
-          .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
-          .catch(() => undefined);
-      };
-      /**
-       * `browser_fill_secret`, wired per turn like the gate: the orchestrator
-       * gets the socket's own scope-bound browser, the `op` adapter, and an
-       * `ask` that opens a `secret_access` request through the SAME askEngine
-       * as every other gate — so an abort settles it, and the heartbeat
-       * carries back the human's item pick in `answers.item`. The values live
-       * inside `runSecretFill` and the fill call it makes; nothing of them
-       * reaches this closure's return value or the journal.
-       */
-      const fillSecretForTurn: NonNullable<BrowserRunBinding["fillSecret"]> = (args, callBrowser) =>
-        runSecretFill(
-          {
-            callBrowser,
-            secrets: this.options.secrets ?? (this.secrets ??= createOnePasswordSecrets()),
-            ask: async (secret) => {
-              const outcome = await askEngine({
-                kind: "secret_access",
-                detail: { kind: "secret_access", secret },
-                toolUseId: `${TELAR_BROWSER_MCP_SERVER}_fill_secret_${crypto.randomUUID().slice(0, 8)}`,
-              });
-              const item = outcome.answers?.item;
-              return { decision: outcome.decision, ...(typeof item === "string" ? { itemId: item } : {}) };
-            },
-          },
-          args,
-        );
       // AFTER `markTurnRunning`, NOT BEFORE, and the ordering is load-bearing:
       // `failTurn` only settles a turn that is RUNNING, so a worker with no
       // driver for this provider that threw here first would leave the turn
@@ -602,6 +511,67 @@ export class EngineWorker {
           if (controller.signal.aborted) return;
           await this.options.client.reportObservations(sessionId, runId, claimToken, observations);
         },
+        /**
+         * THE SESSION'S DOOR FOR WHAT HAPPENS BETWEEN TURNS. The driver keeps
+         * reading the provider process after this turn settles; task frames
+         * come back through `onTasks` with no claim, and a turn the CLI
+         * starts on its own is opened as a PROVIDER TURN — a real turn under
+         * a claim this worker holds, with a gate and a sink of its own, so a
+         * wake-up's tool calls are decided by a human rather than refused
+         * against this turn's settled claim.
+         */
+        session: {
+          onTasks: (observations) =>
+            this.options.client.reportSessionTasks(sessionId, this.options.workerId, observations).then(() => undefined),
+          onProviderTurn: async ({ input, reason }) => {
+            let opened: { turn: { runId: string; claim?: { token: string } } };
+            try {
+              opened = await this.options.client.openProviderTurn(sessionId, { workerId: this.options.workerId, input, reason });
+            } catch (error) {
+              // A live turn already has the session: the wake-up's frames
+              // are that turn's stream. Anything else is a real failure.
+              if (error instanceof EngineClientError && error.code === "conflict") return undefined;
+              throw error;
+            }
+            const providerRunId = opened.turn.runId;
+            const providerToken = opened.turn.claim!.token;
+            const providerController = new AbortController();
+            this.active.set(providerToken, providerController);
+            const bound = this.bindTurn(sessionId, providerRunId, providerToken, providerController);
+            // The browser's per-turn gate now answers to THIS turn's claim.
+            const cached = this.browserLeases.get(sessionId);
+            if (cached) {
+              cached.refs.gate = bound.gate;
+              cached.refs.onNavigated = bound.onNavigated;
+              cached.refs.fillSecret = bound.fillSecret;
+            }
+            return {
+              runId: providerRunId,
+              onRequest: bound.askEngine,
+              onObservations: async (observations) => {
+                if (providerController.signal.aborted) return;
+                await this.options.client.reportObservations(sessionId, providerRunId, providerToken, observations);
+              },
+              close: async (result) => {
+                this.active.delete(providerToken);
+                if (providerController.signal.aborted) return;
+                try {
+                  if ("failure" in result) {
+                    await this.options.client.failTurn(sessionId, providerRunId, providerToken, { code: "driver_failed", message: result.failure });
+                  } else {
+                    await this.options.client.completeTurn(sessionId, providerRunId, providerToken, {
+                      text: result.text,
+                      ...(result.providerSessionId ? { providerSessionId: result.providerSessionId } : {}),
+                      ...(result.usage ? { usage: result.usage } : {}),
+                    });
+                  }
+                } catch (error) {
+                  if (!(error instanceof EngineClientError && error.code === "conflict")) throw error;
+                }
+              },
+            };
+          },
+        },
       });
       // Drained BEFORE the turn settles. A state read still in flight would
       // otherwise report against a turn the engine has already closed, which
@@ -642,6 +612,120 @@ export class EngineWorker {
       this.steering.delete(claimToken);
       this.active.delete(claimToken);
     }
+  }
+
+  /**
+   * EVERYTHING A TURN'S CLAIM BINDS, built once per claim: the engine gate
+   * (`askEngine`), and the browser socket's per-turn gate, navigation sink
+   * and secret fill on top of it. Extracted so a PROVIDER turn (a wake-up the
+   * driver reads between turns) gets exactly the gate a human turn gets —
+   * its tool calls decided under its own claim, never refused against a
+   * settled one.
+   */
+  private bindTurn(sessionId: string, runId: string, claimToken: string, controller: AbortController) {
+    /**
+     * ONE LINE PER TURN when the engine refuses a tool request because the
+     * turn already settled. This is the signature of the premature-completion
+     * bug (a `result` consumed while tool calls were still running): every
+     * refusal after the first says nothing new, and the driver already turns
+     * each into a deny the model can read — but with zero log lines the
+     * failure was undiagnosable from the daemon log alone.
+     */
+    let lateRefusalLogged = false;
+    const askEngine = async ({ kind, detail, toolUseId }: DriverRequest): Promise<DriverRequestOutcome> => {
+      const requestId = `req_${toolUseId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+      const opened = await this.options.client.openRequest(sessionId, runId, claimToken, {
+        requestId,
+        kind,
+        detail,
+      }).catch((error: unknown) => {
+        if (!lateRefusalLogged && error instanceof EngineClientError && error.code === "conflict") {
+          lateRefusalLogged = true;
+          console.error(`[worker] tool request refused for ${runId}: ${error.message}`);
+        }
+        throw error;
+      });
+      // Auto-resolved by the session's runtime mode — no human involved,
+      // no wait. This is the common path in a detached session. (`user_input`
+      // never auto-resolves — no mode can invent a human's answer.)
+      if (opened.state === "resolved") return { decision: opened.decision };
+
+      // Parked. Wait for the heartbeat to carry an answer, or for the turn
+      // to be aborted. ABORT MUST SETTLE THIS PROMISE: a stop arriving
+      // while a human is deciding would otherwise leave the driver blocked
+      // forever inside canUseTool, and the turn would never end.
+      return new Promise<DriverRequestOutcome>((resolve) => {
+        // The runId in the key mirrors the heartbeat's settle lookup — see
+        // `tick()` for why request-only keying breaks under concurrency.
+        this.awaiting.set(`${runId}:${requestId}`, resolve);
+        const onAbort = () => {
+          if (!this.awaiting.delete(`${runId}:${requestId}`)) return;
+          resolve({ decision: "cancel" });
+        };
+        if (controller.signal.aborted) onAbort();
+        else controller.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    /**
+     * THIS TURN'S gate and observation sink — swapped into the session's
+     * long-lived browser binding. Both close over this turn's claim, which
+     * is why the binding itself cannot capture them.
+     */
+    const gate: NonNullable<BrowserRunBinding["gate"]> = async ({ name, args, readOnly }) => {
+      const { decision } = await askEngine({
+        // A CLASSIFICATION, NOT A BYPASS — the same rule TELAR_READ_TOOLS
+        // states in driver.ts. A read-only browser call changes nothing,
+        // so it is declared as a read and the mode ladder's existing
+        // auto-accept does its job; a mutation stays `tool_call` and
+        // parks where the mode says to park.
+        kind: readOnly ? "file_read" : "tool_call",
+        // The QUALIFIED name, so the approval and the timeline row name
+        // the same tool. A client shortens it for display
+        // (`displayToolName`); the data does not lie about which server
+        // it belongs to.
+        detail: {
+          kind: "tool_call",
+          call: { name: qualifyTelarTool(name, TELAR_BROWSER_MCP_SERVER), server: TELAR_BROWSER_MCP_SERVER, input: args },
+        },
+        toolUseId: `${TELAR_BROWSER_MCP_SERVER}_${name}_${crypto.randomUUID().slice(0, 8)}`,
+      });
+      return decision === "accept" || decision === "acceptForSession";
+    };
+    const onNavigated: NonNullable<BrowserRunBinding["onNavigated"]> = (state) => {
+      // A stop is terminal the moment the engine records it — same guard
+      // as `onObservations`, for the same conflict.
+      if (controller.signal.aborted) return;
+      void this.options.client
+        .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
+        .catch(() => undefined);
+    };
+    /**
+     * `browser_fill_secret`, wired per turn like the gate: the orchestrator
+     * gets the socket's own scope-bound browser, the `op` adapter, and an
+     * `ask` that opens a `secret_access` request through the SAME askEngine
+     * as every other gate — so an abort settles it, and the heartbeat
+     * carries back the human's item pick in `answers.item`. The values live
+     * inside `runSecretFill` and the fill call it makes; nothing of them
+     * reaches this closure's return value or the journal.
+     */
+    const fillSecret: NonNullable<BrowserRunBinding["fillSecret"]> = (args, callBrowser) =>
+      runSecretFill(
+        {
+          callBrowser,
+          secrets: this.options.secrets ?? (this.secrets ??= createOnePasswordSecrets()),
+          ask: async (secret) => {
+            const outcome = await askEngine({
+              kind: "secret_access",
+              detail: { kind: "secret_access", secret },
+              toolUseId: `${TELAR_BROWSER_MCP_SERVER}_fill_secret_${crypto.randomUUID().slice(0, 8)}`,
+            });
+            const item = outcome.answers?.item;
+            return { decision: outcome.decision, ...(typeof item === "string" ? { itemId: item } : {}) };
+          },
+        },
+        args,
+      );
+    return { askEngine, gate, onNavigated, fillSecret };
   }
 
   private driverFor(kind: ProviderDriverKind): TurnDriver {

@@ -103,6 +103,7 @@ import {
   type TurnSubmissionResult,
   type UsageSnapshot,
   type WorkerClaim,
+  type ProviderTurnOpenInput,
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
@@ -1698,6 +1699,20 @@ export class EngineClient {
 
   claimTurn(workerId: string): Promise<{ claim?: WorkerClaim }> {
     return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, {});
+  }
+
+  /**
+   * Open a turn the PROVIDER started — a wake-up between turns. Returns a
+   * turn that is already `running` under a claim this worker holds, so the
+   * usual `openRequest`/`reportObservations`/`completeTurn` apply to it.
+   */
+  openProviderTurn(sessionId: string, input: ProviderTurnOpenInput): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/provider`, input);
+  }
+
+  /** Task reports that arrive between turns; no claim, worker-authenticated. */
+  reportSessionTasks(sessionId: string, workerId: string, observations: TurnObservation[]): Promise<{ accepted: number }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/tasks`, { workerId, observations });
   }
 
   markTurnRunning(sessionId: string, runId: string, claimToken: string): Promise<{ turn: Turn }> {

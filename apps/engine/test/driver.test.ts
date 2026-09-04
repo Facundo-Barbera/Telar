@@ -1945,7 +1945,7 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(sink.observations.some((o) => o.kind === "task.started")).toBe(false);
   });
 
-  test("a wake-up whose task never announced is dropped, not shown as an answer", async () => {
+  test("a wake-up whose task never announced keeps its rows, but is never the answer", async () => {
     const driver = createClaudeDriver(async () => ({
       async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
         let turns = 0;
@@ -1964,9 +1964,161 @@ describe("a turn the CLI started by itself is not this turn", () => {
     }) as never);
     await run(driver, { sessionId: "session_orphan" }).result;
     const second = run(driver, { sessionId: "session_orphan" });
+    // The turn's answer is ITS answer: the wake-up's prose never joins it.
     await expect(second.result).resolves.toMatchObject({ text: "second" });
+    // The wake-up's prose is still on the transcript — a human turn's window
+    // is the fallback for a wake-up the idle pump did not get to; dropping
+    // it hid what the agent did. It has no task to file under.
     const prose = second.sink.observations.filter((o) => o.kind === "item.started" && o.item.detail.type === "assistant_message");
-    expect(prose).toHaveLength(1);
+    expect(prose).toHaveLength(2);
+    expect(prose.every((o) => o.kind === "item.started" && o.item.taskId === undefined)).toBe(true);
+  });
+
+  /**
+   * A session door with a recorder behind each hook, for the idle-pump
+   * tests: what the pump filed between turns, and the provider turns it
+   * opened (each with its own sink and its own close).
+   */
+  const sessionDoor = (options: { refuse?: boolean } = {}) => {
+    const tasks: TurnObservation[] = [];
+    const turns: Array<{ input: string; reason: unknown; observations: TurnObservation[]; closed?: unknown; requests: unknown[] }> = [];
+    let runSeq = 0;
+    return {
+      tasks,
+      turns,
+      hooks: {
+        onTasks: async (batch: TurnObservation[]) => void tasks.push(...batch),
+        onProviderTurn: async ({ input, reason }: { input: string; reason: unknown }) => {
+          if (options.refuse) return undefined;
+          const record = { input, reason, observations: [] as TurnObservation[], requests: [] as unknown[] };
+          turns.push(record);
+          return {
+            runId: `run_provider_${(runSeq += 1)}`,
+            onObservations: async (batch: TurnObservation[]) => void record.observations.push(...batch),
+            onRequest: async (request: unknown) => {
+              record.requests.push(request);
+              return "accept" as const;
+            },
+            close: async (result: unknown) => {
+              record.closed = result;
+            },
+          };
+        },
+      },
+    };
+  };
+  const settle = async (check: () => boolean, ms = 500) => {
+    const until = Date.now() + ms;
+    while (!check() && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(check()).toBe(true);
+  };
+
+  test("BETWEEN TURNS the idle pump hears a shell end and opens a PROVIDER TURN for the wake-up", async () => {
+    /**
+     * THE STRUCTURAL FIX. Measured: "Wait for the desktop nightly" sat at
+     * running for 10h37m with zero events because nothing read the stream
+     * between turns; the CLI's own wake-up on it was read hours later, as a
+     * stranger's, with its tool calls refused. Now the process is read for
+     * as long as it lives: the notification closes the row when it happens,
+     * and the wake-up becomes a turn with a gate and a sink of its own.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        // The turn is over; the engine is idle. The shell fires.
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", summary: "DONE" };
+        // The CLI echoes the message it injected, then the model replies.
+        yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } };
+        yield { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "CI is green, merging." } } };
+        yield { type: "stream_event", event: { type: "content_block_stop", index: 0 } };
+        yield { type: "assistant", message: { content: [{ type: "tool_use", id: "toolu_merge", name: "Bash", input: { command: "gh pr merge" } }] } };
+        yield { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_merge", content: "merged" }] } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        // Stay alive for a possible next turn.
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    const first = run(driver, { sessionId: "session_idle_pump", session: door.hooks });
+    await expect(first.result).resolves.toMatchObject({ text: "started" });
+    expect(door.tasks).toHaveLength(0);
+
+    releaseWake!();
+    // The notification closed the row WITH NO HUMAN TURN.
+    await settle(() => door.tasks.some((o) => o.kind === "task.completed"));
+    const closed = door.tasks.find((o) => o.kind === "task.completed");
+    expect(closed?.kind === "task.completed" && closed.task).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "DONE" });
+
+    // The wake-up became a turn of its own, named after the shell.
+    await settle(() => door.turns[0]?.closed !== undefined);
+    const wake = door.turns[0]!;
+    expect(wake.reason).toEqual({ kind: "task_notification", taskId: "task_toolu_bg" });
+    expect(wake.input).toBe("Background task completed (DONE).");
+    expect(wake.closed).toEqual({ text: "CI is green, merging." });
+    // Its rows went to ITS sink: prose, and a tool row that got a decision.
+    expect(wake.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "assistant_message")).toBe(true);
+    const tool = wake.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "command_execution");
+    expect(tool).toBeDefined();
+    expect(wake.observations.some((o) => o.kind === "item.completed" && o.itemId === "item_toolu_merge" && o.status === "completed")).toBe(true);
+    // Nothing of it leaked into the first turn's sink.
+    expect(first.sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "command_execution")).toBe(false);
+  });
+
+  test("a wake-up the engine refuses (a human turn won) is parked and read by that turn", async () => {
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        await woke;
+        yield* wakeUp("late wake");
+        const second = await input.next();
+        yield* reply(second.value!.uuid!, "ok2");
+      },
+    }) as never);
+    const door = sessionDoor({ refuse: true });
+    await run(driver, { sessionId: "session_parked_wake", session: door.hooks }).result;
+    releaseWake!();
+    // The idle pump read the notification (filed), then the message_start,
+    // which the engine refused — parked for the next turn.
+    await settle(() => door.tasks.some((o) => o.kind === "task.completed"));
+    const second = run(driver, { sessionId: "session_parked_wake", session: door.hooks });
+    await expect(second.result).resolves.toMatchObject({ text: "ok2" });
+    // The wake-up's prose is on THIS turn, filed under the shell; the turn's
+    // answer is its own. No frame was lost.
+    const foreign = second.sink.observations.find((o) => o.kind === "item.started" && o.item.taskId === "task_toolu_bg");
+    expect(foreign).toBeDefined();
+  });
+
+  test("without a session door the stream is read only while a turn pumps — the old behaviour, exactly", async () => {
+    let pulled = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield* reply(first.value!.uuid!, "one");
+        pulled += 1;
+        yield { type: "system", subtype: "task_notification", task_id: "x", summary: "never read idly" };
+        pulled += 1;
+        await input.next();
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_no_door" }).result;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Nothing pulled past the result: the notification is still buffered
+    // inside the generator, exactly where the old pump left it.
+    expect(pulled).toBe(0);
   });
 
   test("a local command's result — no message_start, no uuid, no origin — ends OUR turn", async () => {

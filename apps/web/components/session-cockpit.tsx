@@ -327,6 +327,13 @@ export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "stat
  * chips, the activity fold, the live step window and the ambiguous-turn recovery
  * are all decided in this function. A copy would start identical and drift.
  */
+/** What woke a provider turn: the task's title when this turn (or the
+ *  snapshot) knows the row, else the row id's tail. */
+function wokenByLabel(turn: JournalTurn): string {
+  const task = turn.tasks.find((candidate) => candidate.id === turn.wokenBy);
+  return task?.title ?? task?.role ?? (turn.wokenBy ? `task ${turn.wokenBy.slice(-6)}` : "a background task");
+}
+
 export function SessionTurn({
   turn,
   requests,
@@ -411,6 +418,15 @@ export function SessionTurn({
 
   return (
     <div className="flex flex-col gap-8">
+      {turn.origin === "provider" ? (
+        /* A TURN THE PROVIDER STARTED — a background task's ending woke the
+           model. No human typed anything, so no bubble: one quiet line that
+           says what woke it, then the assistant's turn exactly as usual. */
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <ClockIcon className="size-3.5 shrink-0" />
+          <span>Woke up{turn.wokenBy ? ` — ${wokenByLabel(turn)}` : ""}</span>
+        </p>
+      ) : (
       <Message from="user">
         <MessageContent from="user">
           {/* THE SAME CHIPS THE COMPOSER DREW. This was `{turn.prompt}` in a
@@ -441,6 +457,7 @@ export function SessionTurn({
           ) : null}
         </MessageContent>
       </Message>
+      )}
 
       <Message from="assistant">
         <MessageContent from="assistant">
