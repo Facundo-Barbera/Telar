@@ -11,6 +11,8 @@ import {
   ENGINE_PROTOCOL_VERSION,
   parseForgeQuery,
   RequestOpenInput,
+  ProviderTurnOpenInput,
+  SessionTaskReport,
   resolveMcpServers,
   TurnModelSelection,
   type EngineDiscovery,
@@ -2750,6 +2752,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
           writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));
+          return;
+        }
+        // A turn the PROVIDER started (a wake-up between turns). Worker-only,
+        // like claim: the worker is the party holding the process that spoke.
+        if (request.method === "POST" && session.tail === "/turns/provider") {
+          const parsed = ProviderTurnOpenInput.safeParse(await body(request));
+          if (!parsed.success) throw new HttpError(400, "invalid_request", "provider turn payload is invalid");
+          activeWorker(parsed.data.workerId);
+          writeJson(response, 200, { turn: store.openProviderTurn(session.sessionId, parsed.data) });
+          return;
+        }
+        // Task reports between turns — no claim, worker-authenticated.
+        if (request.method === "POST" && session.tail === "/tasks") {
+          const parsed = SessionTaskReport.safeParse(await body(request));
+          if (!parsed.success) throw new HttpError(400, "invalid_request", "task report payload is invalid");
+          activeWorker(parsed.data.workerId);
+          writeJson(response, 200, store.reportSessionTasks(session.sessionId, parsed.data.workerId, parsed.data.observations));
           return;
         }
         // The "N tasks still working" chip's Stop. Names no turn — a background
