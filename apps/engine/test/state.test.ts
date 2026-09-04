@@ -1326,12 +1326,19 @@ test("a vanished worker takes the session's background work with it — a task c
   expect(byId.get("task_b")).toMatchObject({ state: "stopped", failure: "the process that owned this task is gone" });
 });
 
-test("an engine restart mid-turn stops that session's background work, and leaves a merely monitoring session alone", () => {
+test("an engine restart stops every session's background work — the idle-with-monitoring one too", () => {
+  /**
+   * THE PROCESS IS THE UNIT, NOT THE TURN. Since #126 a session's CLI lives in
+   * the worker between turns, so an engine restart (which restarts the
+   * worker) kills the process of a session that was merely monitoring just as
+   * surely as one mid-turn. The earlier shape spared the idle session and it
+   * reported `monitoring` for five days (session_9b43ceec…) over a shell no
+   * process anywhere was running.
+   */
   const { store, root: stateRoot } = readyStore();
   store.createSession({ id: "session_two", projectId: "project_one" });
 
-  // session_one: RUNNING at the crash — its CLI process died with the engine's
-  // workers, and every shell it hosted died with it.
+  // session_one: RUNNING at the crash.
   store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
   const first = store.claimNextTurn("worker_one")!;
   store.markRunning("session_one", "run_one", first.turn.claim!.token);
@@ -1339,8 +1346,8 @@ test("an engine restart mid-turn stops that session's background work, and leave
     { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
   ]);
 
-  // session_two: idle-with-monitoring at the crash — no turn was running, so
-  // no process of ours died; the watcher may be re-adopted by the next turn.
+  // session_two: idle-with-monitoring at the crash — its turn had settled,
+  // its shell lived on in the worker's runtime, and the worker is gone.
   store.submitTurn("session_two", { runId: "run_two", input: "Watch it too" });
   const second = store.claimNextTurn("worker_one")!;
   store.markRunning("session_two", "run_two", second.turn.claim!.token);
@@ -1348,16 +1355,63 @@ test("an engine restart mid-turn stops that session's background work, and leave
     { kind: "task.started", task: { id: "task_c", kind: "background", state: "running", title: "Watch the build" } },
   ]);
   store.completeTurn("session_two", "run_two", second.turn.claim!.token, { text: "Watching" });
+  expect(store.getSession("session_two").activity).toBe("monitoring");
 
   const restarted = new EngineStore(stateRoot, () => 200);
   restarted.recover();
 
-  expect(restarted.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({
-    state: "stopped",
-    failure: "the process that owned this task is gone",
-  });
-  expect(restarted.tasks("session_two").find((task) => task.id === "task_c")).toMatchObject({ state: "running" });
-  expect(restarted.getSession("session_two").activity).toBe("monitoring");
+  for (const [sessionId, taskId] of [["session_one", "task_b"], ["session_two", "task_c"]] as const) {
+    expect(restarted.tasks(sessionId).find((task) => task.id === taskId)).toMatchObject({
+      state: "stopped",
+      failure: "the process that owned this task is gone",
+    });
+  }
+  expect(restarted.getSession("session_two").activity).toBe("idle");
+  // Announced once. A second recover() finds nothing live and appends nothing.
+  const closes = restarted.readEvents("session_two").filter((event) => event.type === "task.completed");
+  expect(closes).toHaveLength(1);
+  restarted.recover();
+  expect(restarted.readEvents("session_two").filter((event) => event.type === "task.completed")).toHaveLength(1);
+});
+
+test("a settled task is not re-announced by a report that adds nothing", () => {
+  /**
+   * MEASURED: 58 tasks in one session with two or more `task.completed`
+   * events, one of them closed a third time under a turn that had started
+   * zero seconds earlier — the next turn's pump replayed the CLI's buffered
+   * frames about a shell the cockpit had already stopped. The store already
+   * kept the state; it still appended an event per report, and a tailing
+   * client folded each as a fresh completion.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claimNextTurn("worker_one")!;
+  const token = first.turn.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "task.started", task: { id: "task_toolu_mon", providerTaskId: "b7ohaj89n", kind: "background", state: "running", title: "Tick" } },
+  ]);
+  store.completeTurn("session_one", "run_one", token, { text: "Watching" });
+  expect(store.stopBackgroundTasks("session_one")).toBe(1);
+
+  store.submitTurn("session_one", { runId: "run_two", input: "Next" });
+  const second = store.claimNextTurn("worker_one")!;
+  const token2 = second.turn.claim!.token;
+  store.markRunning("session_one", "run_two", token2);
+  // A bare restatement of the ending — the CLI's late `task_updated{killed}`.
+  store.ingestObservations("session_one", "run_two", token2, [
+    { kind: "task.completed", task: { id: "task_toolu_mon", providerTaskId: "b7ohaj89n", kind: "background", state: "stopped" } },
+    { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed" } },
+  ]);
+  const closes = () => store.readEvents("session_one").filter((event) => event.type === "task.completed");
+  expect(closes()).toHaveLength(1);
+  // But the summary the notification carries IS new, and lands — once.
+  store.ingestObservations("session_one", "run_two", token2, [
+    { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed", resultText: "tick 2" } },
+  ]);
+  expect(closes()).toHaveLength(2);
+  expect(store.tasks("session_one")).toHaveLength(1);
+  expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "tick 2" });
 });
 
 test("a task's kind is decided once, and a later turn's partial report cannot downgrade it", () => {
@@ -1512,8 +1566,9 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
 
   // The next turn's driver has never heard of the sweep and reports the
   // ATTACHED agent (now closed) as still running. The first ending is the
-  // ending: the record stays failed, and the event says so rather than
-  // announcing progress on a corpse.
+  // ending: the record stays failed, and a report that adds nothing to a
+  // settled row is not announced at all — neither as progress on a corpse
+  // nor as a second completion.
   store.submitTurn("session_one", { runId: "run_two", input: "Carry on" });
   const second = store.claimNextTurn("worker_one")!;
   const secondToken = second.turn.claim!.token;
@@ -1525,7 +1580,9 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
   const later = new Map(store.tasks("session_one").map((task) => [task.id, task]));
   expect(later.get("task_attached")).toMatchObject({ state: "failed", failure: "the turn ended before this agent reported back" });
   expect(later.get("task_attached")?.completedAt).toBeDefined();
-  expect(store.readEvents("session_one").at(-2)?.type).toBe("task.completed");
+  const closes = store.readEvents("session_one").filter((event) => event.type === "task.completed");
+  expect(closes).toHaveLength(1);
+  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "task.progress", task: { id: "task_detached" } });
   // The live one is live, still, with no failure riding along.
   expect(later.get("task_detached")).toMatchObject({ state: "running" });
   expect(later.get("task_detached")?.completedAt).toBeUndefined();
