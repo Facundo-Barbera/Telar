@@ -301,6 +301,9 @@ export type TurnModelSelection = z.infer<typeof TurnModelSelection>;
 export const TurnSubmission = z.object({
   runId: Id,
   input: z.string(),
+  /** `compact` for the compaction gesture — see `Turn.kind`. The engine
+   *  refuses a second one while one is queued or running. */
+  kind: z.enum(["message", "compact"]).optional(),
   model: TurnModelSelection.optional(),
   /** Ids from `POST /v2/sessions/:id/attachments`. The bytes are already on
    *  disk by the time this is sent — see `TurnAttachment`. */

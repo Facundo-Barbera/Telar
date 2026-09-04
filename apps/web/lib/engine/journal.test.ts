@@ -289,3 +289,24 @@ describe("isCompacting", () => {
     expect(isCompacting(undefined)).toBe(false);
   });
 });
+
+describe("the compaction gesture", () => {
+  test("rides through the fold as a kind, from the snapshot and from the accepted event alike", () => {
+    const compact: Turn = { ...turn, runId: "run_c", kind: "compact", input: "/compact" };
+    const [fromSnapshot] = projectJournal([compact], [], []);
+    expect(fromSnapshot?.kind).toBe("compact");
+    const accepted = {
+      id: 1,
+      at: 1,
+      sessionId: "session_one",
+      runId: "run_c",
+      type: "turn.accepted",
+      turn: compact,
+      replayed: false,
+    } as EngineEvent;
+    const [fromEvent] = projectJournal([], [], [accepted]);
+    expect(fromEvent?.kind).toBe("compact");
+    // An ordinary message carries no kind at all.
+    expect(projectJournal([turn], [], [])[0]?.kind).toBeUndefined();
+  });
+});

@@ -41,6 +41,30 @@ struct TurnView: View {
 
     var body: some View {
         let (activity, closing) = split
+        // THE COMPACTION GESTURE IS NOT A MESSAGE: one quiet system line, and
+        // the `context_compaction` row with the numbers when it arrived. The
+        // web cockpit draws the same (SessionTurn).
+        if turn.isCompactGesture {
+            VStack(alignment: .leading, spacing: 6) {
+                let compactions = turn.items.filter { item in
+                    if case .contextCompaction = item.detail { return true }
+                    return false
+                }
+                if compactions.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.system(size: 11))
+                        Text(turn.state.isActive ? "Compacting context…" : turn.state == .failed ? "Compaction failed" : "Context compaction requested")
+                            .font(.system(size: 13))
+                    }
+                    .foregroundStyle(turn.state == .failed ? Theme.statusRed : Theme.textTertiary)
+                } else {
+                    ForEach(compactions) { item in
+                        ItemRowView(item: item)
+                    }
+                }
+            }
+        } else {
         VStack(alignment: .leading, spacing: 10) {
             UserBubble(text: turn.prompt)
             // LIVE, THE WHOLE TIMELINE IS CUT AT ITS SEAMS — each run of work
@@ -70,6 +94,7 @@ struct TurnView: View {
             default:
                 EmptyView()
             }
+        }
         }
     }
 }

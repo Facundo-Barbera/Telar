@@ -4583,10 +4583,11 @@ export class EngineStore {
 
   submitTurn(
     sessionId: string,
-    input: { runId: string; input: string; model?: TurnModelSelection; attachments?: string[] },
+    input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
     assertText(input.input);
+    const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
     const known = queue.turns.find((turn) => turn.runId === input.runId);
@@ -4612,12 +4613,22 @@ export class EngineStore {
     if (queue.turns.some((turn) => turn.state === "ambiguous")) {
       throw new EngineStateError("conflict", "session has an ambiguous turn that must be resolved first");
     }
+    /**
+     * ONE COMPACTION AT A TIME. The gesture is idempotent in meaning — "squeeze
+     * the context" — so a second press while the first is queued or running
+     * has nothing to add, and letting it through is how one session ended up
+     * with three "/compact" turns in a row.
+     */
+    if (kind === "compact" && queue.turns.some((turn) => turn.kind === "compact" && ACTIVE_TURN_STATES.has(turn.state))) {
+      throw new EngineStateError("conflict", "a compaction is already queued or running on this session");
+    }
     const at = this.now();
     const turn: Turn = {
       runId: input.runId,
       sessionId,
       sequence: queue.nextSequence++,
       input: input.input,
+      ...(kind ? { kind } : {}),
       state: "queued",
       acceptedAt: at,
       updatedAt: at,

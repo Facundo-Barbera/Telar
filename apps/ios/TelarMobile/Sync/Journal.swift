@@ -83,6 +83,8 @@ struct JournalTask: Identifiable, Equatable {
 struct JournalTurn: Identifiable, Equatable {
     var runId: EngineID
     var prompt: String
+    /// The compaction gesture — a system row, not a bubble.
+    var isCompactGesture: Bool = false
     var state: TurnState
     /// The MAIN LOOP's timeline only — sub-agent rows live on `tasks`.
     var items: [JournalItem]
@@ -148,6 +150,7 @@ private final class TaskBox {
 private final class TurnBox {
     var runId: EngineID
     var prompt: String
+    var isCompactGesture: Bool
     var state: TurnState
     var items: [ItemBox] = []
     var tasks: [TaskBox] = []
@@ -159,6 +162,7 @@ private final class TurnBox {
     init(turn: Turn) {
         runId = turn.runId
         prompt = turn.input
+        isCompactGesture = turn.kind == "compact"
         state = turn.state
         startedAt = turn.startedAt
         resultText = turn.resultText ?? ""
@@ -302,6 +306,7 @@ func projectJournal(
         return JournalTurn(
             runId: turn.runId,
             prompt: turn.prompt,
+            isCompactGesture: turn.isCompactGesture,
             state: turn.state,
             items: turn.items.sorted(by: byOpen).map(materialize),
             tasks: sortedTasks.map { JournalTask(task: $0.task, items: $0.items.sorted(by: byOpen).map(materialize)) },
