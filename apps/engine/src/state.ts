@@ -1148,7 +1148,11 @@ export class EngineStore {
     this.getSession(sessionId);
     if (this.browserControlLast.get(sessionId) === controller) return;
     this.browserControlLast.set(sessionId, controller);
-    this.appendEvent(sessionId, { type: "browser.control.changed", controller });
+    // Stamped with the RUNNING turn when there is one, so the transcript can
+    // put "You took the browser" inside the turn whose action it explains.
+    // Between turns the row is session-level — the panel badge is live state.
+    const running = this.readQueue(sessionId).turns.find((turn) => turn.state === "running");
+    this.appendEvent(sessionId, { type: "browser.control.changed", controller }, running?.runId);
   }
 
   /**

@@ -277,6 +277,33 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       case "usage.updated":
         if (turn) turn.usage = event.usage;
         break;
+      case "browser.control.changed":
+        /**
+         * "You took the browser" belongs INSIDE the turn it interrupted — it
+         * is the explanation for the agent's refused action right above it.
+         * Rendered through the unknown-detail arm on purpose: a one-line
+         * labeled row is exactly what a control change is, and inventing a
+         * detail type for it would be a schema for a sentence. Session-level
+         * changes (no runId) stay off the transcript; the panel badge is the
+         * live view of those.
+         */
+        if (turn && event.controller !== "idle") {
+          turn.items.push({
+            id: `control_${event.id}`,
+            runId: event.runId!,
+            sessionId: event.sessionId,
+            status: "completed",
+            startedAt: event.at,
+            completedAt: event.at,
+            detail: {
+              type: "unknown",
+              label: event.controller === "human" ? "You took the browser" : "The browser was handed back to the agent",
+            },
+            streamedText: "",
+            openedBy: event.id,
+          });
+        }
+        break;
       default:
         // Every other family (runtime.*, request.*, browser.*, mcp.*) is
         // contract but not yet rendered. Ignoring them here is deliberate;

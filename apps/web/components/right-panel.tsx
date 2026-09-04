@@ -31,6 +31,7 @@ import type {
   TurnState,
 } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
+import { DesktopBrowserSurface, desktopBrowserBridge } from "@/components/browser-live";
 import type { JournalTask } from "@/lib/engine/journal";
 import { pageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/components/transcript";
@@ -406,6 +407,17 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
   const page = state?.tabs.find((tab) => tab.id === pageId);
   const [snapshot, setSnapshot] = useState<BrowserSnapshot>();
   const live = Boolean(page?.active) && Boolean(sessionId);
+  /**
+   * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
+   * WebContentsView can be glued under this panel — tab strip, URL bar, the
+   * page itself, clickable by the human while the agent drives (§6 of the
+   * browser-v2 plan). The screenshot poll below stays as the whole surface
+   * for every client WITHOUT a native view: a phone, a remote cockpit.
+   */
+  const bridge = desktopBrowserBridge();
+  if (bridge && sessionId) {
+    return <DesktopBrowserSurface bridge={bridge} sessionId={sessionId} />;
+  }
 
   useEffect(() => {
     if (!live || !sessionId) return;
