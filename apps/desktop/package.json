@@ -31,6 +31,7 @@
     "files": [
       "main.js",
       "browser-manager.js",
+      "browser-tab-preload.js",
       "browser-control-server.js",
       "command-keys.js",
       "preload.js",

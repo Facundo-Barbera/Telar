@@ -54,6 +54,9 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
     releaseScope: (scopeKey, destroy = false) => ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy }),
     adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
+    // The §6 handback: the human returning the browser to the agent. There is
+    // deliberately no takeBack() twin — taking is done by touching the page.
+    handBack: (scopeKey) => ipcRenderer.invoke("telar:browser:hand-back", { scopeKey }),
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
   },

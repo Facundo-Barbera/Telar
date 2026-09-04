@@ -18,6 +18,7 @@
  * owns it, so nothing may close it). Here the daemon constructs one, holds it,
  * and closes it. Ownership is the feature.
  */
+import nodePath from "node:path";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import {
   browserErrorText,
@@ -28,10 +29,12 @@ import {
   parseBrowserTabs,
   textOf,
 } from "./helpers";
+import type { DesktopBrowserClient } from "./desktop";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
 
+export * from "./desktop";
 export * from "./helpers";
 export * from "./pool";
 export * from "./socket";
@@ -79,6 +82,13 @@ const nodeExitHooks: ExitHooks = {
 };
 
 export type BrowserRuntimeOptions = BrowserTransportOptions & {
+  /**
+   * Where per-scope persistent Chromium profiles live. Set ⇒ each scope gets
+   * `<profileRoot>/<scopeKey>` as `--user-data-dir`, so a session's logins
+   * survive turns, evictions and daemon restarts. Absent ⇒ `--isolated`, the
+   * pre-PR4 behaviour and what tests want.
+   */
+  profileRoot?: string;
   maxScopes?: number;
   exitHooks?: ExitHooks;
   /** Set false to own teardown entirely (a supervisor that already kills its
@@ -103,13 +113,15 @@ export class BrowserRuntime {
   private readonly onProcessExit = () => this.killAllNow();
   private closed = false;
   private readonly install: ((browser?: string) => Promise<string>) | null;
+  private readonly profileRoot: string | undefined;
   /** One attempt per runtime. A second failure after a successful install is
    *  something else — a broken cache, a missing shared library — and retrying
    *  the download forever would hide it behind a slow loop. */
   private installAttempted = false;
 
   constructor(options: BrowserRuntimeOptions = {}) {
-    const { maxScopes, exitHooks, installExitHandler, install, autoInstall, ...transportOptions } = options;
+    const { maxScopes, exitHooks, installExitHandler, install, autoInstall, profileRoot, ...transportOptions } = options;
+    this.profileRoot = profileRoot;
     this.scopes = new ScopedRuntimePool<BrowserScope>(maxScopes ?? MAX_BROWSER_SCOPES);
     this.transportOptions = transportOptions;
     this.exitHooks = installExitHandler === false ? null : (exitHooks ?? nodeExitHooks);
@@ -167,6 +179,10 @@ export class BrowserRuntime {
     const normalized = normalizeBrowserToolCall(name, args);
     // Validated before the lease so a typo cannot spawn a Chromium.
     const input = parseBrowserToolInput(normalized.name, normalized.args);
+    // `tabId` is the DESKTOP host's read-addressing (per-tab control); the
+    // headless runtime has no human to share with and Playwright MCP would
+    // reject the unknown parameter, so it is accepted-and-dropped here.
+    delete input.tabId;
 
     // Take the scope's lease BEFORE any await. Without this ordering another
     // scope's acquisition can hit the LRU in the gap between `start()`
@@ -283,7 +299,14 @@ export class BrowserRuntime {
 
   private scopeFor(scopeKey: string): BrowserScope {
     return this.scopes.acquire(scopeKey, () => {
-      const transport = new PlaywrightMcpTransport(this.transportOptions);
+      const transport = new PlaywrightMcpTransport({
+        ...this.transportOptions,
+        // The scope key is a session id (assertId-shaped), so it is path-safe;
+        // the replace is belt for a future scope naming scheme, not policy.
+        ...(this.profileRoot
+          ? { userDataDir: nodePath.join(this.profileRoot, scopeKey.replace(/[^A-Za-z0-9._-]/g, "_")) }
+          : {}),
+      });
       return {
         scopeKey,
         transport,
@@ -299,4 +322,85 @@ export class BrowserRuntime {
  *  than cache these across an action that opens or closes a tab. */
 function toProtocolTab(tab: { index: number; title: string; url: string; active: boolean }): BrowserTab {
   return { id: String(tab.index), url: tab.url, title: tab.title, active: tab.active };
+}
+
+/**
+ * What the daemon attaches and the socket serves: the runtime itself, or the
+ * router below. One shape so `drivers.ts` has a single assembly site whichever
+ * browser a deployment actually has.
+ */
+export type EngineBrowser = {
+  call(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<BrowserToolResult>;
+  isReadOnly(name: string, args?: Record<string, unknown>): boolean;
+  state(scopeKey: string, options?: { start?: boolean; screenshot?: boolean }): Promise<BrowserState>;
+  release(scopeKey: string, reason?: string): Promise<boolean>;
+  close(reason?: string): Promise<void>;
+};
+
+/**
+ * PREFER THE BROWSER A HUMAN CAN SEE. When the desktop shell is up, its
+ * Electron-hosted tabs (agent cursor, persistent partition, a page the human
+ * can click) serve every call; when it is not — a detached machine, the app
+ * quit mid-session — the engine's own headless Chromium keeps the session
+ * browsing. Decided PER CALL behind a short-lived probe, because the desktop
+ * app's lifetime is not the session's.
+ *
+ * THE SEAM IS DELIBERATELY STICKY-FREE. A session that browsed on the desktop
+ * and falls back headless starts from empty tabs — the two hosts do not share
+ * a profile, and pretending continuity would show the model tabs it cannot
+ * touch. The journalled `browser.state.changed` history still says what was
+ * open where.
+ */
+export class BrowserRouter implements EngineBrowser {
+  constructor(
+    private readonly headless: BrowserRuntime,
+    private readonly desktop?: DesktopBrowserClient,
+  ) {}
+
+  private async useDesktop(): Promise<boolean> {
+    return this.desktop ? this.desktop.reachable() : false;
+  }
+
+  isReadOnly(name: string, args: Record<string, unknown> = {}): boolean {
+    return isReadOnlyBrowserCall(name, args);
+  }
+
+  async call(scopeKey: string, name: string, args: Record<string, unknown> = {}): Promise<BrowserToolResult> {
+    if (await this.useDesktop()) return this.desktop!.call(scopeKey, name, args);
+    return this.headless.call(scopeKey, name, args);
+  }
+
+  async state(scopeKey: string, options: { start?: boolean; screenshot?: boolean } = {}): Promise<BrowserState> {
+    if (!(await this.useDesktop())) return this.headless.state(scopeKey, options);
+    try {
+      const state = await this.desktop!.state(scopeKey);
+      let screenshot: string | null = null;
+      if (state.tabs.length > 0 && options.screenshot !== false) {
+        // Same economics as the headless read: jpeg, css scale, because this
+        // crosses two HTTP boundaries as base64 on every panel poll.
+        const shot = await this.desktop!.call(scopeKey, "browser_take_screenshot", { type: "jpeg", scale: "css" });
+        screenshot = shot.isError ? null : imageDataUrlOf(shot);
+      }
+      return { scopeKey, provider: "attached", running: state.running, tabs: state.tabs, screenshot, error: null };
+    } catch (error) {
+      return {
+        scopeKey,
+        provider: "attached",
+        running: false,
+        tabs: [],
+        screenshot: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  release(scopeKey: string, reason?: string): Promise<boolean> {
+    // The desktop host owns its own tab lifecycle (hibernation, LRU); the
+    // engine releases only what it launched.
+    return this.headless.release(scopeKey, reason);
+  }
+
+  close(reason?: string): Promise<void> {
+    return this.headless.close(reason);
+  }
 }

@@ -2647,6 +2647,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        if (request.method === "POST" && session.tail === "/browser/control") {
+          // The desktop shell reporting whose hands are on the shared browser
+          // — see EngineStore.recordBrowserControl. Idempotent by dedupe.
+          const input = await body(request);
+          const controller = stringValue(input.controller, "controller")!;
+          if (controller !== "agent" && controller !== "human" && controller !== "idle") {
+            throw new HttpError(400, "invalid_request", "controller must be agent, human or idle");
+          }
+          store.recordBrowserControl(session.sessionId, controller, stringValue(input.tabId, "tab id", true));
+          writeJson(response, 200, {});
+          return;
+        }
         if (request.method === "POST" && session.tail === "/attachments") {
           const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
           const header = request.headers["x-telar-attachment-name"];
@@ -2804,13 +2816,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // The daemon owns the browser, not the driver: it outlives any turn and
       // has to be closed exactly once. `release(sessionId)` on archive is what
       // keeps Chromium instances from accumulating until the pool evicts them.
-      const { BrowserRuntime } = await import("./browser");
-      browser = new BrowserRuntime();
-      store.attachBrowser(browser);
+      const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./browser");
+      // Persistent per-session profiles, under the engine's own state root:
+      // a login the human helped with on Tuesday still holds on Thursday.
+      browser = new BrowserRuntime({ profileRoot: path.join(store.paths.root, "browser-profiles") });
+      /**
+       * THE SHARED BROWSER (§6 of the plan): when the desktop shell exported
+       * its control server, calls route to the Electron-hosted tabs the human
+       * can see and click; otherwise — detached machine, app quit — the same
+       * calls run on the headless runtime. One capability either way, so the
+       * store, the socket and both providers never learn which one answered.
+       */
+      const routed = new BrowserRouter(browser, desktopBrowserFromEnv());
+      store.attachBrowser(routed);
       // The browser reaches sessions over the worker-hosted MCP socket, for
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.
-      browserSocket = (await import("./drivers")).createBrowserToolSocket(browser);
+      browserSocket = (await import("./drivers")).createBrowserToolSocket(routed);
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();

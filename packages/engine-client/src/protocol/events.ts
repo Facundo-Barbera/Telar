@@ -131,6 +131,16 @@ const BrowserStateChanged = event("browser.state.changed", {
   provider: BrowserProvider,
   tabs: z.array(BrowserTab),
 });
+/** Whose hands are on the shared browser (§6 of the browser-v2 plan). "human"
+ *  means the person preempted the agent — mutating browser calls are refused
+ *  until an explicit handback flips it to "agent". Journalled so the
+ *  transcript can say "You took the browser" where it happened. */
+const BrowserControlChanged = event("browser.control.changed", {
+  controller: z.enum(["agent", "human", "idle"]),
+  /** WHICH tab changed hands. Control is per tab; absent means an engine (or
+   *  a transition, like scope teardown) that speaks scope-level control. */
+  tabId: z.string().optional(),
+});
 
 // ── diagnostics ────────────────────────────────────────────────────────────
 const UsageUpdated = event("usage.updated", { usage: UsageSnapshot });
@@ -181,6 +191,7 @@ export const EngineEvent = z.discriminatedUnion("type", [
   TaskProgress,
   TaskCompleted,
   BrowserStateChanged,
+  BrowserControlChanged,
   UsageUpdated,
   McpStatusUpdated,
   RuntimeWarning,

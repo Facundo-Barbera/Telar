@@ -17,7 +17,7 @@
  * — rather than being refused a driver up front.
  */
 import type { ProviderDriverKind } from "@telar/engine-client";
-import { BROWSER_TOOLS, type BrowserRuntime } from "./browser";
+import { BROWSER_TOOLS, type EngineBrowser } from "./browser";
 import { BrowserToolSocket, type BrowserSocketCapability } from "./browser/socket";
 import { createCodexDriver } from "./codex-driver";
 import { createClaudeDriver, type TurnDriver } from "./driver";
@@ -31,7 +31,7 @@ import type { DriverSelector } from "./worker";
  * not a session ever browses — so this is the seam, and having ONE of it is
  * what stops the embedded and standalone workers offering different browsers.
  */
-export function browserCapability(browser: BrowserRuntime): BrowserSocketCapability {
+export function browserCapability(browser: EngineBrowser): BrowserSocketCapability {
   return {
     call: (scopeKey, name, args) => browser.call(scopeKey, name, args),
     isReadOnly: (name, args) => browser.isReadOnly(name, args),
@@ -51,7 +51,7 @@ export function browserCapability(browser: BrowserRuntime): BrowserSocketCapabil
  * above — same anti-drift argument: two construction sites is how the embedded
  * and standalone workers end up serving different browsers.
  */
-export function createBrowserToolSocket(browser: BrowserRuntime): BrowserToolSocket {
+export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSocket {
   return new BrowserToolSocket(browserCapability(browser));
 }
 

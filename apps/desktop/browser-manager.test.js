@@ -149,6 +149,8 @@ function makeHarness(options = {}) {
       waits.push(milliseconds);
     }),
     maxLiveViews: options.maxLiveViews,
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.onControlChanged ? { onControlChanged: options.onControlChanged } : {}),
   });
   return { children, manager, messages, views, waits };
 }
@@ -393,5 +395,160 @@ describe("desktop shell development contracts", () => {
     expect(source).toContain('app.setPath("userData", E2E_USER_DATA)');
     expect(source).toContain("app.requestSingleInstanceLock()");
     expect(e2e).toContain("TELAR_DESKTOP_E2E_USER_DATA: desktopUserData");
+  });
+});
+
+describe("the shared-browser control model (§6) — control is PER TAB", () => {
+  function controlHarness() {
+    const clock = { t: 1_000_000 };
+    const changes = [];
+    const harness = makeHarness({
+      now: () => clock.t,
+      onControlChanged: (change) => changes.push(change),
+    });
+    return { ...harness, clock, changes };
+  }
+
+  test("an agent mutation claims the ACTIVE tab; reads and tab-selects never claim anything", async () => {
+    const { manager, changes } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    expect(manager.state("s").tabs[0].controller).toBe("agent");
+    expect(manager.state("s").tabs[0].openedBy).toBe("agent");
+    await manager.callTool("s", "browser_tabs", { action: "list" });
+    await manager.callTool("s", "browser_take_screenshot", {});
+    expect(changes.map((change) => change.controller)).toEqual(["agent"]);
+    expect(changes[0].tabId).toBe(manager.state("s").tabs[0].id);
+  });
+
+  test("the human taking tab 1 does not stop the agent in tab 0 — refusal names the held tab", async () => {
+    const { manager, clock } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://one.example" });
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://two.example" });
+    clock.t += 10_000;
+    // The human grabs tab 1 (the current one, just opened by the agent).
+    expect(manager.noteHumanInput("s")).toBe(true);
+    expect(manager.state("s").tabs[1].controller).toBe("human");
+    expect(manager.state("s").tabs[0].controller).toBe("agent");
+
+    // Mutating the CURRENT (held) tab: refused, naming it.
+    const refused = await manager.callTool("s", "browser_type", { target: "e1", text: "x" });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain("took tab 1");
+    // Closing the held tab: refused too.
+    const closeRefused = await manager.callTool("s", "browser_tabs", { action: "close", index: 1 });
+    expect(closeRefused.isError).toBe(true);
+
+    // The agent moves to ITS tab and keeps working.
+    clock.t += 10_000;
+    await manager.callTool("s", "browser_tabs", { action: "select", index: 0 });
+    const resumed = await manager.callTool("s", "browser_navigate", { url: "https://one.example/next" });
+    expect(resumed.isError).toBeUndefined();
+    // And may still READ the human's tab by tabId without switching current.
+    const looked = await manager.callTool("s", "browser_take_screenshot", { tabId: 1 });
+    expect(looked.isError).toBeUndefined();
+    expect(manager.state("s").tabs[0].active).toBe(true);
+  });
+
+  test("input during or right after an agent action is attributed to the AGENT, not the human", async () => {
+    const { manager, clock } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 100;
+    expect(manager.noteHumanInput("s")).toBe(false);
+    expect(manager.state("s").tabs[0].controller).toBe("agent");
+    // The cockpit's own chrome is human BY CONSTRUCTION and skips the window.
+    expect(manager.noteHumanInput("s", { force: true })).toBe(true);
+    expect(manager.state("s").tabs[0].controller).toBe("human");
+  });
+
+  test("a takeover MID-ACTION turns the in-flight result into the takeover sentence", async () => {
+    const { manager, views } = controlHarness();
+    await manager.createTab("s", "localhost:3000");
+    let release;
+    views[0].webContents.loadGate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const pending = manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    manager.noteHumanInput("s", { force: true });
+    release();
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain("took tab 0");
+  });
+
+  test("handback is explicit and per tab; without a tabId every held tab returns", async () => {
+    const { manager, clock, changes } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    manager.noteHumanInput("s");
+    const state = manager.handBack("s");
+    expect(state.tabs[0].controller).toBe("agent");
+    expect(changes.map((change) => change.controller)).toEqual(["agent", "human", "agent"]);
+    const resumed = await manager.callTool("s", "browser_navigate", { url: "https://example.org" });
+    expect(resumed.isError).toBeUndefined();
+  });
+
+  test("the cockpit's URL bar takes the active tab; a human + opens a HUMAN tab; the agent's back-nav takes nothing away", async () => {
+    const { manager, clock } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    await manager.action("s", { action: "navigate", url: "https://example.org" });
+    expect(manager.state("s").tabs[0].controller).toBe("human");
+    await manager.action("s", { action: "new" });
+    const tabs = manager.state("s").tabs;
+    expect(tabs[1].openedBy).toBe("human");
+    expect(tabs[1].controller).toBe("human");
+    manager.handBack("s");
+    await manager.callTool("s", "browser_tabs", { action: "select", index: 0 });
+    await manager.callTool("s", "browser_navigate_back", {});
+    expect(manager.state("s").tabs[0].controller).toBe("agent");
+  });
+
+  test("the tab cap refuses the 13th tab with a sentence; closing the last tab leaves one blank", async () => {
+    const { manager } = controlHarness();
+    for (let i = 0; i < 12; i += 1) await manager.createTab("s", "about:blank");
+    const overCap = await manager.callTool("s", "browser_tabs", { action: "new" });
+    expect(overCap.isError).toBe(true);
+    expect(textOf(overCap)).toContain("Tab limit reached");
+
+    const solo = controlHarness();
+    await solo.manager.createTab("t", "https://example.com");
+    solo.manager.closeTab("t", 0, "human");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const tabs = solo.manager.state("t").tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].url).toBe("about:blank");
+  });
+
+  test("list output carries controller and opener per tab, in the {…} suffix the engine parses", async () => {
+    const { manager, clock } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    manager.noteHumanInput("s");
+    const listed = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(textOf(listed)).toMatch(/\{controller=human, opened-by=agent\}/);
+  });
+
+  test("destroying a scope returns its tabs to idle; hibernation keeps per-tab control", async () => {
+    const { manager, clock, changes } = controlHarness();
+    await manager.callTool("s", "browser_navigate", { url: "https://example.com" });
+    clock.t += 10_000;
+    manager.noteHumanInput("s");
+    manager.releaseScope("s", false);
+    expect(manager.state("s").tabs[0].controller).toBe("human");
+    manager.releaseScope("s", true);
+    expect(changes.at(-1).controller).toBe("idle");
+  });
+
+  test("human input reported from a tab's own webContents flips THAT tab", async () => {
+    const { manager, views, clock } = controlHarness();
+    await manager.createTab("s", "localhost:3000");
+    await manager.createTab("s", "https://example.com");
+    clock.t += 10_000;
+    manager.noteHumanInputFromWebContents(views[0].webContents);
+    expect(manager.state("s").tabs[0].controller).toBe("human");
+    // Tab 1 keeps ITS controller (the agent claimed it by opening it).
+    expect(manager.state("s").tabs[1].controller).toBe("agent");
+    manager.noteHumanInputFromWebContents({ unknown: true });
   });
 });

@@ -154,7 +154,10 @@ export function parseBrowserTabs(text: string): BrowserTabInfo[] {
   const tabs: BrowserTabInfo[] = [];
   for (const line of text.split("\n")) {
     const match = line.match(
-      /^\s*[-*]?\s*(?:Tab\s+)?(\d+)\s*[:.]\s*(\((?:current|active)\)\s*)?(?:\[([^\]]*)\]\(([^)]+)\)|(.+?)\s+-\s+(https?:\/\/\S+|about:blank))\s*(\[(?:current|active)\]|\((?:current|active)\))?\s*(?:\[crashed\])?\s*$/i,
+      // The trailing `\{[^}]*\}?` arm tolerates the desktop host's per-tab
+      // metadata suffix — `{controller=human, opened-by=agent}` — without
+      // loosening what counts as a tab line.
+      /^\s*[-*]?\s*(?:Tab\s+)?(\d+)\s*[:.]\s*(\((?:current|active)\)\s*)?(?:\[([^\]]*)\]\(([^)]+)\)|(.+?)\s+-\s+(https?:\/\/\S+|about:blank))\s*(\[(?:current|active)\]|\((?:current|active)\))?\s*(?:\[crashed\])?\s*(?:\{[^}]*\})?\s*$/i,
     );
     if (!match) continue;
     const index = Number(match[1]);

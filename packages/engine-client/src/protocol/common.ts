@@ -320,12 +320,21 @@ export type ProviderRefs = z.infer<typeof ProviderRefs>;
 export const BrowserProvider = z.enum(["headless", "attached", "none"]);
 export type BrowserProvider = z.infer<typeof BrowserProvider>;
 
+/** Whose hands are on ONE tab — control is per tab, not per browser, so a
+ *  human taking tab 2 never stops the agent working in tab 1 (§6). */
+export const BrowserTabController = z.enum(["agent", "human", "idle"]);
+export type BrowserTabController = z.infer<typeof BrowserTabController>;
+
 export const BrowserTab = z.object({
   id: Id,
   url: z.string(),
   title: z.string(),
   active: z.boolean(),
   loading: z.boolean().optional(),
+  /** Optional: an older engine (or the headless runtime, which has no human
+   *  to share with) simply omits these. */
+  controller: BrowserTabController.optional(),
+  openedBy: z.enum(["agent", "human"]).optional(),
 });
 export type BrowserTab = z.infer<typeof BrowserTab>;
 

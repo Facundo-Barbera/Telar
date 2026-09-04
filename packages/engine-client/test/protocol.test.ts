@@ -705,3 +705,12 @@ describe("SpoolBrief — the re-entry brief for one subject's room", () => {
     expect(packageRoot.SpoolBrief.safeParse({ ...brief, next: tooMany }).success).toBe(false);
   });
 });
+
+test("browser.control.changed parses, and an unknown controller degrades to a skipped row", () => {
+  const base = { id: 1, at: 10, sessionId: "s" };
+  expect(safeParseEvent({ ...base, type: "browser.control.changed", controller: "human" })).toMatchObject({
+    type: "browser.control.changed",
+    controller: "human",
+  });
+  expect(safeParseEvent({ ...base, type: "browser.control.changed", controller: "gremlin" })).toBeNull();
+});

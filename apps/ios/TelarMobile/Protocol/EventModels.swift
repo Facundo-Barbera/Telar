@@ -40,6 +40,8 @@ struct EngineEvent {
         case taskCompleted(task: AgentTask)
         case sessionUpdated(session: Session)
         case usageUpdated(usage: UsageSnapshot)
+        /// The §6 shared-browser control model: whose hands are on the wheel.
+        case browserControlChanged(controller: String)
         /// Everything else — recognised-but-unused and unknown alike.
         case none
     }
@@ -50,7 +52,7 @@ extension EngineEvent: Decodable {
         case id, at, sessionId, runId, type
         case turn, replayed, resultText, usage, code, message, reason
         case item, itemId, stream, text, request, requestId, decision
-        case task, session
+        case task, session, controller
     }
 
     init(from decoder: Decoder) throws {
@@ -111,6 +113,8 @@ extension EngineEvent: Decodable {
             payload = (try? c.decode(Session.self, forKey: .session)).map { .sessionUpdated(session: $0) } ?? .none
         case "usage.updated":
             payload = (try? c.decode(UsageSnapshot.self, forKey: .usage)).map { .usageUpdated(usage: $0) } ?? .none
+        case "browser.control.changed":
+            payload = (try? c.decode(String.self, forKey: .controller)).map { .browserControlChanged(controller: $0) } ?? .none
         default:
             payload = .none
         }
