@@ -18,6 +18,7 @@
  * owns it, so nothing may close it). Here the daemon constructs one, holds it,
  * and closes it. Ownership is the feature.
  */
+import nodePath from "node:path";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import {
   browserErrorText,
@@ -28,7 +29,6 @@ import {
   parseBrowserTabs,
   textOf,
 } from "./helpers";
-import { imageDataUrlOf as dataUrlOf, isReadOnlyBrowserCall as readOnlyCall } from "./helpers";
 import type { DesktopBrowserClient } from "./desktop";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
@@ -82,6 +82,13 @@ const nodeExitHooks: ExitHooks = {
 };
 
 export type BrowserRuntimeOptions = BrowserTransportOptions & {
+  /**
+   * Where per-scope persistent Chromium profiles live. Set ⇒ each scope gets
+   * `<profileRoot>/<scopeKey>` as `--user-data-dir`, so a session's logins
+   * survive turns, evictions and daemon restarts. Absent ⇒ `--isolated`, the
+   * pre-PR4 behaviour and what tests want.
+   */
+  profileRoot?: string;
   maxScopes?: number;
   exitHooks?: ExitHooks;
   /** Set false to own teardown entirely (a supervisor that already kills its
@@ -106,13 +113,15 @@ export class BrowserRuntime {
   private readonly onProcessExit = () => this.killAllNow();
   private closed = false;
   private readonly install: ((browser?: string) => Promise<string>) | null;
+  private readonly profileRoot: string | undefined;
   /** One attempt per runtime. A second failure after a successful install is
    *  something else — a broken cache, a missing shared library — and retrying
    *  the download forever would hide it behind a slow loop. */
   private installAttempted = false;
 
   constructor(options: BrowserRuntimeOptions = {}) {
-    const { maxScopes, exitHooks, installExitHandler, install, autoInstall, ...transportOptions } = options;
+    const { maxScopes, exitHooks, installExitHandler, install, autoInstall, profileRoot, ...transportOptions } = options;
+    this.profileRoot = profileRoot;
     this.scopes = new ScopedRuntimePool<BrowserScope>(maxScopes ?? MAX_BROWSER_SCOPES);
     this.transportOptions = transportOptions;
     this.exitHooks = installExitHandler === false ? null : (exitHooks ?? nodeExitHooks);
@@ -286,7 +295,14 @@ export class BrowserRuntime {
 
   private scopeFor(scopeKey: string): BrowserScope {
     return this.scopes.acquire(scopeKey, () => {
-      const transport = new PlaywrightMcpTransport(this.transportOptions);
+      const transport = new PlaywrightMcpTransport({
+        ...this.transportOptions,
+        // The scope key is a session id (assertId-shaped), so it is path-safe;
+        // the replace is belt for a future scope naming scheme, not policy.
+        ...(this.profileRoot
+          ? { userDataDir: nodePath.join(this.profileRoot, scopeKey.replace(/[^A-Za-z0-9._-]/g, "_")) }
+          : {}),
+      });
       return {
         scopeKey,
         transport,
@@ -342,7 +358,7 @@ export class BrowserRouter implements EngineBrowser {
   }
 
   isReadOnly(name: string, args: Record<string, unknown> = {}): boolean {
-    return readOnlyCall(name, args);
+    return isReadOnlyBrowserCall(name, args);
   }
 
   async call(scopeKey: string, name: string, args: Record<string, unknown> = {}): Promise<BrowserToolResult> {
@@ -359,7 +375,7 @@ export class BrowserRouter implements EngineBrowser {
         // Same economics as the headless read: jpeg, css scale, because this
         // crosses two HTTP boundaries as base64 on every panel poll.
         const shot = await this.desktop!.call(scopeKey, "browser_take_screenshot", { type: "jpeg", scale: "css" });
-        screenshot = shot.isError ? null : dataUrlOf(shot);
+        screenshot = shot.isError ? null : imageDataUrlOf(shot);
       }
       return { scopeKey, provider: "attached", running: state.running, tabs: state.tabs, screenshot, error: null };
     } catch (error) {

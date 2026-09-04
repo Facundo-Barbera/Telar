@@ -2817,7 +2817,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // has to be closed exactly once. `release(sessionId)` on archive is what
       // keeps Chromium instances from accumulating until the pool evicts them.
       const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./browser");
-      browser = new BrowserRuntime();
+      // Persistent per-session profiles, under the engine's own state root:
+      // a login the human helped with on Tuesday still holds on Thursday.
+      browser = new BrowserRuntime({ profileRoot: path.join(store.paths.root, "browser-profiles") });
       /**
        * THE SHARED BROWSER (§6 of the plan): when the desktop shell exported
        * its control server, calls route to the Electron-hosted tabs the human

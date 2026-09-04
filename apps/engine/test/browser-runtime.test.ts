@@ -604,3 +604,35 @@ describe("installing the browser binary", () => {
     expect(retry.runs).toHaveLength(1);
   });
 });
+
+test("a profile root turns --isolated into --user-data-dir per scope; without one the launch stays ephemeral", async () => {
+  const { BrowserRuntime } = await import("../src/browser");
+  const launches: string[][] = [];
+  const fakeSpawn = () => {
+    launches.push([]);
+    throw new Error("stop before a real spawn");
+  };
+  // Capture args through the spawn seam: the transport hands them verbatim.
+  const spawnCapture = (_command: string, args: readonly string[]) => {
+    launches.push([...args]);
+    throw new Error("stop before a real child");
+  };
+  void fakeSpawn;
+  const persistent = new BrowserRuntime({
+    profileRoot: "/tmp/telar-test-profiles",
+    autoInstall: false,
+    installExitHandler: false,
+    spawn: spawnCapture as never,
+  });
+  await persistent.call("session_abc", "browser_snapshot", {}).catch(() => undefined);
+  const args = launches.at(-1)!;
+  expect(args).toContain("--user-data-dir");
+  expect(args[args.indexOf("--user-data-dir") + 1]).toBe("/tmp/telar-test-profiles/session_abc");
+  expect(args).not.toContain("--isolated");
+  await persistent.close();
+
+  const ephemeral = new BrowserRuntime({ autoInstall: false, installExitHandler: false, spawn: spawnCapture as never });
+  await ephemeral.call("session_abc", "browser_snapshot", {}).catch(() => undefined);
+  expect(launches.at(-1)).toContain("--isolated");
+  await ephemeral.close();
+});

@@ -155,6 +155,13 @@ export type BrowserTransportOptions = {
   killGraceMs?: number;
   /** Explicit path to `@playwright/mcp`'s cli.js; resolved when absent. */
   cliPath?: string;
+  /**
+   * A persistent Chromium profile directory. Set ⇒ the browser launches
+   * WITHOUT `--isolated`, so cookies and logins survive between launches —
+   * the session-persistence half of the browser-v2 plan (§2 item 3). Absent
+   * ⇒ the old ephemeral behaviour, which is what every test wants.
+   */
+  userDataDir?: string;
 };
 
 type RpcMessage = {
@@ -186,7 +193,7 @@ type LiveChild = {
  */
 export class PlaywrightMcpTransport {
   private readonly spawnProcess: SpawnBrowserProcess;
-  private readonly options: Required<Omit<BrowserTransportOptions, "spawn" | "cliPath">> & { cliPath?: string };
+  private readonly options: Required<Omit<BrowserTransportOptions, "spawn" | "cliPath" | "userDataDir">> & { cliPath?: string; userDataDir?: string };
   private child: LiveChild | null = null;
   private starting: Promise<void> | null = null;
   private nextId = 1;
@@ -204,6 +211,7 @@ export class PlaywrightMcpTransport {
       requestTimeoutMs: options.requestTimeoutMs ?? BROWSER_RPC_TIMEOUT_MS,
       killGraceMs: options.killGraceMs ?? BROWSER_KILL_GRACE_MS,
       ...(options.cliPath ? { cliPath: options.cliPath } : {}),
+      ...(options.userDataDir ? { userDataDir: options.userDataDir } : {}),
     };
   }
 
@@ -246,7 +254,8 @@ export class PlaywrightMcpTransport {
     const args = [
       cli,
       "--headless",
-      "--isolated",
+      // Ephemeral by default; a configured profile dir makes logins durable.
+      ...(this.options.userDataDir ? ["--user-data-dir", this.options.userDataDir] : ["--isolated"]),
       "--browser",
       this.options.browser,
       "--output-mode",
