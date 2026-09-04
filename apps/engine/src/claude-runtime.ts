@@ -157,6 +157,33 @@ const MAX_IDLE_RUNTIMES = 3;
  */
 export class ClaudeRuntimeStore<T = unknown> {
   private readonly runtimes = new Map<string, ClaudeSessionRuntime<T>>();
+  private readonly idleWaiters = new Map<string, Array<() => void>>();
+
+  /**
+   * Resolves once no turn is pumping this session's runtime (or there is no
+   * runtime). ONE PUMP PER SESSION: a stopped turn may stay on the iterator
+   * until its interrupt is answered or escalated; a second turn pushing into
+   * the same feed meanwhile would race that escalation's `destroy`. Looped,
+   * because every waiter wakes at once and only the first gets to claim.
+   */
+  async idle(sessionId: string): Promise<void> {
+    for (;;) {
+      const runtime = this.runtimes.get(sessionId);
+      if (!runtime || !runtime.busy) return;
+      await new Promise<void>((resolve) => {
+        const waiters = this.idleWaiters.get(sessionId) ?? [];
+        waiters.push(resolve);
+        this.idleWaiters.set(sessionId, waiters);
+      });
+    }
+  }
+
+  private wakeIdle(sessionId: string): void {
+    const waiters = this.idleWaiters.get(sessionId);
+    if (!waiters) return;
+    this.idleWaiters.delete(sessionId);
+    for (const wake of waiters) wake();
+  }
 
   /** The live runtime for this session — IF its fingerprint still matches.
    *  A mismatch means the turn's config changed (env, cwd, mcp, effort…):
@@ -205,12 +232,14 @@ export class ClaudeRuntimeStore<T = unknown> {
     if (!runtime) return;
     runtime.busy = false;
     runtime.lastUsedAt = Date.now();
+    this.wakeIdle(sessionId);
   }
 
   destroy(sessionId: string): void {
     const runtime = this.runtimes.get(sessionId);
     if (!runtime) return;
     this.runtimes.delete(sessionId);
+    this.wakeIdle(sessionId);
     runtime.feed.end();
     try {
       runtime.destroy();
