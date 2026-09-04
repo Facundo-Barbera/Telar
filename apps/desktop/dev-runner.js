@@ -156,8 +156,12 @@ async function stop(exitCode) {
 }
 
 async function main() {
-  const controlPort = await firstFreePort(19223);
-  const controlToken = randomUUID();
+  // Prefer the pair dev.mjs minted and already handed to the engine — that is
+  // what lets the engine's BrowserRouter find THIS desktop. Standalone runs
+  // (bun run dev in apps/desktop) still mint their own.
+  const configuredPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
+  const controlPort = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : await firstFreePort(19223);
+  const controlToken = process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim() || randomUUID();
   const sharedEnv = {
     ...process.env,
     TELAR_DESKTOP_BROWSER_CONTROL_PORT: String(controlPort),

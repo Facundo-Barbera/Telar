@@ -149,6 +149,21 @@ async function main() {
   const env = childEnv(telarHome);
   const launchDesktop = shouldLaunchDesktop(process.argv.slice(2));
   /**
+   * THE SHARED-BROWSER PAIR, minted HERE for the same reason the host secret
+   * is: in dev this script spawns the engine, the worker AND the desktop, so
+   * it is the only process that can hand all three the same address. Without
+   * this the engine never learns the dev desktop's control server and routes
+   * every browser call headless — or worse, inherits a STALE pair from the
+   * launching shell (a Telar-inside-Telar session carries its parent app's)
+   * and drives a different Telar's browser. Minted fresh, never inherited.
+   */
+  delete env.TELAR_DESKTOP_BROWSER_CONTROL_PORT;
+  delete env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN;
+  if (launchDesktop) {
+    env.TELAR_DESKTOP_BROWSER_CONTROL_PORT = String(19223 + Math.floor(Math.random() * 400));
+    env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN = randomBytes(16).toString("hex");
+  }
+  /**
    * THE HOST SECRET, minted by whoever owns both halves.
    *
    * The shell proves it is the process that runs the server by presenting this
