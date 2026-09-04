@@ -304,54 +304,103 @@ function PlanRow({ item }: { item: JournalItem }) {
 }
 
 /**
- * A SUB-AGENT IS ONE ROW HERE, AND ITS WORK IS SOMEWHERE ELSE.
+ * A SUB-AGENT IS A TOOL CALL — a fancier one — AT THE PLACE IT WAS SPAWNED.
  *
- * This used to expand its whole lane inline, open by default while running —
- * and a fan-out is precisely when that is unaffordable: two agents at sixteen
- * and thirteen steps buried the conversation under twenty-nine tool calls that
- * were never addressed to the reader. The thing you actually wanted, "what did
- * the main thread do next", was pushed off the bottom of the screen by work the
- * main thread had DELEGATED so it would not have to think about it.
+ * Before this the spawn item (`detail.type === "task"`) rendered nothing, and
+ * the agent appeared as a CHIP appended to the tail of whichever fold was
+ * current: at the bottom while the turn worked, then at the top of the tally
+ * once it settled. It floated, detached from the moment the agent reached for
+ * it — which is the one thing a chat history is for. T3 Code draws the same
+ * thing where it belongs: one anchored row per spawn, in stream order, whose
+ * status is derived live from the task rows, and which never folds while the
+ * agent it names is still out (its own `deriveTurnFolds` rule).
  *
- * So this is the donor's agent chip (`AgentStepRow` in the frozen cockpit),
- * which says the same thing about it: "the raw input/output detail a normal tool
- * row would expand inline lives in the subagent's own tab instead, so there is
- * nothing to expand here." The chip is still in the transcript because WHERE a
- * fan-out happened is part of the story; what it did is a different surface.
- *
- * PRESSING IT OPENS THE AGENTS PANEL on this task. Where the donor switched a
- * tab strip above the conversation, this cockpit already has a panel with a tab
- * per surface, and a sub-agent is one — so the gesture is the same one every
- * other "go and look at that" in this app makes.
+ * So this is the `Task` tool call's row, and it reads like `ToolRow`: an icon,
+ * a verb, the title, then what a tool row cannot say — the agent's live state,
+ * its tokens, and a "▸ Open" into the Agents panel. Expanding it shows the
+ * agent's RESPONSE (its `resultText`) once it has one; its step-by-step work
+ * stays on the panel, for the reason the chip's comment gave: a fan-out of
+ * twenty-nine tool calls addressed to nobody must not bury the conversation.
  */
-function AgentChip({ task, onOpen }: { task: JournalTask; onOpen?: (taskId: string) => void }) {
-  const live = task.state === "running" || task.state === "pending" || task.state === "waiting";
-  const label = task.title ?? task.role ?? "Sub-agent";
-  const isError = task.state === "failed";
+function AgentRow({ item, task, onOpen }: { item: JournalItem; task: JournalTask | undefined; onOpen?: (taskId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const state = task?.state ?? (item.status === "inProgress" ? "running" : item.status === "failed" ? "failed" : "completed");
+  const live = state === "running" || state === "pending" || state === "waiting";
+  const isError = state === "failed";
+  const label = task?.title ?? item.title ?? task?.role ?? "Sub-agent";
+  const role = task?.role;
+  const body = task?.resultText ?? task?.failure;
+  const tokens = task?.usage ? task.usage.tokens.input + task.usage.tokens.output : undefined;
+  const status = AGENT_STATE[state];
+  const taskId = item.detail.type === "task" ? item.detail.taskId : task?.id;
 
   return (
-    <button
-      type="button"
-      onClick={() => onOpen?.(task.id)}
-      title={onOpen ? "Open in the Agents panel" : undefined}
-      className={cn(ROW, "w-full text-left hover:bg-muted/60", isError && "bg-destructive/10")}
-    >
-      <BotIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
-      {live ? (
-        <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
-          {label}
-        </Shimmer>
-      ) : (
-        <span className={cn("min-w-0 flex-1 truncate font-medium", isError && "text-destructive")}>{label}</span>
+    <div className={cn("rounded-md", isError && "bg-destructive/10")}>
+      <div className={cn(ROW, "gap-2")}>
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          disabled={!body}
+          aria-expanded={body ? open : undefined}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <BotIcon className={cn("size-3.5 shrink-0", isError ? "text-destructive" : "text-muted-foreground")} />
+          {live ? (
+            <Shimmer as="span" className="min-w-0 flex-1 truncate text-left text-xs">
+              {`${live && state === "running" ? "Running" : "Kicked off"}${role ? ` ${role}` : " agent"} · ${label}`}
+            </Shimmer>
+          ) : (
+            <>
+              <span className={cn("shrink-0", isError && "text-destructive")}>{`Ran${role ? ` ${role}` : " agent"}`}</span>
+              <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{label}</span>
+            </>
+          )}
+          {body && (
+            <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+          )}
+        </button>
+        <span className={cn("shrink-0 font-mono text-[0.625rem] tabular-nums", isError ? "text-destructive" : "text-muted-foreground")}>
+          {status}
+          {tokens ? ` · ${fmtTokens(tokens)}` : ""}
+        </span>
+        {onOpen && taskId && (
+          <button
+            type="button"
+            onClick={() => onOpen(taskId)}
+            title="Open in the Agents panel"
+            className="shrink-0 rounded px-1 text-[0.625rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          >
+            Open ▸
+          </button>
+        )}
+      </div>
+      {open && body && (
+        <div className="ml-3 border-l border-border/70 py-1 pr-1.5 pl-3">
+          {task?.failure ? (
+            <p className="text-xs text-destructive">{task.failure}</p>
+          ) : (
+            <MessageResponse>{body}</MessageResponse>
+          )}
+        </div>
       )}
-      {/* Counted from the rows this agent PRODUCED, which is the only honest
-          number available while it is still working. */}
-      <span className="shrink-0 text-[0.625rem] text-muted-foreground">
-        {task.items.length} step{task.items.length === 1 ? "" : "s"}
-      </span>
-      <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
-    </button>
+    </div>
   );
+}
+
+/** The agent row's state word — the same six the Agents panel uses. */
+const AGENT_STATE: Record<JournalTask["state"], string> = {
+  pending: "queued",
+  running: "running",
+  waiting: "waiting",
+  completed: "done",
+  failed: "failed",
+  stopped: "stopped",
+};
+
+/** A spawn's own row. `task` is the live row the spawn opened, looked up by
+ *  the handle's `taskId`; absent while the task event has not arrived yet. */
+export function isAgentItem(item: JournalItem): boolean {
+  return item.detail.type === "task";
 }
 
 /**
@@ -418,8 +467,15 @@ function SteeredMessageRow({ item }: { item: JournalItem }) {
   );
 }
 
-export function TranscriptItem({ item }: { item: JournalItem }) {
-  if (item.detail.type === "task") return null;
+export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem; tasks?: readonly JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+  if (item.detail.type === "task") {
+    const taskId = item.detail.taskId;
+    const task = tasks?.find((candidate) => candidate.id === taskId);
+    // A backgrounded SHELL spawned as a task is the `Ran command` row already
+    // beside it; only a delegate (or a warp run) earns an agent row.
+    if (task && !transcriptTasks([task]).length) return null;
+    return <AgentRow item={item} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />;
+  }
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
@@ -446,7 +502,7 @@ export function TranscriptItem({ item }: { item: JournalItem }) {
 function tally(items: JournalItem[]): string {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const label = item.detail.type === "reasoning" ? "Thought" : actionLabel(item);
+    const label = item.detail.type === "reasoning" ? "Thought" : item.detail.type === "task" ? "Ran agent" : actionLabel(item);
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label)).join(" · ");
@@ -460,16 +516,42 @@ function tally(items: JournalItem[]): string {
  * the list must be derived from the same set.
  *
  * A `task` ITEM IS THE SPAWN ITSELF — the tool call that started a sub-agent —
- * and `TranscriptItem` has always returned null for it, because the agent it
- * started is already on screen as its own chip. Counting it left the same lie in
- * a worse place: a fan-out of four read as "8 steps · Map repo structure and
- * stack · Explore frontend app code · …", a tally naming four things that were
- * not rows and would never open.
+ * and it IS a row now (`AgentRow`), so it counts, unless it names a background
+ * shell that `transcriptTasks` would drop.
  */
-function renderable(items: JournalItem[]): JournalItem[] {
-  return items.filter((item) =>
-    item.detail.type === "task" ? false : item.detail.type === "reasoning" ? itemText(item).trim().length > 0 : true,
-  );
+function renderable(items: JournalItem[], tasks: readonly JournalTask[] = []): JournalItem[] {
+  return items.filter((item) => {
+    if (item.detail.type === "task") {
+      const taskId = item.detail.taskId;
+      const task = tasks.find((candidate) => candidate.id === taskId);
+      return !task || transcriptTasks([task]).length > 0;
+    }
+    return item.detail.type === "reasoning" ? itemText(item).trim().length > 0 : true;
+  });
+}
+
+/**
+ * A SPAWN ROW NEVER FOLDS WHILE ITS AGENT IS OUT — T3 Code's rule, kept for
+ * the same reason: a still-running fleet hidden behind "12 steps" is invisible
+ * exactly when the human most wants to see it. A settled run is cut around
+ * its live spawns; each cut is tallied on its own and the spawn rows stand
+ * between them, in place.
+ */
+export function cutAroundLiveAgents(items: JournalItem[], tasks: readonly JournalTask[]): Array<{ kind: "run"; items: JournalItem[] } | { kind: "agent"; item: JournalItem }> {
+  const out: Array<{ kind: "run"; items: JournalItem[] } | { kind: "agent"; item: JournalItem }> = [];
+  for (const item of items) {
+    const taskId = item.detail.type === "task" ? item.detail.taskId : undefined;
+    const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
+    const liveAgent = task !== undefined && (task.state === "running" || task.state === "pending" || task.state === "waiting");
+    if (liveAgent) {
+      out.push({ kind: "agent", item });
+      continue;
+    }
+    const last = out.at(-1);
+    if (last?.kind === "run") last.items.push(item);
+    else out.push({ kind: "run", items: [item] });
+  }
+  return out;
 }
 
 /**
@@ -546,17 +628,14 @@ export function LiveActivity({
     <>
       {segments.map((segment, index) =>
         segment.kind === "row" ? (
-          <TranscriptItem key={segment.item.id} item={segment.item} />
+          <TranscriptItem key={segment.item.id} item={segment.item} tasks={tasks} {...open} />
         ) : (
           // Keyed by the run's FIRST item so the fold's open state survives
           // rows appending to it, and so a run that just settled keeps the
           // same element when its neighbour opens.
-          <ActivityGroup key={segment.items[0]!.id} items={segment.items} tasks={index === tail ? tasks : []} live={index === tail} {...open} />
+          <ActivityGroup key={segment.items[0]!.id} items={segment.items} tasks={tasks} live={index === tail} {...open} />
         ),
       )}
-      {/* Sub-agents hang off the tail. When the tail is prose there is no run
-          to carry them, so an empty live group draws just the chips. */}
-      {segments[tail]?.kind !== "run" && <ActivityGroup items={[]} tasks={tasks} live {...open} />}
     </>
   );
 }
@@ -564,6 +643,11 @@ export function LiveActivity({
 /**
  * A run of activity rows: a rolling window while live, a tally once settled.
  * Both are the same sentence at two scales, so the grammar is learned once.
+ *
+ * SPAWN ROWS ARE ROWS IN THE RUN, at the place the agent was reached for —
+ * no longer chips hung off the tail. While the run is live they ride the
+ * window like any step; once it settles, a spawn whose agent is STILL OUT is
+ * never folded (`cutAroundLiveAgents`), so a fleet in flight stays visible.
  */
 export function ActivityGroup({
   items,
@@ -576,55 +660,61 @@ export function ActivityGroup({
   tasks: JournalTask[];
   onOpenAgent?: (taskId: string) => void;
 }) {
-  // DERIVED ONCE, and everything below reads the derived list — a background
-  // shell must not colour the fold red or hold an otherwise-empty group open
-  // for a chip that is not going to be drawn.
-  const delegates = useMemo(() => transcriptTasks(tasks), [tasks]);
-  const anyFailed = useMemo(() => items.some(failed) || delegates.some((task) => task.state === "failed"), [items, delegates]);
-  const [open, setOpen] = useState(false);
-  const rows = renderable(items);
-  if (rows.length === 0 && delegates.length === 0) return null;
-
-  // Sub-agents are never hidden by the window: THAT a fan-out happened is part
-  // of the conversation even when what it did is on another surface.
-  const agents = delegates.map((task) => <AgentChip key={task.id} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />);
-
-  if (live) {
-    const hidden = Math.max(0, rows.length - 1);
-    const shown = open ? rows : rows.slice(-1);
-    return (
-      <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
-        {hidden > 0 && (
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen((c) => !c)}
-            className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
-          >
-            <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-            {/* A step that failed while scrolled out of the window must not be
-                swallowed by the very mechanism that hid it. */}
-            {!open && anyFailed && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
-            <span className={cn("shrink-0", !open && anyFailed && "text-destructive")}>
-              {open ? "Show fewer steps" : `+${hidden} earlier step${hidden === 1 ? "" : "s"}`}
-            </span>
-          </button>
-        )}
-        {shown.map((item) => (
-          <TranscriptItem key={item.id} item={item} />
-        ))}
-        {agents}
-      </div>
-    );
-  }
-
+  const rows = useMemo(() => renderable(items, tasks), [items, tasks]);
+  const open = onOpenAgent ? { onOpenAgent } : {};
+  if (rows.length === 0) return null;
+  if (live) return <LiveRun rows={rows} tasks={tasks} {...open} />;
+  const cuts = cutAroundLiveAgents(rows, tasks);
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
-      {/* NO FOLD OVER NOTHING. A turn whose only main-loop rows were the spawns
-          themselves — now that a `task` item is not counted as a step — printed
-          "0 steps · " above its chips: a summary of an empty list, with the
-          separator still there because the tally had nothing to put after it. */}
-      {rows.length > 0 && (
+      {cuts.map((cut) =>
+        cut.kind === "agent" ? (
+          <TranscriptItem key={cut.item.id} item={cut.item} tasks={tasks} {...open} />
+        ) : (
+          <SettledRun key={cut.items[0]!.id} rows={cut.items} tasks={tasks} {...open} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function LiveRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const anyFailed = rows.some(failed);
+  const hidden = Math.max(0, rows.length - 1);
+  const shown = open ? rows : rows.slice(-1);
+  const pass = onOpenAgent ? { onOpenAgent } : {};
+  return (
+    <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
+      {hidden > 0 && (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((c) => !c)}
+          className={cn(ROW, "text-muted-foreground hover:bg-muted/50")}
+        >
+          <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+          {/* A step that failed while scrolled out of the window must not be
+              swallowed by the very mechanism that hid it. */}
+          {!open && anyFailed && <TriangleAlertIcon className="size-3 shrink-0 text-destructive" />}
+          <span className={cn("shrink-0", !open && anyFailed && "text-destructive")}>
+            {open ? "Show fewer steps" : `+${hidden} earlier step${hidden === 1 ? "" : "s"}`}
+          </span>
+        </button>
+      )}
+      {shown.map((item) => (
+        <TranscriptItem key={item.id} item={item} tasks={tasks} {...pass} />
+      ))}
+    </div>
+  );
+}
+
+function SettledRun({ rows, tasks, onOpenAgent }: { rows: JournalItem[]; tasks: JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const anyFailed = rows.some(failed) || rows.some((item) => item.detail.type === "task" && tasks.find((t) => t.id === (item.detail as { taskId: string }).taskId)?.state === "failed");
+  const pass = onOpenAgent ? { onOpenAgent } : {};
+  return (
+    <>
       <button
         type="button"
         aria-expanded={open}
@@ -639,16 +729,14 @@ export function ActivityGroup({
         <span className="shrink-0 text-muted-foreground/50">·</span>
         <span className="min-w-0 truncate text-muted-foreground/80">{tally(rows)}</span>
       </button>
-      )}
       {open && (
         <div className="ml-2 flex flex-col gap-0.5 border-l border-border/70 pl-2">
           {rows.map((item) => (
-            <TranscriptItem key={item.id} item={item} />
+            <TranscriptItem key={item.id} item={item} tasks={tasks} {...pass} />
           ))}
         </div>
       )}
-      {agents}
-    </div>
+    </>
   );
 }
 
