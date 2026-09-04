@@ -2,7 +2,7 @@ import { listEndpoints } from "@/lib/remote/endpoints";
 import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller } from "@/lib/remote/gate";
 import { remoteErrorResponse } from "@/lib/remote/http";
-import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure } from "@/lib/remote/store";
+import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure, setTailscaleServe } from "@/lib/remote/store";
 import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
 import { machineName, observeIdentity } from "@/lib/remote/observe";
 import { HOST_TOKEN_ENV, isHostToken } from "@/lib/remote/host-token";
@@ -53,6 +53,7 @@ export function GET(request: Request) {
       host: host ? { ...host, isCaller: isHostToken(cookie) } : undefined,
       requireAuth: file.requireAuth,
       exposure: file.exposure ?? "local-only",
+      tailscaleServe: file.tailscaleServe === true,
       devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform, identity }) => ({
         id,
         name,
@@ -81,7 +82,24 @@ export function GET(request: Request) {
  */
 export async function PATCH(request: Request) {
   try {
-    const body = (await request.json()) as { requireAuth?: unknown; exposure?: unknown };
+    const body = (await request.json()) as { requireAuth?: unknown; exposure?: unknown; tailscaleServe?: unknown };
+
+    // Same shape as `exposure` below: persisted now, honoured by the
+    // launcher at the next start, and the answer says so.
+    if (body.tailscaleServe !== undefined) {
+      if (typeof body.tailscaleServe !== "boolean") {
+        return Response.json({ error: { code: "invalid_request", message: "tailscaleServe must be a boolean." } }, { status: 400 });
+      }
+      try {
+        const file = setTailscaleServe(body.tailscaleServe);
+        return Response.json({ tailscaleServe: file.tailscaleServe === true, restartRequired: true });
+      } catch (cause) {
+        return Response.json(
+          { error: { code: "invalid_request", message: cause instanceof Error ? cause.message : "that could not be set." } },
+          { status: 400 },
+        );
+      }
+    }
 
     /**
      * WHERE THE SOCKET LISTENS is its own decision, taken separately from

@@ -10,8 +10,9 @@ import { observeIdentity } from "@/lib/remote/observe";
  */
 const REFUSAL: Record<PairingRefusal, string> = {
   "none-pending": "No pairing code is waiting. Generate one in Settings → Remote access — a code is single-use, so one that already paired a device is spent.",
-  expired: "That pairing code has expired. They last ten minutes; generate a fresh one.",
-  mismatch: "That pairing code was not issued by this cockpit. If you have more than one Telar running, generate the code from the same one you are pairing against.",
+  expired: "That pairing code has expired. They last five minutes; generate a fresh one.",
+  mismatch: "That is not the pending pairing code. Check the digits — or, if you have more than one Telar running, generate the code from the same one you are pairing against.",
+  burned: "Too many wrong tries; that pairing code has been destroyed. Generate a fresh one in Settings → Remote access.",
 };
 import { deviceCookieHeader } from "@/lib/remote/cookie";
 

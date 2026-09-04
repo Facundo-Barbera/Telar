@@ -82,7 +82,7 @@ struct ConnectView: View {
                             .disabled(probing)
                             CardDivider()
                         }
-                        CardField(label: "Or paste the pairing link", placeholder: "http://…/pair#token=tlr_…", text: $pairingLink, mono: true, keyboard: .URL)
+                        CardField(label: "Or paste the pairing link", placeholder: "http://…/pair#token=…", text: $pairingLink, mono: true, keyboard: .URL)
                         if Pairing.parsePairingURL(pairingLink) != nil {
                             CardDivider()
                             Button {

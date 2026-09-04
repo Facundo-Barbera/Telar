@@ -36,6 +36,7 @@
       "command-keys.js",
       "preload.js",
       "server-preload.js",
+      "tailscale.js",
       "window-chrome.js",
       "package.json"
     ],

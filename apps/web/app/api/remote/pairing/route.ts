@@ -12,20 +12,20 @@ function webPort(): number {
 }
 
 /**
- * Mint a fresh one-time pairing token. THE ONLY RESPONSE THAT EVER CARRIES A
- * RAW PAIRING TOKEN. The QR matrices are encoded HERE, per QR-safe endpoint,
- * so the client renders bits rather than ever putting the token in an image
- * URL. Minting replaces any pending token.
+ * Mint a fresh one-time pairing code. THE ONLY RESPONSE THAT EVER CARRIES A
+ * RAW PAIRING CODE. The QR matrices are encoded HERE, per QR-safe endpoint,
+ * so the client renders bits rather than ever putting the code in an image
+ * URL. Minting replaces any pending code.
  */
 export function POST() {
   try {
-    const { token, expiresAt } = mintPairing();
+    const { code, expiresAt } = mintPairing();
     const qrByUrl: Record<string, QrMatrix> = {};
     for (const endpoint of listEndpoints(webPort())) {
       if (!endpoint.qrSafe) continue;
-      qrByUrl[endpoint.url] = encodeQr(`${endpoint.url}/pair#token=${token}`);
+      qrByUrl[endpoint.url] = encodeQr(`${endpoint.url}/pair#token=${code}`);
     }
-    return Response.json({ token, expiresAt, qrByUrl }, { headers: { "cache-control": "no-store" } });
+    return Response.json({ code, expiresAt, qrByUrl }, { headers: { "cache-control": "no-store" } });
   } catch (error) {
     return remoteErrorResponse(error);
   }

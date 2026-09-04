@@ -21,6 +21,7 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, session, shell }
 const { autoUpdater } = require("electron-updater");
 const { DesktopBrowserManager, createExternalLinkPolicy } = require("./browser-manager");
 const { startBrowserControlServer } = require("./browser-control-server");
+const tailscale = require("./tailscale");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
 
@@ -405,16 +406,47 @@ async function seatHostCookie(url) {
   }
 }
 
-function serverBindHost(home) {
+function readRemoteFile(home) {
   try {
-    const file = path.join(home, "remote", "remote.json");
-    const remote = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (remote?.exposure === "network-accessible" && remote?.requireAuth === true) return "0.0.0.0";
+    return JSON.parse(fs.readFileSync(path.join(home, "remote", "remote.json"), "utf8"));
   } catch {
-    // No file, unreadable, or not JSON — loopback, which is the safe answer
-    // and the one every install had before this setting existed.
+    // No file, unreadable, or not JSON — every reader below takes the safe
+    // answer, which is what every install had before the setting existed.
+    return null;
   }
+}
+
+function serverBindHost(home) {
+  const remote = readRemoteFile(home);
+  if (remote?.exposure === "network-accessible" && remote?.requireAuth === true) return "0.0.0.0";
   return "127.0.0.1";
+}
+
+/**
+ * TAILSCALE SERVE, WHEN SETTINGS ASKED FOR IT. Same gate as the bind host —
+ * pairing must be on — re-checked here so a hand-edited file cannot publish
+ * an open cockpit onto the tailnet. Runs BEFORE the web child spawns, because
+ * the child's env has to carry the ts.net URL for the Remote access panel to
+ * list it. Returns the HTTPS base URL, or null when nothing was published;
+ * the reason is logged as a label only (stderr may hold auth keys).
+ */
+let tailscaleServeUrl = null;
+async function publishTailscaleServe(home, port) {
+  const remote = readRemoteFile(home);
+  if (remote?.tailscaleServe !== true || remote?.requireAuth !== true) return null;
+  const domain = await tailscale.certDomain();
+  if (!domain) {
+    console.error("[telar-desktop] tailscale serve requested but tailscale is missing, not running, or has HTTPS certificates disabled; skipped.");
+    return null;
+  }
+  const outcome = await tailscale.startServe(port);
+  if (outcome !== "none") {
+    console.error(`[telar-desktop] tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
+    return null;
+  }
+  tailscaleServeUrl = `https://${domain}`;
+  console.log(`[telar-desktop] tailnet: ${tailscaleServeUrl}/`);
+  return tailscaleServeUrl;
 }
 
 function childEnv(home) {
@@ -558,6 +590,9 @@ function startServer(port, home) {
       ...childEnv(home),
       PORT: String(port),
       HOSTNAME: serverBindHost(home),
+      // The ts.net endpoint the Remote access panel lists — present only when
+      // `publishTailscaleServe` ran first and succeeded.
+      ...(tailscaleServeUrl ? { TELAR_TAILSCALE_URL: tailscaleServeUrl } : {}),
       // What the gate compares this shell's cookie against (lib/remote/host-token.ts).
       TELAR_HOST_TOKEN: HOST_TOKEN,
       // And what the Remote access panel calls the host row. The shell holds a
@@ -1373,6 +1408,21 @@ function closeBrowserControl() {
 app.on("will-quit", () => {
   killServer();
   closeBrowserControl();
+  // The serve mapping outlives the process otherwise, pointing at a port
+  // nobody answers. Best-effort and unawaited: quitting must not wait on
+  // `tailscale`.
+  if (tailscaleServeUrl) void tailscale.stopServe();
+});
+
+/**
+ * RESTART, FROM SETTINGS. A remote-access change (bind address, Tailscale
+ * serve) is read at launch, so the panel offers a restart rather than
+ * pretending it took. `relaunch` schedules a fresh instance; `quit` runs the
+ * teardown above, engine included.
+ */
+ipcMain.handle("telar:app:relaunch", () => {
+  app.relaunch();
+  app.quit();
 });
 process.on("exit", killServer);
 for (const sig of ["SIGINT", "SIGTERM"]) {
@@ -1525,6 +1575,7 @@ if (SMOKE) {
           startEngineChild(home);
           engineDiscovery = await waitForEngine(home);
           const port = await getStablePort();
+          await publishTailscaleServe(home, port);
           startServer(port, home);
           await waitForServer(port);
           url = `http://127.0.0.1:${port}/`;

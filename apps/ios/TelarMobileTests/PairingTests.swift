@@ -47,13 +47,19 @@ final class PairingStubURLProtocol: URLProtocol {
         let http = try #require(Pairing.parsePairingURL("http://100.110.136.102:3000/pair#token=tlr_x"))
         #expect(http.base.absoluteString == "http://100.110.136.102:3000")
         #expect(http.token == "tlr_x")
+
+        // The current cockpit's secret is eight digits.
+        let code = try #require(Pairing.parsePairingURL("http://100.110.136.102:3000/pair#token=37410745"))
+        #expect(code.token == "37410745")
     }
 
     @Test func parseRejectsWhatMustBeRejected() {
         // A query-string token has been in a server log; refuse it.
         #expect(Pairing.parsePairingURL("http://mac:3000/pair?token=tlr_x") == nil)
-        // Missing prefix, missing token, non-http schemes.
+        // Neither a code nor a token, missing token, non-http schemes.
         #expect(Pairing.parsePairingURL("http://mac:3000/pair#token=nope") == nil)
+        #expect(Pairing.parsePairingURL("http://mac:3000/pair#token=1234567") == nil)
+        #expect(Pairing.parsePairingURL("http://mac:3000/pair#token=12345678a") == nil)
         #expect(Pairing.parsePairingURL("http://mac:3000/pair#other=1") == nil)
         #expect(Pairing.parsePairingURL("ftp://mac/pair#token=tlr_x") == nil)
         #expect(Pairing.parsePairingURL("not a url") == nil)

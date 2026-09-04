@@ -3,8 +3,10 @@ import Foundation
 /// The pairing exchange: a one-time token from the cockpit's QR buys this
 /// phone a long-lived device token.
 enum Pairing {
-    /// Parses `<base>/pair#token=tlr_…`. The token must ride the FRAGMENT —
-    /// a query-string token has been in someone's server log, and refusing it
+    /// Parses `<base>/pair#token=…`. The token is the cockpit's eight-digit
+    /// pairing code (an older cockpit's `tlr_…` token is accepted too, so a
+    /// QR it is still showing keeps working). It must ride the FRAGMENT — a
+    /// query-string token has been in someone's server log, and refusing it
     /// here keeps the contract honest end to end.
     static func parsePairingURL(_ text: String) -> (base: URL, token: String)? {
         guard let components = URLComponents(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -17,13 +19,21 @@ enum Pairing {
             let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
             if parts.count == 2 { result[parts[0]] = parts[1] }
         }
-        guard let token = params["token"], token.hasPrefix("tlr_") else { return nil }
+        guard let token = params["token"], Self.looksLikePairingSecret(token) else { return nil }
         var base = components
         base.fragment = nil
         base.query = nil
         base.path = base.path.hasSuffix("/pair") ? String(base.path.dropLast("/pair".count)) : base.path
         guard let baseURL = base.url else { return nil }
         return (baseURL, token)
+    }
+
+    /// Eight digits (the current cockpit) or a `tlr_` token (an older one).
+    /// Anything else is not a pairing secret and the QR/link is refused before
+    /// a network call is made with it.
+    static func looksLikePairingSecret(_ token: String) -> Bool {
+        if token.hasPrefix("tlr_") { return true }
+        return token.count == 8 && token.allSatisfy(\.isNumber)
     }
 
     /// Only the token is load-bearing; requiring more would make the exchange

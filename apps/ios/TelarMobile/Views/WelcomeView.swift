@@ -92,7 +92,7 @@ struct WelcomeView: View {
             }
         }
         .alert("Paste the pairing link", isPresented: $pasting) {
-            TextField("http://…/pair#token=tlr_…", text: $pastedLink)
+            TextField("http://…/pair#token=…", text: $pastedLink)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
             Button("Pair") {

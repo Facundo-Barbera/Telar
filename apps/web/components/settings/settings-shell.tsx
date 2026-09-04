@@ -251,8 +251,11 @@ export function SettingsGroup({
       {(title || description || action) && (
         <div className="mb-2.5 flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            {title && <h4 className="font-heading text-sm font-semibold tracking-tight text-foreground">{title}</h4>}
-            {description && <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>}
+            {/* A GROUP TITLE READS AS A SECTION, not as a row label: one step
+                larger than the rows beneath it, so a page of several groups
+                scans as several groups rather than one long list. */}
+            {title && <h4 className="font-heading text-base font-semibold tracking-tight text-foreground">{title}</h4>}
+            {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
           </div>
           {action && <div className="shrink-0">{action}</div>}
         </div>

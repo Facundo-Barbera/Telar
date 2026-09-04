@@ -34,8 +34,8 @@ afterEach(() => {
 });
 
 async function mintToken(): Promise<string> {
-  const minted = (await pairingMint().json()) as { token: string };
-  return minted.token;
+  const minted = (await pairingMint().json()) as { code: string };
+  return minted.code;
 }
 
 function pairRequest(token: string, headers: Record<string, string> = {}, extra: Record<string, unknown> = {}): Request {
