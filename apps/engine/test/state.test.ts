@@ -1479,11 +1479,12 @@ test("a settled task is not re-announced by a report that adds nothing", () => {
   ]);
   const closes = () => store.readEvents("session_one").filter((event) => event.type === "task.completed");
   expect(closes()).toHaveLength(1);
-  // But the summary the notification carries IS new, and lands — once.
+  // The summary the notification carries IS new — it lands on the row, but
+  // a summary arriving a frame after the close is not a second close.
   store.ingestObservations("session_one", "run_two", token2, [
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed", resultText: "tick 2" } },
   ]);
-  expect(closes()).toHaveLength(2);
+  expect(closes()).toHaveLength(1);
   expect(store.tasks("session_one")).toHaveLength(1);
   expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "tick 2" });
 });
