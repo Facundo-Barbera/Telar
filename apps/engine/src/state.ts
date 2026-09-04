@@ -5008,6 +5008,7 @@ export class EngineStore {
     // A failed turn means the provider process died — background shells died
     // with it, whichever turn started them.
     this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
+    this.closeOpenItems(sessionId, turn.runId, at);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -5042,6 +5043,7 @@ export class EngineStore {
     // pre-runtime code closed background tasks here because the stop killed the
     // process; that assumption no longer holds.
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+    this.closeOpenItems(sessionId, turn.runId, at);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -5475,6 +5477,9 @@ export class EngineStore {
       for (const turn of queue.turns) {
         if (turn.state === "queued" || turn.state === "claimed" || turn.state === "running") continue;
         this.closeOrphanedTasks(session.id, turn.runId, this.now(), "the turn ended before this agent reported back");
+        // Same retroactive cure for items: a stopped turn from before this
+        // sweep existed still holds the tool row it was inside.
+        this.closeOpenItems(session.id, turn.runId, this.now());
       }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.requeued" | "turn.ambiguous"; runId: string }> = [];
@@ -5507,6 +5512,7 @@ export class EngineStore {
           // running these agents did not survive the restart, whatever we
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
+          this.closeOpenItems(session.id, turn.runId, at);
           changed = true;
         } else if (turn.state === "steering") {
           // Delivery is unknowable across a restart; requeue is the side the
@@ -5587,6 +5593,7 @@ export class EngineStore {
           // turn reached the provider is still undecided; whether its agents
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
+          this.closeOpenItems(session.id, turn.runId, at);
           // A promoted message aimed at this turn was never delivered by the
           // vanished worker; back to the queue rather than gone.
           for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
@@ -5781,6 +5788,33 @@ export class EngineStore {
    */
   private closeOrphanedTasks(sessionId: string, runId: string, at: number, failure: string): void {
     this.closeLiveTasks(sessionId, at, failure, { runId, includeBackground: false });
+  }
+
+  /**
+   * A TURN THAT ENDED WITHOUT ITS ITEMS ENDING. The driver closes what it
+   * still holds open when a turn finishes on its own; a turn that is STOPPED
+   * from the cockpit, that fails, or that the engine finds running after a
+   * restart never reaches that code, and the tool row the model was inside
+   * stayed `inProgress` — measured: seven `command_execution` rows across
+   * prod sessions, each spinning under a turn marked stopped, one of them a
+   * shell the human had cancelled a minute earlier. An item is the turn's
+   * own: unlike a background task it cannot outlive the turn, so every
+   * terminal transition closes what the turn left open. Closed as `failed`
+   * — the vocabulary has no "stopped" for an item, and "did not finish" is
+   * what the row should read as.
+   */
+  private closeOpenItems(sessionId: string, runId: string, at: number): number {
+    const items = this.readItems(sessionId);
+    let closed = 0;
+    for (const item of items.values()) {
+      if (item.runId !== runId || item.status !== "inProgress") continue;
+      const settled: Item = { ...item, status: "failed", completedAt: at };
+      items.set(item.id, settled);
+      this.appendEvent(sessionId, { type: "item.completed", item: settled }, runId);
+      closed += 1;
+    }
+    if (closed > 0) this.writeItems(sessionId, items);
+    return closed;
   }
 
   /**

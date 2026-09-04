@@ -164,6 +164,30 @@ test("stop is durable and idempotent", () => {
   expect(store.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
 });
 
+test("a stopped turn closes the tool row it was inside; a background task is left alone", () => {
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.started", item: { id: "shell", detail: { type: "command_execution", command: { command: "sleep 60" } }, title: "sleep 60" } },
+    { kind: "item.started", item: { id: "done", detail: { type: "assistant_message", text: "ok" } } },
+    { kind: "item.completed", itemId: "done", status: "completed" },
+    { kind: "task.started", task: { id: "task_bg", kind: "background", state: "running", title: "watch", backgrounded: true } },
+  ]);
+  expect(store.stopTurn("session_one", "run_one").stopped).toBe(true);
+
+  const byId = new Map(store.items("session_one").map((item) => [item.id, item]));
+  expect(byId.get("shell")).toMatchObject({ status: "failed", completedAt: 100 });
+  expect(byId.get("done")?.status).toBe("completed");
+  expect(store.tasks("session_one").find((task) => task.id === "task_bg")?.state).toBe("running");
+  const closes = store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell");
+  expect(closes).toHaveLength(1);
+  // Idempotent: a second sweep finds nothing open.
+  expect(store.recover()).toEqual({ requeued: [], ambiguous: [] });
+  expect(store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell")).toHaveLength(1);
+});
+
 test("recovery returns merely claimed work to queued and makes running work explicitly ambiguous", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "claimed_turn", input: "Hello" });
