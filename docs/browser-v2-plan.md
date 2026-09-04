@@ -348,10 +348,16 @@ permission-first ([Comet blog](https://www.perplexity.ai/hub/blog/comet-assistan
 third-party `playwriter` has "pause and attach" ([survey](https://bug0.com/blog/playwright-mcp-servers-ai-testing)).
 **Dia**: little public documentation of its agent control model; not a usable reference.
 
-### The control model (DECIDED)
+### The control model (DECIDED — revised for multi-tab)
 
-Per scope (= session), three states, journalled on every transition
-(`browser.control.changed {controller}`):
+**Control is PER TAB, not per scope**: the human taking tab 2 must not stop the
+agent working in tab 1. Every tab carries `controller` and `openedBy`
+(`agent|human`), the tab strip shows both, and `browser.control.changed`
+carries `tabId`. Tabs are capped at 12 per scope; closing the last tab leaves
+one blank tab; the agent's reads (`snapshot`/`screenshot`/`console`/`network`)
+take an optional `tabId` so it can look at a human's tab without switching the
+shared current tab — DECIDED: reads on a human-held tab are allowed, writes
+never. Three states per tab, journalled on every transition:
 
 | state | agent may | human may | cockpit shows |
 |---|---|---|---|

@@ -55,23 +55,34 @@ describe("desktop browser control server", () => {
 });
 
 describe("control state over the wire", () => {
-  test("/state relays the manager's controller so the engine can route around a human", async () => {
-    const { DesktopBrowserManager } = require("./browser-manager");
-    const manager = new DesktopBrowserManager(
-      { isDestroyed: () => true, webContents: { send: () => {} }, contentView: { addChildView: () => {}, removeChildView: () => {} } },
-      { createView: () => { throw new Error("no views needed"); }, now: () => 0 },
-    );
-    manager.noteHumanInput("session-a", { force: true });
+  test("/state relays per-tab controller and opener so the engine can route around a human", async () => {
+    // A fake manager with the REAL state shape: what the engine's desktop
+    // client parses is this wire contract, not the manager internals.
     const control = await startBrowserControlServer({
       port: 0,
       token: "secret",
-      getBrowserManager: () => manager,
+      getBrowserManager: () => ({
+        state(scopeKey) {
+          return {
+            scopeKey,
+            provider: "desktop",
+            controller: "human",
+            tabs: [
+              { index: 0, id: "t0", title: "Mine", url: "https://a.example", active: false, controller: "agent", openedBy: "agent" },
+              { index: 1, id: "t1", title: "Yours", url: "https://b.example", active: true, controller: "human", openedBy: "human" },
+            ],
+          };
+        },
+      }),
     });
     try {
       const state = await fetch(`http://127.0.0.1:${control.port}/state?scopeKey=session-a`, {
         headers: { Authorization: "Bearer secret" },
       });
-      expect(await state.json()).toMatchObject({ scopeKey: "session-a", controller: "human" });
+      const payload = await state.json();
+      expect(payload.controller).toBe("human");
+      expect(payload.tabs.map((tab) => tab.controller)).toEqual(["agent", "human"]);
+      expect(payload.tabs.map((tab) => tab.openedBy)).toEqual(["agent", "human"]);
     } finally {
       await control.close();
     }

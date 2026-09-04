@@ -265,3 +265,30 @@ describe("the scoped browser pool", () => {
     expect(pool.size).toBe(1);
   });
 });
+
+describe("multi-tab additions", () => {
+  test("parseBrowserTabs tolerates the desktop host's {…} metadata suffix and nothing looser", () => {
+    const tabs = parseBrowserTabs(
+      [
+        "- 0: (current) [Mine](https://a.example/) {controller=agent, opened-by=agent}",
+        "- 1: [Yours](https://b.example/) {controller=human, opened-by=human, loading}",
+        "an error message mentioning https://evil.example/ is still not a tab",
+      ].join("\n"),
+    );
+    expect(tabs).toEqual([
+      { index: 0, title: "Mine", url: "https://a.example/", active: true },
+      { index: 1, title: "Yours", url: "https://b.example/", active: false },
+    ]);
+  });
+
+  test("the four reads accept tabId; unknown elsewhere is still rejected", () => {
+    for (const name of ["browser_snapshot", "browser_take_screenshot", "browser_console_messages", "browser_network_requests"]) {
+      expect(parseBrowserToolInput(name, { tabId: 1 })).toMatchObject({ tabId: 1 });
+      expect(() => parseBrowserToolInput(name, { tabId: -1 })).toThrow(BrowserToolInputError);
+    }
+    // Mutations have no tabId — zod strips the unknown key, so a model that
+    // passes one anyway acts on the CURRENT tab rather than sneaking a write
+    // onto another (possibly human-held) tab.
+    expect(parseBrowserToolInput("browser_click", { target: "e1", tabId: 1 })).toEqual({ target: "e1" });
+  });
+});

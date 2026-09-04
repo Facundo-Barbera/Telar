@@ -404,20 +404,26 @@ const BROWSER_POLL_MS = 3_000;
  * pixels under this page's title.
  */
 function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; state?: BrowserState; sessionId?: string }) {
-  const page = state?.tabs.find((tab) => tab.id === pageId);
-  const [snapshot, setSnapshot] = useState<BrowserSnapshot>();
-  const live = Boolean(page?.active) && Boolean(sessionId);
   /**
    * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
    * WebContentsView can be glued under this panel — tab strip, URL bar, the
    * page itself, clickable by the human while the agent drives (§6 of the
-   * browser-v2 plan). The screenshot poll below stays as the whole surface
-   * for every client WITHOUT a native view: a phone, a remote cockpit.
+   * browser-v2 plan). The screenshot poll stays as the whole surface for
+   * every client WITHOUT a native view: a phone, a remote cockpit. Split
+   * into two components because the fallback owns hooks the live surface
+   * must not conditionally skip.
    */
   const bridge = desktopBrowserBridge();
   if (bridge && sessionId) {
     return <DesktopBrowserSurface bridge={bridge} sessionId={sessionId} />;
   }
+  return <BrowserScreenshotSurface pageId={pageId} {...(state ? { state } : {})} {...(sessionId ? { sessionId } : {})} />;
+}
+
+function BrowserScreenshotSurface({ pageId, state, sessionId }: { pageId: string; state?: BrowserState; sessionId?: string }) {
+  const page = state?.tabs.find((tab) => tab.id === pageId);
+  const [snapshot, setSnapshot] = useState<BrowserSnapshot>();
+  const live = Boolean(page?.active) && Boolean(sessionId);
 
   useEffect(() => {
     if (!live || !sessionId) return;

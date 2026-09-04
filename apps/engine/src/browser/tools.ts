@@ -149,6 +149,10 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
       target: z.string().optional(),
       depth: z.number().int().nonnegative().optional(),
       boxes: z.boolean().optional(),
+      /** Read a SPECIFIC tab (positional index) without switching the shared
+       *  current tab — including one the human holds. Desktop host only;
+       *  the headless runtime reads its current tab regardless. */
+      tabId: z.number().int().nonnegative().optional(),
     }),
   },
   {
@@ -207,6 +211,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
       type: z.enum(["png", "jpeg"]).default("png"),
       fullPage: z.boolean().optional(),
       scale: z.enum(["css", "device"]).default("css"),
+      tabId: z.number().int().nonnegative().optional(),
     }),
   },
   {
@@ -215,6 +220,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     input: z.object({
       level: z.enum(["error", "warning", "info", "debug"]).default("info"),
       all: z.boolean().optional(),
+      tabId: z.number().int().nonnegative().optional(),
     }),
   },
   {
@@ -223,6 +229,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     input: z.object({
       static: z.boolean().default(false),
       filter: z.string().optional(),
+      tabId: z.number().int().nonnegative().optional(),
     }),
   },
   {

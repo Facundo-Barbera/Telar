@@ -137,6 +137,9 @@ const BrowserStateChanged = event("browser.state.changed", {
  *  transcript can say "You took the browser" where it happened. */
 const BrowserControlChanged = event("browser.control.changed", {
   controller: z.enum(["agent", "human", "idle"]),
+  /** WHICH tab changed hands. Control is per tab; absent means an engine (or
+   *  a transition, like scope teardown) that speaks scope-level control. */
+  tabId: z.string().optional(),
 });
 
 // ── diagnostics ────────────────────────────────────────────────────────────

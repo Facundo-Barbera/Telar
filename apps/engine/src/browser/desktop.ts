@@ -153,12 +153,20 @@ export class DesktopBrowserClient {
       controller,
       // The index IS the id, matching the headless runtime's positional
       // convention — the model addresses `browser_tabs {index}` on both.
-      tabs: (Array.isArray(payload.tabs) ? payload.tabs : []).map((tab, position) => ({
-        id: String(typeof tab.index === "number" ? tab.index : position),
-        url: typeof tab.url === "string" ? tab.url : "about:blank",
-        title: typeof tab.title === "string" ? tab.title : "",
-        active: tab.active === true,
-      })),
+      tabs: (Array.isArray(payload.tabs) ? payload.tabs : []).map((tab, position) => {
+        const raw = tab as { controller?: unknown; openedBy?: unknown; loading?: unknown };
+        const controller = raw.controller === "human" || raw.controller === "agent" || raw.controller === "idle" ? raw.controller : undefined;
+        const openedBy = raw.openedBy === "human" || raw.openedBy === "agent" ? raw.openedBy : undefined;
+        return {
+          id: String(typeof tab.index === "number" ? tab.index : position),
+          url: typeof tab.url === "string" ? tab.url : "about:blank",
+          title: typeof tab.title === "string" ? tab.title : "",
+          active: tab.active === true,
+          ...(raw.loading === true ? { loading: true } : {}),
+          ...(controller ? { controller } : {}),
+          ...(openedBy ? { openedBy } : {}),
+        };
+      }),
     };
   }
 }

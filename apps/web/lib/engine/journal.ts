@@ -191,6 +191,8 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
     if (latest > 0) turn.lastActivityAt = latest;
   }
 
+  // The last journalled tab set per session, for the quiet open/close rows.
+  const lastBrowserTabs = new Map<string, { url: string; title: string }[]>();
   for (const event of events) {
     const turn = event.runId ? byRun.get(event.runId) : undefined;
     /**
@@ -277,6 +279,41 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       case "usage.updated":
         if (turn) turn.usage = event.usage;
         break;
+      case "browser.state.changed": {
+        /**
+         * The QUIET tab rows: an agent opening or closing a tab is worth one
+         * line in the turn, not a card. Diffed by count with a url lookup —
+         * desktop tab ids are positional, so an id diff would misread every
+         * close as churn. Only agent-driven changes carry a runId (the socket
+         * journals them from inside the turn), so the guard is the filter.
+         */
+        if (!turn) break;
+        const previous = lastBrowserTabs.get(event.sessionId);
+        const current = event.tabs;
+        if (previous && current.length !== previous.length) {
+          const grew = current.length > previous.length;
+          const known = new Set((grew ? previous : current).map((tab) => tab.url));
+          const changed = (grew ? current : previous).find((tab) => !known.has(tab.url));
+          turn.items.push({
+            id: `tabs_${event.id}`,
+            runId: event.runId!,
+            sessionId: event.sessionId,
+            status: "completed",
+            startedAt: event.at,
+            completedAt: event.at,
+            detail: {
+              type: "unknown",
+              label: grew
+                ? `Opened a tab${changed?.title || changed?.url ? ` — ${changed.title || changed.url}` : ""}`
+                : `Closed a tab${changed?.title || changed?.url ? ` — ${changed.title || changed.url}` : ""}`,
+            },
+            streamedText: "",
+            openedBy: event.id,
+          });
+        }
+        lastBrowserTabs.set(event.sessionId, current);
+        break;
+      }
       case "browser.control.changed":
         /**
          * "You took the browser" belongs INSIDE the turn it interrupted — it

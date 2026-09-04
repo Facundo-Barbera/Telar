@@ -31,6 +31,10 @@ export type DesktopBrowserTab = {
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** §6, per tab: whose hands are on THIS tab, and who opened it. */
+  controller?: "agent" | "human" | "idle";
+  openedBy?: "agent" | "human";
+  favicon?: string | null;
 };
 
 export type DesktopBrowserPanelState = {
@@ -44,7 +48,7 @@ export type DesktopBrowserBridge = {
   action(scopeKey: string, action: Record<string, unknown>): Promise<DesktopBrowserPanelState>;
   setBounds(scopeKey: string, bounds: { x: number; y: number; width: number; height: number }): Promise<void>;
   setVisible(scopeKey: string, visible: boolean): Promise<void>;
-  handBack(scopeKey: string): Promise<DesktopBrowserPanelState>;
+  handBack(scopeKey: string, tabId?: string): Promise<DesktopBrowserPanelState>;
   onState(listener: (state: DesktopBrowserPanelState) => void): () => void;
 };
 
@@ -111,7 +115,8 @@ export function DesktopBrowserSurface({ bridge, sessionId }: { bridge: DesktopBr
   const [draft, setDraft] = useState<string>();
   const hostRef = useRef<HTMLDivElement>(null);
   const activeTab = state?.tabs.find((tab) => tab.active);
-  const controller = state?.controller ?? "idle";
+  // Per-tab control (§6): the badge speaks about the tab you are LOOKING at.
+  const controller = activeTab?.controller ?? state?.controller ?? "idle";
 
   const refresh = useCallback(async () => {
     try {
@@ -122,7 +127,9 @@ export function DesktopBrowserSurface({ bridge, sessionId }: { bridge: DesktopBr
   }, [bridge, sessionId]);
 
   useEffect(() => {
-    void refresh();
+    // A microtask, not a direct call: refresh sets state, and React's lint is
+    // right that a synchronous set inside an effect can cascade renders.
+    const first = window.setTimeout(() => void refresh(), 0);
     // The manager pushes on every change; the interval is the belt to that
     // suspender (a push lost during a renderer reload).
     const timer = window.setInterval(() => void refresh(), 2_000);
@@ -130,6 +137,7 @@ export function DesktopBrowserSurface({ bridge, sessionId }: { bridge: DesktopBr
       if (next.scopeKey === sessionId) setState(next);
     });
     return () => {
+      window.clearTimeout(first);
       window.clearInterval(timer);
       unsubscribe();
     };
@@ -148,8 +156,43 @@ export function DesktopBrowserSurface({ bridge, sessionId }: { bridge: DesktopBr
     [bridge, refresh, sessionId],
   );
 
+  /**
+   * Browser keys, panel-local: Cmd/Ctrl+T new, Cmd/Ctrl+W close, Cmd/Ctrl+1-9
+   * select, Ctrl+Tab cycle. Scoped to this container's focus — the app menu
+   * owns some of these chords globally (command-keys.js) and wins when focus
+   * is elsewhere, which is why the + button stays the reliable path.
+   */
+  const onKeys = useCallback(
+    (event: React.KeyboardEvent) => {
+      const meta = event.metaKey || event.ctrlKey;
+      const tabs = state?.tabs ?? [];
+      if (event.ctrlKey && event.key === "Tab" && tabs.length > 1) {
+        const current = tabs.findIndex((tab) => tab.active);
+        const next = tabs[(current + (event.shiftKey ? tabs.length - 1 : 1)) % tabs.length]!;
+        event.preventDefault();
+        void act({ action: "select", index: next.index });
+        return;
+      }
+      if (!meta) return;
+      if (event.key === "t") {
+        event.preventDefault();
+        void act({ action: "new" });
+      } else if (event.key === "w" && activeTab) {
+        event.preventDefault();
+        void act({ action: "close", index: activeTab.index });
+      } else if (/^[1-9]$/.test(event.key)) {
+        const target = tabs[Number(event.key) - 1];
+        if (target) {
+          event.preventDefault();
+          void act({ action: "select", index: target.index });
+        }
+      }
+    },
+    [act, activeTab, state],
+  );
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeys}>
       {/* ── tab strip ─────────────────────────────────────────────────── */}
       <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-2 py-1" role="tablist" aria-label="Browser tabs">
         {(state?.tabs ?? []).map((tab) => (
@@ -158,8 +201,23 @@ export function DesktopBrowserSurface({ bridge, sessionId }: { bridge: DesktopBr
             className={cn(
               "flex min-w-0 max-w-44 items-center gap-1 rounded-md px-2 py-1",
               tab.active ? "bg-muted" : "hover:bg-muted/50",
+              // The agent's CURRENT tab gets the highlight the cursor overlay
+              // lives in; a human-held tab wears the warning tint.
+              tab.active && tab.controller === "agent" && "ring-1 ring-primary/40",
+              tab.controller === "human" && "ring-1 ring-warning/50",
             )}
+            // Middle-click closes, the way every browser's strip does.
+            onAuxClick={(event) => {
+              if (event.button === 1) void act({ action: "close", index: tab.index });
+            }}
           >
+            {/* eslint-disable-next-line @next/next/no-img-element -- page-supplied favicon URL; nothing for next/image here */}
+            {tab.favicon ? <img src={tab.favicon} alt="" aria-hidden className="size-3 shrink-0 rounded-[2px]" /> : null}
+            <span
+              aria-label={tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}
+              title={`${tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}${tab.controller === "human" ? " · you hold this tab" : tab.controller === "agent" ? " · agent is driving" : ""}`}
+              className={cn("size-1.5 shrink-0 rounded-full", tab.openedBy === "human" ? "bg-warning" : "bg-primary/70")}
+            />
             <button
               type="button"
               role="tab"

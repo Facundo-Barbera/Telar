@@ -6,6 +6,10 @@ const RPC_TIMEOUT_MS = 30_000;
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 const MAX_LIVE_VIEWS = 6;
+// A human's browser rarely wants more; an agent's never should. Past the cap
+// browser_tabs{new} answers an error naming the limit. t3code caps profiles
+// at 24; tabs churn faster, so half that.
+const MAX_TABS_PER_SCOPE = 12;
 
 // --- The shared-browser control model (§6, docs/browser-v2-plan.md) ---------
 // Agent-synthesized CDP input raises the SAME DOM events a human's hands do,
@@ -16,8 +20,9 @@ const MAX_LIVE_VIEWS = 6;
 // have to survive every page's own event handling.
 const HUMAN_ATTRIBUTION_GRACE_MS = 400;
 
-const HUMAN_HOLDS_BROWSER =
-  "The human took the browser — wait for it back. You can still look (snapshot, screenshot, console, network) to see what they are doing.";
+function humanHoldsTab(tab, index) {
+  return `The human took tab ${index} — ${tab.title || tab.url || "untitled"}. Wait for it back, or work in another tab. You can still look (snapshot, screenshot, console, network — pass tabId) to see what they are doing.`;
+}
 
 // The reads an agent keeps during human control: watching is the point of a
 // SHARED browser. Everything else — anything that changes the page or the tab
@@ -187,13 +192,10 @@ class DesktopBrowserManager {
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.activeToolCalls = new Map();
-    // scope → "agent" | "human"; absent means idle. See the § above the
-    // constants: three states, explicit handback, epoch preemption.
-    this.controllers = new Map();
-    // Bumped on every human takeover. An agent action that started under an
-    // older epoch returns an error instead of its result — t3code's trick,
-    // with the interruption REPORTED to the model rather than swallowed.
-    this.controlEpochs = new Map();
+    // Control lives ON THE TAB (tab.controller / tab.controlEpoch), not here:
+    // a human taking tab 2 must not stop the agent working in tab 1. The two
+    // maps below are scope-level only because ATTRIBUTION is — agent input is
+    // dispatched per scope call, whichever tab it lands in.
     this.lastAgentInputAt = new Map();
     this.now = dependencies.now || Date.now;
     // The shell forwards these to the engine journal (browser.control.changed)
@@ -201,57 +203,62 @@ class DesktopBrowserManager {
     this.onControlChanged = dependencies.onControlChanged || null;
   }
 
+  /** The ACTIVE tab's controller — what a scope-level consumer (the badge,
+   *  the control-server probe) means by "whose browser is it". */
   controllerOf(scopeKey) {
-    return this.controllers.get(this.requireScope(scopeKey)) || "idle";
+    const scope = this.requireScope(scopeKey);
+    const tab = this.tabs.find((candidate) => candidate.scopeKey === scope && candidate.id === this.activeTabIds.get(scope));
+    return tab?.controller || "idle";
   }
 
-  setController(scopeKey, controller) {
-    const scope = this.requireScope(scopeKey);
-    const current = this.controllers.get(scope) || "idle";
-    if (current === controller) return;
-    if (controller === "idle") this.controllers.delete(scope);
-    else this.controllers.set(scope, controller);
-    if (controller === "human") {
-      this.controlEpochs.set(scope, (this.controlEpochs.get(scope) || 0) + 1);
-    }
+  setTabController(tab, controller) {
+    if ((tab.controller || "idle") === controller) return;
+    tab.controller = controller;
+    if (controller === "human") tab.controlEpoch = (tab.controlEpoch || 0) + 1;
     if (this.onControlChanged) {
       try {
-        this.onControlChanged({ scopeKey: scope, controller, at: new Date(this.now()).toISOString() });
+        this.onControlChanged({ scopeKey: tab.scopeKey, tabId: tab.id, controller, at: new Date(this.now()).toISOString() });
       } catch {
         // The journal hook must never break the browser under it.
       }
     }
-    this.emitState(scope);
+    this.emitState(tab.scopeKey);
   }
 
   /**
-   * A human's hands landed in this scope's page. `force` is for input that is
-   * human BY CONSTRUCTION — the cockpit's URL bar and tab strip — and skips
-   * the temporal attribution that in-page events need (see the constant).
-   * Returns whether the input was attributed to the human.
+   * A human's hands landed in ONE tab. `force` is for input that is human BY
+   * CONSTRUCTION — the cockpit's URL bar and chrome — and skips the temporal
+   * attribution in-page events need (agent-synthesized CDP input raises the
+   * same DOM events). Returns whether the input was attributed to the human.
    */
   noteHumanInput(scopeKey, options = {}) {
     const scope = this.requireScope(scopeKey);
+    const tab = options.tab ?? this.tabs.find((candidate) => candidate.scopeKey === scope && candidate.id === this.activeTabIds.get(scope));
+    if (!tab) return false;
     if (!options.force) {
       const busy = (this.activeToolCalls.get(scope) || 0) > 0;
       const recent = this.now() - (this.lastAgentInputAt.get(scope) || 0) < HUMAN_ATTRIBUTION_GRACE_MS;
       if (busy || recent) return false;
     }
-    this.setController(scope, "human");
+    this.setTabController(tab, "human");
     return true;
   }
 
-  /** The ipc path: a tab preload reported input and all we hold is the sender. */
+  /** The ipc path: a tab preload reported input — the sender IS the tab. */
   noteHumanInputFromWebContents(webContents) {
     const tab = this.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
-    if (tab) this.noteHumanInput(tab.scopeKey);
+    if (tab) this.noteHumanInput(tab.scopeKey, { tab });
   }
 
-  /** The explicit affordance — the ONLY way the agent gets the browser back.
-   *  A human handing back is a decision, never a timeout. */
-  handBack(scopeKey) {
+  /** The explicit affordance — the ONLY way the agent gets a tab back. With a
+   *  tabId, that tab; without, every human-held tab in the scope (the panel's
+   *  one big button). A human handing back is a decision, never a timeout. */
+  handBack(scopeKey, tabId) {
     const scope = this.requireScope(scopeKey);
-    this.setController(scope, "agent");
+    for (const tab of this.scopeTabs(scope)) {
+      if (tabId !== undefined && tab.id !== tabId) continue;
+      if (tab.controller === "human") this.setTabController(tab, "agent");
+    }
     return this.state(scope);
   }
 
@@ -275,7 +282,7 @@ class DesktopBrowserManager {
       available: true,
       running: true,
       provider: "desktop",
-      controller: this.controllers.get(scope) || "idle",
+      controller: tabs.find((tab) => tab.id === activeTabId)?.controller || "idle",
       tabs: tabs.map((tab, index) => ({
         index,
         id: tab.id,
@@ -283,6 +290,9 @@ class DesktopBrowserManager {
         url: tab.url || "about:blank",
         active: tab.id === activeTabId,
         loading: tab.loading,
+        controller: tab.controller || "idle",
+        openedBy: tab.openedBy || "agent",
+        favicon: tab.faviconUrl || null,
         canGoBack: tab.view ? navigationFlag(tab.view.webContents, "canGoBack") : false,
         canGoForward: tab.view ? navigationFlag(tab.view.webContents, "canGoForward") : false,
       })),
@@ -505,8 +515,11 @@ class DesktopBrowserManager {
     }
   }
 
-  async createTab(scopeKey, url = "about:blank") {
+  async createTab(scopeKey, url = "about:blank", openedBy = "agent") {
     const scope = this.requireScope(scopeKey);
+    if (this.scopeTabs(scope).length >= MAX_TABS_PER_SCOPE) {
+      throw new Error(`Tab limit reached (${MAX_TABS_PER_SCOPE} per session). Close a tab first.`);
+    }
     const tab = {
       id: this.createId(),
       scopeKey: scope,
@@ -514,6 +527,12 @@ class DesktopBrowserManager {
       title: "New tab",
       url: "about:blank",
       loading: false,
+      // Whose tab this is (§6): claimed for the opener just below, once the
+      // tab exists — through setTabController, so the transition journals.
+      openedBy,
+      controller: "idle",
+      controlEpoch: 0,
+      faviconUrl: null,
       refs: new Map(),
       console: [],
       network: [],
@@ -530,6 +549,9 @@ class DesktopBrowserManager {
     this.activeTabIds.set(scope, tab.id);
     const view = this.createViewForTab(tab);
     this.applyVisibility();
+    // Opening a tab is the opener's hand on it — a human's fresh tab is
+    // theirs until handed over; an agent's is claimed for the agent.
+    this.setTabController(tab, openedBy === "human" ? "human" : "agent");
     const destination = normalizeUrl(url);
     if (destination !== "about:blank") await this.loadTab(tab, destination);
     this.enforceLiveViewBudget(tab);
@@ -557,6 +579,10 @@ class DesktopBrowserManager {
     });
     wc.on("page-title-updated", (_event, title) => {
       tab.title = title || tab.title;
+      this.emitState(tab.scopeKey);
+    });
+    wc.on("page-favicon-updated", (_event, favicons) => {
+      tab.faviconUrl = (Array.isArray(favicons) && favicons[0]) || null;
       this.emitState(tab.scopeKey);
     });
     wc.on("did-navigate", sync);
@@ -588,6 +614,13 @@ class DesktopBrowserManager {
     return tab;
   }
 
+  /** A read's tab: `tabId` (positional index) when given — DECIDED: reads may
+   *  address a human-held tab, that is how the model sees what the human is
+   *  showing it — else the shared current tab. Never switches "current". */
+  readTarget(scope, args) {
+    return args && args.tabId !== undefined ? this.tabAt(scope, args.tabId) : this.activeTab(scope);
+  }
+
   async selectTab(scopeKey, index) {
     const scope = this.requireScope(scopeKey);
     const tab = this.tabAt(scope, index);
@@ -597,7 +630,7 @@ class DesktopBrowserManager {
     this.emitState(scope);
   }
 
-  closeTab(scopeKey, index) {
+  closeTab(scopeKey, index, closedBy = "agent") {
     const scope = this.requireScope(scopeKey);
     const scoped = this.scopeTabs(scope);
     const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
@@ -605,8 +638,14 @@ class DesktopBrowserManager {
     this.tabs = this.tabs.filter((candidate) => candidate !== tab);
     this.hibernateTab(tab);
     if (this.activeTabIds.get(scope) === tab.id) {
+      // "Current" moves to the nearest neighbour, the way every browser does it.
       const remaining = this.scopeTabs(scope);
       this.activeTabIds.set(scope, remaining[position]?.id ?? remaining[position - 1]?.id ?? null);
+    }
+    // Closing the last tab leaves ONE BLANK TAB, never zero: a browser panel
+    // with no tab has no address bar to type into and no page to snapshot.
+    if (!this.scopeTabs(scope).length) {
+      void this.createTab(scope, "about:blank", closedBy).catch(() => {});
     }
     this.applyVisibility();
     this.emitState(scope);
@@ -621,24 +660,32 @@ class DesktopBrowserManager {
    */
   async action(scopeKey, action) {
     const scope = this.requireScope(scopeKey);
-    this.noteHumanInput(scope, { force: true });
-    return this.performAction(scope, action);
+    const kind = action?.action;
+    // Navigating, going back/forward, reloading: the human drove the ACTIVE
+    // tab — that is taking it. Selecting is just looking, and closing removes
+    // the tab (nothing left to hold); neither flips control.
+    if (kind === "navigate" || kind === "back" || kind === "forward" || kind === "reload") {
+      this.noteHumanInput(scope, { force: true });
+    }
+    if (kind === "new") return (await this.createTab(scope, action.url || "about:blank", "human"), this.state(scope));
+    if (kind === "close") return (this.closeTab(scope, action.index, "human"), this.state(scope));
+    return this.performAction(scope, action, "human");
   }
 
-  async performAction(scopeKey, action) {
+  async performAction(scopeKey, action, opener = "agent") {
     const scope = this.requireScope(scopeKey);
     switch (action?.action) {
       case "new":
-        await this.createTab(scope, action.url || "about:blank");
+        await this.createTab(scope, action.url || "about:blank", opener);
         break;
       case "select":
         await this.selectTab(scope, action.index);
         break;
       case "close":
-        this.closeTab(scope, action.index);
+        this.closeTab(scope, action.index, opener);
         break;
       case "navigate": {
-        const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
+        const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope, "about:blank", opener);
         await this.navigateTab(tab, action.url);
         break;
       }
@@ -916,24 +963,54 @@ class DesktopBrowserManager {
     const tabs = this.scopeTabs(scope);
     if (!tabs.length) return okText("No browser tabs are open in this session.");
     const activeTabId = this.activeTabIds.get(scope);
-    return okText(tabs.map((tab, index) => `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[${tab.title}](${tab.url})`).join("\n"));
+    // The {…} suffix is contract with the engine's parseBrowserTabs, which
+    // tolerates exactly this shape — the model reads who opened and who holds
+    // each tab without a second tool call.
+    return okText(
+      tabs
+        .map((tab, index) => {
+          const meta = [`controller=${tab.controller || "idle"}`, `opened-by=${tab.openedBy || "agent"}`];
+          if (tab.loading) meta.push("loading");
+          return `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[${tab.title}](${tab.url}) {${meta.join(", ")}}`;
+        })
+        .join("\n"),
+    );
   }
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
     const read = isReadTool(name, args);
-    // While the human holds the browser the agent may LOOK — that is what
-    // makes this a shared browser rather than a lock — but not touch. The
-    // refusal is a sentence the model can narrate, not a throw it retries.
-    if (!read && this.controllerOf(scope) === "human") {
-      return errorResult(new Error(HUMAN_HOLDS_BROWSER));
-    }
-    // A mutating call is the agent's hand on the wheel: claim control (from
-    // idle — never from human, refused above) and remember the epoch so a
-    // takeover DURING the action turns its result into the same sentence.
-    const epochAtStart = this.controlEpochs.get(scope) || 0;
+    // Which tab does this call touch? Page mutations hit the ACTIVE tab;
+    // browser_tabs close hits the addressed one; new/select/list touch none.
+    let targetTab = null;
     if (!read) {
-      this.setController(scope, "agent");
+      if (name === "browser_tabs") {
+        if (args.action === "close") {
+          try {
+            targetTab = args.index === undefined ? this.activeTab(scope) : this.tabAt(scope, args.index);
+          } catch (error) {
+            return errorResult(error);
+          }
+        }
+      } else if (this.scopeTabs(scope).length) {
+        try {
+          targetTab = this.activeTab(scope);
+        } catch {
+          targetTab = null;
+        }
+      }
+    }
+    // Control is PER TAB (§6): the human holding tab 2 refuses only calls
+    // that would TOUCH tab 2 — the agent keeps working everywhere else, and
+    // may still LOOK anywhere (reads, incl. tabId-addressed ones).
+    if (targetTab && targetTab.controller === "human") {
+      return errorResult(new Error(humanHoldsTab(targetTab, this.scopeTabs(scope).indexOf(targetTab))));
+    }
+    const epochAtStart = targetTab ? targetTab.controlEpoch || 0 : 0;
+    if (targetTab) {
+      this.setTabController(targetTab, "agent");
+      this.lastAgentInputAt.set(scope, this.now());
+    } else if (!read) {
       this.lastAgentInputAt.set(scope, this.now());
     }
     this.activeToolCalls.set(scope, (this.activeToolCalls.get(scope) || 0) + 1);
@@ -945,9 +1022,9 @@ class DesktopBrowserManager {
       switch (name) {
         case "browser_tabs":
           if (args.action === "list") return this.listTabs(scope);
-          if (args.action === "new") { await this.createTab(scope, args.url || "about:blank"); return this.listTabs(scope); }
+          if (args.action === "new") { await this.createTab(scope, args.url || "about:blank", "agent"); return this.listTabs(scope); }
           if (args.action === "select") { await this.selectTab(scope, args.index); return this.listTabs(scope); }
-          if (args.action === "close") { this.closeTab(scope, args.index); return this.listTabs(scope); }
+          if (args.action === "close") { this.closeTab(scope, args.index, "agent"); return this.listTabs(scope); }
           throw new Error("Unknown browser_tabs action.");
         case "browser_navigate": {
           const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
@@ -955,7 +1032,7 @@ class DesktopBrowserManager {
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
         case "browser_navigate_back": await this.performAction(scope, { action: "back" }); return okText("Navigated back.");
-        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.activeTab(scope)));
+        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.readTarget(scope, args)));
         case "browser_click": return this.click(await this.wakeTab(this.activeTab(scope)), args);
         case "browser_type": return this.type(await this.wakeTab(this.activeTab(scope)), args);
         case "browser_fill_form": return this.fillForm(await this.wakeTab(this.activeTab(scope)), args);
@@ -969,14 +1046,14 @@ class DesktopBrowserManager {
           await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
           return okText(`Hovered ${args.element || args.target}.`);
         }
-        case "browser_take_screenshot": return this.screenshot(await this.wakeTab(this.activeTab(scope)), args);
+        case "browser_take_screenshot": return this.screenshot(await this.wakeTab(this.readTarget(scope, args)), args);
         case "browser_console_messages": {
-          const tab = await this.wakeTab(this.activeTab(scope));
+          const tab = await this.wakeTab(this.readTarget(scope, args));
           await this.ensureDebugger(tab);
           return okText(tab.console.map((entry) => `[${entry.level}] ${entry.text}`).join("\n") || "No console messages captured.");
         }
         case "browser_network_requests": {
-          const tab = await this.wakeTab(this.activeTab(scope));
+          const tab = await this.wakeTab(this.readTarget(scope, args));
           await this.ensureDebugger(tab);
           const filter = String(args.filter || "");
           const rows = tab.network.filter((entry) => !filter || entry.url.includes(filter));
@@ -987,12 +1064,12 @@ class DesktopBrowserManager {
     })();
     try {
       const result = await Promise.race([operation, timeout]);
-      // The human preempted mid-action (epoch bumped): the action may or may
-      // not have landed, and saying so honestly beats returning a result that
-      // implies the agent still drives. t3code interrupts silently; Telar
-      // tells the model, so it narrates and waits instead of fighting.
-      if (!read && (this.controlEpochs.get(scope) || 0) !== epochAtStart) {
-        return errorResult(new Error(HUMAN_HOLDS_BROWSER));
+      // The human preempted THIS tab mid-action (its epoch bumped): the
+      // action may or may not have landed, and saying so honestly beats a
+      // result that implies the agent still drives. t3code interrupts
+      // silently; Telar tells the model, so it narrates and waits.
+      if (targetTab && this.tabs.includes(targetTab) && (targetTab.controlEpoch || 0) !== epochAtStart) {
+        return errorResult(new Error(humanHoldsTab(targetTab, Math.max(0, this.scopeTabs(scope).indexOf(targetTab)))));
       }
       return result;
     } catch (error) {
@@ -1009,13 +1086,16 @@ class DesktopBrowserManager {
 
   releaseScope(scopeKey, destroy = false) {
     const scope = this.requireScope(scopeKey);
-    for (const tab of this.scopeTabs(scope)) this.requestHibernate(tab, destroy);
+    const scoped = this.scopeTabs(scope);
+    // BEFORE the hibernate/remove pass empties the list: a destroyed scope's
+    // tabs belong to nobody, and the idle transitions must still journal.
+    if (destroy) {
+      for (const tab of scoped) this.setTabController(tab, "idle");
+    }
+    for (const tab of scoped) this.requestHibernate(tab, destroy);
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
     if (destroy && !this.scopeTabs(scope).length) this.activeTabIds.delete(scope);
-    // A destroyed scope's controller is nobody. A merely-hibernated one keeps
-    // its state: the human who took the browser still holds it when it wakes.
-    if (destroy) this.setController(scope, "idle");
     this.emitState(scope);
   }
 

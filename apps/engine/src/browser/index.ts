@@ -179,6 +179,10 @@ export class BrowserRuntime {
     const normalized = normalizeBrowserToolCall(name, args);
     // Validated before the lease so a typo cannot spawn a Chromium.
     const input = parseBrowserToolInput(normalized.name, normalized.args);
+    // `tabId` is the DESKTOP host's read-addressing (per-tab control); the
+    // headless runtime has no human to share with and Playwright MCP would
+    // reject the unknown parameter, so it is accepted-and-dropped here.
+    delete input.tabId;
 
     // Take the scope's lease BEFORE any await. Without this ordering another
     // scope's acquisition can hit the LRU in the gap between `start()`
