@@ -93,7 +93,12 @@ function McpConnectionsCard() {
           <button
             type="button"
             onClick={() => {
-              void navigator.clipboard.writeText(mcp.addCommand).then(() => setCopied(true));
+              navigator.clipboard
+                .writeText(mcp.addCommand)
+                .then(() => setCopied(true))
+                .catch(() => {
+                  // Refused: the command is on screen and selectable.
+                });
             }}
             className="rounded-md border border-border px-2 py-0.5 text-[0.625rem] text-muted-foreground transition-colors hover:border-spool/40 hover:text-foreground"
           >

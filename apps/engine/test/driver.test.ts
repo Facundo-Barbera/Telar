@@ -2072,6 +2072,35 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(first.sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "command_execution")).toBe(false);
   });
 
+  test("a Monitor's tick is a task_progress, and the wake-up it triggers is still named after the monitor", async () => {
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "mon1", tool_use_id: "toolu_mon", description: "two ticks", task_type: "monitor", is_backgrounded: true };
+        // A shell launched AFTER the monitor in the same turn: the last task
+        // to speak inside the turn, and not what wakes the model below.
+        yield { type: "system", subtype: "task_started", task_id: "sh1", tool_use_id: "toolu_sh", description: "sleep then done", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "watching");
+        await woke;
+        // A tick: progress, not a notification — and the CLI wakes on it.
+        yield { type: "system", subtype: "task_progress", task_id: "mon1", summary: "TICK_ONE" };
+        yield { type: "user", message: { role: "user", content: "Monitor output: TICK_ONE" } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "tick: TICK_ONE" }] } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    await run(driver, { sessionId: "session_tick", session: door.hooks }).result;
+    releaseWake!();
+    await settle(() => door.turns[0]?.closed !== undefined);
+    expect(door.turns[0]!.reason).toEqual({ kind: "task_notification", taskId: "task_toolu_mon" });
+  });
+
   test("a wake-up the engine refuses (a human turn won) is parked and read by that turn", async () => {
     let releaseWake: (() => void) | undefined;
     const woke = new Promise<void>((resolve) => { releaseWake = resolve; });

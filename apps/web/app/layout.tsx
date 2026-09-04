@@ -4,6 +4,7 @@ import { Fira_Code, Geist, Geist_Mono, IBM_Plex_Mono, IBM_Plex_Sans, Inter, JetB
 // Streamdown FIRST, so the cockpit's own tokens win where the two overlap.
 import "streamdown/styles.css";
 import "./globals.css";
+import { ClipboardShim } from "@/components/clipboard-shim";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/theme-provider";
 import { AppearanceProvider } from "@/components/appearance-provider";
 import { APPEARANCE_INIT_SCRIPT } from "@/lib/appearance";
@@ -87,6 +88,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
         {/* The backdrop layer (lib/backdrop.ts): display:none until <html>
             wears data-backdrop, then painted entirely from CSS variables. */}
         <div id="app-backdrop" aria-hidden="true" />
+        <ClipboardShim />
         <ThemeProvider>
           <AppearanceProvider>
             <AppShell>{children}</AppShell>

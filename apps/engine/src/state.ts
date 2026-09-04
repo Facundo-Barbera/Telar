@@ -5983,11 +5983,25 @@ export class EngineStore {
        */
       if (settled) {
         const additions = definedOnly(seed);
-        const informative = Object.entries(additions).some(([key, value]) => {
-          if (key === "id" || key === "state" || key === "kind" || key === "providerTaskId") return false;
-          return JSON.stringify(known[key as keyof Task]) !== JSON.stringify(value);
-        });
-        if (!informative) return;
+        const changed = Object.entries(additions)
+          .filter(([key, value]) => !(key === "id" || key === "state" || key === "kind" || key === "providerTaskId") && JSON.stringify(known[key as keyof Task]) !== JSON.stringify(value))
+          .map(([key]) => key);
+        if (changed.length === 0) return;
+        /**
+         * THE SUMMARY ARRIVING A FRAME AFTER THE CLOSE IS NOT A SECOND CLOSE.
+         * Measured on the dogfood session: `background_tasks_changed` closes
+         * a shell with no summary, then its `task_notification` carries one —
+         * two `task.completed` events for one ending. The summary is folded
+         * into the row (the projection is right) but not re-announced. Judged
+         * on what CHANGED, not on the seed's key set: the driver repeats the
+         * whole row (title, kind, backgrounded) on every report.
+         */
+        const onlySummary = changed.every((key) => key === "resultText" || key === "usage");
+        if (onlySummary) {
+          projection.tasks.set(known.id, { ...known, ...definedOnly(seed), id: known.id, kind: known.kind, state: known.state, runId: known.runId, startedAt: known.startedAt, updatedAt: at });
+          projection.tasksTouched = true;
+          return;
+        }
       }
       /**
        * THE SEED IS FOLDED OVER WHAT IS ALREADY STORED, not swapped for it.

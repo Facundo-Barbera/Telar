@@ -1393,6 +1393,20 @@ export function createClaudeDriver(
        */
       const handleTaskFrame = async (item: SdkFrame): Promise<boolean> => {
         if (item.type !== "system") return false;
+        /**
+         * THE LAST TASK THAT SPOKE names the wake-up that follows. Measured:
+         * a Monitor's tick is a `task_progress`, not a notification, and the
+         * CLI wakes the model on it just the same — so remembering only
+         * notifications left the tick's turn with no reason. Any frame about
+         * a task that is (or becomes) a row counts; ambient and foreground
+         * shells do not, they are not rows anybody can be woken by.
+         */
+        const spokeFor = str(item.task_id) && !suppressedTasks.has(item.task_id!) && item.ambient !== true
+          ? taskIdFor(str(item.task_id), str(item.tool_use_id))
+          : undefined;
+        if (spokeFor && runtimeRef && item.subtype !== "background_tasks_changed" && !isForegroundShell(str(item.task_type), item.is_backgrounded)) {
+          runtimeRef.tasks.lastWokenTaskId = spokeFor;
+        }
         if (item.subtype === "task_started") {
           /**
            * AMBIENT TASKS ARE THE CLI'S HOUSEKEEPING, NOT WORK. The SDK marks
@@ -1493,7 +1507,6 @@ export function createClaudeDriver(
           // Remembered on the PROCESS: the wake-up this notification triggers
           // may be read by the idle pump, or by the next turn's pump, and
           // either has to name the shell that spoke.
-          if (runtimeRef) runtimeRef.tasks.lastWokenTaskId = id;
           emitTask(
             "task.completed",
             str(item.task_id),
@@ -2645,6 +2658,11 @@ export function createClaudeDriver(
         signal.removeEventListener("abort", onAbort);
         if (persistent) {
           runtimes.release(sessionId);
+          // Only what the CLI says BETWEEN turns names a wake-up. A task that
+          // spoke inside this turn (its own `task_started`) is not what woke
+          // the model — measured: two monitor ticks both attributed to a
+          // shell that had merely been launched in the same turn.
+          runtime.tasks.lastWokenTaskId = undefined;
           // The turn is over; the process is not. Keep reading it.
           if (sessionHooks && !runtime.streamEnded) startIdlePump(runtime, sessionHooks);
         } else runtime.destroy();
