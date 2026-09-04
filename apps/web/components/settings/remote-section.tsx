@@ -465,7 +465,7 @@ export function RemoteSection() {
                   <QrCodeView matrix={matrix} className="size-44 rounded-md border border-border/70" />
                 ) : (
                   <div className="flex size-44 items-center justify-center rounded-md border border-dashed border-border/60 p-4 text-center text-[0.6875rem] leading-snug text-muted-foreground/70">
-                    Nothing to scan — a phone dialling this machine's address would reach itself.
+                    Nothing to scan — a phone dialling this machine&apos;s address would reach itself.
                   </div>
                 )}
               </div>
