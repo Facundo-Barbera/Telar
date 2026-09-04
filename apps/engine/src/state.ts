@@ -5798,7 +5798,20 @@ export class EngineStore {
     }
     if (observation.kind === "task.started" || observation.kind === "task.progress" || observation.kind === "task.completed") {
       const seed = observation.task;
-      const known = projection.tasks.get(seed.id);
+      /**
+       * BY CONTRACT ID, THEN BY PROVIDER ID. A task announced in one turn
+       * under `task_<tool_use_id>` is reported on in a LATER turn by the
+       * CLI's `task_notification`, which carries `task_id` and no
+       * `tool_use_id` — so that turn's driver mints `task_<task_id>` for the
+       * same shell. Measured on session_7657b2ef…: monitor b7ohaj89n ended as
+       * `task_toolu_01FD…` (background, stopped) and was then re-created as
+       * `task_b7ohaj89n` (agent, completed) — a second row, on the Agents
+       * surface, for a shell that was already closed. The provider id is the
+       * one handle both turns share.
+       */
+      const known =
+        projection.tasks.get(seed.id) ??
+        (seed.providerTaskId ? [...projection.tasks.values()].find((task) => task.providerTaskId === seed.providerTaskId) : undefined);
       /**
        * THE FIRST ENDING IS THE ENDING — the driver's own rule (`emitTask`),
        * restated at the store because the store outlives the driver's
@@ -5822,7 +5835,9 @@ export class EngineStore {
       const task: Task = {
         ...known,
         ...definedOnly(seed),
-        id: seed.id,
+        // The row's own id, when a provider-id match found one: the later
+        // turn's minted id names the same shell and must not open a second row.
+        id: known?.id ?? seed.id,
         /**
          * THE FIRST CLASSIFICATION IS THE CLASSIFICATION, for the same reason
          * `runId` and `startedAt` below take the stored value: kind is a fact
