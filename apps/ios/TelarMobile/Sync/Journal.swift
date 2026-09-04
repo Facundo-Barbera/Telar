@@ -271,6 +271,25 @@ func projectJournal(
             upsertTask(task)
         case .usageUpdated(let usage):
             turn?.usage = usage
+        case .browserControlChanged(let controller):
+            // The §6 marker row, mirrored from the web fold: a takeover lands
+            // inside the turn it interrupted as a one-line unknown-detail row.
+            // Between turns (no runId) the live badge is the story, not history.
+            guard let runId = event.runId, controller != "idle" else { break }
+            upsert(
+                Item(
+                    id: "control_\(event.id)",
+                    runId: runId,
+                    sessionId: event.sessionId,
+                    status: .completed,
+                    title: nil,
+                    detail: .unknown(label: controller == "human" ? "You took the browser" : "The browser was handed back to the agent"),
+                    startedAt: event.at,
+                    completedAt: event.at,
+                    taskId: nil
+                ),
+                openedBy: event.id
+            )
         case .requestOpened, .requestResolved, .sessionUpdated:
             break
         case .none:

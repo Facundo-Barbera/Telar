@@ -133,6 +133,19 @@ func fixture(_ name: String) throws -> Data {
         #expect(request.isOpen)
     }
 
+    @Test func browserControlEventDecodesController() throws {
+        let data = Data("""
+        {"events":[
+          {"id":9,"at":10,"sessionId":"s","runId":"run_1","type":"browser.control.changed","controller":"human"}
+         ],"cursor":9,"more":false}
+        """.utf8)
+        let page = try JSONDecoder().decode(EventPage.self, from: data)
+        guard case .browserControlChanged(let controller) = page.events[0].payload else {
+            Issue.record("expected browser.control.changed payload"); return
+        }
+        #expect(controller == "human")
+    }
+
     @Test func secretAccessRequestDecodesCandidates() throws {
         // The 1Password fill card: metadata only, by contract — origin,
         // field kinds, and domain-matched candidates. Approving it sends
