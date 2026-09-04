@@ -91,6 +91,7 @@ import {
   type ProviderUpdateRun,
   type Session,
   type SessionOrigin,
+  type Subscription,
   type Task,
   type EngineRequest,
   type RequestDecision,
@@ -102,6 +103,7 @@ import {
   type TurnObservation,
   type TurnSubmissionResult,
   type UsageSnapshot,
+  type WakeKind,
   type WorkerClaim,
   type ProviderTurnOpenInput,
   type WorkerStatus,
@@ -1749,13 +1751,39 @@ export class EngineClient {
     });
   }
 
-  /** A human answering a parked request. */
+  /**
+   * A human answering a parked request — or, with `resolvedBy: "session"`,
+   * another session doing so through the `sessions` toolkit. That is the only
+   * resolver a caller may name; anything else is recorded as a human's.
+   */
   resolveRequest(
     sessionId: string,
     requestId: string,
-    input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown> },
+    input: { decision: RequestDecision; reason?: string; answers?: Record<string, unknown>; resolvedBy?: "session" },
   ): Promise<{ request: EngineRequest }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input);
+  }
+
+  /**
+   * SUBSCRIPTIONS — being woken by another session. The subscriber is the
+   * session in the path; the engine queues a `origin: "session"` turn on it
+   * when the target does one of `events`. See `Subscription`.
+   */
+  subscribe(
+    sessionId: string,
+    input: { targetSessionId: string; events?: WakeKind[]; once?: boolean },
+  ): Promise<{ subscription: Subscription }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/subscriptions`, input);
+  }
+
+  subscriptions(sessionId: string): Promise<{ subscriptions: Subscription[] }> {
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/subscriptions`);
+  }
+
+  /** `subscriberSessionId` narrows the delete to that session's own
+   *  subscription — a session may not remove another's. */
+  unsubscribe(subscriptionId: string, input: { subscriberSessionId?: string } = {}): Promise<{ removed: boolean }> {
+    return this.request("DELETE", `/v2/subscriptions/${encodeURIComponent(subscriptionId)}`, input);
   }
 
   completeTurn(

@@ -514,6 +514,52 @@ export const TurnClaim = z.object({
 });
 export type TurnClaim = z.infer<typeof TurnClaim>;
 
+/**
+ * WHAT A SUBSCRIBED SESSION MAY BE WOKEN FOR.
+ *
+ * The three terminal turn transitions and a request parking. NO `idle`: idle
+ * is the absence of a live turn, and the terminal kinds already say when it
+ * begins. NO `turn_started`: a subscriber that wanted to know a turn began
+ * would be polling with extra steps, and `sessions_send` already tells the
+ * sender its message was accepted.
+ */
+export const WakeKind = z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]);
+export type WakeKind = z.infer<typeof WakeKind>;
+
+/** Why an `origin: "session"` turn was queued — what happened, and where. */
+export const WakeReason = z.object({
+  kind: WakeKind,
+  /** The session that did the thing. */
+  sessionId: Id,
+  /** Its turn, for the three turn kinds — and for `request_opened`, the turn
+   *  the request belongs to. */
+  runId: Id.optional(),
+  requestId: Id.optional(),
+});
+export type WakeReason = z.infer<typeof WakeReason>;
+
+/**
+ * ONE SESSION ASKING TO BE WOKEN BY ANOTHER.
+ *
+ * Recorded HERE and on neither session: a subscription is an explicit,
+ * revocable, one-directional wish — it is not a parent/child link, and
+ * neither session's own record mentions the other. Engine-wide file
+ * (`subscriptions.json`), because the pair spans sessions.
+ *
+ * NO `expiresAt`: nothing reads one. A subscriber that is archived or deleted
+ * takes its subscriptions with it, and `once` covers "just the next time".
+ */
+export const Subscription = z.object({
+  id: Id,
+  subscriberSessionId: Id,
+  targetSessionId: Id,
+  events: z.array(WakeKind).min(1),
+  /** Removed after it fires once. */
+  once: z.boolean().optional(),
+  createdAt: Timestamp,
+});
+export type Subscription = z.infer<typeof Subscription>;
+
 export const Turn = z.object({
   /**
    * CLIENT-SUPPLIED IDEMPOTENCY KEY, kept from v1. Submitting the same runId
@@ -538,16 +584,24 @@ export const Turn = z.object({
    */
   kind: z.enum(["message", "compact"]).optional(),
   /**
-   * WHO STARTED THIS TURN. Absent means a human (or another session) sent a
-   * message. `provider` is a turn the CLI started ON ITS OWN — a background
-   * task or monitor fired between engine turns, the CLI injected its
-   * notification as a user message and ran the model on it. Such a turn has
-   * no `input` a human typed; `input` carries the provider's own notification
-   * text, and `providerReason` names the task that woke it. Transcripts draw
-   * it as a wake-up rather than a bubble, and a message a human sends while
-   * one runs is steered into it rather than queued behind it.
+   * WHO STARTED THIS TURN. Absent means a human (or another session, through
+   * `sessions_send`) sent a message. `provider` is a turn the CLI started ON
+   * ITS OWN — a background task or monitor fired between engine turns, the
+   * CLI injected its notification as a user message and ran the model on it.
+   * Such a turn has no `input` a human typed; `input` carries the provider's
+   * own notification text, and `providerReason` names the task that woke it.
+   * Transcripts draw it as a wake-up rather than a bubble, and a message a
+   * human sends while one runs is steered into it rather than queued behind
+   * it.
+   *
+   * `session` is a turn the ENGINE queued because a session this one had
+   * subscribed to did something — finished a turn, failed, was stopped, or
+   * parked a request. `input` is the engine's own wake text (it begins with
+   * `[wake]`), `wakeReason` names the source, and unlike a provider turn it
+   * is an ordinary QUEUED turn: it waits behind whatever is running and is
+   * never steered into it. Drawn as a wake-up row too.
    */
-  origin: z.enum(["user", "provider"]).optional(),
+  origin: z.enum(["user", "provider", "session"]).optional(),
   providerReason: z
     .object({
       kind: z.enum(["task_notification", "unknown"]),
@@ -555,6 +609,8 @@ export const Turn = z.object({
       taskId: Id.optional(),
     })
     .optional(),
+  /** For an `origin: "session"` turn: what happened, and where. */
+  wakeReason: WakeReason.optional(),
   /**
    * Files sent WITH this message.
    *
