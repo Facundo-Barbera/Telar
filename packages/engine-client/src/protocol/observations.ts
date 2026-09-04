@@ -194,6 +194,17 @@ export const WorkerClaim = z.object({
   project: z.string().min(1).optional(),
   /** Provider continuity from the last completed turn, if any. */
   resumeCursor: z.string().min(1).optional(),
+  /**
+   * The session's task rows that are NOT settled, as the engine has them.
+   *
+   * A provider process remembers the tasks it launched; one built cold (after
+   * a restart, an eviction, a config change) does not, and the first report a
+   * still-running task sends it would open a second row for a task the store
+   * already holds. Carried for the same reason `resumeCursor` is: continuity
+   * the worker cannot look up itself. Only live rows — a settled one has
+   * nothing left to report on.
+   */
+  tasks: z.array(TaskSeed).optional(),
   turn: Turn,
 });
 export type WorkerClaim = z.infer<typeof WorkerClaim>;

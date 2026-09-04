@@ -473,6 +473,7 @@ export class EngineWorker {
         // not look anything up between claim and execution.
         ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments } : {}),
         ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
+        ...(claim.tasks?.length ? { tasks: claim.tasks } : {}),
         // WHICH LOGIN THIS RUNS AS. Derived here rather than on the claim
         // because it is a fact about spawning a process, and the worker is the
         // process that spawns one — the engine's job was to resolve WHICH
