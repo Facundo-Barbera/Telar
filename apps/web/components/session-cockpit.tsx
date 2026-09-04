@@ -476,7 +476,7 @@ export function SessionTurn({
                 <ActivityGroup items={activity} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
               )}
               {closing.map((item) => (
-                <TranscriptItem key={item.id} item={item} />
+                <TranscriptItem key={item.id} item={item} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
               ))}
             </>
           )}
