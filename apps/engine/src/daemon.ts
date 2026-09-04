@@ -2804,13 +2804,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // The daemon owns the browser, not the driver: it outlives any turn and
       // has to be closed exactly once. `release(sessionId)` on archive is what
       // keeps Chromium instances from accumulating until the pool evicts them.
-      const { BrowserRuntime } = await import("./browser");
+      const { BrowserRuntime, BrowserRouter, desktopBrowserFromEnv } = await import("./browser");
       browser = new BrowserRuntime();
-      store.attachBrowser(browser);
+      /**
+       * THE SHARED BROWSER (§6 of the plan): when the desktop shell exported
+       * its control server, calls route to the Electron-hosted tabs the human
+       * can see and click; otherwise — detached machine, app quit — the same
+       * calls run on the headless runtime. One capability either way, so the
+       * store, the socket and both providers never learn which one answered.
+       */
+      const routed = new BrowserRouter(browser, desktopBrowserFromEnv());
+      store.attachBrowser(routed);
       // The browser reaches sessions over the worker-hosted MCP socket, for
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.
-      browserSocket = (await import("./drivers")).createBrowserToolSocket(browser);
+      browserSocket = (await import("./drivers")).createBrowserToolSocket(routed);
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
