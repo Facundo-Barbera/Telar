@@ -20,6 +20,7 @@ import type {
   InboxPolicy,
   EnvMode,
   SessionDefaults,
+  SidebarLayout,
   TextGenPolicy,
   UsageReport,
   UsageResolution,
@@ -151,6 +152,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     sessionDefaults: () => request<{ sessionDefaults: SessionDefaults }>(fetcher, "GET", "/api/session-defaults"),
     setSessionDefaults: (patch: { envMode?: EnvMode }) =>
       request<{ sessionDefaults: SessionDefaults }>(fetcher, "PATCH", "/api/session-defaults", patch),
+    /** Where each project group sits in the rail — see `SidebarLayout`. One
+     *  arrangement for every client of this engine. */
+    sidebarLayout: () => request<{ layout: SidebarLayout }>(fetcher, "GET", "/api/sidebar-layout"),
+    setSidebarLayout: (patch: { projectOrder?: string[] }) =>
+      request<{ layout: SidebarLayout }>(fetcher, "PATCH", "/api/sidebar-layout", patch),
     /** Spend over time, folded from the engine's journals. */
     usage: (input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }) => {
       const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });

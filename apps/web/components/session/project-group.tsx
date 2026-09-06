@@ -13,6 +13,19 @@ import { cn } from "@/lib/utils";
  * One project's active sessions under a collapsible header. The header is
  * one button (name + chevron) that folds the group; scoping stays with the
  * existing project picker above, which is host-aware.
+ *
+ * THE HEADER IS THE HANDLE. Grab it and the whole group comes along; drop it
+ * on another group and it lands above or below, by which half of that group
+ * the pointer was in. The drag is the platform's own (`draggable` and
+ * `dataTransfer`, the app's one drag idiom — see `lib/drag-reference.ts`), the
+ * handlers arrive as bare prop references the way the Spool's lobby takes
+ * them, and the sidebar owns the state, because the drop lands on a DIFFERENT
+ * group than the one that started the drag.
+ *
+ * THE INSERT MARK IS A SHADOW, NOT A BORDER. A border added on drag-over would
+ * change the group's height the instant it appeared and shove every row under
+ * the pointer — the exact mechanism behind a lobby bug this app already fixed
+ * once. An inset shadow draws the same 2px line and changes no box.
  */
 export function ProjectGroupSection({
   group,
@@ -23,6 +36,13 @@ export function ProjectGroupSection({
   renderedAt,
   autoSettleAfterHours,
   onRefresh,
+  dragging,
+  insert,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: {
   group: Group;
   open: boolean;
@@ -32,12 +52,31 @@ export function ProjectGroupSection({
   renderedAt: number;
   autoSettleAfterHours: number | null;
   onRefresh: () => void;
+  /** This group is the one being carried. */
+  dragging: boolean;
+  /** Where the carried group would land relative to this one, while over it. */
+  insert: "above" | "below" | null;
+  onDragStart: (event: React.DragEvent) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: React.DragEvent) => void;
+  onDragLeave: () => void;
+  onDrop: (event: React.DragEvent) => void;
 }) {
   const headingId = `project-group-${group.key}`;
   const shown = group.sessions.length;
   const countLabel = `${shown} shown`;
   return (
-    <SidebarGroup className="py-0">
+    <SidebarGroup
+      className={cn(
+        "py-0 transition-opacity",
+        dragging && "opacity-40",
+        insert === "above" && "shadow-[inset_0_2px_0_0_var(--color-sidebar-primary)]",
+        insert === "below" && "shadow-[inset_0_-2px_0_0_var(--color-sidebar-primary)]",
+      )}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div className="group/project flex items-center gap-1 pr-1">
         <button
           type="button"
@@ -45,7 +84,11 @@ export function ProjectGroupSection({
           aria-expanded={open}
           aria-controls={`${headingId}-rows`}
           onClick={onToggle}
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"
+          draggable
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          title="Drag to move this project"
+          className="flex min-w-0 flex-1 cursor-grab items-center gap-1.5 rounded px-1 py-1.5 text-left outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
         >
           <ChevronRightIcon className={cn("size-3.5 shrink-0 text-sidebar-foreground/45 transition-transform", open && "rotate-90")} />
           <ProjectAvatar name={group.name} projectId={group.projectId} {...(group.icon ? { icon: group.icon } : {})} size={16} />

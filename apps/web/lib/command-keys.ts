@@ -19,8 +19,8 @@
  *     where its label promises. In the donor this route was a redirect into
  *     whichever session was most recent; here it resolves a project and opens a
  *     new-conversation canvas.
- *   - JUMP COUNTS THE PINNED BAND FIRST, because the rail draws it first. See
- *     `recentSessionsForCommandKeys`.
+ *   - JUMP COUNTS THE RAIL AS DRAWN — attention band, pinned, then each project
+ *     group in the reader's own order. See `railRowsForCommandKeys`.
  */
 import {
   COMMAND_KEY_BINDINGS as RAW_COMMAND_KEY_BINDINGS,
@@ -109,7 +109,8 @@ export type CommandKeyDestination =
  * `/` for both new-session and new-tab: it resolves a project and opens its
  * new-conversation canvas, which is the same guess the rail's own New
  * conversation button makes — so the key and the button cannot disagree.
- * `jump-N` is the Nth row of the rail as drawn, pinned band included.
+ * `jump-N` is the Nth row of the rail as drawn, attention and pinned bands
+ * included, folded groups skipped.
  */
 export function commandKeyDestination(id: CommandKeyId, recentSessionHrefs: readonly (string | undefined)[]): CommandKeyDestination {
   if (id === "new-session") return { kind: "navigate", href: "/" };

@@ -349,39 +349,9 @@ export function deriveSessionList({
   };
 }
 
-/**
- * What ⌘1..⌘9 index into: the rail's own rows, TOP TO BOTTOM, as drawn.
- *
- * PINNED FIRST, THEN THE LIST, because that is the order on screen — and the
- * whole value of a positional shortcut is that you can predict it without
- * looking. The donor indexed its single "Recent" band; the rail has a band above
- * that one now, and a ⌘1 that skipped the row sitting at the top would be a
- * shortcut you have to check before using.
- *
- * SHELVES ARE EXCLUDED. Snoozed and settled rows are, by definition, ones you
- * said you did not want in front of you; a number key is for the rows that are.
- *
- * Reuses `deriveSessionList` rather than re-sorting, so this can never drift
- * from what the rail renders. `activeSessionId` is threaded through for the same
- * reason the rail passes it — but the survivor pin can land the open session
- * anywhere on the page, which is meaningless for INDEXING, so the slice is what
- * guards the bound.
- */
-export function recentSessionsForCommandKeys(
-  sessions: readonly SidebarSession[],
-  activeSessionId?: string,
-  now = Date.now(),
-  autoSettleAfterHours: number | null = DEFAULT_AUTO_SETTLE_HOURS,
-): SidebarSession[] {
-  const list = deriveSessionList({
-    sessions,
-    ...(activeSessionId ? { activeSessionId } : {}),
-    now,
-    autoSettleAfterHours,
-    limit: 9,
-  });
-  return [...list.pinned, ...list.sessions].slice(0, 9);
-}
+// What ⌘1..⌘9 index into moved to `session-groups.ts` (`railRowsForCommandKeys`):
+// the rail draws its rows grouped by project now, and the shortcut has to walk
+// the same arrangement the eye does.
 
 /** The route a session's own row links to — spelled once so every caller
  *  resolves to the exact same URL a click on the row would. */

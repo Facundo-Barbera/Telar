@@ -6,6 +6,14 @@
  * survivor rule and the shelves stay exactly the classic rail's. Every session
  * appears once: a blocked row lives in `attention` and nowhere else, a pinned
  * one in `pinned`, everything else under its project.
+ *
+ * WHERE A GROUP SITS IS A DECISION, NOT A SIDE EFFECT. The groups used to come
+ * out in the order their newest conversation was created, so starting one
+ * hoisted its project to the top and every other group shifted under the
+ * pointer — the one thing a list you navigate by position must not do. Now a
+ * group sits where the reader dragged it (`SidebarLayout.projectOrder`, on the
+ * engine), and a group nobody has placed falls in after the placed ones,
+ * alphabetically. Nothing about a conversation moves its project.
  */
 import { useCallback, useEffect, useState } from "react";
 import { sessionKey, type SidebarSession, type SessionListResult } from "./session-list";
@@ -69,7 +77,70 @@ export function needsAttention(session: SidebarSession): boolean {
   return session.activity === "blocked";
 }
 
-export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions">): GroupedSessions {
+/** The drag's own type, so a file or a reference dropped on a group header is
+ *  not mistaken for a group. Vendor-prefixed per RFC 6839, like `REFERENCE_MIME`. */
+export const PROJECT_GROUP_MIME = "application/x-telar-project-group";
+
+/**
+ * Place the groups: the ones the reader has arranged first, in that order,
+ * then the rest alphabetically. Two groups with one name — the same project
+ * registered on this Mac and a paired one — put this Mac's first, so the copy
+ * that says where it lives is the one wearing the badge.
+ */
+export function orderProjectGroups(groups: readonly ProjectGroup[], order: readonly string[] = []): ProjectGroup[] {
+  const rank = new Map(order.map((key, index) => [key, index] as const));
+  return [...groups].sort((left, right) => {
+    const leftRank = rank.get(left.key);
+    const rightRank = rank.get(right.key);
+    if (leftRank !== undefined && rightRank !== undefined) return leftRank - rightRank;
+    if (leftRank !== undefined) return -1;
+    if (rightRank !== undefined) return 1;
+    return (
+      left.name.localeCompare(right.name, undefined, { sensitivity: "base" }) ||
+      Number(Boolean(left.hostId)) - Number(Boolean(right.hostId)) ||
+      (left.hostName ?? "").localeCompare(right.hostName ?? "") ||
+      left.key.localeCompare(right.key)
+    );
+  });
+}
+
+/**
+ * The order after a drop: `dragged` lands above or below `target` in the list
+ * as DRAWN, and the whole drawn list is what gets written — so every group on
+ * screen keeps the place it had, not only the one that moved. A group drawn
+ * for the first time is thereby placed too, which is what stops it drifting
+ * once somebody has arranged anything.
+ *
+ * KEYS THE RAIL IS NOT DRAWING RIGHT NOW — a paired Mac that is away, a project
+ * with nothing live — keep their slot relative to the ones it is, rather than
+ * being pruned by a drag that had nothing to do with them.
+ */
+export function moveProjectGroup(
+  stored: readonly string[],
+  drawn: readonly string[],
+  dragged: string,
+  target: string,
+  position: "above" | "below",
+): string[] {
+  const without = drawn.filter((key) => key !== dragged);
+  const anchor = without.indexOf(target);
+  if (dragged === target || anchor < 0 || !drawn.includes(dragged)) return [...drawn];
+  const at = anchor + (position === "below" ? 1 : 0);
+  const next = [...without.slice(0, at), dragged, ...without.slice(at)];
+  let after = -1;
+  for (const key of stored) {
+    const index = next.indexOf(key);
+    if (index >= 0) {
+      after = index;
+      continue;
+    }
+    next.splice(after + 1, 0, key);
+    after += 1;
+  }
+  return next;
+}
+
+export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions">, order: readonly string[] = []): GroupedSessions {
   const attention: SidebarSession[] = [];
   const pinned: SidebarSession[] = [];
   const groups = new Map<string, ProjectGroup>();
@@ -99,5 +170,32 @@ export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions
   for (const session of list.pinned) place(session, true);
   for (const session of list.sessions) place(session, false);
 
-  return { attention, pinned, groups: [...groups.values()] };
+  return { attention, pinned, groups: orderProjectGroups([...groups.values()], order) };
+}
+
+/**
+ * What ⌘1..⌘9 index into: the rail's own rows, TOP TO BOTTOM, AS DRAWN.
+ *
+ * The whole value of a positional shortcut is that you can predict it without
+ * looking, and the only order a reader can predict is the one on screen. So
+ * this walks the rail the way the eye does: the "Needs you" band, then pinned,
+ * then each project group in its arranged order — skipping a group that is
+ * folded, because a number on a row you cannot see is a number you cannot
+ * check. It used to count the flat list by creation time, which was the order
+ * on screen right up until the groups landed and then quietly was not.
+ *
+ * SHELVES ARE EXCLUDED. Snoozed and settled rows are, by definition, ones you
+ * said you did not want in front of you; a number key is for the rows that are.
+ *
+ * Takes the rail's OWN `groupSessions` output rather than re-deriving it, so
+ * this cannot drift from what is rendered: the same scope, the same page, the
+ * same arranged groups, the same folds. (A search flattens the rail; the
+ * caller hands over the flat result list instead.)
+ */
+export function railRowsForCommandKeys(grouped: GroupedSessions, collapsed?: ReadonlySet<string>): SidebarSession[] {
+  const rows = [...grouped.attention, ...grouped.pinned];
+  for (const group of grouped.groups) {
+    if (!collapsed?.has(group.key)) rows.push(...group.sessions);
+  }
+  return rows.slice(0, 9);
 }

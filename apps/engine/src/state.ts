@@ -15,9 +15,12 @@ import {
   livenessOf,
   DEFAULT_INBOX_POLICY,
   DEFAULT_SESSION_DEFAULTS,
+  DEFAULT_SIDEBAR_LAYOUT,
   DEFAULT_TEXT_GEN_POLICY,
   InboxPolicy as InboxPolicySchema,
+  MAX_SIDEBAR_PROJECT_ORDER,
   SessionDefaults as SessionDefaultsSchema,
+  SidebarLayout as SidebarLayoutSchema,
   TextGenPolicy as TextGenPolicySchema,
   Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
@@ -52,6 +55,7 @@ import {
   type GitignoreResult,
   type InboxPolicy,
   type SessionDefaults,
+  type SidebarLayout,
   type TextGenPolicy,
   type ModelCatalogue,
   type ModelOverlay,
@@ -499,6 +503,9 @@ export type EngineStatePaths = {
   /** What a session is created with when nobody said — see `SessionDefaults`.
    *  Environment-scoped like `inbox`, and for the same reason. */
   sessionDefaults: string;
+  /** Where each project group sits in the rail — see `SidebarLayout`.
+   *  Environment-scoped like `inbox`: one arrangement per engine, not per window. */
+  sidebarLayout: string;
   /**
    * The host cockpit's resolved look, republished for paired clients — see
    * `getAppearance`. Environment-scoped like `textGen`, but for the opposite
@@ -595,6 +602,7 @@ export function statePaths(root: string): EngineStatePaths {
     subscriptions: path.join(resolved, "subscriptions.json"),
     textGen: path.join(resolved, "text-generation.json"),
     sessionDefaults: path.join(resolved, "session-defaults.json"),
+    sidebarLayout: path.join(resolved, "sidebar-layout.json"),
     appearance: path.join(resolved, "appearance.json"),
     engine: path.join(resolved, "engine.json"),
     lock: path.join(resolved, "engine.lock"),
@@ -1456,6 +1464,44 @@ export class EngineStore {
     }
     atomicWrite(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
     return { ...next };
+  }
+
+  /**
+   * Where each project group sits in the rail — see `SidebarLayout`.
+   *
+   * Same never-throws rule as `getInboxPolicy`: a malformed arrangement costs
+   * the arrangement, never the list it arranges. The default is the empty
+   * order, which the rail reads as "alphabetical, nobody has moved anything".
+   */
+  getSidebarLayout(): SidebarLayout {
+    try {
+      const parsed = SidebarLayoutSchema.safeParse(readJson(this.paths.sidebarLayout));
+      return parsed.success ? parsed.data : { ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [] };
+    } catch {
+      return { ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [] };
+    }
+  }
+
+  /**
+   * Takes `unknown` and validates here, like the policies above. A key listed
+   * twice is kept once, at its first position — the rail reads the first
+   * mention anyway, and a document that said two things would be one that
+   * meant neither.
+   */
+  setSidebarLayout(patch: { projectOrder?: unknown }): SidebarLayout {
+    const next: SidebarLayout = { ...this.getSidebarLayout() };
+    if (patch.projectOrder !== undefined) {
+      const parsed = SidebarLayoutSchema.shape.projectOrder.safeParse(patch.projectOrder);
+      if (!parsed.success) {
+        throw new EngineStateError(
+          "invalid_request",
+          `projectOrder must be a list of up to ${MAX_SIDEBAR_PROJECT_ORDER} non-empty project group keys`,
+        );
+      }
+      next.projectOrder = [...new Set(parsed.data)];
+    }
+    atomicWrite(this.paths.sidebarLayout, { version: STATE_VERSION, ...next });
+    return { ...next, projectOrder: [...next.projectOrder] };
   }
 
   /** Same never-throws rule as `getInboxPolicy`, same reason: a malformed

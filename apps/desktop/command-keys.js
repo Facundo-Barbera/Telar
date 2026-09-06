@@ -50,9 +50,10 @@ const COMMAND_KEY_BINDINGS = [
     accelerator: "CommandOrControl+T",
     key: "t",
   },
-  // cmd+1..cmd+9: jump to the Nth most recent conversation. Generated, not
-  // hand-written nine times — see recentSessionsForCommandKeys in
-  // apps/web/lib/session-list.ts for exactly what "recent" is ordered by.
+  // cmd+1..cmd+9: jump to the Nth conversation in the sidebar, top to bottom
+  // as drawn. Generated, not hand-written nine times — see
+  // railRowsForCommandKeys in apps/web/lib/session-groups.ts for exactly
+  // which rows count.
   ...Array.from({ length: 9 }, (_, i) => {
     const n = i + 1;
     return {

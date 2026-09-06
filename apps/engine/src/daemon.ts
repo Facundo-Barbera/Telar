@@ -746,6 +746,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * Where each project group sits in the rail. A document of the
+       * environment, like the two above: one arrangement for every client that
+       * reads this engine, so a drag on the desktop is where the phone finds
+       * the group too.
+       */
+      if (url.pathname === "/v2/sidebar-layout" && (request.method === "GET" || request.method === "PATCH")) {
+        if (request.method === "GET") {
+          writeJson(response, 200, { layout: store.getSidebarLayout() });
+          return;
+        }
+        const input = await body(request);
+        writeJson(response, 200, {
+          layout: store.setSidebarLayout({
+            ...("projectOrder" in input ? { projectOrder: input.projectOrder } : {}),
+          }),
+        });
+        return;
+      }
+      /**
        * COMPUTER USE, MEASURED. The GET runs one real read-only call through
        * the Sky client, because that is the only honest answer to "is the
        * Automation grant in place" — and when the grant is still undecided,
