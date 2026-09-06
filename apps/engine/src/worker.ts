@@ -742,11 +742,11 @@ export class EngineWorker {
       });
       return decision === "accept" || decision === "acceptForSession";
     };
-    const onNavigated: NonNullable<BrowserRunBinding["onNavigated"]> = (state) => {
+    const onNavigated: NonNullable<BrowserRunBinding["onNavigated"]> = async (state) => {
       // A stop is terminal the moment the engine records it — same guard
       // as `onObservations`, for the same conflict.
       if (controller.signal.aborted) return;
-      void this.options.client
+      await this.options.client
         .reportObservations(sessionId, runId, claimToken, [{ kind: "browser.state", provider: state.provider, tabs: state.tabs }])
         .catch(() => undefined);
     };

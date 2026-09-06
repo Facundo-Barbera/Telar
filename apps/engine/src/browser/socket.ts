@@ -78,7 +78,7 @@ export type BrowserRunBinding = {
    * final one. Failures are swallowed — a browser panel that cannot be
    * described must not fail the tool call that moved it.
    */
-  onNavigated?(state: { provider: BrowserProvider; tabs: BrowserTab[] }): void;
+  onNavigated?(state: { provider: BrowserProvider; tabs: BrowserTab[] }): void | Promise<void>;
 };
 
 export type BrowserSocketLease = {
@@ -268,7 +268,7 @@ export class BrowserToolSocket {
             return { content: [{ type: "text", text: "Credential fill is not available for this session." }], isError: true };
           }
           const result = await binding.fillSecret(args, (name, callArgs) => this.capability.call(binding.scopeKey, name, callArgs));
-          if (!result.isError) this.reportState(binding.scopeKey);
+          if (!result.isError) await this.reportState(binding.scopeKey);
           return result;
         }
         const readOnly = this.capability.isReadOnly(definition.name, args);
@@ -287,7 +287,7 @@ export class BrowserToolSocket {
          * this cheap: an unchanged tab set reports nothing, so the cost of a
          * read-only call is one tab-list read, not a journal row.
          */
-        if (!result.isError) this.reportState(binding.scopeKey);
+        if (!result.isError) await this.reportState(binding.scopeKey);
         return result;
       },
     }));
@@ -308,11 +308,12 @@ export class BrowserToolSocket {
     }
   }
 
-  private reportState(scopeKey: string): void {
+  private async reportState(scopeKey: string): Promise<void> {
     const read = this.capability.state;
     if (!read) return;
     // Find the binding again by scope: the queue lives on the token entry, and
     // a released binding mid-flight simply drops its report.
+    const reports: Promise<void>[] = [];
     for (const bound of this.bindings.values()) {
       if (bound.binding.scopeKey !== scopeKey || !bound.binding.onNavigated) continue;
       bound.stateQueue = bound.stateQueue
@@ -322,10 +323,23 @@ export class BrowserToolSocket {
           // call would journal an identical `browser.state.changed` row.
           const signature = `${state.provider}:${JSON.stringify(state.tabs)}`;
           if (bound.lastReported === signature) return;
+          await bound.binding.onNavigated?.(state);
           bound.lastReported = signature;
-          bound.binding.onNavigated?.(state);
         })
         .catch(() => undefined);
+      reports.push(bound.stateQueue);
+    }
+    // The tool reply must not race turn completion ahead of its state report.
+    // Reporting is best-effort: a hung browser/engine must not strand a tool
+    // that already succeeded. Keep the per-binding queue ordered after timeout.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.all(reports),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, 1_000); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }

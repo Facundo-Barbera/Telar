@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
-import { contentHash, listWorkspaceFiles, MAX_WORKSPACE_FILES, readWorkspaceFile, walkWorkspaceFiles, writeWorkspaceFile } from "../src/files";
+import { listWorkspaceFilesAsync, readWorkspaceFileAsync, walkWorkspaceFilesAsync, contentHash, listWorkspaceFiles, MAX_WORKSPACE_FILES, readWorkspaceFile, walkWorkspaceFiles, writeWorkspaceFile } from "../src/files";
 import type { GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
@@ -261,4 +261,45 @@ describe("writeWorkspaceFile", () => {
     writeWorkspaceFile({ cwd: root, path: "a.ts", text: "const a = 3;\n", expected: sha256 });
     expect(readdirSync(root)).toEqual(["a.ts"]);
   });
+});
+
+
+test("async Files listing stays responsive during Git and preserves repository results", async () => {
+  let release!: (value: GitResult) => void;
+  let ticks = false;
+  const ready = new Promise<GitResult>(resolve => { release = resolve; });
+  const listing = listWorkspaceFilesAsync(async (_cwd, args) => args[0] === "rev-parse" ? ready : ok("a.ts\0two\nlines.txt\0"), { cwd: "/repo", now: 1 });
+  setTimeout(() => { ticks = true; release(ok("true\n")); }, 10);
+  const result = await listing;
+  expect(ticks).toBe(true);
+  expect(result).toEqual({ workspacePath: "/repo", repository: true, source: "git", files: ["a.ts", "two\nlines.txt"], truncated: false, readAt: 1 });
+});
+
+test("async unversioned walk preserves exclusions and refuses symlink traversal", async () => {
+  const root = scratch();
+  mkdirSync(path.join(root, "src"));
+  mkdirSync(path.join(root, "node_modules"));
+  writeFileSync(path.join(root, "src", "index.ts"), "hello");
+  writeFileSync(path.join(root, "node_modules", "dependency.js"), "ignored");
+  symlinkSync(root, path.join(root, "src", "cycle"));
+  expect((await walkWorkspaceFilesAsync(root)).sort()).toEqual(walkWorkspaceFiles(root).sort());
+  expect(await listWorkspaceFilesAsync(async () => fail(), { cwd: root, now: 2 }))
+    .toEqual(listWorkspaceFiles(() => fail(), { cwd: root, now: 2 }));
+  await expect(listWorkspaceFilesAsync(async () => ({ status: 124, stdout: "", stderr: "timed out", timedOut: true }), { cwd: root, now: 2 })).rejects.toThrow("timed out");
+});
+
+test("async file preview hashes the whole file while retaining text and binary semantics", async () => {
+  const root = scratch();
+  const text = Buffer.alloc(2 * 1024 * 1024, "x");
+  writeFileSync(path.join(root, "large.txt"), text);
+  writeFileSync(path.join(root, "binary.dat"), Buffer.from([65, 0, 66]));
+  writeFileSync(path.join(root, "empty.txt"), "");
+  for (const file of ["large.txt", "binary.dat", "empty.txt"]) {
+    const input = { cwd: root, path: file, maxBytes: 17 };
+    expect(await readWorkspaceFileAsync(input)).toEqual(readWorkspaceFile(input));
+  }
+  const preview = await readWorkspaceFileAsync({ cwd: root, path: "large.txt", maxBytes: 17 });
+  expect(preview.sha256).toBe(contentHash(text));
+  expect(preview.text).toHaveLength(17);
+  await expect(readWorkspaceFileAsync({ cwd: root, path: "missing" })).rejects.toThrow();
 });

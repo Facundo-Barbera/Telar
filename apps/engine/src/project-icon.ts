@@ -90,3 +90,36 @@ export function findProjectIcon(root: string): ProjectIcon | undefined {
   }
   return undefined;
 }
+
+export async function findProjectIconAsync(root: string): Promise<ProjectIcon | undefined> {
+  let confinedRoot: string;
+  try {
+    confinedRoot = await fs.promises.realpath(root);
+  } catch {
+    return undefined;
+  }
+  for (const candidate of CANDIDATES) {
+    const absolute = path.join(confinedRoot, candidate);
+    let stats: fs.Stats;
+    let real: string;
+    try {
+      real = await fs.promises.realpath(absolute);
+      stats = await fs.promises.stat(real);
+    } catch {
+      continue;
+    }
+    if (!stats.isFile() || stats.size === 0 || stats.size > MAX_ICON_BYTES) continue;
+    // A symlink pointing OUTSIDE the checkout is refused, not followed: the
+    // icon route serves these bytes to any client, and a project must not be
+    // able to publish /etc/hosts by symlinking favicon.ico at it.
+    if (real !== confinedRoot && !real.startsWith(confinedRoot + path.sep)) continue;
+    const contentType = CONTENT_TYPES[path.extname(candidate)];
+    if (!contentType) continue;
+    return {
+      path: real,
+      etag: crypto.createHash("sha256").update(`${candidate}:${stats.mtimeMs}:${stats.size}`).digest("hex").slice(0, 16),
+      contentType,
+    };
+  }
+  return undefined;
+}
