@@ -31,6 +31,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { ProviderDriverKind, TokenUsage, UsageBucket, UsageReport, UsageResolution, UsageSource } from "@telar/engine-client";
 import { loadRates, priceTokens, type RatesTable } from "./usage-pricing";
 
@@ -176,10 +177,10 @@ function parseCodexFile(text: string, fallbackSession: string): UsageRecord[] {
   return records;
 }
 
-function scanFile(file: string, provider: ProviderDriverKind, sinceMs: number): UsageRecord[] | undefined {
+async function scanFile(file: string, provider: ProviderDriverKind, sinceMs: number): Promise<UsageRecord[] | undefined> {
   let stat: fs.Stats;
   try {
-    stat = fs.statSync(file);
+    stat = await fs.promises.stat(file);
   } catch {
     return undefined;
   }
@@ -188,7 +189,7 @@ function scanFile(file: string, provider: ProviderDriverKind, sinceMs: number): 
   if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.records;
   let text: string;
   try {
-    text = fs.readFileSync(file, "utf8");
+    text = await fs.promises.readFile(file, "utf8");
   } catch {
     return undefined;
   }
@@ -198,13 +199,13 @@ function scanFile(file: string, provider: ProviderDriverKind, sinceMs: number): 
   return records;
 }
 
-function* walkJsonl(root: string): Generator<string> {
+async function* walkJsonl(root: string): AsyncGenerator<string> {
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop()!;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch {
       continue;
     }
@@ -304,49 +305,57 @@ export async function readUsageReport(
     let files = 0;
     let failed = false;
     const providerSessions = new Set<string>();
-    for (const file of present.flatMap((candidate) => [...walkJsonl(candidate)])) {
-      const records = scanFile(file, provider, input.sinceMs);
-      if (records === undefined) {
-        failed = true;
-        continue;
-      }
-      if (records.length > 0) files += 1;
-      for (const record of records) {
-        if (record.at < input.sinceMs || record.at >= input.untilMs) continue;
-        if (record.dedupe) {
-          const key = `${provider}:${record.dedupe}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
+    let walked = 0;
+    for (const candidate of present) {
+      for await (const file of walkJsonl(candidate)) {
+        // Usage reads can cover thousands of transcripts. Yield periodically so
+        // the daemon can keep answering session/browser traffic while this
+        // report is being assembled.
+        walked += 1;
+        if (walked % 32 === 0) await yieldImmediate();
+        const records = await scanFile(file, provider, input.sinceMs);
+        if (records === undefined) {
+          failed = true;
+          continue;
         }
-        providerSessions.add(record.sessionId);
-        sessions.add(`${provider}:${record.sessionId}`);
+        if (records.length > 0) files += 1;
+        for (const record of records) {
+          if (record.at < input.sinceMs || record.at >= input.untilMs) continue;
+          if (record.dedupe) {
+            const key = `${provider}:${record.dedupe}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+          }
+          providerSessions.add(record.sessionId);
+          sessions.add(`${provider}:${record.sessionId}`);
 
-        const period = input.resolution === "hour" ? String(Math.floor(record.at / HOUR_MS) * HOUR_MS) : calendar!.format(record.at);
-        const key = `${period}\0${provider}\0${record.model}`;
-        const bucket = buckets.get(key) ?? {
-          period,
-          driver: provider,
-          model: record.model,
-          tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
-          costUsd: 0,
-          priced: true,
-          allPriced: true,
-          turns: 0,
-        };
-        bucket.tokens.input += record.tokens.input;
-        bucket.tokens.output += record.tokens.output;
-        bucket.tokens.cacheRead += record.tokens.cacheRead;
-        bucket.tokens.cacheCreate += record.tokens.cacheCreate;
-        if (record.tokens.reasoning !== undefined) {
-          bucket.tokens.reasoning = (bucket.tokens.reasoning ?? 0) + record.tokens.reasoning;
+          const period = input.resolution === "hour" ? String(Math.floor(record.at / HOUR_MS) * HOUR_MS) : calendar!.format(record.at);
+          const key = `${period}\0${provider}\0${record.model}`;
+          const bucket = buckets.get(key) ?? {
+            period,
+            driver: provider,
+            model: record.model,
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 },
+            costUsd: 0,
+            priced: true,
+            allPriced: true,
+            turns: 0,
+          };
+          bucket.tokens.input += record.tokens.input;
+          bucket.tokens.output += record.tokens.output;
+          bucket.tokens.cacheRead += record.tokens.cacheRead;
+          bucket.tokens.cacheCreate += record.tokens.cacheCreate;
+          if (record.tokens.reasoning !== undefined) {
+            bucket.tokens.reasoning = (bucket.tokens.reasoning ?? 0) + record.tokens.reasoning;
+          }
+          const cost =
+            record.costUsd ??
+            priceTokens(rates, record.model, record.tokens, record.cacheCreate1h !== undefined ? { cacheCreate1h: record.cacheCreate1h } : {});
+          bucket.costUsd += cost ?? 0;
+          bucket.allPriced = bucket.allPriced && cost !== undefined;
+          bucket.turns += 1;
+          buckets.set(key, bucket);
         }
-        const cost =
-          record.costUsd ??
-          priceTokens(rates, record.model, record.tokens, record.cacheCreate1h !== undefined ? { cacheCreate1h: record.cacheCreate1h } : {});
-        bucket.costUsd += cost ?? 0;
-        bucket.allPriced = bucket.allPriced && cost !== undefined;
-        bucket.turns += 1;
-        buckets.set(key, bucket);
       }
     }
     sources.push({ provider, status: failed ? "failed" : "ok", path: candidates[0]!, files, sessions: providerSessions.size });
