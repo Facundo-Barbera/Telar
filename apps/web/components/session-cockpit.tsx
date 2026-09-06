@@ -902,6 +902,18 @@ export function SessionCockpit({
   const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
+  const syncSession = useRef(sessionId);
+  const syncGeneration = useRef(0);
+  const tailInFlight = useRef(false);
+
+  useEffect(() => {
+    if (syncSession.current === sessionId) return;
+    syncSession.current = sessionId;
+    syncGeneration.current += 1;
+    syncQueue.current = Promise.resolve();
+    tailInFlight.current = false;
+    cursor.current = 0;
+  }, [sessionId]);
 
   const enqueueSync = useCallback((operation: () => Promise<void>) => {
     const next = syncQueue.current.then(operation, operation);
@@ -968,10 +980,12 @@ export function SessionCockpit({
       enqueueSync(async () => {
         // Nothing to read before the first message creates the session.
         if (!sessionId) return;
+        const generation = syncGeneration.current;
         // WINDOWED: the last ten user turns, not the whole history. Opening a
         // 76-turn session used to fetch 4.5 MB of settled transcript; the rest
         // stays on the engine behind "Load earlier turns".
         const hydrated = await hydrateSession(api, sessionId, { turns: INITIAL_TURNS });
+        if (generation !== syncGeneration.current || syncSession.current !== sessionId) return;
         setSession(hydrated.session);
         setTurns(hydrated.turns);
         setItems(hydrated.items);
@@ -985,13 +999,18 @@ export function SessionCockpit({
     [enqueueSync, sessionId, remember],
   );
   const tail = useCallback(
-    () =>
-      enqueueSync(async () => {
+    () => {
+      if (tailInFlight.current) return Promise.resolve();
+      tailInFlight.current = true;
+      const flightGeneration = syncGeneration.current;
+      return enqueueSync(async () => {
         if (!sessionId) return;
+        const generation = syncGeneration.current;
         // The companion snapshot is windowed to the SAME size as hydrate's —
         // a queue event on a long session must not refetch the whole history
         // the window existed to avoid.
         const update = await tailSession(api, sessionId, cursor.current, { turns: INITIAL_TURNS });
+        if (generation !== syncGeneration.current || syncSession.current !== sessionId) return;
         // A quiet tail is still an answer — see `live`.
         live();
         if (update.events.length === 0) return;
@@ -1023,7 +1042,10 @@ export function SessionCockpit({
           // is a handful of writes per turn rather than one per delta.
           remember(sessionId, snapshot);
         }
-      }),
+      }).finally(() => {
+        if (flightGeneration === syncGeneration.current) tailInFlight.current = false;
+      });
+    },
     [enqueueSync, sessionId, remember, live],
   );
   /** One page of settled turns above the transcript, on an explicit click —
@@ -1033,7 +1055,9 @@ export function SessionCockpit({
     if (!sessionId || !before || loadingOlder) return;
     setLoadingOlder(true);
     void enqueueSync(async () => {
+      const generation = syncGeneration.current;
       const older = await loadOlderTurns(api, sessionId, before);
+      if (generation !== syncGeneration.current || syncSession.current !== sessionId) return;
       setTurns((current) => mergeRows(older.turns, current, (turn) => turn.runId));
       setItems((current) => mergeRows(older.items, current, (item) => item.id));
       setTasks((current) => mergeRows(older.tasks, current, (task) => task.id));

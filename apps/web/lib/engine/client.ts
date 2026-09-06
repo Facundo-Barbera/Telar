@@ -268,6 +268,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<GitHubMergeResult>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input),
     sessions: (projectId: string) =>
       request<{ sessions: Session[] }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/sessions`),
+    liveSessions: () => request<{ sessions: Session[]; projects: Project[] }>(fetcher, "GET", "/api/sessions/live"),
     createSession: (
       projectId: string,
       input: {

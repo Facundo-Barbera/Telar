@@ -11,7 +11,8 @@ export const runtime = "nodejs";
  */
 export async function GET() {
   try {
-    const { sessions, projects } = await (await engineClient()).liveSessions();
+    const client = await engineClient();
+    const [{ sessions }, { projects }] = await Promise.all([client.liveSessions(), client.listProjects()]);
     // DETACHMENT (docs/loom-model-v1.md): same subtraction as the per-project
     // list — loom-owned sessions do not exist on ordinary surfaces, and this
     // route is an ordinary surface.
