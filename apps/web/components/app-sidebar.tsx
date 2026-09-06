@@ -355,6 +355,7 @@ function SidebarBody() {
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
   const searchInput = useRef<HTMLInputElement>(null);
   const composing = useRef(false);
+  const loadAllRunning = useRef(false);
 
   // On a phone the rail is a sheet OVER the content, so following a link has to
   // close it — otherwise the destination is behind the thing you just used.
@@ -363,95 +364,93 @@ function SidebarBody() {
   }, [isMobile, setOpenMobile]);
 
   /**
-   * One Mac's rows: its projects, then one session read per project, in
-   * parallel, because the engine lists sessions per project and this rail's
-   * default scope is "all of them". `allSettled`, not `all`: one unreachable
-   * project must not blank the whole list — the sessions that did answer are
-   * still worth showing. Local and remote go through the same function; the
-   * only difference is the fetcher, which decides which Mac answers.
+   * One Mac's rows: the aggregate live-session read plus the project registry.
+   * This used to ask for sessions once per project on every poll; on a machine
+   * with several projects or a remote host, the rail itself became background
+   * traffic. The aggregate route keeps the list one read per Mac.
    */
   const loadHost = useCallback(async (host: { id: string; name: string } | undefined) => {
     const hostApi = host ? createEngineApi(hostFetcher(host.id)) : api;
-    const result = await hostApi.projects();
+    const result = await hostApi.liveSessions();
     const names = new Map(result.projects.map((project) => [project.id, project.name]));
     // The checkout's current branch, for the local sessions that share it —
     // they have no branch of their own. Derived per project by the engine.
     const branches = new Map(result.projects.map((project) => [project.id, project.branch]));
     const icons = new Map(result.projects.map((project) => [project.id, project.icon]));
-    const pages = await Promise.allSettled(result.projects.map((project) => hostApi.sessions(project.id)));
-    const sessions = pages.flatMap((page) =>
-      page.status === "fulfilled"
-        ? page.value.sessions.map((session) =>
-            // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
-            // project-scoped list and the Spool's master chat is a
-            // destination, not a conversation in it — the engine's reads
-            // already exclude it, and this keeps that true if one ever
-            // arrives by another path.
-            toSidebarSession(
-              session,
-              session.projectId ? names.get(session.projectId) : undefined,
-              session.projectId ? branches.get(session.projectId) : undefined,
-              session.projectId ? icons.get(session.projectId) : undefined,
-              host,
-            ),
-          )
-        : [],
+    const sessions = result.sessions.map((session) =>
+      // A PROJECT-LESS SESSION IS NOT A ROW HERE. The rail is a
+      // project-scoped list and the Spool's master chat is a destination, not a
+      // conversation in it — the aggregate route already excludes it, and this
+      // keeps that true if one ever arrives by another path.
+      toSidebarSession(
+        session,
+        session.projectId ? names.get(session.projectId) : undefined,
+        session.projectId ? branches.get(session.projectId) : undefined,
+        session.projectId ? icons.get(session.projectId) : undefined,
+        host,
+      ),
     );
     return { projects: result.projects, sessions };
   }, []);
 
   const loadAll = useCallback(async () => {
-    // localStorage is synchronous and this runs off the render path, so the
-    // cache is read fresh per pass rather than held in state — nothing else
-    // writes it, and a stale copy here would be the one bug this feature has.
-    const cache = typeof window === "undefined" ? {} : readSidebarCache();
-    // The book first, and never fatal: a cockpit with no remotes (or one whose
-    // pairing store is unreadable) is the ordinary local cockpit.
-    const book = await api.hosts().then((answer) => answer.hosts).catch(() => [] as PublicHost[]);
-    setHosts(book);
-    const [local, ...remotes] = await Promise.allSettled([loadHost(undefined), ...book.map((host) => loadHost({ id: host.id, name: host.name }))]);
-    if (local.status !== "fulfilled") {
-      setUnavailable(true);
-      // WHAT WAS THERE A MOMENT AGO, dimmed, rather than an empty rail. The
-      // empty state below still speaks for a browser that never got a read in.
-      const remembered = staleRows(cache, LOCAL_HOST);
-      if (remembered.length > 0) {
-        setSessions(remembered);
-        // The bands need a clock; without one every remembered row would date
-        // from the epoch and land on the settled shelf.
-        setRenderedAt(Date.now());
+    if (loadAllRunning.current) return;
+    loadAllRunning.current = true;
+    try {
+      // localStorage is synchronous and this runs off the render path, so the
+      // cache is read fresh per pass rather than held in state — nothing else
+      // writes it, and a stale copy here would be the one bug this feature has.
+      const cache = typeof window === "undefined" ? {} : readSidebarCache();
+      // The book first, and never fatal: a cockpit with no remotes (or one whose
+      // pairing store is unreadable) is the ordinary local cockpit.
+      const book = await api.hosts().then((answer) => answer.hosts).catch(() => [] as PublicHost[]);
+      setHosts(book);
+      const [local, ...remotes] = await Promise.allSettled([loadHost(undefined), ...book.map((host) => loadHost({ id: host.id, name: host.name }))]);
+      if (local.status !== "fulfilled") {
+        setUnavailable(true);
+        // WHAT WAS THERE A MOMENT AGO, dimmed, rather than an empty rail. The
+        // empty state below still speaks for a browser that never got a read in.
+        const remembered = staleRows(cache, LOCAL_HOST);
+        if (remembered.length > 0) {
+          setSessions(remembered);
+          // The bands need a clock; without one every remembered row would date
+          // from the epoch and land on the settled shelf.
+          setRenderedAt(Date.now());
+        }
+        return;
       }
-      return;
-    }
-    setUnavailable(false);
-    setProjects(local.value.projects);
-    const away = new Set<string>();
-    const remoteSessions: SidebarSession[] = [];
-    // Each Mac's last read, kept so a host going away dims its rows instead
-    // of vanishing them. The local engine writes under LOCAL_HOST; every
-    // remote writes under its own id — one host's rows never touch another's.
-    let next = rememberRows(cache, LOCAL_HOST, local.value.sessions);
-    remotes.forEach((page, index) => {
-      const host = book[index]!;
-      if (page.status === "fulfilled") {
-        next = rememberRows(next, host.id, page.value.sessions);
-        remoteSessions.push(...page.value.sessions);
-      } else {
-        away.add(host.id);
+      setUnavailable(false);
+      setProjects(local.value.projects);
+      const away = new Set<string>();
+      const remoteSessions: SidebarSession[] = [];
+      // Each Mac's last read, kept so a host going away dims its rows instead
+      // of vanishing them. The local engine writes under LOCAL_HOST; every
+      // remote writes under its own id — one host's rows never touch another's.
+      let next = rememberRows(cache, LOCAL_HOST, local.value.sessions);
+      remotes.forEach((page, index) => {
+        const host = book[index]!;
+        if (page.status === "fulfilled") {
+          next = rememberRows(next, host.id, page.value.sessions);
+          remoteSessions.push(...page.value.sessions);
+        } else {
+          away.add(host.id);
+        }
+      });
+      writeSidebarCache(next);
+      // A host that did not answer keeps its LAST rows, dimmed under its retry
+      // line — read out of the cache on the pass that noticed it was away.
+      const remembered = new Map<string, SidebarSession[]>();
+      for (const id of away) {
+        const rows = staleRows(cache, id);
+        if (rows.length > 0) remembered.set(id, rows);
       }
-    });
-    writeSidebarCache(next);
-    // A host that did not answer keeps its LAST rows, dimmed under its retry
-    // line — read out of the cache on the pass that noticed it was away.
-    const remembered = new Map<string, SidebarSession[]>();
-    for (const id of away) {
-      const rows = staleRows(cache, id);
-      if (rows.length > 0) remembered.set(id, rows);
+      setStaleByHost(remembered);
+      setUnreachable(away);
+      setSessions([...local.value.sessions, ...remoteSessions]);
+      setRenderedAt(Date.now());
+    } finally {
+      loadAllRunning.current = false;
     }
-    setStaleByHost(remembered);
-    setUnreachable(away);
-    setSessions([...local.value.sessions, ...remoteSessions]);
-    setRenderedAt(Date.now());
   }, [loadHost]);
 
   useEffect(() => {
