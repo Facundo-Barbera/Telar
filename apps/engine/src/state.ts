@@ -125,8 +125,8 @@ import {
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
-import { findProjectIcon, type ProjectIcon } from "./project-icon";
-import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from "./files";
+import { findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
+import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, writeWorkspaceFile } from "./files";
 import {
   addSubtask as addSpoolSubtask,
   agentsAddedCount as spoolAgentsAdded,
@@ -199,7 +199,7 @@ import { createNote, listNotes, retireNote, updateNote, type NewSpoolNote, type 
 import { renameSpoolTag as renameSpoolTagInStore, spoolTags as spoolTagsList, type SpoolTagUsage } from "./spool/tags";
 import { searchSpool } from "./spool/search";
 import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRecord, type OAuthClientStore } from "./mcp-oauth";
-import { commitSessionWork, gitOverview, sessionDiff, sessionFilePatch, type GitOverview } from "./git";
+import { commitSessionWork, gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync, type GitOverview } from "./git";
 import { ensureTelarGitignore } from "./gitignore";
 import {
   DEFAULT_ISSUE_FILTER,
@@ -216,7 +216,7 @@ import {
 import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
-import { createSessionWorktree, defaultGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
+import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
@@ -1156,6 +1156,7 @@ export class EngineStore {
   private readonly readModels: typeof readModelCatalogue;
   private readonly manifest: ModelManifest;
   private readonly git: GitRunner;
+  private readonly asyncGit: AsyncGitRunner;
   private readonly gh: GhRunner;
   /** In memory and never persisted: it is a cache of somebody else's state, and
    *  a stale one surviving a restart would be worse than a slow first read. */
@@ -3485,6 +3486,7 @@ export class EngineStore {
     options: {
       notifier?: EngineNotifier;
       git?: GitRunner;
+      asyncGit?: AsyncGitRunner;
       gh?: GhRunner;
       /** Resolves Telar's computer-use backend (cua-driver, or Sky). INJECTED
        *  BY THE DAEMON, absent by default — so tests never read the real
@@ -3506,6 +3508,7 @@ export class EngineStore {
     this.manifest = options.manifest ?? BUNDLED_MANIFEST;
     this.computerUse = options.computerUse;
     this.git = options.git ?? defaultGitRunner;
+    this.asyncGit = options.asyncGit ?? (options.git ? async (cwd, args, opts) => options.git!(cwd, args, opts) : defaultAsyncGitRunner);
     this.gh = options.gh ?? defaultGhRunner;
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
@@ -3540,46 +3543,56 @@ export class EngineStore {
     return icon;
   }
 
+  async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
+    const project = this.getProject(projectId);
+    const cached = this.projectIconCache.get(project.id);
+    const icon = cached && this.now() - cached.at < 60_000
+      ? cached.icon : await findProjectIconAsync(project.root);
+    if (!icon) throw new EngineStateError("not_found", "this project has no icon");
+    return icon;
+  }
+
   listProjects(): Project[] {
     const registry = readJson(this.paths.projects);
     if (registry === undefined) return [];
     return structuredClone(parseRegistry(registry).projects).map((project) => {
-      /**
-       * DERIVED HERE, NOT STORED, exactly as `Session.activity` is: HEAD moves,
-       * and a branch written into the registry would be wrong the first time
-       * anybody switched. One `git rev-parse` per project — there are a handful
-       * — is what a sidebar needs to tell a local session where its work lands.
-       *
-       * A DETACHED HEAD ANSWERS "HEAD", which is not a branch and is not worth
-       * showing; an unversioned directory answers non-zero. Both leave the
-       * field absent rather than inventing a name.
-       */
       return { ...project, ...this.projectMetadata(project) };
     });
   }
 
-  /**
-   * The derived fields — branch and icon — or NOTHING, never a missing project.
-   *
-   * `listProjects` is the sidebar and the session list; a project whose
-   * checkout cannot answer right now (a stalled `git`, an unreadable tree) must
-   * still appear, or a person's whole project disappears because a label could
-   * not be computed. The git call is bounded SHORTER than the runner's default:
-   * this runs synchronously on the poll path, once per project, and a stall
-   * here is the daemon not answering anything else meanwhile.
-   */
+  /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
+   * branch/icon labels arrive on the next poll without blocking worker heartbeats. */
+  private readonly projectMetadataCache = new Map<string, {
+    root: string; at: number; value: Pick<Project, "branch" | "icon">; pending?: Promise<void>;
+  }>();
+
   private projectMetadata(project: Project): Pick<Project, "branch" | "icon"> {
-    try {
-      const head = this.git(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 });
-      const branch = head.status === 0 ? head.stdout.trim() : "";
-      const icon = this.projectIcon(project);
-      return {
-        ...(branch && branch !== "HEAD" ? { branch } : {}),
-        ...(icon ? { icon: icon.etag } : {}),
-      };
-    } catch {
-      return {};
+    let entry = this.projectMetadataCache.get(project.id);
+    if (!entry || entry.root !== project.root) {
+      entry = { root: project.root, at: -Infinity, value: {} };
+      this.projectMetadataCache.set(project.id, entry);
     }
+    if (!entry.pending && this.now() - entry.at >= 10_000) {
+      const current = entry;
+      current.pending = Promise.all([
+        this.asyncGit(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 }),
+        findProjectIconAsync(project.root),
+      ]).then(([head, icon]) => {
+        if (this.projectMetadataCache.get(project.id) !== current) return;
+        const branch = head.status === 0 ? head.stdout.trim() : "";
+        current.value = {
+          ...(branch && branch !== "HEAD" ? { branch } : {}),
+          ...(icon ? { icon: icon.etag } : {}),
+        };
+        this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at: this.now() });
+      }).catch(() => {
+        // A stalled checkout must not hold up the registry or lose its row.
+      }).finally(() => {
+        current.at = this.now();
+        current.pending = undefined;
+      });
+    }
+    return entry.value;
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {
@@ -3617,27 +3630,76 @@ export class EngineStore {
     // A fresh registration must not inherit a stale "no icon" answer cached
     // for a project that briefly shared this id.
     this.projectIconCache.delete(id);
+    this.projectMetadataCache.delete(id);
     return structuredClone(project);
   }
 
   getProject(projectId: string): Project {
     assertId(projectId, "project id");
-    const project = this.listProjects().find((candidate) => candidate.id === projectId);
+    const registry = readJson(this.paths.projects);
+    const project = registry === undefined ? undefined : parseRegistry(registry).projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
-    return project;
+    return structuredClone(project);
   }
 
-  /**
-   * The project's git state, read fresh.
-   *
-   * NOT CACHED and not journalled: it describes the working tree, which changes
-   * underneath the engine constantly — an agent writing files, a human on the
-   * same checkout, a rebase in another terminal. A stale branch name in the
-   * composer's foot is worse than a slow one, because that line is what tells a
-   * person where their next message lands.
-   *
-   * Uses the store's injected runner, so a test never needs a real repository.
-   */
+  /** Coalesce polling reads and keep results briefly. Bounded so browsing patches
+   * cannot retain every file's contents for the lifetime of the engine. */
+  private readonly gitReadCache = new Map<string, { until: number; value: Promise<unknown> }>();
+
+  private cachedGitRead<T>(key: string, read: () => Promise<T>): Promise<T> {
+    for (const [oldKey, entry] of this.gitReadCache) {
+      if (this.now() >= entry.until) this.gitReadCache.delete(oldKey);
+    }
+    const cached = this.gitReadCache.get(key);
+    if (cached && this.now() < cached.until) return cached.value as Promise<T>;
+    const entry = { until: Infinity, value: Promise.resolve().then(read) as Promise<unknown> };
+    while (this.gitReadCache.size >= 64) this.gitReadCache.delete(this.gitReadCache.keys().next().value!);
+    this.gitReadCache.set(key, entry);
+    void entry.value.then(() => { entry.until = this.now() + 2_000; }, () => { if (this.gitReadCache.get(key) === entry) this.gitReadCache.delete(key); });
+    return entry.value as Promise<T>;
+  }
+
+  projectGitAsync(projectId: string): Promise<GitOverview> {
+    const project = this.getProject(projectId);
+    return this.cachedGitRead(`git:${project.root}`, () => gitOverviewAsync(this.asyncGit, project.root));
+  }
+
+  projectDiffAsync(projectId: string): Promise<SessionDiff> {
+    const project = this.getProject(projectId);
+    return this.cachedGitRead(`diff:${project.root}`, () => sessionDiffAsync(this.asyncGit, { cwd: project.root }));
+  }
+
+  sessionDiffAsync(sessionId: string): Promise<SessionDiff> {
+    const session = this.getSession(sessionId);
+    return this.cachedGitRead(`diff:${session.workspace.path}:${session.workspace.baseRef ?? ""}`, () => sessionDiffAsync(this.asyncGit, {
+      cwd: session.workspace.path,
+      ...(session.workspace.baseRef ? { baseRef: session.workspace.baseRef } : {}),
+    }));
+  }
+
+  projectFilePatchAsync(projectId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
+    const project = this.getProject(projectId);
+    return this.readFilePatchAsync(project.root, target, options);
+  }
+
+  sessionFilePatchAsync(sessionId: string, target: string, options: { untracked?: boolean } = {}): Promise<{ patch: string; binary: boolean }> {
+    const session = this.getSession(sessionId);
+    return this.readFilePatchAsync(session.workspace.path, target, options, session.workspace.baseRef);
+  }
+
+  private readFilePatchAsync(cwd: string, target: string, options: { untracked?: boolean }, baseRef?: string): Promise<{ patch: string; binary: boolean }> {
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    const resolved = path.resolve(cwd, target);
+    const prefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", "that path is outside the workspace");
+    return this.cachedGitRead(`patch:${cwd}:${baseRef ?? ""}:${resolved}:${!!options.untracked}`, () => sessionFilePatchAsync(this.asyncGit, {
+      cwd,
+      path: path.relative(cwd, resolved),
+      ...(baseRef ? { baseRef } : {}),
+      ...(options.untracked ? { untracked: true } : {}),
+    }));
+  }
+
   projectGit(projectId: string): GitOverview {
     return gitOverview(this.git, this.getProject(projectId).root);
   }
@@ -4044,6 +4106,24 @@ export class EngineStore {
    * PROJECT-SCOPED because a tree is a view of a place: the new-conversation
    * canvas has a project and no session, and the tree there is the same tree.
    */
+  projectFilesAsync(projectId: string): Promise<WorkspaceListing> {
+    const cwd = this.getProject(projectId).root;
+    return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
+  }
+
+  sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
+    const cwd = this.getSession(sessionId).workspace.path;
+    return this.cachedGitRead(`files:${cwd}`, () => listWorkspaceFilesAsync(this.asyncGit, { cwd, now: this.now() }));
+  }
+
+  projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {
+    return this.readFencedAsync(this.getProject(projectId).root, target, "project");
+  }
+
+  sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
+    return this.readFencedAsync(this.getSession(sessionId).workspace.path, target, "session workspace");
+  }
+
   projectFiles(projectId: string): WorkspaceListing {
     return listWorkspaceFiles(this.git, { cwd: this.getProject(projectId).root, now: this.now() });
   }
@@ -4106,6 +4186,22 @@ export class EngineStore {
     if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
     if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
     return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved) });
+  }
+
+  private async readFencedAsync(root: string, target: string, label: string): Promise<WorkspaceFile> {
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    const resolved = path.resolve(root, target);
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(resolved);
+    } catch {
+      throw new EngineStateError("not_found", "no such file in this workspace");
+    }
+    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
+    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
+    return readWorkspaceFileAsync({ cwd: root, path: path.relative(root, resolved) });
   }
 
   /**

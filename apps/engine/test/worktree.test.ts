@@ -11,8 +11,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
-import { createGitRunner, createSessionWorktree, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, removeSessionWorktree, WorktreeError, type GitRunner } from "../src/worktree";
-import { gitOverview } from "../src/git";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktree, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, removeSessionWorktree, WorktreeError, type GitRunner } from "../src/worktree";
+import { gitOverview, gitOverviewAsync, sessionDiff, sessionDiffAsync, sessionFilePatch, sessionFilePatchAsync } from "../src/git";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -381,4 +381,57 @@ test("an ordinary failure is still an ordinary failure, and the default runner i
   expect(result.timedOut).toBeUndefined();
   expect(result.stderr).toContain("not a git repository");
   expect(DEFAULT_GIT_TIMEOUT_MS).toBeGreaterThan(0);
+});
+
+
+test("async git deadlines do not block timers and missing binaries return failures", async () => {
+  const run = createAsyncGitRunner({ gitBin: process.execPath, defaultTimeoutMs: 150 });
+  let heartbeat = false;
+  const tick = setTimeout(() => { heartbeat = true; }, 10);
+  const result = await run(process.cwd(), ["-e", "setTimeout(() => {}, 60000)"]);
+  clearTimeout(tick);
+  expect(heartbeat).toBe(true);
+  expect(result.status).toBe(GIT_TIMEOUT_STATUS);
+  expect(result.timedOut).toBe(true);
+  const missing = await createAsyncGitRunner({ gitBin: "/nonexistent/telar-git" })(process.cwd(), []);
+  expect(missing.status).not.toBe(0);
+  expect(missing.stderr).not.toBe("");
+});
+
+test("async git pool expires queued reads without spawning them and recovers capacity", async () => {
+  const root = tmp("telar-git-pool-");
+  const marker = path.join(root, "should-not-run");
+  const run = createAsyncGitRunner({ gitBin: process.execPath, concurrency: 1 });
+  const stalled = run(root, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 250 });
+  const queued = run(root, ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], { timeoutMs: 50 });
+  expect((await queued).timedOut).toBe(true);
+  expect(fs.existsSync(marker)).toBe(false);
+  expect((await stalled).timedOut).toBe(true);
+  const recovered = await run(root, ["-e", "process.stdout.write('ready')"], { timeoutMs: 2000 });
+  expect(recovered).toEqual({ status: 0, stdout: "ready", stderr: "" });
+  expect(fs.existsSync(marker)).toBe(false);
+});
+
+test("async git reads preserve overview and review data for committed and untracked changes", async () => {
+  const root = repo();
+  const base = defaultGitRunner(root, ["rev-parse", "HEAD"]).stdout.trim();
+  fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\n");
+  defaultGitRunner(root, ["commit", "-am", "second"]);
+  fs.writeFileSync(path.join(root, "README.md"), "hello\ncommitted\nworking\n");
+  fs.writeFileSync(path.join(root, "new.txt"), "new file\n");
+  const input = { cwd: root, baseRef: base };
+  expect(await gitOverviewAsync(defaultAsyncGitRunner, root)).toEqual(gitOverview(defaultGitRunner, root));
+  const diff = await sessionDiffAsync(defaultAsyncGitRunner, input);
+  expect(diff).toEqual(sessionDiff(defaultGitRunner, input));
+  expect(diff.commits).toHaveLength(1);
+  expect(diff.files.map(file => file.path)).toEqual(["new.txt", "README.md"].sort((a, b) => a.localeCompare(b)));
+  for (const patchInput of [
+    { ...input, path: "README.md" },
+    { ...input, path: "new.txt", untracked: true },
+    { ...input, baseRef: "deleted-base", path: "README.md" },
+  ]) {
+    const patch = await sessionFilePatchAsync(defaultAsyncGitRunner, patchInput);
+    expect(patch).toEqual(sessionFilePatch(defaultGitRunner, patchInput));
+    expect(patch.patch).not.toBe("");
+  }
 });

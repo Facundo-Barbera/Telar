@@ -60,6 +60,7 @@ import {
 } from "./sessions-tools/socket";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { GhRunner } from "./github";
+import type { AsyncGitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
 type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
@@ -83,6 +84,7 @@ export type EngineDaemonOptions = {
    * actually spend somebody's rate limit. The default shells to the real `gh`.
    */
   gh?: GhRunner;
+  asyncGit?: AsyncGitRunner;
   /**
    * Run a worker inside the daemon process.
    *
@@ -437,6 +439,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const store = new EngineStore(root, options.now, {
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
+    ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -453,6 +456,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const token = crypto.randomBytes(32).toString("base64url");
   const startedAt = (options.now ?? Date.now)();
   const workers = new Map<string, RegisteredWorker>();
+  // Only the registration established by our own supervisor gets process-lifetime
+  // ownership. An HTTP client cannot opt into this by choosing a worker id.
+  let embeddedRegistration: RegisteredWorker | undefined;
   const now = options.now ?? Date.now;
   const workerLeaseMs = options.workerLeaseMs ?? 15_000;
   /**
@@ -468,7 +474,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
   const pruneWorkers = (): void => {
-    const expired = [...workers.values()].filter((worker) => now() - worker.heartbeatAt > workerLeaseMs);
+    const expired = [...workers.values()].filter((worker) => worker !== embeddedRegistration && now() - worker.heartbeatAt > workerLeaseMs);
     for (const worker of expired) {
       workers.delete(worker.workerId);
       store.recoverInactiveWorker(worker.workerId);
@@ -586,7 +592,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       read: async (sessionId, after) => store.readEvents(sessionId, after),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
       stop: async (sessionId) => store.stopTurn(sessionId),
-      diff: async (sessionId) => store.sessionDiff(sessionId),
+      diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
       subscriptions: async (subscriber) => store.subscriptionsFor(subscriber),
@@ -1898,7 +1904,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       const projectGit = /^\/v2\/projects\/([^/]+)\/git$/.exec(url.pathname);
       if (request.method === "GET" && projectGit) {
-        writeJson(response, 200, { git: store.projectGit(decodeURIComponent(projectGit[1])) });
+        writeJson(response, 200, { git: await store.projectGitAsync(decodeURIComponent(projectGit[1])) });
         return;
       }
       /**
@@ -1910,7 +1916,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
       if (request.method === "GET" && projectIcon) {
-        const icon = store.projectIconFile(decodeURIComponent(projectIcon[1]));
+        const icon = await store.projectIconFileAsync(decodeURIComponent(projectIcon[1]));
         const bytes = await fs.promises.readFile(icon.path);
         response.writeHead(200, {
           "content-type": icon.contentType,
@@ -1935,11 +1941,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const target = url.searchParams.get("path");
         if (target) {
           writeJson(response, 200, {
-            file: store.projectFilePatch(projectId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+            file: await store.projectFilePatchAsync(projectId, target, { untracked: url.searchParams.get("untracked") === "1" }),
           });
           return;
         }
-        writeJson(response, 200, { diff: store.projectDiff(projectId) });
+        writeJson(response, 200, { diff: await store.projectDiffAsync(projectId) });
         return;
       }
       /** The project's own file list, for a canvas with no session — same tree,
@@ -1959,10 +1965,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         if (target) {
-          writeJson(response, 200, { file: store.projectFile(projectId, target) });
+          writeJson(response, 200, { file: await store.projectFileAsync(projectId, target) });
           return;
         }
-        writeJson(response, 200, { listing: store.projectFiles(projectId) });
+        writeJson(response, 200, { listing: await store.projectFilesAsync(projectId) });
         return;
       }
       const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
@@ -2615,11 +2621,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const target = url.searchParams.get("path");
           if (target) {
             writeJson(response, 200, {
-              file: store.sessionFilePatch(session.sessionId, target, { untracked: url.searchParams.get("untracked") === "1" }),
+              file: await store.sessionFilePatchAsync(session.sessionId, target, { untracked: url.searchParams.get("untracked") === "1" }),
             });
             return;
           }
-          writeJson(response, 200, { diff: store.sessionDiff(session.sessionId) });
+          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId) });
           return;
         }
         /**
@@ -2630,10 +2636,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (request.method === "GET" && session.tail === "/files") {
           const target = url.searchParams.get("path");
           if (target) {
-            writeJson(response, 200, { file: store.sessionFile(session.sessionId, target) });
+            writeJson(response, 200, { file: await store.sessionFileAsync(session.sessionId, target) });
             return;
           }
-          writeJson(response, 200, { listing: store.sessionFiles(session.sessionId) });
+          writeJson(response, 200, { listing: await store.sessionFilesAsync(session.sessionId) });
           return;
         }
         /**
@@ -2898,27 +2904,30 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const freshWorkerId = () => `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       let workerId = config.workerId ?? freshWorkerId();
       let generation = 0;
-      /**
-       * SUPERVISED LIKE THE OUT-OF-PROCESS WORKER. A stalled event loop (a
-       * synchronous git child, say) misses heartbeats, the pruner evicts the
-       * registration, and the next beat answers `worker_unavailable`. That is
-       * a connection loss: the old worker stops (its claims were already
-       * requeued by the prune, its driver is disposed) and a NEW worker with a
-       * NEW id registers — never the old id over the old claims. The browser
-       * and its socket stay the daemon's and are handed to each worker.
-       */
+      // The embedded worker shares this event loop: a late heartbeat cannot
+      // distinguish a dead worker from a stalled daemon. Its supervisor owns
+      // liveness; remote workers still need the ordinary heartbeat lease.
       const socket = browserSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
-        connect: async () => new EngineClient(discovery),
+        connect: async () => {
+          const client = new EngineClient(discovery);
+          const register = client.registerWorker.bind(client);
+          client.registerWorker = async (id) => {
+            const result = await register(id);
+            embeddedRegistration = workers.get(id);
+            return result;
+          };
+          return client;
+        },
         createWorker: async (client, onConnectionLost) => {
           generation += 1;
           if (generation > 1) {
             workerId = freshWorkerId();
-            process.stderr.write(`[telar] embedded worker lost its lease; re-registering as ${workerId}\n`);
+            process.stderr.write(`[telar] embedded worker lost its connection; re-registering as ${workerId}\n`);
           }
           const driver = initialDriver ?? (await createDriver());
           initialDriver = undefined;
-          return new EngineWorker({
+          const worker = new EngineWorker({
             client,
             workerId,
             driver,
@@ -2927,6 +2936,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
             onConnectionLost,
           });
+          const stop = worker.stop.bind(worker);
+          const ownedWorkerId = workerId;
+          worker.stop = async () => {
+            // A stopped/replaced generation must not leave an immortal entry,
+            // nor clear the ownership of a later generation.
+            if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
+            await stop();
+          };
+          return worker;
         },
         pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         ...(config.pollMs === undefined ? {} : { retryMs: config.pollMs }),

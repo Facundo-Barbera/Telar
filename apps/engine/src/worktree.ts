@@ -24,7 +24,7 @@
  * a sibling of core's.
  */
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -43,9 +43,9 @@ export type GitRunOptions = {
 export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) => GitResult;
 
 /**
- * EVERY GIT CHILD IS BOUNDED. The runner is synchronous — `listProjects` calls
- * it on the sidebar's poll path, inside the daemon's event loop — so a child
- * that never returns is a daemon that never answers anything again. Measured:
+ * EVERY GIT CHILD IS BOUNDED. The synchronous runner remains for mutation
+ * paths; polling uses the asynchronous runner below. Previously listProjects
+ * called this in the daemon event loop, freezing all requests. Measured:
  * a `git rev-parse --abbrev-ref HEAD` on a project under ~/Documents blocked for
  * minutes in the kernel (`__getcwd` → `__open_nocancel`), and every
  * `GET /api/projects` timed out behind it until that one process was killed.
@@ -102,6 +102,60 @@ function gitTimeoutFromEnv(): number {
 }
 
 export const defaultGitRunner: GitRunner = createGitRunner();
+
+export type AsyncGitRunner = (cwd: string, args: string[], options?: GitRunOptions) => Promise<GitResult>;
+
+/** Read paths share a small process pool so polling cannot flood the machine.
+ * The deadline includes queue time, and completion never waits on a stuck child.
+ */
+export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: number } = {}): AsyncGitRunner {
+  const requestedLimit = deps.concurrency ?? 4;
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.floor(requestedLimit)) : 4;
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return (cwd, args, options) => new Promise((resolve) => {
+    const requested = options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv();
+    const timeout = Number.isFinite(requested) ? Math.max(1, requested) : DEFAULT_GIT_TIMEOUT_MS;
+    let settled = false;
+    let child: ReturnType<typeof execFile> | undefined;
+    const finish = (result: GitResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      const index = queue.indexOf(start);
+      if (index !== -1) queue.splice(index, 1);
+      child?.kill("SIGKILL");
+      finish({ status: GIT_TIMEOUT_STATUS, stdout: "", stderr: `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed`, timedOut: true });
+    }, timeout);
+    const start = () => {
+      if (settled) return;
+      active++;
+      const release = () => {
+        active--;
+        queue.shift()?.();
+      };
+      try {
+        child = execFile(deps.gitBin ?? "git", args, {
+          cwd, encoding: "utf8", maxBuffer: 1024 * 1024, killSignal: "SIGKILL",
+        }, (error, stdout, stderr) => {
+          release();
+          finish({ status: error ? (typeof error.code === "number" ? error.code : 1) : 0, stdout, stderr: stderr || (error ? String(error) : "") });
+        });
+      } catch (error) {
+        release();
+        finish({ status: 1, stdout: "", stderr: String(error) });
+      }
+    };
+    if (active < limit) start();
+    else queue.push(start);
+  });
+}
+
+export const defaultAsyncGitRunner: AsyncGitRunner = createAsyncGitRunner();
+
 
 export class WorktreeError extends Error {
   constructor(message: string) {

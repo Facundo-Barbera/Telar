@@ -28,7 +28,7 @@
  * foot a failure state for a configuration the engine supports on purpose.
  */
 import type { GitChangeStatus, GitCommitEntry, GitFileChange, SessionDiff } from "@telar/engine-client";
-import type { GitRunner } from "./worktree.js";
+import type { AsyncGitRunner, GitRunner } from "./worktree.js";
 
 export type GitWorktreeEntry = {
   path: string;
@@ -503,6 +503,132 @@ export function gitOverview(git: GitRunner, projectRoot: string): GitOverview {
   const worktrees = git(projectRoot, ["worktree", "list", "--porcelain"]);
   const refs = listGitRefs(git, projectRoot);
   const defaultBase = defaultRemoteBase(git, projectRoot, refs);
+
+  return {
+    repository: true,
+    ...(branch ? { branch } : {}),
+    dirtyFiles,
+    ...(divergence ?? {}),
+    worktrees: worktrees.status === 0 ? parseWorktreeList(worktrees.stdout, projectRoot) : [],
+    refs,
+    ...(defaultBase ? { defaultBase } : {}),
+  };
+}
+
+/** Nonblocking read counterpart; uses the same parsers and fallback semantics above. */
+export async function sessionDiffAsync(git: AsyncGitRunner, input: { cwd: string; baseRef?: string }): Promise<SessionDiff> {
+  const { cwd, baseRef } = input;
+  const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") {
+    return { repository: false, workspacePath: cwd, files: [], commits: [], linesAdded: 0, linesRemoved: 0, truncated: false };
+  }
+
+  const head = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const raw = head.status === 0 ? head.stdout.trim() : "";
+  const branch = raw && raw !== "HEAD" ? raw : undefined;
+
+
+  const resolved = baseRef && (await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef])).status === 0 ? baseRef : undefined;
+  const against = resolved ?? "HEAD";
+
+  const numstat = await git(cwd, ["diff", "-z", "--numstat", "--find-renames", against, "--"]);
+  const nameStatus = await git(cwd, ["diff", "-z", "--name-status", "--find-renames", against, "--"]);
+  const statuses = nameStatus.status === 0 ? parseNameStatus(nameStatus.stdout) : new Map<string, GitChangeStatus>();
+  const tracked: GitFileChange[] = (numstat.status === 0 ? parseNumstat(numstat.stdout) : []).map((entry) => ({
+    path: entry.path,
+    status: statuses.get(entry.path) ?? "modified",
+    ...(entry.renamedFrom ? { renamedFrom: entry.renamedFrom } : {}),
+    ...(entry.added === undefined ? {} : { linesAdded: entry.added }),
+    ...(entry.removed === undefined ? {} : { linesRemoved: entry.removed }),
+    ...(entry.binary ? { binary: true } : {}),
+  }));
+
+  const status = await git(cwd, ["status", "--porcelain", "-z", "-uall"]);
+  const untracked: GitFileChange[] = (status.status === 0 ? parseUntracked(status.stdout) : []).map((path) => ({
+    path,
+    status: "untracked" as const,
+  }));
+
+  const log = resolved ? (await git(cwd, ["log", `--format=${GIT_LOG_FORMAT}`, `${resolved}..HEAD`])) : undefined;
+  const commits = log?.status === 0 ? parseGitLog(log.stdout) : [];
+
+  const tracking = await git(cwd, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+  const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
+
+  const all = [...tracked, ...untracked].sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    repository: true,
+    workspacePath: cwd,
+    ...(branch ? { branch } : {}),
+    ...(resolved ? { base: resolved } : {}),
+    ...(divergence ?? {}),
+    files: all.slice(0, MAX_REVIEW_FILES),
+    commits,
+    linesAdded: all.reduce((sum, file) => sum + (file.linesAdded ?? 0), 0),
+    linesRemoved: all.reduce((sum, file) => sum + (file.linesRemoved ?? 0), 0),
+    truncated: all.length > MAX_REVIEW_FILES,
+  };
+}
+
+export async function sessionFilePatchAsync(
+  git: AsyncGitRunner,
+  input: { cwd: string; baseRef?: string; path: string; untracked?: boolean },
+): Promise<{ patch: string; binary: boolean }> {
+  const { cwd, baseRef, path: target } = input;
+  const against = baseRef && (await git(cwd, ["rev-parse", "--verify", "--quiet", baseRef])).status === 0 ? baseRef : "HEAD";
+  const result = input.untracked
+    ? (await git(cwd, ["diff", "--no-index", "--unified=3", "--", "/dev/null", target]))
+    : (await git(cwd, ["diff", "--unified=3", against, "--", target]));
+  if (result.status !== 0 && result.status !== 1) return { patch: "", binary: false };
+  const patch = result.stdout;
+  return { patch, binary: /^Binary files .* differ$/m.test(patch) };
+}
+
+export async function listGitRefsAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitRefEntry[]> {
+
+  const half = async (namespace: string, kind: GitRefEntry["kind"]): Promise<GitRefEntry[]> => {
+    const listed = await git(projectRoot, ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%09%(HEAD)", namespace]);
+    if (listed.status !== 0) return [];
+    const refs: GitRefEntry[] = [];
+    for (const line of listed.stdout.split("\n")) {
+      if (!line.trim()) continue;
+      const [name = "", headMark = ""] = line.split("\t");
+      if (!name || name.endsWith("/HEAD")) continue;
+      refs.push({ name, kind, ...(headMark.trim() === "*" ? { head: true } : {}) });
+      if (refs.length >= MAX_REFS) break;
+    }
+    return refs;
+  };
+  return [...await half("refs/heads", "local"), ...await half("refs/remotes", "remote")].slice(0, MAX_REFS);
+}
+
+export async function defaultRemoteBaseAsync(git: AsyncGitRunner, projectRoot: string, refs: GitRefEntry[]): Promise<string | undefined> {
+  const pointed = await git(projectRoot, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]);
+  if (pointed.status === 0) {
+    const name = pointed.stdout.trim().replace(/^refs\/remotes\//, "");
+    if (name && refs.some((ref) => ref.kind === "remote" && ref.name === name)) return name;
+  }
+  for (const guess of ["origin/main", "origin/master"]) {
+    if (refs.some((ref) => ref.kind === "remote" && ref.name === guess)) return guess;
+  }
+  return undefined;
+}
+
+export async function gitOverviewAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitOverview> {
+  const inside = await git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") return EMPTY;
+  const head = await git(projectRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const raw = head.status === 0 ? head.stdout.trim() : "";
+  const branch = raw && raw !== "HEAD" ? raw : undefined;
+
+  const status = await git(projectRoot, ["status", "--porcelain"]);
+  const dirtyFiles = status.status === 0 ? countDirty(status.stdout) : 0;
+  const tracking = await git(projectRoot, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
+  const divergence = tracking.status === 0 ? parseAheadBehind(tracking.stdout) : undefined;
+
+  const worktrees = await git(projectRoot, ["worktree", "list", "--porcelain"]);
+  const refs = await listGitRefsAsync(git, projectRoot);
+  const defaultBase = await defaultRemoteBaseAsync(git, projectRoot, refs);
 
   return {
     repository: true,

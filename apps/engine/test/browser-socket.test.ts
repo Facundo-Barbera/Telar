@@ -265,6 +265,20 @@ test("a browser whose state cannot be read still lets the tool call succeed", as
   expect(answer.result.isError).toBeUndefined();
 });
 
+test("a stalled state reporter cannot strand an already successful browser action", async () => {
+  const socket = makeSocket(fakeCapability({
+    state: async () => ({ provider: "headless", tabs: [] }),
+  }));
+  const lease = await socket.bind({
+    scopeKey: "s",
+    onNavigated: () => new Promise<void>(() => {}),
+  });
+  const answer = await (await rpc(lease.url, lease.token, call("browser_navigate", { url: "http://x" }))).json() as {
+    result: { isError?: boolean };
+  };
+  expect(answer.result.isError).toBeUndefined();
+});
+
 test("the listener is LAZY: a socket never bound opens no port", async () => {
   const socket = makeSocket(fakeCapability());
   expect(socket.url).toBeUndefined();
