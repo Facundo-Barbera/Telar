@@ -24,7 +24,7 @@ const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
-const { ExtensionHost } = require("./extension-host");
+const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
 const { readMapping: readProfileMapping, partitionFor } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
@@ -928,13 +928,13 @@ function createWindow(url) {
  * THE 1PASSWORD EXTENSION, ONE HOST PER PARTITION (per project profile). The
  * manager calls this the first time a partition gets a tab; the host loads
  * lazily and the tab-wake path waits for it before the first navigation.
- * Dev builds and the dev shell only for now (TELAR_EXTENSIONS=1 forces it
- * elsewhere); the nightly is untouched. Failures land in `status()` and the
+ * Enabled in Dev and personal nightly builds; TELAR_EXTENSIONS=0 disables it
+ * for troubleshooting, and =1 opts other builds in. Failures land in `status()` and the
  * panel shows them — never a silent blank. Returns null when extensions are
  * off, so the manager simply proceeds without one.
  */
 function startExtensionHost(win, manager, partition) {
-  const wanted = DEV_BUILD || !app.isPackaged || process.env.TELAR_EXTENSIONS === "1";
+  const wanted = extensionsEnabled({ dev: DEV_BUILD, packaged: app.isPackaged, version: app.getVersion(), override: process.env.TELAR_EXTENSIONS });
   if (!wanted || SMOKE) return null;
   const ses = session.fromPartition(partition);
   const host = new ExtensionHost(ses, {

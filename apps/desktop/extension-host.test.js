@@ -87,3 +87,20 @@ describe("extension download hardening", () => {
     expect(MAX_DOWNLOAD_BYTES).toBeLessThanOrEqual(64 * 1024 * 1024);
   });
 });
+
+
+describe("extension release channel policy", () => {
+  const { extensionsEnabled } = require("./extension-host");
+  const release = { dev: false, packaged: true, version: "0.1.0-nightly.20260906.1" };
+  test("personal nightlies include extensions; beta and stable remain opt-in", () => {
+    expect(extensionsEnabled(release)).toBe(true);
+    expect(extensionsEnabled({ ...release, version: "0.1.0-beta.1" })).toBe(false);
+    expect(extensionsEnabled({ ...release, version: "0.1.0" })).toBe(false);
+    expect(extensionsEnabled({ ...release, version: "0.1.0", override: "1" })).toBe(true);
+  });
+  test("explicit disable wins even in Dev; dev shells otherwise remain enabled", () => {
+    expect(extensionsEnabled({ ...release, dev: true, override: "0" })).toBe(false);
+    expect(extensionsEnabled({ ...release, version: "0.1.0", dev: true })).toBe(true);
+    expect(extensionsEnabled({ ...release, version: "0.1.0", packaged: false })).toBe(true);
+  });
+});

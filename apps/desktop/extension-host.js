@@ -529,4 +529,10 @@ class ExtensionHost {
   }
 }
 
-module.exports = { ExtensionHost, ONE_PASSWORD, download, MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT_MS, classifyWorkerError, WORKER_ERROR_CLASSES, clampRect, popupRegion, readIconDataUrl };
+// Nightlies are for the owner's personal use. Beta/stable remain opt-in.
+function extensionsEnabled({ dev, packaged, version, override }) {
+  if (override === "0") return false;
+  return override === "1" || dev || !packaged || /^\d+\.\d+\.\d+-nightly\./.test(version);
+}
+
+module.exports = { extensionsEnabled, ExtensionHost, ONE_PASSWORD, download, MAX_DOWNLOAD_BYTES, DOWNLOAD_TIMEOUT_MS, classifyWorkerError, WORKER_ERROR_CLASSES, clampRect, popupRegion, readIconDataUrl };
