@@ -29,6 +29,7 @@ import {
   type ComputerUseStatus,
   type InboxPolicy,
   type SessionDefaults,
+  type SidebarLayout,
   type TextGenPolicy,
   type UsageReport,
   type UsageResolution,
@@ -325,6 +326,16 @@ export class EngineClient {
 
   setSessionDefaults(patch: { envMode?: EnvMode }): Promise<{ sessionDefaults: SessionDefaults }> {
     return this.request("PATCH", "/v2/session-defaults", patch);
+  }
+
+  /** Where each project group sits in the rail — see `SidebarLayout`.
+   *  Environment-wide, like the inbox rule above. */
+  sidebarLayout(): Promise<{ layout: SidebarLayout }> {
+    return this.request("GET", "/v2/sidebar-layout");
+  }
+
+  setSidebarLayout(patch: { projectOrder?: string[] }): Promise<{ layout: SidebarLayout }> {
+    return this.request("PATCH", "/v2/sidebar-layout", patch);
   }
 
   /**

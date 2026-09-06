@@ -2002,6 +2002,35 @@ test("the standing session defaults round-trip, and refuse a mode that is not on
   expect(store.getSessionDefaults()).toEqual({ envMode: "worktree" });
 });
 
+test("the sidebar layout round-trips, dedupes, and refuses a shape that is not a list of keys", () => {
+  // WHERE EACH PROJECT GROUP SITS. Empty by default — the rail reads that as
+  // "alphabetical, nobody has moved anything" — and on the engine so the
+  // desktop shell, a browser tab and a paired phone draw one arrangement.
+  const { store } = readyStore();
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: [] });
+
+  expect(store.setSidebarLayout({ projectOrder: ["b", "h1:a", "a"] })).toEqual({ projectOrder: ["b", "h1:a", "a"] });
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["b", "h1:a", "a"] });
+  // An empty patch changes nothing rather than resetting anything.
+  expect(store.setSidebarLayout({})).toEqual({ projectOrder: ["b", "h1:a", "a"] });
+  // A key said twice is kept once, at its first position.
+  expect(store.setSidebarLayout({ projectOrder: ["a", "b", "a"] })).toEqual({ projectOrder: ["a", "b"] });
+
+  for (const bad of ["a", null, [1], [""], [{ key: "a" }], Array.from({ length: 1001 }, (_, i) => `k${i}`)]) {
+    expect(() => store.setSidebarLayout({ projectOrder: bad })).toThrow(EngineStateError);
+  }
+  // …and the refusal left the stored answer alone.
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: ["a", "b"] });
+});
+
+test("a malformed sidebar-layout document costs the arrangement, never the list", () => {
+  const { store, root: stateRoot } = readyStore();
+  fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), '{"version":2,"projectOrder":"b,a"}');
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: [] });
+  fs.writeFileSync(path.join(stateRoot, "sidebar-layout.json"), "not json at all");
+  expect(store.getSidebarLayout()).toEqual({ projectOrder: [] });
+});
+
 test("a malformed session-defaults document costs the preference, never the session", () => {
   // Read on the CREATE path, which is why the never-throws rule matters more
   // here than anywhere: garbage in this file must not make sessions unopenable.

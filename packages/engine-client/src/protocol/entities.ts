@@ -368,6 +368,41 @@ export type SessionDefaults = z.infer<typeof SessionDefaults>;
  *  that never opens the settings page behaves exactly as it always has. */
 export const DEFAULT_SESSION_DEFAULTS: SessionDefaults = { envMode: "local" };
 
+/** Generous: a rail with a thousand project groups has other problems. The cap
+ *  exists so a runaway client cannot grow this document without bound. */
+export const MAX_SIDEBAR_PROJECT_ORDER = 1000;
+
+/**
+ * WHERE EACH PROJECT GROUP SITS IN THE RAIL — the arrangement, kept apart from
+ * the list it arranges.
+ *
+ * The rail used to order project groups by their newest conversation, so
+ * starting one hoisted its project to the top and every other group shifted
+ * under the pointer. A group's place is now a decision: the reader drags it
+ * there, and it stays there. `projectOrder` is that decision, top to bottom,
+ * as host-qualified group keys (`lib/session-groups.ts`'s `projectGroupKey`:
+ * the bare project id for this Mac's projects, `hostId:projectId` for a paired
+ * Mac's). A group the list does not name falls in after the named ones, so a
+ * newly registered project appears at the bottom rather than in the middle of
+ * an arrangement somebody made.
+ *
+ * ON THE ENGINE, NOT IN A BROWSER, for the reason `InboxPolicy` gives: the same
+ * rail is read from the desktop shell, a browser tab and a paired phone, and an
+ * arrangement that differed between them would be one you had to redo per
+ * window. The keys are the READING cockpit's — a remote host's id is minted by
+ * the cockpit that paired it — so this is the arrangement of THIS Mac's rail,
+ * which is the only rail that can draw those groups.
+ *
+ * Absent keys are kept, not pruned: a paired Mac that is away for the afternoon
+ * keeps its slot for when it answers again.
+ */
+export const SidebarLayout = z.object({
+  projectOrder: z.array(z.string().min(1).max(200)).max(MAX_SIDEBAR_PROJECT_ORDER),
+});
+export type SidebarLayout = z.infer<typeof SidebarLayout>;
+
+export const DEFAULT_SIDEBAR_LAYOUT: SidebarLayout = { projectOrder: [] };
+
 /**
  * COMPUTER USE, MEASURED — the settings page's permission readout.
  *
