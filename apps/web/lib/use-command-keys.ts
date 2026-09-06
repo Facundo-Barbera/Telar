@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { commandKeyDestination, resolveWebCommandKeyAction, type CommandKeyId } from "@/lib/command-keys";
-import { recentSessionsForCommandKeys, sessionHref, type SidebarSession } from "@/lib/session-list";
+import { sessionHref, type SidebarSession } from "@/lib/session-list";
 
 /** The slice of the desktop bridge this needs. Declared locally, as
  *  `lib/choose-directory.ts` declares its own: a global `Window` augmentation
@@ -23,9 +23,14 @@ function desktop(): DesktopCommandKeyBridge | undefined {
  * `lib/use-command-keys.ts`.
  *
  * MOUNTED ONCE, FROM THE SIDEBAR — the one component alive on every route that
- * already holds the session list ⌘1..⌘9 needs and the current route's session
- * id. So this fetches nothing of its own and cannot disagree with what the rail
- * shows, including which row the survivor rule pinned into view.
+ * already draws the rows ⌘1..⌘9 count. It is handed those rows, TOP TO BOTTOM
+ * AS DRAWN (`railRowsForCommandKeys`), and fetches nothing of its own, so the
+ * keys cannot disagree with what the rail shows: the same scope, the same page,
+ * the same arranged groups, the same folds.
+ *
+ * THE LISTENERS ARE REGISTERED ONCE and read the latest rows through a ref. The
+ * rail re-derives its rows on every poll, and re-binding a window listener and
+ * the menu bridge per tick was churn for no change in behaviour.
  *
  * TWO SOURCES FEED ONE DISPATCH, because only one of them can see the DOM:
  *   - a `keydown` listener on window, which applies the focus rule directly
@@ -45,16 +50,16 @@ function desktop(): DesktopCommandKeyBridge | undefined {
  * never reserved, and the desktop shell (where this app actually runs) routes
  * every one of them through the menu.
  */
-export function useCommandKeys(sessions: readonly SidebarSession[], activeSessionId?: string, autoSettleAfterHours: number | null = 72) {
+export function useCommandKeys(rows: readonly SidebarSession[]) {
   const router = useRouter();
+  const recentHrefs = useRef<string[]>([]);
+  useEffect(() => {
+    recentHrefs.current = rows.map((session) => sessionHref(session));
+  });
 
   useEffect(() => {
-    const recentHrefs = recentSessionsForCommandKeys(sessions, activeSessionId, Date.now(), autoSettleAfterHours).map((session) =>
-      sessionHref(session),
-    );
-
     const run = (id: CommandKeyId) => {
-      const destination = commandKeyDestination(id, recentHrefs);
+      const destination = commandKeyDestination(id, recentHrefs.current);
       if (destination.kind === "noop") return;
       if (destination.kind === "open-tab" && !desktop()?.isDesktop) {
         window.open(destination.href, "_blank", "noopener");
@@ -76,5 +81,5 @@ export function useCommandKeys(sessions: readonly SidebarSession[], activeSessio
       window.removeEventListener("keydown", onKeyDown);
       offInvoke?.();
     };
-  }, [sessions, activeSessionId, autoSettleAfterHours, router]);
+  }, [router]);
 }

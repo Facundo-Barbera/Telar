@@ -172,3 +172,30 @@ export function groupSessions(list: Pick<SessionListResult, "pinned" | "sessions
 
   return { attention, pinned, groups: orderProjectGroups([...groups.values()], order) };
 }
+
+/**
+ * What ⌘1..⌘9 index into: the rail's own rows, TOP TO BOTTOM, AS DRAWN.
+ *
+ * The whole value of a positional shortcut is that you can predict it without
+ * looking, and the only order a reader can predict is the one on screen. So
+ * this walks the rail the way the eye does: the "Needs you" band, then pinned,
+ * then each project group in its arranged order — skipping a group that is
+ * folded, because a number on a row you cannot see is a number you cannot
+ * check. It used to count the flat list by creation time, which was the order
+ * on screen right up until the groups landed and then quietly was not.
+ *
+ * SHELVES ARE EXCLUDED. Snoozed and settled rows are, by definition, ones you
+ * said you did not want in front of you; a number key is for the rows that are.
+ *
+ * Takes the rail's OWN `groupSessions` output rather than re-deriving it, so
+ * this cannot drift from what is rendered: the same scope, the same page, the
+ * same arranged groups, the same folds. (A search flattens the rail; the
+ * caller hands over the flat result list instead.)
+ */
+export function railRowsForCommandKeys(grouped: GroupedSessions, collapsed?: ReadonlySet<string>): SidebarSession[] {
+  const rows = [...grouped.attention, ...grouped.pinned];
+  for (const group of grouped.groups) {
+    if (!collapsed?.has(group.key)) rows.push(...group.sessions);
+  }
+  return rows.slice(0, 9);
+}

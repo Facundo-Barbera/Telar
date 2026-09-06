@@ -97,7 +97,7 @@ import {
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
 import { ProjectGroupSection } from "@/components/session/project-group";
-import { groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, useCollapsedGroups } from "@/lib/session-groups";
+import { groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, railRowsForCommandKeys, useCollapsedGroups } from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
@@ -641,13 +641,18 @@ function SidebarBody() {
 
   /**
    * ⌘N, ⌘T, ⌘1..⌘9 and ⌘, — mounted HERE because this is the one component
-   * alive on every route that already holds both the session list and the
-   * active session id, so the keys and the rows they index cannot disagree.
+   * alive on every route that already draws the rows the number keys count.
+   *
+   * THE KEYS COUNT WHAT IS ON SCREEN, top to bottom: the "Needs you" band,
+   * pinned, then each project group in the reader's own order, folded groups
+   * skipped. They used to count the flat list by creation time, which stopped
+   * being the order on screen the day the groups landed. A search flattens the
+   * rail, so under a query they count the results instead.
    *
    * The desktop menu has carried these accelerators the whole time; nothing in
    * this cockpit was listening for them, so they did nothing.
    */
-  useCommandKeys(sessions, activeSessionId, autoSettleAfterHours);
+  useCommandKeys(grouped ? railRowsForCommandKeys(grouped, collapsedGroups) : list.sessions.slice(0, 9));
 
   const selectedSearchIndex = list.sessions.length ? Math.min(searchIndex, list.sessions.length - 1) : -1;
 

@@ -98,10 +98,11 @@ other key (a chord means you found what you wanted), or leave the window
 The gesture is a pure three-state machine in `lib/command-key-hints.ts` —
 tested directly, since this repo has no DOM harness — and the DOM hook
 (`lib/use-command-key-hints.ts`) is a thin translator pinned structurally
-by `command-keys-wiring.test.ts`. The jump numbers are keyed by session ID,
-not row position: `⌘1..9` index the GLOBAL recent band while the sidebar
-may be rendering a scoped, filtered, or searched list in another order, so
-a row wears its true global number or nothing. `⌘T` gets no hint — it
+by `command-keys-wiring.test.ts`. The jump numbers follow the rail AS
+DRAWN: `⌘1..9` count the rows top to bottom — the "Needs you" band, pinned,
+then each project group in the order the reader arranged them, with folded
+groups skipped — so the number a row wears is its position on screen. Under
+a search they count the results instead. `⌘T` gets no hint — it
 targets the same `/` as `⌘N`, as a new browser tab, and has no distinct
 element to label. `⌘K` needs none: the search field already wears a
 permanent one.
@@ -120,6 +121,8 @@ Decided from how routing and session creation actually work, not assumed:
   already are — see the `open-tab` degradation above for what that means on
   each platform.
 - `"settings"` is the sidebar footer's own Settings link (`"/settings"`).
-- `"jump-N"` is `recentSessionsForCommandKeys`'s Nth entry (`session-list.ts`)
-  — the sidebar's own unfiltered "Recent" band, in the exact order it is
-  rendered in.
+- `"jump-N"` is `railRowsForCommandKeys`'s Nth entry (`session-groups.ts`)
+  — the sidebar's own rows, in the exact order they are drawn: attention,
+  pinned, then the project groups as the reader arranged them (persisted on
+  the engine as `SidebarLayout.projectOrder`, so every client of one engine
+  counts the same rows).
