@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -186,6 +186,83 @@ test("a stopped turn closes the tool row it was inside; a background task is lef
   // Idempotent: a second sweep finds nothing open.
   expect(store.recover()).toEqual({ requeued: [], ambiguous: [] });
   expect(store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell")).toHaveLength(1);
+});
+
+test("a turn that fails while parked on a question retires the question; the session is idle and recoverable", () => {
+  // Reproduced live: the provider CLI was killed while inside AskUserQuestion.
+  // The turn failed, but the request stayed open — sidebar "Waiting on you",
+  // composer in answer mode, continuation unreachable.
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Write a checkpoint then wait" });
+  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  const asked = store.openRequest("session_one", "run_one", token, {
+    requestId: "req_question",
+    kind: "user_input",
+    detail: { kind: "user_input", prompt: "Wait or continue?", fields: [{ key: "choice", label: "Choice", kind: "choice", choices: ["Wait", "Continue"] }] },
+  });
+  expect(asked.state).toBe("open");
+  expect(store.getSession("session_one").activity).toBe("blocked");
+
+  store.failTurn("session_one", "run_one", token, { code: "driver_failed", message: "Claude Code process terminated by signal SIGKILL" });
+
+  const request = store.requests("session_one").find((candidate) => candidate.id === "req_question");
+  expect(request).toMatchObject({ state: "resolved", decision: "cancel", resolvedBy: "cancelled", resolvedAt: 100 });
+  expect(store.getSession("session_one")).toMatchObject({ activity: "idle", lastTurnFailed: true });
+  expect(store.readEvents("session_one").filter((event) => event.type === "request.resolved" && event.requestId === "req_question")).toHaveLength(1);
+  // Nothing left for a human to answer — and answering again is refused.
+  expect(() => store.resolveRequest("session_one", "req_question", { decision: "accept" })).toThrow(/already been resolved/);
+  // The next human turn is accepted: the session is not stuck behind the question.
+  expect(store.submitTurn("session_one", { runId: "run_two", input: "Keep the existing checkpoint." }).turn.state).toBe("queued");
+});
+
+test("a request left open on an already-ended turn is retired at boot; one on an ambiguous turn is kept", () => {
+  // Persisted histories from before requests were retired with their turn.
+  const { store, root: stateRoot } = readyStore();
+  store.updateSession("session_one", { runtimeMode: "approval-required" });
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.openRequest("session_one", "run_one", token, {
+    requestId: "req_stale",
+    kind: "command_execution",
+    detail: { kind: "command_execution", command: { command: "sleep 180" } },
+  });
+  // Fail the turn behind the store's back, as an older build did: the
+  // request stays open on disk beside a failed turn.
+  const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+  const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+  queue.turns[0].state = "failed";
+  queue.turns[0].completedAt = 90;
+  queue.turns[0].failure = { code: "driver_failed", message: "old build" };
+  fs.writeFileSync(queueFile, JSON.stringify(queue), "utf8");
+
+  const reopened = new EngineStore(stateRoot, () => 200);
+  // Read alone already refuses to call the session blocked...
+  expect(reopened.getSession("session_one").activity).toBe("idle");
+  // ...and the boot sweep retires the request durably.
+  reopened.recover();
+  expect(reopened.requests("session_one")[0]).toMatchObject({ id: "req_stale", state: "resolved", resolvedBy: "cancelled", resolvedAt: 200 });
+  expect(reopened.recover()).toEqual({ requeued: [], ambiguous: [] });
+  expect(reopened.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(1);
+
+  // An AMBIGUOUS turn's request is a decision still pending; the sweep leaves it.
+  const other = readyStore().store;
+  other.updateSession("session_one", { runtimeMode: "approval-required" });
+  other.submitTurn("session_one", { runId: "run_amb", input: "Hello" });
+  const ambToken = other.claimTurn("session_one", "worker_one")!.claim!.token;
+  other.markRunning("session_one", "run_amb", ambToken);
+  other.openRequest("session_one", "run_amb", ambToken, {
+    requestId: "req_amb",
+    kind: "command_execution",
+    detail: { kind: "command_execution", command: { command: "ls" } },
+  });
+  expect(other.recover()).toEqual({ requeued: [], ambiguous: ["run_amb"] });
+  expect(other.requests("session_one")[0]?.state).toBe("open");
+  expect(other.getSession("session_one").activity).toBe("blocked");
+  // Discarding the ambiguous turn is what finally retires it.
+  other.discardAmbiguousTurn("session_one", "run_amb");
+  expect(other.requests("session_one")[0]).toMatchObject({ state: "resolved", resolvedBy: "cancelled" });
 });
 
 test("recovery returns merely claimed work to queued and makes running work explicitly ambiguous", () => {
@@ -608,6 +685,145 @@ test("an interrupted final journal append is truncated, while malformed complete
   expect(() => store.readEvents("session_one")).toThrow();
 });
 
+describe("the journal head is read from disk once per store, then kept in memory", () => {
+  /**
+   * `appendEvent` used to parse the whole journal on every append to learn
+   * the last id — 9 MB of JSON per event on a long session. The head is now
+   * cached per session after the first append. What these pin: the cache is
+   * seeded through the same validating, tail-repairing read as before (so a
+   * restart behaves identically), and ordinary appends no longer read the
+   * journal at all.
+   */
+  const journalOf = (stateRoot: string): string => path.join(stateRoot, "sessions", "session_one", "events.ndjson");
+  const ids = (store: EngineStore): number[] => store.readEvents("session_one").map((event) => event.id);
+
+  test("a restarted store continues the id sequence from the journal on disk", () => {
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+    store.stopTurn("session_one", "run_one");
+    expect(ids(store)).toEqual([1, 2, 3]);
+
+    const restarted = new EngineStore(stateRoot, () => 200);
+    restarted.submitTurn("session_one", { runId: "run_two", input: "Again" });
+    expect(ids(restarted)).toEqual([1, 2, 3, 4]);
+    // The original instance's memory is stale after the other wrote — which
+    // is why the daemon lock allows only one live writer. Not a supported
+    // configuration; recorded here so the assumption is visible.
+    expect(fs.readFileSync(journalOf(stateRoot), "utf8").split("\n").filter(Boolean)).toHaveLength(4);
+  });
+
+  test("a restart over a torn final record truncates it before the next append", () => {
+    // The crash happened before the JSON finished reaching disk. The fragment
+    // is not a record; a restart drops it and the next id follows the last
+    // COMPLETE one rather than the torn one's claimed id.
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+    const journal = journalOf(stateRoot);
+    const intact = fs.readFileSync(journal, "utf8");
+    fs.appendFileSync(journal, '{"id":3,"at":100,"sessionId":"session_one","type":"turn.st');
+
+    const restarted = new EngineStore(stateRoot, () => 200);
+    restarted.stopTurn("session_one", "run_one");
+    const after = fs.readFileSync(journal, "utf8");
+    expect(after.startsWith(intact)).toBe(true);
+    // Exactly one record follows the intact prefix — the fragment is gone, not
+    // glued to the front of the new record.
+    const appended = after.slice(intact.length).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    expect(appended).toEqual([expect.objectContaining({ id: 3, type: "turn.stopped" })]);
+    expect(ids(restarted)).toEqual([1, 2, 3]);
+  });
+
+  test("a restart over a valid unterminated record keeps it and restores the delimiter", () => {
+    // The crash happened after the JSON bytes landed but before the newline.
+    // That observation is real and must not be lost; the next append must
+    // not be glued onto it either.
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+    const journal = journalOf(stateRoot);
+    const unterminated = JSON.stringify({ id: 3, at: 100, sessionId: "session_one", type: "turn.started", runId: "run_one" });
+    fs.appendFileSync(journal, unterminated);
+
+    const restarted = new EngineStore(stateRoot, () => 200);
+    restarted.stopTurn("session_one", "run_one");
+    const lines = fs.readFileSync(journal, "utf8").split("\n");
+    expect(lines.at(-1)).toBe("");
+    expect(lines[2]).toBe(unterminated);
+    expect(ids(restarted)).toEqual([1, 2, 3, 4]);
+    expect(restarted.readEvents("session_one").map((event) => event.type)).toEqual([
+      "session.created",
+      "turn.accepted",
+      "turn.started",
+      "turn.stopped",
+    ]);
+  });
+
+  test("ordinary appends do not read the journal", () => {
+    // The whole point. `readJournal` goes through `fs.readFileSync`, and
+    // after the head is seeded no append on this session may touch it —
+    // counted per append so a regression to "read every time" is caught even
+    // if some other read slips in once.
+    const { store, root: stateRoot } = readyStore();
+    const journal = journalOf(stateRoot);
+    store.submitTurn("session_one", { runId: "warm", input: "seed the head" });
+    store.stopTurn("session_one", "warm");
+
+    const original = fs.readFileSync;
+    let journalReads = 0;
+    const spy = spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+      if (args[0] === journal) journalReads += 1;
+      return original.apply(fs, args);
+    }) as typeof fs.readFileSync);
+    try {
+      for (let n = 0; n < 10; n += 1) {
+        store.submitTurn("session_one", { runId: `run_${n}`, input: "x" });
+        store.stopTurn("session_one", `run_${n}`);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(journalReads).toBe(0);
+    expect(ids(store)).toEqual(Array.from({ length: 23 }, (_, index) => index + 1));
+  });
+
+  test("a deleted session's head is forgotten, so a recreated id starts a fresh journal", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+    store.stopTurn("session_one", "run_one");
+    expect(store.deleteSession("session_one")).toBe(true);
+    store.createSession({ id: "session_one", projectId: "project_one" });
+    expect(ids(store)).toEqual([1]);
+  });
+
+  test("a failed append forgets the head so the next one re-reads and repairs", () => {
+    const { store, root: stateRoot } = readyStore();
+    const journal = journalOf(stateRoot);
+    store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+
+    // Simulate a write that tore mid-record and then failed: the bytes that
+    // landed are a fragment, and the append threw.
+    const original = fs.appendFileSync;
+    const spy = spyOn(fs, "appendFileSync").mockImplementation(((...args: Parameters<typeof fs.appendFileSync>) => {
+      if (args[0] === journal) {
+        original.call(fs, journal, '{"id":3,"at":100,"sess', { mode: 0o600 });
+        throw new Error("ENOSPC: simulated");
+      }
+      return original.apply(fs, args);
+    }) as typeof fs.appendFileSync);
+    try {
+      expect(() => store.stopTurn("session_one", "run_one")).toThrow(/ENOSPC/);
+    } finally {
+      spy.mockRestore();
+    }
+    // The next append goes back through the repairing read: the fragment is
+    // gone, and the id continues from the last complete record. (The queue
+    // already recorded the stop before the append failed, so the follow-up
+    // append is a fresh submission rather than a second stop.)
+    store.submitTurn("session_one", { runId: "run_two", input: "Next" });
+    expect(ids(store)).toEqual([1, 2, 3]);
+    expect(fs.readFileSync(journal, "utf8")).not.toContain('"sess{');
+  });
+});
+
 test("stale lock recovery uses exclusive replacement and never removes a newly held lock", () => {
   const stateRoot = root();
   const paths = statePaths(stateRoot);
@@ -764,6 +980,26 @@ test("a hand-started browser journals its tabs exactly once, so the panel can sh
   expect((events[0] as { tabs: { url: string }[] }).tabs[0]?.url).toBe("http://x");
 });
 
+test("a hand-started browser binds the session's project profile BEFORE opening, even with no worker turn and no mounted surface", async () => {
+  const { store } = readyStore(); // creates session_one in project_one
+  const calls: Array<{ op: string; scopeKey: string; profileKey?: string; start?: boolean }> = [];
+  store.attachBrowser({
+    bindProfile: async (scopeKey: string, profileKey: string) => { calls.push({ op: "bind", scopeKey, profileKey }); },
+    state: async (scopeKey: string, options: { start?: boolean }) => { calls.push({ op: "state", scopeKey, start: options.start }); return { provider: "attached" as const, running: true, tabs: [] }; },
+    release: async () => undefined,
+  } as never);
+  await store.browserState("session_one", { start: true });
+  // Bind happened, with the session's project, BEFORE the state read that opens.
+  expect(calls).toEqual([
+    { op: "bind", scopeKey: "session_one", profileKey: "project_one" },
+    { op: "state", scopeKey: "session_one", start: true },
+  ]);
+  // A plain read (no start) does not bind — nothing opens, so nothing to bind.
+  calls.length = 0;
+  await store.browserState("session_one");
+  expect(calls.find((c) => c.op === "bind")).toBeUndefined();
+});
+
 test("a local session records the commit it started from, so its review survives the agent committing", () => {
   // Without a base, "what has this session done" was answerable only for
   // worktree sessions: `git status` forgets a change the instant it is
@@ -785,6 +1021,35 @@ test("an unversioned project still gets a session, with no base rather than a re
   const store = new EngineStore(root(), () => 100, { git: () => ({ status: 128, stdout: "", stderr: "not a git repository" }) });
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   expect(store.createSession({ id: "session_one", projectId: "project_one" }).workspace).toEqual({ mode: "local", path: projectRoot });
+});
+
+test("a project whose git stalls or throws is still listed, without a branch, under a short bound", () => {
+  // The registry is the source of truth for WHICH projects exist; git only
+  // decorates them. Measured: one stalled `rev-parse` under ~/Documents made
+  // the whole project list time out, and a thrown runner would have dropped
+  // every project. Neither may cost the row.
+  const projectRoot = fs.realpathSync.native(root());
+  const calls: Array<{ args: string[]; timeoutMs?: number }> = [];
+  const git: import("../src/worktree").GitRunner = (_cwd, args, options) => {
+    calls.push({ args, ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) });
+    if (args[0] === "rev-parse") return { status: 124, stdout: "", stderr: "git rev-parse ... did not finish within 5000ms and was killed", timedOut: true };
+    throw new Error("runner exploded");
+  };
+  const store = new EngineStore(root(), () => 100, { git });
+  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  const [listed] = store.listProjects();
+  expect(listed).toMatchObject({ id: "project_one", name: "One", root: projectRoot });
+  expect(listed?.branch).toBeUndefined();
+  // The poll-path bound is tighter than the runner's general default.
+  expect(calls.find((call) => call.args[0] === "rev-parse")?.timeoutMs).toBe(5_000);
+
+  const exploding = new EngineStore(root(), () => 100, {
+    git: () => {
+      throw new Error("runner exploded");
+    },
+  });
+  exploding.registerProject({ id: "project_two", name: "Two", root: projectRoot });
+  expect(exploding.listProjects().map((project) => project.id)).toEqual(["project_two"]);
 });
 
 test("a file patch cannot be asked for outside the session's own workspace", () => {

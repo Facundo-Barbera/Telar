@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
-import { createSessionWorktree, defaultGitRunner, removeSessionWorktree, WorktreeError, type GitRunner } from "../src/worktree";
+import { createGitRunner, createSessionWorktree, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, removeSessionWorktree, WorktreeError, type GitRunner } from "../src/worktree";
 import { gitOverview } from "../src/git";
 
 const roots: string[] = [];
@@ -321,4 +321,64 @@ test("the default base falls back to common names, and is absent without remote 
   // worktree cut from it would fail its rev-parse.
   git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone");
   expect(gitOverview(defaultGitRunner, projectRoot).defaultBase).toBe("origin/main");
+});
+
+/**
+ * A fake `git` that never returns. Writes its pid first so the test can prove
+ * the child is GONE, not merely abandoned: a runner that gave up waiting but
+ * left the process behind would still leak a stuck git per poll.
+ */
+function stalledGit(): { bin: string; pidFile: string } {
+  const dir = tmp("telar-stalled-git-");
+  const pidFile = path.join(dir, "pid");
+  const bin = path.join(dir, "git");
+  fs.writeFileSync(bin, `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 600\n`, { mode: 0o755 });
+  return { bin, pidFile };
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("a git child that stalls is killed at the bound and reported, not waited on forever", () => {
+  // Measured: `git rev-parse --abbrev-ref HEAD` blocked for minutes in the
+  // kernel under ~/Documents, and the synchronous runner blocked the daemon's
+  // whole event loop with it — every project list timed out until the process
+  // was killed by hand. The runner now does that itself.
+  const { bin, pidFile } = stalledGit();
+  // Long enough for the fake to START under a loaded test run (the pid write
+  // is its first line) — a shorter bound killed it before it wrote anything.
+  const git = createGitRunner({ gitBin: bin, defaultTimeoutMs: 1_500 });
+  const started = Date.now();
+  const result = git("/tmp", ["rev-parse", "--abbrev-ref", "HEAD"]);
+  expect(Date.now() - started).toBeLessThan(5_000);
+  expect(result.timedOut).toBe(true);
+  expect(result.status).toBe(GIT_TIMEOUT_STATUS);
+  expect(result.stderr).toContain("did not finish within 1500ms");
+  // The child itself, not just the wait: execFileSync reaps what it kills.
+  const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+  expect(pid).toBeGreaterThan(0);
+  expect(alive(pid)).toBe(false);
+});
+
+test("a per-call bound wins over the runner's default", () => {
+  const { bin } = stalledGit();
+  const git = createGitRunner({ gitBin: bin, defaultTimeoutMs: 60_000 });
+  const started = Date.now();
+  expect(git("/tmp", ["status"], { timeoutMs: 200 }).timedOut).toBe(true);
+  expect(Date.now() - started).toBeLessThan(5_000);
+});
+
+test("an ordinary failure is still an ordinary failure, and the default runner is bounded", () => {
+  const unversioned = tmp("telar-not-a-repo-");
+  const result = defaultGitRunner(unversioned, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  expect(result.status).not.toBe(0);
+  expect(result.timedOut).toBeUndefined();
+  expect(result.stderr).toContain("not a git repository");
+  expect(DEFAULT_GIT_TIMEOUT_MS).toBeGreaterThan(0);
 });

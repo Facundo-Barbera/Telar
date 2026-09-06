@@ -115,6 +115,99 @@ test("closing the daemon stops the worker BEFORE the server, so no claim outlive
   expect(restarted.store.turns("session_one")[0]?.state).toBe("completed");
 });
 
+test("an embedded worker whose lease expired re-registers with a fresh id and executes the next turn", async () => {
+  // The daemon and its worker share one event loop; a stall long enough to
+  // miss heartbeats gets the registration pruned, and the next beat answers
+  // `worker_unavailable`. Recovery is a NEW registration with a new driver —
+  // the old claims were already requeued by the prune, and re-registering
+  // the stale id over them is exactly what must not happen.
+  let time = 0;
+  let drivers = 0;
+  const daemon = await startEngine({
+    engineRoot: root(),
+    now: () => time,
+    workerLeaseMs: 1_000,
+    workerPruneIntervalMs: 5,
+    embeddedWorker: {
+      workerId: "worker_embedded_first",
+      pollMs: 20,
+      createDriver: () => {
+        drivers += 1;
+        return { run: async ({ prompt }) => ({ text: `echo#${drivers}:${prompt}` }) };
+      },
+    },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  expect(daemon.worker?.workerId).toBe("worker_embedded_first");
+  expect(drivers).toBe(1);
+
+  // Wall-clock jumps past the lease with no beat in between: the pruner
+  // evicts the registration. Heartbeats do not advance `now`, so nothing
+  // the worker does can refresh the lease — only a new registration counts.
+  time = 5_000;
+  await eventually(async () => {
+    const health = await client.health();
+    expect(health.worker.registered).toBe(true);
+    expect(health.worker).not.toMatchObject({ workerId: "worker_embedded_first" });
+  });
+  expect(daemon.worker?.workerId).not.toBe("worker_embedded_first");
+  expect(daemon.worker?.workerId).toMatch(/^worker_embedded_/);
+  expect(drivers).toBe(2);
+
+  await client.submitTurn("session_one", { runId: "run_after", input: "hello" });
+  await eventually(async () => {
+    expect((await client.session("session_one")).turns[0]).toMatchObject({ state: "completed", resultText: "echo#2:hello" });
+  });
+});
+
+test("closing a daemon while its replacement driver is still being built discards it and ends the loop", async () => {
+  // The recovery's second driver is held on a promise the test controls: the
+  // daemon closes WHILE that build is pending, so shutdown races creation
+  // rather than following it.
+  let time = 0;
+  let drivers = 0;
+  let disposed = 0;
+  let releaseSecond: (() => void) | undefined;
+  let signalRequested: (() => void) | undefined;
+  const requestedSecond = new Promise<void>((resolve) => (signalRequested = resolve));
+  const daemon = await startEngine({
+    engineRoot: root(),
+    now: () => time,
+    workerLeaseMs: 1_000,
+    workerPruneIntervalMs: 5,
+    embeddedWorker: {
+      pollMs: 20,
+      createDriver: async () => {
+        drivers += 1;
+        if (drivers === 2) {
+          signalRequested!();
+          await new Promise<void>((resolve) => (releaseSecond = resolve));
+        }
+        return { ...echo, dispose: () => void (disposed += 1) };
+      },
+    },
+  });
+  const client = new EngineClient(daemon.discovery);
+  time = 5_000;
+  await requestedSecond;
+  expect(drivers).toBe(2);
+  await expect(client.health()).resolves.toMatchObject({ worker: { registered: false } });
+
+  const closing = daemon.close();
+  releaseSecond!();
+  await closing;
+  // The pending candidate was stopped (its driver disposed with the first's),
+  // never started, and no third attempt followed.
+  expect(disposed).toBe(2);
+  expect(drivers).toBe(2);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(drivers).toBe(2);
+  await expect(client.health()).rejects.toMatchObject({ code: "engine_unavailable" });
+});
+
 test("a daemon started WITHOUT an embedded worker never loads the provider SDK", async () => {
   // The lazy import is load-bearing: every test in this repo runs a daemon,
   // and eagerly importing the driver would drag the Claude SDK into all of

@@ -46,6 +46,7 @@ export const SETTLED_AFTER_MS = DEFAULT_AUTO_SETTLE_HOURS * 60 * 60 * 1000;
  * once from the project list rather than making every row do it.
  */
 export type SidebarSession = {
+  draft?: boolean;
   id: string;
   title: string;
   /**
@@ -133,6 +134,7 @@ export function toSidebarSession(
   return {
     id: session.id,
     title: session.title,
+    ...(session.draft ? { draft: true } : {}),
     ...(host ? { hostId: host.id, hostName: host.name } : {}),
     projectId: session.projectId,
     ...(projectName ? { projectName } : {}),
@@ -241,6 +243,7 @@ export function bandOf(session: SidebarSession, options: SettlingOptions): Sessi
   // The pin, checked after the snooze and before the clock. `isSettled` already
   // answers false for it; naming it here is what gives it a band of its own.
   if (session.settledOverride === "active") return "pinned";
+  if (session.draft && !session.archived && session.settledOverride !== "settled") return "active";
   return isSettled(session, activity, options) ? "settled" : "active";
 }
 

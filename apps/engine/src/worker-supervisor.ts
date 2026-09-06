@@ -1,6 +1,8 @@
 /**
- * Keeps the executable worker attached across daemon restarts.  It is separate
- * from worker-main so the narrow initial-registration race is regression-testable.
+ * Keeps the executable worker attached across daemon restarts and lease loss.
+ * It is separate from worker-main so the narrow initial-registration race is
+ * regression-testable, and shared with the daemon's embedded worker so both
+ * deployments recover the same way.
  */
 export type SupervisedWorker = {
   start(): Promise<void>;
@@ -9,7 +11,8 @@ export type SupervisedWorker = {
 
 export type WorkerReconnectControllerOptions<Client, Worker extends SupervisedWorker> = {
   connect(): Promise<Client>;
-  createWorker(client: Client, onConnectionLost: () => void): Worker;
+  /** May be async: a fresh driver per attempt is built here. */
+  createWorker(client: Client, onConnectionLost: () => void): Worker | Promise<Worker>;
   pause(ms: number): Promise<void>;
   retryMs?: number;
 };
@@ -31,6 +34,9 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
     const previous = this.worker;
     this.worker = undefined;
     await previous?.stop();
+    // A connect loop mid-flight exits on its own; wait for it so no attempt
+    // outlives the daemon that owns it.
+    await this.connecting?.catch(() => undefined);
   }
 
   private async connect(): Promise<void> {
@@ -48,12 +54,17 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
   private async connectLoop(): Promise<void> {
     while (!this.stopping) {
       let lostDuringStart = false;
+      let candidate: Worker | undefined;
       try {
         const client = await this.options.connect();
-        const candidate = this.options.createWorker(client, () => {
+        candidate = await this.options.createWorker(client, () => {
           lostDuringStart = true;
           this.requestReconnect();
         });
+        if (this.stopping) {
+          await candidate.stop();
+          return;
+        }
         await candidate.start();
         if (this.stopping) {
           await candidate.stop();
@@ -70,6 +81,9 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
         this.worker = candidate;
         return;
       } catch {
+        // A candidate whose start() threw still holds a driver: dispose it
+        // before the next attempt builds another.
+        await candidate?.stop().catch(() => undefined);
         if (!this.stopping) await this.options.pause(this.options.retryMs ?? 250);
       }
     }

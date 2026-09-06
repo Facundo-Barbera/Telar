@@ -84,6 +84,18 @@ describe("build identity", () => {
     expect(buildIdentity({}, packagedWeb({ channel: "beta" })).channel).toBe("stable");
   });
 
+  test("a --dev package is stamped dev and named Telar Dev; a plain local package is not", () => {
+    // What `package-desktop.sh --dev` writes: packaged, yet a checkout — the
+    // phone must see the same name and amber icon the title bar shows.
+    const dev = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "dev" }));
+    expect(dev.channel).toBe("dev");
+    expect(dev.appName).toBe("Telar Dev");
+    // A plain working-tree package stamps "local" and reads as a cut build.
+    const local = buildIdentity({}, packagedWeb({ shortSha: "abc1234", channel: "local" }));
+    expect(local.channel).toBe("stable");
+    expect(local.appName).toBe("Telar");
+  });
+
   test("a malformed or absent stamp reads as a checkout rather than throwing", () => {
     const web = packagedWeb({ channel: "nightly" });
     fs.writeFileSync(path.join(web, "..", "..", "build-info.json"), "{ not json");

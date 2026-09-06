@@ -24,10 +24,38 @@ const { startBrowserControlServer } = require("./browser-control-server");
 const tailscale = require("./tailscale");
 const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
+const { ExtensionHost } = require("./extension-host");
+const { createBrowserSuggestions } = require("./browser-suggestions");
+const { readMapping: readProfileMapping, partitionFor } = require("./browser-profiles");
+const { createTabStore } = require("./browser-tab-store");
 
 const SMOKE = process.argv.includes("--smoke");
-const OVERRIDE_URL = process.env.TELAR_DESKTOP_URL;
-const E2E_USER_DATA = process.env.TELAR_DESKTOP_E2E_USER_DATA?.trim();
+
+/**
+ * A DEV-PACKAGED BUILD IS A SEPARATE APP, NOT A FLAVOUR OF THE INSTALLED ONE.
+ *
+ * `scripts/package-desktop.sh --dev` bakes `telarDev: true` into the packaged
+ * package.json (electron-builder's extraMetadata) beside a distinct productName
+ * and appId. Reading it HERE, before anything else, is what keeps that build
+ * from colliding with the installed Telar when launched from inside it: a shell
+ * an agent session opens carries the live app's TELAR_HOME and
+ * TELAR_DESKTOP_URL, and honouring either would point the dev build at the
+ * live store — or at the live server, so the window would show the installed
+ * app's cockpit wearing the dev build's name. So in this mode both are IGNORED
+ * (not merely defaulted), the home is always appData/<productName>, and the
+ * updater is off outright. Nothing else about the build changes.
+ */
+const DEV_BUILD = (() => {
+  try {
+    return require("./package.json").telarDev === true;
+  } catch {
+    return false;
+  }
+})();
+const OVERRIDE_URL = DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_URL;
+// Dropped in a dev build for the same reason: an inherited E2E directory would
+// move the dedicated home — and the lock — somewhere else. Smoke is unaffected.
+const E2E_USER_DATA = DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_E2E_USER_DATA?.trim();
 
 // Keep automated Electron runs in their own application identity. Electron's
 // single-instance lock is scoped through userData, so this lets the E2E shell
@@ -40,6 +68,11 @@ if (E2E_USER_DATA) {
     "userData",
     fs.mkdtempSync(path.join(os.tmpdir(), "telar-electron-smoke-")),
   );
+} else if (DEV_BUILD) {
+  // Explicit rather than trusting productName alone: the directory is the
+  // single-instance lock's scope AND (below) TELAR_HOME, so it must be the dev
+  // build's own whatever the bundle happens to be called.
+  app.setPath("userData", path.join(app.getPath("appData"), "Telar Dev"));
 } else if (!app.isPackaged) {
   /**
    * A DEV SHELL AND AN INSTALLED TELAR MUST BOTH BE ABLE TO RUN.
@@ -71,6 +104,10 @@ if (E2E_USER_DATA) {
 let serverChild = null;
 let engineChild = null;
 let browserManager = null;
+let browserSuggestions;
+function requireBrowserSuggestions() {
+  return browserSuggestions ||= createBrowserSuggestions(app.getPath("userData"));
+}
 let browserControl = null;
 let browserControlConfig = null;
 
@@ -209,7 +246,11 @@ function readBuildInfo() {
 function windowTitle() {
   if (!app.isPackaged) return "Telar Dev";
   const info = readBuildInfo();
-  return info && info.shortSha ? `Telar ${info.shortSha}` : "Telar";
+  // A dev-packaged build says so in the title, and says when its sources were
+  // dirty: two of them on one machine are otherwise told apart by nothing.
+  const name = DEV_BUILD ? "Telar Dev" : "Telar";
+  if (!info || !info.shortSha) return name;
+  return `${name} ${info.shortSha}${DEV_BUILD && info.dirty ? "+dirty" : ""}`;
 }
 
 function developmentIconPath() {
@@ -317,6 +358,8 @@ function telarHome() {
     smokeHome ??= fs.mkdtempSync(path.join(os.tmpdir(), "telar-smoke-"));
     return smokeHome;
   }
+  // A dev-packaged build never follows an inherited TELAR_HOME — see DEV_BUILD.
+  if (DEV_BUILD) return app.getPath("userData");
   return process.env.TELAR_HOME?.trim() || app.getPath("userData");
 }
 
@@ -532,7 +575,13 @@ function engineDiscoveryFile(home) {
   return path.join(home, "engine", "engine.json");
 }
 
-function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150 } = {}) {
+/**
+ * `requireWorker` waits for `/v2/health` to report a REGISTERED worker, not
+ * just a 200: a daemon whose embedded worker never came up answers every
+ * health check and refuses every turn. Smoke asks for it; the normal boot
+ * does not block the window on it (the supervisor re-registers on its own).
+ */
+function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWorker = false } = {}) {
   const discoveryFile = engineDiscoveryFile(home);
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
@@ -553,9 +602,27 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150 } = {}) {
             timeout: 2_000,
           },
           (response) => {
-            response.resume();
-            if (response.statusCode === 200) return resolve(discovery);
-            retry();
+            if (response.statusCode !== 200) {
+              response.resume();
+              return retry();
+            }
+            if (!requireWorker) {
+              response.resume();
+              return resolve(discovery);
+            }
+            let raw = "";
+            response.setEncoding("utf8");
+            response.on("data", (chunk) => (raw += chunk));
+            response.on("end", () => {
+              let health = null;
+              try {
+                health = JSON.parse(raw);
+              } catch {
+                /* half-written body — retry */
+              }
+              if (health?.worker?.registered === true) return resolve({ ...discovery, workerId: health.worker.workerId });
+              retry();
+            });
           },
         );
         request.on("error", retry);
@@ -569,8 +636,9 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150 } = {}) {
       retry();
     };
     const retry = () => {
-      if (Date.now() >= deadline) reject(new Error(`engine did not become healthy within ${timeoutMs}ms`));
-      else setTimeout(tick, intervalMs);
+      if (Date.now() >= deadline) {
+        reject(new Error(`engine did not become ${requireWorker ? "healthy with a registered worker" : "healthy"} within ${timeoutMs}ms`));
+      } else setTimeout(tick, intervalMs);
     };
     tick();
   });
@@ -774,7 +842,23 @@ function createWindow(url) {
   // Captured, not read from the global at close time: during a translucency
   // rebuild the OLD window closes after the NEW one exists, and destroying
   // whatever the global points to then would kill the replacement's manager.
-  const manager = new DesktopBrowserManager(win, { onControlChanged: reportBrowserControl });
+  // PER-PROJECT BROWSER PROFILES (browser-profiles.js): the legacy owner
+  // mapping is read once from userData; a bad file is a startup error, not a
+  // silent fallback to the shared jar.
+  const profileMapping = readProfileMapping(app.getPath("userData"));
+  const manager = new DesktopBrowserManager(win, {
+    onControlChanged: reportBrowserControl,
+    onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.profileOf(scopeKey), url),
+    profileMapping,
+    // Each session's open pages, order and active tab survive a reload, a
+    // window rebuild and a restart (browser-tab-store.js). A rebuilt window's
+    // manager reads what the old one wrote in destroy(); the smoke run keeps
+    // its temp userData so nothing leaks between runs.
+    tabStore: createTabStore(app.getPath("userData")),
+    // ONE EXTENSION HOST PER PARTITION, created when a partition first gets a
+    // tab. chrome.tabs of one project's 1Password sees that project only.
+    createExtensionHost: (partition) => startExtensionHost(win, manager, partition),
+  });
   browserManager = manager;
   // The window's own URL is what "the app's own UI" means — it is the same
   // origin in dev-repo, packaged and TELAR_DESKTOP_URL modes, so nothing here
@@ -786,6 +870,11 @@ function createWindow(url) {
   // remounted Browser surface will publish fresh bounds and make it visible.
   win.webContents.on("did-start-loading", () => {
     manager.hideVisibleScope();
+  });
+  win.webContents.on("did-finish-load", () => {
+    if (win.isDestroyed()) return;
+    // Re-announce every live partition's host to the reloaded renderer.
+    for (const [partition, host] of manager.extensionHosts) win.webContents.send("telar:browser:extension", { partition, ...host.status() });
   });
   win.on("closed", () => {
     manager.destroy();
@@ -833,6 +922,64 @@ function createWindow(url) {
     if (!win.isDestroyed()) win.loadURL(url);
   });
   return win;
+}
+
+/**
+ * THE 1PASSWORD EXTENSION, ONE HOST PER PARTITION (per project profile). The
+ * manager calls this the first time a partition gets a tab; the host loads
+ * lazily and the tab-wake path waits for it before the first navigation.
+ * Dev builds and the dev shell only for now (TELAR_EXTENSIONS=1 forces it
+ * elsewhere); the nightly is untouched. Failures land in `status()` and the
+ * panel shows them — never a silent blank. Returns null when extensions are
+ * off, so the manager simply proceeds without one.
+ */
+function startExtensionHost(win, manager, partition) {
+  const wanted = DEV_BUILD || !app.isPackaged || process.env.TELAR_EXTENSIONS === "1";
+  if (!wanted || SMOKE) return null;
+  const ses = session.fromPartition(partition);
+  const host = new ExtensionHost(ses, {
+    privacy: manager.privacy,
+    window: win,
+    tabs: {
+      // chrome.tabs.create from THIS partition's extension: a human tab in a
+      // scope of this partition. The extension's own pages open in a
+      // human-only window (openExtensionPage), never as an integrated tab.
+      createTab: async (details) => {
+        const url = details.url || "about:blank";
+        if (/^chrome-extension:/.test(url)) {
+          const page = host.openExtensionPage(url, win);
+          return [page.webContents, page];
+        }
+        // A visible scope on THIS partition, else any scope on it.
+        const onPartition = (scope) => { try { return manager.partitionOf(scope) === partition; } catch { return false; } };
+        const scope = (manager.visibleScopeKey && onPartition(manager.visibleScopeKey))
+          ? manager.visibleScopeKey
+          : [...new Set(manager.tabs.map((t) => t.scopeKey))].find(onPartition);
+        if (!scope) throw new Error("No browser session for this profile is open to receive a tab.");
+        const tab = await manager.createTab(scope, url, "human");
+        return [tab.view.webContents, win];
+      },
+      selectTab: (wc) => {
+        const tab = manager.tabs.find((t) => t.view && t.view.webContents === wc);
+        if (tab) manager.selectTab(tab.scopeKey, manager.scopeTabs(tab.scopeKey).indexOf(tab)).catch(() => undefined);
+      },
+      removeTab: (wc) => {
+        const tab = manager.tabs.find((t) => t.view && t.view.webContents === wc);
+        if (tab) { manager.closeTabRef(tab, "human"); return; }
+        for (const page of host.extensionWindows) if (!page.isDestroyed() && page.webContents === wc) page.close();
+      },
+    },
+  });
+  host.onHealthChange = (status) => { if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status }); };
+  // Track extension chrome independently of credential entry on web pages.
+  // Opening or closing 1Password does not pause the browser.
+  host.onHoldOpen = (id, reason) => manager.addUiHold(id, reason);
+  host.onHoldClose = (id) => manager.removeUiHold(id);
+  host.startOnce().then((status) => {
+    if (status.phase === "failed") console.error(`[telar-desktop] 1Password extension (${partition}): ${status.error}`);
+    if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status });
+  });
+  return host;
 }
 
 function requireBrowserManager() {
@@ -890,7 +1037,49 @@ function buildApplicationMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+ipcMain.handle("telar:browser:suggestions", async (_event, scopeKey) => {
+  const manager = requireBrowserManager();
+  manager.partitionOf(scopeKey); // Validate the binding before reading a project's history.
+  const ownPort = Number(new URL(manager.window.webContents.getURL()).port);
+  return requireBrowserSuggestions().list(manager.profileOf(scopeKey), [
+    ownPort,
+    Number(process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT),
+    Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT),
+  ]);
+});
+ipcMain.handle("telar:browser:remove-suggestion", (_event, input) => {
+  const manager = requireBrowserManager();
+  manager.partitionOf(input?.scopeKey);
+  requireBrowserSuggestions().remove(manager.profileOf(input.scopeKey), input.url);
+});
 ipcMain.handle("telar:browser:state", (_event, scopeKey) => requireBrowserManager().state(scopeKey));
+// The password manager's toolbar button. Opening its popup BEGINS a private
+// interaction; only a human's Resume ends it.
+// Status is PER SCOPE now: each project's session has its own partition and
+// its own 1Password host. Creating the host on the first status poll lets the
+// extension preload while the human looks, before any tab navigates.
+ipcMain.handle("telar:browser:extension-status", (_event, scopeKey) => {
+  const manager = requireBrowserManager();
+  const host = manager.hostForScope(scopeKey);
+  if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet.", privacy: manager.privacy.state() };
+  // Carry the partition so the renderer can keep only this scope's status and
+  // ignore another project's host pushes.
+  let partition; try { partition = manager.partitionOf(scopeKey); } catch { partition = undefined; }
+  return { ...(partition ? { partition } : {}), ...host.status() };
+});
+ipcMain.handle("telar:browser:extension-popup", async (event, input) => {
+  const manager = requireBrowserManager();
+  const host = manager.hostForScope(input?.scopeKey);
+  if (!host) throw new Error("Extensions are not enabled, or this session has no project profile yet.");
+  const tab = manager.activeTab(input?.scopeKey);
+  await manager.wakeTab(tab);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  return host.openPopup(win, tab.view.webContents, input?.anchorRect || { x: 0, y: 0, width: 24, height: 24 }, input?.scopeKey);
+});
+ipcMain.handle("telar:browser:bind-profile", (_event, input) =>
+  requireBrowserManager().declareProfile(input?.scopeKey, input?.profileKey),
+);
+ipcMain.handle("telar:browser:private-resume", () => requireBrowserManager().resumeFromPrivate());
 ipcMain.handle("telar:browser:action", (_event, input) =>
   requireBrowserManager().action(input?.scopeKey, input?.action),
 );
@@ -909,9 +1098,14 @@ ipcMain.handle("telar:browser:release-scope", (_event, input) =>
 ipcMain.handle("telar:browser:adopt-scope", (_event, input) =>
   requireBrowserManager().adoptScope(input?.fromScopeKey, input?.toScopeKey),
 );
-// The explicit handback — the only way the agent gets the browser back (§6).
-ipcMain.handle("telar:browser:hand-back", (_event, input) => requireBrowserManager().handBack(input?.scopeKey));
 // A tab preload heard a human's hands in the page; all we hold is the sender.
+ipcMain.on("telar:browser:credential-field", (event, detail) => {
+  try {
+    browserManager?.noteCredentialFieldFromWebContents(event.sender, detail || {});
+  } catch {
+    // A report from a view mid-teardown must not crash the shell.
+  }
+});
 ipcMain.on("telar:browser:human-input", (event) => {
   try {
     browserManager?.noteHumanInputFromWebContents(event.sender);
@@ -1047,6 +1241,9 @@ const LEGACY_USER_DATA_NAME = "telar-desktop";
  */
 function adoptLegacyUpdatePrefs() {
   const fs = require("node:fs");
+  // A dev build has no updater to hand a channel to, and the legacy directory
+  // is the INSTALLED app's — nothing of it belongs in the dev build's home.
+  if (DEV_BUILD) return;
   try {
     if (fs.existsSync(updatePrefsPath())) return;
     const legacy = path.join(app.getPath("appData"), LEGACY_USER_DATA_NAME, "update-prefs.json");
@@ -1202,6 +1399,9 @@ function broadcastUpdateStatus(status, extra = {}) {
 // DNS error. That makes the key the honest test for "updates are available
 // here at all" — both for the automatic checks and for the Settings button.
 function updatesConfigured() {
+  // A dev-packaged build has no feed and must never replace itself — or, worse,
+  // be replaced by a nightly of the installed app it exists to sit beside.
+  if (DEV_BUILD) return false;
   return app.isPackaged && Boolean(updateProxyKey());
 }
 
@@ -1297,7 +1497,7 @@ ipcMain.handle("telar:updates:check", async () => {
   return { status: "checking" };
 });
 ipcMain.handle("telar:updates:install", () => {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || DEV_BUILD) return;
   // AN EXPLICIT INSTALL MUST NOT RACE THE ON-QUIT INSTALLER.
   //
   // `quitAndInstall()` stages the update and then quits. With
@@ -1406,6 +1606,9 @@ function closeBrowserControl() {
   if (control) void control.close();
 }
 app.on("will-quit", () => {
+  // The tab inventory's last word, before the windows go: what each session
+  // had open is what it will have open on the next launch.
+  try { browserManager?.persistSync(); } catch {}
   killServer();
   closeBrowserControl();
   // The serve mapping outlives the process otherwise, pointing at a port
@@ -1446,9 +1649,11 @@ async function runSmoke() {
       // PROVES THE ENGINE, NOT JUST ITS FILE. A bundle can be present and still
       // fail to boot — a bad import in the bundled graph, a store it cannot
       // open. `/v2/health` answering is the difference between "the file
-      // shipped" and "the app has a back end".
-      engineDiscovery = await waitForEngine(home);
+      // shipped" and "the app has a back end" — and a REGISTERED WORKER is
+      // the difference between a back end and one that accepts a turn.
+      engineDiscovery = await waitForEngine(home, { requireWorker: true });
       console.log("ENGINE_OK");
+      console.log(`ENGINE_WORKER_OK ${engineDiscovery.workerId}`);
       port = await findFreePort();
       startServer(port, home);
     }
@@ -1552,12 +1757,16 @@ if (SMOKE) {
         // Before anything reads the update preferences, and before the updater
         // is configured with a channel.
         adoptLegacyUpdatePrefs();
-        const configuredControlPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
+        // THE INSTALLED APP EXPORTS THESE INTO EVERY SHELL IT OPENS (they are
+        // how its agent sessions reach its browser). A dev build launched from
+        // such a shell would bind the live app's control port — measured:
+        // EADDRINUSE on 127.0.0.1:<live port>, no window — so it takes neither.
+        const configuredControlPort = DEV_BUILD ? NaN : Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
         browserControlConfig = {
           port: Number.isInteger(configuredControlPort) && configuredControlPort > 0
             ? configuredControlPort
             : await findFreePort(),
-          token: process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim() || randomUUID(),
+          token: (DEV_BUILD ? undefined : process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim()) || randomUUID(),
         };
         browserControl = await startBrowserControlServer({
           ...browserControlConfig,

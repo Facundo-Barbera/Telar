@@ -29,7 +29,7 @@ import {
   parseBrowserTabs,
   textOf,
 } from "./helpers";
-import type { DesktopBrowserClient } from "./desktop";
+import type { DesktopBrowserClient, DesktopBrowserState } from "./desktop";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
@@ -333,6 +333,9 @@ export type EngineBrowser = {
   call(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<BrowserToolResult>;
   isReadOnly(name: string, args?: Record<string, unknown>): boolean;
   state(scopeKey: string, options?: { start?: boolean; screenshot?: boolean }): Promise<BrowserState>;
+  /** Bind a scope to its project's browser profile (desktop host only; the
+   *  headless runtime already isolates per scope by user-data-dir). */
+  bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
   release(scopeKey: string, reason?: string): Promise<boolean>;
   close(reason?: string): Promise<void>;
 };
@@ -352,6 +355,9 @@ export type EngineBrowser = {
  * open where.
  */
 export class BrowserRouter implements EngineBrowser {
+  // Project declarations outlive desktop reachability and a host restart.
+  private readonly profiles = new Map<string, string>();
+
   constructor(
     private readonly headless: BrowserRuntime,
     private readonly desktop?: DesktopBrowserClient,
@@ -361,19 +367,65 @@ export class BrowserRouter implements EngineBrowser {
     return this.desktop ? this.desktop.reachable() : false;
   }
 
+  /**
+   * SINGLE-FLIGHT PER SCOPE. Two "open a browser" presses (or a press and a
+   * poll handed `start`) can both read zero tabs before either opens, and
+   * the read-then-open pair is not atomic across requests. The first start
+   * of a scope owns the open; anyone arriving while it is in flight awaits
+   * the same promise and re-reads, so the host is asked to open at most once.
+   */
+  private readonly starting = new Map<string, Promise<DesktopBrowserState>>();
+  private startOnce(scopeKey: string): Promise<DesktopBrowserState> {
+    const inFlight = this.starting.get(scopeKey);
+    if (inFlight) return inFlight;
+    const run = (async () => {
+      // Re-read under the lock: a start that lost the race sees the winner's tab.
+      const fresh = await this.desktop!.state(scopeKey);
+      return fresh.tabs.length > 0 ? fresh : this.desktop!.openForHuman(scopeKey);
+    })().finally(() => this.starting.delete(scopeKey));
+    this.starting.set(scopeKey, run);
+    return run;
+  }
+
   isReadOnly(name: string, args: Record<string, unknown> = {}): boolean {
     return isReadOnlyBrowserCall(name, args);
   }
 
   async call(scopeKey: string, name: string, args: Record<string, unknown> = {}): Promise<BrowserToolResult> {
-    if (await this.useDesktop()) return this.desktop!.call(scopeKey, name, args);
+    if (await this.useDesktop()) {
+      await this.restoreProfile(scopeKey);
+      return this.desktop!.call(scopeKey, name, args);
+    }
     return this.headless.call(scopeKey, name, args);
+  }
+
+  /** Only the desktop host has shared partitions to keep apart; headless
+   *  scopes are already separate user-data-dirs, so this is a no-op there. */
+  async bindProfile(scopeKey: string, profileKey: string): Promise<void> {
+    const previous = this.profiles.get(scopeKey);
+    if (previous !== undefined && previous !== profileKey) throw new Error("Browser session is already bound to a different project profile.");
+    this.profiles.set(scopeKey, profileKey);
+    if (await this.useDesktop()) await this.desktop!.bind(scopeKey, profileKey);
+  }
+
+  private async restoreProfile(scopeKey: string): Promise<void> {
+    const profile = this.profiles.get(scopeKey);
+    if (profile !== undefined) await this.desktop!.bind(scopeKey, profile);
   }
 
   async state(scopeKey: string, options: { start?: boolean; screenshot?: boolean } = {}): Promise<BrowserState> {
     if (!(await this.useDesktop())) return this.headless.state(scopeKey, options);
     try {
-      const state = await this.desktop!.state(scopeKey);
+      await this.restoreProfile(scopeKey);
+      let state = await this.desktop!.state(scopeKey);
+      // `start` on the desktop branch used to be dropped on the floor: the
+      // host's /state is a pure read, so "open a browser" answered
+      // running:true with zero tabs and the cockpit had nothing to show.
+      // Opening happens ONLY when the scope has no tabs, so a repeated press
+      // (or a poll someone hands `start` to) never stacks blank tabs.
+      if (options.start && state.tabs.length === 0) {
+        state = await this.startOnce(scopeKey);
+      }
       let screenshot: string | null = null;
       if (state.tabs.length > 0 && options.screenshot !== false) {
         // Same economics as the headless read: jpeg, css scale, because this
@@ -401,6 +453,7 @@ export class BrowserRouter implements EngineBrowser {
   }
 
   close(reason?: string): Promise<void> {
+    this.profiles.clear();
     return this.headless.close(reason);
   }
 }

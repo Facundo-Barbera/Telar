@@ -24,17 +24,21 @@ afterEach(async () => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-async function eventually(check: () => void | Promise<void>): Promise<void> {
+async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000): Promise<void> {
+  // A wall-clock bound (below bun's 5s test timeout), not a retry count: the
+  // former 60×5ms window was ~300ms only when each check was instant, and
+  // one full-gate run under load failed it. Settles on the first pass.
+  const deadline = Date.now() + deadlineMs;
   let last: unknown;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  do {
     try {
       await check();
       return;
     } catch (error) {
       last = error;
-      await Bun.sleep(5);
+      await Bun.sleep(20);
     }
-  }
+  } while (Date.now() < deadline);
   throw last;
 }
 
@@ -516,4 +520,71 @@ test("a heartbeat WITHOUT a steer key still parses — the forward-compat defaul
   const { WorkerStatus } = await import("@telar/engine-client");
   const parsed = WorkerStatus.parse({ workerId: "worker_one", heartbeatAt: 1, cancel: [], resolved: [] });
   expect(parsed.steer).toEqual([]);
+});
+
+test("a project folder that no longer exists fails the turn with the folder named — never a spawn", async () => {
+  const { assertProjectRoot } = await import("../src/worker");
+  expect(() => assertProjectRoot("/definitely/not/here/telar-integration")).toThrow(/does not exist.*moved or deleted.*re-register/i);
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-root-")), "file.txt");
+  fs.writeFileSync(file, "x");
+  expect(() => assertProjectRoot(file)).toThrow(/not a folder/);
+  expect(() => assertProjectRoot(os.tmpdir())).not.toThrow();
+  // Through the worker: the driver is never invoked; the turn fails with the sentence.
+  let invoked = 0;
+  const driver: TurnDriver = { run: async () => { invoked += 1; return { text: "" }; } };
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const stale = fs.mkdtempSync(path.join(os.tmpdir(), "telar-stale-"));
+  const project = await client.registerProject({ id: "project_stale", name: "Stale", root: stale });
+  const session = await client.createSession({ id: "session_stale", projectId: project.project.id });
+  fs.rmSync(stale, { recursive: true, force: true });
+  const worker = new EngineWorker({ client, workerId: "worker_stale", driver, pollMs: 60_000 });
+  workers.push(worker);
+  await worker.start();
+  await client.submitTurn(session.session.id, { runId: "run_stale", input: "Hello" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(session.session.id)).turns[0]).toMatchObject({ state: "failed" }));
+  const failed = (await client.events(session.session.id)).events.find((event) => event.type === "turn.failed");
+  expect(failed && failed.type === "turn.failed" ? failed.message : "").toMatch(/project folder .* does not exist/);
+  expect(invoked).toBe(0);
+});
+
+test("the claim carries the session's project id and the worker binds the browser profile BEFORE the turn's tools run", async () => {
+  const bound: Array<[string, string]> = [];
+  const socket = new BrowserToolSocket({
+    call: async () => ({ content: [] }),
+    isReadOnly: () => true,
+    tools: [],
+    bindProfile: async (scopeKey, profileKey) => { bound.push([scopeKey, profileKey]); },
+  });
+  const order: string[] = [];
+  const driver: TurnDriver = { run: async () => { order.push(`run:${bound.length}`); return { text: "ok" }; } };
+  const { client, sessionId, worker } = await setup(driver, { browserSocket: socket });
+  await client.submitTurn(sessionId, { runId: "run_bind", input: "Hello" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]).toMatchObject({ state: "completed" }));
+  expect(bound).toEqual([[sessionId, "project_one"]]);
+  expect(order).toEqual(["run:1"]); // bound before the driver ran
+});
+
+test("a browser profile binding the host REFUSES does not fail the turn — the provider still runs", async () => {
+  // Release-review finding: an older desktop shell without a /bind route
+  // answered 404, `bindProfile` threw before `driver.run`, and every turn on
+  // the machine failed as `driver_failed: Not found.` with no browser tool
+  // involved. The binding is re-issued by the router before each browser
+  // tool call, so a refusal belongs to the call that needs it — not here.
+  const socket = new BrowserToolSocket({
+    call: async () => ({ content: [] }),
+    isReadOnly: () => true,
+    tools: [],
+    bindProfile: async () => { throw new Error("Not found."); },
+  });
+  let ran = 0;
+  const driver: TurnDriver = { run: async () => { ran += 1; return { text: "ok" }; } };
+  const { client, sessionId, worker } = await setup(driver, { browserSocket: socket });
+  await client.submitTurn(sessionId, { runId: "run_bind_refused", input: "Hello" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session(sessionId)).turns[0]).toMatchObject({ state: "completed" }));
+  expect(ran).toBe(1);
 });

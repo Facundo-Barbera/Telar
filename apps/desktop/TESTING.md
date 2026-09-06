@@ -58,3 +58,27 @@ existing artifact before copying it.
 The result is unsigned and intended for local development/use only. macOS may
 require Finder → Control-click → **Open** on the first launch. No signing,
 notarization, publishing, or automatic update step is performed.
+
+### A separate Telar Dev.app beside the installed Telar
+
+```bash
+bun run desktop:package:dev
+open "apps/desktop/release/dev/mac-arm64/Telar Dev.app"
+```
+
+Same pipeline and smoke as `desktop:package`, but the artefact is a
+**different app**: bundle id `com.telar.desktop.dev`, product name
+`Telar Dev`, its own state in `~/Library/Application Support/Telar Dev`
+(engine store under `engine/` inside it), updater off, `--publish never`,
+never signed. It **ignores an inherited `TELAR_HOME` or `TELAR_DESKTOP_URL`**,
+so launching it from a shell the installed Telar opened cannot point it at the
+live store or the live server. The window title reads `Telar Dev <sha>`, with
+`+dirty` when the working tree had uncommitted changes; `/api/about` reports
+`channel: "dev"`. Open the built `.app` directly — `--dev` refuses `--install`
+because the installer copies by the fixed name `Telar.app`.
+
+**Quit Telar Dev before rebuilding it** — electron-builder replaces the bundle
+in place, and macOS will not swap the binary out from under a running process.
+The installed Telar (nightly or otherwise) is a different app and can stay
+open throughout. The packaged smoke is bounded to 120 s (`TELAR_SMOKE_TIMEOUT`
+overrides) and enforced with Bun, so no coreutils `timeout` is required.

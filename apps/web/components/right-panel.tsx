@@ -38,7 +38,6 @@ import { TranscriptItem } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
 import { clampSidebarWidth, setSidebarWidth, useSidebarPrefs } from "@/lib/sidebar-width";
 import {
@@ -143,6 +142,18 @@ const PULL_PREFIX = "pull:";
 export function browserPanelTab(tabId: string): PanelTab {
   return `${BROWSER_PREFIX}${tabId}`;
 }
+
+/**
+ * THE SINGLE BROWSER TAB IN THE DESKTOP SHELL. In the shell the native
+ * WebContentsView (DesktopBrowserSurface) draws its own per-page tab strip,
+ * so turning every native page into a separate right-panel tab too would
+ * stack two identical strips (the duplicated-tab-bars defect). On desktop the
+ * panel holds ONE stable "Browser" tab and the native strip owns the pages;
+ * the screenshot/remote clients (no native strip) keep one panel tab per page.
+ * The id is fixed so it does not churn as the native active page changes.
+ */
+export const LIVE_BROWSER_PAGE_ID = "__integrated__";
+export const LIVE_BROWSER_TAB: PanelTab = `${BROWSER_PREFIX}${LIVE_BROWSER_PAGE_ID}`;
 
 /** The engine tab id behind a panel tab, or undefined for anything else. */
 export function browserTabId(tab: PanelTab): string | undefined {
@@ -252,9 +263,14 @@ export function browserTabLabel(tab: Pick<BrowserTab, "title" | "url">): string 
 }
 
 /** What a tab wears in the strip, whichever kind it is. */
+/** What the native browser reports right now — the shell's tabs, not the
+ *  journal's. Only `id`, `title`, `url` and `active` are read. */
+export type LivePage = Pick<BrowserTab, "id" | "title" | "url"> & { active?: boolean };
+
 export function describePanelTab(
   tab: PanelTab,
   browser?: BrowserState,
+  live?: readonly LivePage[],
 ): { label: string; icon: typeof BotIcon; blurb: string; missing?: boolean } {
   // A FILE WEARS ITS BASENAME. `apps/web/components/right-panel.tsx` in a
   // 44px-wide tab is `apps/vnex…`, which names nothing; the full path is the
@@ -278,9 +294,44 @@ export function describePanelTab(
     const surface = SURFACES.find((entry) => entry.id === tab)!;
     return { label: surface.label, icon: surface.icon, blurb: surface.blurb };
   }
+  // The desktop shell's single browser tab: the native strip names the pages.
+  if (pageId === LIVE_BROWSER_PAGE_ID) return { label: "Browser", icon: GlobeIcon, blurb: "Integrated browser" };
+  /**
+   * THE LIVE PAGE WINS. In the shell the surface under this tab is the native
+   * browser, which shows whichever of ITS tabs is active — so the label must
+   * come from there when it can. The journal's `browser.state.changed` is
+   * history and lags (or, with a worker-owned browser, never names the native
+   * tab at all), which is how a tab read "Closed page" over a live Example
+   * Domain. Match by id first; failing that, the native view's active tab is
+   * literally what is on screen.
+   */
+  const livePage = live?.find((entry) => entry.id === pageId) ?? (live && live.length > 0 ? (live.find((entry) => entry.active) ?? live[0]) : undefined);
+  if (livePage) return { label: browserTabLabel(livePage), icon: GlobeIcon, blurb: livePage.url };
   const page = browser?.tabs.find((entry) => entry.id === pageId);
   if (!page) return { label: "Closed page", icon: GlobeIcon, blurb: "This page is no longer open.", missing: true };
   return { label: browserTabLabel(page), icon: GlobeIcon, blurb: page.url };
+}
+
+/** The shell's live tab list for this session, or nothing outside the shell.
+ *  Subscribed rather than polled: the manager pushes on every change. */
+function useLivePages(sessionId: string | undefined): LivePage[] | undefined {
+  const bridge = desktopBrowserBridge();
+  const [result, setResult] = useState<{ scopeKey: string; pages: LivePage[] }>();
+  useEffect(() => {
+    if (!bridge || !sessionId) return;
+    let cancelled = false;
+    const take = (state: { scopeKey: string; tabs: LivePage[] }) => {
+      if (!cancelled && state.scopeKey === sessionId) setResult({ scopeKey: sessionId, pages: state.tabs });
+    };
+    const first = window.setTimeout(() => void bridge.getState(sessionId).then(take, () => undefined), 0);
+    const unsubscribe = bridge.onState(take);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(first);
+      unsubscribe();
+    };
+  }, [bridge, sessionId]);
+  return bridge && result && result.scopeKey === sessionId ? result.pages : undefined;
 }
 
 // ── folds over the session record ──────────────────────────────────────────
@@ -310,6 +361,23 @@ export function journalWrites(items: readonly Item[]): Map<string, number> {
 }
 
 export type BrowserState = { provider: BrowserProvider; tabs: BrowserTab[] };
+
+/**
+ * The outcome of pressing "open a browser", so the press is never silent.
+ * `pending` while the engine is asked; `error` carries the engine's own words.
+ */
+export type BrowserStartState = { status: "idle" } | { status: "pending" } | { status: "error"; message: string };
+
+/** Fold an engine answer to a start into what the button should say next. A
+ *  running browser with no tab is the failure the desktop branch used to hide:
+ *  it is named here rather than left looking like "still starting". */
+export function describeBrowserStart(snapshot: Pick<BrowserSnapshot, "tabs" | "error" | "running">): BrowserStartState {
+  if (snapshot.error) return { status: "error", message: snapshot.error };
+  if (snapshot.tabs.length === 0) {
+    return { status: "error", message: snapshot.running ? "The browser started but opened no page." : "The browser did not start." };
+  }
+  return { status: "idle" };
+}
 
 /** The last `browser.state.changed` wins: the event carries the whole tab set
  *  rather than a delta, so folding it is a replace. */
@@ -403,11 +471,11 @@ const BROWSER_POLL_MS = 3_000;
  * says the picture belongs elsewhere rather than showing a different page's
  * pixels under this page's title.
  */
-function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; state?: BrowserState; sessionId?: string }) {
+function BrowserPageSurface({ pageId, state, sessionId, projectId }: { pageId: string; state?: BrowserState; sessionId?: string; projectId?: string }) {
   /**
    * IN THE SHELL, THE BROWSER IS REAL. The desktop bridge means a native
    * WebContentsView can be glued under this panel — tab strip, URL bar, the
-   * page itself, clickable by the human while the agent drives (§6 of the
+   * page itself, clickable by the human while the agent drives (the shared
    * browser-v2 plan). The screenshot poll stays as the whole surface for
    * every client WITHOUT a native view: a phone, a remote cockpit. Split
    * into two components because the fallback owns hooks the live surface
@@ -415,7 +483,7 @@ function BrowserPageSurface({ pageId, state, sessionId }: { pageId: string; stat
    */
   const bridge = desktopBrowserBridge();
   if (bridge && sessionId) {
-    return <DesktopBrowserSurface bridge={bridge} sessionId={sessionId} />;
+    return <DesktopBrowserSurface key={sessionId} bridge={bridge} sessionId={sessionId} {...(projectId ? { projectId } : {})} />;
   }
   return <BrowserScreenshotSurface pageId={pageId} {...(state ? { state } : {})} {...(sessionId ? { sessionId } : {})} />;
 }
@@ -879,7 +947,7 @@ export function PanelSurface({
     return <ForgeDetailSurface kind="pull" number={pullNumber} {...(projectId ? { projectId } : {})} {...(branch ? { branch } : {})} />;
   const pageId = browserTabId(tab);
   if (pageId !== undefined)
-    return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} />;
+    return <BrowserPageSurface pageId={pageId} {...(browser ? { state: browser } : {})} {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} />;
   if (tab === "diff")
     return (
       <DiffSurface
@@ -943,6 +1011,7 @@ function PanelEmptyState({
   onOpen,
   browser,
   onOpenBrowser,
+  browserStart = { status: "idle" },
 }: {
   onOpen: (tab: PanelTab) => void;
   browser?: BrowserState;
@@ -950,8 +1019,10 @@ function PanelEmptyState({
    *  hides rather than offering a launch that would land beside the worker's
    *  own browser (see BrowserSnapshot.canStart). */
   onOpenBrowser?: () => void;
+  browserStart?: BrowserStartState;
 }) {
   const pages = browser?.tabs ?? [];
+  const starting = browserStart.status === "pending";
   return (
     <div className="flex h-full flex-col justify-center p-4">
       <div className="mx-auto w-full max-w-sm">
@@ -978,21 +1049,53 @@ function PanelEmptyState({
             below; this row exists for the session where nobody has browsed
             yet and a human wants to. */}
         {onOpenBrowser && pages.length === 0 && (
-          <button
-            type="button"
-            onClick={onOpenBrowser}
-            className="mt-1 flex w-full items-center gap-2.5 rounded-lg border border-dashed border-border px-2.5 py-2 text-left transition-colors hover:bg-muted/60"
-          >
-            <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs font-medium text-foreground">Open a browser</span>
-              <span className="block truncate text-[0.6875rem] text-muted-foreground">Start this session’s browser</span>
-            </span>
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={onOpenBrowser}
+              disabled={starting}
+              aria-busy={starting}
+              className="mt-1 flex w-full items-center gap-2.5 rounded-lg border border-dashed border-border px-2.5 py-2 text-left transition-colors hover:bg-muted/60 disabled:cursor-progress disabled:hover:bg-transparent"
+            >
+              {starting ? <Spinner className="size-4 shrink-0 text-muted-foreground" /> : <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium text-foreground">{starting ? "Starting the browser…" : "Open a browser"}</span>
+                <span className="block truncate text-[0.6875rem] text-muted-foreground">
+                  {browserStart.status === "error" ? "Try again" : "Start this session’s browser"}
+                </span>
+              </span>
+            </button>
+            {/* The engine's own words, under the button that asked. A silent
+                press is the one outcome nobody can tell from "still starting". */}
+            {browserStart.status === "error" && (
+              <p role="alert" className="mt-1.5 px-1 text-[0.6875rem] leading-relaxed text-destructive">
+                {browserStart.message}
+              </p>
+            )}
+          </>
         )}
-        {/* ONE ROW PER PAGE, not one row for "Browser". Opening a page opens
-            that page's tab, which is the whole point of the change. */}
-        {pages.length > 0 && (
+        {/* ON DESKTOP the native strip owns the pages, so this is ONE "Browser"
+            row; on screenshot/remote clients (no native strip) it is one row
+            per page, which is how those clients switch pages at all. */}
+        {pages.length > 0 && desktopBrowserBridge() && (
+          <>
+            <p className="mt-5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">Browser</p>
+            <div className="mt-1.5 flex flex-col gap-1">
+              <button
+                type="button"
+                onClick={() => onOpen(LIVE_BROWSER_TAB)}
+                className="flex items-center gap-2.5 rounded-lg border border-border px-2.5 py-2 text-left transition-colors hover:bg-muted/60"
+              >
+                <GlobeIcon className="size-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium text-foreground">Browser</span>
+                  <span className="block truncate font-mono text-[0.625rem] text-muted-foreground">{pages.length} open page{pages.length === 1 ? "" : "s"}</span>
+                </span>
+              </button>
+            </div>
+          </>
+        )}
+        {pages.length > 0 && !desktopBrowserBridge() && (
           <>
             <p className="mt-5 text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">Open pages</p>
             <div className="mt-1.5 flex flex-col gap-1">
@@ -1166,7 +1269,8 @@ export function RightPanelResizeHandle({
  * body that runs edge to edge, and a single hairline on the left as the only
  * thing separating it from the conversation.
  *
- * THE TAB BAR MATCHES THE MASTHEAD'S HEIGHT (`min-h-11`) on purpose. The two sit
+ * THE TAB BAR MATCHES THE MASTHEAD'S HEIGHT (40px, `h-10 py-0` — the rail
+ * header and page header are the same) on purpose. The two sit
  * side by side at the top of the window, and a few pixels of disagreement there
  * is the difference between two panes of one app and two apps in one window.
  */
@@ -1180,6 +1284,7 @@ export function RightPanel({
   tasks = [],
   focusedTask,
   onOpenBrowser,
+  browserStart = { status: "idle" },
   events = [],
   tabs,
   tab,
@@ -1187,6 +1292,7 @@ export function RightPanel({
   onOpenTab,
   onCloseTab,
   onClose,
+  open = true,
 }: {
   active?: TurnState;
   /** Absent until the first message creates the session. The browser and git
@@ -1206,6 +1312,8 @@ export function RightPanel({
   /** Launch the session's browser by hand. Absent when the engine cannot
    *  start one here, and the affordances hide with it. */
   onOpenBrowser?: () => void;
+  /** What the last press of that launch is doing — pending, or why it failed. */
+  browserStart?: BrowserStartState;
   events?: readonly EngineEvent[];
   /** Owned by the cockpit, not by the panel: the pinned summary's rows and the
    *  composer's foot are "go there" gestures, and they have to be able to say
@@ -1216,13 +1324,26 @@ export function RightPanel({
   onOpenTab: (tab: PanelTab) => void;
   onCloseTab: (tab: PanelTab) => void;
   onClose: () => void;
+  /**
+   * OPEN/CLOSE ANIMATION. Kept mounted by the cockpit during the close so the
+   * shell can animate OUT (its WIDTH, from the panel width to 0, and back).
+   * The native browser view has no CSS layer to fade, so it is not faded — the
+   * viewport hook (browser-live.tsx) tracks the animating width each frame via
+   * its ResizeObserver + transition-follow, and its zero-area latch hides the
+   * native view as the width reaches 0 and reveals it at the settled bounds.
+   * `motion-reduce` drops the transition (the width snaps); the cockpit still
+   * unmounts after the same delay, so reduced motion lands in the right state.
+   */
+  open?: boolean;
 }) {
   const [fullscreen, setFullscreen] = useState(false);
+  const [surfaceChooserOpen, setSurfaceChooserOpen] = useState(false);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? RIGHT_PANEL_DEFAULT_WIDTH;
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
+  const livePages = useLivePages(sessionId);
   const openPaths = useMemo(() => openFilePaths(tabs), [tabs]);
   const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
   const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
@@ -1264,9 +1385,14 @@ export function RightPanel({
       label: surface.label,
       icon: surface.icon,
     })),
-    ...(browser?.tabs ?? [])
-      .filter((page) => !tabs.includes(browserPanelTab(page.id)))
-      .map((page) => ({ id: browserPanelTab(page.id), label: browserTabLabel(page), icon: GlobeIcon })),
+    // On desktop the native strip owns the pages: offer ONE "Browser" entry.
+    ...(desktopBrowserBridge()
+      ? (browser?.tabs?.length ?? 0) > 0 && !tabs.includes(LIVE_BROWSER_TAB)
+        ? [{ id: LIVE_BROWSER_TAB, label: "Browser", icon: GlobeIcon }]
+        : []
+      : (browser?.tabs ?? [])
+          .filter((page) => !tabs.includes(browserPanelTab(page.id)))
+          .map((page) => ({ id: browserPanelTab(page.id), label: browserTabLabel(page), icon: GlobeIcon }))),
   ];
 
   return (
@@ -1287,26 +1413,53 @@ export function RightPanel({
     <aside
       ref={panelRef}
       aria-label="Right panel"
-      style={fullscreen ? undefined : ({ "--right-panel-width": `${width}px` } as CSSProperties)}
+      // ALWAYS SET, fullscreen included: leaving fullscreen transitions
+      // from 100% back to this value, and a variable that appears on the
+      // same frame the class changes has nothing to animate from.
+      style={{ "--right-panel-width": `${width}px` } as CSSProperties}
       className={cn(
         // `app-ground`: transparent in the shell's translucent mode, so the
         // panel shares the body's one wash instead of stacking a second.
-        "app-ground relative flex shrink-0 flex-col border-l border-border bg-background",
-        // `min-w-80` is a FLOOR, not a preference. Below ~320px this stops being
-        // a panel and becomes a column of truncation — the tab strip alone eats
-        // it. Better to squeeze the conversation, which can scroll, than to keep
-        // a panel that cannot show anything. `max-w` shares its number with the
-        // drag clamp so the two cannot disagree (lib/right-panel-layout.ts).
-        fullscreen ? "min-w-0 flex-1" : "w-(--right-panel-width) min-w-80 max-w-[calc(100%-24rem)]",
+        // Its own card (see the cockpit's `data-surfaces`), wearing the rail's
+        // surface recipe: `bg-sidebar` + hairline ring. NOT `app-ground` — a
+        // card must paint, or under translucency it dissolves into the wash.
+        // The gutter is the separation, so the old `border-l` divider goes.
+        // NOT `overflow-hidden` here — the resize handle hangs half outside
+        // this box, into the gutter; the body below clips its own corners.
+        "relative flex shrink-0 flex-col md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border",
+        // The open/close animation: WIDTH (and opacity) over 200ms, dropped
+        // under reduced motion. `overflow-hidden` while collapsing so the body
+        // does not spill during the squeeze.
+        "transition-[width,opacity] duration-200 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
+        // WIDTH ORDER MATTERS. `!open` comes FIRST so a close collapses from
+        // fullscreen ("Fill window") too. No `min-w` on the OPEN state: the
+        // stored width is already clamped to RIGHT_PANEL_MIN_WIDTH (384px) and
+        // the panel is `shrink-0`, so the floor is carried by the width value —
+        // a `min-w-80` here would clamp the opening transition to 320px on the
+        // first frame and make it jump instead of growing from 0.
+        !open
+          ? "w-0 min-w-0 overflow-hidden opacity-0 pointer-events-none"
+          : fullscreen
+            ? // FILL THE WINDOW MEANS THE WHOLE ROW, not half of it. The
+              // conversation card beside this is `flex-1` too, so `flex-1`
+              // here only ever split the row with it (measured: the browser
+              // took half, the chat the other half). A fixed 100% width on a
+              // `shrink-0` panel leaves the conversation (min-w-0, overflow
+              // hidden) nothing to grow into, so it collapses to 0 without
+              // unmounting; the negative margin eats the row's gap so the
+              // panel lands exactly on the row's edges. Width still animates
+              // (px ↔ % interpolate), and `!open` above still closes from here.
+              "w-full max-w-none md:-ml-2"
+            : "w-(--right-panel-width) max-w-[calc(100%-24rem)]",
       )}
     >
       {!fullscreen && <RightPanelResizeHandle panelRef={panelRef} />}
 
-      <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
+      <div className={cn("flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0", fullscreen && "pl-[max(0.5rem,calc(var(--titlebar-inset)+0.5rem))]")}>
         <div role="tablist" aria-label="Right panel tabs" className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {tabs.map((id) => {
             const on = id === tab;
-            const { label, icon: Icon, missing } = describePanelTab(id, browser);
+            const { label, icon: Icon, missing } = describePanelTab(id, browser, livePages);
             const count = counts[id];
             return (
               <span
@@ -1375,36 +1528,13 @@ export function RightPanel({
             );
           })}
           {openable.length > 0 && (
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label="Open a surface"
-                    title="Open a surface"
-                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  />
-                }
-              >
-                <PlusIcon className="size-4" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-56">
-                {openable.map((candidate) => (
-                  <DropdownMenuItem key={candidate.id} onClick={() => onOpenTab(candidate.id)}>
-                    <candidate.icon />
-                    <span className="truncate">{candidate.label}</span>
-                  </DropdownMenuItem>
-                ))}
-                {/* A LAUNCH, not a tab: once pages exist they are listed above
-                    by id, so this only appears while there is nothing to open. */}
-                {onOpenBrowser && (browser?.tabs.length ?? 0) === 0 && (
-                  <DropdownMenuItem onClick={onOpenBrowser}>
-                    <GlobeIcon />
-                    <span className="truncate">Open a browser</span>
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <button type="button" aria-label="Open a surface" title="Open a surface"
+              aria-expanded={surfaceChooserOpen} aria-controls="right-panel-surface-chooser"
+              onKeyDown={(event) => { if (event.key === "Escape") setSurfaceChooserOpen(false); }}
+              onClick={() => setSurfaceChooserOpen((value) => !value)}
+              className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground">
+              <PlusIcon className="size-4" />
+            </button>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
@@ -1429,11 +1559,32 @@ export function RightPanel({
         </div>
       </div>
 
+      {surfaceChooserOpen && (
+        <div id="right-panel-surface-chooser" role="group" aria-label="Open a surface"
+          onKeyDown={(event) => { if (event.key === "Escape") setSurfaceChooserOpen(false); }}
+          className="flex shrink-0 flex-wrap gap-1 border-b border-border p-2">
+          {openable.map((candidate) => (
+            <button key={candidate.id} type="button"
+              onClick={() => { setSurfaceChooserOpen(false); onOpenTab(candidate.id); }}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted">
+              <candidate.icon className="size-3.5" /><span>{candidate.label}</span>
+            </button>
+          ))}
+          {onOpenBrowser && (browser?.tabs.length ?? 0) === 0 && (
+            <button type="button" disabled={browserStart.status === "pending"}
+              onClick={() => { setSurfaceChooserOpen(false); onOpenBrowser(); }}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs hover:bg-muted">
+              <GlobeIcon className="size-3.5" />{browserStart.status === "pending" ? "Starting the browser…" : "Open a browser"}
+            </button>
+          )}
+        </div>
+      )}
+
       <div
         {...(tab ? { id: `right-panel-${tab}`, role: "tabpanel" } : {})}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto md:rounded-b-xl"
       >
-        {tab ? (
+        {tab && (sessionId || browserTabId(tab) === undefined) ? (
           <>
             {/* The active turn's state, in the machine's register: one word
                 saying what the RECORD below is currently doing. A page, a file,
@@ -1464,7 +1615,7 @@ export function RightPanel({
             />
           </>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
       </div>
     </aside>

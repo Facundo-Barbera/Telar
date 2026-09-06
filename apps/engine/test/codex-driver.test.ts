@@ -275,6 +275,8 @@ test("the browser socket rides the SAME overlay, Telar last, and the token never
   const argv = sent("@argv").argv as string[];
   expect(argv.slice(1)).toEqual(["app-server"]);
   expect(JSON.stringify(argv)).not.toContain("tok_secret_abc");
+  expect(sent("thread/start").developerInstructions).toContain("tools may be deferred");
+  expect(sent("thread/start").developerInstructions).toContain("telar-browser");
 });
 
 test("a RESUMED turn carries the browser overlay too — a new socket URL must reach an old thread", async () => {
@@ -283,6 +285,7 @@ test("a RESUMED turn carries the browser overlay too — a new socket URL must r
   expect(sent("thread/resume").config).toEqual({
     mcp_servers: { "telar-browser": { url: lease.url, http_headers: { Authorization: "Bearer tok_next" } } },
   });
+  expect(sent("thread/resume").developerInstructions).toContain("tools may be deferred");
 });
 
 test("the tool catalogue is refreshed AFTER the thread call and BEFORE turn/start, and its failure costs nothing", async () => {
@@ -303,6 +306,7 @@ test("a turn with no MCP servers at all sends no catalogue refresh", async () =>
   // grow a new request on every turn.
   await runTurn("plain").result;
   expect(wire().some((entry) => entry.method === "config/mcpServer/reload")).toBeFalse();
+  expect(sent("thread/start").developerInstructions).toBeUndefined();
 });
 
 test("the translation names Codex's fields, not the contract's", () => {

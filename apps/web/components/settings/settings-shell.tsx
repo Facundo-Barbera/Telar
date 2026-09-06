@@ -4,7 +4,7 @@
 // components/settings/settings-shell.tsx. A fixed side-nav (never scrolls) and
 // an internally-scrolling content pane with a sticky sub-header. Colors come
 // from theme tokens only; nothing hard-codes a palette.
-import type { ComponentType, ReactNode } from "react";
+import type { ComponentType, CSSProperties, ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -79,16 +79,35 @@ export function SettingsShell({
     : [{ group: "", items: sections }];
 
   return (
-    // `app-ground`: transparent in the desktop shell's translucent mode — the
-    // body's single wash is the canvas there (globals.css).
-    <div className="app-ground flex h-full min-h-0 bg-background text-foreground">
+    // TWO ISLANDS ON THE SHELL'S GROUND, like the cockpit. `data-surfaces` is
+    // what tells app-shell.tsx to stop framing this route as one card and to
+    // become the ground between the two drawn here (same radius, ring and
+    // 8px gutter as the rail and the conversation card). Below `md` there are
+    // no islands anywhere in the app: the nav keeps its hairline and the body
+    // is the surface. `app-ground`: transparent in the desktop shell's
+    // translucent mode — the body's single wash is the canvas (globals.css).
+    <div
+      data-surfaces
+      className="app-ground flex h-full min-h-0 bg-background text-foreground md:gap-2 md:bg-transparent"
+      // The rail's persisted width INCLUDES the 8px the floating primitive
+      // pads on each side, so the card itself is 1rem narrower; the same
+      // subtraction here keeps the content edge exactly where the session
+      // inset's is across the switch.
+      style={{ "--settings-nav-width": `${navWidth}px` } as CSSProperties}
+    >
       {/* Side-nav — fixed, never scrolls the shell */}
       {/* `bg-sidebar` full-alpha: --sidebar is the one token the wash still
           thins under a backdrop, so a /40 here would multiply down to ~18%
-          and vanish over wallpaper (the Phase-2 contract in globals.css). */}
+          and vanish over wallpaper (the Phase-2 contract in globals.css).
+          THE RAIL'S OWN SURFACE RECIPE on `md` — `bg-sidebar` plus a hairline
+          ring and the inset's radius — so this island matches the one it
+          replaces. `overflow-hidden` is what clips the drag band to the
+          corners; the ring is a box-shadow and survives it. */}
       <nav
-        className="flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar p-3"
-        style={{ width: navWidth }}
+        className={cn(
+          "flex w-[var(--settings-nav-width)] shrink-0 flex-col gap-4 overflow-x-hidden overflow-y-auto border-r border-border bg-sidebar p-3",
+          "md:w-[calc(var(--settings-nav-width)-1rem)] md:rounded-xl md:border-r-0 md:shadow-sm md:ring-1 md:ring-sidebar-border",
+        )}
       >
         {/*
           THIS NAV IS THE WINDOW'S LEFT EDGE, ALWAYS: settings screens mount no
@@ -102,7 +121,19 @@ export function SettingsShell({
           and nothing route-dependent. The road out lives at the BOTTOM of the
           nav (see below), where the app rail keeps its own meta-navigation.
         */}
-        <div className={cn("app-drag -m-3 mb-0 flex h-[var(--titlebar-height)] shrink-0 items-center border-b border-sidebar-border/60 px-3", "pl-[calc(var(--titlebar-inset)+0.75rem)]")}>
+        <div
+          className={cn(
+            "app-drag -m-3 mb-0 flex h-[var(--titlebar-height)] shrink-0 items-center border-b border-sidebar-border/60 px-3",
+            // The island sits 8px in from the window edge (app-shell.tsx), so
+            // the traffic-light inset is measured from the island — never less
+            // than the nav's own padding.
+            "pl-[max(0.75rem,calc(var(--titlebar-inset)+0.25rem))]",
+            // Same 16px shorter on `md` as the rail's band (TelarSidebarHeader)
+            // and the session masthead: the island starts 8px down and the
+            // lights do not move, so this puts the band's centre on theirs.
+            "md:h-[calc(var(--titlebar-height)-1rem)]",
+          )}
+        >
           <span className="px-1.5 font-heading text-lg font-semibold tracking-tight text-foreground">Telar</span>
         </div>
         <div className="px-1 pt-1">
@@ -173,16 +204,20 @@ export function SettingsShell({
         )}
       </nav>
 
-      {/* Content pane — sticky header + internal scroll */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* Content pane — sticky header + internal scroll. On `md` it is the
+          second island: the conversation card's recipe from the cockpit
+          (`bg-sidebar`, hairline ring, the inset's radius), clipping its own
+          content so the sticky header keeps the rounded corners. */}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border">
         {/* Drag region: the top of the window on the macOS shell. */}
         {/* EXACTLY the titlebar height, as the app header is — `min-h` plus
             padding let this bar settle a few pixels off the one it replaces,
-            and the seam jumped on every trip into Settings. */}
+            and the seam jumped on every trip into Settings. On `md` it is 16px
+            shorter, as every header beside the rail is (page-header.tsx). */}
         {/* `app-ground`: this sticky bar is a ground — over a backdrop it goes
             glass with the wash instead of keeping an 80% fill (class-name
             matching died with Phase 2; grounds opt in). */}
-        <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/80 px-5 text-foreground backdrop-blur">
+        <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/65 px-5 text-foreground backdrop-blur md:h-[calc(var(--titlebar-height)-1rem)]">
           <ActiveIcon className="size-4 text-muted-foreground" />
           <h3 className="font-heading text-sm font-semibold tracking-tight">
             {activeSection.label}

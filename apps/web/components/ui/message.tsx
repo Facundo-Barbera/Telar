@@ -94,6 +94,10 @@ export const MessageResponse = memo(
       className={cn("telar-markdown w-full text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", STREAMDOWN_LIST_SPACING, className)}
       mode={streaming ? "streaming" : "static"}
       parseIncompleteMarkdown={streaming === true}
+      // Copy stays (a real button — keyboard and touch reach it); download
+      // goes: a fenced snippet in an answer is rarely a file, and the file
+      // viewer already owns that gesture for things that are.
+      controls={{ code: { copy: true, download: false }, table: true, mermaid: true }}
       {...props}
     >
       {children}

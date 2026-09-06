@@ -118,8 +118,9 @@ export type EngineDaemonOptions = {
 export type EngineDaemon = {
   discovery: EngineDiscovery;
   store: EngineStore;
-  /** Present only when `embeddedWorker` was requested. */
-  worker?: { workerId: string };
+  /** Present only when `embeddedWorker` was requested. The id is the CURRENT
+   *  registration's — it changes when the worker re-registers after lease loss. */
+  worker?: { readonly workerId: string };
   close(): Promise<void>;
 };
 
@@ -2384,6 +2385,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         writeJson(response, 201, {
           session: store.createSession({
+            ...(input.draft === true ? { draft: true } : {}),
             id: stringValue(input.id, "session id", true),
             projectId: stringValue(input.projectId, "project id")!,
             title: stringValue(input.title, "session title", true),
@@ -2888,25 +2890,62 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // the way it owns the browser: it outlives any turn and is closed once.
       browserSocket = (await import("./drivers")).createBrowserToolSocket(routed);
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
-      const workerId = config.workerId ?? `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
-      const worker = new EngineWorker({
-        client: new EngineClient(discovery),
-        workerId,
-        driver: await createDriver(),
-        browserSocket,
-        ...(concurrency === undefined ? {} : { concurrency }),
-        ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
+      const { WorkerReconnectController } = await import("./worker-supervisor");
+      // Built once up front so a driver that cannot be constructed fails the
+      // boot, not a retry loop; every later attempt builds its own.
+      let initialDriver: DriverSelector | undefined = await createDriver();
+      const freshWorkerId = () => `worker_embedded_${crypto.randomUUID().replaceAll("-", "")}`;
+      let workerId = config.workerId ?? freshWorkerId();
+      let generation = 0;
+      /**
+       * SUPERVISED LIKE THE OUT-OF-PROCESS WORKER. A stalled event loop (a
+       * synchronous git child, say) misses heartbeats, the pruner evicts the
+       * registration, and the next beat answers `worker_unavailable`. That is
+       * a connection loss: the old worker stops (its claims were already
+       * requeued by the prune, its driver is disposed) and a NEW worker with a
+       * NEW id registers — never the old id over the old claims. The browser
+       * and its socket stay the daemon's and are handed to each worker.
+       */
+      const socket = browserSocket;
+      const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
+        connect: async () => new EngineClient(discovery),
+        createWorker: async (client, onConnectionLost) => {
+          generation += 1;
+          if (generation > 1) {
+            workerId = freshWorkerId();
+            process.stderr.write(`[telar] embedded worker lost its lease; re-registering as ${workerId}\n`);
+          }
+          const driver = initialDriver ?? (await createDriver());
+          initialDriver = undefined;
+          return new EngineWorker({
+            client,
+            workerId,
+            driver,
+            browserSocket: socket,
+            ...(concurrency === undefined ? {} : { concurrency }),
+            ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
+            onConnectionLost,
+          });
+        },
+        pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        ...(config.pollMs === undefined ? {} : { retryMs: config.pollMs }),
       });
-      await worker.start();
-      embedded = { workerId, stop: () => worker.stop() };
+      await supervisor.start();
+      embedded = {
+        get workerId() {
+          return workerId;
+        },
+        stop: () => supervisor.stop(),
+      };
     }
 
     let closed = false;
     return {
       discovery,
       store,
-      ...(embedded ? { worker: { workerId: embedded.workerId } } : {}),
+      // A getter: the id changes when the supervisor re-registers.
+      ...(embedded ? { worker: embedded } : {}),
       async close() {
         if (closed) return;
         closed = true;

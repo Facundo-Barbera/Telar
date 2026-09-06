@@ -86,6 +86,11 @@ function resolveChannel(stamp: BuildStamp | undefined): Channel {
   // only place this answer can honestly come from — a port number or an install
   // path would just be a guess wearing a type.
   if (stamp?.channel?.trim() === "nightly") return "nightly";
+  // `package-desktop.sh --dev` stamps this: a packaged build that is still a
+  // throwaway checkout, and says so to a phone the same way the shell's title
+  // bar does. A plain working-tree package stamps "local" and stays "stable" —
+  // it is the build somebody cut, on their own machine.
+  if (stamp?.channel?.trim() === "dev") return "dev";
   // Stamped but not a nightly: a build somebody cut, `beta` included.
   if (stamp) return "stable";
   // No stamp at all: this server was started from a checkout, which is exactly

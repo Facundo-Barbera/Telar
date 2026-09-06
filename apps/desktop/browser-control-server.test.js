@@ -88,3 +88,64 @@ describe("control state over the wire", () => {
     }
   });
 });
+
+describe("opening a tab for the human", () => {
+  test("/open routes to manager.action so the tab is stamped human, never through callTool", async () => {
+    const actions = [];
+    const calls = [];
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => ({
+        action(scopeKey, action) {
+          actions.push({ scopeKey, action });
+          return { scopeKey, running: true, tabs: [{ index: 0, title: "New tab", url: "about:blank", active: true, openedBy: "human" }] };
+        },
+        callTool(scopeKey, name, args) {
+          calls.push({ scopeKey, name, args });
+          return { content: [] };
+        },
+      }),
+    });
+    try {
+      const response = await fetch(`http://127.0.0.1:${control.port}/open`, {
+        method: "POST",
+        headers: { Authorization: "Bearer secret", "Content-Type": "application/json" },
+        body: JSON.stringify({ scopeKey: "session-a" }),
+      });
+      const payload = await response.json();
+      expect(payload.tabs[0].openedBy).toBe("human");
+      expect(actions).toEqual([{ scopeKey: "session-a", action: { action: "new", url: "about:blank" } }]);
+      expect(calls).toEqual([]);
+    } finally {
+      await control.close();
+    }
+  });
+
+  test("/bind declares a scope's project profile on the manager and relays its refusal", async () => {
+    const declared = [];
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => ({
+        declareProfile(scopeKey, profileKey) {
+          declared.push({ scopeKey, profileKey });
+          if (profileKey === "bad") throw new Error("Browser profile key must be a project id");
+          return { scopeKey, profileKey, partition: "persist:telar-project-x" };
+        },
+      }),
+    });
+    try {
+      const post = (body) => fetch(`http://127.0.0.1:${control.port}/bind`, { method: "POST", headers: { Authorization: "Bearer secret", "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const ok = await post({ scopeKey: "session-a", profileKey: "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+      expect(ok.status).toBe(200);
+      expect((await ok.json()).partition).toBe("persist:telar-project-x");
+      const bad = await post({ scopeKey: "session-a", profileKey: "bad" });
+      expect(bad.status).toBe(400);
+      expect((await bad.json()).error).toContain("project id");
+      expect(declared).toHaveLength(2);
+    } finally {
+      await control.close();
+    }
+  });
+});

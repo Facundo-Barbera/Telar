@@ -211,3 +211,15 @@ describe("pricing", () => {
     expect(priceTokens(RATES, "Anthropic/claude-opus-5", tokens)).toBeCloseTo(10 * 1e-5 + 10 * 5e-5);
   });
 });
+
+
+test("daily buckets honor local midnight and fall back to UTC for an invalid zone", async () => {
+  const scan = scanRoots();
+  const at = Date.UTC(2026, 7, 30, 2);
+  fs.writeFileSync(path.join(scan.claude, "-tmp-proj", "midnight.jsonl"), claudeLine({ at }));
+  const local = await read(scan, { ...WINDOW, timeZone: "America/Mexico_City" });
+  const fallback = await read(scan, { ...WINDOW, timeZone: "invalid/zone" });
+  expect(local.buckets[0]?.period).toBe("2026-08-29");
+  expect(fallback.buckets[0]?.period).toBe("2026-08-30");
+  expect(local.buckets[0]?.tokens).toEqual(fallback.buckets[0]?.tokens);
+});

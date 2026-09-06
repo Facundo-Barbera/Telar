@@ -268,11 +268,11 @@ const ANSWER_QUESTION = `Record the user's answer to one of a task's open questi
 
 const SETTLE_THREAD = `Close a thread's question with WHAT WAS FOUND OUT — the user's answer, in their words. Only use this to relay an answer the user actually gave in this conversation; never settle on your own conclusion. The answer is required: a settle without one would be a status flip, and this store cannot express one. The thread stays on the map as the record of what was worked out — nothing is deleted, and no work is started or accepted by this.`;
 
-const SET_FOCUS = `Record what the user is on — one subject, with an optional note in their words about where they are. This is a work record, not a view: it feeds the pickup ("where you left off") the next time the user opens that subject's brief. It does not and cannot move the user's screen — they navigate their own rooms. Set it when the user says they are working on something ("let's focus on ozom-gv"); never set it on your own initiative.`;
+const SET_FOCUS = `Record what the user is on — one subject, with an optional note in their words about where they are. This is a work record, not a view: it feeds the pickup ("where you left off") the next time the user opens that subject's brief. It does not and cannot move the user's screen — they navigate their own rooms. Set it when the user says they are working on something ("let's focus on sample-project"); never set it on your own initiative.`;
 
 const LOOK = `Glance at a subject's terrain — the repository the user said it lives in — and get back what MOVED since the Spool's last look, as plain sentences with issue/PR numbers ("PR #420 merged since your last look."). Deterministic and read-only: it never writes to the tracker, never invents urgency, and a subject with no terrain answers with a note, not an error. Use it when the user arrives at a subject or asks what changed; do not loop it — the world does not move that fast.`;
 
-const SET_TERRAIN = `Record where a subject lives, ONLY when the user has stated it in this conversation ("ozom-gv lives in ozom-ai/ozom-gv"). The terrain is an address plus the user's own facts about it (notes) — never something you discovered and asserted on your own. Pass clear: true to withdraw it when the user says the address is wrong. A subject with no terrain is fully first-class; never press the user to add one.`;
+const SET_TERRAIN = `Record where a subject lives, ONLY when the user has stated it in this conversation ("sample-project lives in example-owner/sample-project"). The terrain is an address plus the user's own facts about it (notes) — never something you discovered and asserted on your own. Pass clear: true to withdraw it when the user says the address is wrong. A subject with no terrain is fully first-class; never press the user to add one.`;
 
 const SET_SUBJECT_IDENTITY = `Record a subject's identity — the area it belongs to and/or its color — ONLY when the user states it in this conversation ("pon casa en el área personal, de color mar"). Identity is the user's: an area is their own group name ("Trabajo", "Personal"), written verbatim, and a color is one of the Spool's named tokens. NEVER invent an area, never pick a color uninvited, and never suggest either unprompted. Color says WHOSE a subject is, never how urgent — it carries no state, no priority and no deadline meaning. Pass clearArea or clearColor when the user withdraws one; a subject with no area and no color is fully ordinary.`;
 
@@ -1072,11 +1072,11 @@ export function spoolTools(tool: ToolFactory, capability: SpoolCapability): unkn
         repo: z
           .string()
           .optional()
-          .describe('The address the USER stated, as `owner/name` — e.g. "ozom-ai/ozom-gv". Required unless clearing.'),
+          .describe('The address the USER stated, as `owner/name` — e.g. "example-owner/sample-project". Required unless clearing.'),
         notes: z
           .string()
           .optional()
-          .describe('The user\'s own facts about the place, verbatim where possible: "milestones are Hitos; needs-approval is the accept gate".'),
+          .describe('The user\'s own facts about the place, verbatim where possible: "milestones are phases; needs-approval is the accept gate".'),
         clear: z.boolean().optional().describe("True to withdraw the terrain, when the user says the address is wrong."),
       },
       async (args) => {

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
@@ -347,6 +348,12 @@ export class EngineWorker {
       // Measured — the test below asserted `failed` and got `claimed`.
       await this.options.client.markTurnRunning(sessionId, runId, claimToken);
       const driver = this.driverFor(driverKind);
+      // THE PROJECT FOLDER MUST EXIST BEFORE A PROVIDER IS SPAWNED IN IT. A
+      // missing cwd makes the SDK's spawn fail with ENOENT, which the Claude
+      // SDK reports as a misleading "native binary" error — the folder, not
+      // the binary, is what is gone (a moved checkout, a deleted worktree).
+      // Said plainly here, in the words that fix it, before anything spawns.
+      assertProjectRoot(cwd);
       /**
        * THE SESSION'S BROWSER LEASE, one binding per session rather than one
        * per run. The lease's url+token are baked into the provider's live
@@ -357,6 +364,28 @@ export class EngineWorker {
        * arriving between turns is asked against a settled claim and refused.
        * Released in `stop()`, when the provider processes die too.
        */
+      // THE PROJECT PROFILE, EVERY TURN, BEFORE THE LEASE. Idempotent, and
+      // repeated on purpose: the desktop manager's in-memory bindings are lost
+      // if its window is rebuilt (e.g. a translucency rebuild) while the worker
+      // keeps its cached lease — without a rebind that session's browser would
+      // refuse to open until the cockpit next declared it. The host refuses
+      // tabs for a scope nobody bound; a projectless session binds `none`.
+      //
+      // A BINDING THE HOST CANNOT TAKE IS NOT THE TURN'S FAILURE. Measured in
+      // release review: an older desktop shell (no `/bind` route) answered
+      // 404 "Not found." and, because this threw, EVERY turn on the machine
+      // failed as `driver_failed: Not found.` before the provider ran — with
+      // no browser tool involved. The binding is a precondition for the
+      // browser TOOLS, and the router re-issues it before each tool call
+      // (`restoreProfile`), where a refusal lands on the call that needs it.
+      // Here it is best-effort; the reason is noted for the operator.
+      if (this.options.browserSocket) {
+        try {
+          await this.options.browserSocket.bindProfile(sessionId, claim.projectId ?? "none");
+        } catch (error) {
+          console.error(`[worker] browser profile binding deferred for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       const cached = this.browserLeases.get(sessionId);
       if (cached) {
         cached.refs.gate = gateForTurn;
@@ -763,6 +792,32 @@ export class EngineWorker {
     this.connectionLost = true;
     for (const controller of this.active.values()) controller.abort(reason instanceof Error ? reason : new Error("engine connectivity lost"));
     this.options.onConnectionLost?.();
+  }
+}
+
+/**
+ * The project folder a provider would be spawned in must be a readable
+ * directory NOW. Thrown as a `driver_failed` message that names the path and
+ * the likely cause, so a moved checkout reads as "the folder is gone", never
+ * as a broken binary.
+ */
+export function assertProjectRoot(cwd: string): void {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(cwd);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    throw new Error(
+      code === "ENOENT"
+        ? `The project folder ${cwd} does not exist. It may have been moved or deleted; re-register the project with its current location (or restore the folder) and retry.`
+        : `The project folder ${cwd} cannot be accessed (${code ?? "unknown error"}). Check its permissions and retry.`,
+    );
+  }
+  if (!stat.isDirectory()) throw new Error(`The project path ${cwd} is not a folder. Re-register the project with its checkout directory and retry.`);
+  try {
+    fs.accessSync(cwd, fs.constants.R_OK | fs.constants.X_OK);
+  } catch {
+    throw new Error(`The project folder ${cwd} is not readable by this user. Check its permissions and retry.`);
   }
 }
 

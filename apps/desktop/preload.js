@@ -47,6 +47,8 @@ document.addEventListener("DOMContentLoaded", () => {
 contextBridge.exposeInMainWorld("telarDesktop", {
   isDesktop: true,
   browser: {
+    suggestions: (scopeKey) => ipcRenderer.invoke("telar:browser:suggestions", scopeKey),
+    removeSuggestion: (scopeKey, url) => ipcRenderer.invoke("telar:browser:remove-suggestion", { scopeKey, url }),
     getState: (scopeKey) => ipcRenderer.invoke("telar:browser:state", scopeKey),
     action: (scopeKey, action) => ipcRenderer.invoke("telar:browser:action", { scopeKey, action }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
@@ -54,11 +56,18 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     setVisible: (scopeKey, visible) => ipcRenderer.invoke("telar:browser:set-visible", { scopeKey, visible }),
     releaseScope: (scopeKey, destroy = false) => ipcRenderer.invoke("telar:browser:release-scope", { scopeKey, destroy }),
     adoptScope: (fromScopeKey, toScopeKey) => ipcRenderer.invoke("telar:browser:adopt-scope", { fromScopeKey, toScopeKey }),
-    // The §6 handback: the human returning the browser to the agent. There is
-    // deliberately no takeBack() twin — taking is done by touching the page.
-    handBack: (scopeKey) => ipcRenderer.invoke("telar:browser:hand-back", { scopeKey }),
     onState: (listener) => on("telar:browser:state", listener),
     onPointer: (listener) => on("telar:browser:pointer", listener),
+    // The password manager: its status, its toolbar popup, and the human's
+    // explicit resume from a private interaction.
+    // Per-project browser profile: the cockpit binds a session's scope to its
+    // project before showing the panel, so a human-opened tab lands in the
+    // right cookie jar even before the first agent turn.
+    bindProfile: (scopeKey, profileKey) => ipcRenderer.invoke("telar:browser:bind-profile", { scopeKey, profileKey }),
+    extensionStatus: (scopeKey) => ipcRenderer.invoke("telar:browser:extension-status", scopeKey),
+    openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
+    resumeFromPrivate: () => ipcRenderer.invoke("telar:browser:private-resume"),
+    onExtension: (listener) => on("telar:browser:extension", listener),
   },
   /**
    * The native folder picker.

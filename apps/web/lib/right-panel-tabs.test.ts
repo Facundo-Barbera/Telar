@@ -7,8 +7,33 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { closeOtherPanelTabs, closePanelTab, emptyPanelTabs, openPanelTab, type PanelTabState } from "./right-panel-tabs";
-import { browserPanelTab, browserTabId, browserTabLabel, isPanelTab } from "@/components/right-panel";
+import { closeOtherPanelTabs, closePanelTab, collapseBrowserTabs, emptyPanelTabs, openPanelTab, type PanelTabState } from "./right-panel-tabs";
+import { browserPanelTab, browserTabId, browserTabLabel, describePanelTab, isPanelTab, LIVE_BROWSER_TAB, type PanelTab } from "@/components/right-panel";
+
+describe("collapseBrowserTabs (desktop upgrade path)", () => {
+  const isBrowser = (tab: PanelTab) => browserTabId(tab) !== undefined;
+  test("replaces every per-page browser tab with ONE, preserving order and active", () => {
+    const state: PanelTabState<PanelTab> = {
+      tabs: ["issues", browserPanelTab("p1"), "diff", browserPanelTab("p2")],
+      activeTab: browserPanelTab("p2"),
+      open: true,
+    };
+    const collapsed = collapseBrowserTabs(state, isBrowser, LIVE_BROWSER_TAB);
+    expect(collapsed.tabs).toEqual(["issues", LIVE_BROWSER_TAB, "diff"]);
+    expect(collapsed.activeTab).toBe(LIVE_BROWSER_TAB); // active was a browser page
+    expect(collapsed.open).toBe(true);
+  });
+  test("leaves a state with no browser tabs untouched, and keeps a non-browser active tab", () => {
+    const state: PanelTabState<PanelTab> = { tabs: ["issues", "diff"], activeTab: "diff", open: true };
+    expect(collapseBrowserTabs(state, isBrowser, LIVE_BROWSER_TAB)).toBe(state);
+    const withBrowser: PanelTabState<PanelTab> = { tabs: [browserPanelTab("p1"), "files"], activeTab: "files", open: true };
+    expect(collapseBrowserTabs(withBrowser, isBrowser, LIVE_BROWSER_TAB).activeTab).toBe("files");
+  });
+  test("the collapsed tab describes as a single Browser surface", () => {
+    expect(describePanelTab(LIVE_BROWSER_TAB).label).toBe("Browser");
+    expect(describePanelTab(LIVE_BROWSER_TAB).missing).toBeUndefined();
+  });
+});
 
 type Tab = "agents" | "changes" | "usage" | `browser:${string}`;
 const state = (tabs: Tab[], activeTab?: Tab, open = true): PanelTabState<Tab> => ({ tabs, ...(activeTab ? { activeTab } : {}), open });

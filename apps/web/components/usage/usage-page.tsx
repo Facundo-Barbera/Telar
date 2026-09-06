@@ -76,20 +76,23 @@ function Tile({ label, value }: { label: string; value: string }) {
 export function UsagePage() {
   const [metric, setMetric] = useState<Metric>("cost");
   const [windowKey, setWindowKey] = useState<WindowKey>("7d");
-  const [report, setReport] = useState<UsageReport>();
+  const [result, setResult] = useState<{ window: WindowKey; report: UsageReport }>();
+  const report = result?.window === windowKey ? result.report : undefined;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   // Stale-while-revalidate per window: switching filters shows the last
   // report for that window INSTANTLY and refreshes behind it — the engine's
   // transcript rescan must never gate a button press.
   const cache = useRef(new Map<WindowKey, UsageReport>());
+  const request = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++request.current;
     const window = WINDOWS.find((entry) => entry.key === windowKey)!;
     const cached = cache.current.get(windowKey);
-    if (cached) setReport(cached);
+    if (cached) setResult({ window: windowKey, report: cached });
     const untilMs = Date.now();
-    setLoading(!cached);
+    setLoading(true);
     setError(undefined);
     try {
       const { usage } = await api.usage({
@@ -98,18 +101,22 @@ export function UsagePage() {
         resolution: window.resolution,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
-      cache.current.set(windowKey, usage);
-      setReport(usage);
+      const previous = cache.current.get(windowKey);
+      if (!previous || usage.readAt >= previous.readAt) cache.current.set(windowKey, usage);
+      if (generation === request.current) setResult({ window: windowKey, report: usage });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The engine did not answer.");
+      if (generation === request.current) setError(cause instanceof Error ? cause.message : "The engine did not answer.");
     } finally {
-      setLoading(false);
+      if (generation === request.current) setLoading(false);
     }
   }, [windowKey]);
 
   useEffect(() => {
     const task = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(task);
+    return () => {
+      window.clearTimeout(task);
+      request.current += 1;
+    };
   }, [load]);
 
   const fold: UsageFold | undefined = useMemo(() => (report ? foldUsage(report) : undefined), [report]);
@@ -138,7 +145,7 @@ export function UsagePage() {
   const empty = fold !== undefined && fold.total.turns === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden md:rounded-xl md:ring-1 md:ring-sidebar-border">
       <PageHeader
         title="Usage"
         description={error ?? (unpricedProvider && metric === "cost" ? "Some models have no known rate; their cost is not counted." : undefined)}
@@ -152,7 +159,19 @@ export function UsagePage() {
                 { value: "tokens", label: "Tokens" },
               ]}
             />
-            <Segmented<WindowKey> value={windowKey} onChange={setWindowKey} options={WINDOWS.map(({ key, label }) => ({ value: key, label }))} />
+            <Segmented<WindowKey>
+              value={windowKey}
+              onChange={(key) => {
+                if (key === windowKey) return;
+                request.current += 1;
+                setWindowKey(key);
+                const cached = cache.current.get(key);
+                setResult(cached ? { window: key, report: cached } : undefined);
+                setError(undefined);
+                setLoading(true);
+              }}
+              options={WINDOWS.map(({ key, label }) => ({ value: key, label }))}
+            />
             <Button size="icon-sm" variant="ghost" aria-label="Refresh" onClick={() => void load()} disabled={loading}>
               {loading ? <Spinner /> : <RotateCwIcon />}
             </Button>
@@ -161,6 +180,7 @@ export function UsagePage() {
       />
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-5 py-5">
+          {!report && loading && <p role="status" className="text-sm text-muted-foreground">Loading usage history…</p>}
           {empty && <p className="text-sm text-muted-foreground">No activity in this window.</p>}
 
           {fold && !empty && (

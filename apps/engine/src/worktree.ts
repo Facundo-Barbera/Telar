@@ -28,19 +28,80 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-export type GitResult = { status: number; stdout: string; stderr: string };
-/** Injectable so tests never need a real repository. */
-export type GitRunner = (cwd: string, args: string[]) => GitResult;
-
-export const defaultGitRunner: GitRunner = (cwd, args) => {
-  try {
-    const stdout = execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-    return { status: 0, stdout, stderr: "" };
-  } catch (error) {
-    const failure = error as { status?: number; stdout?: string; stderr?: string };
-    return { status: failure.status ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? String(error) };
-  }
+export type GitResult = {
+  status: number;
+  stdout: string;
+  stderr: string;
+  /** Set when the child was killed for outrunning its bound rather than exiting on its own. */
+  timedOut?: true;
 };
+export type GitRunOptions = {
+  /** Wall-clock bound for this one invocation; the runner's default otherwise. */
+  timeoutMs?: number;
+};
+/** Injectable so tests never need a real repository. */
+export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) => GitResult;
+
+/**
+ * EVERY GIT CHILD IS BOUNDED. The runner is synchronous — `listProjects` calls
+ * it on the sidebar's poll path, inside the daemon's event loop — so a child
+ * that never returns is a daemon that never answers anything again. Measured:
+ * a `git rev-parse --abbrev-ref HEAD` on a project under ~/Documents blocked for
+ * minutes in the kernel (`__getcwd` → `__open_nocancel`), and every
+ * `GET /api/projects` timed out behind it until that one process was killed.
+ *
+ * Generous enough for a `worktree add` on a large checkout, small enough that a
+ * stall is a stale branch label for a moment rather than a frozen app.
+ * `TELAR_GIT_TIMEOUT_MS` overrides it for a machine where the default is wrong.
+ */
+export const DEFAULT_GIT_TIMEOUT_MS = 30_000;
+
+/** The status a timed-out child reports — coreutils' `timeout` convention. */
+export const GIT_TIMEOUT_STATUS = 124;
+
+export type GitRunnerDeps = {
+  /** Which binary to run; `git` from PATH by default. Tests point it at a stalled fake. */
+  gitBin?: string;
+  defaultTimeoutMs?: number;
+};
+
+export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
+  const gitBin = deps.gitBin ?? "git";
+  return (cwd, args, options) => {
+    const timeout = Math.max(1, options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv());
+    try {
+      const stdout = execFileSync(gitBin, args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout,
+        // SIGKILL, NOT SIGTERM: the stall this guards against is a child stuck
+        // in a syscall, and a signal git may handle politely is a signal it may
+        // never get around to handling.
+        killSignal: "SIGKILL",
+      });
+      return { status: 0, stdout, stderr: "" };
+    } catch (error) {
+      const failure = error as { code?: string; signal?: string | null; status?: number | null; stdout?: string; stderr?: string };
+      if (failure.code === "ETIMEDOUT" || (failure.status == null && failure.signal === "SIGKILL")) {
+        return {
+          status: GIT_TIMEOUT_STATUS,
+          stdout: failure.stdout ?? "",
+          stderr: `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed`,
+          timedOut: true,
+        };
+      }
+      return { status: failure.status ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr || String(error) };
+    }
+  };
+}
+
+function gitTimeoutFromEnv(): number {
+  const raw = Number(process.env.TELAR_GIT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GIT_TIMEOUT_MS;
+}
+
+export const defaultGitRunner: GitRunner = createGitRunner();
 
 export class WorktreeError extends Error {
   constructor(message: string) {

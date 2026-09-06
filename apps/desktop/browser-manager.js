@@ -1,8 +1,90 @@
 const { randomUUID } = require("node:crypto");
+const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
+const { partitionFor } = require("./browser-profiles");
+const { serializeInventory, parseInventory } = require("./browser-tab-store");
 
 const CURSOR_MOVE_MS = 160;
 const CURSOR_CLICK_LEAD_MS = 40;
 const RPC_TIMEOUT_MS = 30_000;
+/**
+ * THE STANDARD VIEWPORT — what every tab lays out for unless a person or the
+ * agent asks for another size. The same size the engine hands its headless
+ * Chromium (browser/transport.ts), so an agent sees the same page in both.
+ * It is the tab's INTRINSIC size: the panel's column width never changes it
+ * (a narrower column scales the presentation — see `syncViewport`), so the
+ * agent's snapshot, its click coordinates and what the human sees agree.
+ */
+const DEFAULT_VIEWPORT = { width: 1280, height: 800 };
+/** Kept under its old name for the callers/tests that speak of the
+ *  unmounted case; it is the same standard size. */
+const UNMOUNTED_VIEWPORT = DEFAULT_VIEWPORT;
+/** Named sizes the toolbar and `browser_resize {preset}` offer. */
+const VIEWPORT_PRESETS = {
+  default: { width: 1280, height: 800, label: "Default" },
+  laptop: { width: 1440, height: 900, label: "Laptop" },
+  tablet: { width: 768, height: 1024, label: "Tablet" },
+  phone: { width: 390, height: 844, label: "Phone" },
+};
+const VIEWPORT_MIN = 200;
+const VIEWPORT_MAX = 5_000;
+/** A rendered size is CSS width×height×scale²; bounded so a resize cannot
+ *  ask the compositor for a wall of pixels. */
+const VIEWPORT_MAX_AREA = 5_000 * 3_000;
+
+/** A requested viewport → the clamped one, or a thrown reason. */
+function resolveViewport(input) {
+  if (input && typeof input === "object" && typeof input.preset === "string") {
+    const preset = VIEWPORT_PRESETS[input.preset];
+    if (!preset) throw new Error(`Unknown viewport preset ${JSON.stringify(input.preset)}. Presets: ${Object.keys(VIEWPORT_PRESETS).join(", ")}.`);
+    return { width: preset.width, height: preset.height };
+  }
+  const width = Math.round(Number(input?.width));
+  const height = Math.round(Number(input?.height));
+  if (!Number.isFinite(width) || !Number.isFinite(height)) throw new Error("A viewport needs a numeric width and height, or a preset.");
+  const clamp = (value) => Math.min(VIEWPORT_MAX, Math.max(VIEWPORT_MIN, value));
+  let w = clamp(width);
+  let h = clamp(height);
+  if (w * h > VIEWPORT_MAX_AREA) h = Math.max(VIEWPORT_MIN, Math.floor(VIEWPORT_MAX_AREA / w));
+  return { width: w, height: h };
+}
+
+/** Which preset (if any) a size is — the toolbar shows a name over numbers. */
+function presetOf(viewport) {
+  for (const [key, preset] of Object.entries(VIEWPORT_PRESETS)) {
+    if (preset.width === viewport.width && preset.height === viewport.height) return key;
+  }
+  return null;
+}
+
+/**
+ * PRESENTATION-ONLY FIT. The page keeps its intrinsic CSS viewport; when the
+ * panel is narrower than that, the native view is scaled down to fit (never
+ * up — a small page in a wide panel is shown at 1:1, centred). Returns the
+ * scale and the native rect the view should occupy inside `bounds`.
+ * Measured in a real Electron (Astra's probe, 2026-09-06): bounds 640×400
+ * with `Emulation.setDeviceMetricsOverride {1280×800, scale: 0.5}` keeps
+ * innerWidth/innerHeight at 1280×800, native input maps through the scale on
+ * its own, and CDP `Input.dispatch*` takes NATIVE (scaled) coordinates.
+ */
+function fitViewport(viewport, bounds) {
+  const scale = Math.min(1, bounds.width / viewport.width, bounds.height / viewport.height);
+  const width = Math.max(1, Math.round(viewport.width * scale));
+  const height = Math.max(1, Math.round(viewport.height * scale));
+  return {
+    scale,
+    rect: {
+      x: bounds.x + Math.max(0, Math.floor((bounds.width - width) / 2)),
+      y: bounds.y + Math.max(0, Math.floor((bounds.height - height) / 2)),
+      width,
+      height,
+    },
+  };
+}
+/** How long a capture of a hidden view may take before it is an error rather
+ *  than a hang. A frame from a live compositor is milliseconds; anything
+ *  approaching this means there is no frame coming. */
+const CAPTURE_TIMEOUT_MS = 8_000;
+const CAPTURE_TIMEOUT_MESSAGE = "Screenshot timed out — the page has no frame to capture.";
 const HIBERNATE_GRACE_MS = RPC_TIMEOUT_MS;
 const MAX_LOG_ITEMS = 200;
 const MAX_LIVE_VIEWS = 6;
@@ -11,22 +93,62 @@ const MAX_LIVE_VIEWS = 6;
 // at 24; tabs churn faster, so half that.
 const MAX_TABS_PER_SCOPE = 12;
 
-// --- The shared-browser control model (§6, docs/browser-v2-plan.md) ---------
-// Agent-synthesized CDP input raises the SAME DOM events a human's hands do,
-// so attribution is temporal: input seen while an agent call is in flight, or
-// within this many ms of agent-dispatched input, belongs to the agent. The
-// race window means a human click inside it can be missed ONCE — the next
-// input flips control. Chosen over a marker protocol because the marker would
-// have to survive every page's own event handling.
+// --- The shared-browser interaction model ----------------------------------
+// One tab, two hands, no owner. Direct human input WINS: while a human is
+// actively interacting with a tab, an agent mutation on that tab DEFERS
+// (briefly — it waits for the hands to lift, bounded), and once it may go it
+// must have OBSERVED the page since the human's last input or since the last
+// navigation. Anything the agent decided from a stale view is refused with the
+// reason, never replayed. Conflicting actions on one tab are serialized;
+// other tabs are independent. Nothing here is a lock that a human has to
+// release: attention decays on its own.
+//
+// ATTRIBUTION IS STILL TEMPORAL. Agent-synthesized CDP input raises the same
+// DOM events a human's hands do, so in-page input seen while an agent call is
+// in flight, or within the grace of agent-dispatched input, belongs to the
+// agent. The cockpit's own chrome (URL bar, tab strip) is human by construction.
 const HUMAN_ATTRIBUTION_GRACE_MS = 400;
+/** While an agent call is IN FLIGHT the coarse grace above would swallow a
+ *  real human click. So every synthetic input the agent dispatches that will
+ *  raise a preload report (a click's pointerdown, a key's keydown) is
+ *  EXPECTED on the tab; the next report consumes one expectation and is the
+ *  agent's. A report with nothing expected is a human interrupting, and the
+ *  action is told so before its next mutation. Expectations expire: a hidden
+ *  view delivers its echo late (measured ~1.1 s in the Electron regression),
+ *  so the TTL clears that, and a dropped echo cannot swallow a real hand for
+ *  longer than it. The preload's report throttle is short for the same
+ *  reason — an echo it drops is an expectation that lingers. */
+const SYNTHETIC_REPORT_TTL_MS = 2_000;
+/** How long after the last human input a tab counts as "in the human's hands"
+ *  for the purpose of deferring an agent mutation. */
+const HUMAN_ACTIVE_MS = 1_500;
+/** The most an agent mutation waits for the hands to lift before it is
+ *  answered with "the human is still interacting" — never an indefinite lock. */
+const DEFER_MAX_MS = 5_000;
+const DEFER_POLL_MS = 100;
+/** How long ONE frame's credential-safety probe may take before the resume
+ *  treats it as unresponsive (fails closed with an actionable message). A
+ *  responsive page answers in a few ms; a wedged background frame must not
+ *  hang the resume — that was the never-clearing-banner bug. */
+const CREDENTIAL_PROBE_TIMEOUT_MS = 750;
+/** Distinguishes a probe that timed out from one that answered. */
+const PROBE_TIMEOUT = Symbol("probe-timeout");
+/** How often the automatic-release loop re-checks whether the credential
+ *  interaction is over. Short enough to feel immediate after a submit. */
+const AUTO_RELEASE_POLL_MS = 300;
+/** The whole cross-tab credential probe is bounded to this, independent of
+ *  how many tabs/frames it must ask (they run in parallel). */
+const CREDENTIAL_STATUS_BUDGET_MS = 1_500;
 
-function humanHoldsTab(tab, index) {
-  return `The human took tab ${index} — ${tab.title || tab.url || "untitled"}. Wait for it back, or work in another tab. You can still look (snapshot, screenshot, console, network — pass tabId) to see what they are doing.`;
+function humanActiveOn(tab, index) {
+  return `The human is interacting with tab ${index} — ${tab.title || tab.url || "untitled"} — right now. Wait a moment and look again (snapshot or screenshot), or work in another tab.`;
+}
+function staleView(tab, index, why) {
+  return `Tab ${index} — ${tab.title || tab.url || "untitled"} — changed since you last looked (${why}). Take a fresh snapshot or screenshot before acting on it.`;
 }
 
-// The reads an agent keeps during human control: watching is the point of a
-// SHARED browser. Everything else — anything that changes the page or the tab
-// set — waits for the handback.
+// Reads never conflict with a human and never need a fresh view — they ARE
+// the fresh view. Everything else changes the page or the tab set.
 const READ_TOOLS = new Set([
   "browser_snapshot",
   "browser_take_screenshot",
@@ -42,6 +164,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** The promise, or `message` as an error once `ms` has passed. The timer is
+ *  cleared either way so a settled capture leaves nothing behind. */
+function withTimeout(promise, ms, message) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
 function createElectronView(options) {
   const { WebContentsView } = require("electron");
   return new WebContentsView(options);
@@ -49,6 +181,10 @@ function createElectronView(options) {
 
 function okText(text) {
   return { content: [{ type: "text", text }] };
+}
+
+function textOfResult(result) {
+  return (result?.content || []).filter((part) => part.type === "text").map((part) => part.text).join(" ");
 }
 
 function errorResult(error) {
@@ -189,32 +325,363 @@ class DesktopBrowserManager {
     this.activeTabIds = new Map();
     this.visibleScopeKey = null;
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
+    /**
+     * BOUNDS ARE PER SCOPE. `this.bounds` is always the VISIBLE scope's;
+     * every scope's last published rect is kept here, and becoming visible
+     * adopts its own. Without this, a late `setBounds` for a session the
+     * renderer had already left (an in-flight rAF/IPC during a route switch)
+     * wrote the global rect and re-placed the OTHER session's view with it.
+     */
+    this.boundsByScope = new Map();
     this.version = 0;
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
+    this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
     this.activeToolCalls = new Map();
-    // Control lives ON THE TAB (tab.controller / tab.controlEpoch), not here:
-    // a human taking tab 2 must not stop the agent working in tab 1. The two
-    // maps below are scope-level only because ATTRIBUTION is — agent input is
-    // dispatched per scope call, whichever tab it lands in.
+    // Attribution is scope-level because agent input is dispatched per scope
+    // call, whichever tab it lands in. Everything else lives ON THE TAB
+    // (see createTab): the human's last input, the page generation the agent
+    // last observed, and the per-tab action queue.
     this.lastAgentInputAt = new Map();
     this.now = dependencies.now || Date.now;
     // The shell forwards these to the engine journal (browser.control.changed)
     // and the renderer hears them through the ordinary state push.
     this.onControlChanged = dependencies.onControlChanged || null;
+    /** `(scopeKey, url)` after a SUCCESSFUL top-level http(s) navigation,
+     *  outside a private interaction — what feeds the start page's recent
+     *  sites. Never an extension page, never a failed load, never a URL
+     *  seen while a person signs in. */
+    this.onVisited = dependencies.onVisited || null;
+    // Credential field events are protected independently of extension chrome.
+    this.privacy = dependencies.privacy || new PrivateInteraction({ now: this.now, onChange: (state) => this.onPrivacyChange(state) });
+    // Only actual credential entry starts the automatic protection lifecycle.
+    this.uiHolds = new Map(); // id → reason (popup, extension window)
+    this.credentialHold = false;
+    this.holdRevision = 0;
+    this.privacyStuck = false;
+    this._autoReleaseRunning = false;
+    this._disposed = false;
+    /**
+     * BROWSER PROFILES (browser-profiles.js). Each scope DECLARES the profile
+     * it belongs to — its project, or the explicit `none` — before its first
+     * tab. A scope nobody declared gets NO tab: missing metadata fails closed
+     * instead of landing every unlabelled session in one shared jar. The
+     * partition is fixed on each tab at creation and never moves.
+     */
+    this.profileMapping = dependencies.profileMapping || { legacyOwnerProjectId: null };
+    this.scopeProfiles = new Map(); // scopeKey → profileKey
+    /** Extension hosts, ONE PER PARTITION: chrome.tabs of one project's
+     *  1Password must not see another project's tabs, and the extension's
+     *  own storage lives in the partition too. Created lazily by the shell
+     *  through `createExtensionHost(partition)`; told about tabs of that
+     *  partition only. */
+    this.extensionHosts = new Map(); // partition → host
+    this.createExtensionHost = dependencies.createExtensionHost || null;
+    /**
+     * THE PERSISTED TAB INVENTORY (browser-tab-store.js). The manager owns
+     * every tab's lifetime — not the panel, not the renderer — so a session's
+     * pages survive switching away, closing the panel, a renderer reload and
+     * an app restart. Restored LAZILY: a remembered tab is a record with no
+     * WebContents until something asks for it (the panel showing it, an agent
+     * call), so a restart does not navigate every remembered page at once.
+     * Only scoped metadata is written (see serializeInventory); the cookie
+     * jar is the partition's, recomputed per profile at restore.
+     */
+    this.tabStore = dependencies.tabStore || null;
+    this.restoreInventory(this.tabStore ? this.tabStore.load() : null);
   }
 
-  /** The ACTIVE tab's controller — what a scope-level consumer (the badge,
-   *  the control-server probe) means by "whose browser is it". */
+  /** Seed remembered tabs as hibernated records. Nothing loads here. */
+  restoreInventory(document) {
+    for (const scope of parseInventory(document, this.profileMapping)) {
+      if (this.scopeTabs(scope.scopeKey).length) continue;
+      const partition = partitionFor(scope.profileKey, this.profileMapping);
+      this.scopeProfiles.set(scope.scopeKey, scope.profileKey);
+      for (const remembered of scope.tabs) {
+        const tab = this.newTabRecord(scope.scopeKey, partition, remembered.openedBy);
+        tab.id = remembered.id;
+        tab.url = remembered.url;
+        tab.title = remembered.title;
+        if (remembered.viewport) tab.viewport = remembered.viewport;
+        // LEGACY MIGRATION: inventories written before fit existed carry no
+        // mode. A remembered NON-default size was an explicit choice and
+        // stays fixed; a default/absent size was never chosen and becomes
+        // fit, like every new tab.
+        if (remembered.viewportMode === "fixed") tab.viewportMode = "fixed";
+        else if (remembered.viewportMode === "fit") tab.viewportMode = "fit";
+        else tab.viewportMode = remembered.viewport && presetOf(remembered.viewport) !== "default" ? "fixed" : "fit";
+        tab.restored = true;
+        this.tabs.push(tab);
+      }
+      this.activeTabIds.set(scope.scopeKey, scope.activeTabId);
+    }
+  }
+
+  /** What the inventory file should say now. */
+  inventory() {
+    return serializeInventory({
+      tabs: this.tabs.map((tab) => ({
+        scopeKey: tab.scopeKey,
+        id: tab.id,
+        // A live view knows its URL better than the record (a redirect the
+        // record has not caught up with); a hibernated tab IS the record.
+        url: tab.view && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() || tab.url : tab.url,
+        title: tab.title,
+        openedBy: tab.openedBy,
+        ...(tab.viewport ? { viewport: tab.viewport } : {}),
+        viewportMode: this.viewportModeOf(tab),
+      })),
+      profiles: this.scopeProfiles,
+      active: this.activeTabIds,
+    });
+  }
+
+  /** Schedule a write of the current inventory (coalesced by the store). */
+  persist() {
+    if (!this.tabStore || this._disposed) return;
+    this.tabStore.save(this.inventory());
+  }
+
+  /** Bind a scope to its profile. Idempotent for the same key; a CHANGE
+   *  after tabs exist is refused — the person closes the session's tabs
+   *  first, which is what keeps a cookie jar from following a session. */
+  declareProfile(scopeKey, profileKey) {
+    const scope = this.requireScope(scopeKey);
+    const key = String(profileKey || "").trim();
+    partitionFor(key, this.profileMapping); // validates: required, project id or "none"
+    const current = this.scopeProfiles.get(scope);
+    if (current !== undefined && current !== key && this.scopeTabs(scope).length) {
+      throw new Error(`Browser session ${scope} already has tabs in profile ${current}; close them before moving it to ${key}.`);
+    }
+    this.scopeProfiles.set(scope, key);
+    return { scopeKey: scope, profileKey: key, partition: partitionFor(key, this.profileMapping) };
+  }
+
+  /** The declared profile, or null: nothing is assumed for an unbound scope. */
+  profileOf(scopeKey) {
+    return this.scopeProfiles.get(this.requireScope(scopeKey)) || null;
+  }
+
+  /** The partition a NEW tab in this scope would use. Throws for an unbound
+   *  scope — the one place the fail-closed rule is enforced. */
+  partitionOf(scopeKey) {
+    const key = this.profileOf(scopeKey);
+    if (!key) throw new Error(`Browser session ${this.requireScope(scopeKey)} is not bound to a project profile yet; nothing can open until it is.`);
+    return partitionFor(key, this.profileMapping);
+  }
+
+  /** The extension host for a partition, created on first use. */
+  extensionHostFor(partition) {
+    let host = this.extensionHosts.get(partition) || null;
+    if (!host && this.createExtensionHost) {
+      host = this.createExtensionHost(partition);
+      if (host) this.extensionHosts.set(partition, host);
+    }
+    return host;
+  }
+
+  hostOfTab(tab) {
+    return this.extensionHosts.get(tab.partition) || null;
+  }
+
+  /** The extension host for a scope's profile, created on demand. Null when
+   *  the scope is not bound yet or extensions are off — the caller then shows
+   *  "unavailable" rather than throwing. */
+  hostForScope(scopeKey) {
+    let partition;
+    try { partition = this.partitionOf(scopeKey); } catch { return null; }
+    return this.extensionHostFor(partition);
+  }
+
+  /** Attach a host for ONE partition and tell it about that partition's live tabs. */
+  attachExtensionHost(host, partition) {
+    if (!partition) throw new Error("attachExtensionHost needs the partition the host serves.");
+    this.extensionHosts.set(partition, host);
+    for (const tab of this.tabs) if (tab.view && tab.partition === partition) host.addTab(tab.view.webContents, this.window);
+  }
+
+  /** Privacy began or ended. On BEGIN every tab's captured console and
+   *  network log is dropped: a line captured a moment before the popup
+   *  opened may already be part of the sign-in (a redirect URL with a
+   *  token, a form's own logging), and nothing captured before is worth
+   *  more than what it could leak. */
+  onPrivacyChange(state) {
+    if (state.private) {
+      for (const tab of this.tabs) {
+        tab.console = [];
+        tab.network = [];
+      }
+    }
+    this.emitPrivacy();
+  }
+
+  emitPrivacy() {
+    const scopes = new Set(this.tabs.map((tab) => tab.scopeKey));
+    for (const scope of scopes) this.emitState(scope);
+    if (!scopes.size && !this.window.isDestroyed()) this.window.webContents.send("telar:browser:privacy", this.privacyState());
+  }
+
+  /** The privacy state the renderer reads: the epoch boundary PLUS whether the
+   *  automatic release is stuck (a probe would not answer) so the UI can show
+   *  a specific recovery instead of a bare spinner. */
+  privacyState() {
+    return { ...this.privacy.state(), stuck: this.privacyStuck };
+  }
+
+  // ── automatic credential lifecycle ──────────────────────────────────────
+
+  /** Track extension windows without pausing the browser. */
+  addUiHold(id, reason) {
+    const key = String(id);
+    if (!this.uiHolds.has(key)) {
+      this.uiHolds.set(key, reason || "1Password");
+      this.holdRevision += 1;
+      // Extension chrome is not a page tool target. Opening it does not
+      // pause unrelated tabs or require a manual handoff.
+    }
+  }
+
+  /** Closing extension chrome does not require page probes or Resume. */
+  removeUiHold(id) {
+    const key = String(id);
+    if (this.uiHolds.delete(key)) {
+      this.holdRevision += 1;
+    }
+  }
+
+  /** A credential field was focused, typed, or filled: hold privacy until a
+   *  clean, focus-aware probe says the entry is over. */
+  noteCredentialHold(reason) {
+    this.credentialHold = true;
+    this.holdRevision += 1;
+    this.privacy.begin(reason || "credentials", null);
+    this.ensureAutoRelease();
+    this.emitPrivacy();
+  }
+
+  /** Start the release loop if it is not already running. Catches its own
+   *  failures, and — the race guard — if privacy is still active when the loop
+   *  exits (a hold/credential event landed as it was finishing), restarts it,
+   *  so an active window can never be left with no loop watching it. */
+  ensureAutoRelease() {
+    if (this._autoReleaseRunning || this._disposed) return;
+    this._autoReleaseRunning = true;
+    void this.autoReleaseLoop()
+      .catch(() => {})
+      .finally(() => {
+        this._autoReleaseRunning = false;
+        if (!this._disposed && this.privacy.isActive()) this.ensureAutoRelease();
+      });
+  }
+
+  /**
+   * Poll until it is SAFE to end privacy. Safe = the
+   * cross-tab probe says no blocking field is filled or focused, with the
+   * `holdRevision` unchanged across the probe (so a fill or a popup that
+   * arrived mid-probe re-arms the wait). A probe that cannot answer marks the
+   * interaction stuck and keeps it private — it never releases on a timeout.
+   */
+  async autoReleaseLoop() {
+    while (!this._disposed && this.privacy.isActive()) {
+      await this.wait(AUTO_RELEASE_POLL_MS);
+      if (this._disposed || !this.privacy.isActive()) break;
+      const rev = this.holdRevision;
+      const status = await this.credentialStatus();
+      // Something changed during the probe (a fill, a new popup): re-check.
+      if (this.holdRevision !== rev) continue;
+      if (status === "clear") { this.autoRelease(); break; }
+      // "active" (typing/filled) or "unresponsive" (probe stuck): stay private.
+      this.setPrivacyStuck(status === "unresponsive");
+    }
+  }
+
+  /** End the private window: clear the credential hold, bump every tab's
+   *  generation (so in-flight agent reads are stale), and bump the epoch (so
+   *  results decided under privacy are discarded on return). */
+  autoRelease() {
+    this.credentialHold = false;
+    this.privacyStuck = false;
+    for (const tab of this.tabs) {
+      tab.generation += 1;
+      tab.staleReason = "a private interaction ended";
+      tab.credentialFieldsAt = undefined;
+    }
+    this.privacy.end();
+  }
+
+  setPrivacyStuck(value) {
+    if (this.privacyStuck === value) return;
+    this.privacyStuck = value;
+    this.emitPrivacy();
+  }
+
+  /**
+   * The credential state across the tabs that could hold one — those that
+   * reported a field, plus the active tab of each scope — probed IN PARALLEL
+   * under one overall budget so the check does not grow with tab count.
+   * Returns "clear" | "active" | "unresponsive".
+   */
+  async credentialStatus() {
+    // EVERY live tab, in parallel: a background tab a reporter missed can still
+    // hold a filled field, so narrowing to reported/active tabs would let one
+    // slip through. Parallel + a shared deadline keeps this bounded regardless
+    // of tab count.
+    const live = this.tabs.filter((tab) => tab.view && !tab.view.webContents.isDestroyed());
+    if (live.length === 0) return "clear";
+    const deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS;
+    const results = await Promise.all(live.map((tab) => this.tabHoldsCredentials(tab, deadline)));
+    if (results.includes("active")) return "active";
+    if (results.includes("unresponsive")) return "unresponsive";
+    return "clear";
+  }
+
+  /**
+   * The human's EXPLICIT recovery, kept for the stuck case (the automatic
+   * lifecycle handles the normal flow). Ends privacy only if the page is
+   * clean now; otherwise returns an actionable refusal. Never releases while
+   * a blocking field is filled/focused or a probe will not answer.
+   */
+  async resumeFromPrivate() {
+    const rev = this.holdRevision;
+    const status = await this.credentialStatus();
+    // Same guard as the auto loop: a popup or a fill that arrived DURING the
+    // probe must not be bypassed by a result decided before it.
+    if (this.holdRevision !== rev) {
+      return { ...this.privacyState(), refused: "A credential interaction is still in progress. Try again in a moment." };
+    }
+    if (status !== "clear") {
+      const message = status === "unresponsive"
+        ? "A sign-in page is not responding to the safety check. Reload or close it, then try again."
+        : "A credential field is still in use. Submit or clear it, or leave the page, then try again.";
+      return { ...this.privacyState(), refused: message };
+    }
+    this.autoRelease();
+    return this.privacyState();
+  }
+
+  /** Whether a human has touched this tab within HUMAN_ACTIVE_MS. */
+  humanActive(tab) {
+    return tab.lastHumanInputAt !== undefined && this.now() - tab.lastHumanInputAt < HUMAN_ACTIVE_MS;
+  }
+
+  /** What a scope-level consumer means by "whose hands": the ACTIVE tab's
+   *  recent activity — "human" while a human is interacting, "agent" while
+   *  an agent call runs, else "idle". Advisory; nothing gates on it. */
   controllerOf(scopeKey) {
     const scope = this.requireScope(scopeKey);
     const tab = this.tabs.find((candidate) => candidate.scopeKey === scope && candidate.id === this.activeTabIds.get(scope));
-    return tab?.controller || "idle";
+    if (!tab) return "idle";
+    return this.tabActivity(tab);
   }
 
-  setTabController(tab, controller) {
-    if ((tab.controller || "idle") === controller) return;
-    tab.controller = controller;
-    if (controller === "human") tab.controlEpoch = (tab.controlEpoch || 0) + 1;
+  tabActivity(tab) {
+    if (this.humanActive(tab)) return "human";
+    if (tab.agentBusy > 0) return "agent";
+    return "idle";
+  }
+
+  journalControl(tab, controller) {
+    if (tab.lastJournaled === controller) return;
+    tab.lastJournaled = controller;
     if (this.onControlChanged) {
       try {
         this.onControlChanged({ scopeKey: tab.scopeKey, tabId: tab.id, controller, at: new Date(this.now()).toISOString() });
@@ -222,14 +689,14 @@ class DesktopBrowserManager {
         // The journal hook must never break the browser under it.
       }
     }
-    this.emitState(tab.scopeKey);
   }
 
   /**
    * A human's hands landed in ONE tab. `force` is for input that is human BY
    * CONSTRUCTION — the cockpit's URL bar and chrome — and skips the temporal
-   * attribution in-page events need (agent-synthesized CDP input raises the
-   * same DOM events). Returns whether the input was attributed to the human.
+   * attribution in-page events need. Returns whether the input was attributed
+   * to the human. Bumps the tab's generation: whatever the agent saw before
+   * this is stale.
    */
   noteHumanInput(scopeKey, options = {}) {
     const scope = this.requireScope(scopeKey);
@@ -237,10 +704,26 @@ class DesktopBrowserManager {
     if (!tab) return false;
     if (!options.force) {
       const busy = (this.activeToolCalls.get(scope) || 0) > 0;
-      const recent = this.now() - (this.lastAgentInputAt.get(scope) || 0) < HUMAN_ATTRIBUTION_GRACE_MS;
-      if (busy || recent) return false;
+      // The agent's own echo: one expected report, consumed.
+      const now = this.now();
+      tab.expectedReports = tab.expectedReports.filter((at) => now - at < SYNTHETIC_REPORT_TTL_MS);
+      if (tab.expectedReports.length) {
+        tab.expectedReports.shift();
+        return false;
+      }
+      if (!busy) {
+        const recent = now - (this.lastAgentInputAt.get(scope) || 0) < HUMAN_ATTRIBUTION_GRACE_MS;
+        if (recent) return false;
+      }
     }
-    this.setTabController(tab, "human");
+    // Human, by construction or by attribution. If an agent action is in
+    // flight on this tab, it has been interrupted — whatever its source.
+    if (tab.agentBusy > 0) tab.interruptedAt = this.now();
+    tab.lastHumanInputAt = this.now();
+    tab.generation += 1;
+    tab.staleReason = "the human interacted";
+    this.journalControl(tab, "human");
+    this.emitState(tab.scopeKey);
     return true;
   }
 
@@ -250,16 +733,125 @@ class DesktopBrowserManager {
     if (tab) this.noteHumanInput(tab.scopeKey, { tab });
   }
 
-  /** The explicit affordance — the ONLY way the agent gets a tab back. With a
-   *  tabId, that tab; without, every human-held tab in the scope (the panel's
-   *  one big button). A human handing back is a decision, never a timeout. */
-  handBack(scopeKey, tabId) {
-    const scope = this.requireScope(scopeKey);
-    for (const tab of this.scopeTabs(scope)) {
-      if (tabId !== undefined && tab.id !== tabId) continue;
-      if (tab.controller === "human") this.setTabController(tab, "agent");
+  /**
+   * THE PAGE REPORTED A CREDENTIAL FIELD IN USE — focus on, or a value
+   * landing in, a password/OTP/username field (browser-tab-preload.js).
+   * That is a private interaction whether it came from the toolbar, an
+   * inline suggestion, or the human's own typing: begin privacy here, and
+   * remember which tab, so Resume can check it is safe.
+   */
+  noteCredentialFieldFromWebContents(webContents, detail = {}) {
+    const tab = this.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
+    if (!tab) return;
+    tab.credentialFieldsAt = this.now();
+    // A credential HOLD, cleared only by a clean focus-aware probe — not by
+    // any close event. The automatic loop ends privacy when the entry is over.
+    this.noteCredentialHold(detail.kind === "fill" ? "credentials filled" : "credential entry");
+  }
+
+  /**
+   * Whether a tab still has an ACTIVE credential interaction — a blocking
+   * field (password/current-password/new-password/one-time-code) that is
+   * filled OR focused-while-empty (the human is about to type). Asked through
+   * the preload's own probe; values are never read.
+   *
+   * Returns "clear" | "active" | "unresponsive". EVERY FRAME is asked, IN
+   * PARALLEL, and the result FAILS CLOSED: a frame with no probe, a frame that
+   * throws, or a background frame whose `executeJavaScript` never settles all
+   * count as NOT clear. Per-frame probes are bounded and the whole tab is
+   * bounded by `deadline`, so the check never hangs — a timeout is
+   * "unresponsive" (privacy stays on), never a bypass.
+   */
+  async tabHoldsCredentials(tab, deadline = this.now() + CREDENTIAL_STATUS_BUDGET_MS) {
+    // No document, no fields: a hibernated tab holds nothing.
+    if (!tab.view || tab.view.webContents.isDestroyed()) return "clear";
+    const wc = tab.view.webContents;
+    const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
+    if (!frames.length) return "unresponsive";
+    const answers = await Promise.all(frames.map((frame) => this.probeFrame(frame, deadline).catch(() => PROBE_TIMEOUT)));
+    if (answers.includes(PROBE_TIMEOUT)) return "unresponsive";
+    if (answers.includes(null)) return "unresponsive"; // a frame with no probe can't vouch
+    if (answers.some((answer) => answer === true)) return "active";
+    return "clear";
+  }
+
+  /** Ask one frame's entry-active probe, bounded by both the per-frame timeout
+   *  and the overall `deadline`. Resolves to a boolean, null (no probe), or the
+   *  PROBE_TIMEOUT sentinel. */
+  probeFrame(frame, deadline = this.now() + CREDENTIAL_PROBE_TIMEOUT_MS) {
+    const probe = frame.executeJavaScript(
+      "typeof globalThis.__telarCredentialEntryActive === 'function' ? globalThis.__telarCredentialEntryActive() : null",
+      true,
+    );
+    const budget = Math.max(0, Math.min(CREDENTIAL_PROBE_TIMEOUT_MS, deadline - this.now()));
+    let timer;
+    const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(PROBE_TIMEOUT), budget); });
+    return Promise.race([probe, timeout]).finally(() => clearTimeout(timer));
+  }
+
+  /** A navigation committed: the page the agent observed is gone. */
+  noteNavigation(tab) {
+    tab.generation += 1;
+    tab.staleReason = "the page navigated";
+  }
+
+  /** A committed top-level navigation → `onVisited`, if it is one worth
+   *  remembering: http(s), not an error page (status < 400; Electron reports
+   *  0 for a non-HTTP/failed commit), and not during a private interaction. */
+  noteVisited(tab, url, httpResponseCode) {
+    if (!this.onVisited || this.privacy.isActive()) return;
+    if (typeof httpResponseCode === "number" && (httpResponseCode === 0 || httpResponseCode >= 400)) return;
+    let parsed;
+    try { parsed = new URL(String(url || "")); } catch { return; }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
+    if (isProtectedUrl(parsed.href)) return;
+    try { this.onVisited(tab.scopeKey, parsed.href); } catch { /* a recorder's failure is not the page's */ }
+  }
+
+  /** A synthetic input is about to reach this tab's page. `reports` is how
+   *  many preload reports it will raise (pointerdown/keydown: 1; insertText,
+   *  a mouse move: 0). */
+  stampAgentInput(tab, reports = 0) {
+    const now = this.now();
+    for (let i = 0; i < reports; i += 1) tab.expectedReports.push(now);
+    this.lastAgentInputAt.set(tab.scopeKey, now);
+  }
+
+  /**
+   * IMMEDIATELY BEFORE EACH MUTATION of a multi-step action: stop if this
+   * action was cancelled (it timed out and a successor may have started), a
+   * later action on the tab took the ticket, a human cut in, or the page
+   * moved. `action` is the IMMUTABLE context minted for one invocation —
+   * never read off the tab, so a stale continuation cannot see its
+   * successor's values and pass. Throws so the step's caller unwinds.
+   */
+  checkpoint(action) {
+    const { tab } = action;
+    const index = () => Math.max(0, this.scopeTabs(tab.scopeKey).indexOf(tab));
+    // The credential boundary, between steps: a fill or a slow type must
+    // not continue into a private interaction that began under it.
+    if (this.privacy.isActive() || this.privacy.epoch !== action.privacyEpoch) throw new Error(`Stopped: ${this.privacy.refusal()}`);
+    if (action.cancelled) throw new Error("Stopped: this action timed out.");
+    if (!this.tabs.includes(tab)) throw new Error("The tab was closed.");
+    if (action.ticket !== tab.ticket) throw new Error("Stopped: a later action on this tab has started.");
+    if (tab.interruptedAt !== undefined && tab.interruptedAt >= action.startedAt) {
+      throw new Error(`Stopped: ${humanActiveOn(tab, index())}`);
     }
-    return this.state(scope);
+    if (tab.generation !== action.generation) {
+      throw new Error(`Stopped: ${staleView(tab, index(), tab.staleReason || "it changed")}`);
+    }
+  }
+
+  /** An agent read saw the page as it is now. */
+  noteObserved(tab) {
+    tab.observedGeneration = tab.generation;
+  }
+
+  /** The tab's own ticket counter: a step still running after its successor
+   *  started must not keep mutating the page. */
+  nextTicket(tab) {
+    tab.ticket = (tab.ticket || 0) + 1;
+    return tab.ticket;
   }
 
   requireScope(scopeKey) {
@@ -279,10 +871,14 @@ class DesktopBrowserManager {
     const activeTabId = this.activeTabIds.get(scope) ?? null;
     return {
       scopeKey: scope,
+      // The bound project profile, or null until the engine/cockpit bind it.
+      // Advisory in the state payload; binding happens before any tab opens.
+      profileKey: this.profileOf(scope),
       available: true,
       running: true,
       provider: "desktop",
-      controller: tabs.find((tab) => tab.id === activeTabId)?.controller || "idle",
+      // Advisory only: what the ACTIVE tab is doing right now.
+      controller: (() => { const tab = tabs.find((entry) => entry.id === activeTabId); return tab ? this.tabActivity(tab) : "idle"; })(),
       tabs: tabs.map((tab, index) => ({
         index,
         id: tab.id,
@@ -290,14 +886,30 @@ class DesktopBrowserManager {
         url: tab.url || "about:blank",
         active: tab.id === activeTabId,
         loading: tab.loading,
-        controller: tab.controller || "idle",
+        controller: this.tabActivity(tab),
         openedBy: tab.openedBy || "agent",
         favicon: tab.faviconUrl || null,
+        // A remembered tab with no WebContents yet (restored from the
+        // inventory, or hibernated): the panel shows it as a tab; the first
+        // look at it loads the page.
+        sleeping: !tab.view,
+        viewport: this.viewportInfo(tab),
         canGoBack: tab.view ? navigationFlag(tab.view.webContents, "canGoBack") : false,
         canGoForward: tab.view ? navigationFlag(tab.view.webContents, "canGoForward") : false,
       })),
+      // How the ACTIVE tab is presented inside the panel's bounds: its
+      // intrinsic size, the fit scale, and the native rect it occupies. The
+      // renderer draws its device frame around that rect.
+      presentation: (() => {
+        const tab = tabs.find((entry) => entry.id === activeTabId);
+        if (!tab) return null;
+        const viewport = this.effectiveViewport(tab);
+        const fit = this.isNativeFit(tab) ? { scale: 1, rect: { ...this.bounds } } : fitViewport(viewport, this.bounds);
+        return { ...viewport, mode: this.viewportModeOf(tab), scale: fit.scale, rect: fit.rect, bounds: this.bounds, presets: VIEWPORT_PRESETS };
+      })(),
       screenshot: null,
       error: null,
+      privacy: this.privacyState(),
       version: this.version,
     };
   }
@@ -308,34 +920,215 @@ class DesktopBrowserManager {
     if (!this.window.isDestroyed()) {
       this.window.webContents.send("telar:browser:state", this.state(scope));
     }
+    // Every emitted change is a change worth remembering; the store coalesces.
+    this.persist();
+  }
+
+  /**
+   * The tab's intrinsic viewport — its own, or the standard one.
+   *
+   * FIT MODE follows the visible stage: while the tab is shown with real
+   * bounds, its viewport IS the stage size (scale 1, no letterbox). While
+   * hidden (panel away, another session shown) it keeps the LAST size it
+   * had on screen, so a background agent keeps working in the layout the
+   * human last saw — never a 1×1 or a guess. `syncFitViewport` is what
+   * writes that size, from the geometry pipeline, so this stays a read.
+   */
+  viewportOf(tab) {
+    return tab.viewport || DEFAULT_VIEWPORT;
+  }
+
+  viewportModeOf(tab) {
+    return tab.viewportMode === "fixed" ? "fixed" : "fit";
+  }
+
+  /** In fit mode, adopt the stage size as the viewport. Returns whether it
+   *  changed (the caller bumps the generation / emits). */
+  syncFitViewport(tab) {
+    if (this.viewportModeOf(tab) !== "fit" || !this.isTabVisible(tab)) return false;
+    // A panel mid-animation (opening from 0, closing to 0) publishes tiny
+    // bounds for a few frames. Those are not a size anyone chose: adopting
+    // them would leave a background agent a 200×200 page. Below the
+    // viewport minimum the last meaningful size is kept.
+    if (this.bounds.width < VIEWPORT_MIN || this.bounds.height < VIEWPORT_MIN) return false;
+    const next = resolveViewport({ width: this.bounds.width, height: this.bounds.height });
+    const current = this.viewportOf(tab);
+    if (next.width === current.width && next.height === current.height) return false;
+    tab.viewport = next;
+    return true;
+  }
+
+  viewportInfo(tab) {
+    const viewport = this.viewportOf(tab);
+    return { width: viewport.width, height: viewport.height, preset: presetOf(viewport), mode: this.viewportModeOf(tab) };
+  }
+
+  /** Fit mode, on screen: the page IS the stage — no emulation, no
+   *  presentation scale, whatever the recorded (retained) size says. */
+  isNativeFit(tab) {
+    return this.viewportModeOf(tab) === "fit" && this.isTabVisible(tab);
+  }
+
+  /** The viewport the page is ACTUALLY laid out for right now. */
+  effectiveViewport(tab) {
+    return this.isNativeFit(tab) ? { width: this.bounds.width, height: this.bounds.height } : this.viewportOf(tab);
+  }
+
+  /** The native rect the tab's view occupies inside the current bounds. */
+  nativeRect(tab) {
+    if (this.isNativeFit(tab)) return { ...this.bounds };
+    return fitViewport(this.viewportOf(tab), this.bounds).rect;
+  }
+
+  /**
+   * Set a tab's viewport: a preset or explicit size (→ fixed mode), or
+   * `{ mode: "fit" }` / `{ mode: "fixed" }`. Agents and humans both come
+   * through here; the page reflows wherever the tab is shown (or not), and
+   * a snapshot taken before this is stale by definition. A failed emulation
+   * puts the record back and throws — never a false "resized".
+   */
+  async resizeTab(tab, input) {
+    const previous = { viewport: tab.viewport, mode: tab.viewportMode };
+    const wantsFit = input && typeof input === "object" && input.mode === "fit";
+    if (wantsFit) {
+      tab.viewportMode = "fit";
+      this.syncFitViewport(tab);
+    } else {
+      const explicit = input && typeof input === "object" && (input.preset !== undefined || input.width !== undefined || input.height !== undefined);
+      if (explicit) tab.viewport = resolveViewport(input);
+      else if (input?.mode !== "fixed") throw new Error("A viewport needs a preset, a width and height, or a mode.");
+      tab.viewportMode = "fixed";
+    }
+    const current = this.viewportOf(tab);
+    const before = previous.viewport || DEFAULT_VIEWPORT;
+    const changed = current.width !== before.width || current.height !== before.height || (previous.mode === "fit") !== (tab.viewportMode === "fit");
+    if (!changed) return current;
+    try {
+      await this.applyGeometry(tab);
+    } catch (error) {
+      tab.viewport = previous.viewport;
+      tab.viewportMode = previous.mode;
+      void this.applyGeometry(tab).catch(() => {});
+      throw new Error(`Could not resize the viewport: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (current.width !== before.width || current.height !== before.height) {
+      tab.generation += 1;
+      tab.staleReason = "the viewport was resized";
+    }
+    this.emitState(tab.scopeKey);
+    return current;
+  }
+
+  /** `ensureDebugger` without its trailing viewport sync (the geometry
+   *  pipeline runs that itself so it can observe the failure). */
+  async ensureDebuggerOnly(tab) {
+    const debug = tab.view.webContents.debugger;
+    if (!tab.debuggerReady) await this.ensureDebugger(tab, { sync: false });
+    return debug;
+  }
+
+  /**
+   * THE GEOMETRY PIPELINE — the one place a tab's native bounds and its
+   * emulation are written, SERIALIZED PER TAB and LATEST-WINS.
+   *
+   * Before this, bounds and emulation were written from several unordered
+   * paths (visibility, panel bounds, a resize, a resync) and each read the
+   * state at its own moment: a preset change could set the view's bounds
+   * for the new size while an older emulation was still in flight, or a
+   * resync could re-apply bounds computed before a resize landed — a view
+   * hanging outside the panel until the next real re-layout put it back.
+   *
+   * Here every trigger only SCHEDULES; the run reads the state at execution
+   * time, sets the fitted bounds, applies the emulation, then re-asserts the
+   * bounds once the emulation has settled. Triggers that arrive mid-run
+   * coalesce into ONE further run (latest state), never a backlog.
+   */
+  applyGeometry(tab) {
+    const geometry = (tab.geometry ||= { queue: Promise.resolve(), scheduled: null });
+    if (geometry.scheduled) return geometry.scheduled;
+    const run = geometry.queue.then(() => {
+      geometry.scheduled = null;
+      return this.applyGeometryNow(tab);
+    });
+    geometry.scheduled = run;
+    geometry.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  async applyGeometryNow(tab) {
+    const view = tab.view;
+    if (!view || view.webContents.isDestroyed?.()) return;
+    const place = () => {
+      if (tab.view !== view || view.webContents.isDestroyed?.()) return;
+      // Shown = the visible scope's active tab, bounds or not (a panel that
+      // has not published bounds yet still owns the view); the fit SCALE is
+      // what waits for real bounds (isTabVisible, in viewportTarget).
+      // A BLANK TAB SHOWS NO NATIVE VIEW: the panel draws its start page
+      // (recent sites, local servers) in the DOM there, and the native
+      // layer would cover it. The view stays live and placed, only hidden;
+      // the first navigation (did-start-loading → sync → emitState →
+      // applyVisibility) reveals it.
+      const shown = this.isTabShown(tab) && !this.isBlank(tab);
+      view.setVisible(shown);
+      if (shown) view.setBounds(this.nativeRect(tab));
+    };
+    // Fit mode adopts the stage size FIRST, so the bounds and the emulation
+    // below describe the same viewport.
+    if (this.syncFitViewport(tab)) {
+      tab.generation += 1;
+      tab.staleReason = "the viewport was resized";
+      this.persist();
+    }
+    place();
+    const debug = await this.ensureDebuggerOnly(tab);
+    if (tab.view !== view) return;
+    await this.syncViewport(tab, debug);
+    // The state may have moved while the emulation was in flight; the
+    // coalesced follow-up run handles that. This re-assert covers the case
+    // where nothing else changed but the view's bounds were written before
+    // the emulation existed.
+    place();
   }
 
   applyVisibility() {
     for (const tab of this.tabs) {
       if (!tab.view) continue;
-      const active = tab.scopeKey === this.visibleScopeKey &&
-        tab.id === this.activeTabIds.get(tab.scopeKey);
-      tab.view.setVisible(active);
-      if (active) tab.view.setBounds(this.bounds);
+      const active = tab.scopeKey === this.visibleScopeKey && tab.id === this.activeTabIds.get(tab.scopeKey);
+      // Hide immediately (a switched-away tab must not linger a frame);
+      // the shown one is placed by the pipeline with its emulation.
+      if (!active) tab.view.setVisible(false);
+      this.applyGeometry(tab).catch(() => {});
     }
   }
 
   setBounds(scopeKey, input) {
-    this.requireScope(scopeKey);
     const next = {
       x: Math.max(0, Math.round(Number(input?.x) || 0)),
       y: Math.max(0, Math.round(Number(input?.y) || 0)),
       width: Math.max(1, Math.round(Number(input?.width) || 1)),
       height: Math.max(1, Math.round(Number(input?.height) || 1)),
     };
+    const scope = this.requireScope(scopeKey);
+    this.boundsByScope.set(scope, next);
+    // ANOTHER SCOPE'S RECT NEVER MOVES THE VISIBLE VIEW: remembered for when
+    // that scope is shown, applied to nothing now.
+    if (this.visibleScopeKey && this.visibleScopeKey !== scope) return;
+    const same = next.x === this.bounds.x && next.y === this.bounds.y && next.width === this.bounds.width && next.height === this.bounds.height;
     this.bounds = next;
+    // A republish of unchanged bounds is still a request to re-place the
+    // view (the renderer's self-heal); the pipeline makes it cheap.
     this.applyVisibility();
+    if (!same && this.visibleScopeKey) this.emitState(this.visibleScopeKey);
   }
 
   async setVisible(scopeKey, visible) {
     const scope = this.requireScope(scopeKey);
     if (visible) {
       this.visibleScopeKey = scope;
+      // The scope being shown takes ITS OWN last rect (the renderer publishes
+      // bounds before visibility, so it is normally already here).
+      const own = this.boundsByScope.get(scope);
+      if (own) this.bounds = own;
       for (const tab of this.scopeTabs(scope)) {
         if (!tab.destroyWhenIdle) this.cancelDeferredHibernate(tab);
       }
@@ -351,28 +1144,51 @@ class DesktopBrowserManager {
       }
     }
     else if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
-    this.applyVisibility();
+    // Awaited for the shown scope's active tab, so a caller (the panel's
+    // viewport hook, a harness) observes the view placed when this resolves.
+    await this.applyVisibilityAsync(scope);
   }
 
+  /** applyVisibility, awaiting the scope's active tab's own placement. */
+  async applyVisibilityAsync(scope) {
+    this.applyVisibility();
+    const activeId = this.activeTabIds.get(scope);
+    const active = this.tabs.find((tab) => tab.scopeKey === scope && tab.id === activeId);
+    // The queue TAIL, not the scheduled run: a run already in flight when
+    // this was called reads stale visibility, and it is the coalesced
+    // follow-up (queued behind it) that places the view for this state.
+    if (active?.geometry) await active.geometry.queue;
+  }
+
+  /**
+   * THE RENDERER IS RELOADING (main.js did-start-loading). The native view
+   * outlives the document, and React gets no cleanup pass, so hide it here;
+   * the remounted panel publishes fresh bounds and shows it again. HIDE,
+   * NEVER RELEASE: this used to hibernate the scope, which tore down a page an
+   * agent was working in (a background action's WebContents gone mid-call) and
+   * threw away every other scope's warm view for a reload of the cockpit's
+   * own chrome. The manager owns the tabs' lifetime; a reload is the cockpit's
+   * business, not the pages'. The live-view budget still bounds memory.
+   */
   hideVisibleScope() {
     const scope = this.visibleScopeKey;
     if (!scope) return;
     this.visibleScopeKey = null;
     this.applyVisibility();
-    // A renderer reload has no viewport to return to and is the one lifecycle
-    // where eagerly reclaiming the native view is useful. Ordinary panel/chat
-    // switches call setVisible(false), which now only hides so background
-    // agents keep a live page and returning users get an immediate render.
-    this.releaseScope(scope);
+    this.emitState(scope);
   }
 
   createViewForTab(tab) {
     const view = this.createView({
       webPreferences: {
-        partition: "persist:telar-integrated-browser",
+        partition: tab.partition,
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // Runs the (sandboxed, isolated) preload in SUBFRAMES too, so a
+        // credential field inside an iframe is reported and probed. Despite
+        // the name this enables no Node in any frame: sandbox stays on.
+        nodeIntegrationInSubFrames: true,
         // The human-input reporter (see browser-tab-preload.js) — how a click
         // in the page becomes a control-model takeover in the main process.
         preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
@@ -391,18 +1207,59 @@ class DesktopBrowserManager {
     tab.network = [];
     tab.debuggerReady = false;
     tab.debuggerListenersBound = false;
+    // A new WebContents has no emulation: forget what the old one was told.
+    tab.viewportOverride = undefined;
     this.bindTab(tab);
+    // THE INTRINSIC VIEWPORT APPLIES TO EVERY VIEW, NOT ONLY AGENT-INSPECTED
+    // ONES. The emulation rides the debugger, and the debugger used to attach
+    // only on an agent's first tool call — so a tab a human opened from the
+    // toolbar laid out for the raw column (measured: toolbar said 1280×800
+    // 48%, the page said 616×385). Attach now; a view that refuses (a crashed
+    // renderer) is re-tried at dom-ready and by every resync.
+    this.ensureViewport(tab).catch(() => {});
     return view;
+  }
+
+  /** Attach the debugger if needed and apply this tab's viewport — through
+   *  the serialized pipeline, so it cannot race a resize or a bounds change. */
+  ensureViewport(tab) {
+    return this.applyGeometry(tab);
   }
 
   async wakeTab(tab) {
     tab.lastUsedAt = Date.now();
     if (tab.view) return tab;
     const view = this.createViewForTab(tab);
+    await this.readyHostForTab(tab, view);
     const destination = normalizeUrl(tab.url);
+    // A restored tab's first wake is its first navigation in this process —
+    // lazy by design (nothing loaded at startup), and now that someone asked
+    // for it, this is exactly when it should load.
+    tab.restored = false;
     if (destination !== "about:blank") await this.loadTab(tab, destination);
     this.enforceLiveViewBudget(tab);
     return tab;
+  }
+
+  /**
+   * WAIT FOR THE PARTITION'S EXTENSION HOST BEFORE THE FIRST NAVIGATION. The
+   * host loads lazily and asynchronously (install + verify + loadExtension);
+   * its content scripts register at load time and apply to navigations AFTER.
+   * Navigating a login page before then would inject nothing — the human
+   * would have to reload for 1Password to appear. So the first tab in a new
+   * project waits (bounded) for the host to settle, then is tracked. A host
+   * that FAILED does not block the page: the tab still opens, just without the
+   * extension, and the failure shows in status().
+   */
+  async readyHostForTab(tab, view) {
+    const host = this.extensionHostFor(tab.partition);
+    if (!host) return;
+    if (typeof host.whenReady === "function") {
+      try { await host.whenReady(); } catch { /* a failed host must not block the page */ }
+    }
+    // Only after readiness, and only if the tab's view is still the one we
+    // created (a hibernate could have raced), is it tracked with the library.
+    if (tab.view === view && !view.webContents.isDestroyed()) host.addTab(view.webContents, this.window);
   }
 
   beginNavigation(tab) {
@@ -417,9 +1274,93 @@ class DesktopBrowserManager {
   async loadTab(tab, url) {
     this.beginNavigation(tab);
     try {
-      await tab.view.webContents.loadURL(url);
+      await this.beforeNavigation(tab);
+      await this.loadAllowingReplacement(tab, url);
     } finally {
       this.endNavigation(tab);
+    }
+  }
+
+  /**
+   * `loadURL` REJECTS WITH ERR_ABORTED (-3) WHEN THE PAGE REPLACES ITS OWN
+   * LOAD — a `location.replace` in an inline script, a meta refresh, a site
+   * that bounces itself (`youtube.com/?themeRefresh=1`, seen live) — because
+   * the navigation it was waiting on was superseded, not because anything
+   * failed. That is a page that is loading fine, and reporting it as an
+   * error ("Error invoking remote method … ERR_ABORTED") was wrong.
+   *
+   * So: on -3, if another main-frame navigation has started on this
+   * WebContents since ours, wait for THAT one to settle and answer with its
+   * outcome. A genuine failure (any other code) still throws; an abort with
+   * NO replacement — a stop, a navigation nobody continued — still throws,
+   * because that page did not load and saying so is the point.
+   */
+  async loadAllowingReplacement(tab, url) {
+    const wc = tab.view.webContents;
+    // Listeners are up BEFORE the load, so a replacement that starts, lands
+    // or fails while `loadURL` is still rejecting is seen, not missed.
+    // Every listener is up BEFORE the load and removed in ONE place (the
+    // `finally`), so a timeout cannot leave any attached. SUCCESS NEEDS A
+    // COMMIT: a replacement must `did-navigate` (a new document) or, for a
+    // same-document replacement, `did-navigate-in-page`. `did-stop-loading`
+    // is NOT a success signal — the aborted document's own stop arrives
+    // after the replacement started, and the URL read then still answers
+    // the superseded one (seen: "Navigated to …/bounce"). A stop with no
+    // commit, a destroyed WebContents, a main-frame failure, or the deadline
+    // are all failures — a page that did not load is reported as such.
+    let starts = 0;
+    let committed = false;
+    let failure = null;
+    let settle = null; // resolves/rejects the wait below, once it exists
+    const commit = () => { if (starts >= 2) { committed = true; settle?.(null); } };
+    const onStart = (details) => {
+      if (details?.isMainFrame) { starts += 1; if (!details.isSameDocument) committed = false; }
+    };
+    const onFail = (_event, code, description, failedUrl, isMainFrame) => {
+      if (!isMainFrame || code === -3) return;
+      failure = Object.assign(new Error(`${description || "load failed"} (${code}) loading ${failedUrl}`), { errno: code });
+      settle?.(failure);
+    };
+    const onStop = () => {
+      // The stop of whatever was last loading, with no commit seen for a
+      // replacement: nothing landed (the load was stopped, or the
+      // replacement's own request never committed).
+      if (!committed) settle?.(Object.assign(new Error(`ERR_ABORTED (-3) loading '${url}' — the navigation was stopped before a page committed.`), { errno: -3 }));
+    };
+    const onDestroyed = () => settle?.(new Error("The tab was closed while the page was still loading."));
+    wc.on("did-start-navigation", onStart);
+    wc.on("did-navigate", commit);
+    wc.on("did-navigate-in-page", commit);
+    wc.on("did-fail-load", onFail);
+    wc.on("did-stop-loading", onStop);
+    wc.on("destroyed", onDestroyed);
+    try {
+      await wc.loadURL(url);
+    } catch (error) {
+      const aborted = error && (error.errno === -3 || error.code === "ERR_ABORTED" || /ERR_ABORTED/.test(String(error.message)));
+      // Our own start is one; a replacement is a second. A still-loading
+      // WebContents covers a replacement that began before the listener.
+      const loading = typeof wc.isLoading === "function" && !wc.isDestroyed() && wc.isLoading();
+      const replaced = aborted && !wc.isDestroyed() && (starts >= 2 || loading);
+      if (!replaced) throw error;
+      if (failure) throw failure;
+      if (committed) return;
+      if (!loading) throw error; // the replacement is already over, and never committed
+      await withTimeout(
+        new Promise((resolve, reject) => {
+          settle = (outcome) => (outcome ? reject(outcome) : resolve());
+        }),
+        this.rpcTimeoutMs,
+        "The page kept navigating and never settled.",
+      );
+    } finally {
+      settle = null;
+      wc.removeListener("did-start-navigation", onStart);
+      wc.removeListener("did-navigate", commit);
+      wc.removeListener("did-navigate-in-page", commit);
+      wc.removeListener("did-fail-load", onFail);
+      wc.removeListener("did-stop-loading", onStop);
+      wc.removeListener("destroyed", onDestroyed);
     }
   }
 
@@ -433,10 +1374,19 @@ class DesktopBrowserManager {
     }
   }
 
+  async goBack(tab) {
+    const wc = tab.view.webContents;
+    if (navigationFlag(wc, "canGoBack")) {
+      await this.beforeNavigation(tab);
+      wc.navigationHistory.goBack();
+    }
+  }
+
   hibernateTab(tab) {
     if (!tab.view) return;
     this.cancelDeferredHibernate(tab);
     const view = tab.view;
+    { const host = this.hostOfTab(tab); if (host) host.removeTab(view.webContents); }
     tab.url = view.webContents.getURL() || tab.url || "about:blank";
     tab.title = view.webContents.getTitle() || tab.title || "New tab";
     tab.hibernating = true;
@@ -520,18 +1470,63 @@ class DesktopBrowserManager {
     if (this.scopeTabs(scope).length >= MAX_TABS_PER_SCOPE) {
       throw new Error(`Tab limit reached (${MAX_TABS_PER_SCOPE} per session). Close a tab first.`);
     }
-    const tab = {
+    // Fixed at creation from the scope's declared profile: a tab's cookies
+    // belong to the profile it was opened in.
+    const tab = this.newTabRecord(scope, this.partitionOf(scope), openedBy);
+    this.tabs.push(tab);
+    this.activeTabIds.set(scope, tab.id);
+    const view = this.createViewForTab(tab);
+    await this.readyHostForTab(tab, view);
+    this.applyVisibility();
+    // A human's fresh tab starts in their hands. Nobody has observed a new
+    // tab's page yet — the first mutation on it needs a look first.
+    if (openedBy === "human") tab.lastHumanInputAt = this.now();
+    this.journalControl(tab, openedBy === "human" ? "human" : "agent");
+    const destination = normalizeUrl(url);
+    if (destination !== "about:blank") await this.loadTab(tab, destination);
+    this.enforceLiveViewBudget(tab);
+    this.emitState(scope);
+    return tab;
+  }
+
+  /** A tab record with no WebContents — what createTab and the inventory
+   *  restore both start from. */
+  newTabRecord(scope, partition, openedBy) {
+    return {
       id: this.createId(),
       scopeKey: scope,
+      partition,
       view: null,
+      /** The tab's own intrinsic viewport; absent means DEFAULT_VIEWPORT. */
+      viewport: undefined,
+      /** "fit" (THE DEFAULT: the page reflows with the panel like an ordinary
+       *  browser, and keeps the last seen size while hidden) or "fixed" (an
+       *  explicit preset / custom size / drag — opt-in). */
+      viewportMode: "fit",
+      /** The serialized geometry pipeline — see applyGeometry. */
+      geometry: null,
+      /** Restored from the inventory and not yet woken in this process. */
+      restored: false,
       title: "New tab",
       url: "about:blank",
       loading: false,
-      // Whose tab this is (§6): claimed for the opener just below, once the
-      // tab exists — through setTabController, so the transition journals.
       openedBy,
-      controller: "idle",
-      controlEpoch: 0,
+      // The interaction model (see the header): when a human last touched
+      // this tab; the page generation, bumped by human input and navigation;
+      // the generation the agent last observed; agent calls in flight on it;
+      // and the tail of its serialized action queue.
+      lastHumanInputAt: undefined,
+      generation: 0,
+      observedGeneration: -1,
+      staleReason: "",
+      agentBusy: 0,
+      /** Preload reports the agent's own dispatches are about to raise. */
+      expectedReports: [],
+      /** Set when a human's input landed while an agent action was running. */
+      interruptedAt: undefined,
+      ticket: 0,
+      queue: Promise.resolve(),
+      lastJournaled: "idle",
       faviconUrl: null,
       refs: new Map(),
       console: [],
@@ -545,18 +1540,6 @@ class DesktopBrowserManager {
       navigationPending: 0,
       lastUsedAt: Date.now(),
     };
-    this.tabs.push(tab);
-    this.activeTabIds.set(scope, tab.id);
-    const view = this.createViewForTab(tab);
-    this.applyVisibility();
-    // Opening a tab is the opener's hand on it — a human's fresh tab is
-    // theirs until handed over; an agent's is claimed for the agent.
-    this.setTabController(tab, openedBy === "human" ? "human" : "agent");
-    const destination = normalizeUrl(url);
-    if (destination !== "about:blank") await this.loadTab(tab, destination);
-    this.enforceLiveViewBudget(tab);
-    this.emitState(scope);
-    return tab;
   }
 
   bindTab(tab) {
@@ -565,8 +1548,33 @@ class DesktopBrowserManager {
     const sync = () => {
       tab.url = wc.getURL() || "about:blank";
       tab.title = wc.getTitle() || (tab.url === "about:blank" ? "New tab" : tab.url);
+      // Blank ↔ loaded flips whether the native view is shown at all (the
+      // DOM start page lives under a blank tab) — re-place through the
+      // pipeline, which is idempotent when nothing changed.
+      const blank = this.isBlank(tab);
+      if (blank !== tab.wasBlank) { tab.wasBlank = blank; this.applyGeometry(tab).catch(() => {}); }
       this.emitState(tab.scopeKey);
     };
+    /**
+     * A hidden view is a background renderer and Chromium stops flushing its
+     * input queue — a CDP click never resolves; unthrottled it lands in
+     * ~100ms (measured, browser-manager.electron-test.js). Set on every
+     * dom-ready: the flag lives on the render widget and a navigation gets a
+     * new one. The viewport emulation is re-applied here too; see
+     * beforeNavigation for why it must be gone while a document commits.
+     */
+    wc.on("did-start-navigation", (details) => {
+      if (!details?.isMainFrame || details.isSameDocument || !tab.viewportOverride || !tab.debuggerReady) return;
+      tab.viewportOverride = undefined;
+      wc.debugger.sendCommand("Emulation.clearDeviceMetricsOverride").catch(() => {});
+    });
+    wc.on("dom-ready", () => {
+      if (wc.isDestroyed()) return;
+      wc.setBackgroundThrottling(false);
+      // Attach-and-apply, not apply-if-attached: a human navigation on a
+      // never-inspected tab must land on the intrinsic viewport too.
+      this.ensureViewport(tab).catch(() => {});
+    });
     wc.on("did-start-loading", () => {
       tab.loading = true;
       tab.refs.clear();
@@ -585,7 +1593,11 @@ class DesktopBrowserManager {
       tab.faviconUrl = (Array.isArray(favicons) && favicons[0]) || null;
       this.emitState(tab.scopeKey);
     });
-    wc.on("did-navigate", sync);
+    wc.on("did-navigate", (_event, navigatedUrl, httpResponseCode) => {
+      this.noteNavigation(tab);
+      sync();
+      this.noteVisited(tab, navigatedUrl || wc.getURL(), httpResponseCode);
+    });
     wc.on("did-navigate-in-page", sync);
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
@@ -626,14 +1638,22 @@ class DesktopBrowserManager {
     const tab = this.tabAt(scope, index);
     await this.wakeTab(tab);
     this.activeTabIds.set(scope, tab.id);
+    { const host = tab.view ? this.hostOfTab(tab) : null; if (host) host.selectTab(tab.view.webContents); }
     this.applyVisibility();
     this.emitState(scope);
   }
 
   closeTab(scopeKey, index, closedBy = "agent") {
     const scope = this.requireScope(scopeKey);
+    return this.closeTabRef(index === undefined ? this.activeTab(scope) : this.tabAt(scope, index), closedBy);
+  }
+
+  /** Close BY IDENTITY — what a queued close must do, since the index it was
+   *  given may name a different tab by the time it runs. */
+  closeTabRef(tab, closedBy = "agent") {
+    const scope = tab.scopeKey;
     const scoped = this.scopeTabs(scope);
-    const tab = index === undefined ? this.activeTab(scope) : this.tabAt(scope, index);
+    if (!scoped.includes(tab)) throw new Error("That browser tab is already closed.");
     const position = scoped.indexOf(tab);
     this.tabs = this.tabs.filter((candidate) => candidate !== tab);
     this.hibernateTab(tab);
@@ -654,22 +1674,42 @@ class DesktopBrowserManager {
   /**
    * The IPC surface behind the cockpit's own chrome — URL bar, tab strip,
    * back/forward — which is a human's hand by construction. Typing an address
-   * IS taking the browser (§6): the agent hears about it on its next mutating
-   * call and waits for the handback. The agent's own `browser_navigate_back`
-   * goes through `performAction` below and never touches control.
+   * marks the human active on the tab and bumps its generation, so an agent
+   * mutation defers briefly and then has to look again. The agent's own
+   * `browser_navigate_back` goes through `performAction` and marks nothing.
    */
   async action(scopeKey, action) {
     const scope = this.requireScope(scopeKey);
     const kind = action?.action;
     // Navigating, going back/forward, reloading: the human drove the ACTIVE
-    // tab — that is taking it. Selecting is just looking, and closing removes
-    // the tab (nothing left to hold); neither flips control.
+    // tab. Selecting is just looking; closing removes the tab.
     if (kind === "navigate" || kind === "back" || kind === "forward" || kind === "reload") {
       this.noteHumanInput(scope, { force: true });
     }
+    // Typing in the address bar, before any submit: the human's hands are on
+    // the tab now, and an agent mutation should defer already.
+    if (kind === "intent") {
+      this.noteHumanInput(scope, { force: true });
+      return this.state(scope);
+    }
     if (kind === "new") return (await this.createTab(scope, action.url || "about:blank", "human"), this.state(scope));
     if (kind === "close") return (this.closeTab(scope, action.index, "human"), this.state(scope));
+    // The toolbar's viewport control: a preset or a custom size for the
+    // addressed tab (the active one by default). Presentation-only for the
+    // panel — the page reflows to its new intrinsic size, and an agent
+    // looking at it next sees exactly that.
+    if (kind === "resize") {
+      const tab = action.index === undefined ? this.activeTab(scope) : this.tabAt(scope, action.index);
+      await this.resizeTab(tab, action);
+      return this.state(scope);
+    }
     return this.performAction(scope, action, "human");
+  }
+
+  /** The quit path's synchronous save (main.js will-quit). */
+  persistSync() {
+    if (!this.tabStore || this._disposed) return;
+    this.tabStore.flushSync(this.inventory());
   }
 
   async performAction(scopeKey, action, opener = "agent") {
@@ -689,32 +1729,38 @@ class DesktopBrowserManager {
         await this.navigateTab(tab, action.url);
         break;
       }
-      case "back": {
-        const tab = await this.wakeTab(this.activeTab(scope));
-        const wc = tab.view.webContents;
-        if (navigationFlag(wc, "canGoBack")) wc.navigationHistory.goBack();
+      case "back":
+        await this.goBack(await this.wakeTab(this.activeTab(scope)));
         break;
-      }
       case "forward": {
         const tab = await this.wakeTab(this.activeTab(scope));
         const wc = tab.view.webContents;
-        if (navigationFlag(wc, "canGoForward")) wc.navigationHistory.goForward();
+        if (navigationFlag(wc, "canGoForward")) {
+          await this.beforeNavigation(tab);
+          wc.navigationHistory.goForward();
+        }
         break;
       }
-      case "reload":
-        (await this.wakeTab(this.activeTab(scope))).view.webContents.reload();
+      case "reload": {
+        const tab = await this.wakeTab(this.activeTab(scope));
+        await this.beforeNavigation(tab);
+        tab.view.webContents.reload();
         break;
+      }
       default:
         throw new Error("Unknown desktop browser action.");
     }
     return this.state(scope);
   }
 
-  async ensureDebugger(tab) {
+  async ensureDebugger(tab, { sync = true } = {}) {
     const debug = tab.view.webContents.debugger;
     if (!debug.isAttached()) debug.attach("1.3");
     if (!tab.debuggerListenersBound) {
       debug.on("message", (_event, method, params) => {
+        // NOTHING IS CAPTURED DURING A PRIVATE INTERACTION: a console line or
+        // a request URL made while a person signs in is theirs, not the log's.
+        if (this.privacy.isActive()) return;
         if (method === "Runtime.consoleAPICalled") {
           const text = (params.args || []).map((arg) => arg.value ?? arg.description ?? "").join(" ");
           tab.console.push({ level: params.type || "log", text });
@@ -745,7 +1791,125 @@ class DesktopBrowserManager {
       ]);
       tab.debuggerReady = true;
     }
+    // Through the serialized pipeline, never a direct write: an agent call
+    // arriving mid-resize must not interleave its emulation with the run.
+    // The pipeline itself asks with `sync: false` (it IS the run).
+    if (sync) await this.applyGeometry(tab);
     return debug;
+  }
+
+  /**
+   * EVERY TAB LAYS OUT FOR ITS OWN VIEWPORT, SHOWN OR NOT.
+   *
+   * Why hidden tabs need one at all: until the cockpit's panel mounts and
+   * publishes bounds, every view sits at the 1×1 default — Chromium
+   * hit-tests synthetic mouse events against the visual viewport, so a click
+   * at (140, 96) lands outside a 1×1 window and is silently dropped, and
+   * `Page.captureScreenshot` has no frame to return. The agent browsing while
+   * the panel is closed (or from a remote client with no panel) is the
+   * intended case, not an edge.
+   *
+   * Why shown tabs keep it too (item 11): the panel's column width used to
+   * BE the viewport — narrowing the sidebar reflowed the page, so the agent's
+   * snapshot described one layout and the human looked at another. Now the
+   * intrinsic size is the tab's own (standard 1280×800, a preset, or a
+   * custom size) and what the panel changes is only the presentation
+   * `scale` that fits it into the column. Idempotent per target so a poll
+   * does not re-send it.
+   */
+  async syncViewport(tab, debug) {
+    // FIXED tabs (and every hidden tab) are emulated at their own viewport:
+    // the page lays out for that size wherever it is, and a shown fixed tab
+    // carries a presentation `scale` to fit the column. A FIT tab ON SCREEN
+    // is emulated at NOTHING: it lays out for the native bounds like an
+    // ordinary browser. Measured (Dev, 2026-09-06): emulating the stage
+    // size under fit read as ZOOM — the async override lagged the native
+    // `setBounds` by a frame per resize, and any moment the recorded size
+    // and the bounds disagreed (an animation frame, a sub-minimum frame)
+    // Chromium scaled the stale emulated viewport into the rect.
+    const target = this.viewportTarget(tab);
+    if (!target.emulate) {
+      // `undefined` = a fresh WebContents with no override; nothing to clear.
+      if (tab.viewportOverride === undefined || tab.viewportOverride === "native") { tab.viewportOverride = "native"; return; }
+      await debug.sendCommand("Emulation.clearDeviceMetricsOverride");
+      tab.viewportOverride = "native";
+      return;
+    }
+    const wanted = `${target.width}x${target.height}@${target.scale}`;
+    if (tab.viewportOverride === wanted) return;
+    await debug.sendCommand("Emulation.setDeviceMetricsOverride", {
+      width: target.width,
+      height: target.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      ...(target.scale === 1 ? {} : { scale: target.scale }),
+    });
+    tab.viewportOverride = wanted;
+  }
+
+  /** What the emulation for this tab should be right now. */
+  viewportTarget(tab) {
+    if (this.isNativeFit(tab)) return { emulate: false, width: this.bounds.width, height: this.bounds.height, scale: 1 };
+    const viewport = this.viewportOf(tab);
+    const scale = this.isTabVisible(tab) ? fitViewport(viewport, this.bounds).scale : 1;
+    return { emulate: true, width: viewport.width, height: viewport.height, scale };
+  }
+
+  /**
+   * CDP `Input.dispatch*Event` takes NATIVE coordinates: under a fit scale the
+   * page's CSS point (what a snapshot's element rect says) lands at
+   * `css × scale` (measured — the unscaled point misses). Native input from a
+   * human's hands is mapped by Chromium on its own; only the agent's synthetic
+   * events need this.
+   */
+  inputPoint(tab, point) {
+    const { scale } = this.viewportTarget(tab);
+    return scale === 1 ? point : { ...point, x: point.x * scale, y: point.y * scale };
+  }
+
+  /**
+   * BEFORE A NAVIGATION THIS PROCESS STARTS, clear the emulation and WAIT
+   * for the clear. A new document that commits under an active
+   * `setDeviceMetricsOverride` never produces a compositor frame while
+   * hidden — every capture times out, and only a new WebContents recovers
+   * (measured: navigate, reload and back all fail; the same three pass when
+   * the clear is awaited first and the override re-applied at dom-ready).
+   * The `did-start-navigation` hook below is the best-effort for
+   * navigations the PAGE starts (a link, a redirect): it keeps the tab's
+   * state truthful so dom-ready re-applies, but it fires too late to save
+   * that document's capture — a known limit, not a silent one.
+   */
+  async beforeNavigation(tab) {
+    if (!tab.view || !tab.debuggerReady || !tab.viewportOverride) return;
+    tab.viewportOverride = undefined;
+    try {
+      await tab.view.webContents.debugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+    } catch {
+      // A torn-down debugger mid-navigation: dom-ready re-syncs regardless.
+    }
+  }
+
+  /**
+   * THE INTRINSIC SCREENSHOT — the page at its own viewport, whatever the
+   * panel scale. `captureScreenshot` with an explicit CSS clip at scale 1:
+   * measured, a plain capture (and `capturePage`) under a fit scale returns
+   * the intrinsic dimensions with the content shrunk into a corner and the
+   * rest blank; the clip renders the real layout. A visible view has a
+   * compositor frame; a hidden one may not (`captureHidden` handles that).
+   */
+  captureIntrinsic(debug, tab, format, fullPage, documentHeight) {
+    const viewport = this.effectiveViewport(tab);
+    return debug.sendCommand("Page.captureScreenshot", {
+      format,
+      fromSurface: true,
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width: viewport.width, height: fullPage && documentHeight ? documentHeight : viewport.height, scale: 1 },
+    });
+  }
+
+  /** Every live tab through the pipeline — kept as a name for callers. */
+  resyncViewports() {
+    this.applyVisibility();
   }
 
   async snapshot(tab) {
@@ -877,7 +2041,7 @@ class DesktopBrowserManager {
     }
   }
 
-  async click(tab, args) {
+  async click(tab, args, action) {
     const point = await this.targetPoint(tab, args.target);
     await this.showAgentCursor(tab, point, "move");
     await this.wait(CURSOR_MOVE_MS);
@@ -886,14 +2050,19 @@ class DesktopBrowserManager {
     const debug = await this.ensureDebugger(tab);
     const button = args.button || "left";
     const clickCount = args.doubleClick ? 2 : 1;
-    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
-    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button, clickCount });
-    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button, clickCount });
+    if (action) this.checkpoint(action);
+    // One pointerdown per press → one preload report expected.
+    this.stampAgentInput(tab, clickCount);
+    const native = this.inputPoint(tab, point);
+    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
+    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: native.x, y: native.y, button, clickCount });
+    await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: native.x, y: native.y, button, clickCount });
     return okText(`Clicked ${args.element || args.target}.`);
   }
 
-  async type(tab, args) {
+  async type(tab, args, action) {
     const backendNodeId = this.backendNode(tab, args.target);
+    if (action) this.checkpoint(action);
     await this.callOnNode(
       tab,
       backendNodeId,
@@ -903,41 +2072,49 @@ class DesktopBrowserManager {
     const text = String(args.text ?? "");
     if (args.slowly) {
       for (const char of text) {
+        if (action) this.checkpoint(action);
+        this.stampAgentInput(tab); // insertText raises no keydown: nothing to expect
         await debug.sendCommand("Input.insertText", { text: char });
         await this.wait(15);
       }
     } else {
+      if (action) this.checkpoint(action);
+      this.stampAgentInput(tab);
       await debug.sendCommand("Input.insertText", { text });
     }
-    if (args.submit) await this.press(tab, { key: "Enter" });
+    if (args.submit) await this.press(tab, { key: "Enter" }, action);
     return okText(`Typed into ${args.element || args.target}.`);
   }
 
-  async press(tab, args) {
+  async press(tab, args, action) {
     const key = String(args.key || "");
     if (!key) throw new Error("A key is required.");
+    if (action) this.checkpoint(action);
+    this.stampAgentInput(tab, 1); // keyDown → one keydown report
     tab.view.webContents.sendInputEvent({ type: "keyDown", keyCode: key });
     tab.view.webContents.sendInputEvent({ type: "keyUp", keyCode: key });
     return okText(`Pressed ${key}.`);
   }
 
-  async fillForm(tab, args) {
+  async fillForm(tab, args, action) {
     for (const field of Array.isArray(args.fields) ? args.fields : []) {
       const backendNodeId = this.backendNode(tab, field.target);
       if (field.type === "checkbox" || field.type === "radio") {
         const checked = /^(true|1|yes|on)$/i.test(String(field.value));
+        if (action) this.checkpoint(action);
         await this.callOnNode(tab, backendNodeId, "function(value){ if (this.checked !== value) this.click(); }", [checked]);
       } else if (field.type === "combobox") {
-        await this.selectOption(tab, { target: field.target, values: [field.value] });
+        await this.selectOption(tab, { target: field.target, values: [field.value] }, action);
       } else {
-        await this.type(tab, { target: field.target, element: field.element || field.name, text: field.value });
+        await this.type(tab, { target: field.target, element: field.element || field.name, text: field.value }, action);
       }
     }
     return okText("Filled the requested form fields.");
   }
 
-  async selectOption(tab, args) {
+  async selectOption(tab, args, action) {
     const backendNodeId = this.backendNode(tab, args.target);
+    if (action) this.checkpoint(action);
     await this.callOnNode(
       tab,
       backendNodeId,
@@ -947,15 +2124,87 @@ class DesktopBrowserManager {
     return okText(`Selected an option in ${args.element || args.target}.`);
   }
 
+  /**
+   * A SCREENSHOT OF A HIDDEN VIEW. `Page.captureScreenshot {fromSurface}`
+   * reads the compositor, and a view that is not shown has no compositor
+   * frame — the command never answers. The visible path keeps it (it is
+   * exact, and supports fullPage); the hidden path uses Electron's own
+   * `capturePage` with `stayHidden`, which paints the view offscreen
+   * without showing it or taking focus. Both are bounded: a capture that
+   * outlives CAPTURE_TIMEOUT_MS is an error result, never a 30s hang.
+   */
   async screenshot(tab, args) {
     const debug = await this.ensureDebugger(tab);
     const format = args.type === "jpeg" ? "jpeg" : "png";
-    const result = await debug.sendCommand("Page.captureScreenshot", {
-      format,
-      fromSurface: true,
-      captureBeyondViewport: Boolean(args.fullPage),
+    const fullPage = Boolean(args.fullPage);
+    const data = this.isTabVisible(tab)
+      ? await withTimeout(
+          (async () => {
+            const documentHeight = fullPage ? await this.measureDocument(debug).then((metrics) => metrics.height) : undefined;
+            return (await this.captureIntrinsic(debug, tab, format, fullPage, documentHeight)).data;
+          })(),
+          CAPTURE_TIMEOUT_MS,
+          CAPTURE_TIMEOUT_MESSAGE,
+        )
+      : await this.captureHidden(tab, debug, format, fullPage);
+    return { content: [{ type: "image", data, mimeType: `image/${format}` }] };
+  }
+
+  async measureDocument(debug) {
+    const { result } = await debug.sendCommand("Runtime.evaluate", {
+      expression: "({ width: Math.ceil(Math.max(document.documentElement.scrollWidth, innerWidth)), height: Math.ceil(Math.max(document.documentElement.scrollHeight, innerHeight)) })",
+      returnByValue: true,
     });
-    return { content: [{ type: "image", data: result.data, mimeType: `image/${format}` }] };
+    const metrics = result?.value;
+    if (!metrics || !(metrics.width > 0 && metrics.height > 0)) throw new Error("Could not measure the page for a full-page capture.");
+    return metrics;
+  }
+
+  /**
+   * The hidden path. `capturePage` paints only the viewport, so a fullPage
+   * request is honoured by temporarily emulating the document's own height
+   * (the same trick DevTools uses) and restoring the viewport afterwards;
+   * it is never silently downgraded to a viewport shot.
+   */
+  async captureHidden(tab, debug, format, fullPage) {
+    const wc = tab.view.webContents;
+    let metrics = null;
+    if (fullPage) {
+      metrics = await this.measureDocument(debug);
+      await debug.sendCommand("Emulation.setDeviceMetricsOverride", { width: metrics.width, height: metrics.height, deviceScaleFactor: 1, mobile: false });
+    }
+    try {
+      // The deadline lives INSIDE the try so a capture that never settles
+      // still runs the restore below; raced outside, a timeout would have
+      // left the page at document height for good.
+      const image = await withTimeout(wc.capturePage(undefined, { stayHidden: true, stayAwake: true }), CAPTURE_TIMEOUT_MS, CAPTURE_TIMEOUT_MESSAGE);
+      if (image.isEmpty()) throw new Error("The hidden page produced an empty frame.");
+      return (format === "jpeg" ? image.toJPEG(80) : image.toPNG()).toString("base64");
+    } finally {
+      if (metrics) {
+        // Back to the tab's own viewport — through the pipeline, so a
+        // resize that landed during the capture is not undone by this.
+        tab.viewportOverride = undefined;
+        await this.applyGeometry(tab).catch(() => {});
+      }
+    }
+  }
+
+  /** Nothing loaded and nothing loading: the start page's case. */
+  isBlank(tab) {
+    const url = tab.view && !tab.view.webContents.isDestroyed?.() ? tab.view.webContents.getURL() || tab.url : tab.url;
+    return (!url || url === "about:blank") && !tab.loading && tab.navigationPending === 0;
+  }
+
+  /** The visible scope's active tab — what the native view shows. */
+  isTabShown(tab) {
+    return tab.scopeKey === this.visibleScopeKey && tab.id === this.activeTabIds.get(tab.scopeKey);
+  }
+
+  /** Shown AND with real panel bounds — what fit scaling and the visible
+   *  capture path need. */
+  isTabVisible(tab) {
+    return this.isTabShown(tab) && this.bounds.width > 1 && this.bounds.height > 1;
   }
 
   listTabs(scopeKey) {
@@ -969,8 +2218,9 @@ class DesktopBrowserManager {
     return okText(
       tabs
         .map((tab, index) => {
-          const meta = [`controller=${tab.controller || "idle"}`, `opened-by=${tab.openedBy || "agent"}`];
+          const meta = [`controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
           if (tab.loading) meta.push("loading");
+          if (isProtectedUrl(tab.url)) { meta.push("extension-page"); return `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[Extension page](about:blank) {${meta.join(", ")}}`; }
           return `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[${tab.title}](${tab.url}) {${meta.join(", ")}}`;
         })
         .join("\n"),
@@ -979,7 +2229,45 @@ class DesktopBrowserManager {
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
+    // THE CREDENTIAL BOUNDARY FIRST. Reads and mutations alike, every scope:
+    // the partition is shared, so a person's sign-in in one session is not
+    // another session's page to read. The interaction is managed
+    // automatically (no manual Resume in the normal flow), so a call arriving
+    // while it is open gets an ACTIONABLE, RETRIABLE status — not a terminal
+    // unexplained failure — and the loop clears the window shortly after the
+    // person finishes.
+    if (this.privacy.isActive()) return this.privacyBusyResult();
+    const epochAtStart = this.privacy.epoch;
+    const outcome = await this.callToolInner(scope, name, args);
+    return this.privacy.admit(outcome, epochAtStart);
+  }
+
+  /** The result a tool call gets while a credential interaction is open:
+   *  retriable and specific. When the automatic release is stuck (a probe will
+   *  not answer) it names the recovery instead of promising an auto-clear. */
+  privacyBusyResult() {
+    const text = this.privacyStuck
+      ? "The browser is waiting on a sign-in page that is not responding. Reload or close that page; browser tools resume automatically once it is clear."
+      : "A person is signing in or handling credentials. Browser tools are paused and resume automatically when they finish — retry in a moment.";
+    return { content: [{ type: "text", text: `Error: ${text}` }], isError: true, retriable: true };
+  }
+
+  async callToolInner(scope, name, args) {
     const read = isReadTool(name, args);
+    // AN EXTENSION'S OWN PAGES ARE NEVER A TARGET. A tab showing a
+    // chrome-extension:// page (a popup, an unlock, a settings page) is the
+    // password manager's, not the agent's, whether it wants to read or act.
+    if (name !== "browser_tabs") {
+      let candidate = null;
+      try {
+        candidate = args && args.tabId !== undefined ? this.tabAt(scope, args.tabId) : this.scopeTabs(scope).length ? this.activeTab(scope) : null;
+      } catch {
+        candidate = null;
+      }
+      if (candidate && isProtectedUrl(candidate.url)) {
+        return errorResult(new Error("That tab is showing an extension page. Browser tools do not read or act on extension pages."));
+      }
+    }
     // Which tab does this call touch? Page mutations hit the ACTIVE tab;
     // browser_tabs close hits the addressed one; new/select/list touch none.
     let targetTab = null;
@@ -1000,51 +2288,172 @@ class DesktopBrowserManager {
         }
       }
     }
-    // Control is PER TAB (§6): the human holding tab 2 refuses only calls
-    // that would TOUCH tab 2 — the agent keeps working everywhere else, and
-    // may still LOOK anywhere (reads, incl. tabId-addressed ones).
-    if (targetTab && targetTab.controller === "human") {
-      return errorResult(new Error(humanHoldsTab(targetTab, this.scopeTabs(scope).indexOf(targetTab))));
+    // A SNAPSHOT OR SCREENSHOT observes the tab it addresses — that is the
+    // fresh view a later mutation may act on. Console and network are logs,
+    // not a view of the page. The generation is captured BEFORE the read:
+    // if it moved while the read ran, the read saw a page that is gone.
+    let readTab = null;
+    let readGeneration = -1;
+    if (name === "browser_snapshot" || name === "browser_take_screenshot") {
+      try {
+        readTab = this.readTarget(scope, args);
+        readGeneration = readTab.generation;
+      } catch {
+        readTab = null;
+      }
     }
-    const epochAtStart = targetTab ? targetTab.controlEpoch || 0 : 0;
+    // A mutation of ONE tab is serialized behind that tab's earlier mutations,
+    // defers while a human is interacting there, and needs a fresh view.
+    // Other tabs are independent: their queues never touch this one.
     if (targetTab) {
-      this.setTabController(targetTab, "agent");
-      this.lastAgentInputAt.set(scope, this.now());
-    } else if (!read) {
-      this.lastAgentInputAt.set(scope, this.now());
+      const enqueuedAt = this.now();
+      const run = () => this.runOnTab(scope, name, args, targetTab, enqueuedAt, (action) => this.dispatch(scope, name, args, action));
+      const queued = targetTab.queue.then(run, run);
+      targetTab.queue = queued.catch(() => undefined);
+      return queued;
     }
+    if (!read) this.lastAgentInputAt.set(scope, this.now());
+    const outcome = this.protectedPostcheck(readTab, await this.dispatch(scope, name, args));
+    if (readTab && this.tabs.includes(readTab) && !outcome.isError && readTab.generation === readGeneration) {
+      this.noteObserved(readTab);
+    }
+    return outcome;
+  }
+
+  /**
+   * THE DESTINATION IS CHECKED AGAIN AFTER THE CALL. The entry check saw the
+   * URL the tab HAD; a redirect or a navigation in flight can land it on an
+   * extension page by the time the read or navigation returns. If the tab
+   * addressed now shows a protected URL, the result — a snapshot of the
+   * unlock page, a screenshot of the popup — is refused, not returned.
+   */
+  protectedPostcheck(tab, outcome) {
+    if (!tab || !this.tabs.includes(tab) || outcome.isError) return outcome;
+    const current = tab.view && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() || tab.url : tab.url;
+    if (isProtectedUrl(current)) {
+      return errorResult(new Error("That tab is now showing an extension page. Browser tools do not read or act on extension pages."));
+    }
+    return outcome;
+  }
+
+  /**
+   * The per-tab gate. Direct human input wins: while the human is active on
+   * this tab the mutation waits — bounded — for their hands to lift. Then it
+   * must have observed the page since the last human input or navigation; if
+   * not, it is refused with the reason and never replayed. Then it runs, and
+   * afterwards, if a navigation or human input landed DURING the action, the
+   * model is told the page moved rather than handed a result that implies it
+   * still sees what it saw.
+   */
+  async runOnTab(scope, name, args, tab, enqueuedAt, dispatch) {
+    const index = () => Math.max(0, this.scopeTabs(scope).indexOf(tab));
+    // The deadline counts from when the call was QUEUED, so time spent
+    // behind an earlier action on this tab is not a second wait.
+    const deadline = enqueuedAt + DEFER_MAX_MS;
+    while (this.tabs.includes(tab) && this.humanActive(tab)) {
+      if (this.now() >= deadline) return errorResult(new Error(humanActiveOn(tab, index())));
+      await this.wait(DEFER_POLL_MS);
+    }
+    // Queued behind a deferral: privacy may have begun meanwhile.
+    if (this.privacy.isActive()) return this.privacyBusyResult();
+    if (!this.tabs.includes(tab)) return errorResult(new Error(`Browser tab ${index()} was closed.`));
+    // A deliberate navigation or tab-set change LEAVES the current page; it
+    // does not act on it, so it needs no fresh view of it. Everything that
+    // acts on the page — click, type, fill, select, press, hover — does.
+    // A resize reflows the page rather than acting on it: no fresh view
+    // needed, and the generation it bumps is its own doing.
+    const actsOnPage = name !== "browser_navigate" && name !== "browser_navigate_back" && name !== "browser_tabs" && name !== "browser_resize";
+    if (actsOnPage && tab.observedGeneration !== tab.generation) {
+      return errorResult(new Error(staleView(tab, index(), tab.staleReason || "it changed")));
+    }
+    const generationAtStart = tab.generation;
+    tab.interruptedAt = undefined;
+    const action = { tab, ticket: this.nextTicket(tab), generation: generationAtStart, startedAt: this.now(), cancelled: false, privacyEpoch: this.privacy.epoch };
+    tab.agentBusy += 1;
+    this.lastAgentInputAt.set(scope, this.now());
+    this.journalControl(tab, "agent");
+    try {
+      const outcome = this.protectedPostcheck(tab, await dispatch(action));
+      if (!this.tabs.includes(tab) || outcome.isError) return outcome;
+      // A NAVIGATION NEVER BLESSES THE PAGE IT LANDS ON — deliberate or not,
+      // the agent has not seen it (its refs are gone too); the next mutation
+      // needs a snapshot or screenshot first. Anything else that moved the
+      // generation mid-action was the human or an unasked-for navigation:
+      // say so rather than hand back a result that implies the page held.
+      const navigational = name === "browser_navigate" || name === "browser_navigate_back" || name === "browser_tabs" || name === "browser_resize";
+      if (tab.interruptedAt !== undefined) {
+        return errorResult(new Error(`${textOfResult(outcome)} ${humanActiveOn(tab, index())}`));
+      }
+      if (!navigational && tab.generation !== generationAtStart) {
+        return errorResult(new Error(`${textOfResult(outcome)} ${staleView(tab, index(), tab.staleReason || "it changed")}`));
+      }
+      return outcome;
+    } finally {
+      tab.agentBusy = Math.max(0, tab.agentBusy - 1);
+      this.lastAgentInputAt.set(scope, this.now());
+      if (this.tabs.includes(tab)) this.journalControl(tab, this.humanActive(tab) ? "human" : "idle");
+    }
+  }
+
+  /** One tool call against the host, timed, counted, and turned into a result.
+   *  `pinned` is the tab a mutation was queued against: page mutations act on
+   *  IT, never on "whatever is active now" — a tab switch during the wait
+   *  must not redirect a click. */
+  async dispatch(scope, name, args, action = null) {
+    const pinned = action ? action.tab : null;
+    // A mutation acts on the tab it was queued for, by identity. If that tab
+    // is gone the action is over — never redirected to whatever is active.
+    const target = async () => {
+      if (!pinned) return this.wakeTab(this.activeTab(scope));
+      if (!this.tabs.includes(pinned)) throw new Error("The tab this action was queued for was closed.");
+      return this.wakeTab(pinned);
+    };
     this.activeToolCalls.set(scope, (this.activeToolCalls.get(scope) || 0) + 1);
     let timeoutId;
     const timeout = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error(`Browser action ${name} timed out.`)), RPC_TIMEOUT_MS);
+      timeoutId = setTimeout(() => {
+        // The operation may still be running; from here its next checkpoint
+        // stops it, so a successor on this tab never shares the page with it.
+        if (action) action.cancelled = true;
+        reject(new Error(`Browser action ${name} timed out.`));
+      }, this.rpcTimeoutMs);
     });
     const operation = (async () => {
       switch (name) {
         case "browser_tabs":
           if (args.action === "list") return this.listTabs(scope);
-          if (args.action === "new") { await this.createTab(scope, args.url || "about:blank", "agent"); return this.listTabs(scope); }
+          if (args.action === "new") { if (isProtectedUrl(args.url)) throw new Error("Browser tools cannot open extension pages."); await this.createTab(scope, args.url || "about:blank", "agent"); return this.listTabs(scope); }
           if (args.action === "select") { await this.selectTab(scope, args.index); return this.listTabs(scope); }
-          if (args.action === "close") { this.closeTab(scope, args.index, "agent"); return this.listTabs(scope); }
+          if (args.action === "close") { this.closeTabRef(pinned || (args.index === undefined ? this.activeTab(scope) : this.tabAt(scope, args.index)), "agent"); return this.listTabs(scope); }
           throw new Error("Unknown browser_tabs action.");
         case "browser_navigate": {
-          const tab = this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
+          if (isProtectedUrl(args.url)) throw new Error("Browser tools cannot open extension pages.");
+          const tab = pinned && this.tabs.includes(pinned) ? pinned : this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
           await this.navigateTab(tab, args.url);
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
-        case "browser_navigate_back": await this.performAction(scope, { action: "back" }); return okText("Navigated back.");
+        case "browser_navigate_back": await this.goBack(await target()); return okText("Navigated back.");
         case "browser_snapshot": return this.snapshot(await this.wakeTab(this.readTarget(scope, args)));
-        case "browser_click": return this.click(await this.wakeTab(this.activeTab(scope)), args);
-        case "browser_type": return this.type(await this.wakeTab(this.activeTab(scope)), args);
-        case "browser_fill_form": return this.fillForm(await this.wakeTab(this.activeTab(scope)), args);
-        case "browser_select_option": return this.selectOption(await this.wakeTab(this.activeTab(scope)), args);
-        case "browser_press_key": return this.press(await this.wakeTab(this.activeTab(scope)), args);
+        case "browser_click": return this.click(await target(), args, action);
+        case "browser_type": return this.type(await target(), args, action);
+        case "browser_fill_form": return this.fillForm(await target(), args, action);
+        case "browser_select_option": return this.selectOption(await target(), args, action);
+        case "browser_press_key": return this.press(await target(), args, action);
         case "browser_hover": {
-          const tab = await this.wakeTab(this.activeTab(scope));
+          const tab = await target();
           const point = await this.targetPoint(tab, args.target);
           await this.showAgentCursor(tab, point, "move");
           const debug = await this.ensureDebugger(tab);
-          await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+          this.stampAgentInput(tab);
+          const native = this.inputPoint(tab, point);
+          await debug.sendCommand("Input.dispatchMouseEvent", { type: "mouseMoved", x: native.x, y: native.y });
           return okText(`Hovered ${args.element || args.target}.`);
+        }
+        case "browser_resize": {
+          const tab = await target();
+          const size = await this.resizeTab(tab, args);
+          const mode = this.viewportModeOf(tab) === "fit" ? " (fit to panel — follows the panel while shown)" : presetOf(size) ? ` (${presetOf(size)})` : "";
+          return okText(`Resized the viewport to ${size.width}×${size.height}${mode}. Take a fresh snapshot before acting on the page.`);
         }
         case "browser_take_screenshot": return this.screenshot(await this.wakeTab(this.readTarget(scope, args)), args);
         case "browser_console_messages": {
@@ -1063,20 +2472,11 @@ class DesktopBrowserManager {
       }
     })();
     try {
-      const result = await Promise.race([operation, timeout]);
-      // The human preempted THIS tab mid-action (its epoch bumped): the
-      // action may or may not have landed, and saying so honestly beats a
-      // result that implies the agent still drives. t3code interrupts
-      // silently; Telar tells the model, so it narrates and waits.
-      if (targetTab && this.tabs.includes(targetTab) && (targetTab.controlEpoch || 0) !== epochAtStart) {
-        return errorResult(new Error(humanHoldsTab(targetTab, Math.max(0, this.scopeTabs(scope).indexOf(targetTab)))));
-      }
-      return result;
+      return await Promise.race([operation, timeout]);
     } catch (error) {
       return errorResult(error);
     } finally {
       clearTimeout(timeoutId);
-      if (!read) this.lastAgentInputAt.set(scope, this.now());
       const remaining = Math.max(0, (this.activeToolCalls.get(scope) || 1) - 1);
       if (remaining) this.activeToolCalls.set(scope, remaining);
       else this.activeToolCalls.delete(scope);
@@ -1090,7 +2490,7 @@ class DesktopBrowserManager {
     // BEFORE the hibernate/remove pass empties the list: a destroyed scope's
     // tabs belong to nobody, and the idle transitions must still journal.
     if (destroy) {
-      for (const tab of scoped) this.setTabController(tab, "idle");
+      for (const tab of scoped) this.journalControl(tab, "idle");
     }
     for (const tab of scoped) this.requestHibernate(tab, destroy);
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
@@ -1107,6 +2507,20 @@ class DesktopBrowserManager {
     if (sourceTabs.length && this.scopeTabs(to).length) {
       throw new Error("Cannot merge two browser session scopes.");
     }
+    // Tabs carry their partition; a scope may only adopt tabs of ITS profile,
+    // otherwise a draft's cookie jar would follow it into another project. A
+    // target that is not bound yet INHERITS the source's profile (the common
+    // case: a fresh session scope adopting a draft's tabs).
+    const fromProfile = this.profileOf(from);
+    const toProfile = this.profileOf(to);
+    if (toProfile) {
+      const targetPartition = this.partitionOf(to);
+      if (sourceTabs.some((tab) => tab.partition !== targetPartition)) {
+        throw new Error("Cannot adopt tabs across browser profiles (different projects).");
+      }
+    } else if (fromProfile) {
+      this.scopeProfiles.set(to, fromProfile);
+    }
     const sourceActiveId = this.activeTabIds.get(from) ?? null;
     for (const tab of sourceTabs) tab.scopeKey = to;
     if (sourceTabs.length) this.activeTabIds.set(to, sourceActiveId);
@@ -1119,6 +2533,12 @@ class DesktopBrowserManager {
   }
 
   destroy() {
+    // The inventory is written BEFORE the tabs go, synchronously: this runs
+    // on window close / quit, where an async write would be cut off. The
+    // live views' current URLs are what is remembered.
+    if (this.tabStore && !this._disposed) this.tabStore.flushSync(this.inventory());
+    // Stop the auto-release loop: its next poll sees this and exits.
+    this._disposed = true;
     for (const tab of [...this.tabs]) {
       this.hibernateTab(tab);
     }
@@ -1128,4 +2548,4 @@ class DesktopBrowserManager {
   }
 }
 
-module.exports = { DesktopBrowserManager, createExternalLinkPolicy, normalizeUrl };
+module.exports = { DesktopBrowserManager, createExternalLinkPolicy, normalizeUrl, resolveViewport, fitViewport, DEFAULT_VIEWPORT, VIEWPORT_PRESETS };

@@ -40,6 +40,8 @@ export type BrowserSocketCapability = {
   /** What the browser is looking at now, WITHOUT launching one. Optional
    *  because a capability assembled by a test has no browser to describe. */
   state?(scopeKey: string): Promise<{ provider: BrowserProvider; tabs: BrowserTab[] }>;
+  /** Bind a scope to its project's browser profile before its tools run. */
+  bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
 };
 
 /** What one claimed turn binds to its token. */
@@ -138,6 +140,15 @@ export class BrowserToolSocket {
    * the first bind, so a deployment whose sessions never carry a browser opens
    * no port at all.
    */
+  /**
+   * The project profile a scope's browser runs in. Called by the worker
+   * BEFORE `bind`, from the claim, so a tool invoked in the first turn — before
+   * any cockpit ever opened the session — already lands in the right jar.
+   */
+  async bindProfile(scopeKey: string, profileKey: string): Promise<void> {
+    if (this.capability.bindProfile) await this.capability.bindProfile(scopeKey, profileKey);
+  }
+
   async bind(binding: BrowserRunBinding): Promise<BrowserSocketLease> {
     const url = await this.ensureListening();
     const token = crypto.randomBytes(32).toString("base64url");

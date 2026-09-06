@@ -19,30 +19,58 @@ function isSettingsRoute(pathname: string): boolean {
 }
 
 /**
- * The product shell: a resizable rail and the inset it frames.
- *
- * Both come from the shared Sidebar primitive rather than from a bespoke CSS
- * grid — which is what the cockpit used to do, and why the rail did not match
- * Telar's: no keyboard toggle, no rail drag, no persisted width, no mobile
- * sheet, and a hand-rolled scrim in place of the real one.
+ * The product shell: a resizable rail and the inset it frames, BOTH AS
+ * ISLANDS. The wrapper is the ground (`bg-sidebar`); the rail is the
+ * primitive's `floating` variant (an 8px-padded, ring-bordered card), and the
+ * inset gets the matching margin, radius and border so the two read as one
+ * pair of cards on one ground. On a phone the rail is a sheet and the inset
+ * fills the viewport — the `md:` prefix is what keeps that.
  *
  * `h-dvh` on the inset (not `min-h-dvh`) is what makes the transcript scroll
  * INSIDE its own column instead of growing the document — the composer stays
  * pinned to the floor because the column it lives in cannot exceed the viewport.
- */
-/**
+ * With the 8px margins that becomes `calc(100dvh - 1rem)`.
+ *
  * ONE KEY FOR BOTH HALVES. The provider persists collapsed-ness and the rail
  * persists its dragged width, but they write into the SAME localStorage record
- * (see lib/sidebar-width.ts). Handing the provider a different key than the one
- * `AppSidebar` gives its `resizable` options splits that record in two, and
- * the rail comes back at the default width every reload.
+ * (see lib/sidebar-width.ts).
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const settings = isSettingsRoute(pathname);
   return (
-    <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY}>
-      {!isSettingsRoute(pathname) && <AppSidebar />}
-      <SidebarInset className="flex h-dvh min-w-0 flex-col">{children}</SidebarInset>
+    // `app-ground`: the wrapper is the GROUND — solid `bg-sidebar` in an
+    // opaque window, transparent under the translucent shell so the body's
+    // single wash shows through (globals.css). The islands paint on top of it.
+    <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY} className="app-ground bg-sidebar">
+      {!settings && <AppSidebar />}
+      <SidebarInset
+        className={cn(
+          "flex h-dvh min-w-0 flex-col",
+          // The island: margin on every side, `ml-0` beside the rail because the
+          // rail's own padding already holds the gap; back to `ml-2` once the
+          // rail is collapsed away.
+          // Rounded like the rail, but NO BORDER: a hairline on this edge reads
+          // as a divider between the two islands. The shadow alone lifts the
+          // card, the same treatment the primitive's own `inset` variant uses.
+          "md:m-2 md:h-[calc(100dvh-1rem)] md:rounded-xl md:shadow-sm",
+          // A SCREEN MADE OF SEVERAL SURFACES draws its own cards: the cockpit
+          // marks its <main data-surfaces> and this inset becomes the ground
+          // between them instead of one card around them. Every other route
+          // keeps the single island above.
+          "md:has-[[data-surfaces]]:bg-transparent md:has-[[data-surfaces]]:shadow-none md:has-[[data-surfaces]]:rounded-none",
+          // The inset itself must not clip either, or the cards' rings lose
+          // their outer edge against the gutter.
+          "md:has-[[data-surfaces]]:overflow-visible",
+          settings ? "md:ml-2" : "md:ml-0 md:peer-data-[state=collapsed]:ml-2",
+        )}
+      >
+        {children}
+      </SidebarInset>
     </SidebarProvider>
   );
+}
+
+function cn(...classes: (string | false | undefined)[]): string {
+  return classes.filter(Boolean).join(" ");
 }

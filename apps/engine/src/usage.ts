@@ -239,11 +239,12 @@ export function defaultScanRoots(env: NodeJS.ProcessEnv = process.env): UsageSca
 
 /** `YYYY-MM-DD` in the requested zone. `en-CA` is the locale whose short date
  *  IS that shape — the same trick t3 code uses. */
-function dayOf(at: number, timeZone: string): string {
+function dayFormatter(timeZone: string): Intl.DateTimeFormat {
+  const options = { year: "numeric", month: "2-digit", day: "2-digit" } as const;
   try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+    return new Intl.DateTimeFormat("en-CA", { ...options, timeZone });
   } catch {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+    return new Intl.DateTimeFormat("en-CA", { ...options, timeZone: "UTC" });
   }
 }
 
@@ -281,6 +282,8 @@ export async function readUsageReport(
   const roots = options.roots ?? defaultScanRoots();
   const rates = await (options.loadRatesTable ?? (() => loadRates(options.ratesCachePath)))();
 
+  // Constructing an ICU formatter for every record dominated range changes.
+  const calendar = input.resolution === "day" ? dayFormatter(input.timeZone) : undefined;
   const buckets = new Map<string, UsageBucket & { allPriced: boolean }>();
   const sessions = new Set<string>();
   const seen = new Set<string>();
@@ -318,7 +321,7 @@ export async function readUsageReport(
         providerSessions.add(record.sessionId);
         sessions.add(`${provider}:${record.sessionId}`);
 
-        const period = input.resolution === "hour" ? String(Math.floor(record.at / HOUR_MS) * HOUR_MS) : dayOf(record.at, input.timeZone);
+        const period = input.resolution === "hour" ? String(Math.floor(record.at / HOUR_MS) * HOUR_MS) : calendar!.format(record.at);
         const key = `${period}\0${provider}\0${record.model}`;
         const bucket = buckets.get(key) ?? {
           period,

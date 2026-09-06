@@ -6,7 +6,7 @@
  * Ported from `apps/web_old/lib/server/browser-runtime.ts` and
  * `apps/web_old/lib/browser-mcp.ts`.
  */
-import { BROWSER_TOOL_NAMES, type BrowserToolResult } from "./tools";
+import { BROWSER_TOOL_NAMES, BROWSER_VIEWPORT_PRESETS, type BrowserToolResult, type BrowserViewportPreset } from "./tools";
 
 /** One tab as Playwright MCP reports it. `index` IS the handle — the MCP tab
  *  tools address tabs positionally, so there is no stable id to carry. */
@@ -37,6 +37,8 @@ export const MUTATING_TOOLS: ReadonlySet<string> = new Set([
   "browser_hover",
   "browser_select_option",
   "browser_tabs",
+  // Reflows the page: every snapshot before it is stale.
+  "browser_resize",
   // Not merely mutating: it also opens a `secret_access` request. Listed here
   // so nothing can ever classify it as an auto-acceptable read.
   "browser_fill_secret",
@@ -56,7 +58,22 @@ export function normalizeBrowserToolCall(
   name: string,
   args: Record<string, unknown>,
 ): { name: string; args: Record<string, unknown> } {
-  return name === "browser_list_tabs" ? { name: "browser_tabs", args: { action: "list" } } : { name, args };
+  if (name === "browser_list_tabs") return { name: "browser_tabs", args: { action: "list" } };
+  // A preset is Telar's own vocabulary; the browsers (desktop host and
+  // Playwright's `browser_resize`) take numbers.
+  if (name === "browser_resize") {
+    if (typeof args.preset === "string") {
+      const preset = BROWSER_VIEWPORT_PRESETS[args.preset as BrowserViewportPreset];
+      if (preset) return { name, args: { width: preset.width, height: preset.height } };
+    }
+    // A bare mode has no numbers for the headless browser (which has no panel
+    // to fit): "fit"/"fixed" there mean the standard size. The desktop host
+    // takes the mode itself — the desktop path does not go through here.
+    if (typeof args.mode === "string" && args.width === undefined && args.height === undefined) {
+      return { name, args: { width: BROWSER_VIEWPORT_PRESETS.default.width, height: BROWSER_VIEWPORT_PRESETS.default.height } };
+    }
+  }
+  return { name, args };
 }
 
 /**

@@ -43,7 +43,7 @@ describe("an unsent draft belongs to the composer it was typed in", () => {
    */
   const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
   const submit = source.slice(source.indexOf("const submit = async ()"), source.indexOf("const withdraw = async ("));
-  const clear = submit.indexOf('writeDraft(sessionId, projectId, "")');
+  const clear = submit.indexOf('writeDraft(sessionId ?? browserTarget, projectId, "")');
 
   test("sending clears the stored draft under the id it was typed under", () => {
     expect(submit).toContain('setDraft("")');

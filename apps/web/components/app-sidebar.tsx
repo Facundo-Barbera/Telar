@@ -41,23 +41,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { configStateRoot, ensureConfigProject } from "@/lib/config-session";
 import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   FolderGit2Icon,
   FolderPlusIcon,
-  LayoutGridIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
   MoreHorizontalIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
-  SlidersHorizontalIcon,
-  SpoolIcon,
-  WorkflowIcon,
   XIcon,
 } from "lucide-react";
 import { SpoolWarehouseNav } from "@/components/spool/warehouse-nav";
@@ -101,6 +96,8 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
+import { ProjectGroupSection } from "@/components/session/project-group";
+import { groupSessions, useCollapsedGroups } from "@/lib/session-groups";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
@@ -140,82 +137,20 @@ const APP_SIDEBAR_RESIZABLE = {
  */
 function TelarSidebarHeader() {
   return (
-    <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center border-b border-sidebar-border/60 py-0 pr-2 pl-[calc(var(--titlebar-inset)+0.5rem)]">
+    // The island sits 8px in from the window edge, so the traffic-light inset
+    // is measured from the island: `inset` from the card's edge, never less
+    // than the 8px the header had before.
+    // The island starts 8px below the window edge, but the traffic lights are
+    // centred at --titlebar-height/2 from the WINDOW top (window-chrome.js).
+    // So on `md` the band is 16px shorter, which puts its centre on theirs.
+    <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center rounded-t-lg border-b border-sidebar-border/60 py-0 pr-2 pl-[max(0.5rem,var(--titlebar-inset))] md:h-[calc(var(--titlebar-height)-1rem)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
-        <PlaceSwitcher />
+        {/* NO PLACE SWITCHER. Sessions are the product; Spool and Looms keep
+            their routes and data but are not offered from the main rail. */}
+        <span className="px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
       </div>
     </SidebarHeader>
-  );
-}
-
-/**
- * THE BRAND IS STATIC, THE SWITCHER IS A BUTTON BESIDE IT.
- *
- * This band sits under the macOS traffic lights — it is window decoration by
- * adjacency — and window decoration does not change with the route. The first
- * cut made the wordmark ITSELF the switcher, so the top-left of the window
- * read "telar" or "spool" or "looms" depending on where you were: the one
- * region that should never move, mutating on every navigation. Now the
- * wordmark is the app's name, capitalised, always "Telar" — and the places
- * live behind one small square button beside it, whose glyph never changes
- * either.
- *
- * THE MAIN AREA HAS A NAME OF ITS OWN NOW: "Sessions". It used to borrow
- * "Telar" in the switcher, which stopped working the moment "Telar" became
- * the static brand above it — an app cannot be one of its own places.
- *
- * Switching is CHROME, NOT ROUTING: picking a place navigates (`/`, `/looms`,
- * `/spool`), but a deep link still lands correctly on its own; the menu only
- * reads the pathname to decide which entry to check.
- */
-function PlaceSwitcher() {
-  const pathname = usePathname();
-  const router = useRouter();
-  const inSpool = pathname.startsWith("/spool");
-  // Looms is the third place — the milestone-shaped entry (objective →
-  // threads → verify → human accept), per the default-path invariant in
-  // docs/vision-2026-08.md.
-  const inLooms = pathname.startsWith("/looms");
-
-  return (
-    <div className="mr-auto flex min-w-0 items-center gap-1 px-1.5">
-      <span className="font-heading text-lg font-semibold tracking-tight">Telar</span>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <button
-              type="button"
-              aria-label="Switch place"
-              title="Switch place"
-              className="app-no-drag flex size-6 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/55 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-ring"
-            />
-          }
-        >
-          <LayoutGridIcon className="size-3.5" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-48">
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>Place</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => router.push("/")}>
-              <span className="w-4">{inSpool || inLooms ? null : <CheckIcon />}</span>
-              <MessageSquareIcon className="size-4 shrink-0" />
-              <span>Sessions</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => router.push("/looms")}>
-              <span className="w-4">{inLooms ? <CheckIcon /> : null}</span>
-              <WorkflowIcon className="size-4 shrink-0" />
-              <span>Looms</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => router.push("/spool")}>
-              <span className="w-4">{inSpool ? <CheckIcon /> : null}</span>
-              <SpoolIcon className="size-4 shrink-0 text-spool" />
-              <span>Spool</span>
-            </DropdownMenuItem>
-          </DropdownMenuGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
   );
 }
 
@@ -398,6 +333,7 @@ function SidebarBody() {
   const [query, setQuery] = useState("");
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
+  const { collapsed: collapsedGroups, toggle: toggleGroup } = useCollapsedGroups();
   // Collapsed by default, like t3's: out of the way, never gone. The whole
   // point of snoozing is not to see these until they come back on their own.
   const [snoozedOpen, setSnoozedOpen] = useState(false);
@@ -613,6 +549,10 @@ function SidebarBody() {
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
   const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterHours });
+  // The Work surface's arrangement of the same page: a pure regrouping of
+  // `list`, so paging, search and scope are untouched. Only in the banded view;
+  // a search stays flat.
+  const grouped = list.flat ? undefined : groupSessions(list);
 
   /**
    * The draft rows, joined to the registry and narrowed the same way the list is.
@@ -717,13 +657,8 @@ function SidebarBody() {
   return (
     <>
       <TelarSidebarHeader />
-      {/* THE WAY TO A SETTINGS SESSION, at the top where the other "start
-          something" affordances are. It was buried as a tab inside Settings →
-          Appearance, which put the general act — configure this Telar — inside
-          one of the things it configures. */}
-      <div className="px-2 pt-2">
-        <SettingsSessionButton onNavigate={onNavigate} />
-      </div>
+      {/* The "Settings session" entry was removed from the product UI: it did
+          not work reliably and duplicated the real Settings (in the footer). */}
       <SidebarContent>
         {/* THE SPOOL'S PLACE REPLACES THIS BODY, NOT THE SWITCHER ABOVE IT.
             §11's warehouse nav is what the rail shows on `/spool` — search,
@@ -908,10 +843,35 @@ function SidebarBody() {
           finished with or deferred; this band holds the ones you said to keep
           in front of you, and a control that hides them would be arguing.
         */}
-        {!list.flat && list.pinned.length > 0 && (
+        {grouped && grouped.attention.length > 0 && (
+          <SidebarGroup className="shrink-0 pb-0">
+            <div className={cn("flex items-center gap-2 px-2 pb-1", CAPTION)}>
+              <span className="size-1.5 rounded-full bg-destructive" aria-hidden />
+              <span>Needs you</span>
+              <span className="ml-auto tabular-nums">{grouped.attention.length}</span>
+            </div>
+            <SidebarGroupContent className="space-y-0.5" role="group" aria-label="Needs you">
+              {grouped.attention.map((session) => (
+                <SessionRow
+                  key={sessionKey(session)}
+                  session={session}
+                  active={sessionKey(session) === activeSessionId}
+                  showProject={showProject}
+                  variant="card"
+                  band={bandFor(session)}
+                  renderedAt={renderedAt}
+                  onRefresh={() => void loadAll()}
+                />
+              ))}
+            </SidebarGroupContent>
+            <div aria-hidden className="mx-2 mt-1.5 h-px bg-sidebar-border" />
+          </SidebarGroup>
+        )}
+
+        {!list.flat && (grouped ? grouped.pinned : list.pinned).length > 0 && (
           <SidebarGroup className="shrink-0 pb-0">
             <SidebarGroupContent className="space-y-0.5">
-              {list.pinned.map((session) => (
+              {(grouped ? grouped.pinned : list.pinned).map((session) => (
                 <SessionRow
                   key={sessionKey(session)}
                   session={session}
@@ -971,6 +931,20 @@ function SidebarBody() {
                 title={query ? "No sessions found" : selectedScope ? "No sessions in this project" : "No sessions yet"}
                 detail={query ? "Try another title or project." : "Start one from the button above."}
               />
+            ) : grouped ? (
+              grouped.groups.map((group) => (
+                <ProjectGroupSection
+                  key={group.key}
+                  group={group}
+                  open={!collapsedGroups.has(group.key)}
+                  onToggle={() => toggleGroup(group.key)}
+                  onNavigate={onNavigate}
+                  {...(activeSessionId ? { activeSessionId } : {})}
+                  renderedAt={renderedAt}
+                  autoSettleAfterHours={autoSettleAfterHours}
+                  onRefresh={() => void loadAll()}
+                />
+              ))
             ) : (
               list.sessions.map((session, index) => (
                 <SessionRow
@@ -1122,44 +1096,6 @@ function UsageButton({ onNavigate }: { onNavigate: () => void }) {
   );
 }
 
-/**
- * START A SESSION THAT CONFIGURES THIS TELAR.
- *
- * A normal session, in the engine's own state directory. The knowledge lives
- * in an AGENTS.md the engine writes there, so the agent is oriented by the
- * PLACE rather than by a brief this button would have to keep in sync.
- */
-function SettingsSessionButton({ onNavigate }: { onNavigate: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const router = useRouter();
-  const start = async () => {
-    setBusy(true);
-    try {
-      const stateRoot = await configStateRoot();
-      if (!stateRoot) return;
-      const projectId = await ensureConfigProject(stateRoot);
-      router.push(`/projects/${encodeURIComponent(projectId)}`);
-      onNavigate();
-    } catch {
-      // No engine, no session; the button simply does not take.
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <button
-      type="button"
-      onClick={() => void start()}
-      disabled={busy}
-      title="Start a session that configures this Telar"
-      className="flex w-full items-center gap-2 rounded-md p-2 text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground disabled:opacity-60"
-    >
-      <SlidersHorizontalIcon className="size-4 shrink-0" />
-      <span>{busy ? "Starting…" : "Settings session"}</span>
-    </button>
-  );
-}
-
 function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
   const pathname = usePathname();
   const active = pathname.startsWith("/settings");
@@ -1180,12 +1116,23 @@ function SettingsButton({ onNavigate }: { onNavigate: () => void }) {
 
 function AppSidebarRail() {
   const { open } = useSidebar();
-  return open ? <SidebarRail /> : null;
+  // THE IDLE LINE GOES. The primitive draws a faint 2px hairline down the rail
+  // at rest (`after:bg-sidebar-border/25`) — the old rail/content divider,
+  // which now sits in the gutter between two ringed islands and reads as a
+  // leftover. Transparent until hovered or focused; the 16px hit target and
+  // the hover/focus stroke are untouched.
+  return open ? <SidebarRail className="after:bg-transparent" /> : null;
 }
+
+/** The rail's body without its `<Sidebar>` frame — for the dev workspace
+ *  preview, which mounts it inside a static column under its own titlebar. */
+export { SidebarBody as AppSidebarBody };
 
 export function AppSidebar() {
   return (
-    <Sidebar collapsible="offcanvas" resizable={APP_SIDEBAR_RESIZABLE}>
+    // `floating`: the rail is an island (see app-shell.tsx). The primitive pads
+    // the fixed container 8px and rounds/rings the inner card.
+    <Sidebar variant="floating" collapsible="offcanvas" resizable={APP_SIDEBAR_RESIZABLE}>
       <SidebarBody />
       <AppSidebarRail />
     </Sidebar>

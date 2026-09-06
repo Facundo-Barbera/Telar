@@ -43,6 +43,10 @@ describe("the lights sit on the app header's centreline", () => {
     expect(TRAFFIC_LIGHT_POSITION.y).toBe((APP_HEADER_HEIGHT - TRAFFIC_LIGHT_DIAMETER) / 2);
   });
 
+  test("the top and left insets are equal (a balanced corner)", () => {
+    expect(TRAFFIC_LIGHT_POSITION.x).toBe(TRAFFIC_LIGHT_POSITION.y);
+  });
+
   test("the group fits inside the header with room to spare", () => {
     expect(TRAFFIC_LIGHT_POSITION.y + TRAFFIC_LIGHT_DIAMETER).toBeLessThan(APP_HEADER_HEIGHT);
     expect(TRAFFIC_LIGHT_POSITION.y).toBeGreaterThan(0);

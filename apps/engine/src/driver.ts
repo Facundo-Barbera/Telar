@@ -12,6 +12,7 @@
  * downstream of that one omission.
  */
 import crypto from "node:crypto";
+import { BROWSER_BRIEFING } from "./browser/briefing";
 import fs from "node:fs";
 import { z } from "zod";
 import type {
@@ -499,6 +500,7 @@ type ClaudeSdk = {
     options: {
       cwd: string;
       permissionMode: "default";
+      systemPrompt?: { type: "preset"; preset: "claude_code"; append: string };
       abortController: AbortController;
       /** Omitted entirely when the session names none — the SDK then uses the
        *  model the local Claude Code install is configured with. */
@@ -1950,6 +1952,9 @@ export function createClaudeDriver(
           options: {
             cwd,
             permissionMode: "default",
+            ...(browserSocket
+              ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: BROWSER_BRIEFING } }
+              : {}),
             abortController: processController,
             includePartialMessages: true,
             forwardSubagentText: true,

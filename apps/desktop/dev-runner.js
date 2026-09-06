@@ -189,13 +189,12 @@ async function main() {
   console.log(`[telar-desktop] app=${url} devtools=http://127.0.0.1:${debuggingPort}`);
   startElectron(url, debuggingPort, controlPort, controlToken);
 
-  for (const file of ["main.js", "preload.js", "browser-manager.js", "browser-control-server.js"]) {
-    watchers.push(
-      fs.watch(path.join(desktopDir, file), { persistent: true }, () =>
-        scheduleElectronRestart(),
-      ),
-    );
-  }
+  // Watch the directory: editors often replace a file by rename, which leaves
+  // a watcher on the old inode and silently stops desktop hot reload.
+  watchers.push(fs.watch(desktopDir, { persistent: true }, (_event, filename) => {
+    const name = String(filename || "");
+    if (name.endsWith(".js") && !name.includes("test") && name !== "dev-runner.js") scheduleElectronRestart();
+  }));
 }
 
 process.once("SIGINT", () => void stop(130));

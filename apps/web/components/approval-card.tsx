@@ -4,6 +4,7 @@ import { useState } from "react";
 import { FileIcon, KeyRoundIcon, MessageCircleQuestionIcon, PencilIcon, ShieldIcon, TerminalIcon, WrenchIcon } from "lucide-react";
 import { displayToolName, type EngineRequest, type RequestDecision, type SecretAccessDetail, type UserInputField } from "@telar/engine-client";
 import { Button } from "@/components/ui/button";
+import { CodeSurface } from "@/components/ui/code-surface";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -272,9 +273,7 @@ export function ApprovalCard({
       </p>
 
       {argument && (
-        <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-muted/40 px-3 py-2 font-mono text-[0.6875rem] break-words whitespace-pre-wrap">
-          {argument}
-        </pre>
+        <CodeSurface text={argument} wrap tone="foreground" />
       )}
 
       {/* A request that parked with nobody watching is the case a detached

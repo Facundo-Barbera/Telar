@@ -99,3 +99,101 @@ describe("extraResources carries the node_modules its trees need", () => {
     }
   });
 });
+
+describe("a --dev package is a separate app that cannot collide with the installed Telar", () => {
+  const { spawnSync } = require("node:child_process");
+  const script = path.join(__dirname, "..", "..", "scripts", "package-desktop.sh");
+  const devApp = path.join(__dirname, "release", "dev", "mac-arm64", "Telar Dev.app");
+
+  /**
+   * BEHAVIOUR, NOT SOURCE. The script is actually spawned: the refusal has to
+   * happen before any build step runs, because `install-app.sh` copies to the
+   * fixed name Telar.app and the dev build would land on the installed one.
+   */
+  test("--dev --install is refused before anything is built", () => {
+    const result = spawnSync("bash", [script, "--dev", "--install"], { encoding: "utf8", timeout: 10_000 });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--dev cannot be combined with --install");
+    expect(result.stdout).not.toContain("==> build standalone web app");
+  });
+
+  test("the shipping identity in package.json is untouched by the dev option", () => {
+    // Overrides at package time, never edits: the nightly/beta pipelines read
+    // this file and must see the same app they always did.
+    expect(manifest.build.appId).toBe("com.telar.desktop");
+    expect(manifest.build.productName).toBe("Telar");
+    expect(manifest.productName).toBe("Telar");
+    expect(manifest.telarDev).toBeUndefined();
+  });
+
+  /**
+   * THE ARTEFACT, WHEN THERE IS ONE. `package-desktop.sh --dev` takes minutes
+   * and needs Electron, so the unit layer does not build it — but once it has
+   * been built, the unit layer reads the identity off the real bundle rather
+   * than off the script that claims to produce it.
+   */
+  const built = fs.existsSync(path.join(devApp, "Contents", "Info.plist"));
+  const when = built ? test : test.skip;
+
+  when("the built Telar Dev.app carries its own bundle id, name and executable", () => {
+    const plist = (key) =>
+      spawnSync("plutil", ["-extract", key, "raw", "-o", "-", path.join(devApp, "Contents", "Info.plist")], { encoding: "utf8" }).stdout.trim();
+    expect(plist("CFBundleIdentifier")).toBe("com.telar.desktop.dev");
+    expect(plist("CFBundleName")).toBe("Telar Dev");
+    expect(fs.existsSync(path.join(devApp, "Contents", "MacOS", "Telar Dev"))).toBe(true);
+    // Stamped as a dev build, with the dirtiness of its sources recorded.
+    const stamp = JSON.parse(fs.readFileSync(path.join(devApp, "Contents", "Resources", "standalone", "build-info.json"), "utf8"));
+    expect(stamp.channel).toBe("dev");
+    expect(typeof stamp.dirty).toBe("boolean");
+  });
+
+  when("the built app's packaged metadata carries telarDev as a boolean, which is what main.js keys on", () => {
+    const scratch = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "telar-dev-meta-"));
+    try {
+      const extracted = spawnSync(
+        "bunx",
+        ["--bun", "@electron/asar", "extract-file", path.join(devApp, "Contents", "Resources", "app.asar"), "package.json"],
+        { cwd: scratch, encoding: "utf8", timeout: 60_000, env: { ...process.env, NODE_OPTIONS: "" } },
+      );
+      expect(extracted.status).toBe(0);
+      const packaged = JSON.parse(fs.readFileSync(path.join(scratch, "package.json"), "utf8"));
+      expect(packaged.telarDev).toBe(true);
+      expect(packaged.productName).toBe("Telar Dev");
+      expect(packaged.updateProxyKey).toBeUndefined();
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the password-manager extension ships with what it needs", () => {
+  test("the compat modules main.js requires are in build.files, and the library is a runtime dependency", () => {
+    for (const file of ["extension-host.js", "extension-compat.js", "private-interaction.js"]) expect(manifest.build.files).toContain(file);
+    // A devDependency is pruned from the packaged app; the library must be a
+    // real dependency, like electron-updater.
+    expect(manifest.dependencies["electron-chrome-extensions"]).toBeDefined();
+    expect(manifest.devDependencies["electron-chrome-extensions"]).toBeUndefined();
+  });
+  test("the library's preload is resolvable from the desktop package (it is registered by path at runtime)", () => {
+    const preload = require.resolve("electron-chrome-extensions/preload");
+    expect(fs.existsSync(preload)).toBe(true);
+  });
+  test("the host attaches the library with a directory for the sanitized preload (the noisy upstream never registers alone)", () => {
+    const host = fs.readFileSync(path.join(__dirname, "extension-host.js"), "utf8");
+    expect(host).toMatch(/attachExtensionSupport\([^)]*preloadDir: this\.rootDir/);
+    const compat = fs.readFileSync(path.join(__dirname, "extension-compat.js"), "utf8");
+    expect(compat).toContain('if (!options.preloadDir) throw new Error');
+  });
+  test("no debug logging of native messages is enabled by the app", () => {
+    for (const file of ["main.js", "extension-host.js"]) {
+      const source = fs.readFileSync(path.join(__dirname, file), "utf8");
+      expect(source).not.toMatch(/debug\.enable\(|DEBUG\s*=|process\.env\.DEBUG\s*=/);
+    }
+    // extension-compat's single debug.enable call is the NEGATION that turns
+    // the library's namespaces off; nothing there sets DEBUG.
+    const compat = fs.readFileSync(path.join(__dirname, "extension-compat.js"), "utf8");
+    expect(compat.match(/debug\.enable\(/g)).toHaveLength(1);
+    expect(compat).toContain('"-electron-chrome-extensions:*"');
+    expect(compat).not.toMatch(/DEBUG\s*=|process\.env\.DEBUG\s*=/);
+  });
+});

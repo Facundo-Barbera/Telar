@@ -81,11 +81,23 @@ export const BrowserToolName = z.enum([
   "browser_select_option",
   "browser_press_key",
   "browser_hover",
+  "browser_resize",
   "browser_take_screenshot",
   "browser_console_messages",
   "browser_network_requests",
   "browser_fill_secret",
 ]);
+
+/** Named viewport sizes `browser_resize {preset}` accepts. The desktop host
+ *  keeps the same table (browser-manager.js VIEWPORT_PRESETS); resolved to
+ *  numbers here so the headless runtime, which has no presets, gets a size. */
+export const BROWSER_VIEWPORT_PRESETS = {
+  default: { width: 1280, height: 800 },
+  laptop: { width: 1440, height: 900 },
+  tablet: { width: 768, height: 1024 },
+  phone: { width: 390, height: 844 },
+} as const;
+export type BrowserViewportPreset = keyof typeof BROWSER_VIEWPORT_PRESETS;
 export type BrowserToolName = z.infer<typeof BrowserToolName>;
 
 export type BrowserToolDefinition = {
@@ -202,6 +214,21 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     name: "browser_hover",
     description: "Move Telar's visible agent cursor over an element in the selected browser tab.",
     input: z.object({ ...targeted }),
+  },
+  {
+    name: "browser_resize",
+    description:
+      "Change the selected Telar browser tab's viewport — the size the page lays out for, independent of how it is shown. Pass a preset (default 1280×800, laptop, tablet, phone), an explicit width and height, or mode \"fit\" to follow the size of the panel the human is looking at (mode \"fixed\" returns to a stable size). Take a fresh browser_snapshot afterwards.",
+    input: z
+      .object({
+        preset: z.enum(["default", "laptop", "tablet", "phone"]).optional(),
+        width: z.number().int().min(200).max(5000).optional(),
+        height: z.number().int().min(200).max(5000).optional(),
+        mode: z.enum(["fixed", "fit"]).optional(),
+      })
+      .refine((input) => input.preset !== undefined || input.mode !== undefined || (input.width !== undefined && input.height !== undefined), {
+        message: "pass a preset, a mode, or both width and height",
+      }),
   },
   {
     name: "browser_take_screenshot",

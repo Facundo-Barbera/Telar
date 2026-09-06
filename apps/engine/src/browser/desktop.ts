@@ -136,11 +136,55 @@ export class DesktopBrowserClient {
     }
   }
 
+  /**
+   * Open a tab AS THE HUMAN. The cockpit's "open a browser" lands here rather
+   * than on `browser_tabs {new}` so the host stamps it `openedBy: "human"` —
+   * the agent's tool path has no opener argument and must not grow one.
+   */
+  /**
+   * BIND A SCOPE TO ITS PROJECT'S BROWSER PROFILE. The host refuses to open
+   * any tab for a scope nobody bound — cookies are per project, and a scope
+   * without a declared project is exactly the leak this prevents. Called
+   * before a turn's first browser tool with the claim's project id, and by
+   * the cockpit before the panel shows. `profileKey` is a project id or the
+   * explicit `none` for a projectless session.
+   */
+  async bind(scopeKey: string, profileKey: string): Promise<{ scopeKey: string; profileKey: string; partition: string }> {
+    const response = await this.fetchImpl(this.url("/bind"), {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ scopeKey, profileKey }),
+    });
+    const payload: unknown = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      const message = payload && typeof payload === "object" && typeof (payload as { error?: unknown }).error === "string" ? (payload as { error: string }).error : `The desktop browser host answered ${response.status}.`;
+      throw new Error(message);
+    }
+    return payload as { scopeKey: string; profileKey: string; partition: string };
+  }
+
+  async openForHuman(scopeKey: string, url = "about:blank"): Promise<DesktopBrowserState> {
+    const response = await this.fetchImpl(this.url("/open"), {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ scopeKey, url }),
+    });
+    return this.parseState(response);
+  }
+
   async state(scopeKey: string): Promise<DesktopBrowserState> {
     const response = await this.fetchImpl(this.url(`/state?scopeKey=${encodeURIComponent(scopeKey)}`), {
       headers: this.headers(),
     });
-    if (!response.ok) throw new Error(`The desktop browser host answered ${response.status}.`);
+    return this.parseState(response);
+  }
+
+  private async parseState(response: Response): Promise<DesktopBrowserState> {
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => undefined);
+      const message = payload && typeof payload === "object" && typeof (payload as { error?: unknown }).error === "string" ? (payload as { error: string }).error : undefined;
+      throw new Error(message ?? `The desktop browser host answered ${response.status}.`);
+    }
     const payload = (await response.json()) as {
       running?: unknown;
       controller?: unknown;
