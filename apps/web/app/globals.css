@@ -826,6 +826,94 @@ pre span[style*="--sdm-c"] {
   display: block;
 }
 
+/* ONE QUIET FRAME AROUND A FENCED BLOCK.
+
+   Streamdown 2.5 draws a code block as a card inside a card: an outer
+   `rounded-xl border bg-sidebar p-2` wrapper, an `h-8` header row (empty when
+   the fence names no language), a sticky actions row, and an inner
+   `rounded-md border bg-background p-4` body — two borders, 24px of stacked
+   padding and up to 48px of chrome above two lines of text. It also hints
+   `contain-intrinsic-size: auto 200px`, so a short block off-screen reserves
+   a card's height and the transcript jolts as it scrolls into view.
+
+   These rules collapse that to the same surface every other monospace body
+   in the app wears (components/ui/code-surface.tsx): one hairline, the muted
+   fill, ten pixels of padding, content-sized. Keyed on the `data-streamdown`
+   attributes for the reason the Shiki rules above give — an attribute cannot
+   be missed by Tailwind's scanner, and no class in node_modules has to
+   survive a build. Nothing here touches the tokens inside the block, so the
+   highlighting the two rules above reach stays exactly as it was. */
+.telar-markdown [data-streamdown="code-block"] {
+  margin-block: 0.75rem;
+  gap: 0;
+  padding: 0;
+  /* `rounded-md`, spelled from the :root token the @theme scale derives it from. */
+  border-radius: calc(var(--radius) * 0.8);
+  border-color: color-mix(in oklch, var(--border) 70%, transparent);
+  background: color-mix(in oklch, var(--muted) 40%, transparent);
+  contain-intrinsic-size: auto none;
+}
+.telar-markdown [data-streamdown="code-block-header"] {
+  height: auto;
+  min-height: 0;
+  padding: 0.25rem 0.625rem 0;
+  font-size: 0.625rem;
+  line-height: 1rem;
+}
+/* No language, no row: an empty 32px band above two lines of code was the
+   most visible symptom of the old frame. */
+.telar-markdown [data-streamdown="code-block-header"]:not([data-language]),
+.telar-markdown [data-streamdown="code-block-header"][data-language=""] {
+  display: none;
+}
+.telar-markdown [data-streamdown="code-block-body"] {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0.5rem 0.625rem;
+}
+/* THE CONTROL COLUMN LIVES ON THE FRAME, NOT THE BODY. The body scrolls
+   horizontally for long source, so padding on it scrolls away with the text
+   and the first line runs under the button at a narrow measure. Reserving
+   the column on the non-scrolling frame keeps it fixed whatever the body
+   does; the button is absolutely positioned into that column. */
+.telar-markdown [data-streamdown="code-block"] {
+  padding-right: 2rem;
+}
+/* The actions row keeps its sticky position (a long block's copy stays in
+   reach) but sheds the pull-up that assumed the 32px header. The button
+   itself stays a real button: focusable, labelled, thumb-sized. */
+.telar-markdown [data-streamdown="code-block"] {
+  position: relative;
+}
+.telar-markdown [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+  /* Absolute, not sticky-with-negative-margin: the library's `-mt-10` pulled
+     the row up over a header that no longer exists, and the button's top
+     half was clipped at the frame's border. Inside the frame, top-right. */
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  margin: 0;
+  height: auto;
+}
+.telar-markdown [data-streamdown="code-block-actions"] {
+  margin: 0;
+  border: 0;
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  padding: 0.125rem;
+}
+.telar-markdown [data-streamdown="code-block-actions"] button {
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+}
+/* An unlabelled, unhinted code block is also an element with a copy button
+   that must be reachable by keyboard: `:focus-visible` gets the ring the
+   rest of the app draws. */
+.telar-markdown [data-streamdown="code-block-actions"] button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
 /* ─── THE APP OWNS ITS TITLEBAR (macOS desktop shell only) ───────────────────
 
    apps/desktop launches the window with `titleBarStyle: "hiddenInset"`, which

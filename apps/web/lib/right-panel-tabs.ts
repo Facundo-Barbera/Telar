@@ -61,6 +61,32 @@ export function closeOtherPanelTabs<Tab extends string>(state: PanelTabState<Tab
   return { tabs: [tab], activeTab: tab, open: state.open };
 }
 
+/**
+ * Collapse every per-page browser tab into ONE, in place, preserving the order
+ * of the other tabs and the active selection. Used on the desktop shell, where
+ * the native WebContentsView owns the per-page strip — a session persisted
+ * before this change would otherwise still show the old per-page outer tabs
+ * after upgrade. `isBrowser` identifies a browser page tab; `single` is the
+ * one collapsed tab that replaces them (at the position of the first).
+ */
+export function collapseBrowserTabs<Tab extends string>(
+  state: PanelTabState<Tab>,
+  isBrowser: (tab: Tab) => boolean,
+  single: Tab,
+): PanelTabState<Tab> {
+  if (!state.tabs.some(isBrowser)) return state;
+  const tabs: Tab[] = [];
+  for (const tab of state.tabs) {
+    if (isBrowser(tab)) {
+      if (!tabs.includes(single)) tabs.push(single);
+    } else {
+      tabs.push(tab);
+    }
+  }
+  const activeTab = state.activeTab !== undefined && isBrowser(state.activeTab) ? single : state.activeTab;
+  return { tabs, ...(activeTab ? { activeTab } : {}), open: state.open };
+}
+
 type StoredPanel = { version: number; sessions: Record<string, { tabs: string[]; activeTab?: string; open: boolean; touchedAt: number }> };
 
 function readStore(): StoredPanel {

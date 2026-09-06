@@ -43,6 +43,7 @@ export function browserCapability(browser: EngineBrowser): BrowserSocketCapabili
       const state = await browser.state(scopeKey, { screenshot: false });
       return { provider: state.provider, tabs: state.tabs };
     },
+    ...(browser.bindProfile ? { bindProfile: (scopeKey, profileKey) => browser.bindProfile!(scopeKey, profileKey) } : {}),
   };
 }
 

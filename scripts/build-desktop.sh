@@ -269,7 +269,41 @@ for f in "$SNAP/apps/desktop/release/"*.dmg "$SNAP/apps/desktop/release/"*.zip \
 done
 shopt -u nullglob
 
+# --- smoke the packaged binary (fail unless SMOKE_OK) ------------------------
+# VALIDATE BEFORE PUBLISHING. This must run BEFORE any R2 upload: a broken
+# binary or a feed that names an app the engine can't bring up must never
+# reach the bucket. The upload below is gated on this passing.
+log "smoke: $DEST_APP --smoke"
+SMOKE_OUT="$TMP_ROOT/smoke.log"
+# BOUNDED, AND JUDGED ON ITS OWN WORD (ported from package-desktop.sh). A hung
+# Electron never reaches main.js's internal 30s waits, and an exit 0 with no
+# SMOKE_OK printed has happened; so we cap the run and require the marker. The
+# deadline is enforced by Bun (already a prerequisite), not coreutils' `timeout`
+# (absent on macOS); exit 124 on the deadline, like timeout. ELECTRON_RUN_AS_NODE
+# is unset for this line so the app binary is Telar, not a bare node.
+SMOKE_STATUS=0
+env -u ELECTRON_RUN_AS_NODE NODE_OPTIONS= bun -e '
+  const [bin, seconds] = [process.argv[1], Number(process.argv[2])];
+  const child = Bun.spawn([bin, "--smoke"], { stdout: "inherit", stderr: "inherit" });
+  const timer = setTimeout(() => { child.kill("SIGKILL"); process.exit(124); }, seconds * 1000);
+  process.exit(await child.exited);
+' "$DEST_APP/Contents/MacOS/Telar" "${TELAR_SMOKE_TIMEOUT:-120}" >"$SMOKE_OUT" 2>&1 || SMOKE_STATUS=$?
+cat "$SMOKE_OUT"
+if [ "$SMOKE_STATUS" -ne 0 ]; then
+  echo "build-desktop: smoke exited $SMOKE_STATUS (124 = timed out) — failing before publish." >&2
+  exit 1
+fi
+if ! grep -q '^SMOKE_OK' "$SMOKE_OUT"; then
+  echo "build-desktop: smoke did not report SMOKE_OK — failing before publish." >&2
+  exit 1
+fi
+if ! grep -q '^ENGINE_WORKER_OK ' "$SMOKE_OUT"; then
+  echo "build-desktop: the engine came up without a registered worker — failing before publish." >&2
+  exit 1
+fi
+
 # --- publish to R2 (opt-in) ---------------------------------------------------
+# Reached ONLY after smoke + engine-worker verification above passed.
 if [ "$PUBLISH_R2" -eq 1 ]; then
   if [ "${#ARTIFACTS[@]}" -eq 0 ]; then
     echo "build-desktop: --publish-r2 requested but no artifacts were produced (check --targets)" >&2
@@ -277,27 +311,23 @@ if [ "$PUBLISH_R2" -eq 1 ]; then
   fi
   R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
   log "publishing ${#ARTIFACTS[@]} artifact(s) to r2://$R2_BUCKET"
-  for a in "${ARTIFACTS[@]}"; do
+  # IMMUTABLE ASSETS FIRST, MUTABLE FEED LAST. The *-mac.yml feed names the
+  # zip/dmg/blockmap an updater will fetch; uploading it before those assets
+  # exist would advertise files that are not there yet if the run dies
+  # mid-publish. So push everything that is NOT a feed first, then the feeds.
+  upload() {
     AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
     AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
     AWS_DEFAULT_REGION="auto" \
-      aws s3 cp "$a" "s3://$R2_BUCKET/$(basename "$a")" --endpoint-url "$R2_ENDPOINT"
+      aws s3 cp "$1" "s3://$R2_BUCKET/$(basename "$1")" --endpoint-url "$R2_ENDPOINT"
+  }
+  for a in "${ARTIFACTS[@]}"; do
+    case "$a" in *-mac.yml) continue ;; esac
+    upload "$a"
   done
-fi
-
-# --- smoke the packaged binary (fail unless SMOKE_OK) ------------------------
-log "smoke: $DEST_APP --smoke"
-SMOKE_OUT="$TMP_ROOT/smoke.log"
-set +e
-# See package-desktop.sh: a shell descended from a running Telar carries
-# ELECTRON_RUN_AS_NODE=1, which turns the app binary into a bare node and makes
-# this exit with "bad option: --smoke" before any Telar code runs.
-env -u ELECTRON_RUN_AS_NODE "$DEST_APP/Contents/MacOS/Telar" --smoke >"$SMOKE_OUT" 2>&1
-set -e
-cat "$SMOKE_OUT"
-if ! grep -q '^SMOKE_OK' "$SMOKE_OUT"; then
-  echo "build-desktop: smoke did not report SMOKE_OK — failing." >&2
-  exit 1
+  for a in "${ARTIFACTS[@]}"; do
+    case "$a" in *-mac.yml) upload "$a" ;; esac
+  done
 fi
 
 # --- done --------------------------------------------------------------------

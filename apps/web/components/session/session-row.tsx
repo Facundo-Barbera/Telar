@@ -323,7 +323,9 @@ export function SessionRow({
    * exactly that. The countdown is the same one t3 puts on its snoozed rows,
    * and it takes the timestamp's place rather than sitting beside it.
    */
-  const statusSlot = snoozing && session.snoozedUntil !== undefined ? (
+  const statusSlot = session.draft ? (
+    <span className={`shrink-0 text-[0.6875rem] text-sidebar-foreground/45 ${yieldOnHover}`}>Draft</span>
+  ) : snoozing && session.snoozedUntil !== undefined ? (
     <span className={`inline-flex shrink-0 items-center gap-1 text-[0.6875rem] tabular-nums text-sidebar-foreground/45 ${yieldOnHover}`}>
       <AlarmClockIcon className="size-3" />
       {wakeLabel(session.snoozedUntil, renderedAt)}
@@ -464,10 +466,23 @@ export function SessionRow({
   const slimBody = (
     <>
       {pinMark}
-      <span className="shrink-0 opacity-40 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0">
-        <ProviderIcon provider={session.driver} size={12} />
+      {/* A SETTLED ROW WEARS ITS PROJECT, not its provider. Whose work this was
+          is what you scan the tail for; the provider is identity that already
+          lives in the hover card. Falls back to the provider mark only when the
+          session has no project (a rare orphan). */}
+      <span className="shrink-0 opacity-50 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0">
+        {session.projectName ? (
+          <ProjectAvatar
+            name={session.projectName}
+            {...(session.projectId ? { projectId: session.projectId } : {})}
+            {...(session.projectIcon ? { icon: session.projectIcon } : {})}
+            size={14}
+          />
+        ) : (
+          <ProviderIcon provider={session.driver} size={13} />
+        )}
       </span>
-      <span className="min-w-0 flex-1 truncate text-xs text-sidebar-foreground/60 group-hover/session:text-sidebar-foreground">
+      <span className="min-w-0 flex-1 truncate text-left text-[0.8125rem] text-sidebar-foreground/70 group-hover/session:text-sidebar-foreground">
         {session.title || "Untitled session"}
       </span>
       {statusSlot}
@@ -545,8 +560,13 @@ export function SessionRow({
                   event.preventDefault();
                   beginRename();
                 }}
-                className={`flex min-w-0 flex-1 items-center gap-2 px-2 outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                  variant === "card" ? "py-2.5" : "py-1"
+                // RESERVE THE ACTIONS' WIDTH ON HOVER/FOCUS/MENU-OPEN so the
+                // title TRUNCATES before the buttons instead of running under
+                // them. The controls stay absolute (a resting row is all title);
+                // this padding only appears when they do, and it covers keyboard
+                // focus (focus-within) and an open row menu (popup-open) too.
+                className={`flex min-w-0 flex-1 items-center gap-2 px-2 text-left outline-none transition-[padding] focus-visible:ring-2 focus-visible:ring-ring group-hover/session:pr-[5.5rem] group-focus-within/session:pr-[5.5rem] group-has-data-popup-open/session:pr-[5.5rem] ${
+                  variant === "card" ? "py-2.5" : "py-1.5"
                 }`}
               />
             }
@@ -598,7 +618,8 @@ export function SessionRow({
             // TOP-ALIGNED ON A CARD, as t3 has them: the actions belong to the
             // header line, where they take the status label's place rather than
             // floating over the title. A slim row has only one line, so they
-            // centre on it.
+            // centre on it. The content beside them reserves this width on
+            // hover/focus/menu-open, so they no longer overlap the title.
             variant === "card" ? "top-1.5" : "top-1/2 -translate-y-1/2"
           }`}
         >

@@ -1133,6 +1133,9 @@ export type AttachedBrowser = {
     scopeKey: string,
     options: { screenshot?: boolean; start?: boolean },
   ): Promise<{ provider: BrowserProvider; running: boolean; tabs: BrowserTab[]; screenshot?: string | null; error?: string | null }>;
+  /** Bind a scope to its project's browser profile before a human-started
+   *  read opens a tab (the desktop host refuses an unbound scope). */
+  bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
 };
 
 export type EngineNotifier = (input: {
@@ -1197,6 +1200,15 @@ export class EngineStore {
    *  row after a restart is noise, not a lie. */
   private readonly browserControlLast = new Map<string, string>();
 
+  /**
+   * The last event id this store wrote to each session's journal. Seeded from
+   * disk on the first append after construction (see `appendEvent`) and then
+   * advanced in memory, which is sound only because the daemon lock makes one
+   * process the journal's sole writer. Dropped when the journal is deleted or
+   * a write fails, so the next append re-reads and repairs.
+   */
+  private readonly journalHead = new Map<string, number>();
+
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
   }
@@ -1215,7 +1227,7 @@ export class EngineStore {
     if (this.browserControlLast.get(key) === controller) return;
     this.browserControlLast.set(key, controller);
     // Stamped with the RUNNING turn when there is one, so the transcript can
-    // put "You took the browser" inside the turn whose action it explains.
+    // put "You interacted with the browser" inside the turn whose action it explains.
     // Between turns the row is session-level — the panel badge is live state.
     const running = this.readQueue(sessionId).turns.find((turn) => turn.state === "running");
     this.appendEvent(sessionId, { type: "browser.control.changed", controller, ...(tabId ? { tabId } : {}) }, running?.runId);
@@ -1237,9 +1249,18 @@ export class EngineStore {
    * that has never browsed, and asking must never be what starts a browser.
    */
   async browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
-    this.getSession(sessionId);
+    const session = this.getSession(sessionId);
     if (!this.browser?.state) {
       return { scopeKey: sessionId, provider: "none", running: false, tabs: [], canStart: false };
+    }
+    // BIND THE PROJECT PROFILE ON THE HUMAN ENTRY PATH. "Open a browser" from
+    // the cockpit reaches here with `start:true` BEFORE the browser surface
+    // mounts, so its own bind effect cannot run first; a fresh human-only
+    // session after a restart would otherwise hit an unbound scope and the
+    // host would refuse to open. Idempotent with the worker's per-turn bind.
+    // Projectless sessions bind the explicit `none`.
+    if (options.start && this.browser.bindProfile) {
+      await this.browser.bindProfile(sessionId, session.projectId ?? "none");
     }
     const state = await this.browser.state(sessionId, {
       ...(options.screenshot === undefined ? {} : { screenshot: options.screenshot }),
@@ -3533,15 +3554,32 @@ export class EngineStore {
        * showing; an unversioned directory answers non-zero. Both leave the
        * field absent rather than inventing a name.
        */
-      const head = this.git(project.root, ["rev-parse", "--abbrev-ref", "HEAD"]);
+      return { ...project, ...this.projectMetadata(project) };
+    });
+  }
+
+  /**
+   * The derived fields — branch and icon — or NOTHING, never a missing project.
+   *
+   * `listProjects` is the sidebar and the session list; a project whose
+   * checkout cannot answer right now (a stalled `git`, an unreadable tree) must
+   * still appear, or a person's whole project disappears because a label could
+   * not be computed. The git call is bounded SHORTER than the runner's default:
+   * this runs synchronously on the poll path, once per project, and a stall
+   * here is the daemon not answering anything else meanwhile.
+   */
+  private projectMetadata(project: Project): Pick<Project, "branch" | "icon"> {
+    try {
+      const head = this.git(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 });
       const branch = head.status === 0 ? head.stdout.trim() : "";
       const icon = this.projectIcon(project);
       return {
-        ...project,
         ...(branch && branch !== "HEAD" ? { branch } : {}),
         ...(icon ? { icon: icon.etag } : {}),
       };
-    });
+    } catch {
+      return {};
+    }
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Project {
@@ -4089,6 +4127,7 @@ export class EngineStore {
   }
 
   createSession(input: {
+    draft?: boolean;
     id?: string;
     projectId: string;
     title?: string;
@@ -4169,6 +4208,9 @@ export class EngineStore {
     const envMode =
       input.envMode ??
       (this.getSessionDefaults().envMode === "worktree" && isGitWorkTree(this.git, project.root) ? "worktree" : "local");
+    if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
+      throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
+    }
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
     if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
@@ -4177,12 +4219,9 @@ export class EngineStore {
     // whose workspace does not exist is unusable and would have to be repaired
     // on read; failing here leaves nothing behind to repair.
     const workspace: Session["workspace"] =
-      envMode === "worktree"
+      envMode === "worktree" && !input.draft
         ? (() => {
             const branchSlug = input.branchSlug ?? derivedBranchFor(input.title ?? "", id);
-            if (input.baseRef !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._/@{}-]{0,200}$/.test(input.baseRef)) {
-              throw new EngineStateError("invalid_request", "base ref is not a usable git ref name");
-            }
             const cut = createSessionWorktree(this.git, {
               engineRoot: this.paths.root,
               projectRoot: project.root,
@@ -4232,6 +4271,11 @@ export class EngineStore {
       driver,
       workspace,
       envMode,
+      ...(input.draft ? { draft: {
+        ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+        ...(input.branchName ? { branchName: input.branchName } : {}),
+        ...(input.branchSlug ? { branchSlug: input.branchSlug } : {}),
+      } } : {}),
       runtimeMode: detached ? DEFAULT_DETACHED_RUNTIME_MODE : DEFAULT_ATTENDED_RUNTIME_MODE,
       interactionMode: "default",
       detached,
@@ -4445,7 +4489,10 @@ export class EngineStore {
       ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
       ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
     };
-    const open = [...this.readRequests(session.id).values()].filter((request) => request.state === "open");
+    // Only a request whose turn can still take the answer blocks the session;
+    // one left on an ended turn is retired at the next boot sweep meanwhile.
+    const settledRuns = new Set(turns.filter((turn) => turn.state === "completed" || turn.state === "failed" || turn.state === "stopped" || turn.state === "discarded").map((turn) => turn.runId));
+    const open = [...this.readRequests(session.id).values()].filter((request) => request.state === "open" && !settledRuns.has(request.runId));
     if (open.length > 0) {
       // The OLDEST open request, not the newest: it dates how long this session
       // has been waiting, which is the number that should embarrass us.
@@ -4751,6 +4798,24 @@ export class EngineStore {
           }
         : {}),
     };
+    if (session.draft) {
+      if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
+      if (kind === "compact") throw new EngineStateError("conflict", "a browser draft has no conversation to compact");
+      if (session.envMode === "worktree") {
+        if (!session.projectId) throw new EngineStateError("conflict", "a worktree draft requires a project");
+        const project = this.getProject(session.projectId);
+        const cut = createSessionWorktree(this.git, {
+          engineRoot: this.paths.root, projectRoot: project.root, sessionId,
+          branchSlug: session.draft.branchSlug ?? derivedBranchFor(input.input, sessionId),
+          ...(session.draft.baseRef ? { baseRef: session.draft.baseRef } : {}),
+          ...(session.draft.branchName ? { branchName: session.draft.branchName } : {}),
+        });
+        session.workspace = { mode: "worktree", path: cut.path, branch: cut.branch, baseRef: cut.baseRef };
+      }
+      if (session.title === "Browser draft") session.title = input.input.replace(/\s+/g, " ").slice(0, 80);
+      delete session.draft;
+      atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    }
     queue.turns.push(turn);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -4911,6 +4976,7 @@ export class EngineStore {
       return {
         sessionId: session.id,
         projectRoot: session.workspace.path,
+        ...(session.projectId ? { projectId: session.projectId } : {}),
         driver: session.driver,
         providerInstanceId: session.providerInstanceId,
         providerInstance,
@@ -5059,6 +5125,7 @@ export class EngineStore {
     // with it, whichever turn started them.
     this.closeLiveTasks(sessionId, at, "the turn failed before this agent reported back", { includeBackground: true });
     this.closeOpenItems(sessionId, turn.runId, at);
+    this.closeOpenRequests(sessionId, turn.runId, at);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -5095,6 +5162,7 @@ export class EngineStore {
     // process; that assumption no longer holds.
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
     this.closeOpenItems(sessionId, turn.runId, at);
+    this.closeOpenRequests(sessionId, turn.runId, at);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
     for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
@@ -5210,6 +5278,7 @@ export class EngineStore {
     delete turn.claim;
     this.writeQueue(sessionId, queue);
     this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was discarded before this agent reported back");
+    this.closeOpenRequests(sessionId, turn.runId, at);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.discarded" }, turn.runId);
     return structuredClone(turn);
@@ -5307,6 +5376,9 @@ export class EngineStore {
     // this session is told why its stream ended rather than simply losing it.
     this.appendEvent(sessionId, { type: "session.archived" });
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
+    // The journal is gone with the directory; a session recreated under this
+    // id starts a new one from 1, not from where the old one stopped.
+    this.journalHead.delete(sessionId);
     this.dropSubscriptionsOf(sessionId);
     return true;
   }
@@ -5710,6 +5782,10 @@ export class EngineStore {
         // Same retroactive cure for items: a stopped turn from before this
         // sweep existed still holds the tool row it was inside.
         this.closeOpenItems(session.id, turn.runId, this.now());
+        // And for requests: a question parked on a turn that already ended
+        // kept a persisted session `blocked` with nothing left to answer it.
+        // An ambiguous turn is skipped — its decision is still pending.
+        if (turn.state !== "ambiguous") this.closeOpenRequests(session.id, turn.runId, this.now());
       }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.requeued" | "turn.ambiguous"; runId: string }> = [];
@@ -6037,6 +6113,31 @@ export class EngineStore {
    * — the vocabulary has no "stopped" for an item, and "did not finish" is
    * what the row should read as.
    */
+  /**
+   * A turn that ended can no longer be answered: the worker parked on these
+   * requests is gone with it. Left open, they keep the session `blocked` and
+   * the composer in answer mode over a turn nothing will resume. Retired as
+   * `cancelled` — the audit trail says nobody chose. Never called for an
+   * ambiguous turn: that one is still undecided.
+   */
+  private closeOpenRequests(sessionId: string, runId: string, at: number): number {
+    const requests = this.readRequests(sessionId);
+    let closed = 0;
+    for (const request of requests.values()) {
+      if (request.runId !== runId || request.state !== "open") continue;
+      request.state = "resolved";
+      request.decision = "cancel";
+      request.resolvedBy = "cancelled";
+      request.resolvedAt = at;
+      request.reason = "the turn ended before this request was answered";
+      requests.set(request.id, request);
+      this.appendEvent(sessionId, { type: "request.resolved", requestId: request.id, decision: "cancel", resolvedBy: "cancelled", reason: request.reason }, runId);
+      closed += 1;
+    }
+    if (closed > 0) this.writeRequests(sessionId, requests);
+    return closed;
+  }
+
   private closeOpenItems(sessionId: string, runId: string, at: number): number {
     const items = this.readItems(sessionId);
     let closed = 0;
@@ -6357,9 +6458,15 @@ export class EngineStore {
   private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
     const file = eventsFile(this.paths, sessionId);
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    const prior = readJournal(file);
+    // The head is read from disk ONCE per session per store, through the same
+    // parse that validates every record and repairs a torn tail — so a restart
+    // still recovers exactly as before. After that the daemon lock makes this
+    // process the only writer, and the head is whatever it last wrote. Parsing
+    // a 9 MB journal to learn one integer on every append was the cost that
+    // made long sessions sluggish.
+    const head = this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
     const record = {
-      id: (prior.at(-1)?.id ?? 0) + 1,
+      id: head + 1,
       at: this.now(),
       sessionId,
       ...(runId ? { runId } : {}),
@@ -6367,7 +6474,16 @@ export class EngineStore {
     } as EngineEvent;
     // NDJSON is an append-only stream, not a document: do not replace it with
     // tmp+rename. The daemon lock gives this one writer and each record is one append.
-    fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    try {
+      fs.appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    } catch (error) {
+      // A failed write may have left a partial record. Forget the head so the
+      // next append goes back through `readJournal`, which repairs the tail
+      // before anything is concatenated onto it.
+      this.journalHead.delete(sessionId);
+      throw error;
+    }
+    this.journalHead.set(sessionId, record.id);
     fs.chmodSync(file, 0o600);
     return record;
   }

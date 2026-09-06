@@ -2201,3 +2201,27 @@ describe("a turn the CLI started by itself is not this turn", () => {
     await expect(run(driver).result).resolves.toMatchObject({ text: "plain" });
   });
 });
+
+for (const providerSessionId of [undefined, 'resumed-browser-session']) {
+  test(`browser briefing preserves Claude's preset on ${providerSessionId ? 'resume' : 'start'} and is absent without a browser`, async () => {
+    const prompts: unknown[] = [];
+    const sdk = async () => ({
+      async *query(input: { options: { systemPrompt?: unknown } }) {
+        prompts.push(input.options.systemPrompt);
+        yield { type: "result", subtype: "success" };
+      },
+    });
+    await run(createClaudeDriver(sdk), {
+      ...(providerSessionId ? { providerSessionId } : {}),
+      browserSocket: { url: 'http://127.0.0.1:1234/v2/browser/mcp', token: 'test-token' },
+    }).result;
+    const briefing = prompts[0] as { type: string; preset: string; append: string };
+    expect(briefing.type).toBe('preset');
+    expect(briefing.preset).toBe('claude_code');
+    expect(briefing.append).toContain('telar-browser');
+    expect(briefing.append).toContain('tools may be deferred');
+    expect(JSON.stringify(prompts[0])).not.toContain('test-token');
+    await run(createClaudeDriver(sdk), { ...(providerSessionId ? { providerSessionId } : {}) }).result;
+    expect(prompts[1]).toBeUndefined();
+  });
+}

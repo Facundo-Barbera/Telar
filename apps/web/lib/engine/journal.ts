@@ -331,15 +331,21 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       }
       case "browser.control.changed":
         /**
-         * "You took the browser" belongs INSIDE the turn it interrupted — it
-         * is the explanation for the agent's refused action right above it.
-         * Rendered through the unknown-detail arm on purpose: a one-line
-         * labeled row is exactly what a control change is, and inventing a
-         * detail type for it would be a schema for a sentence. Session-level
-         * changes (no runId) stay off the transcript; the panel badge is the
-         * live view of those.
+         * "You interacted with the browser" belongs INSIDE the turn it
+         * touched — it explains the agent's deferred or refused action right
+         * above it. Rendered through the unknown-detail arm on purpose: a
+         * one-line labeled row is exactly what this is, and inventing a
+         * detail type for it would be a schema for a sentence.
+         *
+         * ONLY THE HUMAN'S SIDE IS A ROW. There is no ownership to hand back
+         * in the shared browser: the agent resuming is routine and would only
+         * be noise (it used to print "handed back to the agent", which claimed
+         * a ritual that no longer exists). Historical "agent" events keep
+         * their semantics in the journal; they simply do not draw. Session-
+         * level changes (no runId) stay off the transcript; the panel's
+         * activity mark is the live view of those.
          */
-        if (turn && event.controller !== "idle") {
+        if (turn && event.controller === "human") {
           turn.items.push({
             id: `control_${event.id}`,
             runId: event.runId!,
@@ -347,10 +353,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             status: "completed",
             startedAt: event.at,
             completedAt: event.at,
-            detail: {
-              type: "unknown",
-              label: event.controller === "human" ? "You took the browser" : "The browser was handed back to the agent",
-            },
+            detail: { type: "unknown", label: "You interacted with the browser" },
             streamedText: "",
             openedBy: event.id,
           });
@@ -427,7 +430,7 @@ export function itemLabel(item: JournalItem): string {
       return item.detail.query;
     case "error":
       return item.detail.error.message;
-    // The label IS the row for a one-line notice ("You took the browser",
+    // The label IS the row for a one-line notice ("You interacted with the browser",
     // "Opened a tab — …"). Falling through to the type name printed the word
     // "unknown" three times under a real answer.
     case "unknown":

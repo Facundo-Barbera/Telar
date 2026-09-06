@@ -312,22 +312,22 @@ describe("the compaction gesture", () => {
 });
 
 describe("browser control rows", () => {
-  test("a takeover during a turn renders as a labeled row inside it; between turns it stays off the transcript", () => {
+  test("human interaction during a turn renders as a labeled row inside it; the agent resuming and between-turn changes stay off the transcript", () => {
     const [projected] = projectJournal([turn], [], [
       { ...envelope, id: 5, type: "browser.control.changed", controller: "human" },
+      // The agent's side is routine in a shared browser — no "handed back" row.
       { ...envelope, id: 6, type: "browser.control.changed", controller: "agent" },
-      // No runId: a change between turns — live state for the panel badge,
+      { ...envelope, id: 8, type: "browser.control.changed", controller: "idle" },
+      // No runId: a change between turns — live state for the panel mark,
       // not transcript history.
       { at: 2, sessionId: "s1", id: 7, type: "browser.control.changed", controller: "human" },
     ]);
-    expect(projected!.items.map((row) => (row.detail.type === "unknown" ? row.detail.label : ""))).toEqual([
-      "You took the browser",
-      "The browser was handed back to the agent",
-    ]);
+    expect(projected!.items.map((row) => (row.detail.type === "unknown" ? row.detail.label : ""))).toEqual(["You interacted with the browser"]);
     expect(projected!.items.every((row) => row.status === "completed")).toBe(true);
     // The transcript renders through itemLabel — it must say the sentence,
     // not the wire type. This is what printed "unknown" on screen.
-    expect(projected!.items.map(itemLabel)).toEqual(["You took the browser", "The browser was handed back to the agent"]);
+    expect(projected!.items.map(itemLabel)).toEqual(["You interacted with the browser"]);
+    expect(projected!.items.map(itemLabel).join(" ")).not.toMatch(/handed back|took the browser/);
   });
 
   test("a tab opened by the agent is a labeled row, and reads as one", () => {

@@ -271,6 +271,8 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     createSession: (
       projectId: string,
       input: {
+        id?: string;
+        draft?: boolean;
         title?: string;
         driver?: ProviderDriverKind;
         envMode?: "local" | "worktree";

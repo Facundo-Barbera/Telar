@@ -143,6 +143,14 @@ export type TurnObservationBatch = z.infer<typeof TurnObservationBatch>;
 export const WorkerClaim = z.object({
   sessionId: Id,
   projectRoot: z.string().min(1),
+  /**
+   * The session's project, for the browser's PER-PROJECT profile: the worker
+   * binds the session's browser scope to this before the turn's first tool
+   * runs, so cookies of one project never appear in another. Absent for a
+   * projectless session (the worker then binds the explicit `none` profile);
+   * an older engine sends nothing here and the worker does the same.
+   */
+  projectId: Id.optional(),
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
   /**

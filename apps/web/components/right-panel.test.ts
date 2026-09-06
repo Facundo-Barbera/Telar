@@ -8,6 +8,9 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent, Item, Task } from "@telar/engine-client";
 import {
+  browserPanelTab,
+  describeBrowserStart,
+  describePanelTab,
   groupWarps,
   isLiveTask,
   isPanelTab,
@@ -270,5 +273,48 @@ describe("groupWarps", () => {
     ] as never);
     expect(loose.map((task) => task.id)).toEqual(["plain"]);
     expect(groups).toHaveLength(1);
+  });
+});
+
+describe("describeBrowserStart", () => {
+  test("a tab means the press worked and the button goes quiet", () => {
+    expect(describeBrowserStart({ running: true, tabs: [{ id: "0", url: "about:blank", title: "", active: true }] })).toEqual({ status: "idle" });
+  });
+
+  test("the engine's error is the message, verbatim", () => {
+    expect(describeBrowserStart({ running: true, tabs: [], error: "Tab limit reached." })).toEqual({ status: "error", message: "Tab limit reached." });
+  });
+
+  test("running with no tab is named, not left looking like 'still starting'", () => {
+    expect(describeBrowserStart({ running: true, tabs: [] })).toEqual({ status: "error", message: "The browser started but opened no page." });
+    expect(describeBrowserStart({ running: false, tabs: [] })).toEqual({ status: "error", message: "The browser did not start." });
+  });
+});
+
+describe("a browser tab's label comes from the live page when the shell has one", () => {
+  const journal = { provider: "engine" as never, tabs: [{ id: "p1", title: "Old title", url: "https://old.example", active: true }] } as never;
+
+  test("the journal alone names the page, and a missing page says so", () => {
+    expect(describePanelTab(browserPanelTab("p1"), journal).label).toBe("Old title");
+    expect(describePanelTab(browserPanelTab("gone"), journal)).toMatchObject({ label: "Closed page", missing: true });
+  });
+
+  test("a live tab with the same id wins over the journal", () => {
+    const live = [{ id: "p1", title: "Example Domain", url: "https://example.com", active: true }];
+    expect(describePanelTab(browserPanelTab("p1"), journal, live)).toMatchObject({ label: "Example Domain", blurb: "https://example.com" });
+  });
+
+  test("a journal id the shell never saw takes the shell's ACTIVE tab, not 'Closed page'", () => {
+    const live = [
+      { id: "native-a", title: "Background", url: "https://a.example", active: false },
+      { id: "native-b", title: "Example Domain", url: "https://example.com", active: true },
+    ];
+    const described = describePanelTab(browserPanelTab("gone"), journal, live);
+    expect(described.label).toBe("Example Domain");
+    expect(described.missing).toBeUndefined();
+  });
+
+  test("no live tabs at all falls back to the journal's answer", () => {
+    expect(describePanelTab(browserPanelTab("gone"), journal, [])).toMatchObject({ label: "Closed page", missing: true });
   });
 });

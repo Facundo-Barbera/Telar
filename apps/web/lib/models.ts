@@ -13,7 +13,7 @@
  * REGARDLESS of which models exist: how to name an effort level, and how to
  * label a model the catalogue has not loaded yet.
  */
-import type { ProviderModel } from "@telar/engine-client";
+import type { ProviderModel, ModelSelection } from "@telar/engine-client";
 
 /** Effort levels, where the provider has the concept. Absent means the model
  *  chooses — which is not the same as any level named here. */
@@ -117,4 +117,16 @@ export function modelLabel(models: readonly ProviderModel[], id: string | undefi
    * `Sonnet` rather than as an unknown id.
    */
   return models.find((model) => model.resolves === id)?.label ?? id;
+}
+
+
+/** Provider defaults are represented by no selection, never an instance-only object. */
+export function sessionModelSelection(instanceId: string, choice: ModelChoice): ModelSelection | undefined {
+  if (!choice.model && !choice.effort && choice.fastMode === undefined) return undefined;
+  return {
+    instanceId,
+    ...(choice.model ? { model: choice.model } : {}),
+    ...(choice.effort ? { effort: choice.effort } : {}),
+    ...(choice.fastMode === undefined ? {} : { fastMode: choice.fastMode }),
+  };
 }

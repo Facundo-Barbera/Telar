@@ -12,12 +12,21 @@
     "dev": "bun ./dev-runner.js",
     "test": "bun run test:desktop:unit",
     "test:desktop": "bun run test:desktop:unit",
-    "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js ./window-chrome.test.js ./packaging.test.js",
+    "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js ./window-chrome.test.js ./packaging.test.js ./extension-compat.test.js ./private-interaction.test.js ./extension-host.test.js ./browser-profiles.test.js ./browser-tab-store.test.js ./browser-suggestions.test.js",
     "test:desktop:smoke": "electron . --smoke",
     "test:desktop:e2e": "bun ./desktop-e2e-launcher.js",
+    "test:desktop:browser": "electron ./browser-manager.electron-test.js",
+    "test:desktop:fit-zoom": "env -u ELECTRON_RUN_AS_NODE electron ./browser-fit-zoom.electron-test.js",
+    "test:desktop:persistence": "env -u ELECTRON_RUN_AS_NODE electron ./browser-persistence.electron-test.js",
+    "test:desktop:credentials": "env -u ELECTRON_RUN_AS_NODE electron ./credential-frames.electron-test.js",
+    "test:desktop:popup-geometry": "env -u ELECTRON_RUN_AS_NODE electron ./popup-geometry.electron-test.js",
+    "test:desktop:extension": "env -u ELECTRON_RUN_AS_NODE electron ./extension-harness.electron-test.js",
+    "test:desktop:extension-boot": "env -u ELECTRON_RUN_AS_NODE electron ./extension-boot.electron-test.js",
+    "test:desktop:webauthn": "env -u ELECTRON_RUN_AS_NODE electron ./webauthn-fixture.electron-test.js",
     "smoke": "bun run test:desktop:smoke",
     "pack": "bash ../../scripts/package-desktop.sh",
     "package:local": "bash ../../scripts/package-desktop.sh",
+    "package:dev": "bash ../../scripts/package-desktop.sh --dev",
     "install:app": "bash ./install-app.sh",
     "install:local": "bash ../../scripts/package-desktop.sh --install"
   },
@@ -25,14 +34,20 @@
     "electron"
   ],
   "build": {
-    "appId": "ai.ozom.telar.desktop",
+    "appId": "com.telar.desktop",
     "productName": "Telar",
     "asar": true,
     "files": [
       "main.js",
       "browser-manager.js",
+      "browser-suggestions.js",
       "browser-tab-preload.js",
       "browser-control-server.js",
+      "extension-compat.js",
+      "extension-host.js",
+      "private-interaction.js",
+      "browser-profiles.js",
+      "browser-tab-store.js",
       "command-keys.js",
       "preload.js",
       "server-preload.js",
@@ -89,6 +104,7 @@
     }
   },
   "dependencies": {
+    "electron-chrome-extensions": "4.9.0",
     "electron-updater": "^6.6.2"
   },
   "devDependencies": {

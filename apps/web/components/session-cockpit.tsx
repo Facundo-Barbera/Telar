@@ -21,26 +21,29 @@ import {
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { actionableRequests, continuationDraft, recoverableFailedTurn } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
-import { hostFromPathname } from "@/lib/hosts/client";
+import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
-import type { ModelChoice } from "@/lib/models";
+import { sessionModelSelection, type ModelChoice } from "@/lib/models";
 import { INITIAL_TURNS, hydrateSession, loadOlderTurns, mergeRows, tailSession } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
 import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
-import { browserPanelTab, isPanelTab, latestBrowserState, RailToggle, RightPanel, type PanelTab, type TaskFocus } from "./right-panel";
+import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, latestBrowserState, LIVE_BROWSER_TAB, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { desktopBrowserBridge } from "./browser-live";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { PromptText } from "./session/prompt-text";
 import {
   canvasPanelKey,
   closePanelTab,
+  collapseBrowserTabs,
   emptyPanelTabs,
   openPanelTab,
   readPanelTabs,
@@ -54,6 +57,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ConversationContent, ConversationScrollButton, ConversationViewport } from "@/components/ui/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
+import { CodeSurface } from "@/components/ui/code-surface";
 import { useSidebar } from "@/components/ui/sidebar";
 
 const api = createEngineApi();
@@ -97,6 +101,44 @@ function SessionProblem({ error }: { error: EngineApiError }) {
       <AlertDescription>{error.message}</AlertDescription>
     </Alert>
   );
+}
+
+/**
+ * Mount presence for the right panel's open/close animation. On open it mounts
+ * immediately and flips `shown` next frame so the width transitions IN; on
+ * close it drops `shown` (width transitions OUT) and unmounts after the same
+ * ~200ms, so the shell can animate out before it leaves the DOM. Reopening
+ * before the timer fires cancels the unmount and re-shows. Reduced motion still
+ * lands in the correct state — only the transition itself is dropped (CSS).
+ */
+function usePanelPresence(open: boolean, durationMs = 200): { mounted: boolean; shown: boolean } {
+  const [mounted, setMounted] = useState(open);
+  const [shown, setShown] = useState(open);
+  useEffect(() => {
+    // All state updates are deferred into a frame/timeout, never synchronous in
+    // the effect body (which would cascade renders — the lint rule this obeys).
+    if (open) {
+      let inner = 0;
+      const outer = requestAnimationFrame(() => {
+        setMounted(true);
+        // A second frame so the width starts at 0 and transitions to full.
+        inner = requestAnimationFrame(() => setShown(true));
+      });
+      // BOTH frames are cancelled: the inner one, left running, would flip
+      // `shown` true again and reopen a panel that is closing.
+      return () => {
+        cancelAnimationFrame(outer);
+        cancelAnimationFrame(inner);
+      };
+    }
+    const frame = requestAnimationFrame(() => setShown(false));
+    const timer = window.setTimeout(() => setMounted(false), durationMs);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [open, durationMs]);
+  return { mounted, shown };
 }
 
 /**
@@ -182,8 +224,12 @@ function SessionMasthead({
         // go see-through only because the wash rules happened to match the
         // string `bg-background/65`. The opt-in is a class now, not a class
         // name — see the translucency note in globals.css.
-        "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur",
-        mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
+        // Same 16px shorter on `md` as the rail's band (see TelarSidebarHeader):
+        // both islands start 8px down, and the lights do not move.
+        "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur md:h-[calc(var(--titlebar-height)-1rem)] md:min-h-[calc(var(--titlebar-height)-1rem)] md:py-0",
+        // The content island sits 8px in from the window edge (app-shell.tsx),
+        // so the traffic-light inset is measured from the island.
+        mainIsLeftmost ? "pl-[max(1rem,calc(var(--titlebar-inset)+0.5rem))]" : "pl-4",
       )}
     >
       <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
@@ -290,6 +336,29 @@ function RecoveryActions({ sending, onRetry, onDiscard }: { sending: boolean; on
           </Button>
           <Button size="sm" variant="ghost" disabled={sending} onClick={onDiscard}>
             Discard recovered run
+          </Button>
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
+ * AN ORDINARY FAILURE, NOT AN AMBIGUOUS ONE. The provider process died or the
+ * driver threw; the engine knows the turn ended and kept everything that
+ * streamed. Nothing is resubmitted from here: the button only PREPARES a
+ * continuation in the composer, and the person sends it — or edits it first.
+ */
+function FailedTurnContinuation({ sending, onContinue }: { sending: boolean; onContinue: () => void }) {
+  return (
+    <Alert className="mt-2" aria-label="Failed turn continuation">
+      <TriangleAlertIcon />
+      <AlertTitle>This turn ended early</AlertTitle>
+      <AlertDescription className="flex flex-col gap-2">
+        <p>The work above is kept. Prepare a message that asks the agent to continue from it — nothing is sent until you send it.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={sending} onClick={onContinue}>
+            Prepare continuation
           </Button>
         </div>
       </AlertDescription>
@@ -410,7 +479,9 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
         )}
       </div>
       {open && body && (
-        <pre className="ml-3 max-h-40 overflow-auto border-l border-border/70 py-1 pr-1.5 pl-3 font-mono text-[0.6875rem] whitespace-pre-wrap text-muted-foreground">{body}</pre>
+        <div className="ml-3 border-l border-border/70 py-1 pr-1.5 pl-3">
+          <CodeSurface text={body} wrap />
+        </div>
       )}
     </div>
   );
@@ -426,6 +497,7 @@ export function SessionTurn({
   onDecide,
   onRetry,
   onDiscard,
+  onContinue,
   onOpenAgent,
   onOpenTab,
   roster = [],
@@ -458,6 +530,10 @@ export function SessionTurn({
   now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
   onDiscard: (turn: Pick<Turn, "runId">) => void;
+  /** Offered on the ONE failed turn the session can continue from (see
+   *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
+   *  the turn only renders. */
+  onContinue?: () => void;
 }) {
   /**
    * THE CLOSING PROSE IS SEPARATED FROM THE WORK.
@@ -611,6 +687,7 @@ export function SessionTurn({
           {turn.state === "ambiguous" && (
             <RecoveryActions sending={sending} onRetry={() => onRetry(retryInputForJournalTurn(turn))} onDiscard={() => onDiscard(turn)} />
           )}
+          {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
         </MessageContent>
       </Message>
     </div>
@@ -814,6 +891,9 @@ export function SessionCockpit({
    * "go there", which means opening a tab that may not exist yet.
    */
   const [panel, setPanel] = useState<PanelTabState<PanelTab>>(() => emptyPanelTabs<PanelTab>());
+  // Keep the panel MOUNTED through its close animation so the shell can animate
+  // out (see RightPanel `open`). `shown` drives the width; `mounted` the DOM.
+  const panelPresence = usePanelPresence(panel.open);
   /**
    * SEEDED FROM THE SERVER when the page could resolve it, which is every case
    * that matters — the canvas. The client read below stays for the session
@@ -985,7 +1065,13 @@ export function SessionCockpit({
     // Deferred to a task rather than called in the effect body: a synchronous
     // setState there is a cascading render, and it is the same rule the git
     // readout in workspace-environment.tsx follows.
-    const task = window.setTimeout(() => setPanel(readPanelTabs<PanelTab>(panelKey, isPanelTab)), 0);
+    const task = window.setTimeout(() => {
+      const restored = readPanelTabs<PanelTab>(panelKey, isPanelTab);
+      // On desktop the native strip owns the pages: collapse any per-page
+      // browser tabs persisted before this change into one "Browser" tab, so
+      // an upgraded session does not still show the old per-page outer tabs.
+      setPanel(desktopBrowserBridge() ? collapseBrowserTabs(restored, (tab) => browserTabId(tab) !== undefined, LIVE_BROWSER_TAB) : restored);
+    }, 0);
     return () => window.clearTimeout(task);
   }, [panelKey]);
 
@@ -1016,7 +1102,10 @@ export function SessionCockpit({
     // setState in an effect body is a cascading render.
     const task = window.setTimeout(() => {
       setBrowserCanStart(false);
-      if (!sessionId) return;
+      if (!sessionId) {
+        setBrowserCanStart(Boolean(projectId && hostId === LOCAL_HOST_ID && desktopBrowserBridge()));
+        return;
+      }
       api.browserState(sessionId).then(
         (result) => {
           if (!cancelled) setBrowserCanStart(result.browser.canStart ?? false);
@@ -1028,7 +1117,7 @@ export function SessionCockpit({
       cancelled = true;
       window.clearTimeout(task);
     };
-  }, [sessionId]);
+  }, [sessionId, projectId, hostId]);
 
   /**
    * THREE COLUMNS DO NOT FIT A LAPTOP. Opening the panel on a narrow window
@@ -1069,17 +1158,6 @@ export function SessionCockpit({
    * `showPanelTab` here is only what makes the gesture feel immediate instead
    * of waiting one sync cycle.
    */
-  const openBrowser = useCallback(async () => {
-    if (!sessionId) return;
-    try {
-      const result = await api.browserState(sessionId, { start: true });
-      const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
-      if (active) showPanelTab(browserPanelTab(active.id));
-    } catch {
-      // The engine said no — the panel's own copy already explains when a
-      // browser cannot be started here.
-    }
-  }, [sessionId, showPanelTab]);
 
   /**
    * A PAGE THE ENGINE JUST OPENED GETS A TAB, the way it would in a browser.
@@ -1098,6 +1176,9 @@ export function SessionCockpit({
     if (fresh.length === 0) return;
     updatePanel((current) => {
       if (!current.open) return current;
+      // Desktop: one stable browser tab (the native strip lists the pages);
+      // other clients: one panel tab per page (their only way to switch).
+      if (desktopBrowserBridge()) return openPanelTab(current, LIVE_BROWSER_TAB);
       return fresh.reduce((state, page) => openPanelTab(state, browserPanelTab(page.id)), current);
     });
   }, [browser, updatePanel]);
@@ -1132,6 +1213,81 @@ export function SessionCockpit({
   const owner = useRef<{ sessionId: string | undefined; projectId: string }>({ sessionId, projectId });
   /** The live text, readable from an effect that must not re-run per keystroke. */
   const draftText = useRef(draft);
+  const [browserStart, setBrowserStart] = useState<BrowserStartState>({ status: "idle" });
+  const browserOpening = useRef(false);
+  const browserDraftIdentity = useRef<{ path: string; id: string } | null>(null);
+  const browserDraftFlight = useRef<Promise<string> | null>(null);
+  const browserDraftSendPending = useRef(false);
+
+  async function ensureBrowserDraft(): Promise<string> {
+    if (sessionId) return sessionId;
+    if (browserDraftFlight.current) return browserDraftFlight.current;
+    const origin = window.location.pathname;
+    if (browserDraftIdentity.current?.path !== origin) {
+      browserDraftIdentity.current = { path: origin, id: `session_${crypto.randomUUID().replaceAll("-", "")}` };
+    }
+    const id = browserDraftIdentity.current.id;
+    // Keep both requests on the originating host if navigation changes mid-flight.
+    const draftApi = createEngineApi(hostFetcher(hostId));
+    const flight = (async () => {
+      const created = await draftApi.createSession(projectId, {
+        id, draft: true, title: "Browser draft", driver: draftDriver, envMode: draftEnvMode,
+        ...(draftEnvMode === "worktree" ? draftBase : {}),
+      });
+      const model = sessionModelSelection(created.session.providerInstanceId, draftModel);
+      const patched = await draftApi.updateSession(id, {
+        runtimeMode: draftRuntimeMode,
+        ...(model ? { model } : {}),
+      });
+      // Keep the durable draft, but never navigate over a different conversation.
+      if (window.location.pathname !== origin) return id;
+      writeDraft(id, projectId, draftText.current);
+      writeDraft(undefined, projectId, "");
+      writePanelTabs(id, panel, Date.now());
+      owner.current = { sessionId: id, projectId };
+      setSession(patched.session);
+      setCreatedSessionId(id);
+      const destination = sessionHref({ id, projectId, hostId });
+      browserDraftIdentity.current = { path: destination, id };
+      window.history.replaceState(null, "", destination);
+      return id;
+    })();
+    browserDraftFlight.current = flight;
+    try { return await flight; } finally { browserDraftFlight.current = null; }
+  }
+
+  async function openBrowser() {
+    if (browserOpening.current) return;
+    browserOpening.current = true;
+    const origin = window.location.pathname;
+    setBrowserStart({ status: "pending" });
+    let destination = origin;
+    const browserApi = createEngineApi(hostFetcher(hostId));
+    try {
+      const target = await ensureBrowserDraft();
+      destination = sessionHref({ id: target, projectId, hostId });
+      if (window.location.pathname !== origin && window.location.pathname !== destination) return;
+      // Bind the native host before the engine asks it to create the first tab.
+      // This also covers a renderer updated while its engine is still running.
+      await desktopBrowserBridge()?.bindProfile?.(target, projectId ?? "none");
+      if (window.location.pathname !== origin && window.location.pathname !== destination) return;
+      const result = await browserApi.browserState(target, { start: true });
+      if (window.location.pathname !== destination) return;
+      setBrowserStart(describeBrowserStart(result.browser));
+      const active = result.browser.tabs.find((tab) => tab.active) ?? result.browser.tabs[0];
+      // On desktop the native strip owns the pages — one stable "Browser" tab.
+      if (active) showPanelTab(desktopBrowserBridge() ? LIVE_BROWSER_TAB : browserPanelTab(active.id));
+    } catch (error) {
+      // NEVER SILENT: a press that ends in nothing is the one outcome a person
+      // cannot tell apart from "still starting".
+      if (window.location.pathname === origin || window.location.pathname === destination) {
+        setBrowserStart({ status: "error", message: error instanceof Error ? error.message : "The engine could not start a browser." });
+      }
+    } finally {
+      browserOpening.current = false;
+    }
+  }
+
   useEffect(() => {
     draftText.current = draft;
   }, [draft]);
@@ -1284,6 +1440,22 @@ export function SessionCockpit({
    *  context_compaction row on the live turn. Gates the compact button (and,
    *  soon, send-now) so the client tells the same story the engine enforces. */
   const compacting = isCompacting(active);
+  /**
+   * The one ordinary failure the session can continue from — the latest human
+   * turn, failed, with nothing running or queued behind it and no ambiguous
+   * turn awaiting its own decision. `undefined` hides the affordance.
+   */
+  const recoverable = recoverableFailedTurn(transcript);
+  /**
+   * PREPARES, NEVER SENDS. Puts a continuation in the composer after whatever
+   * is already typed; the attachments are untouched. The original prompt is
+   * not replayed — the transcript already holds the work it produced.
+   */
+  const prepareContinuation = () => {
+    if (!recoverable) return;
+    setDraft((current) => continuationDraft(current, recoverable));
+    setDraftRunId(undefined);
+  };
   /** Everything typed but not yet started, oldest first — the pending strip.
    *  A `steering` turn stays in the strip as a spinner: it is mid-flight to
    *  the running turn and no longer withdrawable. */
@@ -1304,9 +1476,10 @@ export function SessionCockpit({
     return () => window.clearInterval(timer);
   }, [running]);
 
-  // Only OPEN requests are actionable; resolved ones are history and live in the
-  // journal rather than as a card demanding a second answer.
-  const openRequests = useMemo(() => requests.filter((request) => request.state === "open"), [requests]);
+  // Only OPEN requests on a turn that can still take the answer are actionable;
+  // resolved ones are history, and one left on an ended turn has no worker
+  // waiting for it (see `actionableRequests`).
+  const openRequests = useMemo(() => actionableRequests(requests, transcript), [requests, transcript]);
   /**
    * The question the COMPOSER answers — the first open all-choice `user_input`
    * request. It leaves the turn's approval cards and meets the person at the
@@ -1434,7 +1607,23 @@ export function SessionCockpit({
     }
   };
   const submit = async () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || browserDraftSendPending.current) return;
+    // A send racing the first browser open joins its stable session identity.
+    let browserTarget: string | undefined;
+    if (browserDraftFlight.current) {
+      browserDraftSendPending.current = true;
+      const origin = window.location.pathname;
+      try {
+        browserTarget = await browserDraftFlight.current;
+      } catch (cause) {
+        setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not save the browser draft. Your message is still here."));
+        return;
+      } finally {
+        browserDraftSendPending.current = false;
+      }
+      const destination = sessionHref({ id: browserTarget, projectId, hostId });
+      if (window.location.pathname !== origin && window.location.pathname !== destination) return;
+    }
     const runId = draftRunId ?? newRunId();
     setDraftRunId(runId);
     setSending(true);
@@ -1462,7 +1651,7 @@ export function SessionCockpit({
      * clear before anything can cancel it. The master chat has always done this
      * on send, for this reason.
      */
-    writeDraft(sessionId, projectId, "");
+    writeDraft(sessionId ?? browserTarget, projectId, "");
     setDraftRunId(undefined);
     setAttachments([]);
     try {
@@ -1476,7 +1665,7 @@ export function SessionCockpit({
        * than a router push: a navigation here would remount this component and
        * discard the turn we are in the middle of submitting.
        */
-      let target = sessionId;
+      let target = sessionId ?? browserTarget;
       if (!target) {
         const created = await api.createSession(projectId, {
           title: text.replace(/\s+/g, " ").slice(0, 80),
@@ -1492,18 +1681,10 @@ export function SessionCockpit({
         // ONE PATCH FOR EVERY CREATE-TIME CHOICE. Two round trips to set two
         // fields on a session that was created a moment ago is two chances for
         // the second to fail after the first landed.
+        const model = sessionModelSelection(created.session.providerInstanceId, draftModel);
         const creationPatch = {
           ...(draftRuntimeMode === "auto" ? {} : { runtimeMode: draftRuntimeMode }),
-          ...(draftModel.model || draftModel.effort || draftModel.fastMode !== undefined
-            ? {
-                model: {
-                  instanceId: created.session.providerInstanceId,
-                  ...(draftModel.model ? { model: draftModel.model } : {}),
-                  ...(draftModel.effort ? { effort: draftModel.effort } : {}),
-                  ...(draftModel.fastMode === undefined ? {} : { fastMode: draftModel.fastMode }),
-                },
-              }
-            : {}),
+          ...(model ? { model } : {}),
         };
         if (Object.keys(creationPatch).length > 0) {
           const patched = await api.updateSession(target, creationPatch);
@@ -1740,8 +1921,21 @@ export function SessionCockpit({
      * app. `min-w-0` on the column is what keeps a long unbroken line from
      * widening the row instead of scrolling inside its own box.
      */
-    <main className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    /* TWO SURFACES, ONE GUTTER. The conversation and the right panel are
+       separate cards on the shell's ground (`data-surfaces` is what tells
+       app-shell.tsx to stop framing them as one). Same radius and gap as the
+       rail, so the window reads as three islands and no edge needs a rule. */
+    <main data-surfaces className="flex min-h-0 flex-1 overflow-hidden md:overflow-visible md:gap-2">
+      {/* THE RAIL'S OWN SURFACE RECIPE — `bg-sidebar` (the wash, under
+          translucency) plus a hairline ring — so the three islands match.
+          NOT `app-ground`: a card must paint, or it disappears into the wash
+          the way this one did. Below `md` there are no islands and the body
+          is the surface.
+          THE ROW DOES NOT CLIP ON `md`: a ring is a box-shadow drawn OUTSIDE
+          the box, and `overflow-hidden` on this parent shaved the cards'
+          outer edge — which is why this outline read thinner than the
+          rail's. Each card clips its own content instead. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border">
         <SessionMasthead
           projectId={projectId}
           hostId={hostId}
@@ -1825,6 +2019,7 @@ export function SessionCockpit({
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 onDiscard={(item) => void discardAmbiguous(item)}
+                {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />
             ))}
           </ConversationContent>
@@ -1921,8 +2116,9 @@ export function SessionCockpit({
         />
         )}
       </div>
-      {panel.open && (
+      {panelPresence.mounted && (
         <RightPanel
+          open={panelPresence.shown}
           {...(active?.state ? { active: active.state } : {})}
           {...(sessionId ? { sessionId } : {})}
           {...(session?.title ? { sessionTitle: session.title } : {})}
@@ -1931,7 +2127,7 @@ export function SessionCockpit({
           items={items}
           tasks={roster}
           {...(focusedTask ? { focusedTask } : {})}
-          {...(browserCanStart ? { onOpenBrowser: openBrowser } : {})}
+          {...(browserCanStart ? { onOpenBrowser: openBrowser, browserStart } : {})}
           events={events}
           tabs={panel.tabs}
           {...(panel.activeTab ? { tab: panel.activeTab } : {})}

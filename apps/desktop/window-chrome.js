@@ -23,12 +23,15 @@ const TRAFFIC_LIGHT_DIAMETER = 12;
 /**
  * Where the light group's top-left corner goes.
  *
- * `x` is the standard macOS left margin; `y` centres the group in the app's own
- * header rather than leaving it at the top of the window.
+ * EQUAL TOP AND LEFT INSET. The group is centred vertically in the app's own
+ * 56px header (so the lights sit on its centreline, not in a strip above it),
+ * and the LEFT inset is set to that SAME number — so the distance from the top
+ * edge equals the distance from the left edge and the corner reads balanced.
  */
+const TRAFFIC_LIGHT_INSET = Math.round((APP_HEADER_HEIGHT - TRAFFIC_LIGHT_DIAMETER) / 2);
 const TRAFFIC_LIGHT_POSITION = {
-  x: 13,
-  y: Math.round((APP_HEADER_HEIGHT - TRAFFIC_LIGHT_DIAMETER) / 2),
+  x: TRAFFIC_LIGHT_INSET,
+  y: TRAFFIC_LIGHT_INSET,
 };
 
 /**

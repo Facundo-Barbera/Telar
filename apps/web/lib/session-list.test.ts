@@ -368,3 +368,11 @@ describe("canvasProjectFromPathname", () => {
     expect(canvasProjectFromPathname("/projects/project_a/sessions/new/")).toBe("project_a");
   });
 });
+
+ test("browser drafts stay available until explicitly settled or archived", () => {
+  const draft = row("draft", "Browser draft", { draft: true, updatedAt: NOW - 30 * DAY });
+  expect(bandOf(draft, opts)).toBe("active");
+  expect(bandOf({ ...draft, settledOverride: "settled" }, opts)).toBe("settled");
+  expect(bandOf({ ...draft, archived: true }, opts)).toBe("settled");
+  expect(bandOf({ ...draft, settledOverride: "active" }, opts)).toBe("pinned");
+});

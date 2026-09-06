@@ -51,6 +51,7 @@ import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type Jou
 import { fmtTokens } from "@/lib/format";
 import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
+import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
@@ -122,32 +123,49 @@ const running = (item: JournalItem) => item.status === "inProgress";
 
 const ROW = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs";
 
+/** A diff is SOURCE: read as written, never wrapped, cut at 24 lines like any
+ *  other tool body — copy still writes the whole patch. */
 function DiffBody({ diff }: { diff: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const { shown, total } = expanded ? { shown: diff, total: diff.split("\n").length } : foldLines(diff);
   return (
-    <pre className="max-h-72 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[0.6875rem] leading-relaxed">
-      {diff.split("\n").map((line, index) => {
-        // `---`/`+++`/`@@` are the file header, not a removed and an added
-        // line. Tested first, or every diff opens with one of each.
-        const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
-        return (
-          <span
-            key={index}
-            className={cn(
-              "block whitespace-pre-wrap break-words",
-              header
-                ? "text-muted-foreground/70"
-                : line.startsWith("+")
-                  ? "bg-success/10 text-success"
-                  : line.startsWith("-")
-                    ? "bg-destructive/10 text-destructive"
-                    : "text-muted-foreground",
-            )}
-          >
-            {line || " "}
-          </span>
-        );
-      })}
-    </pre>
+    <div className={cn("relative pr-8", CODE_SURFACE_FRAME)}>
+      <CopyButton text={diff} className="absolute top-1 right-1 z-10 bg-muted/60" />
+      <pre className={cn("overflow-x-auto px-2.5 py-2", CODE_SURFACE_TEXT)}>
+        {shown.split("\n").map((line, index) => {
+          // `---`/`+++`/`@@` are the file header, not a removed and an added
+          // line. Tested first, or every diff opens with one of each.
+          const header = line.startsWith("---") || line.startsWith("+++") || line.startsWith("@@");
+          return (
+            <span
+              key={index}
+              className={cn(
+                "block",
+                header
+                  ? "text-muted-foreground/70"
+                  : line.startsWith("+")
+                    ? "bg-success/10 text-success"
+                    : line.startsWith("-")
+                      ? "bg-destructive/10 text-destructive"
+                      : "text-muted-foreground",
+              )}
+            >
+              {line || " "}
+            </span>
+          );
+        })}
+      </pre>
+      {total > CODE_SURFACE_LINES && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          className="flex w-full items-center border-t border-border/70 px-2.5 py-1 text-left text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? "Show less" : `Show all · ${total} lines`}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -200,13 +218,7 @@ function ToolRow({ item }: { item: JournalItem }) {
       </button>
       {open && body && (
         <div className="ml-3 flex flex-col gap-2 border-l border-border/70 py-1 pr-1.5 pl-3">
-          {change?.unifiedDiff ? (
-            <DiffBody diff={change.unifiedDiff} />
-          ) : (
-            <pre className="max-h-60 overflow-auto font-mono text-[0.6875rem] break-words whitespace-pre-wrap text-muted-foreground">
-              {output}
-            </pre>
-          )}
+          {change?.unifiedDiff ? <DiffBody diff={change.unifiedDiff} /> : <CodeSurface text={output ?? ""} wrap />}
         </div>
       )}
     </div>

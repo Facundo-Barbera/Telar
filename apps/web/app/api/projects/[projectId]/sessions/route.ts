@@ -31,6 +31,7 @@ export async function POST(request: Request, context: Context) {
   try {
     const [{ projectId }, body] = await Promise.all([context.params, requestObject(request)]);
     const result = await (await engineClient()).createSession({
+      ...(body.draft === true ? { draft: true } : {}),
       id: optionalString(body.id, "Session id"),
       projectId,
       title: optionalString(body.title, "Session title"),

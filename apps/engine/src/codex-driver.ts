@@ -45,6 +45,7 @@
  * symptom go away is not evidence that the cause was understood.
  */
 import crypto from "node:crypto";
+import { BROWSER_BRIEFING } from "./browser/briefing";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
@@ -639,8 +640,8 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         client.notify("initialized");
 
         /**
-         * OMIT-WHEN-EMPTY IS PROTOCOL-SIGNIFICANT HERE. `dynamicTools`,
-         * `developerInstructions` and `config` are absent rather than empty
+         * OMIT-WHEN-EMPTY IS PROTOCOL-SIGNIFICANT HERE. Optional tool config
+         * and instructions are absent rather than empty
          * because an explicit `dynamicTools: []` states "this client has no
          * tools", which is a different sentence from saying nothing — and a
          * resumed thread that says it LOSES the tools it started with. So
@@ -679,6 +680,11 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
             : undefined;
         const threadParams = {
           cwd,
+          ...(browserSocket
+            ? {
+                developerInstructions: BROWSER_BRIEFING,
+              }
+            : {}),
           approvalPolicy: threadConfig.approvalPolicy,
           approvalsReviewer: threadConfig.approvalsReviewer,
           sandbox: threadConfig.sandbox,

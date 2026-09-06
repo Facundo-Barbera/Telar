@@ -167,3 +167,148 @@ test("without a desktop client the router IS the headless runtime", async () => 
   await router.call("s", "browser_navigate", { url: "https://example.com" });
   expect(log).toEqual(["headless:browser_navigate"]);
 });
+
+test("a profile declared while desktop is offline is restored before opening and after host restart", async () => {
+  // A host that is only reachable AFTER `up` flips true — the initial reads
+  // 503 (unreachable), later 200. `probeTtlMs: 0` so reachability is re-probed.
+  const hits: string[] = [];
+  let up = false;
+  let bound = false;
+  const port = await fakeHost(({ method, url, body }) => {
+    if (method === "GET" && url.pathname === "/state") {
+      if (!up) return { status: 503, payload: { error: "not ready" } };
+      return { status: 200, payload: { provider: "attached", running: true, tabs: [] } };
+    }
+    if (url.pathname === "/bind") { bound = true; hits.push(`bind:${String(body.profileKey)}`); return { status: 200, payload: { scopeKey: body.scopeKey, profileKey: body.profileKey, partition: "persist:telar-project-x" } }; }
+    if (url.pathname === "/open" || url.pathname === "/tool") {
+      hits.push(url.pathname);
+      if (!bound) return { status: 400, payload: { error: "not bound" } };
+      return { status: 200, payload: { running: true, tabs: [{ index: 0, title: "New tab", url: "about:blank", active: true }], content: [{ type: "text", text: "ready" }] } };
+    }
+    return { status: 200, payload: { content: [] } };
+  });
+  const desktop = new DesktopBrowserClient({ port, token: "tok", probeTtlMs: 0 });
+  const router = new BrowserRouter(fakeHeadless([]), desktop);
+
+  // Unreachable: bindProfile forwards nothing (the scope never gets a /bind).
+  await router.bindProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  expect(hits).toEqual([]);
+
+  // The host comes up between declaration and start, with no second declaration.
+  up = true;
+  const opened = await router.state("s", { start: true, screenshot: false });
+  expect(opened.error).toBeNull();
+  expect(opened.tabs).toHaveLength(1);
+  expect(hits).toEqual(["bind:project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/open"]);
+  // A fresh host has lost its bindings, but the agent's next call still works.
+  bound = false;
+  hits.length = 0;
+  expect(textOf(await router.call("s", "browser_snapshot"))).toBe("ready");
+  expect(hits).toEqual(["bind:project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "/tool"]);
+  await expect(router.bindProfile("s", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")).rejects.toThrow(/different project/);
+});
+
+test("a rejected profile restore prevents both opening and agent calls", async () => {
+  let up = false;
+  const actions: string[] = [];
+  const port = await fakeHost(({ url }) => {
+    if (!up) return { status: 503, payload: { error: "offline" } };
+    if (url.pathname === "/bind") return { status: 409, payload: { error: "profile conflict" } };
+    if (url.pathname === "/open" || url.pathname === "/tool") actions.push(url.pathname);
+    return { status: 200, payload: { running: true, tabs: [] } };
+  });
+  const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port, token: "tok", probeTtlMs: 0 }));
+  await router.bindProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  up = true;
+  expect((await router.state("s", { start: true })).error).toContain("profile conflict");
+  await expect(router.call("s", "browser_snapshot")).rejects.toThrow(/profile conflict/);
+  expect(actions).toEqual([]);
+});
+
+// ── starting a browser by hand, on the desktop branch ──────────────────────
+
+function hostWithTabs(initial: { index: number; title: string; url: string; active: boolean; openedBy?: string }[], options: { openFails?: string } = {}) {
+  const tabs = [...initial];
+  const opens: Record<string, unknown>[] = [];
+  const port = fakeHost(({ method, url, body }) => {
+    if (method === "GET" && url.pathname === "/state") return { status: 200, payload: { running: true, tabs } };
+    if (method === "POST" && url.pathname === "/open") {
+      opens.push(body);
+      if (options.openFails) return { status: 400, payload: { error: options.openFails } };
+      tabs.push({ index: tabs.length, title: "New tab", url: String(body.url ?? "about:blank"), active: true, openedBy: "human" });
+      return { status: 200, payload: { running: true, tabs } };
+    }
+    return { status: 200, payload: { content: [{ type: "text", text: "" }] } };
+  });
+  return { port, opens, tabs };
+}
+
+test("start on a desktop scope with no tabs opens one AS THE HUMAN", async () => {
+  const { port, opens } = hostWithTabs([]);
+  const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port: await port, token: "tok", probeTtlMs: 0 }));
+  const before = await router.state("s", { screenshot: false });
+  expect(before.tabs).toEqual([]);
+  expect(opens).toEqual([]); // a plain read never starts anything
+
+  const started = await router.state("s", { start: true, screenshot: false });
+  expect(started.error).toBeNull();
+  expect(started.tabs).toHaveLength(1);
+  expect(started.tabs[0]).toMatchObject({ active: true, openedBy: "human" });
+  expect(opens).toEqual([{ scopeKey: "s", url: "about:blank" }]);
+});
+
+test("a repeated start is idempotent — a scope that already has a tab opens nothing", async () => {
+  const { port, opens } = hostWithTabs([{ index: 0, title: "Example", url: "https://example.com", active: true, openedBy: "agent" }]);
+  const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port: await port, token: "tok", probeTtlMs: 0 }));
+  const first = await router.state("s", { start: true, screenshot: false });
+  const second = await router.state("s", { start: true, screenshot: false });
+  expect(first.tabs).toHaveLength(1);
+  expect(second.tabs).toHaveLength(1);
+  expect(opens).toEqual([]);
+});
+
+test("a host that refuses to open answers the host's own error, not a throw", async () => {
+  const { port } = hostWithTabs([], { openFails: "Tab limit reached (8 per session). Close a tab first." });
+  const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port: await port, token: "tok", probeTtlMs: 0 }));
+  const state = await router.state("s", { start: true, screenshot: false });
+  expect(state.provider).toBe("attached");
+  expect(state.tabs).toEqual([]);
+  expect(state.error).toContain("Tab limit reached");
+});
+
+test("concurrent starts on one scope open exactly one tab", async () => {
+  const { port, opens } = hostWithTabs([]);
+  const router = new BrowserRouter(fakeHeadless([]), new DesktopBrowserClient({ port: await port, token: "tok", probeTtlMs: 60_000 }));
+  const results = await Promise.all(Array.from({ length: 5 }, () => router.state("s", { start: true, screenshot: false })));
+  expect(opens).toHaveLength(1);
+  for (const result of results) {
+    expect(result.error).toBeNull();
+    expect(result.tabs).toHaveLength(1);
+  }
+  // And a later start, after the flight has landed, still opens nothing new.
+  const later = await router.state("s", { start: true, screenshot: false });
+  expect(later.tabs).toHaveLength(1);
+  expect(opens).toHaveLength(1);
+});
+
+test("bind() posts the scope's project profile to /bind and surfaces the host's refusal", async () => {
+  const binds: Record<string, unknown>[] = [];
+  const port = await fakeHost(({ url, body, auth }) => {
+    if (auth !== "Bearer t") return { status: 401, payload: { error: "Unauthorized." } };
+    if (url.pathname === "/bind") {
+      binds.push(body);
+      if (body.profileKey === "session_x") return { status: 400, payload: { error: "Browser profile key must be a project id" } };
+      return { status: 200, payload: { scopeKey: body.scopeKey, profileKey: body.profileKey, partition: `persist:telar-project-${String(body.profileKey).slice(8)}` } };
+    }
+    return { status: 200, payload: { provider: "attached", running: true, tabs: [] } };
+  });
+  const client = new DesktopBrowserClient({ port, token: "t" });
+  const ok = await client.bind("session_one", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  expect(ok.partition).toBe("persist:telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  await expect(client.bind("session_one", "session_x")).rejects.toThrow(/project id/);
+  expect(binds).toHaveLength(2);
+  // The router forwards to the desktop host when reachable and is a no-op headless.
+  const router = new BrowserRouter({ call: async () => ({ content: [] }), isReadOnly: () => true, state: async () => ({ scopeKey: "s", provider: "headless", running: false, tabs: [], screenshot: null, error: null }), release: async () => true, close: async () => undefined } as unknown as BrowserRuntime, client);
+  await router.bindProfile("session_two", "none");
+  expect(binds.at(-1)).toMatchObject({ scopeKey: "session_two", profileKey: "none" });
+});

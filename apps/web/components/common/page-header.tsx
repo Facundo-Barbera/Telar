@@ -57,8 +57,12 @@ export function PageHeader({
          * edge has to agree on it, and agreeing by coincidence is how they
          * drifted 6px apart last time.
          */
-        "app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-3 border-b py-2 pr-4",
-        mainIsLeftmost ? "pl-[calc(var(--titlebar-inset)+1rem)]" : "pl-4",
+        // Same 16px shorter on `md` as the rail's header and the session
+        // masthead (both islands start 8px down and the lights do not move), so
+        // every header sitting beside the rail reads at one height.
+        "app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-3 border-b py-2 pr-4 md:h-[calc(var(--titlebar-height)-1rem)] md:min-h-[calc(var(--titlebar-height)-1rem)] md:py-0",
+        // The content island sits 8px in from the window edge (app-shell.tsx).
+        mainIsLeftmost ? "pl-[max(1rem,calc(var(--titlebar-inset)+0.5rem))]" : "pl-4",
         className,
       )}
     >

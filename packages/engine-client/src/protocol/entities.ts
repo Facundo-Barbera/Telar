@@ -188,6 +188,8 @@ export const Session = z.object({
 
   workspace: SessionWorkspace,
   envMode: EnvMode,
+  /** Browser-only conversation. Workspace creation is deferred until first send. */
+  draft: z.object({ baseRef: z.string().optional(), branchName: z.string().optional(), branchSlug: z.string().optional() }).optional(),
 
   /** What this session may do without asking. Set at creation, changeable
    *  mid-session — a human can hand a running session more rope, or take it. */

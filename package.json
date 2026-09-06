@@ -16,6 +16,7 @@
     "test:operations": "bun test scripts/dev-lifecycle.test.mjs scripts/tailscale.test.mjs",
     "dev:shell": "bun run --cwd apps/desktop dev",
     "desktop:package": "bun run --cwd apps/desktop package:local",
+    "desktop:package:dev": "bun run --cwd apps/desktop package:dev",
     "desktop:install": "bun run --cwd apps/desktop install:local",
     "verify": "bun run typecheck && bun run lint && bun run test",
     "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd packages/engine-client typecheck && bun run --cwd packages/env typecheck && bun run --cwd apps/engine typecheck && bun run --cwd apps/web typecheck && bun run typecheck:core-tests",
