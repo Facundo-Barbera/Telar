@@ -97,7 +97,8 @@ import {
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
 import { ProjectGroupSection } from "@/components/session/project-group";
-import { groupSessions, useCollapsedGroups } from "@/lib/session-groups";
+import { groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, useCollapsedGroups } from "@/lib/session-groups";
+import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
 import { Button } from "@/components/ui/button";
@@ -334,6 +335,17 @@ function SidebarBody() {
   const [searchIndex, setSearchIndex] = useState(0);
   const [settledOpen, setSettledOpen] = useState(false);
   const { collapsed: collapsedGroups, toggle: toggleGroup } = useCollapsedGroups();
+  /**
+   * WHERE EACH PROJECT GROUP SITS, from the engine — so the desktop shell, a
+   * browser tab and a paired phone draw the same arrangement. The fold state
+   * above stays per window; the order is about the work. See lib/sidebar-layout.ts.
+   */
+  const { order: projectOrder, setOrder: setProjectOrder } = useSidebarLayout();
+  /** The group being carried, and where it would land. Owned here rather than
+   *  by the group, because a drop lands on a DIFFERENT group than the one that
+   *  started the drag. */
+  const [draggingGroup, setDraggingGroup] = useState<string | null>(null);
+  const [groupInsert, setGroupInsert] = useState<{ key: string; position: "above" | "below" } | null>(null);
   // Collapsed by default, like t3's: out of the way, never gone. The whole
   // point of snoozing is not to see these until they come back on their own.
   const [snoozedOpen, setSnoozedOpen] = useState(false);
@@ -550,8 +562,56 @@ function SidebarBody() {
   const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterHours });
   // The Work surface's arrangement of the same page: a pure regrouping of
   // `list`, so paging, search and scope are untouched. Only in the banded view;
-  // a search stays flat.
-  const grouped = list.flat ? undefined : groupSessions(list);
+  // a search stays flat. The groups sit in the reader's own order — nothing a
+  // conversation does moves its project.
+  const grouped = list.flat ? undefined : groupSessions(list, projectOrder);
+
+  /**
+   * DRAGGING A GROUP TO WHERE IT BELONGS. The header is the handle; a drop on
+   * another group lands above or below it by which half the pointer was in.
+   * The platform's own drag, no library (see `lib/drag-reference.ts`), and the
+   * handlers are curried once here so each group receives bare references.
+   */
+  const onGroupDragStart = (key: string) => (event: React.DragEvent) => {
+    event.dataTransfer.setData(PROJECT_GROUP_MIME, key);
+    event.dataTransfer.effectAllowed = "move";
+    setDraggingGroup(key);
+  };
+  const onGroupDragEnd = () => {
+    setDraggingGroup(null);
+    setGroupInsert(null);
+  };
+  const onGroupDragOver = (key: string) => (event: React.DragEvent) => {
+    if (!event.dataTransfer.types.includes(PROJECT_GROUP_MIME)) return;
+    if (draggingGroup === key) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const rect = event.currentTarget.getBoundingClientRect();
+    const position: "above" | "below" = event.clientY < rect.top + rect.height / 2 ? "above" : "below";
+    setGroupInsert((current) => (current?.key === key && current.position === position ? current : { key, position }));
+  };
+  const onGroupDragLeave = (key: string) => () => setGroupInsert((current) => (current?.key === key ? null : current));
+  const onGroupDrop = (key: string) => (event: React.DragEvent) => {
+    if (!event.dataTransfer.types.includes(PROJECT_GROUP_MIME)) return;
+    event.preventDefault();
+    const dragged = event.dataTransfer.getData(PROJECT_GROUP_MIME) || draggingGroup;
+    const position = groupInsert?.key === key ? groupInsert.position : "below";
+    setDraggingGroup(null);
+    setGroupInsert(null);
+    if (!dragged || dragged === key || !grouped) return;
+    // THE WHOLE DRAWN ORDER IS WRITTEN, not just the moved group: every group on
+    // screen keeps the place it had, and a group nobody had placed yet is
+    // placed by this drop rather than left to drift.
+    void setProjectOrder(
+      moveProjectGroup(
+        projectOrder,
+        grouped.groups.map((group) => group.key),
+        dragged,
+        key,
+        position,
+      ),
+    );
+  };
 
   /**
    * The draft rows, joined to the registry and narrowed the same way the list is.
@@ -942,6 +1002,13 @@ function SidebarBody() {
                   renderedAt={renderedAt}
                   autoSettleAfterHours={autoSettleAfterHours}
                   onRefresh={() => void loadAll()}
+                  dragging={draggingGroup === group.key}
+                  insert={groupInsert?.key === group.key ? groupInsert.position : null}
+                  onDragStart={onGroupDragStart(group.key)}
+                  onDragEnd={onGroupDragEnd}
+                  onDragOver={onGroupDragOver(group.key)}
+                  onDragLeave={onGroupDragLeave(group.key)}
+                  onDrop={onGroupDrop(group.key)}
                 />
               ))
             ) : (
