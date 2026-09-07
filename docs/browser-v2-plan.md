@@ -354,10 +354,31 @@ third-party `playwriter` has "pause and attach" ([survey](https://bug0.com/blog/
 agent working in tab 1. Every tab carries `controller` and `openedBy`
 (`agent|human`), the tab strip shows both, and `browser.control.changed`
 carries `tabId`. Tabs are capped at 12 per scope; closing the last tab leaves
-one blank tab; the agent's reads (`snapshot`/`screenshot`/`console`/`network`)
-take an optional `tabId` so it can look at a human's tab without switching the
-shared current tab — DECIDED: reads on a human-held tab are allowed, writes
-never. Three states per tab, journalled on every transition:
+one blank tab.
+
+**There is no shared "current tab" — there are two pointers** (REVISED, and it
+supersedes "reads on a human-held tab are allowed, writes never"). The human's
+view and the agent's working tab were one value, so each hand kept moving the
+other's: selecting a tab in the strip re-aimed the agent's next write, and an
+agent opening a page took the screen away from whatever was being read. Now:
+
+- the human's view moves only on a human gesture (tab strip, ⌘1..⌘9, URL bar);
+- the agent's focus moves only on `browser_tabs new`/`select`, and moving it
+  changes nothing on screen;
+- **every** tool takes an optional `tabId`, writes included — the earlier
+  reads-only rule was protecting a property that `runOnTab` already enforces
+  (a write defers while the human's hands are on that tab and is refused on a
+  view the agent has not refreshed), while costing the agent any ability to
+  work in a background tab;
+- an agent with no focus of its own follows the human's tab, so "look at this
+  page" keeps working; once it opens or selects one, it stays there;
+- a focus tab that somebody else closes is reported once (`the tab you were
+  working in … was closed`) rather than silently redirected to the human's;
+- `browser_list_tabs` marks the human's `(current)` and the agent's `yours`,
+  and `browser_fill_secret` binds its origin check to the agent's tab — the
+  one the fill will actually land in.
+
+Three states per tab, journalled on every transition:
 
 | state | agent may | human may | cockpit shows |
 |---|---|---|---|

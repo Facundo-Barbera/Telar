@@ -801,7 +801,9 @@ describe("the shared-browser interaction model — human input wins, agent defer
     clock.t += 10_000;
     manager.noteHumanInput("s");
     expect(manager.state("s").tabs[0].controller).toBe("human");
-    expect(textOf(await manager.callTool("s", "browser_tabs", { action: "list" }))).toMatch(/\{controller=human, opened-by=agent\}/);
+    // `yours` rides in the same braces: the one tab is both what the human is
+    // looking at and where the agent's calls land.
+    expect(textOf(await manager.callTool("s", "browser_tabs", { action: "list" }))).toMatch(/\{controller=human, opened-by=agent, yours\}/);
     clock.t += 2_000;
     expect(manager.state("s").tabs[0].controller).toBe("idle");
     expect(typeof manager.handBack).toBe("undefined");
@@ -1288,7 +1290,10 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
     manager.declareProfile("s1", PROJECT);
     await manager.createTab("s1", "https://one.example/", "human");
     await manager.createTab("s1", "https://two.example/");
-    await manager.resizeTab(manager.activeTab("s1"), { preset: "phone" });
+    // The AGENT's tab, named explicitly: an agent-opened tab no longer takes
+    // the human's view, so "the active tab" is no longer a way to say "the one
+    // that was just opened".
+    await manager.resizeTab(manager.scopeTabs("s1")[1], { preset: "phone" });
     await manager.selectTab("s1", 0);
     let doc = store.latest();
     expect(doc.scopes.s1.profileKey).toBe(PROJECT);
@@ -1790,5 +1795,138 @@ describe("bounds are per scope — a stale scope's publish never moves the visib
     await manager.activeTab("B").geometry.queue;
     expect(manager.visibleScopeKey).toBe("B");
     expect(views[1].visible).toBe(true);
+  });
+});
+
+/**
+ * THE COMPLAINT THIS ANSWERS: "agents can't use other tabs if I'm using a tab,
+ * they automatically need to use the one I'm using."
+ */
+describe("two pointers — the human's view and the agent's tab move independently", () => {
+  function harness(options = {}) {
+    const clock = { t: 1_000_000 };
+    const base = makeHarness({ ...options, now: () => clock.t, wait: async (ms) => { clock.t += ms; } });
+    return { ...base, clock };
+  }
+  const observed = async (manager, args = {}) => {
+    const result = await manager.callTool("s", "browser_snapshot", args);
+    expect(result.isError).toBeUndefined();
+  };
+
+  test("a tab the agent opens does not take the screen, and the human's stays put", async () => {
+    const { manager } = harness();
+    await manager.createTab("s", "https://issues.example/", "human");
+    await manager.setVisible("s", true);
+
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://docs.example/" });
+    const tabs = manager.state("s").tabs;
+    // You are still reading the issue you opened...
+    expect(tabs.map((tab) => [tab.url, tab.active, tab.agentFocus])).toEqual([
+      ["https://issues.example/", true, false],
+      ["https://docs.example/", false, true],
+    ]);
+    // ...and the agent's next un-addressed call lands in ITS tab, not yours.
+    expect(manager.agentTab("s").url).toBe("https://docs.example/");
+  });
+
+  test("the human switching tabs does not re-aim the agent's next click", async () => {
+    const { manager, views } = harness();
+    await manager.createTab("s", "https://issues.example/", "human");
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://docs.example/" });
+    await observed(manager);
+
+    // The human moves to their own tab, the way clicking the strip does.
+    await manager.selectTab("s", 0);
+    expect(manager.state("s").tabs[0].active).toBe(true);
+
+    const clicked = await manager.callTool("s", "browser_click", { target: "e1" });
+    expect(clicked.isError).toBeUndefined();
+    const clicks = (view) => view.webContents.debugger.commands.filter((c) => c.method === "Input.dispatchMouseEvent").length;
+    // The agent's tab took the click; the tab you are reading was not touched.
+    expect(clicks(views[1])).toBeGreaterThan(0);
+    expect(clicks(views[0])).toBe(0);
+  });
+
+  test("the agent selecting a tab moves only itself", async () => {
+    const { manager } = harness();
+    await manager.createTab("s", "https://one.example/", "human");
+    await manager.createTab("s", "https://two.example/", "human");
+    await manager.selectTab("s", 1);
+
+    await manager.callTool("s", "browser_tabs", { action: "select", index: 0 });
+    expect(manager.state("s").tabs[1].active).toBe(true); // still yours
+    expect(manager.agentTab("s").url).toBe("https://one.example/"); // now theirs
+  });
+
+  test("a write may name a tab, and naming one does not weaken the human's claim on it", async () => {
+    const { manager, views, clock } = harness();
+    await manager.createTab("s", "https://one.example/", "human");
+    await manager.createTab("s", "https://two.example/", "human");
+    await observed(manager, { tabId: 1 });
+
+    // Addressed explicitly, and it lands.
+    const direct = await manager.callTool("s", "browser_click", { target: "e1", tabId: 1 });
+    expect(direct.isError).toBeUndefined();
+    expect(views[1].webContents.debugger.commands.some((c) => c.method === "Input.dispatchMouseEvent")).toBe(true);
+
+    // But a tab the human is USING still defers and then refuses — naming a
+    // tab is addressing, never permission.
+    await observed(manager, { tabId: 0 });
+    manager.noteHumanInput("s", { force: true, tab: manager.scopeTabs("s")[0] });
+    const contested = await manager.callTool("s", "browser_click", { target: "e1", tabId: 0 });
+    clock.t += 10_000;
+    expect(contested.isError).toBe(true);
+    expect(textOf(contested)).toMatch(/interacting with tab 0|changed since you last looked/);
+  });
+
+  test("a closed agent tab is reported once, not silently swapped for the human's", async () => {
+    const { manager } = harness();
+    await manager.createTab("s", "https://yours.example/", "human");
+    await manager.callTool("s", "browser_tabs", { action: "new", url: "https://mine.example/" });
+    await observed(manager);
+
+    // The human closes the tab the agent was working in.
+    manager.closeTab("s", 1, "human");
+
+    const orphaned = await manager.callTool("s", "browser_snapshot", {});
+    expect(orphaned.isError).toBe(true);
+    expect(textOf(orphaned)).toMatch(/was closed\. List the tabs/);
+    // Said ONCE: the next call resolves normally rather than stranding the
+    // agent, and listing tabs is how it recovers — so that must never fail.
+    const listed = await manager.callTool("s", "browser_tabs", { action: "list" });
+    expect(listed.isError).toBeUndefined();
+    expect(manager.agentTab("s").url).toBe("https://yours.example/");
+  });
+
+  test("with no tab of its own the agent follows the human — 'look at this page' still works", async () => {
+    const { manager } = harness();
+    await manager.createTab("s", "https://one.example/", "human");
+    await manager.createTab("s", "https://two.example/", "human");
+
+    await manager.selectTab("s", 1);
+    expect(manager.agentTab("s").url).toBe("https://two.example/");
+    await manager.selectTab("s", 0);
+    expect(manager.agentTab("s").url).toBe("https://one.example/");
+  });
+});
+
+describe("the agent's pointer follows the tabs through a scope's life", () => {
+  test("adoption carries the agent's tab; destroying a scope leaves no tombstone for the next one", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("draft", "none");
+    await manager.createTab("draft", "https://one.example/", "human");
+    await manager.callTool("draft", "browser_tabs", { action: "new", url: "https://two.example/" });
+    expect(manager.agentTab("draft").url).toBe("https://two.example/");
+
+    manager.adoptScope("draft", "real");
+    // The agent is still working in the same page, under the new scope.
+    expect(manager.agentTab("real").url).toBe("https://two.example/");
+    expect(manager.agentTabIds.has("draft")).toBe(false);
+
+    // A destroyed scope's id must come back clean: its closed tabs are not an
+    // error to report to whoever uses that id next.
+    manager.releaseScope("real", true);
+    expect(manager.agentTabIds.has("real")).toBe(false);
+    expect(manager.agentTabClosed.has("real")).toBe(false);
   });
 });

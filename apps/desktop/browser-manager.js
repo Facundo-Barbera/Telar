@@ -322,7 +322,40 @@ class DesktopBrowserManager {
     this.createId = dependencies.createId || randomUUID;
     this.wait = dependencies.wait || sleep;
     this.tabs = [];
+    /**
+     * THE TAB THE HUMAN IS LOOKING AT. This drives visibility and the panel's
+     * presentation, and NOTHING the agent does moves it — see `agentTabIds`.
+     */
     this.activeTabIds = new Map();
+    /**
+     * THE TAB THE AGENT IS WORKING IN, which is a different question from the
+     * one above and used to be answered by the same value.
+     *
+     * One pointer served both, so the two hands fought over it: clicking a tab
+     * in the strip re-aimed the agent's next click at the tab you had just
+     * opened, and an agent opening a page yanked your view away from whatever
+     * you were reading. Neither is what either party asked for. Now the human's
+     * view is `activeTabIds`, the agent's focus is here, and they are free to
+     * be different tabs — which is what lets an agent work in the background
+     * while you read something else in the same session.
+     *
+     * UNSET MEANS "WHEREVER THE HUMAN IS", so a session where the agent has
+     * never opened a tab of its own still behaves as one shared tab — that is
+     * the "look at this page" flow, and it must keep working. The agent takes
+     * its own focus the moment it opens or selects a tab.
+     *
+     * NOT PERSISTED, deliberately: focus is a fact about a run, not about a
+     * session, and an agent that comes back after a restart lists the tabs
+     * before it does anything anyway.
+     */
+    this.agentTabIds = new Map();
+    /**
+     * A tab the agent was working in that somebody else closed, remembered
+     * just long enough to say so once. Without this the agent's next call
+     * would silently fall back to the human's tab — acting on a page nobody
+     * asked it to touch. Read and cleared by `agentTab`.
+     */
+    this.agentTabClosed = new Map();
     this.visibleScopeKey = null;
     this.bounds = { x: 0, y: 0, width: 1, height: 1 };
     /**
@@ -869,6 +902,7 @@ class DesktopBrowserManager {
     const scope = this.requireScope(scopeKey);
     const tabs = this.scopeTabs(scope);
     const activeTabId = this.activeTabIds.get(scope) ?? null;
+    const agentTabId = this.peekTarget(scope, {})?.id ?? null;
     return {
       scopeKey: scope,
       // The bound project profile, or null until the engine/cockpit bind it.
@@ -885,6 +919,10 @@ class DesktopBrowserManager {
         title: tab.title || `Tab ${index + 1}`,
         url: tab.url || "about:blank",
         active: tab.id === activeTabId,
+        /** The tab the agent's next un-addressed call acts on — which is not
+         *  necessarily the one being shown. The strip marks it so you can see
+         *  where the agent is working while you read something else. */
+        agentFocus: tab.id === agentTabId,
         loading: tab.loading,
         controller: this.tabActivity(tab),
         openedBy: tab.openedBy || "agent",
@@ -1406,6 +1444,7 @@ class DesktopBrowserManager {
   removeTab(tab) {
     const scope = tab.scopeKey;
     this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+    this.noteAgentTabClosed(tab);
     if (this.activeTabIds.get(scope) === tab.id) {
       const remaining = this.scopeTabs(scope);
       this.activeTabIds.set(scope, remaining.at(-1)?.id ?? null);
@@ -1473,8 +1512,20 @@ class DesktopBrowserManager {
     // Fixed at creation from the scope's declared profile: a tab's cookies
     // belong to the profile it was opened in.
     const tab = this.newTabRecord(scope, this.partitionOf(scope), openedBy);
+    const wasEmpty = this.scopeTabs(scope).length === 0;
     this.tabs.push(tab);
-    this.activeTabIds.set(scope, tab.id);
+    /**
+     * AN AGENT'S NEW TAB DOES NOT TAKE THE SCREEN. Opening a page is the
+     * agent's decision, not yours, and it used to move your view mid-read —
+     * the complaint that produced the two pointers. The human's view follows
+     * only their own gesture, or the very first tab of a scope (a panel with
+     * nothing shown has nothing to show).
+     */
+    if (openedBy === "human" || wasEmpty) this.activeTabIds.set(scope, tab.id);
+    if (openedBy === "agent") {
+      this.agentTabIds.set(scope, tab.id);
+      this.agentTabClosed.delete(scope);
+    }
     const view = this.createViewForTab(tab);
     await this.readyHostForTab(tab, view);
     this.applyVisibility();
@@ -1602,6 +1653,7 @@ class DesktopBrowserManager {
     wc.on("destroyed", () => {
       if (tab.hibernating || tab.view !== view) return;
       this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+      this.noteAgentTabClosed(tab);
       const scoped = this.scopeTabs(tab.scopeKey);
       if (this.activeTabIds.get(tab.scopeKey) === tab.id) {
         this.activeTabIds.set(tab.scopeKey, scoped.at(-1)?.id ?? null);
@@ -1626,13 +1678,80 @@ class DesktopBrowserManager {
     return tab;
   }
 
-  /** A read's tab: `tabId` (positional index) when given — DECIDED: reads may
-   *  address a human-held tab, that is how the model sees what the human is
-   *  showing it — else the shared current tab. Never switches "current". */
-  readTarget(scope, args) {
-    return args && args.tabId !== undefined ? this.tabAt(scope, args.tabId) : this.activeTab(scope);
+  /**
+   * THE TAB AN AGENT CALL ACTS ON when it did not name one.
+   *
+   * Its own focus if it has taken one and that tab still exists; otherwise the
+   * human's, which is what makes "look at this page" work in a session where
+   * the agent never opened a tab of its own.
+   *
+   * A FOCUS THAT WAS CLOSED IS AN ERROR, ONCE. Falling through to the human's
+   * tab would have the agent quietly act on a page nobody pointed it at, so it
+   * is told instead — and the tombstone is cleared as it is reported, so the
+   * next call resolves normally rather than stranding the agent.
+   */
+  agentTab(scopeKey) {
+    const scope = this.requireScope(scopeKey);
+    const closed = this.agentTabClosed.get(scope);
+    if (closed) {
+      this.agentTabClosed.delete(scope);
+      throw new Error(`The tab you were working in (${closed}) was closed. List the tabs and choose one to continue in.`);
+    }
+    const focused = this.tabs.find((candidate) => candidate.scopeKey === scope && candidate.id === this.agentTabIds.get(scope));
+    if (focused) return focused;
+    this.agentTabIds.delete(scope);
+    return this.activeTab(scope);
   }
 
+  /** The agent takes a tab as its own. Does NOT move the human's view — that
+   *  is the whole point of the two pointers. */
+  async focusAgentTab(scopeKey, index) {
+    const scope = this.requireScope(scopeKey);
+    const tab = this.tabAt(scope, index);
+    await this.wakeTab(tab);
+    this.agentTabIds.set(scope, tab.id);
+    this.agentTabClosed.delete(scope);
+    this.emitState(scope);
+    return tab;
+  }
+
+  /** Remember that the agent's tab went, so its next call is told rather than
+   *  silently redirected. Only for the tab it was actually working in. */
+  noteAgentTabClosed(tab) {
+    if (this.agentTabIds.get(tab.scopeKey) !== tab.id) return;
+    this.agentTabIds.delete(tab.scopeKey);
+    this.agentTabClosed.set(tab.scopeKey, tab.title || tab.url || "untitled");
+  }
+
+  /**
+   * A call's tab: `tabId` (positional index) when given — a call may address
+   * any tab, including one the human holds, which is how the model both sees
+   * what it is being shown and works somewhere else — else the agent's own.
+   * Never switches the human's view.
+   *
+   * A WRITE TO A TAB THE HUMAN IS USING IS STILL GATED. Being able to name a
+   * tab does not weaken `runOnTab`: it still defers while their hands are on
+   * that tab and still refuses on a view the agent has not refreshed.
+   */
+  tabFor(scope, args) {
+    return args && args.tabId !== undefined ? this.tabAt(scope, args.tabId) : this.agentTab(scope);
+  }
+
+  /** `tabFor` for the paths that only want to LOOK — the extension-page
+   *  precheck and the queue's pinning. Never throws, and never consumes the
+   *  closed-tab tombstone, which belongs to the call that reports it. */
+  peekTarget(scope, args) {
+    try {
+      if (args && args.tabId !== undefined) return this.tabAt(scope, args.tabId);
+      if (this.agentTabClosed.has(this.requireScope(scope))) return null;
+      return this.tabFor(scope, args);
+    } catch {
+      return null;
+    }
+  }
+
+  /** The HUMAN's view moves to a tab — the tab strip, the keyboard shortcuts,
+   *  the extension host. Leaves the agent's focus exactly where it was. */
   async selectTab(scopeKey, index) {
     const scope = this.requireScope(scopeKey);
     const tab = this.tabAt(scope, index);
@@ -1656,6 +1775,7 @@ class DesktopBrowserManager {
     if (!scoped.includes(tab)) throw new Error("That browser tab is already closed.");
     const position = scoped.indexOf(tab);
     this.tabs = this.tabs.filter((candidate) => candidate !== tab);
+    this.noteAgentTabClosed(tab);
     this.hibernateTab(tab);
     if (this.activeTabIds.get(scope) === tab.id) {
       // "Current" moves to the nearest neighbour, the way every browser does it.
@@ -2212,6 +2332,10 @@ class DesktopBrowserManager {
     const tabs = this.scopeTabs(scope);
     if (!tabs.length) return okText("No browser tabs are open in this session.");
     const activeTabId = this.activeTabIds.get(scope);
+    // Which tab an un-addressed call would act on, WITHOUT consuming the
+    // closed-tab tombstone or throwing — listing tabs is how an agent
+    // recovers from exactly that, so it must never be the thing that fails.
+    const agentTabId = this.peekTarget(scope, {})?.id;
     // The {…} suffix is contract with the engine's parseBrowserTabs, which
     // tolerates exactly this shape — the model reads who opened and who holds
     // each tab without a second tool call.
@@ -2219,6 +2343,10 @@ class DesktopBrowserManager {
       tabs
         .map((tab, index) => {
           const meta = [`controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
+          // "(current)" is the HUMAN's view; this is where YOUR next call
+          // lands. They are routinely different tabs, and a model that cannot
+          // tell them apart cannot work in the background on purpose.
+          if (tab.id === agentTabId) meta.push("yours");
           if (tab.loading) meta.push("loading");
           if (isProtectedUrl(tab.url)) { meta.push("extension-page"); return `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[Extension page](about:blank) {${meta.join(", ")}}`; }
           return `- ${index}: ${tab.id === activeTabId ? "(current) " : ""}[${tab.title}](${tab.url}) {${meta.join(", ")}}`;
@@ -2258,12 +2386,7 @@ class DesktopBrowserManager {
     // chrome-extension:// page (a popup, an unlock, a settings page) is the
     // password manager's, not the agent's, whether it wants to read or act.
     if (name !== "browser_tabs") {
-      let candidate = null;
-      try {
-        candidate = args && args.tabId !== undefined ? this.tabAt(scope, args.tabId) : this.scopeTabs(scope).length ? this.activeTab(scope) : null;
-      } catch {
-        candidate = null;
-      }
+      const candidate = this.scopeTabs(scope).length ? this.peekTarget(scope, args) : null;
       if (candidate && isProtectedUrl(candidate.url)) {
         return errorResult(new Error("That tab is showing an extension page. Browser tools do not read or act on extension pages."));
       }
@@ -2275,17 +2398,16 @@ class DesktopBrowserManager {
       if (name === "browser_tabs") {
         if (args.action === "close") {
           try {
-            targetTab = args.index === undefined ? this.activeTab(scope) : this.tabAt(scope, args.index);
+            targetTab = args.index === undefined ? this.agentTab(scope) : this.tabAt(scope, args.index);
           } catch (error) {
             return errorResult(error);
           }
         }
       } else if (this.scopeTabs(scope).length) {
-        try {
-          targetTab = this.activeTab(scope);
-        } catch {
-          targetTab = null;
-        }
+        // The agent's own tab, or the one it named. A tombstone leaves this
+        // null so the call falls through to `dispatch`, where resolving it
+        // again reports the closed tab instead of silently redirecting.
+        targetTab = this.peekTarget(scope, args);
       }
     }
     // A SNAPSHOT OR SCREENSHOT observes the tab it addresses — that is the
@@ -2295,12 +2417,8 @@ class DesktopBrowserManager {
     let readTab = null;
     let readGeneration = -1;
     if (name === "browser_snapshot" || name === "browser_take_screenshot") {
-      try {
-        readTab = this.readTarget(scope, args);
-        readGeneration = readTab.generation;
-      } catch {
-        readTab = null;
-      }
+      readTab = this.peekTarget(scope, args);
+      readGeneration = readTab ? readTab.generation : -1;
     }
     // A mutation of ONE tab is serialized behind that tab's earlier mutations,
     // defers while a human is interacting there, and needs a fresh view.
@@ -2404,7 +2522,7 @@ class DesktopBrowserManager {
     // A mutation acts on the tab it was queued for, by identity. If that tab
     // is gone the action is over — never redirected to whatever is active.
     const target = async () => {
-      if (!pinned) return this.wakeTab(this.activeTab(scope));
+      if (!pinned) return this.wakeTab(this.tabFor(scope, args));
       if (!this.tabs.includes(pinned)) throw new Error("The tab this action was queued for was closed.");
       return this.wakeTab(pinned);
     };
@@ -2423,17 +2541,18 @@ class DesktopBrowserManager {
         case "browser_tabs":
           if (args.action === "list") return this.listTabs(scope);
           if (args.action === "new") { if (isProtectedUrl(args.url)) throw new Error("Browser tools cannot open extension pages."); await this.createTab(scope, args.url || "about:blank", "agent"); return this.listTabs(scope); }
-          if (args.action === "select") { await this.selectTab(scope, args.index); return this.listTabs(scope); }
-          if (args.action === "close") { this.closeTabRef(pinned || (args.index === undefined ? this.activeTab(scope) : this.tabAt(scope, args.index)), "agent"); return this.listTabs(scope); }
+          // SELECT IS THE AGENT TAKING A TAB, not moving your screen.
+          if (args.action === "select") { await this.focusAgentTab(scope, args.index); return this.listTabs(scope); }
+          if (args.action === "close") { this.closeTabRef(pinned || (args.index === undefined ? this.agentTab(scope) : this.tabAt(scope, args.index)), "agent"); return this.listTabs(scope); }
           throw new Error("Unknown browser_tabs action.");
         case "browser_navigate": {
           if (isProtectedUrl(args.url)) throw new Error("Browser tools cannot open extension pages.");
-          const tab = pinned && this.tabs.includes(pinned) ? pinned : this.scopeTabs(scope).length ? this.activeTab(scope) : await this.createTab(scope);
+          const tab = pinned && this.tabs.includes(pinned) ? pinned : this.scopeTabs(scope).length ? this.tabFor(scope, args) : await this.createTab(scope);
           await this.navigateTab(tab, args.url);
           return okText(`Navigated to ${tab.view.webContents.getURL()}.`);
         }
         case "browser_navigate_back": await this.goBack(await target()); return okText("Navigated back.");
-        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.readTarget(scope, args)));
+        case "browser_snapshot": return this.snapshot(await this.wakeTab(this.tabFor(scope, args)));
         case "browser_click": return this.click(await target(), args, action);
         case "browser_type": return this.type(await target(), args, action);
         case "browser_fill_form": return this.fillForm(await target(), args, action);
@@ -2455,14 +2574,14 @@ class DesktopBrowserManager {
           const mode = this.viewportModeOf(tab) === "fit" ? " (fit to panel — follows the panel while shown)" : presetOf(size) ? ` (${presetOf(size)})` : "";
           return okText(`Resized the viewport to ${size.width}×${size.height}${mode}. Take a fresh snapshot before acting on the page.`);
         }
-        case "browser_take_screenshot": return this.screenshot(await this.wakeTab(this.readTarget(scope, args)), args);
+        case "browser_take_screenshot": return this.screenshot(await this.wakeTab(this.tabFor(scope, args)), args);
         case "browser_console_messages": {
-          const tab = await this.wakeTab(this.readTarget(scope, args));
+          const tab = await this.wakeTab(this.tabFor(scope, args));
           await this.ensureDebugger(tab);
           return okText(tab.console.map((entry) => `[${entry.level}] ${entry.text}`).join("\n") || "No console messages captured.");
         }
         case "browser_network_requests": {
-          const tab = await this.wakeTab(this.readTarget(scope, args));
+          const tab = await this.wakeTab(this.tabFor(scope, args));
           await this.ensureDebugger(tab);
           const filter = String(args.filter || "");
           const rows = tab.network.filter((entry) => !filter || entry.url.includes(filter));
@@ -2495,7 +2614,14 @@ class DesktopBrowserManager {
     for (const tab of scoped) this.requestHibernate(tab, destroy);
     if (this.visibleScopeKey === scope) this.visibleScopeKey = null;
     this.applyVisibility();
-    if (destroy && !this.scopeTabs(scope).length) this.activeTabIds.delete(scope);
+    if (destroy && !this.scopeTabs(scope).length) {
+      this.activeTabIds.delete(scope);
+      // The agent's pointers go with the scope. A tombstone left here would be
+      // reported to whatever session next used the id — an error about a tab
+      // belonging to a conversation that is over.
+      this.agentTabIds.delete(scope);
+      this.agentTabClosed.delete(scope);
+    }
     this.emitState(scope);
   }
 
@@ -2522,9 +2648,18 @@ class DesktopBrowserManager {
       this.scopeProfiles.set(to, fromProfile);
     }
     const sourceActiveId = this.activeTabIds.get(from) ?? null;
+    // The agent's focus travels with the tabs, exactly as the human's view
+    // does: a draft adopted into a real session must not lose track of the tab
+    // its agent was working in.
+    const sourceAgentId = this.agentTabIds.get(from) ?? null;
     for (const tab of sourceTabs) tab.scopeKey = to;
-    if (sourceTabs.length) this.activeTabIds.set(to, sourceActiveId);
+    if (sourceTabs.length) {
+      this.activeTabIds.set(to, sourceActiveId);
+      if (sourceAgentId) this.agentTabIds.set(to, sourceAgentId);
+    }
     this.activeTabIds.delete(from);
+    this.agentTabIds.delete(from);
+    this.agentTabClosed.delete(from);
     if (this.visibleScopeKey === from) this.visibleScopeKey = to;
     this.applyVisibility();
     this.emitState(from);
@@ -2544,6 +2679,8 @@ class DesktopBrowserManager {
     }
     this.tabs = [];
     this.activeTabIds.clear();
+    this.agentTabIds.clear();
+    this.agentTabClosed.clear();
     this.visibleScopeKey = null;
   }
 }

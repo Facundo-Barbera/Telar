@@ -56,12 +56,23 @@ function errorResult(text: string): BrowserToolResult {
 type ParsedField = { target: string; element?: string; kind: "username" | "password" | "otp" | "field"; label?: string };
 type ParsedArgs = { fields: ParsedField[]; item?: string; submit?: { target: string; element?: string } };
 
-/** The active tab's URL, from the engine's own tab state. */
+/**
+ * The URL of the tab THIS FILL WILL LAND IN, from the engine's own tab state.
+ *
+ * THE AGENT'S TAB, NOT THE HUMAN'S VIEW. The fill below calls
+ * `browser_fill_form` without a `tabId`, which acts on the tab the agent is
+ * working in — and since the human's view moves independently, reading the
+ * `(current)` tab here would bind the approval to one page while typing the
+ * credential into another. The whole domain check rests on these being the
+ * same page, so it asks for the same tab the write will use. `agentFocus` is
+ * absent on hosts with no such distinction (the headless runtime), where the
+ * human's tab IS the agent's.
+ */
 async function activeTabUrl(callBrowser: SecretFillDeps["callBrowser"]): Promise<string | null> {
   const result = asToolResult(await callBrowser("browser_list_tabs", {}));
   if (result.isError) return null;
   const tabs = parseBrowserTabs(textOf(result));
-  const tab = tabs.find((candidate) => candidate.active) ?? tabs[0];
+  const tab = tabs.find((candidate) => candidate.agentFocus) ?? tabs.find((candidate) => candidate.active) ?? tabs[0];
   return tab && tab.url !== "about:blank" ? tab.url : null;
 }
 
