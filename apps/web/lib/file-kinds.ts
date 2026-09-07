@@ -89,14 +89,22 @@ export type FileKind = {
   lang?: string;
   /** Bytes rather than text. The viewer says so instead of trying to read it. */
   binary?: boolean;
+  /**
+   * A surface other than the text editor. `notebook` opens an .ipynb as cells
+   * in the session's kernel; `table` opens a CSV or Parquet as a grid. Absent
+   * means the plain file view — which is what these fall back to on a project
+   * that has not opted into data science.
+   */
+  viewer?: "notebook" | "table";
 };
 
-const KIND = (label: string, glyph: FileGlyph, tint: keyof typeof TINTS, lang?: string, binary?: boolean): FileKind => ({
+const KIND = (label: string, glyph: FileGlyph, tint: keyof typeof TINTS, lang?: string, binary?: boolean, viewer?: FileKind["viewer"]): FileKind => ({
   label,
   glyph,
   tint: TINTS[tint],
   ...(lang ? { lang } : {}),
   ...(binary ? { binary: true } : {}),
+  ...(viewer ? { viewer } : {}),
 });
 
 /**
@@ -166,8 +174,10 @@ const BY_EXTENSION: Record<string, FileKind> = {
   htm: KIND("HTML", "code", "orange", "html"),
   xml: KIND("XML", "code", "orange", "xml"),
   svg: KIND("SVG image", "image", "purple", "xml"),
-  csv: KIND("CSV", "table", "green", "csv"),
-  tsv: KIND("TSV", "table", "green"),
+  csv: KIND("CSV", "table", "green", "csv", false, "table"),
+  tsv: KIND("TSV", "table", "green", undefined, false, "table"),
+  parquet: KIND("Parquet", "table", "green", undefined, true, "table"),
+  ipynb: KIND("Jupyter notebook", "code", "orange", "json", false, "notebook"),
   // Styles.
   css: KIND("CSS", "style", "blue", "css"),
   scss: KIND("Sass", "style", "pink", "scss"),

@@ -3,8 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import {
   BotIcon,
+  BracesIcon,
+  ChartLineIcon,
   ChevronRightIcon,
   CircleDotIcon,
+  NotebookIcon,
+  TableIcon,
   FileDiffIcon,
   FolderTreeIcon,
   GitPullRequestIcon,
@@ -49,6 +53,12 @@ import {
 import { DiffSurface } from "@/components/session/diff-surface";
 import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
+import { NotebookSurface } from "@/components/session/notebook-surface";
+import { TableSurface } from "@/components/session/table-surface";
+import { PlotsSurface } from "@/components/session/plots-surface";
+import { VariablesSurface } from "@/components/session/variables-surface";
+import { ImageLightbox } from "@/components/session/image-lightbox";
+import { fileKind } from "@/lib/file-kinds";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
 import { cn } from "@/lib/utils";
@@ -112,9 +122,23 @@ const SURFACES = [
    */
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues" },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests" },
+  /**
+   * THE DATA-SCIENCE SURFACES, present only on a project that opted in. They
+   * stay in this list so a restored tab id validates; the panel filters them
+   * out of the chooser and the empty state when `dataScience` is off.
+   */
+  { id: "plots", label: "Plots", icon: ChartLineIcon, blurb: "Every figure this session drew" },
+  { id: "variables", label: "Variables", icon: BracesIcon, blurb: "The kernel's namespace" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
+
+/** Surfaces that exist only when the project opted into data science. */
+const DS_SURFACES: ReadonlySet<string> = new Set(["plots", "variables"]);
+
+function surfacesFor(dataScience: boolean): typeof SURFACES[number][] {
+  return SURFACES.filter((surface) => dataScience || !DS_SURFACES.has(surface.id));
+}
 
 /**
  * A panel tab is a fixed surface, ONE BROWSER PAGE, or ONE FILE.
@@ -132,12 +156,46 @@ type SurfaceId = (typeof SURFACES)[number]["id"];
  * tree — splits a 320px column into two unreadable halves (see
  * session/file-view-surface.tsx).
  */
-export type PanelTab = SurfaceId | `browser:${string}` | `file:${string}` | `issue:${number}` | `pull:${number}`;
+export type PanelTab =
+  | SurfaceId
+  | `browser:${string}`
+  | `file:${string}`
+  | `notebook:${string}`
+  | `table:${string}`
+  | `issue:${number}`
+  | `pull:${number}`;
 
 const BROWSER_PREFIX = "browser:";
 const FILE_PREFIX = "file:";
+const NOTEBOOK_PREFIX = "notebook:";
+const TABLE_PREFIX = "table:";
 const ISSUE_PREFIX = "issue:";
 const PULL_PREFIX = "pull:";
+
+/** A NOTEBOOK IS A FILE TAB WITH A DIFFERENT SURFACE — cells and a kernel
+ *  instead of a textarea. Same for a table. The prefix carries the choice so
+ *  the tab restores to the right surface without re-deciding from the path. */
+export function notebookPanelTab(path: string): PanelTab {
+  return `${NOTEBOOK_PREFIX}${path}`;
+}
+export function notebookPanelPath(tab: PanelTab): string | undefined {
+  return tab.startsWith(NOTEBOOK_PREFIX) ? tab.slice(NOTEBOOK_PREFIX.length) : undefined;
+}
+export function tablePanelTab(path: string): PanelTab {
+  return `${TABLE_PREFIX}${path}`;
+}
+export function tablePanelPath(tab: PanelTab): string | undefined {
+  return tab.startsWith(TABLE_PREFIX) ? tab.slice(TABLE_PREFIX.length) : undefined;
+}
+
+/** Which tab a path opens as: notebook, table or plain file — by file kind,
+ *  and only when the project opted into data science. */
+export function panelTabForPath(path: string, dataScience: boolean): PanelTab {
+  const viewer = fileKind(path).viewer;
+  if (dataScience && viewer === "notebook") return notebookPanelTab(path);
+  if (dataScience && viewer === "table") return tablePanelTab(path);
+  return filePanelTab(path);
+}
 
 export function browserPanelTab(tabId: string): PanelTab {
   return `${BROWSER_PREFIX}${tabId}`;
@@ -172,7 +230,9 @@ export function filePanelPath(tab: PanelTab): string | undefined {
 
 /** Every open file, as plain paths — what the tree marks as already open. */
 export function openFilePaths(tabs: readonly PanelTab[]): string[] {
-  return tabs.map(filePanelPath).filter((path): path is string => path !== undefined);
+  return tabs
+    .map((tab) => filePanelPath(tab) ?? notebookPanelPath(tab) ?? tablePanelPath(tab))
+    .filter((path): path is string => path !== undefined);
 }
 
 /**
@@ -222,9 +282,13 @@ export function pullPanelNumber(tab: PanelTab): number | undefined {
 const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => browserTabId(tab) !== undefined,
   (tab) => filePanelPath(tab) !== undefined,
+  (tab) => notebookPanelPath(tab) !== undefined,
+  (tab) => tablePanelPath(tab) !== undefined,
   (tab) => issuePanelNumber(tab) !== undefined,
   (tab) => pullPanelNumber(tab) !== undefined,
   (tab) => tab === "files",
+  (tab) => tab === "plots",
+  (tab) => tab === "variables",
 ];
 
 /** Which numbers are already open, so a list row can say so instead of opening a
@@ -242,6 +306,8 @@ export function isPanelTab(value: string): value is PanelTab {
   if (value.startsWith(BROWSER_PREFIX)) return true;
   // A bare `file:` names nothing, and would restore as a tab that can only fail.
   if (value.startsWith(FILE_PREFIX)) return value.length > FILE_PREFIX.length;
+  if (value.startsWith(NOTEBOOK_PREFIX)) return value.length > NOTEBOOK_PREFIX.length;
+  if (value.startsWith(TABLE_PREFIX)) return value.length > TABLE_PREFIX.length;
   // `issue:` and `pull:` must carry a number, because the surface behind them
   // asks gh for exactly that number.
   if (value.startsWith(ISSUE_PREFIX) || value.startsWith(PULL_PREFIX)) {
@@ -285,6 +351,10 @@ export function describePanelTab(
    * recognisable, and would have to be fetched before the tab could be drawn — so
    * a restored tab would have no label until the network answered.
    */
+  const notebookPath = notebookPanelPath(tab);
+  if (notebookPath !== undefined) return { label: notebookPath.slice(notebookPath.lastIndexOf("/") + 1), icon: NotebookIcon, blurb: notebookPath };
+  const tablePath = tablePanelPath(tab);
+  if (tablePath !== undefined) return { label: tablePath.slice(tablePath.lastIndexOf("/") + 1), icon: TableIcon, blurb: tablePath };
   const issueNumber = issuePanelNumber(tab);
   if (issueNumber !== undefined) return { label: `#${issueNumber}`, icon: CircleDotIcon, blurb: `Issue #${issueNumber}` };
   const pullNumber = pullPanelNumber(tab);
@@ -899,6 +969,8 @@ export function PanelSurface({
   openPullNumbers,
   onOpenTab,
   active,
+  dataScience,
+  onOpenImage,
 }: {
   tab: PanelTab;
   /** What the journal says was written, path → count. The Diff surface's half of
@@ -928,7 +1000,17 @@ export function PanelSurface({
   /** The tree opens a file by opening a TAB, which the panel owns. */
   onOpenTab: (tab: PanelTab) => void;
   active?: TurnState;
+  /** The project opted into data science: .ipynb opens as cells, CSV as a grid. */
+  dataScience?: boolean;
+  onOpenImage?: (attachmentId: string) => void;
 }) {
+  const notebookPath = notebookPanelPath(tab);
+  if (notebookPath !== undefined)
+    return <NotebookSurface path={notebookPath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
+  const tablePath = tablePanelPath(tab);
+  if (tablePath !== undefined) return <TableSurface path={tablePath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
+  if (tab === "plots") return <PlotsSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
+  if (tab === "variables") return <VariablesSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (
@@ -964,7 +1046,7 @@ export function PanelSurface({
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
         {...(openPaths ? { openPaths } : {})}
-        onOpenFile={(path) => onOpenTab(filePanelTab(path))}
+        onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}
         {...(active ? { active } : {})}
       />
     );
@@ -1012,8 +1094,10 @@ function PanelEmptyState({
   browser,
   onOpenBrowser,
   browserStart = { status: "idle" },
+  dataScience = false,
 }: {
   onOpen: (tab: PanelTab) => void;
+  dataScience?: boolean;
   browser?: BrowserState;
   /** Absent when the engine cannot start a browser here — the affordance
    *  hides rather than offering a launch that would land beside the worker's
@@ -1030,7 +1114,7 @@ function PanelEmptyState({
         <h2 className="mt-3 text-center font-heading text-sm font-medium">Open a surface</h2>
         <p className="mt-1 text-center text-xs leading-relaxed text-muted-foreground">Choose what to keep beside the conversation.</p>
         <div className="mt-4 flex flex-col gap-1">
-          {SURFACES.map((candidate) => (
+          {surfacesFor(dataScience).map((candidate) => (
             <button
               key={candidate.id}
               type="button"
@@ -1293,8 +1377,12 @@ export function RightPanel({
   onCloseTab,
   onClose,
   open = true,
+  dataScience = false,
 }: {
   active?: TurnState;
+  /** The project opted into data science — shows Plots and Variables, and
+   *  opens .ipynb and CSV files in their own surfaces. */
+  dataScience?: boolean;
   /** Absent until the first message creates the session. The browser and git
    *  surfaces are the two that need it — everything else folds records the
    *  cockpit already holds. */
@@ -1358,6 +1446,8 @@ export function RightPanel({
    * nothing flags is the worse of the two errors.
    */
   const roster = useMemo(() => splitRoster(tasks), [tasks]);
+  /** A plot opened large, from any surface that shows one. */
+  const [lightbox, setLightbox] = useState<string>();
   const agentSide = [...roster.groups.flatMap(warpAgents), ...roster.agents];
   const running = agentSide.filter(isLiveTask).length;
   const failed = agentSide.filter((task) => task.state === "failed").length +
@@ -1380,7 +1470,7 @@ export function RightPanel({
   /** Everything openable that is not already open — fixed surfaces first, then
    *  one entry per browser page the engine currently reports. */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon }[] = [
-    ...SURFACES.filter((surface) => !tabs.includes(surface.id)).map((surface) => ({
+    ...surfacesFor(dataScience).filter((surface) => !tabs.includes(surface.id)).map((surface) => ({
       id: surface.id as PanelTab,
       label: surface.label,
       icon: surface.icon,
@@ -1612,10 +1702,13 @@ export function RightPanel({
               {...(projectId ? { projectId } : {})}
               {...(branch ? { branch } : {})}
               {...(active ? { active } : {})}
+              dataScience={dataScience}
+              onOpenImage={setLightbox}
             />
+            {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
           </>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} dataScience={dataScience} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
       </div>
     </aside>
