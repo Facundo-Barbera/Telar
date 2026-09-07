@@ -56,6 +56,9 @@ function capability(selfId: string, calls: Array<{ verb: string; args: unknown[]
       throw new Error("this test does not read status");
     },
     stop: async () => ({ stopped: false }),
+    settle: async () => {
+      throw new Error("this test does not settle");
+    },
     diff: async () => {
       throw new Error("this test does not diff");
     },
@@ -115,7 +118,7 @@ test("tools/list IS the wall, and the server introduces itself under the key Cod
   // PARITY WITH THE WALL, structurally: both lists come from `sessionsTools`,
   // so a tool added to the toolkit appears here in the same change or this fails.
   expect(result.tools.map((tool) => tool.name)).toEqual(wallNames);
-  expect(result.tools.length).toBe(12);
+  expect(result.tools.length).toBe(13);
 });
 
 test("`self` rides the binding: a subscription made over this socket names the bound session as subscriber", async () => {

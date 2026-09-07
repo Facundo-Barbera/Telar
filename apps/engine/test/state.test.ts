@@ -406,27 +406,37 @@ test("a report against a SETTLED turn is a typed conflict that says the turn end
   ).toThrow(/not running under this worker claim/);
 });
 
-test("a follow-up may be QUEUED while a turn runs, and drains in the order it was typed", () => {
+test("a message while a turn runs STEERS into it; one that cannot be delivered runs next, in order", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "First" });
   const claimed = store.claimTurn("session_one", "worker_one")!;
   store.markRunning("session_one", "run_one", claimed.claim!.token);
 
-  // THE POINT: this used to be a conflict, so a human had to sit and wait
-  // through a long turn before they could say the next thing.
+  // THE POINT: typing at a running turn reaches it — the same turn continues,
+  // as it does in T3 Code and at any running CLI. Nothing waits for "Send now".
   const second = store.submitTurn("session_one", { runId: "run_two", input: "Second" });
-  expect(second.turn.state).toBe("queued");
+  expect(second.turn).toMatchObject({ state: "steering", steer: { intoRunId: "run_one" } });
+  expect(store.readEvents("session_one").slice(-2).map((event) => event.type)).toEqual(["turn.accepted", "turn.steering"]);
   store.submitTurn("session_one", { runId: "run_three", input: "Third" });
 
   // Still exactly ONE turn executing: nothing may be claimed while one runs.
   expect(store.claimNextTurn("worker_two")).toBeUndefined();
 
+  // The worker delivers the first; the turn ends before the second lands.
+  store.ackSteer("session_one", "run_two", claimed.claim!.token);
   store.completeTurn("session_one", "run_one", claimed.claim!.token, { text: "done" });
-  // Oldest first, so a backlog runs in the order it was typed.
-  expect(store.claimNextTurn("worker_two")?.turn.runId).toBe("run_two");
+  const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+  expect(turns.get("run_two")?.state).toBe("steered");
+  // NOT LOST: the undelivered one is back to queued and runs as its own turn.
+  expect(turns.get("run_three")?.state).toBe("queued");
+  expect(store.claimNextTurn("worker_two")?.turn.runId).toBe("run_three");
 
-  // A queued follow-up can be withdrawn before it ever runs.
-  expect(store.stopTurn("session_one", "run_three").stopped).toBe(true);
+  // A message to an IDLE session is the next turn, as before.
+  const { store: idle } = readyStore();
+  expect(idle.submitTurn("session_one", { runId: "run_solo", input: "Hello" }).turn.state).toBe("queued");
+  // A claimed-but-not-yet-running turn is not steerable either: queued, not lost.
+  idle.claimTurn("session_one", "worker_one");
+  expect(idle.submitTurn("session_one", { runId: "run_early", input: "and this" }).turn.state).toBe("queued");
 });
 
 test("an ambiguous turn still blocks new work, and the backlog is bounded", () => {
@@ -1681,9 +1691,8 @@ test("a provider turn is born running under a claim, and a human message sent me
     { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "merging" } } },
   ]);
   // A human message while it runs goes where a message during any running
-  // turn goes: queued, and promotable into it.
-  store.submitTurn("session_one", { runId: "run_human", input: "also check the docs" });
-  expect(store.promoteTurn("session_one", "run_human")).toMatchObject({ state: "steering", steer: { intoRunId: turn.runId } });
+  // turn goes: straight into it.
+  expect(store.submitTurn("session_one", { runId: "run_human", input: "also check the docs" }).turn).toMatchObject({ state: "steering", steer: { intoRunId: turn.runId } });
   store.completeTurn("session_one", turn.runId, turn.claim!.token, { text: "merged" });
   const turns = new Map(store.turns("session_one").map((candidate) => [candidate.runId, candidate]));
   expect(turns.get(turn.runId)).toMatchObject({ state: "completed", resultText: "merged", origin: "provider" });
@@ -2230,7 +2239,7 @@ describe("subscriptions", () => {
 
     const [wake] = wakes(store, "session_one");
     expect(wake).toMatchObject({ origin: "session", state: "queued", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
-    expect(wake!.input.startsWith("[wake] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
+    expect(wake!.input.startsWith("[wake: completed] Session session_two \"the worker\" — turn run_w completed.")).toBe(true);
     expect(wake!.input).toContain("first 2000 chars");
     expect(wake!.input).not.toContain("x".repeat(2_500));
     expect(wake!.input).toContain('sessions_read(sessionId: "session_two")');
@@ -2277,6 +2286,54 @@ describe("subscriptions", () => {
     expect(store.subscriptionsFor("session_one")).toHaveLength(0);
     runTurn(store, "session_two", "run_3");
     expect(wakes(store, "session_one")).toHaveLength(1);
+  });
+
+  test("a second event from the same target REWRITES the waiting wake in place rather than queueing a twin", () => {
+    const { store } = pair();
+    store.subscribe("session_one", { targetSessionId: "session_two" });
+    // Park → the first wake. Then the same turn's approval is answered and it finishes → the second event.
+    runTurn(store, "session_two", "run_p", "park");
+    const [parked] = wakes(store, "session_one");
+    expect(parked!.input.startsWith("[wake: waiting]")).toBe(true);
+    expect(parked!.wakeReason).toMatchObject({ kind: "request_opened", requestId: "req_q" });
+
+    store.resolveRequest("session_two", "req_q", { decision: "accept", answers: { db: "postgres" } });
+    const token = store.turns("session_two").find((turn) => turn.runId === "run_p")!.claim!.token;
+    store.completeTurn("session_two", "run_p", token, { text: "done" });
+
+    const after = wakes(store, "session_one");
+    expect(after).toHaveLength(1);
+    expect(after[0]!.runId).toBe(parked!.runId);
+    expect(after[0]!.input.startsWith("[wake: completed]")).toBe(true);
+    expect(after[0]!.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_p" });
+    expect(after[0]!.wakeReason).not.toHaveProperty("requestId");
+    // The rewrite is announced as a replay of the same run, so a client redraws the chip.
+    const events = store.readEvents("session_one").filter((event) => event.type === "turn.accepted" && event.runId === parked!.runId);
+    expect(events).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ replayed: true });
+
+    // A wake the worker already CLAIMED is not rewritten: a fresh one queues behind it.
+    store.claimTurn("session_one", "worker_one");
+    runTurn(store, "session_two", "run_next");
+    expect(wakes(store, "session_one")).toHaveLength(2);
+  });
+
+  test("unsubscribe withdraws the wakes still waiting from that session, and leaves everything else", () => {
+    const { store } = pair();
+    store.createSession({ id: "session_three", projectId: "project_one", title: "another" });
+    const two = store.subscribe("session_one", { targetSessionId: "session_two" });
+    store.subscribe("session_one", { targetSessionId: "session_three" });
+    store.submitTurn("session_one", { runId: "run_mine", input: "my own message" });
+    runTurn(store, "session_two", "run_a");
+    runTurn(store, "session_three", "run_b");
+    expect(wakes(store, "session_one")).toHaveLength(2);
+
+    expect(store.unsubscribe(two.id, "session_one")).toBe(true);
+    const turns = store.turns("session_one");
+    expect(turns.find((turn) => turn.wakeReason?.sessionId === "session_two")!.state).toBe("discarded");
+    expect(turns.find((turn) => turn.wakeReason?.sessionId === "session_three")!.state).toBe("queued");
+    expect(turns.find((turn) => turn.runId === "run_mine")!.state).toBe("queued");
+    expect(store.readEvents("session_one").filter((event) => event.type === "turn.discarded")).toHaveLength(1);
   });
 
   test("a wake's own ending wakes nobody, so two sessions subscribed to each other cannot ping-pong", () => {

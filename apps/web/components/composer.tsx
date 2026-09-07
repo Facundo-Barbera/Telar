@@ -8,15 +8,11 @@
  * same radius — as every other field in Telar. The block-end addon is what puts
  * the toolbar INSIDE the box instead of under it.
  *
- * ENTER ALWAYS WORKS. While a turn is running the message is QUEUED rather than
- * refused, the box clears exactly as if it had sent, and the queue renders above
- * as ordinary lines. The UI never says "wait": the only mention of the mechanism
- * anywhere is the placeholder, and that is deliberate.
- *
- * The pending strip carries NO LIFECYCLE VOCABULARY by construction — no
- * "queued" badge, no spinner, no "sending…". A line that is executing has no
- * chip at all; it is in the transcript instead. Status words there would be
- * describing the machine when the human only wants their sentence back.
+ * ENTER ALWAYS WORKS. While a turn is running the message goes INTO that turn
+ * — the engine steers it, the way typing at a running Claude Code or Codex
+ * does, and the way T3 Code's composer does — and the box clears exactly as if
+ * it had sent. There is no queue strip: a message sent mid-turn appears in the
+ * transcript inside the run it joined. The UI never says "wait".
  *
  * SEND BECOMES STOP. One control in the corner, `↵` → spinner → `■`, never
  * moving and never duplicating: the thing you press to go is the thing you press
@@ -34,9 +30,7 @@ import {
   LayersIcon,
   MonitorIcon,
   PaperclipIcon,
-  PencilIcon,
   PlusIcon,
-  SendHorizontalIcon,
   SquareIcon,
   TriangleAlertIcon,
   XIcon,
@@ -93,14 +87,6 @@ const api = createEngineApi();
  *  end of a submit that also uploaded the first sixteen. */
 const MAX_ATTACHMENTS = 16;
 
-export type QueuedMessage = {
-  runId: string;
-  text: string;
-  /** `steering` while a send-now is in flight to the worker — the chip shows
-   *  a spinner and withdraws its edit/remove affordances, because a message
-   *  the provider may already hold cannot honestly be recalled. */
-  state?: "queued" | "steering";
-};
 
 /**
  * ONE VALUE FOR EVERY PROVIDER KNOB, and one place that derives it.
@@ -125,16 +111,13 @@ function activeDriverOf(session: Session | undefined, driver: ProviderDriverKind
 
 function placeholderFor(ready: boolean, busy: boolean, placeholder?: string): string {
   if (!ready) return "Waiting for the session…";
-  // The ONLY place the cockpit mentions that queueing exists.
-  if (busy) return "Enter queues a message…";
+  // A message mid-turn reaches the running agent; say so.
+  if (busy) return "Enter sends into the running turn…";
   // A CALLER MAY NAME ITS OWN. The default offers to "explore the project",
   // which the Spool's front door does not have one of.
   return placeholder ?? "Ask for changes, or explore the project…";
 }
 
-/** One waiting message. Ported from the donor's QueueChip — the numbered badge
- *  appears only when there is more than one, because "1." above a single line is
- *  a list marker for a list nobody is reading. */
 /**
  * The donor's add-context menu, now attached to a real file picker.
  *
@@ -251,94 +234,6 @@ function AttachmentChip({ file, onRemove }: { file: File; onRemove: () => void }
   );
 }
 
-function QueueChip({
-  item,
-  index,
-  onWithdraw,
-  onRecall,
-  onSendNow,
-  sendNowDisabled,
-  sendNowReason,
-}: {
-  item: QueuedMessage;
-  index?: number;
-  onWithdraw: (runId: string) => void;
-  onRecall?: (item: QueuedMessage) => void;
-  /** SEND NOW — push this message into the RUNNING turn instead of waiting.
-   *  Present only while a turn is running; the engine does the promoting. */
-  onSendNow?: (runId: string) => void;
-  sendNowDisabled?: boolean;
-  sendNowReason?: string;
-}) {
-  const steering = item.state === "steering";
-  return (
-    <div className="group rounded-lg bg-background/80 px-2 py-1.5 ring-1 ring-border">
-      <div className="flex items-center gap-2">
-        {steering ? (
-          <Spinner className="size-3.5 shrink-0 text-primary" />
-        ) : (
-          index !== undefined && (
-            <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[0.625rem] font-medium text-primary">
-              {index}
-            </span>
-          )
-        )}
-        {steering && <span className="shrink-0 text-[0.625rem] font-medium uppercase tracking-wide text-primary">sending</span>}
-        {/* THE TEXT ITSELF IS THE EDIT TARGET, as in the donor. A queued line is
-            a sentence you wrote thirty seconds ago and can still improve;
-            clicking it pulls it back into the box rather than making you
-            withdraw and retype. */}
-        {onRecall && !steering ? (
-          <button
-            type="button"
-            onClick={() => onRecall(item)}
-            title="Click to edit"
-            className="min-w-0 flex-1 truncate text-left text-sm text-foreground"
-          >
-            {item.text}
-          </button>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-left text-sm text-foreground" title={item.text}>
-            {item.text}
-          </span>
-        )}
-        {onSendNow && !steering && (
-          <button
-            type="button"
-            aria-label="Send this message into the running turn"
-            title={sendNowDisabled ? (sendNowReason ?? "Send now is unavailable.") : "The running turn hears it without stopping"}
-            disabled={sendNowDisabled}
-            onClick={() => onSendNow(item.runId)}
-            className="flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[0.6875rem] font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <SendHorizontalIcon className="size-3" />
-            Send now
-          </button>
-        )}
-        {onRecall && !steering && (
-          <button
-            type="button"
-            aria-label="Edit this queued message"
-            onClick={() => onRecall(item)}
-            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
-          >
-            <PencilIcon className="size-3.5" />
-          </button>
-        )}
-        {!steering && (
-          <button
-            type="button"
-            aria-label="Remove this queued message"
-            onClick={() => onWithdraw(item.runId)}
-            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-          >
-            <XIcon className="size-3.5" />
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
 
 /**
  * ONE CARD IN THE STACK OVER THE COMPOSER'S TOP EDGE — the question drawer's
@@ -411,7 +306,6 @@ export function Composer({
   pendingModel,
   busy,
   sending,
-  queued,
   runtimeMode,
   session,
   projectId,
@@ -425,11 +319,6 @@ export function Composer({
   onSubmit,
   onStop,
   onStopBackground,
-  onWithdraw,
-  onRecall,
-  onSendNow,
-  sendNowDisabled,
-  sendNowReason,
   onRuntimeMode,
   placeholder,
   onModelChange,
@@ -465,7 +354,6 @@ export function Composer({
   /** A turn is running or claimed. NOT a reason to disable anything. */
   busy: boolean;
   sending: boolean;
-  queued: QueuedMessage[];
   runtimeMode?: RuntimeMode;
   session?: Session;
   /**
@@ -517,18 +405,6 @@ export function Composer({
   /** Stop the lingering background tasks — the "N tasks still working" chip.
    *  Separate from `onStop` (which ends the turn and spares them). */
   onStopBackground: () => void;
-  onWithdraw: (runId: string) => void;
-  /** Pull a queued message back into the box to re-edit it. Withdrawing it
-   *  is the caller's job — the composer only asks for the text. */
-  onRecall?: (item: QueuedMessage) => void;
-  /** SEND NOW — promote a queued message into the RUNNING turn. Passed only
-   *  while something is running; the engine owns the promoting. */
-  onSendNow?: (runId: string) => void;
-  sendNowDisabled?: boolean;
-  /** Why the button is disabled, as its tooltip — "compacting", "a question
-   *  is waiting". The client mirrors the engine's own refusals so the two
-   *  tell one story rather than the client discovering a 409. */
-  sendNowReason?: string;
   onRuntimeMode: (mode: RuntimeMode) => void;
   /** Change what the NEXT turn runs with. Absent makes every picker read-only.
    *  Takes the WHOLE choice, never a fragment. */
@@ -540,8 +416,6 @@ export function Composer({
   onOpenChanges?: () => void;
 }) {
   const [armedRaw, setEscArmed] = useState(false);
-  /** Which queued line the composer is currently editing, if any. */
-  const [recalled, setRecalled] = useState<number>();
   const armedAt = useRef<number>(0);
   const editor = useRef<ComposerEditorHandle>(null);
   /**
@@ -975,31 +849,6 @@ export function Composer({
         if (draft.trim() && ready) onSubmit();
         return;
       }
-      /**
-       * ARROW-UP ON AN EMPTY BOX WALKS BACK THROUGH WHAT IS STILL WAITING.
-       *
-       * Queueing makes it easy to fire off a line and immediately think of a
-       * better way to say it. Without this the only recovery is to withdraw the
-       * chip and retype it from memory. Gated on an EMPTY composer so it can
-       * never eat a cursor movement inside text you are editing.
-       */
-      if (event.key === "ArrowUp" && !draft && queued.length > 0 && onRecall) {
-        event.preventDefault();
-        const index = recalled === undefined ? queued.length - 1 : Math.max(0, recalled - 1);
-        const item = queued[index];
-        if (item) {
-          setRecalled(index);
-          onRecall(item);
-        }
-        return;
-      }
-      // Escape abandons a recall without sending it, putting the line back.
-      if (event.key === "Escape" && recalled !== undefined) {
-        event.preventDefault();
-        setRecalled(undefined);
-        onDraftChange("");
-        return;
-      }
       if (event.key === "Escape" && busy) {
         event.preventDefault();
         if (escArmed && Date.now() - armedAt.current <= ESC_ARM_WINDOW_MS) {
@@ -1020,9 +869,6 @@ export function Composer({
       ready,
       busy,
       escArmed,
-      queued,
-      recalled,
-      onRecall,
       onDraftChange,
       onSubmit,
       onStop,
@@ -1151,28 +997,6 @@ export function Composer({
         <FreshGreeting projectId={projectId} {...(projectName ? { projectName } : {})} {...(greeting === undefined ? {} : { index: greeting })} />
       )}
 
-      {queued.length > 0 && (
-        <div className="mb-2 space-y-1.5 rounded-xl border border-primary/25 bg-primary/[0.04] p-2" aria-label="Queued messages">
-          {queued.length > 1 && (
-            <div className="flex items-center justify-between px-1.5 pt-0.5">
-              <span className="text-[0.6875rem] font-medium uppercase tracking-wide text-muted-foreground">{queued.length} waiting</span>
-            </div>
-          )}
-          {queued.map((item, index) => (
-            <QueueChip
-              key={item.runId}
-              item={item}
-              {...(queued.length > 1 ? { index: index + 1 } : {})}
-              onWithdraw={onWithdraw}
-              {...(onRecall ? { onRecall } : {})}
-              {...(onSendNow ? { onSendNow } : {})}
-              sendNowDisabled={Boolean(sendNowDisabled)}
-              {...(sendNowReason ? { sendNowReason } : {})}
-            />
-          ))}
-        </div>
-      )}
-
       <BackgroundPresence count={backgroundTasks} onStop={onStopBackground} />
 
       {/* WHY IT DID NOT HAPPEN, above the box rather than in a toast — the
@@ -1247,8 +1071,8 @@ export function Composer({
             rest: it lifts the composer off the conversation without a border
             heavy enough to read as a division. */}
         {/* RELATIVE, so the completion menu can hang off the box's top edge
-            rather than off the whole composer column — the queued strip and the
-            greeting live in that column and would push the menu around. */}
+            rather than off the whole composer column — the greeting lives in
+            that column and would push the menu around. */}
         <div className="relative">
         {/* ONE SLOT, WRITTEN AS ONE EXPRESSION. Both panels are
             `bottom-full`, so rendering them as two independent conditions

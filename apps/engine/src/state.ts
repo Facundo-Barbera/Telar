@@ -251,11 +251,18 @@ function wakeMessage(
   turn: Turn,
   context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
 ): string {
+  /**
+   * THE KIND LEADS. A queue strip truncates a wake to its first few words, and
+   * four wakes that all began `[wake] Session session_… "title"` read as four
+   * copies of one message — which is what a person saw when a child parked an
+   * approval and then finished: two rows, apparently identical, actually two
+   * different facts. The verb up front makes them tell apart at a glance.
+   */
   const who = `Session ${target.id} "${target.title}"`;
   const lines: string[] = [];
   switch (kind) {
     case "turn_completed": {
-      lines.push(`[wake] ${who} — turn ${turn.runId} completed.`);
+      lines.push(`[wake: completed] ${who} — turn ${turn.runId} completed.`);
       const text = (context.resultText ?? "").trim();
       if (text) {
         const clipped = text.length > MAX_WAKE_RESULT_CHARS;
@@ -266,14 +273,14 @@ function wakeMessage(
       break;
     }
     case "turn_failed":
-      lines.push(`[wake] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code}): ${context.failure.message}` : "."}`);
+      lines.push(`[wake: failed] ${who} — turn ${turn.runId} FAILED${context.failure ? ` (${context.failure.code}): ${context.failure.message}` : "."}`);
       break;
     case "turn_stopped":
-      lines.push(`[wake] ${who} — turn ${turn.runId} was stopped.`);
+      lines.push(`[wake: stopped] ${who} — turn ${turn.runId} was stopped.`);
       break;
     case "request_opened": {
       const request = context.request!;
-      lines.push(`[wake] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${requestTitle(request.detail)}`);
+      lines.push(`[wake: waiting] ${who} — is WAITING on a request (request ${request.id}, kind ${request.detail.kind}): ${requestTitle(request.detail)}`);
       if (request.detail.kind === "user_input") {
         for (const field of request.detail.fields) {
           const choices = field.choices && field.choices.length > 0 ? ` [choices: ${field.choices.join(" | ")}]` : "";
@@ -5241,17 +5248,22 @@ export class EngineStore {
       return { turn: structuredClone(known), replayed: true };
     }
     /**
-     * A FOLLOW-UP MAY BE QUEUED WHILE A TURN RUNS. This used to be a conflict,
-     * which meant a human had to sit and wait for a long turn before they could
-     * say the next thing — the single most common way to lose a thought.
+     * A MESSAGE WHILE A TURN RUNS IS A STEER, not a queued follow-up. This
+     * went through three shapes: a conflict (the human waited), then a queue
+     * with a "Send now" button (the human chose), and now what T3 Code does
+     * and what every running CLI does when you type at it — the words go
+     * into the live turn the moment they arrive, and the same turn continues.
+     * The steer is attempted at the bottom of this method; the cases where it
+     * cannot happen (nothing running, the provider compacting, a claim not yet
+     * marked running) leave the turn `queued`, where the worker picks it up as
+     * the next turn. So `queued` is the fallback, never the plan.
      *
      * Only ONE turn executes at a time and that has not changed: `claimTurn`
      * refuses while any turn is claimed or running, and picks the OLDEST queued
-     * one, so a backlog drains in the order it was typed. Provider continuity
-     * still works because `resumeCursorFor` reads the last COMPLETED turn, and
-     * the next claim happens after the previous turn settles.
+     * one. The cap below counts everything waiting — queued or mid-steer — so
+     * a runaway client cannot grow the queue file without bound.
      */
-    const queued = queue.turns.filter((turn) => turn.state === "queued").length;
+    const queued = queue.turns.filter((turn) => turn.state === "queued" || turn.state === "steering").length;
     if (queued >= MAX_QUEUED_TURNS) {
       throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
     }
@@ -5342,7 +5354,31 @@ export class EngineStore {
     // v1 emitted only `{ sequence }` here, which is why the client had to fetch
     // a snapshot to learn the prompt. The whole turn rides the event now.
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
+    // A compaction is a gesture on the session, not words for the running
+    // model; it always waits its turn.
+    if (kind !== "compact") {
+      const steered = this.steerIfRunning(sessionId, turn.runId);
+      if (steered) return { turn: steered, replayed: false };
+    }
     return { turn: structuredClone(turn), replayed: false };
+  }
+
+  /**
+   * The steer half of `submitTurn`: when a turn is RUNNING, the just-accepted
+   * turn goes straight into it. `promoteTurn` holds the rules (a claim that
+   * is running, no compaction in flight) and its refusals are exactly the
+   * cases that should fall back to `queued`, so they are swallowed here and
+   * nothing else is.
+   */
+  private steerIfRunning(sessionId: string, runId: string): Turn | undefined {
+    const running = this.readQueue(sessionId).turns.some((candidate) => candidate.state === "running" && candidate.claim);
+    if (!running) return undefined;
+    try {
+      return this.promoteTurn(sessionId, runId);
+    } catch (error) {
+      if (error instanceof EngineStateError && error.code === "conflict") return undefined;
+      throw error;
+    }
   }
 
   claimTurn(sessionId: string, workerId: string): Turn | undefined {
@@ -5720,7 +5756,10 @@ export class EngineStore {
   }
 
   /**
-   * SEND NOW: promote a queued turn into the RUNNING one.
+   * Promote a queued turn into the RUNNING one. `submitTurn` calls this for
+   * every message that arrives mid-turn; the HTTP route still exposes it for
+   * a turn that fell back to `queued` (compaction, a claim not yet running)
+   * and can be sent now that the moment has passed.
    *
    * `promoteTurn` is a promise of NOT-LOSING, never of delivery: the turn goes
    * `steering`, the worker hears about it on its next heartbeat, and if the
@@ -6004,8 +6043,12 @@ export class EngineStore {
       (each) => each.id === subscriptionId && (subscriberSessionId === undefined || each.subscriberSessionId === subscriberSessionId),
     );
     if (index < 0) return false;
-    all.splice(index, 1);
+    const [removed] = all.splice(index, 1);
     this.writeSubscriptions(all);
+    // "Stop waking me" includes the wakes already waiting: an unsubscribe that
+    // left fourteen queued wakes to run one by one stopped nothing a person
+    // could see. Only QUEUED ones go; a running wake is the worker's.
+    this.discardQueuedWakes(removed!.subscriberSessionId, removed!.targetSessionId);
     return true;
   }
 
@@ -6039,9 +6082,12 @@ export class EngineStore {
    * request parks — after the target's own queue and events are written, so
    * a wake that fails can never fail the transition that caused it.
    *
-   * A WAKE IS A QUEUED TURN ON THE SUBSCRIBER, through `submitTurn` and no
-   * other path: it waits behind whatever the subscriber is running, the
-   * worker claims it like any message, and the transcript draws it. There is
+   * A WAKE IS A TURN ON THE SUBSCRIBER, through `submitTurn` and no other
+   * path — which means it follows the same rule as a typed message: STEERED
+   * into a running turn the moment it arrives, or claimed as the next turn
+   * when the subscriber is idle. An orchestrator mid-thought hears that its
+   * child finished while it is still thinking about that child, rather than
+   * fourteen turns later. There is
    * no event bus in this engine to ride instead, and `openProviderTurn` is
    * for a process that is already talking — a subscriber sitting idle has no
    * such process to inject into.
@@ -6096,13 +6142,28 @@ export class EngineStore {
         runId: turn.runId,
         ...(context.request ? { requestId: context.request.id } : {}),
       };
+      const input = wakeMessage(kind, target, turn, context);
       try {
-        this.submitTurn(subscriberId, {
-          runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
-          input: wakeMessage(kind, target, turn, context),
-          origin: "session",
-          wakeReason,
-        });
+        /**
+         * ONE QUEUED WAKE PER CHILD TURN. A child that parks an approval,
+         * then gets it, then finishes, produced two queued turns on the
+         * parent about the same run — and both would have run as full turns,
+         * the first announcing a state already superseded. The newest fact
+         * about THAT RUN wins: a wake still waiting for it is REWRITTEN in
+         * place, keeping its position in the queue. Different runs keep
+         * separate wakes — a failure on one turn is not erased by the next
+         * turn finishing. A wake already claimed or running is not touched;
+         * it is the worker's now.
+         */
+        const coalesced = this.coalesceQueuedWake(subscriberId, targetSessionId, input, wakeReason);
+        if (!coalesced) {
+          this.submitTurn(subscriberId, {
+            runId: `run_${crypto.randomUUID().replaceAll("-", "")}`,
+            input,
+            origin: "session",
+            wakeReason,
+          });
+        }
         if (subscription.once) remove(subscription);
       } catch (error) {
         // A full backlog or an ambiguous turn on the subscriber is that
@@ -6119,6 +6180,46 @@ export class EngineStore {
       }
     }
     if (changed) this.writeSubscriptions(all);
+  }
+
+  /** Rewrite a still-queued wake about the same child run with newer words. True when one was found. */
+  private coalesceQueuedWake(subscriberId: string, targetSessionId: string, input: string, wakeReason: WakeReason): boolean {
+    const queue = this.readQueue(subscriberId);
+    const waiting = queue.turns.find(
+      (turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId && turn.wakeReason.runId === wakeReason.runId,
+    );
+    if (!waiting) return false;
+    const at = this.now();
+    waiting.input = input;
+    waiting.wakeReason = wakeReason;
+    waiting.updatedAt = at;
+    this.writeQueue(subscriberId, queue);
+    this.touchSession(subscriberId, at);
+    // The strip redraws from `turn.accepted`; re-announcing the same run id
+    // with `replayed: true` is how a client learns the words changed.
+    this.appendEvent(subscriberId, { type: "turn.accepted", turn: structuredClone(waiting), replayed: true }, waiting.runId);
+    return true;
+  }
+
+  /**
+   * Withdraw every QUEUED wake from `targetSessionId` on `subscriberId` — what
+   * an unsubscribe means when wakes have already piled up. Turns already
+   * claimed or running stay; they are the worker's. Returns how many went.
+   */
+  private discardQueuedWakes(subscriberId: string, targetSessionId: string): number {
+    const queue = this.readQueue(subscriberId);
+    const at = this.now();
+    const dropped = queue.turns.filter((turn) => turn.state === "queued" && turn.origin === "session" && turn.wakeReason?.sessionId === targetSessionId);
+    if (dropped.length === 0) return 0;
+    for (const turn of dropped) {
+      turn.state = "discarded";
+      turn.completedAt = at;
+      turn.updatedAt = at;
+    }
+    this.writeQueue(subscriberId, queue);
+    this.touchSession(subscriberId, at);
+    for (const turn of dropped) this.appendEvent(subscriberId, { type: "turn.discarded" }, turn.runId);
+    return dropped.length;
   }
 
   requests(sessionId: string): EngineRequest[] {

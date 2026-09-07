@@ -108,6 +108,9 @@ test("the sessions toolkit registers under the SAME one server, and only when th
       throw new Error("this test does not read status");
     },
     stop: async () => ({ stopped: false }),
+    settle: async () => {
+      throw new Error("this test does not settle");
+    },
     diff: async () => {
       throw new Error("this test does not diff");
     },
@@ -137,6 +140,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_read",
     "sessions_status",
     "sessions_stop",
+    "sessions_settle",
     "sessions_diff",
     "sessions_subscribe",
     "sessions_unsubscribe",
@@ -242,7 +246,7 @@ test("the worker cannot archive, delete or accept anything — the client it hol
   const { sawCapability } = await turnWith(async (sessions) => {
     const surface = Object.keys(sessions).sort();
     expect(surface).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "diff", "list", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {
       expect(surface).not.toContain(forbidden);
@@ -286,7 +290,7 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   const wake = turns.find((turn) => turn.origin === "session");
   expect(wake).toBeDefined();
   expect(wake!.wakeReason).toEqual({ kind: "turn_completed", sessionId: made!.id, runId: "run_made" });
-  expect(wake!.input).toContain("[wake]");
+  expect(wake!.input).toContain("[wake: completed]");
   expect(wake!.input).toContain("all done here");
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.

@@ -25,6 +25,8 @@ type WorkerClient = Pick<
   | "openProviderTurn"
   | "reportSessionTasks"
   | "ackSteer"
+  // Shelve/unshelve only — never the whole `updateSession`. See `settleSession`.
+  | "settleSession"
   // The spool's verbs. THE WORKER STILL HOLDS NO STORE HANDLE — these go
   // back over the same loopback socket as everything else here, which is what
   // makes the toolkit identical in the embedded worker and the out-of-process
@@ -513,6 +515,7 @@ export class EngineWorker {
           return { session: snapshot.session, turns: snapshot.turns };
         },
         stop: (id) => this.options.client.stopTurn(id),
+        settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
         diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
         unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,

@@ -935,15 +935,14 @@ describe("the room is state, and the Lobby is the landing — never seeded from 
     /**
      * NEW LAW, 2026-08-17: no `[room:` is ever VISIBLE. The strip is a
      * display-time replace of the known shape — one bracketed line, then a
-     * newline — applied where turns are shown (the transcript's SessionTurn
-     * and the composer's queued strip), never to what is stored or sent.
+     * newline — applied where turns are shown (the transcript's SessionTurn;
+     * there is no queued strip any more — a message sent mid-turn steers into
+     * it and renders inside that run), never to what is stored or sent.
      */
     const chat = code(read("master-chat.tsx"));
     expect(chat).toContain("const ROOM_PREFIX = /^\\[room: [^\\n]*\\]\\n/");
     // The transcript site: the displayed turn's prompt, stripped in place.
     expect(chat).toContain("prompt: turn.prompt.replace(ROOM_PREFIX");
-    // The queued strip: same words the transcript would show, same strip.
-    expect(chat).toContain("shownPrompt(turn.prompt)");
     // And the strip must not touch the send path — the prefix is applied
     // AFTER the draft leaves the box, exactly as before.
     expect(chat).not.toContain("shownPrompt(text");
