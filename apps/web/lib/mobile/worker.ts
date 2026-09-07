@@ -1,7 +1,7 @@
 import { relayConfig, relayDelivery, revokeRelayDevice } from "./relay";
 import { engineClient } from "../engine/engine-server";
 import { readRemote } from "../remote/store";
-import { activityDelivery, notification, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type PushRecord, type SessionSignal } from "./push";
+import { AUTOMATIC_ACTIVITY, automaticSessions, automaticActivityDelivery, activityDelivery, notification, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type PushRecord, type SessionSignal } from "./push";
 
 /** Fold after successful delivery only. First sight baselines history, not a burst of old alerts. */
 export async function deliverRecord(record: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<number>, now = Date.now() / 1000): Promise<PushRecord | undefined> {
@@ -25,7 +25,26 @@ export async function deliverRecord(record: PushRecord, sessions: SessionSignal[
   }
   const ids = new Set(sessions.map(s => s.id));
   for (const id of Object.keys(next.seen)) if (!ids.has(id)) delete next.seen[id];
-  for (const follow of record.activities) {
+  const active = automaticSessions(sessions);
+  const automatic = record.activities.filter(a => a.sessionId === AUTOMATIC_ACTIVITY);
+  const aggregateSignal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)])]);
+  if (!active.length) next.automaticStartedAt = undefined;
+  if (record.liveActivities && active.length && !automatic.length && !record.automaticStartedAt && record.pushToStartToken) {
+    const status = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
+    if (status === 200) next.automaticStartedAt = now;
+    // Expiration of a start token must never unregister ordinary phone notifications.
+    if (status === 410) next.pushToStartToken = undefined;
+  }
+  for (const follow of automatic) {
+    if (active.length && record.liveActivities) next.automaticStartedAt = follow.startedAt;
+    if (aggregateSignal === record.automaticSignal && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
+    const status = await safeSend(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now));
+    if (status === 410 || (status === 200 && (!active.length || !record.liveActivities))) {
+      next.activities = next.activities.filter(a => a.token !== follow.token);
+      delete next.activitySent[follow.token];
+    } else if (status === 200) { next.activitySent[follow.token] = now; next.automaticSignal = aggregateSignal; }
+  }
+  for (const follow of record.activities.filter(a => a.sessionId !== AUTOMATIC_ACTIVITY)) {
     const session = sessions.find(s => s.id === follow.sessionId);
     const changed = session && record.seen[session.id] !== signalKey(session);
     if (!changed && now - (record.activitySent[follow.token] ?? 0) < 60) continue;
@@ -69,6 +88,16 @@ export function startMobilePushWorker(): void {
           if (index >= 0) {
             if (result) current[index] = result; else current.splice(index, 1);
             writePushRecords(current);
+          } else if (result?.automaticStartedAt) {
+            // A push-start wakes the app, whose registration may arrive before
+            // APNs returns. Retain only the start receipt across that refresh;
+            // never overwrite newer preferences, subscriptions or alert state.
+            const refreshed = current.find(r => r.deviceId === record.deviceId && r.topic === record.topic
+              && r.liveActivities && r.pushToStartToken === record.pushToStartToken);
+            if (refreshed && !refreshed.automaticStartedAt) {
+              refreshed.automaticStartedAt = result.automaticStartedAt;
+              writePushRecords(current);
+            }
           }
         }
       }

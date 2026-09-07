@@ -202,6 +202,22 @@ const DsWatchViolated = event("ds.watch.violated", {
   detail: z.string().optional(),
 });
 
+// ── latex: the session's compiles ──────────────────────────────────────────
+const LatexCompileStarted = event("latex.compile.started", { path: z.string() });
+/**
+ * COUNTS AND ONE SENTENCE, never the log and never the diagnostics array: the
+ * journal stays a journal. The surface reads full diagnostics through the
+ * session's latex door.
+ */
+const LatexCompileFinished = event("latex.compile.finished", {
+  path: z.string(),
+  ok: z.boolean(),
+  pdfPath: z.string().optional(),
+  errors: z.number().int(),
+  warnings: z.number().int(),
+  firstError: z.string().optional(),
+});
+
 /** Recoverable. The turn continues. */
 const RuntimeWarning = event("runtime.warning", { message: z.string() });
 /** Not recoverable by the engine, but not necessarily fatal to the session. */
@@ -251,6 +267,8 @@ export const EngineEvent = z.discriminatedUnion("type", [
   KernelStateChanged,
   NotebookCellOutput,
   DsWatchViolated,
+  LatexCompileStarted,
+  LatexCompileFinished,
   RuntimeWarning,
   RuntimeError,
 ]);

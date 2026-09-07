@@ -392,6 +392,28 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         });
         break;
       }
+      case "latex.compile.finished":
+        /**
+         * ONE ROW PER COMPILE — the counts and the first error, never the
+         * log; the LaTeX surface holds the full diagnostics. A compile with
+         * no turn (pressed on the panel) stays off the transcript.
+         */
+        if (turn) {
+          turn.items.push({
+            id: `latex_${event.id}`,
+            runId: event.runId!,
+            sessionId: event.sessionId,
+            status: event.ok ? "completed" : "failed",
+            startedAt: event.at,
+            completedAt: event.at,
+            detail: event.ok
+              ? { type: "unknown", label: `Compiled ${event.path}${event.warnings ? ` — ${event.warnings} warning${event.warnings === 1 ? "" : "s"}` : ""}` }
+              : { type: "error", error: { message: `Compile of ${event.path} failed — ${event.errors} error${event.errors === 1 ? "" : "s"}${event.firstError ? `, first: ${event.firstError}` : ""}` } },
+            streamedText: "",
+            openedBy: event.id,
+          });
+        }
+        break;
       case "ds.watch.violated":
         if (turn) {
           turn.items.push({

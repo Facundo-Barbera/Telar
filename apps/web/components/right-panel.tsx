@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   CircleDotIcon,
   FlaskConicalIcon,
+  SigmaIcon,
   NotebookIcon,
   TableIcon,
   FileDiffIcon,
@@ -56,6 +57,7 @@ import { NotebookSurface } from "@/components/session/notebook-surface";
 import { PdfSurface } from "@/components/session/pdf-surface";
 import { TableSurface } from "@/components/session/table-surface";
 import { DataSurface } from "@/components/session/data-surface";
+import { LatexSurface } from "@/components/session/latex-surface";
 import { ImageLightbox } from "@/components/session/image-lightbox";
 import { fileKind } from "@/lib/file-kinds";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
@@ -131,12 +133,23 @@ const SURFACES = [
    * out of the chooser and the empty state when `dataScience` is off.
    */
   { id: "data", label: "Data", icon: FlaskConicalIcon, blurb: "Plots, variables and the Python environment" },
+  /**
+   * THE LATEX SURFACE, the same deal as "data": present only on a project
+   * that opted in, one tab (compile status, structured errors, the log tail —
+   * session/latex-surface.tsx). The PDF itself is a FILE tab, not this
+   * surface: the compile writes it beside its source and "Open PDF" routes
+   * through `panelTabForPath` like any other file.
+   */
+  { id: "latex", label: "LaTeX", icon: SigmaIcon, blurb: "Compile status, errors and the log" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
 
 /** Surfaces that exist only when the project opted into data science. */
 const DS_SURFACES: ReadonlySet<string> = new Set(["data"]);
+
+/** Surfaces that exist only when the project opted into LaTeX. */
+const LATEX_SURFACES: ReadonlySet<string> = new Set(["latex"]);
 
 /** The two tabs "data" replaced. A layout saved by the previous build names
  *  them; they restore as the one tab rather than vanishing. */
@@ -146,8 +159,8 @@ export function migratePanelTab(value: string): string {
   return LEGACY_DS_TABS.has(value) ? "data" : value;
 }
 
-function surfacesFor(dataScience: boolean): typeof SURFACES[number][] {
-  return SURFACES.filter((surface) => dataScience || !DS_SURFACES.has(surface.id));
+function surfacesFor(dataScience: boolean, latex = false): typeof SURFACES[number][] {
+  return SURFACES.filter((surface) => (dataScience || !DS_SURFACES.has(surface.id)) && (latex || !LATEX_SURFACES.has(surface.id)));
 }
 
 /**
@@ -310,6 +323,7 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => pullPanelNumber(tab) !== undefined,
   (tab) => tab === "files",
   (tab) => tab === "data",
+  (tab) => tab === "latex",
 ];
 
 /** Which numbers are already open, so a list row can say so instead of opening a
@@ -1037,6 +1051,8 @@ export function PanelSurface({
   if (pdfPath !== undefined)
     return <PdfSurface path={pdfPath} {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} />;
   if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
+  if (tab === "latex")
+    return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (
@@ -1121,9 +1137,11 @@ function PanelEmptyState({
   onOpenBrowser,
   browserStart = { status: "idle" },
   dataScience = false,
+  latex = false,
 }: {
   onOpen: (tab: PanelTab) => void;
   dataScience?: boolean;
+  latex?: boolean;
   browser?: BrowserState;
   /** Absent when the engine cannot start a browser here — the affordance
    *  hides rather than offering a launch that would land beside the worker's
@@ -1140,7 +1158,7 @@ function PanelEmptyState({
         <h2 className="mt-3 text-center font-heading text-sm font-medium">Open a surface</h2>
         <p className="mt-1 text-center text-xs leading-relaxed text-muted-foreground">Choose what to keep beside the conversation.</p>
         <div className="mt-4 flex flex-col gap-1">
-          {surfacesFor(dataScience).map((candidate) => (
+          {surfacesFor(dataScience, latex).map((candidate) => (
             <button
               key={candidate.id}
               type="button"
@@ -1404,11 +1422,14 @@ export function RightPanel({
   onClose,
   open = true,
   dataScience = false,
+  latex = false,
 }: {
   active?: TurnState;
   /** The project opted into data science — shows Plots and Variables, and
    *  opens .ipynb and CSV files in their own surfaces. */
   dataScience?: boolean;
+  /** The project opted into LaTeX — shows the compile surface. */
+  latex?: boolean;
   /** Absent until the first message creates the session. The browser and git
    *  surfaces are the two that need it — everything else folds records the
    *  cockpit already holds. */
@@ -1496,7 +1517,7 @@ export function RightPanel({
   /** Everything openable that is not already open — fixed surfaces first, then
    *  one entry per browser page the engine currently reports. */
   const openable: { id: PanelTab; label: string; icon: typeof BotIcon }[] = [
-    ...surfacesFor(dataScience).filter((surface) => !tabs.includes(surface.id)).map((surface) => ({
+    ...surfacesFor(dataScience, latex).filter((surface) => !tabs.includes(surface.id)).map((surface) => ({
       id: surface.id as PanelTab,
       label: surface.label,
       icon: surface.icon,
@@ -1734,7 +1755,7 @@ export function RightPanel({
             {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
           </>
         ) : (
-          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} dataScience={dataScience} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
+          <PanelEmptyState onOpen={onOpenTab} browserStart={browserStart} dataScience={dataScience} latex={latex} {...(browser ? { browser } : {})} {...(onOpenBrowser ? { onOpenBrowser } : {})} />
         )}
       </div>
     </aside>

@@ -190,6 +190,13 @@ export const WorkerClaim = z.object({
    */
   dataScience: z.object({ pythonPath: z.string().min(1) }).optional(),
   /**
+   * THE PROJECT OPTED INTO LATEX, resolved at claim time like `dataScience`
+   * above: present means the `latex_*` toolkit registers for this turn. The
+   * kind rides along so tool descriptions can be honest about how packages
+   * behave (tectonic fetches automatically; TeX Live wants tlmgr).
+   */
+  latex: z.object({ kind: z.enum(["tectonic", "texlive"]) }).optional(),
+  /**
    * The configured login this session runs as, RESOLVED — sensitive environment
    * values included, unlike every other read of the registry.
    *

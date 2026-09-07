@@ -115,9 +115,11 @@ Settings → Notifications & activities asks for notification permission only
 when the person turns notifications on. Attention and failures are enabled;
 completion alerts and session-title previews are separate options. Titles are
 hidden in notification and Live Activity payloads by default. A conversation's
-menu can mute alerts or start/stop following a running session. Following creates
-a Lock Screen Live Activity and the compact, minimal, and expanded Dynamic
-Island presentations where supported. Stale activities explicitly say they
+menu can mute alerts. Automatic Live Activities are enabled by default, with a
+separate Settings toggle. Each Mac starts one Lock Screen / Dynamic Island card
+when agent work is active, including while the phone app is in the background.
+The card aggregates active sessions, prioritizes work needing input, and ends
+when that Mac has no active work. There is no per-session Follow step. Stale activities explicitly say they
 are waiting for an update. Finished activities dismiss after five minutes.
 
 The provisioned Mac sends **host → Cloudflare relay → APNs → iPhone**.
@@ -167,7 +169,7 @@ awake with the cockpit running. The Mac makes outbound requests to the relay
 
 The worker samples the engine's live-session summary every five seconds,
 baselines existing history, checkpoints successful alerts, retries delivery
-failures with exponential backoff (up to five minutes), and refreshes followed activities at most once per minute unless
+failures with exponential backoff (up to five minutes), and refreshes active cards at most once per minute unless
 state changes. It checks device revocation and registration changes again
 before sending. This is **snapshot-based**, so a transient state that appears
 and disappears between reads can be missed; this is not a durable engine-event
@@ -215,9 +217,13 @@ xcodebuild -project apps/ios/TelarMobile.xcodeproj -scheme TelarMobileUI \
   -derivedDataPath /tmp/telar-mobile-tests CODE_SIGNING_ALLOWED=NO test
 ```
 
-The Live Activity UI smoke test uses `-localActivityPreview 1` alongside the
-loopback fixture flag. This Debug-only mode requests a **local** activity
-without a push token, so unsigned simulator builds can verify its lifecycle.
-The production path always requests a push-enabled activity. Apple rejects
-push-enabled creation when a build has no signed APS environment; do not count
-the local smoke test as APNs delivery acceptance.
+Automatic background starts are verified through host/relay payload tests; a
+signed phone is needed to verify Apple creating and updating the card.
+
+Automatic activity starts use Apple's ActivityKit push-to-start token, separate
+from both the phone notification token and each card's update token. App startup
+observes incoming activities and registers their update tokens with the paired
+Mac, including on an APNs background launch. Open the new app once to register
+these tokens. Updates still require the phone to reach the Mac for token
+registration, and Apple controls Live Activity delivery and background budgets.
+A dismissed card is not recreated during the same uninterrupted work period.

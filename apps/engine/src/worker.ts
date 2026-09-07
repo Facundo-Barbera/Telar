@@ -4,6 +4,7 @@ import os from "node:os";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { clientDsCapability } from "./ds/client-capability";
 import { createDisplayCapability } from "./display/capability";
+import { clientLatexCapability } from "./latex/client-capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
@@ -64,6 +65,7 @@ type WorkerClient = Pick<
   // that tried would not compile.
   | "liveSessions"
   | "ds"
+  | "latex"
   | "createSession"
   | "submitTurn"
   | "events"
@@ -652,6 +654,8 @@ export class EngineWorker {
          * claim means absent here, and the driver registers no toolkit.
          */
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
+        // The compile door, same shape: HTTP to the daemon, which owns the jobs.
+        ...(claim.latex ? { latex: clientLatexCapability(this.options.client, sessionId) } : {}),
         /**
          * `display_open` — show the human one file in the cockpit. The fence
          * is this turn's own checkout; the report rides the same observation
