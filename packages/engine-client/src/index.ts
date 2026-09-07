@@ -87,6 +87,12 @@ import {
   type DataSciencePreflight,
   type DataScienceRequirementsSource,
   type DataScienceToolchain,
+  type LatexBootstrap,
+  type LatexConfig,
+  type LatexDistributions,
+  type LatexJob,
+  type LatexPackagesAnswer,
+  type LatexToolchain,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -319,8 +325,8 @@ export class EngineClient {
     return this.request("POST", "/v2/projects", input);
   }
 
-  /** Move a project's opt-in switches. `dataScience: null` turns it off. */
-  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null }): Promise<{ project: Project }> {
+  /** Move a project's opt-in switches. `dataScience: null` / `latex: null` turn them off. */
+  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Promise<{ project: Project }> {
     return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);
   }
 
@@ -368,6 +374,40 @@ export class EngineClient {
   /** Probe one interpreter, venv or conda env directory a person named. */
   dataScienceProbe(projectId: string, path: string): Promise<{ probe: DataSciencePreflight & { relativePath?: string; root?: string; manager?: DataScienceManager } }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path });
+  }
+
+  /** Every TeX distribution the machine carries plus the checkout's main-file
+   *  candidates. Spawns `--version` probes; call it from a page, never a poll. */
+  latexDistributions(projectId: string): Promise<LatexDistributions> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/latex/distributions`);
+  }
+
+  /** Installed TeX packages — or the sentence that this manager self-serves. */
+  latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/latex/packages`);
+  }
+
+  /** `tlmgr install`/`remove`, as a job. Refused for tectonic projects. */
+  latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/latex/packages`, input);
+  }
+
+  /** Install Tectonic or TinyTeX — machine-wide, as a job. */
+  latexBootstrap(request: LatexBootstrap): Promise<{ jobId: string }> {
+    return this.request("POST", "/v2/latex/bootstrap", request);
+  }
+
+  latexToolchain(fresh = false): Promise<{ toolchain: LatexToolchain }> {
+    return this.request("GET", `/v2/latex/toolchain${fresh ? "?fresh=1" : ""}`);
+  }
+
+  /** A latex job's status and the log lines after `after`. */
+  latexJob(jobId: string, after = 0): Promise<{ job: LatexJob }> {
+    return this.request("GET", `/v2/latex/jobs/${encodeURIComponent(jobId)}?after=${after}`);
+  }
+
+  latexCancelJob(jobId: string): Promise<Record<string, never>> {
+    return this.request("DELETE", `/v2/latex/jobs/${encodeURIComponent(jobId)}`);
   }
 
   /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every
@@ -1535,6 +1575,15 @@ export class EngineClient {
    */
   ds<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/ds/${method}`, body ?? {});
+  }
+
+  /**
+   * ONE DOOR TO THE SESSION'S LATEX, shaped like `ds` above: `method` is the
+   * verb — `compile`, `status`, `log`… — always a POST. The daemon's
+   * `storeLatexCapability` is the implementation; this is its wire.
+   */
+  latex<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/latex/${method}`, body ?? {});
   }
 
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */

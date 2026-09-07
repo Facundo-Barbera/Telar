@@ -904,6 +904,8 @@ export function SessionCockpit({
   const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
   /** The project's data-science opt-in, read with its name. Off until known. */
   const [dataScience, setDataScience] = useState(false);
+  /** The project's LaTeX opt-in — same lifecycle. */
+  const [latex, setLatex] = useState(false);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const syncSession = useRef(sessionId);
@@ -1423,6 +1425,7 @@ export function SessionCockpit({
         const found = result.projects.find((project) => project.id === projectId);
         setProjectName(found?.name);
         setDataScience(found?.dataScience?.enabled === true);
+        setLatex(found?.latex?.enabled === true);
       },
       () => undefined,
     );
@@ -2178,6 +2181,7 @@ export function SessionCockpit({
           onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
           onClose={() => updatePanel((current) => ({ ...current, open: false }))}
           dataScience={dataScience}
+          latex={latex}
         />
       )}
     </main>

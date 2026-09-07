@@ -35,6 +35,8 @@ import {
   Project as ProjectSchema,
   DataScienceConfig as DataScienceConfigSchema,
   type DataScienceConfig,
+  LatexConfig as LatexConfigSchema,
+  type LatexConfig,
   Session as SessionSchema,
   Subscription as SubscriptionSchema,
   Task as TaskSchema,
@@ -234,6 +236,12 @@ import type { DsCapability, EnvironmentRow } from "./ds/capability";
 import { DsFiles } from "./ds/state-files";
 import { NOTEBOOK_MAX_BYTES, storeDsCapability } from "./ds/store-capability";
 import { windowCsv, type TableWindow } from "./ds/table";
+import { findLatexBinary, latexToolchainStatus, type LatexToolchain } from "./latex/toolchain";
+import { planLatexBootstrap, type LatexBootstrapRequest } from "./latex/bootstrap";
+import { listTexPackages, TECTONIC_PACKAGES_NOTE, texInstallSteps, texRemoveSteps, type LatexPackagesAnswer } from "./latex/packages";
+import type { LatexCapability, CompileStatus as LatexCompileMemory } from "./latex/capability";
+import { storeLatexCapability } from "./latex/store-capability";
+import type { ResolvedLatex } from "./latex/compile";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
@@ -1330,6 +1338,60 @@ export class EngineStore {
     const pythonPath = resolvePythonPath(session.workspace.path, config.python.path);
     if (!fs.existsSync(pythonPath)) return undefined;
     return { pythonPath };
+  }
+
+  /** Compile and tlmgr jobs — a SIBLING runner, not `dsJobs`, so a thesis
+   *  compile never queues behind three pip installs and the job-id namespaces
+   *  stay apart. Same class, own concurrency budget. */
+  readonly latexJobs = new JobRunner(() => this.now());
+
+  /** The last compile per session, for `latex_status` and the surface. */
+  private readonly latexCompiles = new Map<string, LatexCompileMemory>();
+
+  /**
+   * THE LATEX DOOR FOR ONE SESSION, shaped like `dataScience()` above:
+   * resolves the project's toolchain with the worktree rule for `mainFile`,
+   * builds the capability over this store's jobs, and refuses when the
+   * project has not opted in.
+   */
+  latex(sessionId: string): LatexCapability {
+    const session = this.getSession(sessionId);
+    const resolved = this.resolveLatex(session);
+    if (!resolved) throw new EngineStateError("invalid_request", "LaTeX is not enabled for this session's project");
+    return storeLatexCapability({
+      sessionId,
+      cwd: session.workspace.path,
+      resolved,
+      toolchain: () => this.latexToolchain(),
+      jobs: this.latexJobs,
+      appendEvent: (event) => { this.appendEvent(sessionId, event); },
+      now: () => this.now(),
+      lastCompile: {
+        get: () => this.latexCompiles.get(sessionId),
+        set: (status) => { this.latexCompiles.set(sessionId, status); },
+      },
+    });
+  }
+
+  /**
+   * Which TeX toolchain a session compiles with, or nothing. The binary is a
+   * MACHINE-level fact (absolute path, checked on disk); `mainFile` is the
+   * per-tree fact and follows the worktree rule — it resolves against the
+   * session's own tree when the capability compiles, never the project root's.
+   */
+  resolveLatex(session: Session): ResolvedLatex | undefined {
+    if (!session.projectId) return undefined;
+    let project: Project;
+    try { project = this.getProject(session.projectId); } catch { return undefined; }
+    const config = project.latex;
+    if (!config?.enabled || !config.toolchain?.path) return undefined;
+    if (!fs.existsSync(config.toolchain.path)) return undefined;
+    return {
+      kind: config.toolchain.kind,
+      binPath: config.toolchain.path,
+      ...(config.toolchain.engine ? { engine: config.toolchain.engine } : {}),
+      ...(config.mainFile ? { mainFile: config.mainFile } : {}),
+    };
   }
 
   /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
@@ -3905,7 +3967,7 @@ export class EngineStore {
    * the block, which is how "off" is spelled so the registry does not grow a
    * `{enabled: false}` for every project that tried it once.
    */
-  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null }): Project {
+  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Project {
     assertId(projectId, "project id");
     const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
@@ -3919,6 +3981,18 @@ export class EngineStore {
       const config = DataScienceConfigSchema.safeParse(patch.dataScience);
       if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
       next.dataScience = config.data;
+    }
+    if (patch.latex === null) {
+      delete next.latex;
+    } else if (patch.latex !== undefined) {
+      const config = LatexConfigSchema.safeParse(patch.latex);
+      if (!config.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
+      next.latex = config.data;
+      if (config.data.enabled) {
+        try {
+          ensureTelarGitignore(next.root, [{ rule: ".telar/latex/", alreadyCovered: [".telar/", ".telar", "/.telar/", ".telar/latex/"], why: "LaTeX aux files from Telar's compiles" }]);
+        } catch { /* not a repo, or unwritable — compiles still work */ }
+      }
     }
     parsed.projects[index] = next;
     atomicWrite(this.paths.projects, parsed);
@@ -4165,6 +4239,130 @@ export class EngineStore {
       root: relativisePythonPath(project.root, env?.root ?? path.dirname(python)),
       manager: env?.manager ?? "system",
     };
+  }
+
+  /**
+   * THE TEX TOOLCHAIN, MEASURED — Tectonic and every TeX Live root. Cached
+   * like the Python one and for the same reason: the settings page asks
+   * beside every list, and each answer is a fistful of `--version` spawns.
+   */
+  private latexToolchainCache?: { until: number; value: Promise<LatexToolchain> };
+
+  latexToolchain(fresh = false): Promise<LatexToolchain> {
+    if (!fresh && this.latexToolchainCache && this.now() < this.latexToolchainCache.until) return this.latexToolchainCache.value;
+    const value = latexToolchainStatus();
+    this.latexToolchainCache = { until: this.now() + 5_000, value };
+    void value.catch(() => { this.latexToolchainCache = undefined; });
+    return value;
+  }
+
+  /**
+   * Every TeX distribution the machine carries, plus the checkout's main-file
+   * candidates — `.tex` files carrying `\documentclass`, scanned two directory
+   * levels deep and capped, because a thesis has one main file and a monorepo
+   * has thousands of files that are not it.
+   */
+  async latexDistributions(projectId: string): Promise<{ toolchain: LatexToolchain; mainCandidates: string[]; current?: LatexConfig["toolchain"] }> {
+    const project = this.getProject(projectId);
+    const toolchain = await this.latexToolchain(true);
+    const candidates: string[] = [];
+    const scan = (dir: string, depth: number) => {
+      if (candidates.length >= 50) return;
+      let names: string[];
+      try { names = fs.readdirSync(dir); } catch { return; }
+      for (const name of names) {
+        if (candidates.length >= 50) return;
+        if (name.startsWith(".") || name === "node_modules") continue;
+        const file = path.join(dir, name);
+        let stat: fs.Stats;
+        try { stat = fs.statSync(file); } catch { continue; }
+        if (stat.isDirectory()) {
+          if (depth > 0) scan(file, depth - 1);
+          continue;
+        }
+        if (!/\.tex$/i.test(name) || stat.size > 2 * 1024 * 1024) continue;
+        try {
+          if (fs.readFileSync(file, "utf8").includes("\\documentclass")) candidates.push(path.relative(project.root, file));
+        } catch { /* unreadable is not a candidate */ }
+      }
+    };
+    scan(project.root, 2);
+    return { toolchain, mainCandidates: candidates.sort(), ...(project.latex?.toolchain ? { current: project.latex.toolchain } : {}) };
+  }
+
+  /** Install Tectonic or TinyTeX, as a job. Adopts the binary's directory on
+   *  success so the next compile finds it without a restart. */
+  async latexBootstrap(request: LatexBootstrapRequest): Promise<{ jobId: string }> {
+    const toolchain = await this.latexToolchain(true);
+    let plan;
+    try {
+      plan = planLatexBootstrap(request, toolchain);
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+    if (request.what === "tectonic" && !toolchain.brew) {
+      try { fs.mkdirSync(path.join(os.homedir(), ".local", "bin"), { recursive: true }); } catch { /* the installer will say so */ }
+    }
+    const expect = plan.expectBinary;
+    return this.latexJobs.start({
+      kind: `bootstrap:${request.what}`,
+      lock: `bootstrap:${request.what}`,
+      steps: plan.steps,
+      onDone: () => {
+        this.latexToolchainCache = undefined;
+        const found = findLatexBinary(expect);
+        if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
+        adoptBinaryDir(found);
+        return { binary: found };
+      },
+    });
+  }
+
+  /** What the project's distribution has installed — or the honest sentence
+   *  about why there is nothing to list. */
+  async latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
+    const project = this.getProject(projectId);
+    const config = project.latex;
+    if (!config?.enabled || !config.toolchain) throw new EngineStateError("invalid_request", "this project has no TeX toolchain configured");
+    if (config.toolchain.kind === "tectonic") return { mode: "automatic", note: TECTONIC_PACKAGES_NOTE };
+    const toolchain = await this.latexToolchain();
+    const dist = toolchain.texlive.find((candidate) => candidate.binDir === config.toolchain!.path) ?? toolchain.texlive[0];
+    if (!dist) return { mode: "unavailable", reason: "the configured TeX Live was not found on this machine" };
+    return listTexPackages(dist);
+  }
+
+  /** tlmgr install/remove, as a job. Tectonic projects are refused here — the
+   *  settings page never shows the form, and the agent's tool says why. */
+  async latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
+    const project = this.getProject(projectId);
+    const config = project.latex;
+    if (!config?.enabled || !config.toolchain) throw new EngineStateError("invalid_request", "this project has no TeX toolchain configured");
+    if (config.toolchain.kind === "tectonic") throw new EngineStateError("invalid_request", TECTONIC_PACKAGES_NOTE);
+    const toolchain = await this.latexToolchain();
+    const dist = toolchain.texlive.find((candidate) => candidate.binDir === config.toolchain!.path) ?? toolchain.texlive[0];
+    if (!dist) throw new EngineStateError("invalid_request", "the configured TeX Live was not found on this machine");
+    try {
+      const steps = [
+        ...(input.remove?.length ? texRemoveSteps(dist, input.remove) : []),
+        ...(input.add?.length ? texInstallSteps(dist, input.add) : []),
+      ];
+      if (!steps.length) throw new Error("nothing to install or remove");
+      return this.latexJobs.start({ kind: "tex-packages", lock: `${dist.binDir}:tex-packages`, steps });
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  latexJob(jobId: string, after?: number): JobRead {
+    try {
+      return this.latexJobs.read(jobId, after);
+    } catch (error) {
+      throw new EngineStateError("not_found", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  latexCancelJob(jobId: string): void {
+    this.latexJobs.cancel(jobId);
   }
 
   /** Coalesce polling reads and keep results briefly. Bounded so browsing patches
@@ -5672,6 +5870,13 @@ export class EngineStore {
         ...(() => {
           const ds = this.resolveDataScience(session);
           return ds ? { dataScience: ds } : {};
+        })(),
+        // The LaTeX opt-in, resolved the same way. Only the kind travels: the
+        // worker needs presence to register the toolkit, and the kind keeps
+        // the tools honest about how packages behave.
+        ...(() => {
+          const latex = this.resolveLatex(session);
+          return latex ? { latex: { kind: latex.kind } } : {};
         })(),
         /**
          * The project's NAME, for the spool toolkit's scoping — a spool item's

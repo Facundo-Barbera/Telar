@@ -76,7 +76,7 @@ export function isTelarMcpServer(server: string | undefined): boolean {
  * can be told about and then cannot use — so an entry appears in the same change
  * that ships its toolkit, never before.
  */
-export const TELAR_CAPABILITIES = ["browser", "spool", "sessions", "notebook", "ds"] as const;
+export const TELAR_CAPABILITIES = ["browser", "spool", "sessions", "notebook", "ds", "latex"] as const;
 export type TelarCapability = (typeof TELAR_CAPABILITIES)[number];
 
 const MCP_PREFIX = "mcp__";
