@@ -166,7 +166,7 @@ function versionFromPath(python: string): string {
 
 function describeSystemPython(python: string): string {
   if (python.includes("/Cellar/") || python.startsWith("/opt/homebrew/")) return "Homebrew";
-  if (python.includes("/.local/share/uv/python/")) return "installed by uv";
+  if (python.includes("/.local/share/uv/python/") || /\/\.local\/bin\/python3(\.\d+)?$/.test(python)) return "installed by uv";
   if (python.includes("/.pyenv/")) return "pyenv";
   if (python.startsWith("/usr/bin/") || python.startsWith("/Library/Developer/")) return "the system's";
   if (python.includes("/Library/Frameworks/Python.framework/")) return "python.org installer";
