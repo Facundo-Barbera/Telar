@@ -408,6 +408,28 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
 });
 
+test("a selected Claude [1m] row is the context-meter floor", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 400_000, output_tokens: 2 } },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        usage: { input_tokens: 400_000, output_tokens: 2 },
+        modelUsage: { "claude-fable-5-1": { contextWindow: 200_000, inputTokens: 400_000 } },
+      };
+    },
+  }));
+  const { sink, result } = run(driver, { model: "claude-fable-5-1[1m]" });
+  await result;
+  const last = sink.observations.filter((o) => o.kind === "usage").at(-1);
+  expect(last?.kind === "usage" && last.usage.contextMax).toBe(1_000_000);
+  expect(last?.kind === "usage" && last.usage.contextUsed).toBe(400_002);
+});
+
 test("compaction is a timeline row, not a dropped message", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
@@ -1319,25 +1341,24 @@ test("the user's MCP servers reach the SDK, and Telar's own key wins a collision
   expect(servers?.tools).toEqual({ type: "stdio", command: "node", args: ["s.js"] });
 });
 
-test("fast mode reaches the SDK only when a session asked for it, and no beta ever does", async () => {
+test("fast mode stays explicit, and Claude long-context families keep 1M enabled", async () => {
   // A settings override is a request for non-default behaviour, so absence has
-  // to stay absence. And NO `betas` is sent at all any more: the long-context
-  // flag this driver used to translate is not a flag — Claude Code offers the
-  // long window as a model (`claude-opus-5[1m]`), so there is nothing to opt
-  // into and a stale dated beta would be the only thing left to send.
-  const seen: { betas?: unknown; settings?: { fastMode?: boolean } }[] = [];
+  // to stay absence. Telar no longer offers 200k Claude rows, so both `[1m]`
+  // rows and legacy bare family aliases explicitly keep 1M enabled even if the
+  // host shell disabled it.
+  const seen: { model?: unknown; env?: Record<string, unknown>; settings?: { fastMode?: boolean } }[] = [];
   const driver = createClaudeDriver(async () => ({
     async *query(input) {
-      seen.push({ betas: (input.options as { betas?: unknown }).betas, settings: input.options.settings });
+      seen.push({ model: input.options.model, env: input.options.env, settings: input.options.settings });
       yield { type: "result", subtype: "success" };
     },
   }));
-  await run(driver, { fastMode: true }).result;
+  await run(driver, { model: "claude-fable-5-1[1m]", fastMode: true }).result;
+  await run(driver, { model: "claude-opus-5" }).result;
   await run(driver, {}).result;
-  expect(seen).toEqual([
-    { betas: undefined, settings: { fastMode: true } },
-    { betas: undefined, settings: undefined },
-  ]);
+  expect(seen[0]).toMatchObject({ model: "claude-fable-5-1[1m]", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: { fastMode: true } });
+  expect(seen[1]).toMatchObject({ model: "claude-opus-5", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
+  expect(seen[2]).toEqual({ model: undefined, env: undefined, settings: undefined });
 });
 
 /**
@@ -1681,10 +1702,10 @@ describe("the session runtime", () => {
         });
       },
     }) as never);
-    await run(driver, { sessionId: "session_switching", model: "opus" }).result;
-    await run(driver, { sessionId: "session_switching", model: "haiku" }).result;
+    await run(driver, { sessionId: "session_switching", model: "opus[1m]" }).result;
+    await run(driver, { sessionId: "session_switching", model: "sonnet[1m]" }).result;
     expect(queryCalls).toBe(1);
-    expect(modelsSet).toEqual(["haiku"]);
+    expect(modelsSet).toEqual(["sonnet[1m]"]);
   });
 
   test("dispose closes every live runtime — the worker's stop is the session's end", async () => {

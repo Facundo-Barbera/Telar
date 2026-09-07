@@ -31,8 +31,17 @@ type ListOverlay = Pick<ModelOverlay, "hidden" | "order" | "custom">;
  * and the real row wins, with its real label, its real efforts and its real
  * `isDefault`.
  */
+function withoutWindowSuffix(id: string): string {
+  return id.replace(/\[1m\]$/i, "");
+}
+
 function published(models: readonly ProviderModel[], id: string): boolean {
-  return models.some((model) => model.id === id || model.resolves === id);
+  const requested = withoutWindowSuffix(id);
+  return models.some((model) => {
+    const modelId = withoutWindowSuffix(model.id);
+    const resolves = model.resolves ? withoutWindowSuffix(model.resolves) : undefined;
+    return modelId === requested || resolves === requested;
+  });
 }
 
 /**
