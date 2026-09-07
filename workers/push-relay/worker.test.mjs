@@ -63,3 +63,23 @@ test('signing token survives signer eviction and rotates with credentials',async
   const rotated=await (await new RelaySigner(state,{...env,APNS_KEY_BASE64:key()}).fetch()).text();
   assert.notEqual(first,rotated);
 });
+test('automatic starts require a separately registered start token and use immediate priority',async()=>{
+  const host=new RelayHost(store(),{SIGNER:{idFromName:n=>n,get:()=>({fetch:async()=>new Response('test-jwt')})}});
+  const startToken='f'.repeat(64);
+  const start={...delivery,kind:'liveactivity',topic:'com.telar.mobile.push-type.liveactivity',token:startToken,payload:{aps:{event:'start'}}};
+  await host.fetch(request('/v1/devices/phone'));
+  assert.equal((await host.fetch(request('/v1/devices/phone/push','POST',start))).status,400);
+  await host.fetch(request('/v1/devices/phone','PUT',{...registration,pushToStartToken:startToken}));
+  const original=globalThis.fetch;
+  try {
+    globalThis.fetch=async(url,init)=>{assert.equal(init.headers['apns-priority'],'10');return new Response(null,{status:410});};
+    assert.deepEqual(await (await host.fetch(request('/v1/devices/phone/push','POST',start))).json(),{status:410});
+    assert.equal((await host.fetch(request('/v1/devices/phone/push','POST',start))).status,400);
+    globalThis.fetch=async()=>new Response(null,{status:200});
+    assert.deepEqual(await (await host.fetch(request('/v1/devices/phone/push','POST',delivery))).json(),{status:200});
+    await host.fetch(request('/v1/devices/phone','PUT',{...registration,pushToStartToken:startToken}));
+    assert.equal((await host.fetch(request('/v1/devices/phone/push','POST',{...start,payload:{aps:{event:'update'}}}))).status,400);
+    await host.fetch(request('/v1/devices/phone'));
+    assert.equal((await host.fetch(request('/v1/devices/phone/push','POST',start))).status,400);
+  } finally {globalThis.fetch=original;}
+});

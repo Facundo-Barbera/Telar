@@ -32,7 +32,7 @@ struct SessionLiveActivity: Widget {
             .activityBackgroundTint(Color(white: 0.10))
             .activitySystemActionForegroundColor(.white)
             .foregroundStyle(.white)
-            .widgetURL(context.attributes.sessionURL)
+            .widgetURL(context.attributes.url(sessionId: context.state.sessionId))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -50,11 +50,12 @@ struct SessionLiveActivity: Widget {
             } compactLeading: {
                 TelarMark(color: color(context.state)).frame(width: 20, height: 20)
             } compactTrailing: {
-                Image(systemName: symbol(context.state, stale: context.isStale)).foregroundStyle(color(context.state))
+                if let count = context.state.activeCount, count > 1 { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(color(context.state)) }
+                else { Image(systemName: symbol(context.state, stale: context.isStale)).foregroundStyle(color(context.state)) }
             } minimal: {
                 Image(systemName: symbol(context.state, stale: context.isStale)).foregroundStyle(color(context.state))
             }
-            .widgetURL(context.attributes.sessionURL)
+            .widgetURL(context.attributes.url(sessionId: context.state.sessionId))
             .keylineTint(color(context.state))
         }
     }

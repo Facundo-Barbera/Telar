@@ -315,12 +315,6 @@ struct SessionView: View {
             Menu {
                 if let hostId, let session = store.sync.session {
                     let ref = ScopedSessionID(hostId: hostId, sessionId: sessionId)
-                    Button(MobileNotifications.shared.followed.contains(ref) ? "Stop following" : "Follow session", systemImage: "waveform.path") {
-                        Task {
-                            if MobileNotifications.shared.followed.contains(ref) { await MobileNotifications.shared.unfollow(ref) }
-                            else { await MobileNotifications.shared.follow(ref, session: session) }
-                        }
-                    }
                     Button(MobileNotifications.shared.isMuted(ref) ? "Unmute notifications" : "Mute notifications", systemImage: "bell.slash") {
                         Task { await MobileNotifications.shared.toggleMute(ref) }
                     }

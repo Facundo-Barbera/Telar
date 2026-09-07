@@ -52,3 +52,7 @@ handling and persisted signer reuse. Web tests cover paired-device role gates
 and the host-to-relay adapter. A dummy-device response from Apple establishes
 transport and signing only; actual notification and Live Activity delivery
 requires the signed iPhone build.
+
+Automatic cards use a separately registered ActivityKit push-to-start token.
+That token can start a card but cannot update one; per-card tokens can update
+or end it but cannot start another. Starts and ends use immediate APNs priority.

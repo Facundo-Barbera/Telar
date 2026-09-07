@@ -18,6 +18,9 @@ struct PushRegistration: Encodable {
     var previews: Bool
     var mutedSessions: [String]
     var activities: [Follow]
+    var liveActivities: Bool = false
+    var pushToStartToken: String? = nil
+    var hostName: String? = nil
 }
 struct PushStatus: Decodable { var configured: Bool }
 
@@ -37,6 +40,46 @@ struct PushStatus: Decodable { var configured: Bool }
     private var synchronizing = false
     private var syncAgain = false
     private var attemptedRegistration = false
+    private var startToken: String? = UserDefaults.standard.string(forKey: "telar.activity.startToken")
+    private var startTokenWatcher: Task<Void, Never>?
+    private var incomingActivityWatcher: Task<Void, Never>?
+    var liveActivities = UserDefaults.standard.object(forKey: "telar.activities.enabled") as? Bool ?? true {
+        didSet { defaults.set(liveActivities, forKey: "telar.activities.enabled") }
+    }
+
+    // Installed during App initialization, including an APNs background launch.
+    func start(settings: AppSettings) {
+        self.settings = settings
+        guard startTokenWatcher == nil else { return }
+        if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
+        startTokenWatcher = Task { [weak self] in
+            for await data in Activity<SessionActivityAttributes>.pushToStartTokenUpdates {
+                self?.saveStartToken(data)
+                await self?.syncRegistrations()
+            }
+        }
+        incomingActivityWatcher = Task { [weak self] in
+            for await activity in Activity<SessionActivityAttributes>.activityUpdates {
+                self?.watch(activity)
+                await self?.syncRegistrations()
+            }
+        }
+        restoreActivities()
+        Task { await syncRegistrations() }
+    }
+    private func saveStartToken(_ data: Data) {
+        startToken = data.map { String(format: "%02x", $0) }.joined()
+        defaults.set(startToken, forKey: "telar.activity.startToken")
+    }
+    func setLiveActivities(_ enabled: Bool) async {
+        liveActivities = enabled
+        if !enabled {
+            for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.sessionId == "__automatic__" {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+        await syncRegistrations()
+    }
 
     var enabled = UserDefaults.standard.bool(forKey: "telar.notifications.enabled") {
         didSet { defaults.set(enabled, forKey: "telar.notifications.enabled") }
@@ -84,7 +127,7 @@ struct PushStatus: Decodable { var configured: Bool }
     private func performRegistrationSync() async {
         restoreActivities()
         guard let settings else { return }
-        if (enabled || !followed.isEmpty) && !attemptedRegistration {
+        if (enabled || liveActivities || !followed.isEmpty) && !attemptedRegistration {
             attemptedRegistration = true
             UIApplication.shared.registerForRemoteNotifications()
         }
@@ -109,7 +152,9 @@ struct PushStatus: Decodable { var configured: Bool }
                 let reply = try await api.registerPush(.init(hostId: host.id.uuidString, token: token,
                     topic: Bundle.main.bundleIdentifier ?? "com.telar.mobile", sandbox: sandbox,
                     enabled: enabled && allowed, completions: completions, previews: previews,
-                    mutedSessions: mutedSessions, activities: subscriptions))
+                    mutedSessions: mutedSessions, activities: subscriptions,
+                    liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
+                    pushToStartToken: startToken, hostName: host.name))
                 if !reply.configured { unavailable += 1 }
             } catch { unavailable += 1 }
         }
@@ -119,9 +164,9 @@ struct PushStatus: Decodable { var configured: Bool }
     func refreshActivityPrivacy() async {
         for activity in Activity<SessionActivityAttributes>.activities {
             var state = activity.content.state
-            if !previews { state.title = "Telar session" }
+            if !previews { state.title = activity.attributes.sessionId == "__automatic__" ? "Telar work" : "Telar session" }
             else if let host = UUID(uuidString: activity.attributes.hostId),
-                    let snapshot = try? await settings?.api(for: host)?.session(activity.attributes.sessionId) {
+                    let snapshot = try? await settings?.api(for: host)?.session(state.sessionId ?? activity.attributes.sessionId) {
                 state.title = snapshot.session.title
             }
             await activity.update(ActivityContent(state: state, staleDate: activity.content.staleDate))
@@ -197,6 +242,10 @@ struct PushStatus: Decodable { var configured: Bool }
         }
     }
     private func watch(_ activity: Activity<SessionActivityAttributes>) {
+        if activity.attributes.sessionId == "__automatic__" && !liveActivities {
+            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            return
+        }
         guard let host = UUID(uuidString: activity.attributes.hostId) else { return }
         followed.insert(.init(hostId: host, sessionId: activity.attributes.sessionId))
         if let data = activity.pushToken { activityTokens[activity.id] = data.map { String(format: "%02x", $0) }.joined() }
