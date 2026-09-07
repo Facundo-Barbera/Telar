@@ -2329,3 +2329,119 @@ describe("subscriptions", () => {
     expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "request.resolved", resolvedBy: "session" });
   });
 });
+
+/**
+ * THE COST OF AN IDLE CONVERSATION, which is the thing that decides whether a
+ * person may keep their history or has to prune it to stay fast.
+ */
+describe("worker queries scale with live turns, not with the number of sessions", () => {
+  function storeWith(idleSessions: number): { store: EngineStore; root: string } {
+    const stateRoot = root();
+    const store = new EngineStore(stateRoot, () => 100);
+    store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    for (let index = 0; index < idleSessions; index += 1) {
+      const id = `session_idle${String(index).padStart(4, "0")}`;
+      store.createSession({ id, projectId: "project_one" });
+      // Settled work, exactly like a conversation somebody finished last week.
+      store.submitTurn(id, { runId: `run_${id}`, input: "done long ago" });
+      const claim = store.claimTurn(id, "worker_old")!;
+      store.markRunning(id, `run_${id}`, claim.claim!.token);
+      store.completeTurn(id, `run_${id}`, claim.claim!.token, { text: "done" });
+    }
+    return { store, root: stateRoot };
+  }
+
+  /** File reads performed while `run` executes. */
+  function readsDuring(run: () => void): number {
+    const spy = spyOn(fs, "readFileSync");
+    try {
+      run();
+      return spy.mock.calls.length;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  test("a heartbeat's reads do not grow when settled conversations pile up", () => {
+    const few = storeWith(4);
+    const many = storeWith(40);
+    // Warm each index once — the lazily-built scan is paid on first use, not
+    // ten times a second, and it is the STEADY state this is about.
+    few.store.cancellationsForWorker("worker_one");
+    many.store.cancellationsForWorker("worker_one");
+
+    const beat = (store: EngineStore): number =>
+      readsDuring(() => {
+        store.cancellationsForWorker("worker_one");
+        store.resolutionsForWorker("worker_one");
+        store.steerForWorker("worker_one");
+      });
+
+    // Ten times the history, and the same work: nothing here is per-session.
+    expect(beat(few.store)).toBe(beat(many.store));
+    expect(beat(many.store)).toBeLessThan(10);
+  });
+
+  test("a claim reads the queues that could be claimed and the metadata of the one that wins", () => {
+    const claimReads = (idleSessions: number): { sessionId?: string; reads: number } => {
+      const { store } = storeWith(idleSessions);
+      store.createSession({ id: "session_live", projectId: "project_one" });
+      store.submitTurn("session_live", { runId: "run_live", input: "Hello" });
+      store.cancellationsForWorker("worker_one"); // warm the index
+      let sessionId: string | undefined;
+      const reads = readsDuring(() => {
+        sessionId = store.claimNextTurn("worker_one")?.sessionId;
+      });
+      return { ...(sessionId ? { sessionId } : {}), reads };
+    };
+
+    const few = claimReads(4);
+    const many = claimReads(40);
+    expect(few.sessionId).toBe("session_live");
+    expect(many.sessionId).toBe("session_live");
+    // Ten times the settled history, and not one extra read: the claim touches
+    // the claimable queues and the winner's metadata, nothing else.
+    expect(many.reads).toBe(few.reads);
+  });
+
+  test("the index follows every transition: a settled session leaves it, a stopped one stays until its claim is gone", () => {
+    const { store } = storeWith(0);
+    store.createSession({ id: "session_a", projectId: "project_one" });
+    store.submitTurn("session_a", { runId: "run_a", input: "Hello" });
+    const claim = store.claimNextTurn("worker_one")!;
+    const token = claim.turn.claim!.token;
+    store.markRunning("session_a", "run_a", token);
+
+    // Stopped, but the worker still has to be told — so it is still visible.
+    store.stopTurn("session_a", "run_a");
+    expect(store.cancellationsForWorker("worker_one")).toEqual([
+      { sessionId: "session_a", runId: "run_a", claimToken: token },
+    ]);
+
+    // A fresh turn that completes leaves nothing for any worker to ask about.
+    store.submitTurn("session_a", { runId: "run_b", input: "Again" });
+    const second = store.claimNextTurn("worker_two")!;
+    const secondToken = second.turn.claim!.token;
+    store.markRunning("session_a", "run_b", secondToken);
+    store.completeTurn("session_a", "run_b", secondToken, { text: "done" });
+    expect(store.cancellationsForWorker("worker_two")).toEqual([]);
+    expect(store.claimNextTurn("worker_two")).toBeUndefined();
+  });
+
+  test("across sessions the oldest ACCEPTED message runs first, whatever age its session is", () => {
+    const stateRoot = root();
+    let clock = 100;
+    const store = new EngineStore(stateRoot, () => clock);
+    store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    // `session_old` exists first; the message in it is written second.
+    store.createSession({ id: "session_old", projectId: "project_one" });
+    store.createSession({ id: "session_new", projectId: "project_one" });
+    clock = 200;
+    store.submitTurn("session_new", { runId: "run_first", input: "typed first" });
+    clock = 300;
+    store.submitTurn("session_old", { runId: "run_second", input: "typed second" });
+
+    expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_first");
+    expect(store.claimNextTurn("worker_two")?.turn.runId).toBe("run_second");
+  });
+});
