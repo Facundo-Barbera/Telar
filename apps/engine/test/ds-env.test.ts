@@ -41,7 +41,7 @@ function scriptedExec(answers: Record<string, { status: number; stdout: string }
   };
 }
 
-test("a project venv is listed first, uv second, and duplicates by real path collapse", async () => {
+test("a project venv is listed first, uv second, and the same literal path shows once", async () => {
   const project = root();
   const venvPython = fakeVenv(path.join(project, ".venv"));
   fs.writeFileSync(path.join(project, "uv.lock"), "", "utf8");
@@ -54,6 +54,17 @@ test("a project venv is listed first, uv second, and duplicates by real path col
   expect(candidates.map((c) => c.kind)).toEqual(["project-venv", "path"]);
   expect(candidates[0]!.reason).toBe("found .venv/");
   expect(projectEnvSignals(project)).toEqual(["uv.lock"]);
+});
+
+test("a venv whose python is a symlink to the base interpreter is still its own candidate", async () => {
+  const project = root();
+  const base = fakeVenv(root());
+  const venvBin = path.join(project, ".venv", "bin");
+  fs.mkdirSync(venvBin, { recursive: true });
+  fs.symlinkSync(base, path.join(venvBin, "python"));
+  const exec = scriptedExec({ "uv python find": { status: 0, stdout: `${base}\n` } });
+  const candidates = await detectPythonCandidates(project, { exec });
+  expect(candidates.map((c) => c.kind)).toEqual(["project-venv", "uv"]);
 });
 
 test("pyenv is consulted only when .python-version is present; Telar's venv is offered when it exists", async () => {

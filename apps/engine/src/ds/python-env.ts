@@ -117,18 +117,21 @@ export type DetectOptions = {
 };
 
 /**
- * Every interpreter worth offering, most specific first. Duplicates by resolved
- * path are dropped so `uv python find` returning the project's `.venv` shows once.
+ * Every interpreter worth offering, most specific first. Duplicates by LITERAL
+ * path are dropped so `uv python find` returning the project's `.venv` shows
+ * once. Not by real path: a venv's `bin/python` is usually a symlink to the
+ * base interpreter, and the two are different environments — `pyvenv.cfg`
+ * gives the venv its own site-packages — so collapsing them would hide every
+ * venv behind the Python it was built from.
  */
 export async function detectPythonCandidates(root: string, options: DetectOptions = {}): Promise<PythonCandidate[]> {
   const exec = options.exec ?? defaultExec;
   const found: PythonCandidate[] = [];
   const seen = new Set<string>();
   const add = (candidate: PythonCandidate) => {
-    let real = candidate.path;
-    try { real = fs.realpathSync.native(candidate.path); } catch { /* keep as-is */ }
-    if (seen.has(real)) return;
-    seen.add(real);
+    const key = path.normalize(candidate.path);
+    if (seen.has(key)) return;
+    seen.add(key);
     found.push(candidate);
   };
 
