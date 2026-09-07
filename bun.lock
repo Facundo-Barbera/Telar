@@ -9,12 +9,12 @@
       "name": "telar-desktop",
       "version": "0.1.0",
       "dependencies": {
+        "electron-chrome-extensions": "4.9.0",
         "electron-updater": "^6.6.2",
       },
       "devDependencies": {
         "electron": "^43.1.1",
         "electron-builder": "^26.15.3",
-        "electron-chrome-extensions": "4.9.0",
       },
     },
     "apps/engine": {
