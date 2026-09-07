@@ -41,6 +41,10 @@ export type DesktopBrowserTab = {
    *  back; it decays on its own. */
   controller?: "agent" | "human" | "idle";
   openedBy?: "agent" | "human";
+  /** The tab the AGENT's calls land in, which is independent of `active` —
+   *  the one you are looking at. Marked in the strip so "where is it working"
+   *  is answerable without opening its tab and losing your own place. */
+  agentFocus?: boolean;
   favicon?: string | null;
   /** Remembered (restored from the shell's inventory, or hibernated) with no
    *  live page yet — the first look at it loads the page. */
@@ -623,8 +627,12 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             className={cn(
               "flex min-w-0 max-w-44 items-center gap-1 rounded-md px-2 py-1",
               tab.active ? "bg-muted" : "hover:bg-muted/50",
-              // A tab the agent is acting on right now wears a faint ring.
+              // A tab the agent is acting on right now wears a faint ring...
               tab.controller === "agent" && "ring-1 ring-primary/40",
+              // ...and the tab it is WORKING IN keeps a fainter one between
+              // actions, so a background agent is visible while you read
+              // something else rather than only flickering as it clicks.
+              tab.agentFocus && tab.controller !== "agent" && "ring-1 ring-primary/20",
             )}
             // Middle-click closes, the way every browser's strip does.
             onAuxClick={(event) => {
@@ -647,7 +655,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             ) : null}
             <span
               aria-label={tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}
-              title={`${tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}${tab.controller === "agent" ? " · agent acting" : ""}`}
+              title={`${tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}${tab.controller === "agent" ? " · agent acting" : tab.agentFocus ? " · the agent is working here" : ""}`}
               className={cn("size-1.5 shrink-0 rounded-full", tab.openedBy === "human" ? "bg-warning" : "bg-primary/70")}
             />
             <button

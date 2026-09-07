@@ -14,7 +14,13 @@ export type BrowserTabInfo = {
   index: number;
   title: string;
   url: string;
+  /** The tab the HUMAN is looking at. */
   active: boolean;
+  /** The tab the AGENT's un-addressed calls act on. Often not the same tab —
+   *  that is what lets an agent work in the background — so anything asking
+   *  "which page am I on" must mean this one, not `active`. Absent from hosts
+   *  that do not report it (the headless runtime has no human to differ from). */
+  agentFocus?: boolean;
 };
 
 /**
@@ -172,19 +178,23 @@ export function parseBrowserTabs(text: string): BrowserTabInfo[] {
   for (const line of text.split("\n")) {
     const match = line.match(
       // The trailing `\{[^}]*\}?` arm tolerates the desktop host's per-tab
-      // metadata suffix — `{controller=human, opened-by=agent}` — without
-      // loosening what counts as a tab line.
-      /^\s*[-*]?\s*(?:Tab\s+)?(\d+)\s*[:.]\s*(\((?:current|active)\)\s*)?(?:\[([^\]]*)\]\(([^)]+)\)|(.+?)\s+-\s+(https?:\/\/\S+|about:blank))\s*(\[(?:current|active)\]|\((?:current|active)\))?\s*(?:\[crashed\])?\s*(?:\{[^}]*\})?\s*$/i,
+      // metadata suffix — `{controller=human, opened-by=agent, yours}` —
+      // without loosening what counts as a tab line. It is CAPTURED rather
+      // than merely tolerated now, because `yours` in there is the only signal
+      // of which tab the agent's own calls land on.
+      /^\s*[-*]?\s*(?:Tab\s+)?(\d+)\s*[:.]\s*(\((?:current|active)\)\s*)?(?:\[([^\]]*)\]\(([^)]+)\)|(.+?)\s+-\s+(https?:\/\/\S+|about:blank))\s*(\[(?:current|active)\]|\((?:current|active)\))?\s*(?:\[crashed\])?\s*(?:\{([^}]*)\})?\s*$/i,
     );
     if (!match) continue;
     const index = Number(match[1]);
     const title = (match[3] ?? match[5] ?? `Tab ${index + 1}`).trim();
     const url = (match[4] ?? match[6] ?? "about:blank").trim();
+    const meta = match[8] ?? "";
     tabs.push({
       index,
       title: title.replace(/\s*\((?:current|active)\)\s*$/i, "") || `Tab ${index + 1}`,
       url,
       active: Boolean(match[2] || match[7]),
+      ...(/(^|,)\s*yours\s*(,|$)/i.test(meta) ? { agentFocus: true } : {}),
     });
   }
   return tabs;

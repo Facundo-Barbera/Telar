@@ -282,14 +282,52 @@ describe("multi-tab additions", () => {
     ]);
   });
 
-  test("the four reads accept tabId; unknown elsewhere is still rejected", () => {
-    for (const name of ["browser_snapshot", "browser_take_screenshot", "browser_console_messages", "browser_network_requests"]) {
-      expect(parseBrowserToolInput(name, { tabId: 1 })).toMatchObject({ tabId: 1 });
-      expect(() => parseBrowserToolInput(name, { tabId: -1 })).toThrow(BrowserToolInputError);
+  test("the human's tab and the agent's are read as separate facts about separate tabs", () => {
+    // The shape that used to be impossible: the person is reading tab 0 while
+    // the agent works in tab 1.
+    const tabs = parseBrowserTabs(
+      [
+        "- 0: (current) [Issue #12](https://a.example/) {controller=human, opened-by=human}",
+        "- 1: [Docs](https://b.example/) {controller=agent, opened-by=agent, yours}",
+      ].join("\n"),
+    );
+    expect(tabs).toEqual([
+      { index: 0, title: "Issue #12", url: "https://a.example/", active: true },
+      { index: 1, title: "Docs", url: "https://b.example/", active: false, agentFocus: true },
+    ]);
+    // `yours` is a whole word in the metadata, never a substring of a title.
+    expect(parseBrowserTabs("- 0: [Yours truly](https://a.example/) {opened-by=agent}")[0]?.agentFocus).toBeUndefined();
+  });
+
+  test("every tool accepts tabId — a write may name a tab, and a bad index is still refused", () => {
+    /**
+     * REVERSED DELIBERATELY. Withholding `tabId` from writes was meant to keep
+     * an agent off a human-held tab, but the host enforces that directly (it
+     * defers while their hands are on the tab and refuses a stale view), so all
+     * the missing parameter achieved was that an agent could not work anywhere
+     * except the one tab the human happened to be looking at.
+     */
+    const writes: Array<[string, Record<string, unknown>]> = [
+      ["browser_click", { target: "e1" }],
+      ["browser_type", { target: "e1", text: "hi" }],
+      ["browser_select_option", { target: "e1", values: ["a"] }],
+      ["browser_press_key", { key: "Enter" }],
+      ["browser_hover", { target: "e1" }],
+      ["browser_navigate", { url: "https://example.com/" }],
+      ["browser_navigate_back", {}],
+      ["browser_fill_form", { fields: [] }],
+    ];
+    const reads: Array<[string, Record<string, unknown>]> = [
+      ["browser_snapshot", {}],
+      ["browser_take_screenshot", {}],
+      ["browser_console_messages", {}],
+      ["browser_network_requests", {}],
+    ];
+    for (const [name, base] of [...writes, ...reads]) {
+      expect(parseBrowserToolInput(name, { ...base, tabId: 1 })).toMatchObject({ tabId: 1 });
+      expect(() => parseBrowserToolInput(name, { ...base, tabId: -1 })).toThrow(BrowserToolInputError);
+      // Omitted still means "the tab I am working in", so it must stay optional.
+      expect(parseBrowserToolInput(name, base)).not.toHaveProperty("tabId");
     }
-    // Mutations have no tabId — zod strips the unknown key, so a model that
-    // passes one anyway acts on the CURRENT tab rather than sneaking a write
-    // onto another (possibly human-held) tab.
-    expect(parseBrowserToolInput("browser_click", { target: "e1", tabId: 1 })).toEqual({ target: "e1" });
   });
 });

@@ -968,6 +968,28 @@ function parseQueue(value: unknown, sessionId: string): SessionQueue {
   return { version: STATE_VERSION, sessionId, nextSequence: stored.nextSequence as number, turns: turns.data };
 }
 
+/**
+ * Whether a worker could have any business with this queue — see
+ * `liveQueueIndex`, whose membership this decides.
+ *
+ * THE UNION OF FOUR QUERIES, deliberately, so that one index serves all of
+ * them and no query can be narrowed without someone noticing here. The first
+ * four states are the unsettled ones a claim or a heartbeat acts on. The fifth
+ * is the one that is easy to miss: a STOPPED turn keeps its claim (only a
+ * discard or a recovery sweep clears it), and reading exactly those is how a
+ * worker learns that a human pressed Stop.
+ */
+function queueConcernsAWorker(queue: SessionQueue): boolean {
+  return queue.turns.some(
+    (turn) =>
+      turn.state === "queued" ||
+      turn.state === "claimed" ||
+      turn.state === "running" ||
+      turn.state === "steering" ||
+      (turn.state === "stopped" && turn.claim !== undefined),
+  );
+}
+
 function sessionDir(paths: EngineStatePaths, sessionId: string): string {
   assertId(sessionId, "session id");
   const directory = path.join(paths.sessions, sessionId);
@@ -1864,8 +1886,11 @@ export class EngineStore {
    * later. A live turn is a fact, not an inference.
    */
   humanActive(): boolean {
-    for (const session of this.allSessions()) {
-      const queue = this.readQueue(session.id);
+    // Only the live index can hold such a turn, and it never reads the
+    // metadata of a session that cannot: this used to open every session on
+    // disk to answer a yes/no question about a handful of them.
+    for (const sessionId of this.liveQueueSessionIds()) {
+      const queue = this.readQueue(sessionId);
       if (queue.turns.some((turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running")) {
         return true;
       }
@@ -5070,9 +5095,35 @@ export class EngineStore {
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
   claimNextTurn(workerId: string): WorkerClaim | undefined {
     assertId(workerId, "worker id");
-    for (const session of this.allSessions().sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))) {
-      const turn = this.claimTurn(session.id, workerId);
+    /**
+     * ONLY THE SESSIONS THAT COULD BE CLAIMED, and only their queues.
+     *
+     * This walked every session on disk and read each one's metadata purely to
+     * sort by `createdAt` — a cost that grew with the number of conversations
+     * ever created and was paid on every claim. The candidates are now drawn
+     * from the live index, and the ONE session that wins is the only one whose
+     * metadata is read.
+     *
+     * ORDERED BY WHEN THE MESSAGE WAS ACCEPTED rather than by when its session
+     * was created. That is what "oldest first, so a backlog runs in the order
+     * it was typed" always meant; sorting by session age merely approximated it
+     * and let an old session's brand-new message jump ahead of a new session's
+     * older one.
+     */
+    const candidates: Array<{ sessionId: string; acceptedAt: number }> = [];
+    for (const sessionId of this.liveQueueSessionIds()) {
+      const queue = this.readQueue(sessionId);
+      // One turn per session at a time — the engine's own invariant, checked
+      // here so a busy session costs nothing further.
+      if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
+      const next = queue.turns.find((candidate) => candidate.state === "queued");
+      if (next) candidates.push({ sessionId, acceptedAt: next.acceptedAt });
+    }
+    candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
+    for (const candidate of candidates) {
+      const turn = this.claimTurn(candidate.sessionId, workerId);
       if (!turn) continue;
+      const session = this.getSession(candidate.sessionId);
       const resumeCursor = this.resumeCursorFor(session);
       /**
        * THE TURN'S OWN CHOICE BEATS THE SESSION'S, and that ordering is the
@@ -5518,6 +5569,10 @@ export class EngineStore {
     // this session is told why its stream ended rather than simply losing it.
     this.appendEvent(sessionId, { type: "session.archived" });
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
+    // The queue went with the directory, so no `writeQueue` will ever retire
+    // this id from the live index. Drop it here or a worker keeps asking about
+    // a session that no longer exists.
+    this.liveQueueIndex?.delete(sessionId);
     // The journal is gone with the directory; a session recreated under this
     // id starts a new one from 1, not from where the old one stopped.
     this.journalHead.delete(sessionId);
@@ -5827,18 +5882,18 @@ export class EngineStore {
    */
   resolutionsForWorker(workerId: string): WorkerStatus["resolved"] {
     assertId(workerId, "worker id");
-    return this.allSessions().flatMap((session) => {
+    return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
       const claimed = new Map(
-        this.readQueue(session.id).turns
+        this.readQueue(sessionId).turns
           .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
           .map((turn) => [turn.runId, turn] as const),
       );
       if (claimed.size === 0) return [];
-      return [...this.readRequests(session.id).values()]
+      return [...this.readRequests(sessionId).values()]
         .filter((request) => request.state === "resolved" && request.decision && claimed.has(request.runId))
         .map((request) => ({
           requestId: request.id,
-          sessionId: session.id,
+          sessionId,
           runId: request.runId,
           decision: request.decision!,
           ...(request.reason ? { reason: request.reason } : {}),
@@ -5855,8 +5910,8 @@ export class EngineStore {
    */
   steerForWorker(workerId: string): WorkerStatus["steer"] {
     assertId(workerId, "worker id");
-    return this.allSessions().flatMap((session) => {
-      const queue = this.readQueue(session.id);
+    return [...this.liveQueueSessionIds()].flatMap((sessionId) => {
+      const queue = this.readQueue(sessionId);
       const claimed = new Map(
         queue.turns
           .filter((turn) => turn.claim?.workerId === workerId && turn.state === "running")
@@ -5869,7 +5924,7 @@ export class EngineStore {
         if (!claimToken) return [];
         return [
           {
-            sessionId: session.id,
+            sessionId,
             runId: turn.steer.intoRunId,
             claimToken,
             steerRunId: turn.runId,
@@ -6061,16 +6116,28 @@ export class EngineStore {
 
   cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {
     assertId(workerId, "worker id");
-    return this.allSessions().flatMap((session) =>
-      this.readQueue(session.id).turns.flatMap((turn) =>
+    return [...this.liveQueueSessionIds()].flatMap((sessionId) =>
+      this.readQueue(sessionId).turns.flatMap((turn) =>
         turn.state === "stopped" && turn.claim?.workerId === workerId
-          ? [{ sessionId: session.id, runId: turn.runId, claimToken: turn.claim.token }]
+          ? [{ sessionId, runId: turn.runId, claimToken: turn.claim.token }]
           : [],
       ),
     );
   }
 
   private allSessions(): Session[] {
+    return this.sessionIds().map((sessionId) => this.getSession(sessionId));
+  }
+
+  /**
+   * Every session's id, and NOTHING ELSE READ.
+   *
+   * `allSessions` costs four file reads per session — `session.json`, and then
+   * `withActivity`'s queue plus requests — which is the right price for a
+   * sidebar and the wrong one for a scan that only wants to know which
+   * sessions have work in them. This is one `readdir`.
+   */
+  private sessionIds(): string[] {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
@@ -6078,9 +6145,43 @@ export class EngineStore {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
-    return entries
-      .filter((entry) => entry.isDirectory() && ID.test(entry.name))
-      .map((entry) => this.getSession(entry.name));
+    return entries.filter((entry) => entry.isDirectory() && ID.test(entry.name)).map((entry) => entry.name);
+  }
+
+  /**
+   * THE SESSIONS A WORKER COULD POSSIBLY HAVE BUSINESS WITH — the index that
+   * makes the number of IDLE conversations cost nothing.
+   *
+   * Every worker heartbeat asks three questions (what was cancelled, what was
+   * answered, what was steered) and a claim asks a fourth, and each of them
+   * used to walk EVERY session on disk: at ten beats a second and fifty
+   * sessions that is thousands of file reads a second to discover, almost
+   * always, that nothing has changed. The daemon burned most of a core doing
+   * it, and the cost grew with every conversation ever started — so the
+   * machine got slower the longer it was used, which is the shape of the
+   * complaint that produced this index.
+   *
+   * MAINTAINED IN `writeQueue`, WHICH IS THE ONLY WRITER. Every turn
+   * transition in this store rewrites the whole queue through that one method,
+   * so there is exactly one place that can put a session in or out of this set
+   * — no transition can forget to. Built lazily on first use by the same scan
+   * it replaces, so a cold daemon pays it once instead of ten times a second.
+   *
+   * The membership test is deliberately the UNION of what the four queries
+   * need, so one index serves all of them: anything not yet settled, plus a
+   * stopped turn that still carries a claim (the worker learns of a stop by
+   * reading exactly those).
+   */
+  private liveQueueIndex: Set<string> | undefined;
+
+  private liveQueueSessionIds(): Set<string> {
+    if (this.liveQueueIndex) return this.liveQueueIndex;
+    const index = new Set<string>();
+    for (const sessionId of this.sessionIds()) {
+      if (queueConcernsAWorker(this.readQueue(sessionId))) index.add(sessionId);
+    }
+    this.liveQueueIndex = index;
+    return index;
   }
 
   private readQueue(sessionId: string): SessionQueue {
@@ -6089,8 +6190,13 @@ export class EngineStore {
     return parseQueue(stored, sessionId);
   }
 
+  /** THE ONLY WRITER, which is what lets `liveQueueIndex` be maintained in one
+   *  place rather than at each of the thirteen transitions that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
     atomicWrite(sessionQueueFile(this.paths, sessionId), queue);
+    if (!this.liveQueueIndex) return;
+    if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
+    else this.liveQueueIndex.delete(sessionId);
   }
 
   private requireRunningClaim(sessionId: string, runId: string, claimToken: string): Turn {

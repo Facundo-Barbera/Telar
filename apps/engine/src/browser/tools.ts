@@ -124,17 +124,37 @@ const targeted = {
   element: z.string().optional(),
 };
 
+/**
+ * WHICH TAB — accepted by reads AND by writes.
+ *
+ * It used to be reads only, on the rule "reads on a human-held tab are
+ * allowed, writes never". That rule was protecting the wrong thing: what must
+ * not happen is an agent typing into a page while a person is using it, and
+ * that is enforced where it actually lives — the desktop host defers a write
+ * while their hands are on that tab and refuses one decided from a view the
+ * agent has not refreshed. Withholding the parameter did not add safety; it
+ * only meant every write landed on one shared "current tab", so an agent could
+ * not work in a background tab at all and a person switching tabs silently
+ * re-aimed the agent's next click.
+ *
+ * Omitted means the tab the agent is working in, which is NOT necessarily the
+ * one the human is looking at — `browser_list_tabs` marks both.
+ */
+const tabId = {
+  tabId: z.number().int().nonnegative().optional(),
+};
+
 export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_list_tabs",
     description:
-      "List the tabs currently open in Telar's integrated browser without changing them. Use this first when the user refers to a visible page or open browser tab.",
+      "List the tabs currently open in Telar's integrated browser without changing them. Each is marked (current) if it is the tab the human is looking at and \"yours\" if it is the one your calls act on — these are often different, which is how you can work in a background tab while they read something else. Use this first when the user refers to a visible page, and to pick a tabId.",
     input: EMPTY,
   },
   {
     name: "browser_tabs",
     description:
-      "List, create, close, or select a tab in Telar's integrated browser. List tabs before acting when the user has more than one open.",
+      "Open, close, or move to a tab in Telar's integrated browser. \"new\" opens a tab and moves you into it; \"select\" moves you to an existing one. Neither changes what the human is looking at — you get your own tab, in the background. List tabs before acting when more than one is open.",
     input: z.object({
       action: z.enum(["list", "new", "close", "select"]),
       // Tabs are addressed positionally by Playwright MCP, so a fractional or
@@ -145,42 +165,41 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_navigate",
-    description: "Navigate the selected Telar browser tab to an http or https URL.",
-    input: z.object({ url: z.url() }),
+    description: "Navigate to an http or https URL — in the tab you are working in, or the tabId you name. Does not change what the human is looking at.",
+    input: z.object({ url: z.url(), ...tabId }),
   },
   {
     name: "browser_navigate_back",
-    description: "Go back in the selected Telar browser tab.",
-    input: EMPTY,
+    description: "Go back in the tab you are working in.",
+    input: z.object({ ...tabId }),
   },
   {
     name: "browser_snapshot",
     description:
-      "Read the accessibility snapshot of the selected Telar browser tab. Use its exact target refs for interactions.",
+      "Read the accessibility snapshot of the tab you are working in, or the tabId you name. Use its exact target refs for interactions.",
     input: z.object({
       target: z.string().optional(),
       depth: z.number().int().nonnegative().optional(),
       boxes: z.boolean().optional(),
-      /** Read a SPECIFIC tab (positional index) without switching the shared
-       *  current tab — including one the human holds. Desktop host only;
-       *  the headless runtime reads its current tab regardless. */
-      tabId: z.number().int().nonnegative().optional(),
+      ...tabId,
     }),
   },
   {
     name: "browser_click",
-    description: "Click an element in the selected Telar browser tab using a target from browser_snapshot.",
+    description: "Click an element using a target from browser_snapshot, in the tab you are working in or the tabId you name.",
     input: z.object({
       ...targeted,
+      ...tabId,
       doubleClick: z.boolean().optional(),
       button: z.enum(["left", "right", "middle"]).optional(),
     }),
   },
   {
     name: "browser_type",
-    description: "Type text into an editable element in the selected Telar browser tab.",
+    description: "Type text into an editable element, in the tab you are working in or the tabId you name.",
     input: z.object({
       ...targeted,
+      ...tabId,
       text: z.string(),
       submit: z.boolean().optional(),
       slowly: z.boolean().optional(),
@@ -188,8 +207,9 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_fill_form",
-    description: "Fill several fields in the selected Telar browser tab.",
+    description: "Fill several fields, in the tab you are working in or the tabId you name.",
     input: z.object({
+      ...tabId,
       fields: z.array(
         z.object({
           ...targeted,
@@ -202,29 +222,30 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_select_option",
-    description: "Select values in a dropdown in the selected Telar browser tab.",
-    input: z.object({ ...targeted, values: z.array(z.string()) }),
+    description: "Select values in a dropdown, in the tab you are working in or the tabId you name.",
+    input: z.object({ ...targeted, ...tabId, values: z.array(z.string()) }),
   },
   {
     name: "browser_press_key",
-    description: "Press a keyboard key in the selected Telar browser tab.",
-    input: z.object({ key: z.string().min(1) }),
+    description: "Press a keyboard key, in the tab you are working in or the tabId you name.",
+    input: z.object({ key: z.string().min(1), ...tabId }),
   },
   {
     name: "browser_hover",
-    description: "Move Telar's visible agent cursor over an element in the selected browser tab.",
-    input: z.object({ ...targeted }),
+    description: "Move Telar's visible agent cursor over an element, in the tab you are working in or the tabId you name.",
+    input: z.object({ ...targeted, ...tabId }),
   },
   {
     name: "browser_resize",
     description:
-      "Change the selected Telar browser tab's viewport — the size the page lays out for, independent of how it is shown. Pass a preset (default 1280×800, laptop, tablet, phone), an explicit width and height, or mode \"fit\" to follow the size of the panel the human is looking at (mode \"fixed\" returns to a stable size). Take a fresh browser_snapshot afterwards.",
+      "Change the viewport of the tab you are working in (or the tabId you name) — the size the page lays out for, independent of how it is shown. Pass a preset (default 1280×800, laptop, tablet, phone), an explicit width and height, or mode \"fit\" to follow the size of the panel the human is looking at (mode \"fixed\" returns to a stable size). Take a fresh browser_snapshot afterwards.",
     input: z
       .object({
         preset: z.enum(["default", "laptop", "tablet", "phone"]).optional(),
         width: z.number().int().min(200).max(5000).optional(),
         height: z.number().int().min(200).max(5000).optional(),
         mode: z.enum(["fixed", "fit"]).optional(),
+        ...tabId,
       })
       .refine((input) => input.preset !== undefined || input.mode !== undefined || (input.width !== undefined && input.height !== undefined), {
         message: "pass a preset, a mode, or both width and height",
@@ -233,30 +254,30 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   {
     name: "browser_take_screenshot",
     description:
-      "Capture the selected Telar browser tab for visual inspection. Use browser_snapshot for element targeting.",
+      "Capture the tab you are working in, or the tabId you name, for visual inspection. Use browser_snapshot for element targeting.",
     input: z.object({
       type: z.enum(["png", "jpeg"]).default("png"),
       fullPage: z.boolean().optional(),
       scale: z.enum(["css", "device"]).default("css"),
-      tabId: z.number().int().nonnegative().optional(),
+      ...tabId,
     }),
   },
   {
     name: "browser_console_messages",
-    description: "Read console messages from the selected Telar browser tab.",
+    description: "Read console messages from the tab you are working in, or the tabId you name.",
     input: z.object({
       level: z.enum(["error", "warning", "info", "debug"]).default("info"),
       all: z.boolean().optional(),
-      tabId: z.number().int().nonnegative().optional(),
+      ...tabId,
     }),
   },
   {
     name: "browser_network_requests",
-    description: "Read network requests from the selected Telar browser tab.",
+    description: "Read network requests from the tab you are working in, or the tabId you name.",
     input: z.object({
       static: z.boolean().default(false),
       filter: z.string().optional(),
-      tabId: z.number().int().nonnegative().optional(),
+      ...tabId,
     }),
   },
   {

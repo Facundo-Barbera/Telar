@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
@@ -93,9 +94,31 @@ export class UnsupportedDriverError extends Error {
   }
 }
 
-/** Under the browser's scope target (6) with headroom for the machine: four
- *  concurrent provider processes is a laptop's honest ceiling. */
-const DEFAULT_WORKER_CONCURRENCY = 4;
+/**
+ * HOW MANY DIFFERENT SESSIONS MAY RUN AT ONCE, derived from the machine
+ * instead of guessed.
+ *
+ * The old value was a flat 4, chosen "under the browser's scope target with
+ * headroom" — which meant a laptop with eight cores and 24 GB queued the fifth
+ * conversation behind four that were, almost always, idle inside an HTTP
+ * request. A provider process is not CPU-bound: it spends its life waiting on
+ * a model, so the binding resource is MEMORY, not parallelism. Measured on the
+ * dogfood machine, a live `claude` child sits around 300 MB resident.
+ *
+ * So: budget half of physical memory at 512 MB a process. 16 GB yields 16,
+ * 24 GB yields 24 (clamped), 8 GB yields 8. The floor of 4 keeps the old
+ * behaviour on a small machine; the ceiling is where the daemon's own event
+ * loop — one thread, serving every one of these — stops being able to keep up
+ * with their observation traffic, which is a real limit and not a memory one.
+ */
+const WORKER_MEMORY_BUDGET_PER_TURN = 512 * 1024 * 1024;
+const MIN_WORKER_CONCURRENCY = 4;
+const MAX_WORKER_CONCURRENCY = 24;
+
+export function defaultWorkerConcurrency(totalBytes: number = os.totalmem()): number {
+  const affordable = Math.floor(totalBytes / 2 / WORKER_MEMORY_BUDGET_PER_TURN);
+  return Math.min(MAX_WORKER_CONCURRENCY, Math.max(MIN_WORKER_CONCURRENCY, affordable));
+}
 
 /** The deployment knob, read by BOTH worker construction sites so the
  *  embedded and standalone workers cannot drift — same rule as
@@ -130,9 +153,14 @@ export type EngineWorkerOptions = {
    * claimed or running turn), so this cap only decides how many DIFFERENT
    * sessions may progress together — the old hard-coded 1 was why creating
    * three sessions queued them single-file across unrelated projects.
-   * Clamped to at least 1; keep it ≤ the browser's scope target
-   * (MAX_BROWSER_SCOPES = 6) or concurrent browsing sessions grow Chromiums
-   * past what the pool aims to hold.
+   * Clamped to at least 1; absent means `defaultWorkerConcurrency()`.
+   *
+   * IT IS COUNTED OVER CLAIMS, not over live turns — a turn the provider woke
+   * by itself is real work but holds no slot, see `tick`.
+   *
+   * The browser is NOT a reason to keep this small. Its pool (`MAX_BROWSER_SCOPES`)
+   * is an LRU that reclaims idle Chromiums on its own, so exceeding it costs a
+   * browser relaunch on a session nobody was looking at — not correctness.
    */
   concurrency?: number;
   /** Short testable polling loop; production process supervision is outside this leaf. */
@@ -148,6 +176,10 @@ export class EngineWorker {
   private ticking = false;
   private stopped = false;
   private readonly active = new Map<string, AbortController>();
+  /** The subset of `active` that came from a CLAIM — what the concurrency cap
+   *  is counted over. A provider-opened turn is live work but was never
+   *  scheduled through the gate, so it must not hold a slot shut. */
+  private readonly activeClaims = new Set<string>();
   private connectionLost = false;
   /** Lazily built default `op` adapter — one per worker, never per turn. */
   private secrets: SecretsProvider | undefined;
@@ -279,8 +311,20 @@ export class EngineWorker {
       // engine's shape (`claimNextTurn` hands out the oldest claimable turn),
       // so the loop is what turns a per-tick single claim into real
       // cross-session concurrency.
-      const cap = Math.max(1, this.options.concurrency ?? DEFAULT_WORKER_CONCURRENCY);
-      while (this.active.size < cap) {
+      /**
+       * COUNTED OVER CLAIMS, NOT OVER EVERY LIVE TURN.
+       *
+       * `active` also holds PROVIDER turns — the ones a CLI opens by itself
+       * when a background task notifies it — and those were never claimed
+       * through this gate. Counting them here meant a session waking up on its
+       * own silently consumed one of the machine's execution slots, so a human
+       * starting a new conversation could sit at "queued" behind work nobody
+       * scheduled and no slot could be seen to be free. Measured on the
+       * dogfood machine: four human turns plus one wake-up, and the fifth
+       * conversation would not start.
+       */
+      const cap = Math.max(1, this.options.concurrency ?? defaultWorkerConcurrency());
+      while (this.activeClaims.size < cap) {
         const { claim } = await this.options.client.claimTurn(this.options.workerId);
         if (!claim) break;
         void this.execute(claim);
@@ -308,6 +352,7 @@ export class EngineWorker {
     const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();
     this.active.set(claimToken, controller);
+    this.activeClaims.add(claimToken);
     // The turn's send-now mailbox, registered before the first heartbeat that
     // could carry a delivery. Closed with the turn — a push after close is
     // refused and the engine's sweep requeues the message instead.
@@ -662,6 +707,7 @@ export class EngineWorker {
       for (const ack of steerEntry.pendingAck.splice(0)) this.pushedSteers.delete(ack.steerRunId);
       this.steering.delete(claimToken);
       this.active.delete(claimToken);
+      this.activeClaims.delete(claimToken);
     }
   }
 

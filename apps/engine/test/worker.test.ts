@@ -6,7 +6,7 @@ import { EngineClient } from "@telar/engine-client";
 import { BrowserToolSocket } from "../src/browser/socket";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { ProviderUnavailableError, type TurnDriver } from "../src/driver";
-import { EngineWorker } from "../src/worker";
+import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -594,4 +594,69 @@ test("a browser profile binding the host REFUSES does not fail the turn — the 
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]).toMatchObject({ state: "completed" }));
   expect(ran).toBe(1);
+});
+
+test("the default concurrency is derived from memory, with a floor and a ceiling", () => {
+  // A small machine keeps the old behaviour...
+  expect(defaultWorkerConcurrency(4 * 1024 ** 3)).toBe(4);
+  expect(defaultWorkerConcurrency(8 * 1024 ** 3)).toBe(8);
+  // ...a large one is allowed to use what it has, up to where the daemon's own
+  // single event loop — not memory — becomes the limit.
+  expect(defaultWorkerConcurrency(24 * 1024 ** 3)).toBe(24);
+  expect(defaultWorkerConcurrency(256 * 1024 ** 3)).toBe(24);
+});
+
+test("a turn the PROVIDER opened does not hold an execution slot shut", async () => {
+  /**
+   * THE REPORTED SYMPTOM: four conversations running, one of them woken by a
+   * background task rather than by a human, and a newly typed message sat at
+   * "queued" with a slot that was never scheduled through the gate holding it.
+   */
+  const release: Array<() => void> = [];
+  const started: string[] = [];
+  let openProviderTurn: (() => Promise<void>) | undefined;
+
+  const driver: TurnDriver = {
+    async run({ prompt, session }) {
+      started.push(prompt);
+      if (prompt === "A1" && session) {
+        // The provider process OUTLIVES its turn, which is how a background
+        // task can wake it later. That later wake-up is what this captures.
+        openProviderTurn = async () => {
+          await session.onProviderTurn({ input: "woken", reason: { kind: "task_notification" } });
+        };
+        return { text: "done A1" };
+      }
+      // Session B parks, so the claim it takes is observable.
+      await new Promise<void>((resolve) => release.push(resolve));
+      return { text: `done ${prompt}` };
+    },
+  };
+
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  for (const id of ["session_a", "session_b"]) await client.createSession({ id, projectId: project.project.id });
+  // ONE slot, so a wake-up wrongly holding it is the difference between B
+  // running and B sitting at "queued" forever.
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, concurrency: 1, pollMs: 60_000 });
+  workers.push(worker);
+  await worker.start();
+
+  await client.submitTurn("session_a", { runId: "a1", input: "A1" });
+  await worker.tick();
+  await eventually(async () => expect((await client.session("session_a")).turns[0]?.state).toBe("completed"));
+
+  // A background task wakes session_a BETWEEN turns: a real, live, running
+  // turn that no worker ever claimed — and that is left open here.
+  await openProviderTurn!();
+  await eventually(async () => expect((await client.session("session_a")).turns[1]?.state).toBe("running"));
+
+  await client.submitTurn("session_b", { runId: "b1", input: "B1" });
+  await worker.tick();
+  // The one slot was never the wake-up's to hold.
+  await eventually(() => expect(started).toEqual(["A1", "B1"]));
+
+  for (const resolve of release.splice(0)) resolve();
 });
