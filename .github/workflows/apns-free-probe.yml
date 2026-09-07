@@ -1,0 +1,30 @@
+name: APNs free Worker probe
+on:
+  workflow_dispatch:
+  push:
+    branches: ['telar/apns-free-probe-*']
+    paths: ['workers/apns-probe/**', '.github/workflows/apns-free-probe.yml']
+permissions:
+  contents: read
+concurrency:
+  group: apns-free-probe
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify probe locally
+        run: node --test workers/apns-probe/worker.test.mjs
+      - name: Probe APNs from a disposable Worker and clean up
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TELAR_APNS_KEY_P8_BASE64: ${{ secrets.TELAR_APNS_KEY_P8_BASE64 }}
+          TELAR_APNS_KEY_ID: ${{ secrets.TELAR_APNS_KEY_ID }}
+          TELAR_APNS_TEAM_ID: ${{ secrets.TELAR_APNS_TEAM_ID }}
+        run: node workers/apns-probe/run.mjs
