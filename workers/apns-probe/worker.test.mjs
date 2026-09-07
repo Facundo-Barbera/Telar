@@ -23,6 +23,7 @@ test('only fixed Apple destination and test token are used; result excludes prov
   try {
     globalThis.fetch = async (url, init) => {
       assert.equal(url, `https://api.push.apple.com/3/device/${'0'.repeat(64)}`);
+      assert.equal(init.redirect, 'manual');
       assert.equal(init.headers['apns-topic'], 'com.telar.mobile');
       assert.ok(init.headers.authorization.startsWith('bearer '));
       return Response.json({ reason: 'BadDeviceToken', privateData: 'DO NOT RETURN' }, { status: 400, headers: { 'apns-id': 'test-id' } });

@@ -18,7 +18,7 @@ export default {
     try {
       const authorization = url.searchParams.get('unsigned') === '1' ? undefined : `bearer ${await jwt(env)}`;
       const response = await fetch(`https://api.push.apple.com/3/device/${'0'.repeat(64)}`, {
-        method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+        method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(10000),
         headers: { ...(authorization ? { authorization } : {}), 'apns-topic': 'com.telar.mobile', 'apns-push-type': 'alert', 'apns-priority': '10' },
         body: JSON.stringify({ aps: { alert: 'Telar transport probe' } }),
       });
