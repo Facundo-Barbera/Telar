@@ -64,6 +64,12 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
  * providers — Claude as an `http` entry in `mcpServers`, Codex through
  * `thread/start`'s `config.mcp_servers` overlay. One transport, both drivers.
  *
+ * The SESSIONS wall is closed the same way (`./sessions-tools/run-socket.ts`):
+ * a Codex turn is pointed at a worker-hosted socket under `telar-sessions`,
+ * with the session's own `self` bound behind the token so subscriptions wake
+ * it. Claude deliberately KEEPS its in-process registration under `telar` —
+ * one wall, two transports, and the wall itself is the shared piece.
+ *
  * The SPOOL and WARP remain in-process Claude SDK servers, so CAP-12 ("items
  * are a Telar-wide substrate reachable from any session") is still TRUE FOR
  * CLAUDE SESSIONS ONLY. A Codex session cannot read or file the user's tasks.

@@ -69,6 +69,7 @@ type RunOptions = {
   options?: CodexDriverOptions;
   mcpServers?: McpServer[];
   browserSocket?: { url: string; token: string };
+  sessionsSocket?: { url: string; token: string };
   steer?: SteerMailbox;
 };
 
@@ -88,6 +89,7 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.onRequest ? { onRequest: run.onRequest } : {}),
     ...(run.mcpServers ? { mcpServers: run.mcpServers } : {}),
     ...(run.browserSocket ? { browserSocket: run.browserSocket } : {}),
+    ...(run.sessionsSocket ? { sessionsSocket: run.sessionsSocket } : {}),
     ...(run.steer ? { steer: run.steer } : {}),
   });
   return { result, observations, controller };
@@ -277,6 +279,32 @@ test("the browser socket rides the SAME overlay, Telar last, and the token never
   expect(JSON.stringify(argv)).not.toContain("tok_secret_abc");
   expect(sent("thread/start").developerInstructions).toContain("tools may be deferred");
   expect(sent("thread/start").developerInstructions).toContain("telar-browser");
+});
+
+test("the sessions socket rides the same overlay, beside the browser's, token on stdin only", async () => {
+  // The `sessions_*` wall for Codex — see `sessions-tools/run-socket.ts`. Same
+  // shape, same shadowing rule, same spawn discipline as the browser's entry.
+  const browser = { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_browser" };
+  const sessions = { url: "http://127.0.0.1:5678/v2/sessions/mcp", token: "tok_sessions_xyz" };
+  await runTurn("plain", { browserSocket: browser, sessionsSocket: sessions }).result;
+
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: {
+      "telar-browser": { url: browser.url, http_headers: { Authorization: "Bearer tok_browser" } },
+      "telar-sessions": { url: sessions.url, http_headers: { Authorization: "Bearer tok_sessions_xyz" } },
+    },
+  });
+  const argv = sent("@argv").argv as string[];
+  expect(argv.slice(1)).toEqual(["app-server"]);
+  expect(JSON.stringify(argv)).not.toContain("tok_sessions_xyz");
+});
+
+test("the sessions socket stands alone too — a Codex session without a browser still reaches its peers", async () => {
+  const sessions = { url: "http://127.0.0.1:5678/v2/sessions/mcp", token: "tok_only" };
+  await runTurn("plain", { sessionsSocket: sessions }).result;
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: { "telar-sessions": { url: sessions.url, http_headers: { Authorization: "Bearer tok_only" } } },
+  });
 });
 
 test("a RESUMED turn carries the browser overlay too — a new socket URL must reach an old thread", async () => {
@@ -814,4 +842,26 @@ test("the browser socket's OWN elicitation is answered by the driver, never by t
   expect(row?.kind === "item.completed" && row.detail?.type === "browser_action" && row.detail.call.name).toBe(
     "mcp__telar-browser__browser_navigate",
   );
+});
+
+test("the sessions socket's elicitation DOES reach the engine's gate — it carries no gate of its own", async () => {
+  // THE DELIBERATE ASYMMETRY with the browser test above. The browser socket
+  // enforces approvals per lease, so its elicitation is auto-accepted here;
+  // the sessions socket enforces nothing, so its elicitation must ride the
+  // ordinary approval arm — the same ladder a Claude session's `sessions_*`
+  // call answers to through `canUseTool`. Auto-accepting it would make Codex
+  // the one provider whose sessions tools skip the mode's decision.
+  const seen: DriverRequest[] = [];
+  const { result } = runTurn("mcp-elicitation-telar-sessions", {
+    sessionsSocket: { url: "http://127.0.0.1:5678/v2/sessions/mcp", token: "tok_s" },
+    onRequest: async (request) => {
+      seen.push(request);
+      return "decline";
+    },
+  });
+  await expect(result).resolves.toMatchObject({ text: "action=decline" });
+  expect(seen.map((request) => request.kind)).toEqual(["tool_call"]);
+  // Declined in the elicitation's own vocabulary, so Codex reads a refusal,
+  // not a broken server.
+  expect(replies()[0]?.result).toEqual({ action: "decline" });
 });
