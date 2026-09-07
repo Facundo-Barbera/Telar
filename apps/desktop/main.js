@@ -831,6 +831,9 @@ function createWindow(url) {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, "preload.js"),
+      // The cockpit's right panel embeds PDFs in an <iframe>; Chromium's PDF
+      // viewer counts as a plugin, and without this the frame stays blank.
+      plugins: true,
       // The renderer half of the anti-flicker pair (see Main): a throttled
       // renderer hands the compositor nothing to show at refocus.
       ...(translucent ? { backgroundThrottling: false } : {}),

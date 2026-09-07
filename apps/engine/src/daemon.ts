@@ -2006,6 +2006,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, { listing: await store.projectFilesAsync(projectId) });
         return;
       }
+      /** One project file's BYTES — the media viewers' read. Same fence as the
+       *  text read; the answer is content and a media type instead of JSON. */
+      const projectFileRaw = /^\/v2\/projects\/([^/]+)\/files\/raw$/.exec(url.pathname);
+      if (request.method === "GET" && projectFileRaw) {
+        const target = url.searchParams.get("path");
+        if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
+        const raw = await store.projectFileBytesAsync(decodeURIComponent(projectFileRaw[1]), target);
+        response.writeHead(200, {
+          "content-type": raw.mediaType,
+          "content-length": raw.data.byteLength,
+          // Unlike an attachment, a workspace file changes under its own name.
+          "cache-control": "no-store",
+        });
+        response.end(raw.data);
+        return;
+      }
       const projectGitHub = /^\/v2\/projects\/([^/]+)\/github$/.exec(url.pathname);
       if (request.method === "GET" && projectGitHub) {
         /**
@@ -2818,6 +2834,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             return;
           }
           writeJson(response, 200, { listing: await store.sessionFilesAsync(session.sessionId) });
+          return;
+        }
+        /** The session twin of `/v2/projects/:id/files/raw` — one file's bytes,
+         *  fenced inside the session's own checkout. */
+        if (request.method === "GET" && session.tail === "/files/raw") {
+          const target = url.searchParams.get("path");
+          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
+          const raw = await store.sessionFileBytesAsync(session.sessionId, target);
+          response.writeHead(200, {
+            "content-type": raw.mediaType,
+            "content-length": raw.data.byteLength,
+            "cache-control": "no-store",
+          });
+          response.end(raw.data);
           return;
         }
         /**

@@ -209,9 +209,16 @@ describe("normalizeUrl", () => {
   test("normalizes local addresses without accepting non-web protocols", () => {
     expect(normalizeUrl("localhost:3000")).toBe("http://localhost:3000/");
     expect(normalizeUrl("https://example.com/path")).toBe("https://example.com/path");
-    expect(() => normalizeUrl("file:///tmp/example.html")).toThrow(
-      "only opens http and https URLs",
-    );
+    // file: renders in the sandboxed tab now (local guides, compiled PDFs).
+    // The dangerous half — handing file: to shell.openExternal — stays
+    // refused by createExternalLinkPolicy, tested in external-links.test.js.
+    expect(normalizeUrl("file:///tmp/example.html")).toBe("file:///tmp/example.html");
+    // A bare absolute path is the file, the way every address bar reads it —
+    // including one with a space, which pathToFileURL escapes.
+    expect(normalizeUrl("/tmp/my guide.html")).toBe("file:///tmp/my%20guide.html");
+    // Every other scheme stays out: openExternal-adjacent handlers included.
+    expect(() => normalizeUrl("smb://server/share")).toThrow("only opens http, https and file URLs");
+    expect(() => normalizeUrl("javascript://alert(1)")).toThrow("only opens http, https and file URLs");
   });
 });
 

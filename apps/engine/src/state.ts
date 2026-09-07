@@ -134,7 +134,7 @@ import {
 import { atomicWrite } from "./atomic";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
 import { findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
-import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, writeWorkspaceFile } from "./files";
+import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import {
   addSubtask as addSpoolSubtask,
   agentsAddedCount as spoolAgentsAdded,
@@ -4847,6 +4847,20 @@ export class EngineStore {
     return this.readFencedAsync(this.getSession(sessionId).workspace.path, target, "session workspace");
   }
 
+  /**
+   * One file's BYTES — what the cockpit's media viewers (image, PDF, video)
+   * render. The same fence as the text read, because the same client can name
+   * the same paths; only the answer differs: content and a media type instead
+   * of decoded text. Refused past `MAX_RAW_FILE_BYTES` — see files.ts.
+   */
+  projectFileBytesAsync(projectId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
+    return this.readFencedBytes(this.getProject(projectId).root, target, "project");
+  }
+
+  sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
+    return this.readFencedBytes(this.getSession(sessionId).workspace.path, target, "session workspace");
+  }
+
   projectFiles(projectId: string): WorkspaceListing {
     return listWorkspaceFiles(this.git, { cwd: this.getProject(projectId).root, now: this.now() });
   }
@@ -4925,6 +4939,29 @@ export class EngineStore {
     if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
     if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
     return readWorkspaceFileAsync({ cwd: root, path: path.relative(root, resolved) });
+  }
+
+  /** The bytes twin of `readFencedAsync` — same fence, same refusals, whole
+   *  content instead of decoded text. Size errors become `invalid_request` so
+   *  the route answers with the sentence rather than a 500. */
+  private async readFencedBytes(root: string, target: string, label: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
+    if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
+    const resolved = path.resolve(root, target);
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
+    let stats: fs.Stats;
+    try {
+      stats = await fs.promises.stat(resolved);
+    } catch {
+      throw new EngineStateError("not_found", "no such file in this workspace");
+    }
+    if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
+    if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
+    try {
+      return await readWorkspaceFileBytes({ cwd: root, path: path.relative(root, resolved) });
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : "the file could not be read");
+    }
   }
 
   /**
@@ -7327,6 +7364,18 @@ export class EngineStore {
       this.appendEvent(
         sessionId,
         { type: "browser.state.changed", provider: observation.provider, tabs: observation.tabs },
+        turn.runId,
+      );
+      return;
+    }
+    if (observation.kind === "display.opened") {
+      // A gesture, not state: the agent asked the cockpit to show one file.
+      // No projection for the same reason browser.state has none — a client
+      // replaying last week's journal must not have last week's panel opened
+      // at it, and the cockpit's own fold guards against exactly that.
+      this.appendEvent(
+        sessionId,
+        { type: "display.opened", path: observation.path, ...(observation.title ? { title: observation.title } : {}) },
         turn.runId,
       );
       return;

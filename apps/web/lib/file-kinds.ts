@@ -91,20 +91,39 @@ export type FileKind = {
   binary?: boolean;
   /**
    * A surface other than the text editor. `notebook` opens an .ipynb as cells
-   * in the session's kernel; `table` opens a CSV or Parquet as a grid. Absent
-   * means the plain file view — which is what these fall back to on a project
-   * that has not opted into data science.
+   * in the session's kernel; `table` opens a CSV or Parquet as a grid — both
+   * only on a project that opted into data science. `pdf` opens the browser's
+   * own paged viewer and is NOT gated: a PDF is a document, not an analysis,
+   * and other features (compiled LaTeX output, a downloaded paper) route
+   * through this same kind. Absent means the plain file view.
    */
-  viewer?: "notebook" | "table";
+  viewer?: "notebook" | "table" | "pdf";
+  /**
+   * Bytes the file view can RENDER rather than merely name. `binary` alone
+   * means "no text to show"; this says which media element shows the content
+   * instead — an <img>, the browser's own PDF viewer in an <iframe>, an
+   * <audio> or <video> control. The bytes come from the raw file route, which
+   * exists precisely because the text route withholds them.
+   */
+  media?: "image" | "pdf" | "audio" | "video";
 };
 
-const KIND = (label: string, glyph: FileGlyph, tint: keyof typeof TINTS, lang?: string, binary?: boolean, viewer?: FileKind["viewer"]): FileKind => ({
+const KIND = (
+  label: string,
+  glyph: FileGlyph,
+  tint: keyof typeof TINTS,
+  lang?: string,
+  binary?: boolean,
+  viewer?: FileKind["viewer"],
+  media?: FileKind["media"],
+): FileKind => ({
   label,
   glyph,
   tint: TINTS[tint],
   ...(lang ? { lang } : {}),
   ...(binary ? { binary: true } : {}),
   ...(viewer ? { viewer } : {}),
+  ...(media ? { media } : {}),
 });
 
 /**
@@ -232,25 +251,26 @@ const BY_EXTENSION: Record<string, FileKind> = {
   hcl: KIND("HCL", "config", "purple", "hcl"),
   patch: KIND("patch", "git", "green", "diff"),
   diff: KIND("diff", "git", "green", "diff"),
-  // Bytes. `lang` absent AND `binary` set: the viewer must not try either.
-  png: KIND("PNG image", "image", "purple", undefined, true),
-  jpg: KIND("JPEG image", "image", "purple", undefined, true),
-  jpeg: KIND("JPEG image", "image", "purple", undefined, true),
-  gif: KIND("GIF image", "image", "purple", undefined, true),
-  webp: KIND("WebP image", "image", "purple", undefined, true),
-  avif: KIND("AVIF image", "image", "purple", undefined, true),
-  ico: KIND("icon", "image", "purple", undefined, true),
+  // Bytes. `lang` absent AND `binary` set — but most of these carry `media`,
+  // so the viewer renders the content instead of apologising for it.
+  png: KIND("PNG image", "image", "purple", undefined, true, undefined, "image"),
+  jpg: KIND("JPEG image", "image", "purple", undefined, true, undefined, "image"),
+  jpeg: KIND("JPEG image", "image", "purple", undefined, true, undefined, "image"),
+  gif: KIND("GIF image", "image", "purple", undefined, true, undefined, "image"),
+  webp: KIND("WebP image", "image", "purple", undefined, true, undefined, "image"),
+  avif: KIND("AVIF image", "image", "purple", undefined, true, undefined, "image"),
+  ico: KIND("icon", "image", "purple", undefined, true, undefined, "image"),
   icns: KIND("icon", "image", "purple", undefined, true),
-  pdf: KIND("PDF", "doc", "red", undefined, true),
+  pdf: KIND("PDF", "doc", "red", undefined, true, "pdf", "pdf"),
   woff: KIND("font", "binary", "plain", undefined, true),
   woff2: KIND("font", "binary", "plain", undefined, true),
   ttf: KIND("font", "binary", "plain", undefined, true),
   otf: KIND("font", "binary", "plain", undefined, true),
-  mp3: KIND("audio", "audio", "pink", undefined, true),
-  wav: KIND("audio", "audio", "pink", undefined, true),
-  mp4: KIND("video", "video", "pink", undefined, true),
-  mov: KIND("video", "video", "pink", undefined, true),
-  webm: KIND("video", "video", "pink", undefined, true),
+  mp3: KIND("audio", "audio", "pink", undefined, true, undefined, "audio"),
+  wav: KIND("audio", "audio", "pink", undefined, true, undefined, "audio"),
+  mp4: KIND("video", "video", "pink", undefined, true, undefined, "video"),
+  mov: KIND("video", "video", "pink", undefined, true, undefined, "video"),
+  webm: KIND("video", "video", "pink", undefined, true, undefined, "video"),
   zip: KIND("archive", "archive", "yellow", undefined, true),
   gz: KIND("archive", "archive", "yellow", undefined, true),
   tgz: KIND("archive", "archive", "yellow", undefined, true),

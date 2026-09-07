@@ -1407,6 +1407,20 @@ export class EngineClient {
   }
 
   /**
+   * One file's BYTES — what the cockpit's media viewers (image, PDF, video)
+   * render. The text routes above deliberately withhold a binary file's
+   * content; this is the read that serves it, refused past the engine's raw
+   * ceiling rather than truncated.
+   */
+  projectFileBytes(projectId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
+    return this.rawBytes(`/v2/projects/${encodeURIComponent(projectId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
+  }
+
+  sessionFileBytes(sessionId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
+    return this.rawBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
+  }
+
+  /**
    * Save a file a human edited.
    *
    * `expectedSha256` IS THE SAFETY, not an optimisation: it is the hash the read
@@ -1608,10 +1622,16 @@ export class EngineClient {
   }
 
   /** The bytes behind an attachment. Immutable: the id is minted per write. */
-  async attachmentBytes(sessionId: string, attachmentId: string): Promise<{ data: Uint8Array; contentType: string }> {
+  attachmentBytes(sessionId: string, attachmentId: string): Promise<{ data: Uint8Array; contentType: string }> {
+    return this.rawBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`);
+  }
+
+  /** A GET whose answer is content rather than JSON — attachments and raw
+   *  workspace files. Errors still arrive as JSON and are decoded as such. */
+  private async rawBytes(pathAndQuery: string): Promise<{ data: Uint8Array; contentType: string }> {
     let response: Response;
     try {
-      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathAndQuery}`, {
         method: "GET",
         headers: { authorization: `Bearer ${this.discovery.token}` },
       });
