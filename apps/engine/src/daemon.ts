@@ -2152,6 +2152,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         });
         return;
       }
+      /** `uv venv .venv` inside the project — the one write into a checkout this feature makes. */
+      const projectDsProjectVenv = /^\/v2\/projects\/([^/]+)\/data-science\/project-venv$/.exec(url.pathname);
+      if (request.method === "POST" && projectDsProjectVenv) {
+        const input = await body(request);
+        writeJson(response, 200, {
+          venv: await store.dataScienceCreateProjectVenv(decodeURIComponent(projectDsProjectVenv[1]), {
+            basePython: stringValue(input.basePython, "base python")!,
+            ...(typeof input.stack === "boolean" ? { stack: input.stack } : {}),
+          }),
+        });
+        return;
+      }
+      /** Probe one interpreter or venv directory a person named. */
+      const projectDsProbe = /^\/v2\/projects\/([^/]+)\/data-science\/probe$/.exec(url.pathname);
+      if (request.method === "POST" && projectDsProbe) {
+        const input = await body(request);
+        writeJson(response, 200, { probe: await store.dataScienceProbe(decodeURIComponent(projectDsProbe[1]), stringValue(input.path, "python path")!) });
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {
@@ -2768,28 +2787,44 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         if (request.method === "POST" && dsMethod) {
           const input = await body(request);
           const ds = store.dataScience(session.sessionId);
+          /**
+           * A KERNEL'S REFUSAL IS AN ANSWER, NOT A CRASH. "The notebook is
+           * 2 MB, larger than the engine reads" and "could not build the
+           * kernel's environment" are sentences a person can act on; folded
+           * into a generic 500 they read as the engine being broken, which is
+           * what the first nightly showed. Everything the capability throws is
+           * about the request, so it maps to 400 with its own words.
+           */
+          const dsAnswer = async <T,>(work: () => Promise<T>): Promise<T> => {
+            try {
+              return await work();
+            } catch (error) {
+              if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+              throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
+            }
+          };
           const str = (key: string, optional = false) => stringValue(input[key], key, optional);
           const num = (key: string): number | undefined => (typeof input[key] === "number" ? (input[key] as number) : undefined);
           let result: unknown;
           switch (dsMethod) {
-            case "kernel": result = await ds.kernel(); break;
-            case "execute": result = await ds.execute({ code: str("code")!, ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}), ...(str("producer", true) ? { producer: str("producer", true)! } : {}) }); break;
-            case "interrupt": await ds.interrupt(); result = {}; break;
-            case "restart": await ds.restart(); result = {}; break;
-            case "vars": result = await ds.vars(num("limit")); break;
-            case "inspect": result = await ds.inspect(str("name")!, num("depth")); break;
-            case "notebook/read": result = await ds.notebookRead(str("path")!, { ...(num("from") !== undefined ? { from: num("from")! } : {}), ...(num("to") !== undefined ? { to: num("to")! } : {}), ...(input.withOutputs === true ? { withOutputs: true } : {}) }); break;
-            case "notebook/edit": result = await ds.notebookEdit(str("path")!, input.edit as Parameters<typeof ds.notebookEdit>[1]); break;
-            case "notebook/run": result = await ds.notebookRun(str("path")!, { ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(input.all === true ? { all: true } : {}), ...(typeof input.stopOnError === "boolean" ? { stopOnError: input.stopOnError } : {}) }); break;
-            case "plot": result = await ds.plot({ code: str("code")!, ...(str("title", true) ? { title: str("title", true)! } : {}) }); break;
-            case "snapshot": result = await ds.snapshot(str("name")!, Array.isArray(input.vars) ? input.vars.map(String) : undefined); break;
-            case "snapshots": result = await ds.snapshots(); break;
-            case "diff": result = await ds.diff(str("from")!, str("to")!); break;
-            case "checkpoint": result = await ds.checkpoint({ action: str("action")! as "save" | "restore" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}) }); break;
-            case "lineage": result = await ds.lineage(str("of", true)); break;
-            case "watches": result = await ds.watches(); break;
-            case "watch": result = await ds.watch({ name: str("name")!, ...(str("assert", true) ? { assert: str("assert", true)! } : {}), ...(input.remove === true ? { remove: true } : {}) }); break;
-            case "experiment": result = await ds.experiment({ action: str("action")! as "start" | "log" | "end" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}), ...(input.params && typeof input.params === "object" ? { params: input.params as Record<string, unknown> } : {}), ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}) }); break;
+            case "kernel": result = await dsAnswer(() => ds.kernel()); break;
+            case "execute": result = await dsAnswer(() => ds.execute({ code: str("code")!, ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}), ...(str("producer", true) ? { producer: str("producer", true)! } : {}) })); break;
+            case "interrupt": await dsAnswer(() => ds.interrupt()); result = {}; break;
+            case "restart": await dsAnswer(() => ds.restart()); result = {}; break;
+            case "vars": result = await dsAnswer(() => ds.vars(num("limit"))); break;
+            case "inspect": result = await dsAnswer(() => ds.inspect(str("name")!, num("depth"))); break;
+            case "notebook/read": result = await dsAnswer(() => ds.notebookRead(str("path")!, { ...(num("from") !== undefined ? { from: num("from")! } : {}), ...(num("to") !== undefined ? { to: num("to")! } : {}), ...(input.withOutputs === true ? { withOutputs: true } : {}) })); break;
+            case "notebook/edit": result = await dsAnswer(() => ds.notebookEdit(str("path")!, input.edit as Parameters<typeof ds.notebookEdit>[1])); break;
+            case "notebook/run": result = await dsAnswer(() => ds.notebookRun(str("path")!, { ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(input.all === true ? { all: true } : {}), ...(typeof input.stopOnError === "boolean" ? { stopOnError: input.stopOnError } : {}) })); break;
+            case "plot": result = await dsAnswer(() => ds.plot({ code: str("code")!, ...(str("title", true) ? { title: str("title", true)! } : {}) })); break;
+            case "snapshot": result = await dsAnswer(() => ds.snapshot(str("name")!, Array.isArray(input.vars) ? input.vars.map(String) : undefined)); break;
+            case "snapshots": result = await dsAnswer(() => ds.snapshots()); break;
+            case "diff": result = await dsAnswer(() => ds.diff(str("from")!, str("to")!)); break;
+            case "checkpoint": result = await dsAnswer(() => ds.checkpoint({ action: str("action")! as "save" | "restore" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}) })); break;
+            case "lineage": result = await dsAnswer(() => ds.lineage(str("of", true))); break;
+            case "watches": result = await dsAnswer(() => ds.watches()); break;
+            case "watch": result = await dsAnswer(() => ds.watch({ name: str("name")!, ...(str("assert", true) ? { assert: str("assert", true)! } : {}), ...(input.remove === true ? { remove: true } : {}) })); break;
+            case "experiment": result = await dsAnswer(() => ds.experiment({ action: str("action")! as "start" | "log" | "end" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}), ...(input.params && typeof input.params === "object" ? { params: input.params as Record<string, unknown> } : {}), ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}) })); break;
             default: throw new HttpError(404, "not_found", `no data-science method ${dsMethod}`);
           }
           writeJson(response, 200, result ?? {});
