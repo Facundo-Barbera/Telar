@@ -28,31 +28,31 @@ describe("the model manifest", () => {
      */
     const listed = [row("claude-fable-5[1m]", { resolves: "claude-fable-5[1m]" }), row("claude-fable-5-1", { resolves: "claude-fable-5-1", isDefault: true })];
     const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["claude-fable-5[1m]", "claude-fable-5-1", "claude-fable-5-1[1m]"]);
-    const synthesized = out[2]!;
+    expect(out.map((m) => m.id)).toEqual(["claude-fable-5[1m]", "claude-fable-5-1[1m]"]);
+    const synthesized = out[1]!;
     expect(synthesized.resolves).toBe("claude-fable-5-1[1m]");
-    // A variant of the default, never the default in its own right.
-    expect(synthesized.isDefault).toBe(false);
+    // The 200k default row is filtered away, so the surviving 1M row carries it.
+    expect(synthesized.isDefault).toBe(true);
     // Everything else — efforts, fast mode, label — copied from the sibling.
     expect(synthesized.efforts).toEqual(["high"]);
   });
 
   test("the CLI wins: a listed [1m] row is never duplicated", () => {
     const listed = [row("sonnet", { resolves: "claude-sonnet-5" }), row("sonnet[1m]", { resolves: "claude-sonnet-5[1m]" })];
-    expect(applyModelManifest(listed, WINDOWS_ONLY).map((m) => m.id)).toEqual(["sonnet", "sonnet[1m]"]);
+    expect(applyModelManifest(listed, WINDOWS_ONLY).map((m) => m.id)).toEqual(["sonnet[1m]"]);
   });
 
-  test("a profile without a long window, or a model the manifest does not know, is left alone", () => {
+  test("a profile without a long window is dropped, and a model the manifest does not know is left alone", () => {
     const listed = [row("haiku", { resolves: "claude-haiku-4-5-20251001" }), row("claude-mystery-9", { resolves: "claude-mystery-9" })];
-    expect(applyModelManifest(listed, WINDOWS_ONLY).map((m) => m.id)).toEqual(["haiku", "claude-mystery-9"]);
+    expect(applyModelManifest(listed, WINDOWS_ONLY).map((m) => m.id)).toEqual(["claude-mystery-9"]);
   });
 
   test("keys on the canonical id: a dated build and an alias both find their profile", () => {
     const manifest: ModelManifest = { version: 1, claude: { profiles: { p: { longWindow: true } }, models: { "claude-x-1": "p" } } };
     const listed = [row("x", { resolves: "claude-x-1-20260101" })];
     const out = applyModelManifest(listed, manifest);
-    expect(out.map((m) => m.id)).toEqual(["x", "x[1m]"]);
-    expect(out[1]!.resolves).toBe("claude-x-1-20260101[1m]");
+    expect(out.map((m) => m.id)).toEqual(["x[1m]"]);
+    expect(out[0]!.resolves).toBe("claude-x-1-20260101[1m]");
   });
 
   test("the bundled manifest is well-formed: every model points at a profile that exists", () => {
@@ -73,9 +73,9 @@ describe("declared models", () => {
      */
     const listed = [row("claude-fable-5", { resolves: "claude-fable-5" })];
     const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["claude-fable-5", "claude-fable-5[1m]", "claude-fable-5-1", "claude-fable-5-1[1m]"]);
-    const declared = out[2]!;
-    expect(declared).toMatchObject({ label: "Fable 5.1", source: "provider", isDefault: false, resolves: "claude-fable-5-1" });
+    expect(out.map((m) => m.id)).toEqual(["claude-fable-5[1m]", "claude-fable-5-1[1m]"]);
+    const declared = out[1]!;
+    expect(declared).toMatchObject({ label: "Fable 5.1", source: "provider", isDefault: false, resolves: "claude-fable-5-1[1m]" });
     expect(declared.efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
   });
 
@@ -83,7 +83,7 @@ describe("declared models", () => {
     // Listed by alias, resolving to the canonical id the manifest declares.
     const listed = [row("fable", { resolves: "claude-fable-5-1", label: "Fable (live)" })];
     const out = applyModelManifest(listed, BUNDLED_MANIFEST);
-    expect(out.map((m) => m.id)).toEqual(["fable", "fable[1m]"]);
+    expect(out.map((m) => m.id)).toEqual(["fable[1m]"]);
     expect(out[0]!.label).toBe("Fable (live)");
   });
 });
@@ -96,8 +96,8 @@ test("a profile shipped 1M by default marks its synthesized [1m] row as the defa
   const out = applyModelManifest(listed, BUNDLED_MANIFEST);
   const long = out.find((m) => m.id === "claude-fable-5-1[1m]")!;
   expect(long.defaultWindow).toBe(true);
-  expect(long.isDefault).toBe(false);
-  expect(out.find((m) => m.id === "claude-fable-5-1")!.defaultWindow).toBeUndefined();
+  expect(long.isDefault).toBe(true);
+  expect(out.find((m) => m.id === "claude-fable-5-1")).toBeUndefined();
   // A long-window profile NOT shipped 1M by default gets no mark.
   const sonnet = applyModelManifest([row("sonnet", { resolves: "claude-sonnet-5" })], BUNDLED_MANIFEST).find((m) => m.id === "sonnet[1m]")!;
   expect(sonnet.defaultWindow).toBeUndefined();

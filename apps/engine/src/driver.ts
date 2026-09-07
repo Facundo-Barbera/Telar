@@ -501,13 +501,27 @@ function claudeMcpServers(servers: McpServer[] | undefined): Record<string, SdkM
  * display-level nicety is the worse trade, and a level the SDK cannot honour is
  * indistinguishable from none.
  */
+const CLAUDE_1M_FAMILY_ALIAS = /^(opus|sonnet|fable)(?:$|[-[])/i;
+
+function isClaudeLongContextFamily(model: string): boolean {
+  return /(^|[/])claude-(?:opus|sonnet|fable)-/i.test(model) || CLAUDE_1M_FAMILY_ALIAS.test(model);
+}
+
 /**
- * NO LONG-CONTEXT BETA IS SENT ANY MORE. This driver used to translate a
- * `contextWindow: "1m"` selection into `betas: ['context-1m-2025-08-07']`.
- * Asking the installed Claude Code for its models showed the translation to be
- * unnecessary: it offers `claude-opus-5[1m]` and `sonnet[1m]` as MODELS, so a
- * long window is chosen by naming one, and there is nothing to opt into.
+ * Telar no longer offers Claude's 200k variants. Keep 1M enabled for the
+ * provider default too, because an absent model means "run Claude Code's
+ * default", not "run a short-context row". Explicit unsupported custom ids are
+ * left alone rather than given a fabricated meter.
  */
+function claudeContextEnvForModel(model: string | undefined): Record<string, string> | undefined {
+  if (model && !isClaudeLongContextFamily(model)) return undefined;
+  return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
+}
+
+function selectedContextMaxFromModel(model: string | undefined): number | undefined {
+  if (model && !isClaudeLongContextFamily(model)) return undefined;
+  return 1_000_000;
+}
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 const CLAUDE_EFFORTS = new Set<string>(["low", "medium", "high", "xhigh", "max"]);
@@ -554,6 +568,7 @@ type ClaudeSdk = {
       resume?: string;
       canUseTool?: SdkCanUseTool;
       mcpServers?: Record<string, SdkMcpServer>;
+      env?: Record<string, string | undefined>;
       /**
        * WHICH BINARY ANSWERS THE TURN.
        *
@@ -1171,6 +1186,7 @@ export function createClaudeDriver(
       }
       const sdkEffort = claudeEffort(effort);
       const userServers = claudeMcpServers(userMcpServers);
+      const contextEnv = claudeContextEnvForModel(model);
 
       let finalText = "";
       let receivedPartialText = false;
@@ -1184,7 +1200,7 @@ export function createClaudeDriver(
        * forward because a slash-command result can arrive with an empty table.
        */
       let contextUsed: number | undefined;
-      let contextMax: number | undefined;
+      let contextMax: number | undefined = selectedContextMaxFromModel(model);
       const decorateUsage = (snapshot: UsageSnapshot | undefined): UsageSnapshot | undefined =>
         snapshot === undefined
           ? undefined
@@ -1846,6 +1862,7 @@ export function createClaudeDriver(
         cwd,
         env: env ?? null,
         effort: sdkEffort ?? null,
+        contextEnv: contextEnv ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
         /**
@@ -2015,7 +2032,7 @@ export function createClaudeDriver(
             // environment here, which is where the child's PATH and HOME come
             // from — and a key patched to `undefined` genuinely disappears,
             // which is how a configured instance stops inheriting a credential.
-            ...(env ? { env: { ...process.env, ...env } } : {}),
+            ...(env || contextEnv ? { env: { ...process.env, ...env, ...contextEnv } } : {}),
             // Part of the fingerprint: a CLI that upgraded itself between two
             // turns changes the resolved path, and the runtime is recreated.
             ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
@@ -2397,7 +2414,11 @@ export function createClaudeDriver(
               await flush();
               continue;
             }
-            contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
+            const reportedContextMax = contextMaxFrom(item.modelUsage);
+            contextMax =
+              reportedContextMax === undefined
+                ? contextMax
+                : Math.max(contextMax ?? 0, reportedContextMax);
             usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {
@@ -2427,7 +2448,7 @@ export function createClaudeDriver(
              * closing as failed rather than parking the pump forever.
              */
             const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
-            const toolsStillRunning = stopReason === "tool_use" || (stopReason === null && openTopLevelTools.size > 0);
+            const toolsStillRunning = openTopLevelTools.size > 0 && (stopReason === "tool_use" || stopReason === null);
             if (persistent && toolsStillRunning) {
               await flush();
               continue;
@@ -2818,7 +2839,7 @@ export function createClaudeDriver(
 
               if (item.type === "result" && !parentToolUseId) {
                 const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
-                if (stopReason === "tool_use" || (stopReason === null && wake.tools.size > 0)) continue;
+                if (wake.tools.size > 0 && (stopReason === "tool_use" || stopReason === null)) continue;
                 const failed = item.subtype !== "success";
                 await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });
                 continue;

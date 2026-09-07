@@ -21,13 +21,11 @@
  *     always wins, so a declaration goes quiet the moment the CLI catches up.
  *
  *  2. SYNTHESIZE the missing `<id>[1m]` row for a model (listed or declared)
- *     whose profile has a long window. The row is a real provider row in every
- *     other respect (copied from its standard sibling), which is what lets
- *     every consumer — web and iOS — work unchanged: they already understand
- *     `[1m]` rows.
+ *     whose profile has a long window, then publish only long-window Claude
+ *     rows. This app no longer offers the 200k variants or Haiku.
  *
- * No new protocol field, no second source of truth for the meter (the CLI's
- * own `modelUsage.contextWindow` still decides that at runtime).
+ * No new protocol field: a selected row is still the provider's own model id,
+ * with the context window encoded in Claude Code's `[1m]` suffix.
  *
  * BUNDLED, NO NETWORK. The engine makes no outbound fetches today and this does
  * not start; updating the manifest is shipping a build, which for this app is a
@@ -67,6 +65,12 @@ function canonicalId(model: Pick<ProviderModel, "id" | "resolves">): string {
 const isLong = (model: Pick<ProviderModel, "id" | "resolves">): boolean =>
   /\[1m\]$/i.test(model.id) || /\[1m\]$/i.test(model.resolves ?? "");
 
+function publishClaudeModel(model: ProviderModel, manifest: NonNullable<ModelManifest["claude"]>): boolean {
+  const profile = manifest.profiles[manifest.models[canonicalId(model)] ?? ""];
+  if (!profile) return true;
+  return profile.longWindow === true && isLong(model);
+}
+
 /**
  * Add the `[1m]` rows the provider left out, per the manifest. Pure; returns a
  * new array with each synthesized row placed right after its standard sibling
@@ -95,6 +99,7 @@ export function applyModelManifest(models: readonly ProviderModel[], manifest: M
       fastMode: false,
     }));
   const withDeclared = [...models, ...declared];
+  const defaultCanonical = new Set(withDeclared.filter((model) => model.isDefault).map(canonicalId));
   // Step 2: every canonical id that already has a long row, listed by the provider.
   const alreadyLong = new Set(withDeclared.filter(isLong).map(canonicalId));
   const out: ProviderModel[] = [];
@@ -112,12 +117,18 @@ export function applyModelManifest(models: readonly ProviderModel[], manifest: M
       // Resolves to the long form of what the standard row resolves to, so the
       // cockpit's family fold puts both rows under one name.
       resolves: `${model.resolves ?? model.id}[1m]`,
-      // The standard row keeps the provider's default flag; the synthesized
-      // one is a variant of it, never the default in its own right.
-      isDefault: false,
+      // If the provider named the filtered-out 200k row as default, carry that
+      // default to the only row Telar now publishes for this family.
+      isDefault: model.isDefault,
       // A fact for the picker to show, not a choice made on anyone's behalf.
       ...(profile.defaultLong ? { defaultWindow: true } : {}),
     });
   }
-  return out;
+  return out
+    .filter((model) => publishClaudeModel(model, claude))
+    .map((model) =>
+      isLong(model) && defaultCanonical.has(canonicalId(model))
+        ? { ...model, isDefault: true }
+        : model,
+    );
 }

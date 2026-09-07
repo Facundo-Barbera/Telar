@@ -316,6 +316,26 @@ test("a result with NO stop reason stated but main-loop tools unresolved also ho
   expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
 });
 
+test("a tool-use result with no unresolved top-level tools ends the turn", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "not blocking on the background work" }], stop_reason: "end_turn" },
+      };
+      yield { type: "result", subtype: "success", stop_reason: "tool_use" };
+      await new Promise(() => undefined);
+    },
+  }));
+  const { result } = run(driver);
+  const raced = await Promise.race([
+    result.then((value) => ({ kind: "resolved" as const, value })),
+    new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 250)),
+  ]);
+  expect(raced.kind).toBe("resolved");
+  expect(raced.kind === "resolved" && raced.value.text).toBe("not blocking on the background work");
+});
+
 test("a sub-agent's result never completes the parent turn", async () => {
   // Every message produced inside a sub-agent carries `parent_tool_use_id`.
   // A child's result completing the PARENT would end a turn whose main loop
@@ -399,13 +419,41 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   // Occupancy is the NEWEST message's input+cacheRead+cacheCreate+output.
   expect(usages[0]?.kind === "usage" && usages[0].usage.contextUsed).toBe(115);
   expect(usages[1]?.kind === "usage" && usages[1].usage.contextUsed).toBe(219);
-  // The window is the LARGEST model's — the main loop's, not a sidechain's —
-  // and it lands on the final snapshot from the result's modelUsage table.
+  // Claude's default is now Telar's long-context row. A provider-reported 200k
+  // window cannot lower the meter below the selected/default 1M floor.
   const last = usages[2];
-  expect(last?.kind === "usage" && last.usage.contextMax).toBe(200_000);
+  expect(last?.kind === "usage" && last.usage.contextMax).toBe(1_000_000);
   expect(last?.kind === "usage" && last.usage.contextUsed).toBe(219);
   // Tokens still come from the result's own usage, never from modelUsage.
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
+});
+
+test("a selected or default Claude 1M row is the context-meter floor", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 400_000, output_tokens: 2 } },
+      };
+      yield {
+        type: "result",
+        subtype: "success",
+        usage: { input_tokens: 400_000, output_tokens: 2 },
+        modelUsage: { "claude-fable-5-1": { contextWindow: 200_000, inputTokens: 400_000 } },
+      };
+    },
+  }));
+  const selected = run(driver, { model: "claude-fable-5-1[1m]" });
+  await selected.result;
+  const selectedUsage = selected.sink.observations.filter((o) => o.kind === "usage").at(-1);
+  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextMax).toBe(1_000_000);
+  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextUsed).toBe(400_002);
+
+  const fallback = run(driver);
+  await fallback.result;
+  const fallbackUsage = fallback.sink.observations.filter((o) => o.kind === "usage").at(-1);
+  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextMax).toBe(1_000_000);
+  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextUsed).toBe(400_002);
 });
 
 test("compaction is a timeline row, not a dropped message", async () => {
@@ -1319,25 +1367,24 @@ test("the user's MCP servers reach the SDK, and Telar's own key wins a collision
   expect(servers?.tools).toEqual({ type: "stdio", command: "node", args: ["s.js"] });
 });
 
-test("fast mode reaches the SDK only when a session asked for it, and no beta ever does", async () => {
+test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   // A settings override is a request for non-default behaviour, so absence has
-  // to stay absence. And NO `betas` is sent at all any more: the long-context
-  // flag this driver used to translate is not a flag — Claude Code offers the
-  // long window as a model (`claude-opus-5[1m]`), so there is nothing to opt
-  // into and a stale dated beta would be the only thing left to send.
-  const seen: { betas?: unknown; settings?: { fastMode?: boolean } }[] = [];
+  // to stay absence. Telar no longer offers 200k Claude rows, so both `[1m]`
+  // rows and legacy bare family aliases explicitly keep 1M enabled even if the
+  // host shell disabled it.
+  const seen: { model?: unknown; env?: Record<string, unknown>; settings?: { fastMode?: boolean } }[] = [];
   const driver = createClaudeDriver(async () => ({
     async *query(input) {
-      seen.push({ betas: (input.options as { betas?: unknown }).betas, settings: input.options.settings });
+      seen.push({ model: input.options.model, env: input.options.env, settings: input.options.settings });
       yield { type: "result", subtype: "success" };
     },
   }));
-  await run(driver, { fastMode: true }).result;
+  await run(driver, { model: "claude-fable-5-1[1m]", fastMode: true }).result;
+  await run(driver, { model: "claude-opus-5" }).result;
   await run(driver, {}).result;
-  expect(seen).toEqual([
-    { betas: undefined, settings: { fastMode: true } },
-    { betas: undefined, settings: undefined },
-  ]);
+  expect(seen[0]).toMatchObject({ model: "claude-fable-5-1[1m]", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: { fastMode: true } });
+  expect(seen[1]).toMatchObject({ model: "claude-opus-5", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
+  expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
 });
 
 /**
@@ -1681,10 +1728,10 @@ describe("the session runtime", () => {
         });
       },
     }) as never);
-    await run(driver, { sessionId: "session_switching", model: "opus" }).result;
-    await run(driver, { sessionId: "session_switching", model: "haiku" }).result;
+    await run(driver, { sessionId: "session_switching", model: "opus[1m]" }).result;
+    await run(driver, { sessionId: "session_switching", model: "sonnet[1m]" }).result;
     expect(queryCalls).toBe(1);
-    expect(modelsSet).toEqual(["haiku"]);
+    expect(modelsSet).toEqual(["sonnet[1m]"]);
   });
 
   test("dispose closes every live runtime — the worker's stop is the session's end", async () => {

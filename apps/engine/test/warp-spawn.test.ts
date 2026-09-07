@@ -159,21 +159,31 @@ test("a child may not create work that outlives the run", async () => {
   for (const tool of ["EnterWorktree", "ExitWorktree"]) expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(tool);
 });
 
-test("the session is inherited and the call overrides it", async () => {
+test("the session is inherited and the call overrides it, including Claude context env", async () => {
   // `DriverRun.model`'s rule, one level down: absent means the provider's own
   // default, so a script that names nothing must not have a name invented for
   // it — but a script that names one must get exactly that one.
   const { sdk, seen } = fakeSdk(() => success("done"));
-  const spawn = createWarpSpawn({ sdk, cwd: "/repo", model: "claude-sonnet-5", effort: "medium", fastMode: true });
+  const spawn = createWarpSpawn({ sdk, cwd: "/repo", model: "claude-fable-5-1[1m]", effort: "medium", fastMode: true });
 
   await spawn(call());
-  expect(seen.options.model).toBe("claude-sonnet-5");
+  expect(seen.options.model).toBe("claude-fable-5-1[1m]");
+  expect(seen.options.env).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" });
   expect(seen.options.effort).toBe("medium");
   expect(seen.options.settings).toEqual({ fastMode: true });
 
   await spawn(call({ opts: { model: "claude-opus-5", effort: "max" } }));
   expect(seen.options.model).toBe("claude-opus-5");
+  expect(seen.options.env).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" });
   expect(seen.options.effort).toBe("max");
+
+  await spawn(call({ opts: { model: "claude-opus-5[1m]" } }));
+  expect(seen.options.model).toBe("claude-opus-5[1m]");
+  expect(seen.options.env).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" });
+
+  await spawn(call({ opts: { model: undefined } }));
+  expect(seen.options.model).toBe("claude-fable-5-1[1m]");
+  expect(seen.options.env).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" });
 });
 
 test("an effort word the SDK has never heard of is dropped, not forwarded", async () => {
