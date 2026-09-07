@@ -218,6 +218,20 @@ function normalizeUrl(value) {
   return parsed.href;
 }
 
+function normalizePopupUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "about:blank") return "about:blank";
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (isProtectedUrl(parsed.href)) return null;
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  return parsed.href;
+}
+
 // --- External-link policy (issue #35) ---------------------------------------
 // The tabs this file owns are a feature: agents drive those WebContentsView
 // instances and they must keep rendering in-app. Every OTHER link is the
@@ -383,6 +397,7 @@ class DesktopBrowserManager {
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
     this.activeToolCalls = new Map();
+    this.pendingPopupTabs = new Set();
     // Attribution is scope-level because agent input is dispatched per scope
     // call, whichever tab it lands in. Everything else lives ON THE TAB
     // (see createTab): the human's last input, the page generation the agent
@@ -1607,6 +1622,31 @@ class DesktopBrowserManager {
     return tab;
   }
 
+  popupOpener(tab) {
+    const recentAgentInput = this.now() - (this.lastAgentInputAt.get(tab.scopeKey) || 0) < HUMAN_ATTRIBUTION_GRACE_MS;
+    return tab.agentBusy > 0 || recentAgentInput ? "agent" : "human";
+  }
+
+  trackPopupTab(task) {
+    this.pendingPopupTabs.add(task);
+    task.then(
+      () => this.pendingPopupTabs.delete(task),
+      () => this.pendingPopupTabs.delete(task),
+    );
+    return task;
+  }
+
+  async settlePopupTabs() {
+    await Promise.allSettled([...this.pendingPopupTabs]);
+  }
+
+  async openPopupTab(opener, rawUrl) {
+    if (!this.tabs.includes(opener)) return null;
+    const url = normalizePopupUrl(rawUrl);
+    if (!url) return null;
+    return this.createTab(opener.scopeKey, url, this.popupOpener(opener));
+  }
+
   /** A tab record with no WebContents — what createTab and the inventory
    *  restore both start from. */
   newTabRecord(scope, partition, openedBy) {
@@ -1673,6 +1713,12 @@ class DesktopBrowserManager {
       if (blank !== tab.wasBlank) { tab.wasBlank = blank; this.applyGeometry(tab).catch(() => {}); }
       this.emitState(tab.scopeKey);
     };
+    if (typeof wc.setWindowOpenHandler === "function") {
+      wc.setWindowOpenHandler(({ url }) => {
+        this.trackPopupTab(this.openPopupTab(tab, url)).catch(() => {});
+        return { action: "deny" };
+      });
+    }
     /**
      * A hidden view is a background renderer and Chromium stops flushing its
      * input queue — a CDP click never resolves; unthrottled it lands in

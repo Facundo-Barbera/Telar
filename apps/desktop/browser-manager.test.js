@@ -68,6 +68,7 @@ class FakeWebContents extends EventEmitter {
       goBack: () => {},
       goForward: () => {},
     };
+    this.windowOpenHandler = null;
     // The credential probe, per frame: tests set `probeAnswers` to one
     // answer per frame (false = empty, true = filled, null = probe missing,
     // an Error = the frame threw).
@@ -105,6 +106,15 @@ class FakeWebContents extends EventEmitter {
 
   isLoading() {
     return false;
+  }
+
+  setWindowOpenHandler(handler) {
+    this.windowOpenHandler = handler;
+  }
+
+  openWindow(url) {
+    if (!this.windowOpenHandler) return { action: "allow" };
+    return this.windowOpenHandler({ url });
   }
 
   // A hidden view's capture path (see DesktopBrowserManager.screenshot):
@@ -269,6 +279,51 @@ describe("DesktopBrowserManager", () => {
     expect(manager.state("session-a").tabs).toEqual([
       expect.objectContaining({ url: "https://example.com/", active: true, sleeping: false }),
     ]);
+  });
+
+  test("opens target-blank web links as managed browser tabs", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://one.example/", "human");
+
+    expect(views[0].webContents.openWindow("https://popup.example/path")).toEqual({ action: "deny" });
+    await manager.settlePopupTabs();
+
+    const state = manager.state("session-a");
+    expect(state.tabs.map((tab) => [tab.url, tab.active, tab.agentFocus, tab.openedBy])).toEqual([
+      ["https://one.example/", false, false, "human"],
+      ["https://popup.example/path", true, true, "human"],
+    ]);
+  });
+
+  test("keeps agent-triggered popups off the human's current browser tab", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://human.example/", "human");
+    await manager.createTab("session-a", "https://agent.example/", "agent");
+    const agentTab = manager.scopeTabs("session-a")[1];
+    agentTab.agentBusy = 1;
+
+    expect(views[1].webContents.openWindow("https://popup.example/oauth")).toEqual({ action: "deny" });
+    await manager.settlePopupTabs();
+    agentTab.agentBusy = 0;
+
+    const state = manager.state("session-a");
+    expect(state.tabs.map((tab) => [tab.url, tab.active, tab.agentFocus, tab.openedBy])).toEqual([
+      ["https://human.example/", true, false, "human"],
+      ["https://agent.example/", false, false, "agent"],
+      ["https://popup.example/oauth", false, true, "agent"],
+    ]);
+  });
+
+  test("refuses protected and non-web popup targets without creating a browser tab", async () => {
+    const { manager, views } = makeHarness();
+    await manager.createTab("session-a", "https://one.example/", "human");
+
+    for (const target of ["chrome-extension://abc/popup.html", "chrome://extensions", "javascript:alert(1)", "file:///etc/passwd"]) {
+      expect(views[0].webContents.openWindow(target)).toEqual({ action: "deny" });
+    }
+    await manager.settlePopupTabs();
+
+    expect(manager.state("session-a").tabs).toHaveLength(1);
   });
 
   test("an agent action in flight across a renderer reload finishes on the same page", async () => {
