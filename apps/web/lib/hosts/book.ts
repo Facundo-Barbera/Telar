@@ -70,11 +70,19 @@ export function defaultHostName(baseUrl: string): string {
   }
 }
 
+/** Eight digits (the current cockpit's pairing code) or a `tlr_` token (an
+ *  older one's) — the same test iOS's `Pairing.looksLikePairingSecret` makes,
+ *  so a link either app accepts, both do. */
+export function looksLikePairingSecret(token: string): boolean {
+  return /^tlr_[A-Za-z0-9_-]+$/.test(token) || /^\d{8}$/.test(token);
+}
+
 /**
  * The pairing URL the other cockpit shows in Settings → Remote access:
- * `http://host:port/pair#token=tlr_…`. The token rides in the FRAGMENT so it
- * never reaches a server log; a token in the query is refused for that
- * reason (the same rule iOS's `parsePairingURL` applies).
+ * `http://host:port/pair#token=…`. The token is the eight-digit pairing code
+ * (an older cockpit's `tlr_…` token rides the same way). It rides in the
+ * FRAGMENT so it never reaches a server log; a token in the query is refused
+ * for that reason (the same rule iOS's `parsePairingURL` applies).
  */
 export function parsePairingUrl(text: string): { baseUrl: string; token: string } | undefined {
   let url: URL;
@@ -87,7 +95,7 @@ export function parsePairingUrl(text: string): { baseUrl: string; token: string 
   if (url.searchParams.has("token")) return undefined;
   const params = new URLSearchParams(url.hash.replace(/^#/, ""));
   const token = params.get("token");
-  if (!token || !/^tlr_[A-Za-z0-9_-]+$/.test(token)) return undefined;
+  if (!token || !looksLikePairingSecret(token)) return undefined;
   const base = normalizeBaseUrl(url.origin);
   if (!base) return undefined;
   return { baseUrl: base, token };

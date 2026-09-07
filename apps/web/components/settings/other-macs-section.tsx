@@ -91,7 +91,7 @@ export function OtherMacsSection() {
       ))}
       <Row
         label="Add a Mac"
-        hint={error ?? "Its pairing link looks like http://mini.tail:3000/pair#token=tlr_…"}
+        hint={error ?? "Its pairing link looks like http://mini.tail:3000/pair#token=48129037"}
         control={
           <form
             className="flex items-center gap-2"

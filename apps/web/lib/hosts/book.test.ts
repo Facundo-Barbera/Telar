@@ -27,8 +27,16 @@ describe("defaultHostName", () => {
 });
 
 describe("parsePairingUrl", () => {
-  test("the cockpit's own pairing link — token in the fragment, /pair stripped", () => {
-    expect(parsePairingUrl(" http://192.168.1.9:3000/pair#token=tlr_abcDEF-_12 ")).toEqual({
+  // The link the Remote access card mints today: the eight-digit code.
+  test("the cockpit's own pairing link — code in the fragment, /pair stripped", () => {
+    expect(parsePairingUrl(" http://192.168.1.9:3000/pair#token=48129037 ")).toEqual({
+      baseUrl: "http://192.168.1.9:3000",
+      token: "48129037",
+    });
+  });
+
+  test("an older cockpit's tlr_ token still rides", () => {
+    expect(parsePairingUrl("http://192.168.1.9:3000/pair#token=tlr_abcDEF-_12")).toEqual({
       baseUrl: "http://192.168.1.9:3000",
       token: "tlr_abcDEF-_12",
     });
@@ -42,6 +50,8 @@ describe("parsePairingUrl", () => {
   test("not a pairing link at all", () => {
     expect(parsePairingUrl("http://mini:3000/")).toBeUndefined();
     expect(parsePairingUrl("http://mini:3000/pair#token=nope")).toBeUndefined();
+    expect(parsePairingUrl("http://mini:3000/pair#token=1234567")).toBeUndefined();
+    expect(parsePairingUrl("http://mini:3000/pair#token=123456789")).toBeUndefined();
     expect(parsePairingUrl("garbage")).toBeUndefined();
   });
 });
