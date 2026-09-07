@@ -1186,6 +1186,8 @@ export type AttachedBrowser = {
   /** Bind a scope to its project's browser profile before a human-started
    *  read opens a tab (the desktop host refuses an unbound scope). */
   bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
+  /** One browser tool call on a scope — what `browserOpen` uses to open a tab. */
+  call?(scopeKey: string, name: string, args?: Record<string, unknown>): Promise<{ isError?: boolean; content: Array<{ type: string; text?: string }> }>;
 };
 
 export type EngineNotifier = (input: {
@@ -1472,6 +1474,38 @@ export class EngineStore {
       ...(state.error ? { error: state.error } : {}),
       canStart: true,
     };
+  }
+
+  /**
+   * OPEN A URL IN THE SESSION'S BROWSER, AS THE HUMAN — the engine-side twin
+   * of the desktop shell's "new tab" action, for the clients that have no
+   * shell: a phone, or this cockpit reading a paired Mac. The tab opens on
+   * whichever browser that engine routes to (the desktop's when its shell is
+   * up, headless otherwise), and the resulting tab set is journalled exactly
+   * as a hand-started browser's is, so the panel learns of it.
+   *
+   * http(s) only: a browser tool is not a way to hand `file:` or a custom
+   * scheme to whatever handles it on that machine.
+   */
+  async browserOpen(sessionId: string, url: string): Promise<BrowserSnapshot> {
+    const session = this.getSession(sessionId);
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new EngineStateError("invalid_request", "that is not a URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new EngineStateError("invalid_request", "only http and https pages can be opened");
+    if (!this.browser?.call || !this.browser.state) throw new EngineStateError("invalid_request", "this engine has no browser to open pages in");
+    if (this.browser.bindProfile) await this.browser.bindProfile(sessionId, session.projectId ?? "none");
+    const result = await this.browser.call(sessionId, "browser_tabs", { action: "new", url: parsed.href });
+    if (result.isError) {
+      const text = result.content.find((part) => part.type === "text")?.text;
+      throw new EngineStateError("invalid_request", text || "the browser could not open that page");
+    }
+    // The same dedupe-by-signature journal write as a hand-started browser:
+    // the panel folds the journal, not this snapshot.
+    return this.browserState(sessionId, { start: true });
   }
 
   /**
