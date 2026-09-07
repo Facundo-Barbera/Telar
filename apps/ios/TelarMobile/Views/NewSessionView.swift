@@ -23,10 +23,11 @@ struct NewSessionView: View {
     @State private var autoProject: ProjectRef?
     @State private var addingProject = false
 
-    init(settings: AppSettings, onCreated: @escaping (ScopedSessionID) -> Void) {
+    init(settings: AppSettings, draft: MobileDraft? = nil, onCreated: @escaping (ScopedSessionID) -> Void) {
         self.settings = settings
         self.onCreated = onCreated
-        _hostId = State(initialValue: settings.hosts.first?.id ?? HostID())
+        _hostId = State(initialValue: draft?.hostId ?? settings.hosts.first?.id ?? HostID())
+        _autoProject = State(initialValue: draft?.project)
     }
 
     private var api: any EngineAPI {
@@ -134,12 +135,12 @@ struct NewSessionView: View {
         .background(Theme.sheet)
         .navigationTitle("Choose project")
         .navigationDestination(for: ProjectRef.self) { project in
-            NewSessionDraftView(api: api, project: project, hostName: draftHostName) { sessionId in
+            NewSessionDraftView(api: api, project: project, hostId: hostId, hostName: draftHostName) { sessionId in
                 onCreated(ScopedSessionID(hostId: hostId, sessionId: sessionId))
             }
         }
         .navigationDestination(item: $autoProject) { project in
-            NewSessionDraftView(api: api, project: project, hostName: draftHostName) { sessionId in
+            NewSessionDraftView(api: api, project: project, hostId: hostId, hostName: draftHostName) { sessionId in
                 onCreated(ScopedSessionID(hostId: hostId, sessionId: sessionId))
             }
         }
@@ -230,6 +231,7 @@ struct NewSessionDraftView: View {
     /// Which Mac runs this session — shown as a quiet chip when the phone
     /// knows more than one. Not a control here: switching after the project
     /// is chosen would only invalidate the choice.
+    var hostId: HostID
     var hostName: String?
     let onCreated: (EngineID) -> Void
 
@@ -265,7 +267,12 @@ struct NewSessionDraftView: View {
     /// Set the moment the create succeeds: a retry after a failed upload or
     /// turn must resume this session, never create a second one.
     @State private var createdSessionId: EngineID?
+    @State private var submissionRunId = RunID.newRunId()
     @FocusState private var focused: Bool
+
+    private func saveTextDraft() {
+        MobileDrafts.shared.save(MobileDraft(hostId: hostId, project: project, prompt: prompt, title: title, createdSessionId: createdSessionId, submissionRunId: submissionRunId))
+    }
 
     private var canStart: Bool {
         !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !submitting
@@ -376,6 +383,15 @@ struct NewSessionDraftView: View {
             }
         }
         .background(Theme.sheet)
+        .onAppear {
+            if let saved = MobileDrafts.shared.draft(host: hostId, project: project.id) {
+                prompt = saved.prompt; title = saved.title
+                createdSessionId = saved.createdSessionId
+                if let runId = saved.submissionRunId { submissionRunId = runId }
+            }
+        }
+        .onChange(of: prompt) { saveTextDraft() }
+        .onChange(of: title) { saveTextDraft() }
         .navigationTitle(project.name)
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -560,6 +576,7 @@ struct NewSessionDraftView: View {
                 )
                 sessionId = session.id
                 createdSessionId = session.id
+                saveTextDraft()
                 // createSession takes neither a model nor a runtime mode —
                 // they are session PATCHes, applied before the first turn runs.
                 let modelTouched = choice.model != nil || choice.effort != nil || choice.fastMode != nil
@@ -592,11 +609,12 @@ struct NewSessionDraftView: View {
                 }
             }
             _ = try await api.submitTurn(
-                sessionId, runId: RunID.newRunId(), input: prompt,
+                sessionId, runId: submissionRunId, input: prompt,
                 attachments: attachmentIds.isEmpty ? nil : attachmentIds
             )
             // The caller closes the sheet and replaces it with the live
             // conversation — no back-stack detour (t3's replace()).
+            MobileDrafts.shared.remove(host: hostId, project: project.id)
             onCreated(sessionId)
         } catch {
             self.error = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription

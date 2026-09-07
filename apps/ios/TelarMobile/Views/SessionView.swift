@@ -7,6 +7,8 @@ struct SessionView: View {
     @State private var renaming = false
     @State private var renameDraft = ""
     @State private var showChanges = false
+    @State private var showInspector = false
+    @Environment(\.horizontalSizeClass) private var sizeClass
     /// Stick-to-bottom (t3's `use-stick-to-bottom`), the native iOS 18 way: a
     /// position pinned to an EDGE rather than an offset stays on that edge as
     /// the content grows, which is the whole behaviour. `isPositionedByUser`
@@ -20,12 +22,23 @@ struct SessionView: View {
     @State private var isAtBottom = true
     private let api: any EngineAPI
     private let sessionId: EngineID
+    private let hostId: HostID?
+    private let cockpitBaseURL: URL?
+    @State private var previousVisit: Int?
+    @State private var dismissedRecap = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dismiss) private var dismiss
 
-    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil, cache: HostSnapshotCache? = nil) {
+    init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil, cockpitBaseURL: URL? = nil, cache: HostSnapshotCache? = nil) {
         self.api = api
         self.sessionId = sessionId
+        self.hostId = hostId
+        self.cockpitBaseURL = cockpitBaseURL
+        if let hostId {
+            let value = UserDefaults.standard.integer(forKey: "telar.lastVisit.\(hostId).\(sessionId)")
+            _previousVisit = State(initialValue: value > 0 ? value : nil)
+        }
+        if let hostId { _draft = State(initialValue: UserDefaults.standard.string(forKey: "telar.draft.\(hostId).\(sessionId)") ?? "") }
         _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId, cache: cache))
     }
 
@@ -66,6 +79,29 @@ struct SessionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if let session = store.sync.session {
+                HStack(spacing: 6) {
+                    ActivityBadge(activity: session.activity)
+                    Text(session.activity == .blocked ? "Needs you" : session.activity.rawValue.capitalized)
+                    Spacer()
+                    Text(session.workspace.branch ?? session.driver).lineLimit(1)
+                }.font(.caption).foregroundStyle(Theme.textMuted).padding(.horizontal, 16).padding(.vertical, 8)
+            }
+            if let previousVisit, !dismissedRecap,
+               let ended = store.sync.session?.lastTurnEndedAt, ended > previousVisit {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "sparkle").foregroundStyle(Theme.accent)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Since your last visit").font(.subheadline.weight(.semibold))
+                        Text(store.sync.session?.lastTurnFailed == true ? "The last turn failed. Review its result below." : "A turn finished while you were away.").font(.caption)
+                        if let result = visibleTurns.last(where: { !$0.resultText.isEmpty })?.resultText {
+                            Text(result).font(.caption).lineLimit(3).foregroundStyle(Theme.textMuted)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Button("Dismiss", systemImage: "xmark") { dismissedRecap = true }.labelStyle(.iconOnly)
+                }.padding().background(Theme.messageSurface)
+            }
             ScrollView {
                 VStack(spacing: 0) {
                     // AN EXPLICIT TAP, NOT A SCROLL TRIGGER — the reader
@@ -80,6 +116,8 @@ struct SessionView: View {
                     // Queued messages live below the composer (t3's queue
                     // line), not in the transcript.
                     TranscriptView(turns: visibleTurns)
+                        .frame(maxWidth: 900)
+                        .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                 }
             }
@@ -107,26 +145,63 @@ struct SessionView: View {
             footer
         }
         .background(Theme.canvas)
-        .navigationTitle(store.sync.session?.title ?? "Session")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
         .task { store.sync.start() }
-        .onDisappear { store.sync.stop() }
+        .onAppear {
+            if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+        }
+        .onChange(of: draft) { _, text in
+            if let hostId { UserDefaults.standard.set(text, forKey: "telar.draft.\(hostId).\(sessionId)") }
+        }
+        .onChange(of: store.sync.session) { _, session in
+            if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
+        }
+        .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
+            Button("OK") { MobileNotifications.shared.activityError = nil }
+        } message: { Text(MobileNotifications.shared.activityError ?? "") }
+
+        .onDisappear {
+            store.sync.stop()
+            if MobileNotifications.shared.visibleSession?.sessionId == sessionId && MobileNotifications.shared.visibleSession?.hostId == hostId {
+                MobileNotifications.shared.visibleSession = nil
+            }
+            recordVisit()
+        }
+        .userActivity("com.telar.session", isActive: cockpitBaseURL != nil && store.sync.session != nil) { activity in
+            guard let base = cockpitBaseURL, let session = store.sync.session else { return }
+            activity.title = session.title
+            activity.webpageURL = session.cockpitURL(base: base)
+            activity.isEligibleForHandoff = true
+        }
         .onChange(of: scenePhase) { _, phase in
             // Poll only while someone is looking.
-            if phase == .active { store.sync.start() } else { store.sync.stop() }
+            if phase == .active {
+                store.sync.start()
+                if let hostId { MobileNotifications.shared.visibleSession = .init(hostId: hostId, sessionId: sessionId) }
+            } else { store.sync.stop(); recordVisit(); MobileNotifications.shared.visibleSession = nil }
         }
         .onChange(of: store.sync.connection) { _, connection in
             if connection == .gone { dismiss() }
         }
+        .inspector(isPresented: $showInspector) {
+            NavigationStack { DiffView(api: api, sessionId: sessionId) }
+                .inspectorColumnWidth(min: 320, ideal: 420, max: 600)
+        }
         .navigationDestination(isPresented: $showChanges) {
             DiffView(api: api, sessionId: sessionId)
         }
+        .navigationTitle(store.sync.session?.title ?? "Session")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { toolbarContent }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Title", text: $renameDraft)
             Button("Rename") { Task { await store.rename(renameDraft) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private func recordVisit() {
+        guard let hostId, store.sync.recordedAt == nil, store.sync.session != nil else { return }
+        UserDefaults.standard.set(Int(Date().timeIntervalSince1970 * 1000), forKey: "telar.lastVisit.\(hostId).\(sessionId)")
     }
 
     /// Re-pin to the tail, unless the reader has taken the scroll — scrolled
@@ -236,27 +311,25 @@ struct SessionView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            VStack(spacing: 1) {
-                Text(store.sync.session?.title ?? "Session")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1)
-                if let session = store.sync.session {
-                    HStack(spacing: 4) {
-                        ActivityBadge(activity: session.activity)
-                        Text(session.workspace.branch ?? session.driver)
-                            .font(Theme.metaSmall)
-                            .foregroundStyle(Theme.textMuted)
-                            .lineLimit(1)
-                    }
-                }
-            }
-        }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                if let hostId, let session = store.sync.session {
+                    let ref = ScopedSessionID(hostId: hostId, sessionId: sessionId)
+                    Button(MobileNotifications.shared.followed.contains(ref) ? "Stop following" : "Follow session", systemImage: "waveform.path") {
+                        Task {
+                            if MobileNotifications.shared.followed.contains(ref) { await MobileNotifications.shared.unfollow(ref) }
+                            else { await MobileNotifications.shared.follow(ref, session: session) }
+                        }
+                    }
+                    Button(MobileNotifications.shared.isMuted(ref) ? "Unmute notifications" : "Mute notifications", systemImage: "bell.slash") {
+                        Task { await MobileNotifications.shared.toggleMute(ref) }
+                    }
+                    if let base = cockpitBaseURL {
+                        ShareLink(item: session.cockpitURL(base: base)) { Label("Continue on your Mac", systemImage: "desktopcomputer") }
+                    }
+                }
                 Button("Changes", systemImage: "plus.forwardslash.minus") {
-                    showChanges = true
+                    if sizeClass == .regular { showInspector = true } else { showChanges = true }
                 }
                 Button("Rename", systemImage: "pencil") {
                     renameDraft = store.sync.session?.title ?? ""
@@ -280,6 +353,7 @@ struct SessionView: View {
                 Image(systemName: "ellipsis.circle")
                     .foregroundStyle(Theme.textMuted)
             }
+            .accessibilityLabel("Session actions")
         }
     }
 

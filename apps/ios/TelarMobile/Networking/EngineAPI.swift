@@ -115,6 +115,19 @@ struct SessionPatch: Encodable {
     /// Must belong to the session's provider instance — the engine rejects
     /// anything else. The composer's Model pill.
     var model: ModelSelection?
+    var clearSettledOverride = false
+    var clearSnooze = false
+    private enum CodingKeys: String, CodingKey { case title, settledOverride, snoozedUntil, runtimeMode, model }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(title, forKey: .title)
+        if clearSettledOverride { try c.encodeNil(forKey: .settledOverride) }
+        else { try c.encodeIfPresent(settledOverride, forKey: .settledOverride) }
+        if clearSnooze { try c.encodeNil(forKey: .snoozedUntil) }
+        else { try c.encodeIfPresent(snoozedUntil, forKey: .snoozedUntil) }
+        try c.encodeIfPresent(runtimeMode, forKey: .runtimeMode)
+        try c.encodeIfPresent(model, forKey: .model)
+    }
 }
 
 enum EngineAPIError: Error, LocalizedError {
@@ -196,6 +209,23 @@ struct HTTPEngineAPI: EngineAPI {
             self.session = URLSession(configuration: config)
         }
     }
+
+    func sidebarLayout() async throws -> [String] {
+        struct Layout: Decodable { var projectOrder: [String] }
+        struct Reply: Decodable { var layout: Layout }
+        let reply: Reply = try await get("api/sidebar-layout")
+        return reply.layout.projectOrder
+    }
+
+    func setSidebarLayout(_ order: [String]) async throws {
+        let _: IgnoredBody = try await send("PATCH", "api/sidebar-layout", body: ["projectOrder": order])
+    }
+
+    func registerPush(_ registration: PushRegistration) async throws -> PushStatus {
+        try await send("PUT", "api/mobile/push", body: registration)
+    }
+
+    func pushStatus() async throws -> PushStatus { try await get("api/mobile/push") }
 
     func health() async throws -> EngineHealth {
         try await get("api/health")

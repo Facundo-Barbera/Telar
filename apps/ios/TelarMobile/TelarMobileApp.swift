@@ -2,111 +2,127 @@ import SwiftUI
 
 @main
 struct TelarMobileApp: App {
-    @State private var settings = AppSettings()
-
-    var body: some Scene {
-        WindowGroup {
-            RootView(settings: settings)
+    @UIApplicationDelegateAdaptor(MobileAppDelegate.self) private var delegate
+    @State private var settings: AppSettings
+    init() {
+        #if DEBUG
+        if let raw = UserDefaults.standard.string(forKey: "mobilePreviewURL"), let url = URL(string: raw),
+           url.scheme == "http", ["127.0.0.1", "localhost"].contains(url.host ?? "") {
+            let defaults = UserDefaults(suiteName: "telar.mobile.preview")!
+            let host = Host(id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!, name: "Studio Mac", baseURLString: raw)
+            HostMigration.persist(HostBook(hosts: [host]), defaults: defaults)
+            let preview = AppSettings(defaults: defaults, vault: MemoryVault())
+            preview.snapshots = nil
+            _settings = State(initialValue: preview)
+            return
         }
+        #endif
+        _settings = State(initialValue: AppSettings())
+    }
+    var body: some Scene {
+        WindowGroup { RootView(settings: settings).tint(Theme.accent) }
     }
 }
 
 struct RootView: View {
     let settings: AppSettings
-    /// `-openSettings 1` launch arg — automation affordance like -openSession.
+    @State private var inbox = MergedInbox()
+    @State private var resumedDraft: MobileDraft?
+    @State private var selection: ScopedSessionID?
     @State private var showSettings = UserDefaults.standard.bool(forKey: "openSettings")
-    // `-newSession 1` launch arg — automation affordance like -openSession.
     @State private var showNewSession = UserDefaults.standard.bool(forKey: "newSession")
-    /// Navigation is HOST-SCOPED: a session id means nothing without the Mac
-    /// that minted it. `-openSession <id>` resolves against the first host
-    /// (identical to the single-host world); `-openSessionHost <name-or-host>`
-    /// disambiguates in two-stack automation.
-    @State private var path: [ScopedSessionID] = []
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var preferredColumn: NavigationSplitViewColumn = .sidebar
+    @Environment(\.scenePhase) private var scenePhase
+
+    private var fingerprint: String { settings.hosts.map { settings.apiFingerprint($0.id) }.joined(separator: "\n") }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            if !settings.hosts.isEmpty {
-                InboxView(settings: settings)
-                    .navigationTitle("Telar")
-                    .navigationDestination(for: ScopedSessionID.self) { ref in
-                        if let hostApi = settings.api(for: ref.hostId) {
-                            SessionView(api: hostApi, sessionId: ref.sessionId, hostId: ref.hostId, cache: settings.snapshotCache(for: ref.hostId))
-                                .id(settings.apiFingerprint(ref.hostId))
-                        } else {
-                            ContentUnavailableView(
-                                "That Mac was removed",
-                                systemImage: "desktopcomputer.trianglebadge.exclamationmark"
-                            )
-                        }
-                    }
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                showNewSession = true
-                            } label: {
-                                Image(systemName: "plus")
-                            }
-                            .accessibilityLabel("New session")
-                        }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button {
-                                showSettings = true
-                            } label: {
-                                Image(systemName: "gearshape")
-                            }
-                        }
-                    }
-                    .sheet(isPresented: $showNewSession) {
-                        NavigationStack {
-                            NewSessionView(settings: settings) { ref in
-                                showNewSession = false
-                                // Pushing while the sheet's dismissal is still
-                                // animating gets the push dropped on device —
-                                // land in the inbox instead of the session.
-                                // Let the dismissal finish first.
-                                Task {
-                                    try? await Task.sleep(for: .milliseconds(600))
-                                    path.append(ref)
-                                }
-                            }
-                        }
-                    }
-                    .sheet(isPresented: $showSettings) {
-                        NavigationStack {
-                            SettingsView(settings: settings)
-                                .toolbar {
-                                    ToolbarItem(placement: .confirmationAction) {
-                                        Button("Done") { showSettings = false }
-                                    }
-                                }
-                        }
-                    }
+        Group {
+            if settings.hosts.isEmpty {
+                NavigationStack { WelcomeView(settings: settings) }
             } else {
-                // The front door welcomes; ConnectView is where it guides you.
-                WelcomeView(settings: settings)
+                NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredColumn) {
+                    SessionSidebar(settings: settings, inbox: inbox, selection: $selection,
+                        newSession: { resumedDraft = nil; showNewSession = true }, openSettings: { showSettings = true },
+                        resumeDraft: { resumedDraft = $0; showNewSession = true })
+                        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 380)
+                } detail: {
+                    NavigationStack {
+                        if let ref = selection, let api = settings.api(for: ref.hostId) {
+                            SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId, cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId))
+                                .id("\(settings.apiFingerprint(ref.hostId)):\(ref.sessionId)")
+                        } else {
+                            ContentUnavailableView {
+                                Label("Your work, within reach", systemImage: "text.bubble")
+                            } description: {
+                                Text("Choose a session from the sidebar, or start a conversation.")
+                            } actions: {
+                                Button("New conversation") { showNewSession = true }.buttonStyle(.borderedProminent)
+                            }
+                        }
+                    }
+                }
+                .navigationSplitViewStyle(.balanced)
             }
         }
-        // A removed Mac's pushes must not survive it — prune, don't trap.
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                SettingsView(settings: settings)
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
+            }
+        }
+        .sheet(isPresented: $showNewSession) {
+            NavigationStack {
+                NewSessionView(settings: settings, draft: resumedDraft) { ref in
+                    showNewSession = false
+                    selection = ref
+                    preferredColumn = .detail
+                }
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showNewSession = false } } }
+            }.interactiveDismissDisabled(false)
+        }
+        .onChange(of: selection) { _, next in
+            if next != nil { preferredColumn = .detail }
+        }
+        .onOpenURL { url in
+            guard let ref = ScopedSessionID(url: url), settings.host(ref.hostId) != nil else { return }
+            selection = ref; preferredColumn = .detail
+        }
+        .onChange(of: MobileNotifications.shared.destination) { _, ref in
+            guard let ref, settings.host(ref.hostId) != nil else { return }
+            showSettings = false; showNewSession = false
+            selection = ref; preferredColumn = .detail
+            MobileNotifications.shared.destination = nil
+        }
         .onChange(of: settings.book.membershipFingerprint) {
-            let living = Set(settings.hosts.map(\.id))
-            path.removeAll { !living.contains($0.hostId) }
+            if let selection, settings.host(selection.hostId) == nil { self.selection = nil }
+        }
+        .task(id: fingerprint) {
+            inbox.sync(hosts: settings.hosts, settings: settings)
+            MobileNotifications.shared.settings = settings
+            await MobileNotifications.shared.syncRegistrations()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                inbox.start()
+                Task { await MobileNotifications.shared.syncRegistrations() }
+            } else { inbox.stop() }
         }
         .task {
-            // `-addHostLink <pairing url>` — the two-stack automation
-            // affordance: -pairingLink only fires on an EMPTY phone (by
-            // design), this one pairs an ADDITIONAL Mac. Inert in normal use.
             if let link = UserDefaults.standard.string(forKey: "addHostLink"),
                let parsed = Pairing.parsePairingURL(link),
-               let token = try? await Pairing.exchange(
-                   base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name
-               ) {
+               let token = try? await Pairing.exchange(base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name) {
                 settings.upsert(baseURLString: parsed.base.absoluteString, token: token)
             }
-            // `simctl launch … -openSession <id> [-openSessionHost <hint>]`.
-            guard path.isEmpty, let sessionId = UserDefaults.standard.string(forKey: "openSession") else { return }
-            let hint = UserDefaults.standard.string(forKey: "openSessionHost")
-            if let ref = ScopedSessionID.resolveLaunchArg(sessionId: sessionId, hostHint: hint, hosts: settings.hosts) {
-                path = [ref]
+            if let id = UserDefaults.standard.string(forKey: "openSession") {
+                selection = ScopedSessionID.resolveLaunchArg(sessionId: id,
+                    hostHint: UserDefaults.standard.string(forKey: "openSessionHost"), hosts: settings.hosts)
+                if selection != nil { preferredColumn = .detail }
+            }
+            if let pending = MobileNotifications.shared.destination, settings.host(pending.hostId) != nil {
+                selection = pending; preferredColumn = .detail
+                MobileNotifications.shared.destination = nil
             }
         }
     }

@@ -336,7 +336,9 @@ struct UserBubble: View {
 
     var body: some View {
         HStack {
-            Spacer(minLength: 0)
+            // Use the proposed column width. A container-relative width can
+            // resolve to the whole split view and force an iPad detail underneath its sidebar.
+            Spacer(minLength: 24)
             Text(text)
                 .font(Theme.body)
                 .lineSpacing(4)
@@ -345,9 +347,7 @@ struct UserBubble: View {
                 .background(Theme.messageSurface)
                 .clipShape(RoundedRectangle(cornerRadius: Theme.radiusBubble))
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .containerRelativeFrame(.horizontal, alignment: .trailing) { width, _ in
-                    width * 0.85
-                }
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

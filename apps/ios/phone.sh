@@ -28,7 +28,7 @@ xcodebuild \
   -derivedDataPath "$DIR/DerivedData-$MODE" \
   -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
   DEVELOPMENT_TEAM="$TEAM" \
-  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE" \
+  TELAR_APP_BUNDLE_ID="$BUNDLE" \
   INFOPLIST_KEY_CFBundleDisplayName="$NAME" \
   ASSETCATALOG_COMPILER_APPICON_NAME="$ICON" \
   build

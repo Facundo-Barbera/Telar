@@ -19,9 +19,8 @@ struct WelcomeView: View {
             Spacer()
 
             // The hero: your Mac and this phone, one pair.
-            Image(systemName: "macbook.and.iphone")
-                .font(.system(size: 64, weight: .light))
-                .foregroundStyle(Theme.text)
+            TelarMark(color: Theme.accent)
+                .frame(width: 112, height: 112)
                 .padding(.bottom, 28)
 
             Text("Telar")
@@ -29,13 +28,13 @@ struct WelcomeView: View {
                 .foregroundStyle(Theme.text)
                 .padding(.bottom, 10)
 
-            Text("The cockpit on your Mac,\nin your pocket.")
+            Text("Your work, within reach.")
                 .font(.system(size: 17))
                 .foregroundStyle(Theme.textMuted2)
                 .multilineTextAlignment(.center)
                 .padding(.bottom, 6)
 
-            Text("Every device pairs with its own key —\nsee and manage them all from any of them.")
+            Text("Follow your agents. Review their work.\nPick up the conversation anywhere.")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.textTertiary)
                 .multilineTextAlignment(.center)
@@ -83,6 +82,7 @@ struct WelcomeView: View {
                 .padding(.top, 8)
         }
         .padding(.horizontal, 24)
+        .frame(maxWidth: 520)
         .padding(.bottom, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.sheet)

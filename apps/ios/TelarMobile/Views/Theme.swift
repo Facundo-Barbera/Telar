@@ -1,206 +1,79 @@
 import SwiftUI
 import UIKit
 
-/// Telar Mobile's design tokens, ported from t3code's role palette
-/// (packages/shared/src/themePalettes.ts + the compiled default stylesheet).
-/// This is their neutral "default" theme — zinc steps in light, translucent
-/// white overlays over near-black in dark — with their blue primary.
-///
-/// THE STRUCTURAL RULES, which matter more than any one value:
-///  - Dark borders and fills are WHITE AT LOW ALPHA (4–8%), never opaque
-///    grays; light mode uses opaque zinc steps.
-///  - Dark surfaces are lifted by lightness + hairline, never by shadow.
-///    Shadows exist only in light mode: big blur, low opacity.
-///  - Status colors: amber = needs approval, indigo = awaiting input,
-///    sky = working (the ONLY one that animates), violet = plan,
-///    emerald = done. Dark variants are the -300 tint at ~90% alpha,
-///    never the light -500/-600.
-///  - Type: body 14pt, metadata 10–13pt, weights regular/medium only,
-///    tabular digits on every number.
+/// sRGB conversions of the default roles in apps/web/app/globals.css.
+/// Neutral surfaces, blue human actions, and the same five work states.
 enum Theme {
-    // MARK: surfaces
-
-    /// canvas — the page. zinc-25 / neutral-950.
     static let canvas = adaptive(light: 0xFCFCFC, dark: 0x0A0A0A)
-    /// card / composer surface. white / background lifted 3–4% toward white.
-    static let surface = adaptive(light: 0xFFFFFF, dark: 0x151515)
-    /// secondary/muted fill. zinc-50 / white 4%.
-    static let fill = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.04)
-            : UIColor(rgb: 0xFAFAFA)
-    })
-    /// accent fill (hover/selected rows, user bubble in default theme).
-    /// zinc-100 / white 4%.
-    static let messageSurface = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.06)
-            : UIColor(rgb: 0xF4F4F5)
-    })
-    /// code block background.
-    static let codeBackground = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.05)
-            : UIColor(rgb: 0xF7F7F8)
-    })
-
-    // MARK: ink
-
-    /// text — zinc-800 / neutral-100.
+    static let surface = adaptive(light: 0xFFFFFF, dark: 0x161616)
+    static let fill = adaptive(light: 0xF4F4F5, dark: 0x252525)
+    static let messageSurface = adaptive(light: 0xF1F1F3, dark: 0x252525)
+    static let codeBackground = adaptive(light: 0xF4F4F5, dark: 0x252525)
     static let text = adaptive(light: 0x27272A, dark: 0xF5F5F5)
-    /// muted text — zinc-500 / neutral-500 blended toward white.
-    static let textMuted = adaptive(light: 0x71717A, dark: 0x8B8B8B)
-    /// hairline. zinc-200 opaque / white 8%.
-    static let border = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.08)
-            : UIColor(rgb: 0xE4E4E7)
-    })
-
-    // MARK: accent
-
-    /// primary — oklch(.488 .217 264) light, oklch(.571 .21 264) dark.
-    static let accent = adaptive(light: 0x1B4ED8, dark: 0x346BF1)
-
-    // MARK: status (the sidebar's whole vocabulary)
-
-    /// Needs approval / blocked.
-    static let statusAmber = adaptive(light: 0xD97706, dark: 0xFCD34D, darkAlpha: 0.9)
-    /// Awaiting input (a question).
-    static let statusIndigo = adaptive(light: 0x4F46E5, dark: 0xA5B4FC, darkAlpha: 0.9)
-    /// Working / connecting — the only status that animates.
-    static let statusSky = adaptive(light: 0x0284C7, dark: 0x7DD3FC, darkAlpha: 0.8)
-    /// Plan ready.
-    static let statusViolet = adaptive(light: 0x7C3AED, dark: 0xC4B5FD, darkAlpha: 0.9)
-    /// Done.
-    static let statusEmerald = adaptive(light: 0x059669, dark: 0x6EE7B7, darkAlpha: 0.9)
-    /// Failed / destructive text. red-700 / red-400.
-    static let statusRed = adaptive(light: 0xB91C1C, dark: 0xF87171)
-
-    // MARK: t3 mobile tokens (apps/mobile global.css, dark/light resolved)
-
-    /// Grouped-sheet background. rgba(14,14,14,.98) / rgba(242,242,247,.98).
-    static let sheet = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(rgb: 0x0E0E0E).withAlphaComponent(0.98)
-            : UIColor(rgb: 0xF2F2F7).withAlphaComponent(0.98)
-    })
-    /// Inset card on a sheet. #171717 / #FFFFFF.
-    static let card = adaptive(light: 0xFFFFFF, dark: 0x171717)
-    /// foreground-muted — project names, receded titles.
-    static let textMuted2 = adaptive(light: 0x737373, dark: 0x8E8E93)
-    /// foreground-tertiary — timestamps, section labels.
-    static let textTertiary = adaptive(light: 0x8E8E93, dark: 0x636366)
-    /// subtle fill — chip idle background. white 4% / black 4%.
-    static let subtle = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.04) : UIColor(white: 0, alpha: 0.04)
-    })
-    /// subtle-strong — pressed/disabled fills. white 8% / black 8%.
-    static let subtleStrong = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.08) : UIColor(white: 0, alpha: 0.08)
-    })
-    /// border-subtle — row hairlines inside cards. white 4% / black 6%.
-    static let borderSubtle = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.04) : UIColor(white: 0, alpha: 0.06)
-    })
-    /// The primary control fill — near-white in dark, near-black in light —
-    /// with its inverted glyph. t3's send button is NOT accent-colored.
-    static let primaryFill = adaptive(light: 0x262626, dark: 0xF5F5F5)
-    static let primaryGlyph = adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
-    /// danger — the stop pill. red at 14% fill, red-300 glyph.
-    static let dangerFill = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(rgb: 0xEF4444).withAlphaComponent(0.14)
-            : UIColor(rgb: 0xFEF2F2)
-    })
-    static let dangerGlyph = adaptive(light: 0xDC2626, dark: 0xFCA5A5)
-    /// Disclosure chevrons in list rows. white 20% / black 20%.
-    static let chevron = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(white: 1, alpha: 0.2) : UIColor(white: 0, alpha: 0.2)
-    })
-    /// The opaque composer-surface fallback (no liquid glass).
-    static let composerSurface = Color(UIColor { trait in
-        trait.userInterfaceStyle == .dark
-            ? UIColor(rgb: 0x2C2C2E).withAlphaComponent(0.96)
-            : UIColor(white: 1, alpha: 0.96)
-    })
-
-    // MARK: shape — one knob, five stops (6/8/10/14/18) + the specials
-
+    static let textMuted = adaptive(light: 0x696973, dark: 0xA1A1A1)
+    static let accent = adaptive(light: 0x2F58B9, dark: 0x6594FA)
+    static let statusAmber = adaptive(light: 0x8E5B01, dark: 0xF2A635)
+    static let statusIndigo = adaptive(light: 0x8E5B01, dark: 0xF2A635)
+    static let statusSky = adaptive(light: 0x007386, dark: 0x22BEDC)
+    static let statusViolet = adaptive(light: 0x794ED7, dark: 0xA486FD)
+    static let statusEmerald = adaptive(light: 0x02744E, dark: 0x2AC48A)
+    static let statusRed = adaptive(light: 0xB71822, dark: 0xFF645E)
+    static let sheet = adaptive(light: 0xF6F6F6, dark: 0x101010)
+    static let card = adaptive(light: 0xFFFFFF, dark: 0x161616)
+    static let textMuted2 = adaptive(light: 0x696973, dark: 0xA1A1A1)
+    static let textTertiary = adaptive(light: 0x696973, dark: 0xA1A1A1)
+    static let subtle = adaptive(light: 0xF1F1F3, dark: 0x252525)
+    static let subtleStrong = adaptive(light: 0xF0F0F1, dark: 0x2F2F2F)
+    static let composerSurface = adaptive(light: 0xFFFFFF, dark: 0x1C1C1C)
+    static let primaryGlyph = adaptive(light: 0xFFFFFF, dark: 0x070F21)
+    static let primaryFill = accent
+    static let border = Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 1, alpha: 0.10) : UIColor(rgb: 0xE4E4E7) })
+    static let borderSubtle = border.opacity(0.6)
+    static let chevron = textMuted
+    static let dangerFill = statusRed.opacity(0.14)
+    static let dangerGlyph = statusRed
     static let radiusControl: CGFloat = 8
     static let radiusRow: CGFloat = 8
-    static let radiusCard: CGFloat = 10
+    static let radiusCard: CGFloat = 14
     static let radiusBubble: CGFloat = 18
     static let radiusComposer: CGFloat = 22
     static let radiusDrawer: CGFloat = 16
-
-    // MARK: type
-
-    /// Chat body: 14pt with a relaxed line.
-    static let body = Font.system(size: 14)
-    static let bodyMedium = Font.system(size: 14, weight: .medium)
-    /// Row titles: small and medium, never large and bold.
-    static let rowTitle = Font.system(size: 14, weight: .medium)
-    /// Metadata: 12pt regular.
-    static let meta = Font.system(size: 12)
-    static let metaSmall = Font.system(size: 11)
-    /// Code and labels that name files/commands.
-    static let mono = Font.system(size: 12, design: .monospaced)
-    static let monoSmall = Font.system(size: 11, design: .monospaced)
-
-    private static func adaptive(light: UInt32, dark: UInt32, darkAlpha: CGFloat = 1) -> Color {
-        Color(UIColor { trait in
-            trait.userInterfaceStyle == .dark
-                ? UIColor(rgb: dark).withAlphaComponent(darkAlpha)
-                : UIColor(rgb: light)
-        })
+    static let body = Font.system(.body)
+    static let bodyMedium = Font.system(.body, weight: .medium)
+    static let rowTitle = Font.system(.subheadline, weight: .medium)
+    static let meta = Font.system(.caption)
+    static let metaSmall = Font.system(.caption2)
+    static let mono = Font.system(.caption, design: .monospaced)
+    static let monoSmall = Font.system(.caption2, design: .monospaced)
+    private static func adaptive(light: UInt32, dark: UInt32) -> Color {
+        Color(UIColor { UIColor(rgb: $0.userInterfaceStyle == .dark ? dark : light) })
     }
 }
 
 extension UIColor {
     convenience init(rgb: UInt32) {
-        self.init(
-            red: CGFloat((rgb >> 16) & 0xFF) / 255,
-            green: CGFloat((rgb >> 8) & 0xFF) / 255,
-            blue: CGFloat(rgb & 0xFF) / 255,
-            alpha: 1
-        )
+        self.init(red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                  green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                  blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
     }
 }
-
-// MARK: - shared visual idioms
-
 extension View {
-    /// t3code's hairline: 1px border at low alpha, the whole of dark-mode
-    /// elevation. Light mode may add the soft ambient shadow separately.
     func hairline(_ radius: CGFloat) -> some View {
         overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(Theme.border, lineWidth: 1))
     }
-
-    /// Every number in the app wears tabular digits — timestamps, counts,
-    /// token figures. A t3code constant.
-    func tabularNumbers() -> some View {
-        monospacedDigit()
-    }
+    func tabularNumbers() -> some View { monospacedDigit() }
 }
-
-/// The stepped status pulse: t3code dots don't breathe smoothly, they
-/// quantize opacity into discrete steps (steps(6) over 2s) — a terminal-LED
-/// cadence. TimelineView gives us the same quantization for free.
 struct SteppedPulseDot: View {
     let color: Color
-
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 2.0 / 6.0)) { context in
-            let step = Int(context.date.timeIntervalSinceReferenceDate / (2.0 / 6.0)) % 6
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-                .opacity(step < 3 ? 1 : 0.5)
+        if reduceMotion {
+            Circle().fill(color).frame(width: 7, height: 7)
+        } else {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Circle().fill(color).frame(width: 7, height: 7)
+                    .opacity(Int(context.date.timeIntervalSinceReferenceDate) % 2 == 0 ? 1 : 0.5)
+            }
         }
     }
 }

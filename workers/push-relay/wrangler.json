@@ -1,0 +1,14 @@
+{
+  "name": "telar-push-relay",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "send_metrics": false,
+  "observability": { "enabled": false },
+  "durable_objects": { "bindings": [
+    { "name": "HOST_STATE", "class_name": "RelayHost" },
+    { "name": "SIGNER", "class_name": "RelaySigner" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayHost", "RelaySigner"] }]
+}
