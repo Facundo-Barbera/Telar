@@ -1485,6 +1485,16 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/ds/${method}`, body ?? {});
   }
 
+  /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */
+  sessionTable(
+    sessionId: string,
+    path: string,
+    options: { offset: number; limit: number; sort?: string; desc?: boolean },
+  ): Promise<{ path: string; columns: string[]; dtypes?: string[]; total: number; offset: number; rows: unknown[][]; truncated?: boolean }> {
+    const query = new URLSearchParams({ path, offset: String(options.offset), limit: String(options.limit), ...(options.sort ? { sort: options.sort } : {}), ...(options.desc ? { desc: "1" } : {}) });
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/data/table?${query.toString()}`);
+  }
+
   /** The session's attachment index, optionally by tag (`plot`). Newest first. */
   attachments(sessionId: string, options: { tag?: string } = {}): Promise<{ attachments: TurnAttachment[] }> {
     const suffix = options.tag ? `?tag=${encodeURIComponent(options.tag)}` : "";

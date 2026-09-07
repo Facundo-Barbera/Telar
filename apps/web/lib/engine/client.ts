@@ -61,6 +61,7 @@ import type {
 } from "@telar/engine-client";
 import { forgeQuery, snapshotQuery } from "@telar/engine-client";
 import { pathnameFetcher } from "@/lib/hosts/client";
+import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/lib/ds";
 // Type-only, like `Channel` above: the store reads the filesystem and must not
 // follow into the browser bundle.
 import type { PublicHost } from "@/lib/hosts/store";
@@ -455,6 +456,60 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "PUT",
         `/api/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`,
         { text, expectedSha256 },
+      ),
+    /**
+     * THE SESSION'S KERNEL, NOTEBOOKS AND PLOTS. Every verb is a POST to one
+     * `ds/<method>` door on the engine — the same door the agent's toolkit
+     * uses — so a cell run from here and one run by `notebook_run_cell` land
+     * in the same kernel and write the same file.
+     */
+    kernel: (sessionId: string) =>
+      request<{ state: KernelState; executionCount?: number; modules?: Record<string, boolean>; python?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/kernel`, {}),
+    kernelInterrupt: (sessionId: string) => request<object>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/interrupt`, {}),
+    kernelRestart: (sessionId: string) => request<object>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/restart`, {}),
+    kernelExecute: (sessionId: string, code: string) => request<ExecResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/execute`, { code, producer: "cockpit" }),
+    kernelVars: (sessionId: string, limit = 200) => request<VarRow[]>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/vars`, { limit }),
+    kernelInspect: (sessionId: string, name: string, depth = 10) =>
+      request<Record<string, unknown>>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/inspect`, { name, depth }),
+    notebook: (sessionId: string, path: string, options: { from?: number; to?: number; withOutputs?: boolean } = {}) =>
+      request<NotebookRead>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/notebook/read`, { path, ...options }),
+    notebookEdit: (
+      sessionId: string,
+      path: string,
+      edit:
+        | { kind: "set"; cellId?: string; index?: number; source?: string; cellType?: "code" | "markdown" | "raw" }
+        | { kind: "insert"; after?: string | number; source: string; cellType?: "code" | "markdown" | "raw" }
+        | { kind: "delete"; cellId?: string; index?: number }
+        | { kind: "create" },
+    ) => request<NotebookRead>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/notebook/edit`, { path, edit }),
+    notebookRun: (sessionId: string, path: string, input: { cellId?: string; all?: boolean; stopOnError?: boolean }) =>
+      request<{ results: Array<{ cellId: string; result: ExecResult }>; notebook: NotebookRead }>(
+        fetcher,
+        "POST",
+        `/api/sessions/${encodeURIComponent(sessionId)}/ds/notebook/run`,
+        { path, ...input },
+      ),
+    /** The attachment index, optionally by tag. `plot` is what the gallery reads. */
+    attachments: (sessionId: string, options: { tag?: string } = {}) =>
+      request<{ attachments: TurnAttachment[] }>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/attachments${options.tag ? `?tag=${encodeURIComponent(options.tag)}` : ""}`,
+      ),
+    tagAttachment: (sessionId: string, attachmentId: string, tags: string[]) =>
+      request<{ attachment: TurnAttachment }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, { tags }),
+    /** A window of rows from a CSV, TSV or Parquet file, for the table view. */
+    sessionTable: (sessionId: string, path: string, options: { offset: number; limit: number; sort?: string; desc?: boolean }) =>
+      request<TableWindow>(
+        fetcher,
+        "GET",
+        `/api/sessions/${encodeURIComponent(sessionId)}/data/table?${new URLSearchParams({
+          path,
+          offset: String(options.offset),
+          limit: String(options.limit),
+          ...(options.sort ? { sort: options.sort } : {}),
+          ...(options.desc ? { desc: "1" } : {}),
+        }).toString()}`,
       ),
     /** Snapshot the session's work as one commit. A refusal ("nothing to commit",
      *  a hook that said no) comes back as `committed: false` with a reason, not
