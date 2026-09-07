@@ -1250,7 +1250,7 @@ export class EngineStore {
    * the native view — over the engine's own HTTP API, and deduped here so a
    * shell that re-reports the standing state journals nothing new.
    */
-  recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle", tabId?: string): void {
+  recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle", tabId?: string, interrupted = false): void {
     this.getSession(sessionId);
     // Control is PER TAB (§6): the dedupe key carries the tab so tab 1
     // changing hands is never mistaken for a re-report about tab 0.
@@ -1261,7 +1261,11 @@ export class EngineStore {
     // put "You interacted with the browser" inside the turn whose action it explains.
     // Between turns the row is session-level — the panel badge is live state.
     const running = this.readQueue(sessionId).turns.find((turn) => turn.state === "running");
-    this.appendEvent(sessionId, { type: "browser.control.changed", controller, ...(tabId ? { tabId } : {}) }, running?.runId);
+    this.appendEvent(
+      sessionId,
+      { type: "browser.control.changed", controller, ...(tabId ? { tabId } : {}), ...(interrupted ? { interrupted: true } : {}) },
+      running?.runId,
+    );
   }
 
   /**

@@ -312,9 +312,9 @@ describe("the compaction gesture", () => {
 });
 
 describe("browser control rows", () => {
-  test("human interaction during a turn renders as a labeled row inside it; the agent resuming and between-turn changes stay off the transcript", () => {
+  test("human interaction that INTERRUPTED the agent renders as a labeled row inside the turn; the agent resuming and between-turn changes stay off the transcript", () => {
     const [projected] = projectJournal([turn], [], [
-      { ...envelope, id: 5, type: "browser.control.changed", controller: "human" },
+      { ...envelope, id: 5, type: "browser.control.changed", controller: "human", interrupted: true },
       // The agent's side is routine in a shared browser — no "handed back" row.
       { ...envelope, id: 6, type: "browser.control.changed", controller: "agent" },
       { ...envelope, id: 8, type: "browser.control.changed", controller: "idle" },
@@ -328,6 +328,22 @@ describe("browser control rows", () => {
     // not the wire type. This is what printed "unknown" on screen.
     expect(projected!.items.map(itemLabel)).toEqual(["You interacted with the browser"]);
     expect(projected!.items.map(itemLabel).join(" ")).not.toMatch(/handed back|took the browser/);
+  });
+
+  test("touching the browser without interrupting the agent draws nothing", () => {
+    /**
+     * THE NOISE THIS REMOVES: scrolling or clicking in a tab the agent is not
+     * working in used to put "You interacted with the browser" in the
+     * conversation, repeatedly, explaining nothing. The row exists to explain
+     * a deferred or refused agent action; with nothing interrupted there is
+     * nothing to explain.
+     */
+    const [projected] = projectJournal([turn], [], [
+      { ...envelope, id: 5, type: "browser.control.changed", controller: "human" },
+      { ...envelope, id: 6, type: "browser.control.changed", controller: "idle" },
+      { ...envelope, id: 7, type: "browser.control.changed", controller: "human" },
+    ]);
+    expect(projected!.items).toEqual([]);
   });
 
   test("a tab opened by the agent is a labeled row, and reads as one", () => {

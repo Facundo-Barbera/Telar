@@ -141,6 +141,17 @@ const BrowserControlChanged = event("browser.control.changed", {
   /** WHICH tab changed hands. Control is per tab; absent means an engine (or
    *  a transition, like scope teardown) that speaks scope-level control. */
   tabId: z.string().optional(),
+  /**
+   * The person's input landed WHILE THE AGENT WAS ACTING on that tab, so it
+   * stopped or invalidated something — which is the only case where saying so
+   * explains anything.
+   *
+   * Every human touch used to draw a transcript row, and most of them explain
+   * nothing: scrolling a page the agent is not working in is not an event in
+   * the conversation. Absent (an older shell) reads as "not known to have
+   * interrupted", which renders nothing — the quiet side, deliberately.
+   */
+  interrupted: z.boolean().optional(),
 });
 
 // ── diagnostics ────────────────────────────────────────────────────────────

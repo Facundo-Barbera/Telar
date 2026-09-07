@@ -337,6 +337,13 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
          * one-line labeled row is exactly what this is, and inventing a
          * detail type for it would be a schema for a sentence.
          *
+         * ONLY WHEN IT INTERRUPTED SOMETHING. Every human touch used to draw
+         * this row, so scrolling a page the agent was not working in put a
+         * line in the conversation that explained nothing — reported from the
+         * dogfood app as constant noise. It now draws only when the input
+         * landed while the agent was acting on that tab, which is the case it
+         * was written to explain.
+         *
          * ONLY THE HUMAN'S SIDE IS A ROW. There is no ownership to hand back
          * in the shared browser: the agent resuming is routine and would only
          * be noise (it used to print "handed back to the agent", which claimed
@@ -345,7 +352,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
          * level changes (no runId) stay off the transcript; the panel's
          * activity mark is the live view of those.
          */
-        if (turn && event.controller === "human") {
+        if (turn && event.controller === "human" && event.interrupted) {
           turn.items.push({
             id: `control_${event.id}`,
             runId: event.runId!,
