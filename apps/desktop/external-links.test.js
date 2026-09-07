@@ -135,12 +135,14 @@ describe("desktop external-link wiring", () => {
   test("leaves the integrated browser's WebContentsView tabs in-app", () => {
     // THE GUARD, not a style rule: app.on("web-contents-created") is the
     // catch-all shape this feature invites, and it would also capture the
-    // browser manager's views — the surface agents drive. Same for the manager
-    // opening the shell itself. If either becomes necessary, the in-app
-    // browser has to be excluded explicitly first.
+    // browser manager's views — the surface agents drive. The manager does
+    // intercept target=_blank/window.open now, but only to create another
+    // managed in-app tab; it still must never hand a page target to the OS.
     expect(mainCode).not.toContain("web-contents-created");
     expect(managerCode).not.toContain("openExternal(");
-    expect(managerCode).not.toContain("setWindowOpenHandler");
+    expect(managerCode).toContain("setWindowOpenHandler");
+    expect(managerCode).toContain("openPopupTab(tab, url)");
+    expect(managerCode).toContain('return { action: "deny" }');
   });
 });
 
