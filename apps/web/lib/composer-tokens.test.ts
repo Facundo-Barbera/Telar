@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { chipBasename, chipIsDirectory, chipPath, detectComposerTrigger, replaceTextRange, segmentDraft } from "./composer-tokens";
-import { checkReference, directoryReference, fileReference, issueReference, pageReference, pullReference, taskReference } from "./drag-reference";
+import { browserPageReference, checkReference, directoryReference, fileReference, issueReference, pageReference, pullReference, taskReference } from "./drag-reference";
 
 describe("what the caret is in the middle of", () => {
   test("an at-sign opens the path menu and carries what follows it", () => {
@@ -131,8 +131,38 @@ describe("which runs of a draft draw as chips", () => {
   });
 
   test("a title carrying a double quote falls back to prose rather than half a chip", () => {
-    // A missing decoration; the message is byte-identical either way.
+    // A missing decoration; the message is byte-identical either way. (New
+    // drops never produce this string — `issueReference` sanitizes quotes —
+    // but a draft typed by hand or saved by an older build still might.)
     const draft = `#5 "the "quoted" one" (https://example.test/issues/5)`;
+    expect(rebuild(draft)).toBe(draft);
+  });
+
+  test("an issue whose TITLE had quotes still chips, because the reference sanitized them (the #167 regression)", () => {
+    const draft = `fix ${issueReference({ number: 167, title: 'the environment marked "In use" (+ UX follow-ups)', url: "https://example.test/issues/167" }).text} please`;
+    const segments = segmentDraft(draft);
+    expect(segments).toHaveLength(3);
+    expect(segments[1]).toMatchObject({ type: "chip", reference: { kind: "issue", label: "#167" } });
+    expect(rebuild(draft)).toBe(draft);
+  });
+
+  test("a page open in the session's browser chips with its title, and its URL is not torn out", () => {
+    const draft = `pull the pricing table from ${browserPageReference({ title: "Pricing — Acme", url: "http://localhost:3000/pricing" }).text}`;
+    const segments = segmentDraft(draft);
+    expect(segments).toHaveLength(2);
+    expect(segments[1]).toMatchObject({ type: "chip", reference: { kind: "page", label: "Pricing — Acme" } });
+    expect(rebuild(draft)).toBe(draft);
+  });
+
+  test("a bare URL does not swallow the sentence's punctuation after it", () => {
+    // `\S+` used to take the closing paren and the full stop with it, and the
+    // chip's text was a URL that 404s.
+    const draft = "see (https://example.test/docs), then https://example.test/a.";
+    const chips = segmentDraft(draft).filter((segment) => segment.type === "chip");
+    expect(chips.map((chip) => chip.reference.text)).toEqual(["https://example.test/docs", "https://example.test/a"]);
+    // A Wikipedia-style path keeps ITS OWN closing paren.
+    const wiki = segmentDraft("read https://en.example.org/wiki/Bun_(software) now").filter((segment) => segment.type === "chip");
+    expect(wiki[0]?.reference.text).toBe("https://en.example.org/wiki/Bun_(software)");
     expect(rebuild(draft)).toBe(draft);
   });
 

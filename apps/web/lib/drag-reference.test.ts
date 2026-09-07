@@ -8,6 +8,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
+  browserPageReference,
   checkReference,
   failingChecksReference,
   fileReference,
@@ -56,6 +57,24 @@ describe("what a reference says", () => {
   test("a page is its URL, and a titleless page still labels as something", () => {
     expect(pageReference({ title: "Settings", url: "http://localhost:3000/settings" }).text).toBe("http://localhost:3000/settings");
     expect(pageReference({ url: "http://localhost:3000/x" }).label).toBe("http://localhost:3000/x");
+  });
+
+  test("a title's double quotes become single ones, because the chip pattern finds a title BY its quotes", () => {
+    // The #167 regression: an issue literally titled `…marked "In use"…`
+    // dropped as prose, because the inner quotes broke the pattern that turns
+    // the text back into a chip. Sanitized at write time, once.
+    const issue = issueReference({ number: 167, title: 'kernel runs elsewhere than the env marked "In use"', url: "https://github.com/o/r/issues/167" });
+    expect(issue.text).toBe("#167 \"kernel runs elsewhere than the env marked 'In use'\" (https://github.com/o/r/issues/167)");
+    const pull = pullReference({ number: 9, title: 'Revert "the revert"', url: "https://github.com/o/r/pull/9" });
+    expect(pull.text).toBe("PR #9 \"Revert 'the revert'\" (https://github.com/o/r/pull/9)");
+  });
+
+  test("a page open in the session's browser SAYS so — the words that point the agent at its browser tools", () => {
+    expect(browserPageReference({ title: "Checkout — Acme", url: "http://localhost:3000/checkout" }).text).toBe(
+      "the \"Checkout — Acme\" page open in the session's browser (http://localhost:3000/checkout)",
+    );
+    // No title yet (still loading): the bare URL is still actionable.
+    expect(browserPageReference({ url: "http://localhost:3000/x" }).text).toBe("http://localhost:3000/x");
   });
 
   test("a sub-agent names itself and says how it ended", () => {

@@ -50,11 +50,24 @@ export type TelarReference = {
  * unreadable in a transcript six weeks later — and the transcript is the part
  * that has to survive.
  */
+
+/**
+ * A TITLE'S DOUBLE QUOTES BECOME SINGLE ONES, at write time, because the read
+ * side (`composer-tokens.ts`) finds a reference by the quotes AROUND its title.
+ * An issue literally titled `…marked "In use"…` used to fall out of the pattern
+ * the moment it was dropped — no chip in the composer, no chip in the
+ * transcript — which is a regression a real issue title triggers, not an edge
+ * case. The meaning survives; only the quote glyph changes.
+ */
+function safeTitle(title: string): string {
+  return title.replaceAll('"', "'");
+}
+
 export function issueReference(issue: { number: number; title: string; url: string }): TelarReference {
   return {
     kind: "issue",
     label: `#${issue.number}`,
-    text: `#${issue.number} "${issue.title}" (${issue.url})`,
+    text: `#${issue.number} "${safeTitle(issue.title)}" (${issue.url})`,
   };
 }
 
@@ -62,7 +75,7 @@ export function pullReference(pull: { number: number; title: string; url: string
   return {
     kind: "pull",
     label: `PR #${pull.number}`,
-    text: `PR #${pull.number} "${pull.title}" (${pull.url})`,
+    text: `PR #${pull.number} "${safeTitle(pull.title)}" (${pull.url})`,
   };
 }
 
@@ -82,6 +95,24 @@ export function directoryReference(path: string): TelarReference {
 
 export function pageReference(page: { title?: string; url: string }): TelarReference {
   return { kind: "page", label: page.title?.trim() || page.url, text: page.url };
+}
+
+/**
+ * A PAGE THAT IS OPEN IN THE SESSION'S OWN BROWSER, which is worth more words
+ * than a bare URL. The agent holds `browser_*` tools over exactly these tabs,
+ * and "the X page open in the session's browser" is the sentence that tells it
+ * to reach for them — read the live DOM, pull the component, act on the page —
+ * instead of fetching the URL cold. A page with no title yet drags as the
+ * plain URL, which is still actionable.
+ */
+export function browserPageReference(page: { title?: string; url: string }): TelarReference {
+  const title = page.title?.trim();
+  if (!title) return pageReference(page);
+  return {
+    kind: "page",
+    label: title,
+    text: `the "${safeTitle(title)}" page open in the session's browser (${page.url})`,
+  };
 }
 
 /**
