@@ -34,6 +34,7 @@ import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
+import { KernelHost } from "./ds/kernel-host";
 import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
 import {
   isAppearanceId,
@@ -2109,6 +2110,48 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         );
         return;
       }
+      /**
+       * What a project OPTS INTO. `PATCH`, not `PUT`: identity stays where
+       * `registerProject` put it, and the body names only the switches it
+       * means to move. `dataScience: null` turns the feature off and removes
+       * the block, which is the difference between "never asked" and "off".
+       */
+      const projectPatch = /^\/v2\/projects\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "PATCH" && projectPatch) {
+        const input = await body(request);
+        const patch: Parameters<typeof store.updateProject>[1] = {};
+        if ("dataScience" in input) {
+          if (input.dataScience !== null && (typeof input.dataScience !== "object" || Array.isArray(input.dataScience))) {
+            throw new HttpError(400, "invalid_request", "dataScience must be an object or null");
+          }
+          patch.dataScience = input.dataScience as Parameters<typeof store.updateProject>[1]["dataScience"];
+        }
+        writeJson(response, 200, { project: store.updateProject(decodeURIComponent(projectPatch[1]), patch) });
+        return;
+      }
+      /**
+       * Which Pythons a project could run on, each probed. A LIST, so the
+       * settings page can ask rather than the engine guessing — see
+       * `ds/python-env.ts`. Slow by nature (it spawns each interpreter), and
+       * only a human opening the dialog calls it.
+       */
+      const projectDsDetect = /^\/v2\/projects\/([^/]+)\/data-science\/detect$/.exec(url.pathname);
+      if (request.method === "GET" && projectDsDetect) {
+        writeJson(response, 200, await store.dataScienceDetect(decodeURIComponent(projectDsDetect[1])));
+        return;
+      }
+      /** Build Telar's own venv for a project on the interpreter the person chose. */
+      const projectDsVenv = /^\/v2\/projects\/([^/]+)\/data-science\/venv$/.exec(url.pathname);
+      if (request.method === "POST" && projectDsVenv) {
+        const input = await body(request);
+        writeJson(response, 200, {
+          venv: await store.dataScienceVenv(decodeURIComponent(projectDsVenv[1]), {
+            basePython: stringValue(input.basePython, "base python")!,
+            ...(typeof input.stack === "boolean" ? { stack: input.stack } : {}),
+          }),
+        });
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {
@@ -2715,6 +2758,79 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, {});
           return;
         }
+        /**
+         * THE KERNEL'S DOOR. Every data-science verb is a POST under
+         * `/ds/<method>`, dispatched to the store's capability — the same object
+         * the worker's toolkit reaches through `EngineClient.ds`. A project that
+         * has not opted in gets `invalid_request` here, which is the whole gate.
+         */
+        const dsMethod = /^\/ds\/([a-z]+(?:\/[a-z]+)?)$/.exec(session.tail)?.[1];
+        if (request.method === "POST" && dsMethod) {
+          const input = await body(request);
+          const ds = store.dataScience(session.sessionId);
+          const str = (key: string, optional = false) => stringValue(input[key], key, optional);
+          const num = (key: string): number | undefined => (typeof input[key] === "number" ? (input[key] as number) : undefined);
+          let result: unknown;
+          switch (dsMethod) {
+            case "kernel": result = await ds.kernel(); break;
+            case "execute": result = await ds.execute({ code: str("code")!, ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}), ...(str("producer", true) ? { producer: str("producer", true)! } : {}) }); break;
+            case "interrupt": await ds.interrupt(); result = {}; break;
+            case "restart": await ds.restart(); result = {}; break;
+            case "vars": result = await ds.vars(num("limit")); break;
+            case "inspect": result = await ds.inspect(str("name")!, num("depth")); break;
+            case "notebook/read": result = await ds.notebookRead(str("path")!, { ...(num("from") !== undefined ? { from: num("from")! } : {}), ...(num("to") !== undefined ? { to: num("to")! } : {}), ...(input.withOutputs === true ? { withOutputs: true } : {}) }); break;
+            case "notebook/edit": result = await ds.notebookEdit(str("path")!, input.edit as Parameters<typeof ds.notebookEdit>[1]); break;
+            case "notebook/run": result = await ds.notebookRun(str("path")!, { ...(str("cellId", true) ? { cellId: str("cellId", true)! } : {}), ...(input.all === true ? { all: true } : {}), ...(typeof input.stopOnError === "boolean" ? { stopOnError: input.stopOnError } : {}) }); break;
+            case "plot": result = await ds.plot({ code: str("code")!, ...(str("title", true) ? { title: str("title", true)! } : {}) }); break;
+            case "snapshot": result = await ds.snapshot(str("name")!, Array.isArray(input.vars) ? input.vars.map(String) : undefined); break;
+            case "snapshots": result = await ds.snapshots(); break;
+            case "diff": result = await ds.diff(str("from")!, str("to")!); break;
+            case "checkpoint": result = await ds.checkpoint({ action: str("action")! as "save" | "restore" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}) }); break;
+            case "lineage": result = await ds.lineage(str("of", true)); break;
+            case "watches": result = await ds.watches(); break;
+            case "watch": result = await ds.watch({ name: str("name")!, ...(str("assert", true) ? { assert: str("assert", true)! } : {}), ...(input.remove === true ? { remove: true } : {}) }); break;
+            case "experiment": result = await ds.experiment({ action: str("action")! as "start" | "log" | "end" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}), ...(input.params && typeof input.params === "object" ? { params: input.params as Record<string, unknown> } : {}), ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}) }); break;
+            default: throw new HttpError(404, "not_found", `no data-science method ${dsMethod}`);
+          }
+          writeJson(response, 200, result ?? {});
+          return;
+        }
+        /** The CSV / Parquet table viewer's backend: a window of rows. */
+        if (request.method === "GET" && session.tail === "/data/table") {
+          const target = url.searchParams.get("path");
+          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
+          writeJson(response, 200, await store.sessionTable(session.sessionId, target, {
+            offset: Number(url.searchParams.get("offset") ?? 0),
+            limit: Math.min(Number(url.searchParams.get("limit") ?? 200), 1000),
+            ...(url.searchParams.get("sort") ? { sort: url.searchParams.get("sort")! } : {}),
+            ...(url.searchParams.get("desc") === "1" ? { desc: true } : {}),
+          }));
+          return;
+        }
+        /** The plots gallery reads the index; the transcript reads the bytes. */
+        if (request.method === "GET" && session.tail === "/attachments") {
+          const tag = url.searchParams.get("tag") ?? undefined;
+          writeJson(response, 200, { attachments: store.listAttachments(session.sessionId, tag ? { tag } : {}) });
+          return;
+        }
+        const attachmentOne = /^\/attachments\/([A-Za-z0-9_-]+)$/.exec(session.tail);
+        if (attachmentOne && request.method === "GET") {
+          const { attachment, data } = store.attachmentBytes(session.sessionId, attachmentOne[1]!);
+          response.writeHead(200, {
+            "content-type": attachment.mediaType,
+            "content-length": data.byteLength,
+            // The id is minted per write, so the bytes behind it never change.
+            "cache-control": "private, max-age=31536000, immutable",
+          });
+          response.end(Buffer.from(data));
+          return;
+        }
+        if (attachmentOne && request.method === "PATCH") {
+          const input = await body(request);
+          const tags = Array.isArray(input.tags) ? input.tags.filter((t): t is string => typeof t === "string") : [];
+          writeJson(response, 200, { attachment: store.tagAttachment(session.sessionId, attachmentOne[1]!, tags) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/attachments") {
           const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
           const header = request.headers["x-telar-attachment-name"];
@@ -2899,6 +3015,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
+    let kernels: KernelHost | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
       const [{ EngineClient }, { EngineWorker }] = await Promise.all([
@@ -2921,6 +3038,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
        */
       const routed = new BrowserRouter(browser, desktopBrowserFromEnv());
       store.attachBrowser(routed);
+      /**
+       * THE KERNEL HOST, beside the browser and for the same reason: a
+       * kernel outlives any turn, so the daemon owns it. Outputs are
+       * journaled by the store's capability; the host only persists images.
+       */
+      kernels = new KernelHost({
+        engineRoot: store.paths.root,
+        sessionDir: (sessionId) => path.join(store.paths.sessions, sessionId),
+        events: {
+          onState: (sessionId, state, reason) => store.recordKernelState(sessionId, state, reason),
+          persistImage: (sessionId, input) =>
+            store.putAttachment(sessionId, {
+              name: `${input.producer}.${input.mediaType === "image/svg+xml" ? "svg" : "png"}`,
+              mediaType: input.mediaType,
+              data: input.data,
+              tags: ["plot"],
+              producer: input.producer,
+            }).id,
+        },
+      });
+      store.attachKernels(kernels);
       // The browser reaches sessions over the worker-hosted MCP socket, for
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.
@@ -3020,6 +3158,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The socket before the browser it fronts: a listener that outlived
         // its browser would answer tool calls with a runtime already closing.
         await browserSocket?.close();
+        // Kernels beside the browser: both are processes a turn borrowed and
+        // the daemon owns, and both leak past a daemon that does not stop them.
+        await kernels?.disposeAll("engine shutting down");
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");

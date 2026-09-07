@@ -18,6 +18,9 @@ import { displayToolName, type EngineEvent, type Item, type Session, type Task, 
 export type JournalItem = Item & {
   /** Deltas accumulated in arrival order. Empty for items that never stream. */
   streamedText: string;
+  /** A figure the kernel drew during this turn — the attachment behind it.
+   *  Set only on the synthetic `unknown` rows the plot fold produces. */
+  plotAttachmentId?: string;
   /** The event id that opened this item — the sort key, not a display value. */
   openedBy: number;
 };
@@ -361,6 +364,44 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             startedAt: event.at,
             completedAt: event.at,
             detail: { type: "unknown", label: "You interacted with the browser" },
+            streamedText: "",
+            openedBy: event.id,
+          });
+        }
+        break;
+      case "notebook.cell.output": {
+        /**
+         * ONLY THE FIGURES BECOME ROWS. Text and tables are already in the
+         * tool result the model read; a plot is the one output a human wants
+         * to SEE where it was made, and the gallery holds the rest. Outputs
+         * with no turn (a cell run from the panel) stay off the transcript.
+         */
+        const output = event.output as { kind?: string; attachmentId?: string } | null;
+        if (!turn || output?.kind !== "image" || !output.attachmentId) break;
+        turn.items.push({
+          id: `plot_${output.attachmentId}`,
+          runId: event.runId!,
+          sessionId: event.sessionId,
+          status: "completed",
+          startedAt: event.at,
+          completedAt: event.at,
+          detail: { type: "unknown", label: `Drew a figure${event.producer ? ` — ${event.producer}` : ""}` },
+          streamedText: "",
+          openedBy: event.id,
+          plotAttachmentId: output.attachmentId,
+        });
+        break;
+      }
+      case "ds.watch.violated":
+        if (turn) {
+          turn.items.push({
+            id: `watch_${event.id}`,
+            runId: event.runId!,
+            sessionId: event.sessionId,
+            status: "failed",
+            startedAt: event.at,
+            completedAt: event.at,
+            detail: { type: "error", error: { message: `Watch "${event.watch}" violated: ${event.assert}${event.detail ? ` (${event.detail})` : ""}` } },
             streamedText: "",
             openedBy: event.id,
           });

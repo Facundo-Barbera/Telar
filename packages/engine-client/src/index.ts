@@ -76,6 +76,9 @@ import {
   type McpServerSpec,
   type TurnAttachment,
   type TurnModelSelection,
+  type DataScienceConfig,
+  type DataScienceDetection,
+  type DataScienceVenvOutcome,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -306,6 +309,23 @@ export class EngineClient {
 
   registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
     return this.request("POST", "/v2/projects", input);
+  }
+
+  /** Move a project's opt-in switches. `dataScience: null` turns it off. */
+  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null }): Promise<{ project: Project }> {
+    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);
+  }
+
+  /** The Pythons a project could run its data-science tooling on, each probed.
+   *  Spawns interpreters; call it from a dialog, never from a poll. */
+  dataScienceDetect(projectId: string): Promise<DataScienceDetection> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/detect`);
+  }
+
+  /** Build Telar's own venv for a project on `basePython`; `stack` also installs
+   *  pandas, matplotlib, duckdb and pyarrow. Slow — minutes with the stack. */
+  dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<{ venv: DataScienceVenvOutcome }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/venv`, input);
   }
 
   /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every
@@ -1453,6 +1473,60 @@ export class EngineClient {
     input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
   ): Promise<TurnSubmissionResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns`, input);
+  }
+
+  /**
+   * ONE DOOR TO THE SESSION'S KERNEL. `method` is the verb — `execute`,
+   * `notebook/run`, `snapshot`… — and it is always a POST, because even a read
+   * of the namespace may start the kernel. The daemon's `storeDsCapability`
+   * is the implementation; this is its wire.
+   */
+  ds<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/ds/${method}`, body ?? {});
+  }
+
+  /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */
+  sessionTable(
+    sessionId: string,
+    path: string,
+    options: { offset: number; limit: number; sort?: string; desc?: boolean },
+  ): Promise<{ path: string; columns: string[]; dtypes?: string[]; total: number; offset: number; rows: unknown[][]; truncated?: boolean }> {
+    const query = new URLSearchParams({ path, offset: String(options.offset), limit: String(options.limit), ...(options.sort ? { sort: options.sort } : {}), ...(options.desc ? { desc: "1" } : {}) });
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/data/table?${query.toString()}`);
+  }
+
+  /** The session's attachment index, optionally by tag (`plot`). Newest first. */
+  attachments(sessionId: string, options: { tag?: string } = {}): Promise<{ attachments: TurnAttachment[] }> {
+    const suffix = options.tag ? `?tag=${encodeURIComponent(options.tag)}` : "";
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/attachments${suffix}`);
+  }
+
+  /** Replace an attachment's tags — how a plot is pinned. */
+  tagAttachment(sessionId: string, attachmentId: string, tags: string[]): Promise<{ attachment: TurnAttachment }> {
+    return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, { tags });
+  }
+
+  /** The bytes behind an attachment. Immutable: the id is minted per write. */
+  async attachmentBytes(sessionId: string, attachmentId: string): Promise<{ data: Uint8Array; contentType: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.discovery.token}` },
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+    }
+    if (!response.ok) {
+      let code: EngineErrorCode = "engine_unavailable";
+      let message = "engine request failed";
+      try {
+        const error = ((await response.json()) as EngineErrorBody | null)?.error;
+        if (error) ({ code, message } = error);
+      } catch { /* keep defaults */ }
+      throw new EngineClientError(code, message, response.status);
+    }
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
   }
 
   /**

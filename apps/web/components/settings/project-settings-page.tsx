@@ -17,11 +17,12 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleAlertIcon, FolderGitIcon, WrenchIcon } from "lucide-react";
+import { CircleAlertIcon, FlaskConicalIcon, FolderGitIcon, WrenchIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { canvasHref } from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
+import { DataScienceSection } from "./data-science-section";
 import { McpSection } from "./mcp-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
@@ -30,6 +31,7 @@ const api = createEngineApi();
 
 const SECTIONS: SettingsSection[] = [
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "This project" },
+  { id: "data-science", label: "Data science", icon: FlaskConicalIcon, group: "This project" },
   { id: "project", label: "Project", icon: FolderGitIcon, group: "This project" },
 ];
 
@@ -90,6 +92,15 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
           <McpSection scope={{ projectId: project.id, projectName: project.name }} />
         ) : (
           <SettingsGroup title="MCP servers">
+            <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
+          </SettingsGroup>
+        ))}
+
+      {active === "data-science" &&
+        (project ? (
+          <DataScienceSection project={project} onChange={setProject} />
+        ) : (
+          <SettingsGroup title="Data science">
             <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
           </SettingsGroup>
         ))}

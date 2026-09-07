@@ -49,6 +49,7 @@ import {
 import type { Item } from "@telar/engine-client";
 import { isToolItem, itemLabel, itemText, toolOutput, type JournalItem, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { fmtTokens } from "@/lib/format";
+import { attachmentUrl } from "@/lib/ds";
 import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
 import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
@@ -479,6 +480,21 @@ function SteeredMessageRow({ item }: { item: JournalItem }) {
   );
 }
 
+/**
+ * A FIGURE, WHERE IT WAS DRAWN. Bounded in height so a run that plots ten
+ * things stays a transcript rather than a poster; the Plots surface has them
+ * large. The bytes come from the attachment route — nothing is inlined.
+ */
+function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: string }) {
+  return (
+    <figure className="my-1 max-w-md overflow-hidden rounded-md border border-border bg-white">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={attachmentUrl(item.sessionId, attachmentId)} alt={itemLabel(item)} className="block max-h-72 w-full object-contain" loading="lazy" />
+      <figcaption className="border-t border-border bg-background px-2 py-0.5 text-[0.625rem] text-muted-foreground">{itemLabel(item)}</figcaption>
+    </figure>
+  );
+}
+
 export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem; tasks?: readonly JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
   if (item.detail.type === "task") {
     const taskId = item.detail.taskId;
@@ -492,6 +508,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
   if (item.detail.type === "user_message") return <SteeredMessageRow item={item} />;
+  if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
   if (item.detail.type === "error") {
     return (

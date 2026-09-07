@@ -19,6 +19,17 @@ const MAX_BYTES = 20 * 1024 * 1024;
 
 type Context = { params: Promise<{ sessionId: string }> };
 
+/** The index, optionally filtered by tag — `?tag=plot` is the gallery's read. */
+export async function GET(request: Request, context: Context) {
+  try {
+    const { sessionId } = await context.params;
+    const tag = new URL(request.url).searchParams.get("tag") ?? undefined;
+    return Response.json(await (await engineClient()).attachments(sessionId, tag ? { tag } : {}));
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
+}
+
 export async function POST(request: Request, context: Context) {
   try {
     const { sessionId } = await context.params;

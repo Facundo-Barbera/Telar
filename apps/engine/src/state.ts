@@ -33,6 +33,8 @@ import {
   resolveMcpServers,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
+  DataScienceConfig as DataScienceConfigSchema,
+  type DataScienceConfig,
   Session as SessionSchema,
   Subscription as SubscriptionSchema,
   Task as TaskSchema,
@@ -221,6 +223,13 @@ import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
+import { defaultExec, detectPythonCandidates, preflightPython, resolvePythonPath, type PythonCandidate, type PythonPreflight } from "./ds/python-env";
+import { ensureTelarVenv, removeTelarVenv, telarVenvDir, telarVenvPython, type VenvOutcome } from "./ds/telar-venv";
+import type { KernelHost } from "./ds/kernel-host";
+import type { DsCapability } from "./ds/capability";
+import { DsFiles } from "./ds/state-files";
+import { storeDsCapability } from "./ds/store-capability";
+import { windowCsv, type TableWindow } from "./ds/table";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
@@ -1242,6 +1251,121 @@ export class EngineStore {
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
+  }
+
+  /**
+   * The daemon's kernel host, attached like the browser and for the same
+   * reason: the store must build in a test without spawning Python. Absent
+   * means every kernel verb refuses with "no kernel host".
+   */
+  private kernels?: KernelHost;
+
+  attachKernels(host: KernelHost): void {
+    this.kernels = host;
+  }
+
+  /**
+   * THE DATA-SCIENCE DOOR FOR ONE SESSION. Resolves the project's interpreter
+   * with the worktree rule, builds the capability over the daemon's kernel
+   * host and this store's files, and refuses when the project has not opted
+   * in. Every route and every toolkit reaches the kernel through this.
+   */
+  dataScience(sessionId: string): DsCapability {
+    const session = this.getSession(sessionId);
+    const resolved = this.resolveDataScience(session);
+    if (!resolved) throw new EngineStateError("invalid_request", "data science is not enabled for this session's project");
+    if (!this.kernels) throw new EngineStateError("invalid_request", "this engine has no kernel host");
+    return storeDsCapability({
+      sessionId,
+      cwd: session.workspace.path,
+      python: resolved.pythonPath,
+      telarVenv: telarVenvDir(this.paths.root, session.projectId!, session.workspace.mode === "worktree" ? path.basename(session.workspace.path) : undefined),
+      host: this.kernels,
+      files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
+      readFile: (target) => this.sessionFile(sessionId, target),
+      writeFile: (target, text, expected) => this.sessionFileWrite(sessionId, target, text, expected),
+      putAttachment: (input) => this.putAttachment(sessionId, input),
+      attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
+      appendEvent: (event) => { this.appendEvent(sessionId, event); },
+      now: () => this.now(),
+    });
+  }
+
+  /**
+   * Which interpreter a session runs on, or nothing. THE WORKTREE RULE LIVES
+   * HERE AND NOWHERE ELSE: a relative path resolves against the session's own
+   * tree, and a worktree missing it gets nothing — never the project root's.
+   */
+  resolveDataScience(session: Session): { pythonPath: string } | undefined {
+    if (!session.projectId) return undefined;
+    let project: Project;
+    try { project = this.getProject(session.projectId); } catch { return undefined; }
+    const config = project.dataScience;
+    if (!config?.enabled || !config.python) return undefined;
+    const pythonPath = resolvePythonPath(session.workspace.path, config.python.path);
+    if (!fs.existsSync(pythonPath)) return undefined;
+    return { pythonPath };
+  }
+
+  /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
+  recordKernelState(sessionId: string, state: "starting" | "idle" | "busy" | "restarting" | "dead", reason?: string): void {
+    try {
+      this.getSession(sessionId);
+    } catch {
+      return; // a kernel outliving its session has nowhere to report
+    }
+    this.appendEvent(sessionId, { type: "kernel.state.changed", state, ...(reason ? { reason } : {}) });
+  }
+
+  /**
+   * A WINDOW OF ROWS from a CSV, TSV or Parquet file in the session's tree.
+   * CSV is parsed here; Parquet goes through the kernel (pyarrow), so it needs
+   * data science on. The fence is `sessionFile`'s.
+   */
+  async sessionTable(sessionId: string, target: string, options: { offset: number; limit: number; sort?: string; desc?: boolean }): Promise<TableWindow> {
+    const session = this.getSession(sessionId);
+    if (/\.parquet$/i.test(target)) {
+      const ds = this.dataScience(sessionId);
+      const sort = options.sort ? `.sort_values(${JSON.stringify(options.sort)}, ascending=${options.desc ? "False" : "True"})` : "";
+      const code = `import pandas as _pd, json as _j\n_df = _pd.read_parquet(${JSON.stringify(path.resolve(session.workspace.path, target))})${sort}\n_w = _df.iloc[${options.offset}:${options.offset + options.limit}]\nprint("__TELAR_TABLE__" + _j.dumps({"columns": list(map(str, _df.columns)), "dtypes": [str(_df.dtypes[c]) for c in _df.columns], "total": int(len(_df)), "rows": _j.loads(_w.to_json(orient="values", date_format="iso"))}, default=str))`;
+      const result = await ds.execute({ code, producer: "table" });
+      const line = result.outputs.find((o) => o.kind === "text" && o.text.includes("__TELAR_TABLE__"));
+      if (!result.ok || !line || line.kind !== "text") throw new EngineStateError("invalid_request", result.error ? `${result.error.ename}: ${result.error.evalue}` : "could not read the parquet file");
+      const parsed = JSON.parse(line.text.slice(line.text.indexOf("__TELAR_TABLE__") + 15)) as Omit<TableWindow, "offset" | "path">;
+      return { path: target, offset: options.offset, ...parsed };
+    }
+    const file = this.sessionFile(sessionId, target);
+    if (file.binary) throw new EngineStateError("invalid_request", "that file is not text");
+    return { path: target, ...windowCsv(file.text, /\.tsv$/i.test(target) ? "\t" : ",", options), ...(file.truncated ? { truncated: true } : {}) };
+  }
+
+  /** The attachment index, for the plots gallery. Newest first. */
+  listAttachments(sessionId: string, options: { tag?: string } = {}): TurnAttachment[] {
+    this.getSession(sessionId);
+    const all = [...this.readAttachments(sessionId).values()];
+    const filtered = options.tag ? all.filter((a) => a.tags?.includes(options.tag!)) : all;
+    return structuredClone(filtered.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)));
+  }
+
+  attachmentBytes(sessionId: string, attachmentId: string): { attachment: TurnAttachment; data: Uint8Array } {
+    this.getSession(sessionId);
+    const attachment = this.readAttachments(sessionId).get(attachmentId);
+    if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
+    return { attachment: structuredClone(attachment), data: new Uint8Array(fs.readFileSync(attachment.path)) };
+  }
+
+  /** Replace an attachment's tags — how a plot is pinned and unpinned. */
+  tagAttachment(sessionId: string, attachmentId: string, tags: string[]): TurnAttachment {
+    this.getSession(sessionId);
+    const index = this.readAttachments(sessionId);
+    const attachment = index.get(attachmentId);
+    if (!attachment) throw new EngineStateError("not_found", "attachment does not exist");
+    const cleaned = [...new Set(tags.map((t) => t.trim()).filter(Boolean))].slice(0, 16);
+    const next = { ...attachment, ...(cleaned.length ? { tags: cleaned } : {}) };
+    if (!cleaned.length) delete next.tags;
+    index.set(attachmentId, next);
+    atomicWrite(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
+    return structuredClone(next);
   }
 
   /**
@@ -3717,6 +3841,62 @@ export class EngineStore {
     return structuredClone(project);
   }
 
+  /**
+   * Change what a project OPTS INTO. Identity — name, root — is not patchable:
+   * moving a project means registering it again, and this method refuses any
+   * key it does not know rather than storing it. `dataScience: null` removes
+   * the block, which is how "off" is spelled so the registry does not grow a
+   * `{enabled: false}` for every project that tried it once.
+   */
+  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null }): Project {
+    assertId(projectId, "project id");
+    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registry);
+    const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
+    if (index < 0) throw new EngineStateError("not_found", "project does not exist");
+    const current = parsed.projects[index]!;
+    const next: Project = { ...current, updatedAt: this.now() };
+    if (patch.dataScience === null) {
+      delete next.dataScience;
+    } else if (patch.dataScience !== undefined) {
+      const config = DataScienceConfigSchema.safeParse(patch.dataScience);
+      if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
+      next.dataScience = config.data;
+    }
+    parsed.projects[index] = next;
+    atomicWrite(this.paths.projects, parsed);
+    return structuredClone(next);
+  }
+
+  /**
+   * The interpreters a project could run its data-science tooling on, each
+   * probed. A list for a human to choose from — see `ds/python-env.ts` for why
+   * the engine never picks. Telar's own venv is listed when it already exists.
+   */
+  async dataScienceDetect(projectId: string): Promise<{ candidates: (PythonCandidate & { preflight: PythonPreflight })[]; uv: boolean }> {
+    const project = this.getProject(projectId);
+    const telarVenv = telarVenvDir(this.paths.root, projectId);
+    const found = await detectPythonCandidates(project.root, { ...(telarVenvPython(telarVenv) ? { telarVenv } : {}) });
+    const candidates = await Promise.all(found.map(async (candidate) => ({ ...candidate, preflight: await preflightPython(candidate.path) })));
+    const uv = await defaultExec("uv", ["--version"], { timeoutMs: 5_000 }).then((r) => r.status === 0, () => false);
+    return { candidates, uv };
+  }
+
+  /**
+   * Build or repair Telar's venv for a project, on the interpreter the person
+   * chose. Returns the venv's python so the caller can store it with
+   * `source: "telar"`. `stack` also installs the optional analysis libraries;
+   * the answer says which packages were asked for, and the next preflight says
+   * which actually import.
+   */
+  async dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<VenvOutcome> {
+    const project = this.getProject(projectId);
+    const base = resolvePythonPath(project.root, input.basePython);
+    const probe = await preflightPython(base, []);
+    if (!probe.ok) throw new EngineStateError("invalid_request", `base interpreter is unusable: ${probe.reason}`);
+    return ensureTelarVenv(telarVenvDir(this.paths.root, projectId), { basePython: base, ...(input.stack ? { stack: true } : {}) });
+  }
+
   /** Coalesce polling reads and keep results briefly. Bounded so browsing patches
    * cannot retain every file's contents for the lifetime of the engine. */
   private readonly gitReadCache = new Map<string, { until: number; value: Promise<unknown> }>();
@@ -4837,7 +5017,7 @@ export class EngineStore {
    * to take the whole attachment from the client — including its PATH — and a
    * client-supplied path is a client-supplied file read.
    */
-  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array }): TurnAttachment {
+  putAttachment(sessionId: string, input: { name: string; mediaType: string; data: Uint8Array; tags?: string[]; producer?: string }): TurnAttachment {
     this.getSession(sessionId);
     if (input.data.byteLength === 0) throw new EngineStateError("invalid_request", "attachment is empty");
     if (input.data.byteLength > MAX_ATTACHMENT_BYTES) {
@@ -4849,7 +5029,11 @@ export class EngineStore {
     const file = attachmentFile(this.paths, sessionId, id, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, input.data, { mode: 0o600 });
-    const attachment: TurnAttachment = { id, name, mediaType, bytes: input.data.byteLength, path: file };
+    const attachment: TurnAttachment = {
+      id, name, mediaType, bytes: input.data.byteLength, path: file, createdAt: this.now(),
+      ...(input.tags?.length ? { tags: input.tags } : {}),
+      ...(input.producer ? { producer: input.producer } : {}),
+    };
     const index = this.readAttachments(sessionId);
     index.set(id, attachment);
     atomicWrite(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
@@ -5184,6 +5368,12 @@ export class EngineStore {
         // Filtered to the enabled ones in the engine, so "disabled" is decided
         // in exactly one place rather than trusted to every worker.
         ...(mcpServers.length > 0 ? { mcpServers } : {}),
+        // The project's opt-in, resolved with the worktree rule. Absent means
+        // the toolkits do not register for this turn.
+        ...(() => {
+          const ds = this.resolveDataScience(session);
+          return ds ? { dataScience: ds } : {};
+        })(),
         /**
          * The project's NAME, for the spool toolkit's scoping — a spool item's
          * `project` is a free-form LABEL, so a session's slice is found by
@@ -5504,6 +5694,7 @@ export class EngineStore {
     // until the pool's LRU evicts them six sessions later — which is a leak
     // measured in hundreds of megabytes on a machine running detached work.
     void this.browser?.release(sessionId, "session archived");
+    this.releaseDataScience(session, "session archived");
 
     // A WORKTREE IMPLIES A PROJECT, and checking both is how that stays true
     // rather than assumed: a project-less session (the Spool's master) is always
@@ -5554,6 +5745,14 @@ export class EngineStore {
    * removed session directory is the opposite: it would parse as corruption on
    * the next read, so it either goes or the call fails with it intact.
    */
+  /** Kill the session's kernel, and for a worktree, its own Telar venv. Best-effort. */
+  private releaseDataScience(session: Session, reason: string): void {
+    void this.kernels?.dispose(session.id, reason);
+    if (session.workspace.mode === "worktree" && session.projectId) {
+      removeTelarVenv(telarVenvDir(this.paths.root, session.projectId, path.basename(session.workspace.path)));
+    }
+  }
+
   deleteSession(sessionId: string): boolean {
     const session = this.getSession(sessionId);
     const active = this.readQueue(sessionId).turns.find(
@@ -5562,6 +5761,7 @@ export class EngineStore {
     if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before deleting");
 
     void this.browser?.release(sessionId, "session deleted");
+    this.releaseDataScience(session, "session deleted");
 
     // See `archiveSession` for why the project is checked beside the mode.
     if (session.workspace.mode === "worktree" && session.projectId) {

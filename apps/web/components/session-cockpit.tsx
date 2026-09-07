@@ -900,6 +900,8 @@ export function SessionCockpit({
    * routes, which do not have it, and for a project renamed while open.
    */
   const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
+  /** The project's data-science opt-in, read with its name. Off until known. */
+  const [dataScience, setDataScience] = useState(false);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const syncSession = useRef(sessionId);
@@ -1351,7 +1353,12 @@ export function SessionCockpit({
   useEffect(() => {
     let cancelled = false;
     void api.projects().then(
-      (result) => !cancelled && setProjectName(result.projects.find((project) => project.id === projectId)?.name),
+      (result) => {
+        if (cancelled) return;
+        const found = result.projects.find((project) => project.id === projectId);
+        setProjectName(found?.name);
+        setDataScience(found?.dataScience?.enabled === true);
+      },
       () => undefined,
     );
     return () => {
@@ -2159,6 +2166,7 @@ export function SessionCockpit({
           onOpenTab={showPanelTab}
           onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
           onClose={() => updatePanel((current) => ({ ...current, open: false }))}
+          dataScience={dataScience}
         />
       )}
     </main>

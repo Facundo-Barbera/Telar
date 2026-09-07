@@ -53,3 +53,7 @@ apps/engine/dist/
 apps/ios/**/xcuserdata/
 apps/ios/**/project.xcworkspace/
 apps/ios/DerivedData/
+
+# Python bytecode from the kernel bridge under apps/engine/src/ds.
+__pycache__/
+*.pyc

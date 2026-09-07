@@ -29,6 +29,72 @@ import {
   UsageSnapshot,
 } from "./common";
 
+/**
+ * Which Python a project's data-science tooling runs on.
+ *
+ * A RESOLVED PATH, NOT A MODE. "venv" or "system" would have been a guess made
+ * again at every kernel start; a path is one decision, made once by a human
+ * from a list the engine detected, and honoured until it stops existing.
+ * `source` records how it was picked so the settings page can explain it and
+ * re-detect when the file is gone. `path` is relative to the project root when
+ * it lives inside the checkout — a worktree session resolves it against its
+ * OWN tree, never the project's, so `.venv/bin/python` means "this tree's".
+ */
+export const DataSciencePython = z.object({
+  source: z.enum(["detected", "chosen", "telar"]),
+  path: z.string().min(1),
+  resolvedAt: Timestamp,
+});
+export type DataSciencePython = z.infer<typeof DataSciencePython>;
+
+/**
+ * The per-project data-science switch. ABSENT MEANS OFF: a project that never
+ * asked gets no kernel, no `notebook_*`/`ds_*` tools and no plots surface, so
+ * the many projects that are not analysis work stay exactly as they were.
+ * `stack` lists what the optional one-click install put into Telar's own venv;
+ * tools gate on the libraries actually importable at kernel start, not on this.
+ */
+export const DataScienceConfig = z.object({
+  enabled: z.boolean(),
+  python: DataSciencePython.optional(),
+  stack: z.array(z.string().min(1)).optional(),
+});
+export type DataScienceConfig = z.infer<typeof DataScienceConfig>;
+
+/** One interpreter the engine found, and what it proved about it. */
+export const DataSciencePreflight = z.object({
+  ok: z.boolean(),
+  path: z.string(),
+  version: z.string().optional(),
+  versionInfo: z.tuple([z.number(), z.number()]).optional(),
+  sitePackages: z.array(z.string()).optional(),
+  modules: z.record(z.string(), z.boolean()).optional(),
+  reason: z.string().optional(),
+});
+export type DataSciencePreflight = z.infer<typeof DataSciencePreflight>;
+
+export const DataScienceCandidate = z.object({
+  kind: z.enum(["project-venv", "uv", "pyenv", "path", "telar"]),
+  path: z.string(),
+  reason: z.string(),
+  preflight: DataSciencePreflight,
+});
+export type DataScienceCandidate = z.infer<typeof DataScienceCandidate>;
+
+/** `GET /v2/projects/:id/data-science/detect`. `uv` says whether Telar can build its own venv here. */
+export const DataScienceDetection = z.object({
+  candidates: z.array(DataScienceCandidate),
+  uv: z.boolean(),
+});
+export type DataScienceDetection = z.infer<typeof DataScienceDetection>;
+
+/** `POST /v2/projects/:id/data-science/venv`. A refusal is a result: the reason names the fix. */
+export const DataScienceVenvOutcome = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), python: z.string(), installed: z.array(z.string()) }),
+  z.object({ ok: z.literal(false), reason: z.string() }),
+]);
+export type DataScienceVenvOutcome = z.infer<typeof DataScienceVenvOutcome>;
+
 export const Project = z.object({
   id: Id,
   environmentId: EnvironmentId,
@@ -65,6 +131,8 @@ export const Project = z.object({
    * lives in somebody's working tree and changes without telling the engine.
    */
   icon: z.string().min(1).max(64).optional(),
+  /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
+  dataScience: DataScienceConfig.optional(),
 });
 export type Project = z.infer<typeof Project>;
 
