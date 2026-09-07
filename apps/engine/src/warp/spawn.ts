@@ -248,6 +248,16 @@ function childUsage(value: unknown, costUsd: unknown): UsageSnapshot | undefined
  *  than forwarded, for the reason `driver.ts` gives at length: failing a child
  *  over a display-level nicety is the worse trade of the two. */
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const CLAUDE_1M_FAMILY_ALIAS = /^(opus|sonnet|fable)(?:$|[-[])/i;
+
+function isClaudeLongContextFamily(model: string): boolean {
+  return /(^|[/])claude-(?:opus|sonnet|fable)-/i.test(model) || CLAUDE_1M_FAMILY_ALIAS.test(model);
+}
+
+function contextEnvForModel(model: string | undefined): Record<string, string> | undefined {
+  if (!model || !isClaudeLongContextFamily(model)) return undefined;
+  return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
+}
 
 export function createWarpSpawn(environment: WarpSpawnEnvironment): WarpSpawn {
   return async function spawn({ prompt, opts, signal, steer }): Promise<WarpAgentOutcome> {
@@ -257,6 +267,8 @@ export function createWarpSpawn(environment: WarpSpawnEnvironment): WarpSpawn {
     else signal.addEventListener("abort", abort, { once: true });
 
     const boundary = new TurnBoundary();
+    const selectedModel = opts.model ?? environment.model;
+    const contextEnv = contextEnvForModel(selectedModel);
     const effort = opts.effort ?? environment.effort;
     const maxTurns = opts.maxTurns ?? environment.defaultMaxTurns;
 
@@ -279,7 +291,7 @@ export function createWarpSpawn(environment: WarpSpawnEnvironment): WarpSpawn {
           // observation traffic by the width of the fan-out for nothing.
           includePartialMessages: false,
           disallowedTools: [...WARP_CHILD_DISALLOWED_TOOLS],
-          ...(opts.model ?? environment.model ? { model: opts.model ?? environment.model } : {}),
+          ...(selectedModel ? { model: selectedModel } : {}),
           ...(effort && EFFORTS.has(effort) ? { effort } : {}),
           ...(environment.fastMode === undefined ? {} : { settings: { fastMode: environment.fastMode } }),
           ...(maxTurns === undefined ? {} : { maxTurns }),
@@ -305,7 +317,7 @@ export function createWarpSpawn(environment: WarpSpawnEnvironment): WarpSpawn {
           ...(opts.agentType ? { agent: opts.agentType } : {}),
           ...(environment.mcpServers ? { mcpServers: environment.mcpServers } : {}),
           ...(environment.canUseTool ? { canUseTool: environment.canUseTool } : {}),
-          ...(environment.env ? { env: { ...process.env, ...environment.env } } : {}),
+          ...(environment.env || contextEnv ? { env: { ...process.env, ...environment.env, ...contextEnv } } : {}),
           ...(environment.executable ? { pathToClaudeCodeExecutable: environment.executable } : {}),
         },
       })) {

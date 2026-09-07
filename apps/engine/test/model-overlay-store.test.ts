@@ -143,10 +143,10 @@ test("a manifest declaration pre-empts a hand-typed custom row for the same id �
   /**
    * THE COLLISION THE BUNDLED MANIFEST CREATES. Someone typed `claude-fable-5-1`
    * into the Models tab back when the CLI did not list it; now the manifest
-   * declares it. The overlay's own `published` check treats the declared row
-   * as published, so the custom entry goes quiet — exactly as it would if the
-   * CLI itself had started listing the id — and the reader gets the declared
-   * row's real label and efforts rather than the bare id.
+   * declares its 1M row. The overlay's own `published` check treats the
+   * declared row as published, so the custom entry goes quiet — exactly as it
+   * would if the CLI itself had started listing the id — and the reader gets
+   * the declared row's real label and efforts rather than the bare id.
    */
   const catalogue = async (driver: "claude" | "codex", now: () => number): Promise<ModelCatalogue> => ({
     driver,
@@ -158,13 +158,13 @@ test("a manifest declaration pre-empts a hand-typed custom row for the same id �
     models: catalogue,
     manifest: {
       version: 1,
-      claude: { profiles: { f: { longWindow: false } }, models: { "claude-fable-5-1": "f" }, declare: [{ id: "claude-fable-5-1", label: "Fable 5.1", efforts: ["high"] }] },
+      claude: { profiles: { f: { longWindow: true } }, models: { "claude-fable-5-1": "f" }, declare: [{ id: "claude-fable-5-1", label: "Fable 5.1", efforts: ["high"] }] },
     },
   });
   engine.setModelOverlay("claude", { hidden: [], order: [], custom: [{ id: "claude-fable-5-1" }] });
   return (async () => {
     const { models } = await engine.modelCatalogue("claude");
-    const rows = models.filter((model) => model.id === "claude-fable-5-1");
+    const rows = models.filter((model) => model.id === "claude-fable-5-1[1m]");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ label: "Fable 5.1", source: "provider", efforts: ["high"] });
   })();
