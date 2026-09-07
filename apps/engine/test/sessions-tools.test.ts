@@ -80,6 +80,7 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     read: async (sessionId, after) => store.readEvents(sessionId, after),
     status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
     stop: async (sessionId) => store.stopTurn(sessionId),
+    settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
     diff: async (sessionId) => store.sessionDiff(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
     unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),
@@ -96,6 +97,7 @@ const WALL_NAMES = [
   "sessions_read",
   "sessions_status",
   "sessions_stop",
+  "sessions_settle",
   "sessions_diff",
   "sessions_subscribe",
   "sessions_unsubscribe",
@@ -136,7 +138,7 @@ async function call(tools: Map<string, Registered>, name: string, args: Record<s
 // ── the wall's shape ────────────────────────────────────────────────────────
 
 describe("what the wall is", () => {
-  test("exactly twelve tools, every one declaring the `sessions` capability in its name", () => {
+  test("exactly thirteen tools, every one declaring the `sessions` capability in its name", () => {
     const { store } = engine();
     const names = [...wall(store).keys()];
     // PINNED AS A SET, not merely counted: a tool added here has to be added
@@ -232,7 +234,7 @@ describe("creating a session", () => {
     // turn's does (`self`) — for subscriptions, which are recorded on the
     // subscription and on neither session.
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
+      "create", "diff", "list", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscriptions", "unsubscribe",
     ]);
   });
 
@@ -306,6 +308,29 @@ describe("driving a session", () => {
     const busy = await call(tools, "sessions_status", { sessionId: id });
     expect(busy.json!.running).toBe(true);
     expect((busy.json!.turns as unknown[]).length).toBe(1);
+  });
+
+  test("settle shelves a session without archiving it, and a new message lifts it back", async () => {
+    const { store, projectId } = engine();
+    const tools = wall(store);
+    const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
+
+    const settled = await call(tools, "sessions_settle", { sessionId: id });
+    expect(settled.isError).toBe(false);
+    expect(settled.json).toMatchObject({ sessionId: id, settled: true });
+    expect(String(settled.json!.note)).toContain("Nothing was archived");
+    expect(store.getSession(id)).toMatchObject({ state: "active", settledOverride: "settled" });
+
+    // Still live: a message lifts it, exactly as one typed by a person would.
+    await call(tools, "sessions_send", { sessionId: id, input: "one more thing" });
+    expect(store.getSession(id).settledOverride).toBeUndefined();
+
+    const back = await call(tools, "sessions_settle", { sessionId: id, settled: false });
+    expect(store.getSession(id).settledOverride).toBe("active");
+    expect(String(back.json!.note)).toContain("Back in the active list");
+
+    const missing = await call(tools, "sessions_settle", { sessionId: "session_nope" });
+    expect(missing.isError).toBe(true);
   });
 
   test("stop ends the turn and says it undid nothing; stopping an idle session is not an error", async () => {
@@ -480,7 +505,7 @@ describe("subscribing and answering", () => {
     const subscribed = await call(tools, "sessions_subscribe", { sessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
     expect(subscribed.isError).toBe(false);
     expect(subscribed.json).toMatchObject({ subscriberSessionId: host.id, targetSessionId: target.id, events: ["turn_completed", "turn_failed"], once: true });
-    expect(String(subscribed.json!.note)).toContain("[wake]");
+    expect(String(subscribed.json!.note)).toContain("[wake");
 
     const listed = await call(tools, "sessions_subscriptions");
     expect((listed.json!.subscriptions as unknown[]).length).toBe(1);
@@ -561,7 +586,7 @@ describe("a warp child may not reach these tools", () => {
     // fan-out wearing another hat, and the rest are steering a session from
     // inside a script that cannot see it.
     const names = collectSessionsWallTools({} as SessionsCapability).map((tool) => tool.name);
-    expect(names.length).toBe(12);
+    expect(names.length).toBe(13);
     for (const name of names) {
       expect(WARP_CHILD_DISALLOWED_TOOLS).toContain(qualifyTelarTool(name));
     }

@@ -492,10 +492,10 @@ test("a wake-up between turns becomes a PROVIDER TURN on the engine, with its to
   expect(events).toEqual(["turn.accepted", "turn.claimed", "turn.started", "request.opened", "request.resolved", "item.started", "item.completed", "turn.completed"]);
 });
 
-test("a send-now delivery lands in the driver's mailbox and the promoted turn goes steered", async () => {
+test("a message submitted mid-turn lands in the driver's mailbox and goes steered", async () => {
   // The driver plays a long turn: it waits for a steered message, drains it,
-  // and answers with what it heard — proof the text crossed heartbeat →
-  // mailbox → driver, and that the ack settled the promoted turn.
+  // and answers with what it heard — proof the text crossed submit → heartbeat
+  // → mailbox → driver, and that the ack settled the steered turn.
   const driver: TurnDriver = {
     async run({ steer }) {
       await steer!.wake();
@@ -509,8 +509,9 @@ test("a send-now delivery lands in the driver's mailbox and the promoted turn go
     expect((await client.session(sessionId)).turns.find((turn) => turn.runId === "run_live")?.state).toBe("running");
   });
 
-  await client.submitTurn(sessionId, { runId: "run_next", input: "Also do this" });
-  await client.promoteTurn(sessionId, "run_next");
+  // No "Send now": submitting while the turn runs IS the steer.
+  const accepted = await client.submitTurn(sessionId, { runId: "run_next", input: "Also do this" });
+  expect(accepted.turn.state).toBe("steering");
   // The next heartbeat carries the delivery; the driver hears it and finishes.
   await worker.tick();
   await eventually(async () => {

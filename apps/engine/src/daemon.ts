@@ -606,6 +606,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       read: async (sessionId, after) => store.readEvents(sessionId, after),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
       stop: async (sessionId) => store.stopTurn(sessionId),
+      settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
       unsubscribe: async (id, subscriber) => store.unsubscribe(id, subscriber),

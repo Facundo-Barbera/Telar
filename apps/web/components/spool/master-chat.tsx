@@ -135,7 +135,6 @@ const cutoffKey = (sessionId: string) => `telar:spool-master-cutoff:${sessionId}
  * stored changes, and "earlier" history strips the same way.
  */
 const ROOM_PREFIX = /^\[room: [^\n]*\]\n/;
-const shownPrompt = (prompt: string) => prompt.replace(ROOM_PREFIX, "");
 
 export function MasterChat({
   onChanged,
@@ -421,39 +420,14 @@ export function MasterChat({
   }, [journal, session]);
 
   /**
-   * A QUEUED MESSAGE IS WAITING, AND THE COMPOSER SAYS SO. This surface passed
-   * `queued: []` while the send path had the state all along — the engine
-   * queues a turn submitted behind a live one — so a second dump sat in the
-   * box LOOKING sent for minutes. The cockpit's own derivation, borrowed
-   * whole: queued turns come out of the transcript and into the composer's
-   * waiting strip, where they can be withdrawn or recalled.
-   */
-  const queued = journal
-    .filter((turn) => turn.state === "queued")
-    // Stripped for DISPLAY like the transcript — and recalling a queued turn
-    // into the box must recall the words, not the machine line the next send
-    // would prefix again.
-    .map((turn) => ({ runId: turn.runId, text: shownPrompt(turn.prompt) }));
-
-  const withdraw = useCallback(
-    (runId: string) => {
-      if (!session) return;
-      void api
-        .stopTurn(session.id, runId)
-        .then(() => open())
-        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-    },
-    [open, session],
-  );
-
-  /**
    * THE DEFAULT VIEW IS THE LATEST EXCHANGE after the cutoff. "Earlier" shows
    * the WHOLE journal — including what a Start fresh folded away — because a
    * disclosure that revealed only part of the history would be a second,
-   * quieter deletion path, and this module has none. Queued turns are not
-   * exchanges yet; they render in the composer's strip instead.
+   * quieter deletion path, and this module has none. A message sent mid-turn is
+   * steered into the running one and renders inside it; the brief `queued`
+   * state of an idle session's next turn is not an exchange yet.
    */
-  const settledJournal = journal.filter((turn) => turn.state !== "queued");
+  const settledJournal = journal.filter((turn) => turn.state !== "queued" && turn.state !== "steering" && turn.state !== "steered");
   const cutIndex = cutoff ? settledJournal.findIndex((t) => t.runId === cutoff) : -1;
   const afterCutoff = cutIndex >= 0 ? settledJournal.slice(cutIndex + 1) : settledJournal;
   const latest = afterCutoff.slice(-1);
@@ -634,7 +608,6 @@ export function MasterChat({
             onAttach={() => undefined}
             busy={!!live}
             sending={sending}
-            queued={queued}
             backgroundTasks={0}
             onDraftChange={setDraft}
             placeholder="Say what you're working on, or dump something and it'll get filed…"
@@ -643,11 +616,6 @@ export function MasterChat({
             // The master chat runs no background tasks (backgroundTasks={0}), so
             // the chip never renders and this never fires.
             onStopBackground={() => undefined}
-            onWithdraw={withdraw}
-            onRecall={(item) => {
-              withdraw(item.runId);
-              setDraft(item.text);
-            }}
             onRuntimeMode={() => undefined}
             onModelChange={() => undefined}
             {...(session ? { session } : {})}

@@ -38,6 +38,11 @@
  *   · NOTHING THAT DELETES OR ARCHIVES. The engine has both verbs and a person
  *     reaches them from a surface they are looking at. An agent that could
  *     archive a session could erase another agent's work with one call.
+ *     `sessions_settle` is deliberately NOT one of these: it moves a session
+ *     out of (or back into) the list and touches nothing else — the same
+ *     reversible switch as the sidebar's Settle button, so an orchestrator
+ *     can tidy the peers it finished with without being handed a verb that
+ *     destroys anything.
  *   · NO PERMISSION LAUNDERING, which is the one rule this wall can only SAY.
  *     See `NOT_A_BYPASS` below: it is stated in the prose of every tool that
  *     could be used for it, because that text is the only voice the wall has
@@ -92,6 +97,14 @@ export type SessionsCapability = {
   read(sessionId: string, after: number): Promise<EngineEvent[]>;
   status(sessionId: string): Promise<{ session: Session; turns: Turn[] }>;
   stop(sessionId: string): Promise<{ turn?: Turn; stopped: boolean }>;
+  /**
+   * SHELVE OR UNSHELVE A SESSION IN THE LIST — `Session.settledOverride`, the
+   * same switch the sidebar's Settle button flips. NOT an archive: the session
+   * stays live and resumable, nothing is deleted, and a new message (or a
+   * wake) lifts it again. It is the one housekeeping verb an orchestrator
+   * needs when a peer it started has finished and is now only clutter.
+   */
+  settle(sessionId: string, settled: boolean): Promise<Session>;
   diff(sessionId: string): Promise<SessionDiff>;
   /**
    * WHO IS ASKING — present inside a turn, ABSENT on the outward socket. A
@@ -149,11 +162,11 @@ Say everything the session needs in the message itself. It cannot see this conve
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
 
-const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake]" that names the session, what happened, and enough of the outcome to act on — so you can end your turn now and be woken later rather than polling. It queues behind whatever you are running; one wake per event; if sixteen turns are already queued on you, a wake is dropped and your journal says so.
+const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake: completed]", "[wake: failed]", "[wake: stopped]" or "[wake: waiting]" that names the session, what happened, and enough of the outcome to act on — so you can end your turn now and be woken later rather than polling. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
 
 events narrows what wakes you (default: all four). once removes the subscription after its first wake. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
 
-const UNSUBSCRIBE = `Stop being woken by a session. Takes the subscription id sessions_subscribe returned (sessions_subscriptions lists them). Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
+const UNSUBSCRIBE = `Stop being woken by a session. Takes the subscription id sessions_subscribe returned (sessions_subscriptions lists them). Any wakes from that session still waiting in your queue are withdrawn too, so unsubscribing is how you stop a pile-up, not only future noise. Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
 
 const SUBSCRIPTIONS = `Every subscription this session holds: which sessions will wake it, for which events, and whether once. Read this before subscribing again, and to find an id for sessions_unsubscribe.`;
 
@@ -172,6 +185,8 @@ THE ANSWER IS BOUNDED and a transcript is not: you may get a page rather than ev
 const STATUS = `Whether a session is doing anything: what it is (working, waiting on a person, idle), what its recent turns are and how each ended, and whether anything is running right now. This is the cheap question — ask it before sessions_read when all you need to know is "is it finished yet". It costs nothing to call and it changes nothing.`;
 
 const STOP = `Stop whatever turn a session is running or has queued. The work already done is kept — this ends the turn, it does not undo it, and it deletes nothing. Use it when a session is going somewhere wrong or when you have changed your mind about what you asked for; the session stays alive and you can send it something else afterwards. A session with nothing running answers that it stopped nothing, which is not an error.`;
+
+const SETTLE = `Shelve a session — move it out of the active list into Settled, the way the sidebar's Settle button does — or bring it back with settled: false. Use it on a session you started once it has finished and you have read what you needed: a settled session is still live and resumable, nothing is deleted, and any new message (yours or a wake) lifts it back into the list. You may settle your own session as your last act. This is housekeeping, not acceptance: it says nothing about whether the work was good, and it archives nothing — archive and delete stay the user's.`;
 
 const DIFF = `What a session has changed in its checkout since it started — the files, and the shape of the change. A session with a worktree of its own shows exactly what it did there; a "local" session shows what has happened in the project's own checkout, which may include work that is not its own.
 
@@ -474,6 +489,31 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       },
     ),
     tool(
+      "sessions_settle",
+      SETTLE,
+      {
+        sessionId: z.string().min(1).describe("The session to shelve or unshelve, from sessions_list."),
+        settled: z.boolean().optional().describe("Default true. false returns a settled session to the active list."),
+      },
+      async (args) => {
+        const sessionId = String(args.sessionId ?? "");
+        const settled = args.settled !== false;
+        try {
+          const session = await capability.settle(sessionId, settled);
+          return json({
+            sessionId,
+            settled,
+            title: session.title,
+            note: settled
+              ? "Settled. It is out of the active list but still live: a message to it, or a wake it receives, brings it back. Nothing was archived."
+              : "Back in the active list.",
+          });
+        } catch (error) {
+          return err(`Could not settle "${sessionId}": ${failure(error)}`);
+        }
+      },
+    ),
+    tool(
       "sessions_diff",
       DIFF,
       { sessionId: z.string().min(1).describe("The session whose changes to read, from sessions_list.") },
@@ -549,7 +589,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           });
           return json({
             ...subscription,
-            note: `You will be woken with a "[wake]" turn when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. End your turn whenever you like; the wake queues.`,
+            note: `You will be woken with a "[wake: …]" turn when ${targetSessionId} does any of: ${subscription.events.join(", ")}${subscription.once ? " — once" : ""}. End your turn whenever you like; the wake queues.`,
           });
         } catch (error) {
           return err(`Could not subscribe to "${targetSessionId}": ${failure(error)}`);

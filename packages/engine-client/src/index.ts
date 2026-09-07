@@ -1496,6 +1496,16 @@ export class EngineClient {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }
 
+  /**
+   * THE ONE FIELD OF `updateSession` A WORKER MAY TOUCH. The worker's client
+   * is a `Pick`, so an orchestrating session can shelve a peer it finished
+   * with without gaining the mode, model or title of any session — see
+   * `sessions_settle`.
+   */
+  settleSession(sessionId: string, settled: boolean): Promise<{ session: Session }> {
+    return this.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
+  }
+
   session(sessionId: string, window?: SnapshotWindow): Promise<SessionSnapshot> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`);
   }
