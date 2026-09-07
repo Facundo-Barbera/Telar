@@ -9,7 +9,7 @@ import { addHost, publicHost, readHosts } from "@/lib/hosts/store";
  *
  * `GET` lists them without their tokens. `POST` pairs with one: it takes the
  * pairing link the OTHER cockpit shows in its Settings → Remote access — the
- * same `…/pair#token=tlr_…` a phone scans — exchanges the one-time token at
+ * same `…/pair#token=…` a phone scans — exchanges the one-time secret at
  * that cockpit's `/api/pair` exactly as the iOS app does, and keeps the device
  * token it gets back. From then on `/api/hosts/:id/…` speaks for this desktop
  * over there, and that cockpit's Devices list shows this Mac as a paired
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
   const parsed = typeof body.pairingUrl === "string" ? parsePairingUrl(body.pairingUrl) : undefined;
   if (!parsed) {
     return Response.json(
-      { error: { code: "invalid_request", message: "Paste the pairing link from the other Mac's Settings → Remote access (it ends in #token=tlr_…)." } },
+      { error: { code: "invalid_request", message: "Paste the pairing link from the other Mac's Settings → Remote access (it ends in #token= and the eight-digit code)." } },
       { status: 400 },
     );
   }
