@@ -17,7 +17,9 @@ struct TelarMobileApp: App {
             return
         }
         #endif
-        _settings = State(initialValue: AppSettings())
+        let settings = AppSettings()
+        _settings = State(initialValue: settings)
+        MobileNotifications.shared.start(settings: settings)
     }
     var body: some Scene {
         WindowGroup { RootView(settings: settings).tint(Theme.accent) }

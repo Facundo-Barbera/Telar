@@ -38,7 +38,7 @@ export async function relayDelivery(config: RelayConfig, record: PushRecord, del
   // The available Apple key is production-only. Never claim sandbox readiness.
   if (record.sandbox || record.topic !== "com.telar.mobile") return 400;
   const path = `/v1/devices/${encodeURIComponent(record.deviceId)}`;
-  const registered = await relayRequest(config, path, "PUT", { token: record.token, topic: record.topic, sandbox: record.sandbox, activities: record.activities.map(a => a.token) });
+  const registered = await relayRequest(config, path, "PUT", { token: record.token, topic: record.topic, sandbox: record.sandbox, activities: record.activities.map(a => a.token), pushToStartToken: record.liveActivities ? record.pushToStartToken : undefined });
   await registered.body?.cancel();
   if (!registered.ok) return registered.status === 410 ? 503 : registered.status;
   const response = await relayRequest(config, `${path}/push`, "POST", delivery);

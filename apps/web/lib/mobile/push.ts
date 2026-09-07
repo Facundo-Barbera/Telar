@@ -7,6 +7,9 @@ import { remoteHome } from "../remote/store";
 
 export interface MobileRegistration {
   hostId: string;
+  hostName?: string;
+  liveActivities?: boolean;
+  pushToStartToken?: string;
   token: string;
   topic: string;
   sandbox: boolean;
@@ -24,6 +27,8 @@ export interface PushRecord extends MobileRegistration {
   deviceId: string;
   revision: string;
   baselined?: boolean;
+  automaticStartedAt?: number;
+  automaticSignal?: string;
   failures?: number;
   retryAt?: number;
   updatedAt: number;
@@ -44,11 +49,17 @@ export function parseRegistration(input: unknown): MobileRegistration {
       || ["sandbox", "enabled", "completions", "previews"].some(k => typeof x[k] !== "boolean")
       || !Array.isArray(x.mutedSessions) || x.mutedSessions.length > 1000 || !x.mutedSessions.every(v => typeof v === "string" && v.length > 0 && v.length <= 256)
       || !Array.isArray(x.activities) || x.activities.length > 8) throw new PushInputError("Invalid registration");
+  if ((x.liveActivities !== undefined && typeof x.liveActivities !== "boolean")
+    || (x.pushToStartToken !== undefined && (typeof x.pushToStartToken !== "string" || !hex.test(x.pushToStartToken)))
+    || (x.hostName !== undefined && (typeof x.hostName !== "string" || x.hostName.length > 160))) throw new PushInputError("Invalid automatic activity registration");
   for (const a of x.activities) {
     if (!a || typeof a.sessionId !== "string" || !a.sessionId || a.sessionId.length > 256 || typeof a.token !== "string" || !hex.test(a.token)
       || typeof a.startedAt !== "number" || !Number.isFinite(a.startedAt) || a.startedAt <= 0) throw new PushInputError("Invalid activity");
   }
-  return { hostId: x.hostId, token: x.token, topic: x.topic as string, sandbox: x.sandbox as boolean,
+  return { ...(x.liveActivities === undefined ? {} : { liveActivities: x.liveActivities as boolean }),
+    ...(x.pushToStartToken === undefined ? {} : { pushToStartToken: x.pushToStartToken as string }),
+    ...(x.hostName === undefined ? {} : { hostName: x.hostName as string }),
+    hostId: x.hostId, token: x.token, topic: x.topic as string, sandbox: x.sandbox as boolean,
     enabled: x.enabled as boolean, completions: x.completions as boolean, previews: x.previews as boolean,
     mutedSessions: [...x.mutedSessions], activities: x.activities.map(a => ({sessionId: a.sessionId, token: a.token, startedAt: a.startedAt})) };
 }
@@ -67,7 +78,7 @@ export function writePushRecords(records: PushRecord[], file = pushFile()): void
 export function saveRegistration(deviceId: string, registration: MobileRegistration, file = pushFile()): void {
   const records = readPushRecords(file);
   const old = records.find(r => r.deviceId === deviceId && r.topic === registration.topic);
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: registration.liveActivities && old?.liveActivities ? old.automaticStartedAt : undefined, automaticSignal: old?.automaticSignal, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
 export function signalKey(session: SessionSignal): string {
@@ -132,7 +143,7 @@ export async function sendAPNs(delivery: Delivery): Promise<number> {
     const fail = () => { clearTimeout(timer); client.destroy(); reject(new Error("APNs transport failed")); };
     client.on("error", fail);
     const request = client.request({ ":method": "POST", ":path": `/3/device/${delivery.token}`, authorization,
-      "apns-topic": delivery.topic, "apns-push-type": delivery.kind, "apns-priority": delivery.kind === "alert" ? "10" : "5",
+      "apns-topic": delivery.topic, "apns-push-type": delivery.kind, "apns-priority": delivery.kind === "alert" || ["start", "end"].includes(String(delivery.payload.aps.event)) ? "10" : "5",
       "apns-expiration": String(Math.floor(Date.now() / 1000) + 3600), "apns-collapse-id": delivery.collapseId });
     let status = 0;
     request.on("response", headers => { status = Number(headers[":status"]); });
@@ -141,4 +152,28 @@ export async function sendAPNs(delivery: Delivery): Promise<number> {
     request.on("end", () => { clearTimeout(timer); client.close(); resolve(status); });
     request.end(JSON.stringify(delivery.payload));
   });
+}
+
+export const AUTOMATIC_ACTIVITY = "__automatic__";
+export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
+  const rank: Record<string, number> = { blocked: 0, working: 1, queued: 2, monitoring: 3 };
+  return sessions.filter(s => s.activity in rank).sort((a,b) => rank[a.activity]! - rank[b.activity]! || a.id.localeCompare(b.id));
+}
+export function automaticActivityDelivery(record: MobileRegistration, sessions: SessionSignal[], token: string, startedAt: number, now: number, start = false): Delivery {
+  const active = record.liveActivities ? automaticSessions(sessions) : [];
+  const focus = active[0];
+  const ended = !focus;
+  const state = {
+    title: record.previews && active.length === 1 ? focus!.title.slice(0,160) : active.length > 1 ? `${active.length} active sessions` : ended ? "Work finished" : "Telar work",
+    status: ended ? "Finished" : focus.activity === "blocked" ? "Needs you" : focus.activity === "queued" ? "Queued" : focus.activity === "monitoring" ? "Monitoring" : "Working",
+    startedAt: startedAt - 978307200, updatedAt: now - 978307200, ended,
+    sessionId: focus?.id, activeCount: active.length,
+  };
+  return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity",
+    collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
+    payload: { aps: { timestamp: Math.floor(now), event: start ? "start" : ended ? "end" : "update", "content-state": state,
+      "stale-date": Math.floor(now + 180), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),
+      ...(start ? { "attributes-type":"SessionActivityAttributes", attributes:{hostId:record.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:record.hostName ?? "Mac"},
+        "input-push-token":1, alert:{title:"Telar",body:"Agent work in progress"} } : {}),
+    } } };
 }

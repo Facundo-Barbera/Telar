@@ -4,6 +4,7 @@ struct NotificationSettingsView: View {
     @State private var notifications = MobileNotifications.shared
     @State private var enabled = MobileNotifications.shared.enabled
     @State private var completions = MobileNotifications.shared.completions
+    @State private var liveActivities = MobileNotifications.shared.liveActivities
     @State private var previews = MobileNotifications.shared.previews
     var body: some View {
         Form {
@@ -36,8 +37,9 @@ struct NotificationSettingsView: View {
                 }
             }
             Section("Live Activities") {
-                Text("Choose Follow session from a conversation’s menu to see its status on the Lock Screen and Dynamic Island. Background updates require push delivery from that Mac.")
-                Text("Following \(notifications.followed.count) session(s)").foregroundStyle(Theme.textMuted)
+                Toggle("Automatic Live Activities", isOn: $liveActivities)
+                    .onChange(of: liveActivities) { _, value in Task { await notifications.setLiveActivities(value) } }
+                Text("A Live Activity starts automatically when a Mac has active agent work, highlights sessions that need you, and finishes when the work is done. Updates appear on the Lock Screen and Dynamic Island, including while Telar is in the background.")
             }
         }.navigationTitle("Notifications & activities")
     }

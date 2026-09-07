@@ -73,10 +73,11 @@ export class RelayHost {
     try { body = await readJSON(request); } catch { return reply(400); }
     if (!match[2] && request.method === 'PUT') {
       if (!body || typeof body.token !== 'string' || !hex.test(body.token) || body.topic !== 'com.telar.mobile' || body.sandbox !== false || !Array.isArray(body.activities) || body.activities.length > 8 || !body.activities.every(t => typeof t === 'string' && hex.test(t))) return reply(400);
+      if (body.pushToStartToken !== undefined && (typeof body.pushToStartToken !== 'string' || !hex.test(body.pushToStartToken))) return reply(400);
       // Bound each trusted host's registrations. Existing device updates never consume another slot.
       const registered = await this.state.storage.transaction(async tx => {
         if (!await tx.get(deviceKey) && (await tx.list({prefix:'device:',limit:33})).size >= 32) return false;
-        await tx.put(deviceKey, { token: body.token, activities: body.activities, updatedAt: Date.now() });
+        await tx.put(deviceKey, { token: body.token, activities: body.activities, pushToStartToken: body.pushToStartToken, updatedAt: Date.now() });
         return true;
       });
       return reply(registered ? 200 : 409);
@@ -85,8 +86,9 @@ export class RelayHost {
     const registration = await this.state.storage.get(deviceKey);
     // Expired/offline registrations need the host to register them again.
     if (!registration || Date.now() - registration.updatedAt > 86400000) return reply(409);
+    const isStart = body?.kind === 'liveactivity' && body.payload?.aps?.event === 'start';
     const isAlert = body?.kind === 'alert', isActivity = body?.kind === 'liveactivity';
-    if ((!isAlert && !isActivity) || body.sandbox !== false || body.topic !== (isAlert ? 'com.telar.mobile' : 'com.telar.mobile.push-type.liveactivity') || typeof body.collapseId !== 'string' || !/^[a-f0-9]{64}$/.test(body.collapseId) || typeof body.token !== 'string' || !(isAlert ? registration.token === body.token : registration.activities.includes(body.token)) || !body.payload?.aps || new TextEncoder().encode(JSON.stringify(body.payload)).length > 4096) return reply(400);
+    if ((!isAlert && !isActivity) || body.sandbox !== false || body.topic !== (isAlert ? 'com.telar.mobile' : 'com.telar.mobile.push-type.liveactivity') || typeof body.collapseId !== 'string' || !/^[a-f0-9]{64}$/.test(body.collapseId) || typeof body.token !== 'string' || !(isAlert ? registration.token === body.token : (isStart ? registration.pushToStartToken === body.token : registration.activities.includes(body.token))) || !body.payload?.aps || new TextEncoder().encode(JSON.stringify(body.payload)).length > 4096) return reply(400);
     try {
       let jwt;
       if (this.env.SIGNER) {
@@ -96,13 +98,14 @@ export class RelayHost {
       } else jwt = await providerToken(this.env); // In-process test adapter; deployments bind SIGNER.
       const response = await fetch(`https://api.push.apple.com/3/device/${body.token}`, {
         method:'POST', redirect:'manual', signal:AbortSignal.timeout(10000),
-        headers: { authorization:`bearer ${jwt}`, 'apns-topic':body.topic, 'apns-push-type':body.kind, 'apns-priority':isAlert?'10':'5', 'apns-expiration':String(Math.floor(Date.now()/1000)+3600), 'apns-collapse-id':body.collapseId },
+        headers: { authorization:`bearer ${jwt}`, 'apns-topic':body.topic, 'apns-push-type':body.kind, 'apns-priority':isAlert||isStart||body.payload.aps.event==='end'?'10':'5', 'apns-expiration':String(Math.floor(Date.now()/1000)+3600), 'apns-collapse-id':body.collapseId },
         body:JSON.stringify(body.payload),
       });
       // Do not return provider bodies, credentials, device tokens, or session content.
       await response.body?.cancel();
       if (response.status === 410) {
-        if (isAlert) await this.state.storage.delete(deviceKey);
+        if (isStart) { delete registration.pushToStartToken; await this.state.storage.put(deviceKey,registration); }
+        else if (isAlert) await this.state.storage.delete(deviceKey);
         else { registration.activities = registration.activities.filter(t => t !== body.token); await this.state.storage.put(deviceKey,registration); }
       }
       return reply(200, { status:response.status });
