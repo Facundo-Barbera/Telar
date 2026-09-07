@@ -25,6 +25,10 @@ export default {
       const body = await response.json().catch(() => ({}));
       const reasons = ['BadDeviceToken', 'MissingProviderToken', 'InvalidProviderToken', 'ExpiredProviderToken', 'DeviceTokenNotForTopic', 'Forbidden', 'TooManyProviderTokenUpdates'];
       return Response.json({ status: response.status, reason: reasons.includes(body.reason) ? body.reason : 'Other', apnsResponse: response.headers.has('apns-id') });
-    } catch { return Response.json({ error: 'Transport or signing failed' }, { status: 502 }); }
+    } catch (error) {
+      const message = String(error?.message ?? '').toLowerCase();
+      const errorKind = message.includes('connection') ? 'Connection failure' : message.includes('timeout') || message.includes('abort') ? 'Timeout' : message.includes('key') ? 'Key import or signing failure' : 'Fetch failure';
+      return Response.json({ error: errorKind }, { status: 502 });
+    }
   },
 };

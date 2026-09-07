@@ -1,5 +1,7 @@
 import { readFileSync, appendFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import http2 from 'node:http2';
+import { jwt } from './worker.mjs';
 const account = process.env.CLOUDFLARE_ACCOUNT_ID;
 const token = process.env.CLOUDFLARE_API_TOKEN;
 const name = `telar-apns-probe-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`;
@@ -35,13 +37,29 @@ try {
   }
   if (!ready) throw Error('Worker endpoint did not become ready');
   report('Unauthenticated probe rejected: 401');
+  const directJWT = await jwt({ APNS_KEY_BASE64: process.env.TELAR_APNS_KEY_P8_BASE64, APNS_KEY_ID: process.env.TELAR_APNS_KEY_ID, APNS_TEAM_ID: process.env.TELAR_APNS_TEAM_ID });
+  const direct = await new Promise((resolve, reject) => {
+    const client = http2.connect('https://api.push.apple.com');
+    const timer = setTimeout(() => { client.destroy(); reject(Error('Direct APNs timeout')); }, 10000);
+    client.on('error', () => { clearTimeout(timer); reject(Error('Direct APNs transport failure')); });
+    const request = client.request({ ':method': 'POST', ':path': `/3/device/${'0'.repeat(64)}`, authorization: `bearer ${directJWT}`, 'apns-topic': 'com.telar.mobile', 'apns-push-type': 'alert' });
+    let status = 0, body = '';
+    request.on('response', h => { status = h[':status']; });
+    request.on('data', d => { if (body.length < 2048) body += d; });
+    request.on('error', () => { clearTimeout(timer); client.destroy(); reject(Error('Direct APNs request failure')); });
+    request.on('end', () => { clearTimeout(timer); client.close(); resolve({ status, badDevice: body.includes('BadDeviceToken') }); });
+    request.end(JSON.stringify({ aps: { alert: 'Telar transport probe' } }));
+  });
+  report(`Direct Node HTTP/2 control: Apple status ${direct.status}; BadDeviceToken ${direct.badDevice}`);
+  let signedPassed = false;
   for (const unsigned of [true, false]) {
     const response = await fetch(url + (unsigned ? '?unsigned=1' : ''), { method: 'POST', headers: { authorization: `Bearer ${probeToken}` }, signal: AbortSignal.timeout(20000) });
     const result = await response.json();
     // Only the fixed, redacted Worker response is printed. Never raw provider or API responses.
     report(`${unsigned ? 'Unsigned' : 'Signed'} APNs probe: HTTP ${response.status}; Apple status ${Number(result.status) || 0}; reason ${String(result.reason ?? result.error).replace(/[^A-Za-z ]/g, '').slice(0,60)}; APNs response ${result.apnsResponse === true}`);
-    if (!response.ok || !result.apnsResponse || (unsigned ? ![400,403].includes(result.status) : result.status !== 400 || result.reason !== 'BadDeviceToken')) throw Error('APNs transport probe did not meet acceptance criteria');
+    if (!unsigned) signedPassed = response.ok && result.apnsResponse && result.status === 400 && result.reason === 'BadDeviceToken';
   }
+  if (!signedPassed) throw Error('Signed Worker APNs transport did not meet acceptance criteria');
   report('Transport/signing probe passed. No real-device delivery was tested.');
 } finally {
   if (attempted) {
