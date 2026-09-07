@@ -28,7 +28,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { bearerIsValid } from "../http-auth";
-import { handleSocketMessage, type SocketTool } from "../mcp-socket";
+import { handleSocketMessage, readSocketBody, type SocketTool } from "../mcp-socket";
 
 /** The engine's browser, narrowed to what the socket may do with it. The same
  *  shape `driver.ts` used to consume in-process — see `browserCapability` in
@@ -100,27 +100,6 @@ type Binding = {
   /** The last tab set actually reported, so identical reads report nothing. */
   lastReported?: string;
 };
-
-/** The transport's own body cap, mirroring the daemon's `body()` — one guard,
- *  same number, stated where it applies. */
-async function readBody(request: http.IncomingMessage): Promise<Record<string, unknown> | undefined> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.length;
-    if (total > 1_000_000) return undefined;
-    chunks.push(buffer);
-  }
-  if (total === 0) return {};
-  try {
-    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return undefined;
-    return parsed as Record<string, unknown>;
-  } catch {
-    return undefined;
-  }
-}
 
 export class BrowserToolSocket {
   private server: http.Server | undefined;
@@ -222,7 +201,7 @@ export class BrowserToolSocket {
         writeJson(405, { error: { code: "invalid_request", message: "MCP messages arrive as POST" } });
         return;
       }
-      const message = await readBody(request);
+      const message = await readSocketBody(request);
       if (message === undefined) {
         writeJson(400, { error: { code: "invalid_request", message: "request body must be a JSON object under 1MB" } });
         return;
