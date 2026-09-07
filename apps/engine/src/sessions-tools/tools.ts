@@ -113,20 +113,8 @@ export type SessionsCapability = {
   ): Promise<EngineRequest>;
 };
 
-/** Just enough of the SDK to register a tool — the same seam the browser and
- *  spool toolkits take, so a test can drive this with no SDK installed. */
-export type ToolFactory = (
-  name: string,
-  description: string,
-  shape: Record<string, unknown>,
-  handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
-) => unknown;
-
-const ok = (text: string) => ({ content: [{ type: "text", text }] });
-const err = (text: string) => ({ content: [{ type: "text", text }], isError: true });
-const json = (value: unknown) => ok(JSON.stringify(value, null, 2));
-
-const failure = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+export type { ToolFactory };
 
 /**
  * THE SENTENCE THE WALL CANNOT ENFORCE, so it says it instead — in the prose of

@@ -201,18 +201,8 @@ export type SpoolCapability = {
   search(query: string, subject?: string): Promise<SpoolSearchHit[]>;
 };
 
-/** Just enough of the SDK to register a tool — the same seam the browser
- *  toolkit takes, so a test can drive this with no SDK installed. */
-export type ToolFactory = (
-  name: string,
-  description: string,
-  shape: Record<string, unknown>,
-  handler: (args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
-) => unknown;
-
-const ok = (text: string) => ({ content: [{ type: "text", text }] });
-const err = (text: string) => ({ content: [{ type: "text", text }], isError: true });
-const json = (value: unknown) => ok(JSON.stringify(value, null, 2));
+import { err, json, ok, type ToolFactory } from "../tool-kit";
+export type { ToolFactory };
 
 /**
  * A row as a model should read it — the queue's own chips, in words.
