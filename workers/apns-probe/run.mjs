@@ -57,6 +57,7 @@ try {
     const result = await response.json();
     // Only the fixed, redacted Worker response is printed. Never raw provider or API responses.
     report(`${unsigned ? 'Unsigned' : 'Signed'} APNs probe: HTTP ${response.status}; Apple status ${Number(result.status) || 0}; reason ${String(result.reason ?? result.error).replace(/[^A-Za-z ]/g, '').slice(0,60)}; APNs response ${result.apnsResponse === true}`);
+    if (typeof result.detail === 'string') report(`Worker diagnostic: ${result.detail}`);
     if (!unsigned) signedPassed = response.ok && result.apnsResponse && result.status === 400 && result.reason === 'BadDeviceToken';
   }
   if (!signedPassed) throw Error('Signed Worker APNs transport did not meet acceptance criteria');

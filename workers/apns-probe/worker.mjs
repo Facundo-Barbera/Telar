@@ -28,7 +28,10 @@ export default {
     } catch (error) {
       const message = String(error?.message ?? '').toLowerCase();
       const errorKind = message.includes('connection') ? 'Connection failure' : message.includes('timeout') || message.includes('abort') ? 'Timeout' : message.includes('key') ? 'Key import or signing failure' : 'Fetch failure';
-      return Response.json({ error: errorKind }, { status: 502 });
+      let detail = String(error?.message ?? '');
+      for (const value of Object.values(env)) if (typeof value === 'string' && value) detail = detail.split(value).join('[redacted]');
+      detail = detail.replace(/[A-Za-z0-9_+\/=-]{20,}/g, '[redacted]').slice(0, 160);
+      return Response.json({ error: errorKind, detail }, { status: 502 });
     }
   },
 };
