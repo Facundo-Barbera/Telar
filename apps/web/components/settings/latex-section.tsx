@@ -16,6 +16,7 @@
  * itself on first use and an install form would be a lie.
  */
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CheckIcon, DownloadIcon, RefreshCwIcon } from "lucide-react";
 import type {
   LatexConfig,
@@ -36,6 +37,8 @@ import { Switch } from "@/components/ui/switch";
 import { Row, SettingsGroup } from "./settings-shell";
 import { JobLog, type JobHandle, type JobIo } from "./job-log";
 import { cn } from "@/lib/utils";
+import { writeDraft } from "@/lib/composer-draft";
+import { canvasHref } from "@/lib/session-list";
 
 const api = createEngineApi();
 
@@ -54,6 +57,7 @@ const FLAVOUR_LABEL: Record<LatexTexliveDistribution["flavour"], string> = {
 };
 
 export function LatexSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
+  const router = useRouter();
   const config = project.latex;
   const enabled = config?.enabled === true;
   const [saving, setSaving] = useState(false);
@@ -125,31 +129,45 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
   const tectonic = data?.toolchain.tectonic;
   const texlive = data?.toolchain.texlive ?? [];
   const currentTexlive = texlive.find((dist) => dist.binDir === currentPath);
+  const askAgentToSetUp = () => {
+    writeDraft(
+      undefined,
+      project.id,
+      "Set up LaTeX for this workspace. Please inspect the .tex files, choose or install the right TeX toolchain, identify the report entry points, and compile one document to confirm it works.",
+    );
+    router.push(canvasHref(project.id));
+  };
 
   return (
     <>
       <SettingsGroup
         title="LaTeX"
-        description="Compile .tex to PDF from the panel or the agent's latex_* tools. The PDF lands beside its source; aux files stay in .telar/latex."
+        description="Enable compile tools for this project. The panel and agent can compile any .tex file; the default only fills in bare Compile."
+        action={
+          <Button variant="outline" size="sm" onClick={askAgentToSetUp}>
+            <DownloadIcon className="size-3" /> Ask agent to set up
+          </Button>
+        }
       >
         <Row
-          label="Enable for this project"
-          hint={error ?? (enabled ? "Sessions on this project get the latex_* tools and the LaTeX panel tab." : "Off. Enabling picks the distribution below, or the only one found.")}
+          label="Enabled"
+          hint={error ?? (enabled ? "Sessions get the latex_* tools and the LaTeX panel tab." : "Off. You can enable first, then choose or install a toolchain below.")}
           control={<Switch checked={enabled} disabled={saving} onCheckedChange={setEnabled} aria-label="Enable LaTeX for this project" />}
         />
         <Row
-          label="Main file"
-          hint={data?.mainCandidates.length ? "The document a bare compile builds." : "No .tex with \\documentclass found in the top folders — type a path."}
+          label="Default document"
+          hint={data?.mainCandidates.length ? "Used only when you press Compile without choosing a file. Agents can still compile any report by path." : "No .tex with \\documentclass found in the top folders — type a path, or ask the agent to inspect deeper."}
           control={
             data && data.mainCandidates.length > 0 ? (
               <Select
-                value={config?.mainFile ?? ""}
-                onValueChange={(next) => void save({ enabled, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(next ? { mainFile: next } : {}) })}
+                value={config?.mainFile ?? "__none"}
+                onValueChange={(next) => void save({ enabled, ...(config?.toolchain ? { toolchain: config.toolchain } : {}), ...(typeof next === "string" && next !== "__none" ? { mainFile: next } : {}) })}
               >
                 <SelectTrigger size="sm" className="w-56" aria-label="Main .tex file">
-                  <SelectValue placeholder="Pick the main .tex…" />
+                  <SelectValue placeholder="No default" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="__none">No default</SelectItem>
                   {data.mainCandidates.map((candidate) => (
                     <SelectItem key={candidate} value={candidate}>{candidate}</SelectItem>
                   ))}

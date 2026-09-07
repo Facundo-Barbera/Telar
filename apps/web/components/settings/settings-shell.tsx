@@ -4,7 +4,7 @@
 // components/settings/settings-shell.tsx. A fixed side-nav (never scrolls) and
 // an internally-scrolling content pane with a sticky sub-header. Colors come
 // from theme tokens only; nothing hard-codes a palette.
-import type { ComponentType, CSSProperties, ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, Undo2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
-import { APP_SIDEBAR_STORAGE_KEY, SIDEBAR_RESIZE_MIN_WIDTH, useSidebarPrefs } from "@/lib/sidebar-width";
+import { APP_SIDEBAR_STORAGE_KEY, APP_SIDEBAR_MAIN_MIN_WIDTH, clampSidebarWidth, keepsRoomForMain, setSidebarWidth, SIDEBAR_RESIZE_MIN_WIDTH, useSidebarPrefs } from "@/lib/sidebar-width";
 
 export type SettingsSection = {
   id: string;
@@ -68,7 +68,38 @@ export function SettingsShell({
    * record keeps the left edge still across the switch. Null (nothing stored,
    * and every server render) is the rail's own default.
    */
-  const navWidth = useSidebarPrefs(APP_SIDEBAR_STORAGE_KEY).width ?? SIDEBAR_RESIZE_MIN_WIDTH;
+  const prefsWidth = useSidebarPrefs(APP_SIDEBAR_STORAGE_KEY).width ?? SIDEBAR_RESIZE_MIN_WIDTH;
+  const [dragWidth, setDragWidth] = useState<number>();
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const navWidth = dragWidth ?? prefsWidth;
+
+  useEffect(() => {
+    if (dragWidth === undefined) return;
+    const stop = () => {
+      setSidebarWidth(APP_SIDEBAR_STORAGE_KEY, dragWidth);
+      setDragWidth(undefined);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    const move = (event: PointerEvent) => {
+      const wrapper = wrapperRef.current;
+      if (!wrapper) return;
+      const rect = wrapper.getBoundingClientRect();
+      const current = dragWidth;
+      const proposed = event.clientX - rect.left;
+      const max = Math.max(SIDEBAR_RESIZE_MIN_WIDTH, rect.width - APP_SIDEBAR_MAIN_MIN_WIDTH);
+      const next = clampSidebarWidth(proposed, SIDEBAR_RESIZE_MIN_WIDTH, max);
+      if (keepsRoomForMain(current, next, rect.width, APP_SIDEBAR_MAIN_MIN_WIDTH)) setDragWidth(next);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+    window.addEventListener("pointercancel", stop, { once: true });
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, [dragWidth]);
 
   // Group the nav if any section declares a group; otherwise flat.
   const groups = sections.some((s) => s.group)
@@ -88,6 +119,7 @@ export function SettingsShell({
     // translucent mode — the body's single wash is the canvas (globals.css).
     <div
       data-surfaces
+      ref={wrapperRef}
       className="app-ground flex h-full min-h-0 bg-background text-foreground md:gap-2 md:bg-transparent"
       // The rail's persisted width INCLUDES the 8px the floating primitive
       // pads on each side, so the card itself is 1rem narrower; the same
@@ -203,6 +235,20 @@ export function SettingsShell({
           </div>
         )}
       </nav>
+      <button
+        type="button"
+        aria-label="Resize settings sidebar"
+        title="Drag to resize settings sidebar"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          setDragWidth(navWidth);
+          document.body.style.cursor = "col-resize";
+          document.body.style.userSelect = "none";
+        }}
+        className="app-no-drag -mx-2 hidden w-4 shrink-0 cursor-col-resize items-stretch justify-center md:flex"
+      >
+        <span className="my-3 w-px rounded bg-sidebar-border/40" />
+      </button>
 
       {/* Content pane — sticky header + internal scroll. On `md` it is the
           second island: the conversation card's recipe from the cockpit

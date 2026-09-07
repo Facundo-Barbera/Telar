@@ -47,10 +47,10 @@ import {
   ChevronRightIcon,
   FolderGit2Icon,
   FolderPlusIcon,
+  SlidersHorizontalIcon,
   MessageSquareIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
-  MoreHorizontalIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
   XIcon,
@@ -952,16 +952,30 @@ function SidebarBody() {
                         variant="ghost"
                         size="icon-xs"
                         aria-label={`Settings for ${project.name}`}
-                        title={project.root}
+                        title={`Project settings for ${project.name}`}
                         onClick={() => {
                           onNavigate();
                           router.push(`/projects/${encodeURIComponent(project.id)}/settings`);
                         }}
                       >
-                        <MoreHorizontalIcon />
+                        <SlidersHorizontalIcon />
                       </Button>
                     </div>
                   ))}
+                  {selectedProject && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={() => {
+                          onNavigate();
+                          router.push(`/projects/${encodeURIComponent(selectedProject.id)}/settings`);
+                        }}
+                      >
+                        <SlidersHorizontalIcon />
+                        Project settings
+                      </DropdownMenuItem>
+                    </>
+                  )}
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>

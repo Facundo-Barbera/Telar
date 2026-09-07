@@ -17,6 +17,7 @@ import { ChevronDownIcon, ChevronRightIcon, FileTextIcon, Loader2Icon, PlayIcon,
 import type { LatexCompileStatus, LatexDiagnostic, TurnState } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 
 const api = createEngineApi();
 
@@ -31,6 +32,8 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
   const [compiling, setCompiling] = useState(false);
   const [failure, setFailure] = useState<string>();
   const [logOpen, setLogOpen] = useState(false);
+  const [target, setTarget] = useState("");
+  const [defaultFile, setDefaultFile] = useState<string>();
 
   const read = useCallback(async () => {
     if (!sessionId) return;
@@ -47,12 +50,25 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
     return () => window.clearTimeout(first);
   }, [read, active]);
 
+  useEffect(() => {
+    if (!sessionId) return;
+    const task = window.setTimeout(() => {
+      void api.sessionLatexToolchain(sessionId)
+        .then((toolchain) => {
+          setDefaultFile(toolchain.mainFile);
+          setTarget((current) => current || toolchain.mainFile || "");
+        })
+        .catch(() => {});
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [sessionId]);
+
   const compile = async () => {
     if (!sessionId || compiling) return;
     setCompiling(true);
     setFailure(undefined);
     try {
-      await api.latexCompile(sessionId, {});
+      await api.latexCompile(sessionId, target.trim() ? { path: target.trim() } : {});
     } catch (error) {
       setFailure(error instanceof Error ? error.message : String(error));
     } finally {
@@ -68,6 +84,13 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
+        <Input
+          value={target}
+          onChange={(event) => setTarget(event.target.value)}
+          placeholder={defaultFile ? `Default: ${defaultFile}` : "report/main.tex"}
+          className="h-7 min-w-0 flex-1 font-mono text-[0.6875rem]"
+          aria-label="LaTeX document to compile"
+        />
         <button
           type="button"
           onClick={() => void compile()}
@@ -75,7 +98,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
           className="flex items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs font-medium text-foreground hover:bg-muted/70 disabled:opacity-50"
         >
           {compiling ? <Loader2Icon className="size-3 animate-spin" /> : <PlayIcon className="size-3" />}
-          {compiling ? "Compiling…" : "Compile"}
+          {compiling ? "Compiling..." : "Compile"}
         </button>
         {last && (
           <span
@@ -105,7 +128,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {!last && !failure && (
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Nothing has been compiled in this session yet. Press Compile, or ask the agent — its <code className="font-mono">latex_compile</code> lands here too.
+            Nothing has been compiled in this session yet. Type a .tex path and press Compile, or ask the agent; its <code className="font-mono">latex_compile</code> lands here too.
           </p>
         )}
         {failure && (
