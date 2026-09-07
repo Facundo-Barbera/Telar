@@ -712,12 +712,19 @@ class DesktopBrowserManager {
     return "idle";
   }
 
-  journalControl(tab, controller) {
+  journalControl(tab, controller, options = {}) {
     if (tab.lastJournaled === controller) return;
     tab.lastJournaled = controller;
     if (this.onControlChanged) {
       try {
-        this.onControlChanged({ scopeKey: tab.scopeKey, tabId: tab.id, controller, at: new Date(this.now()).toISOString() });
+        this.onControlChanged({
+          scopeKey: tab.scopeKey,
+          tabId: tab.id,
+          controller,
+          // Only an interruption is worth a line in the conversation.
+          ...(options.interrupted ? { interrupted: true } : {}),
+          at: new Date(this.now()).toISOString(),
+        });
       } catch {
         // The journal hook must never break the browser under it.
       }
@@ -751,11 +758,12 @@ class DesktopBrowserManager {
     }
     // Human, by construction or by attribution. If an agent action is in
     // flight on this tab, it has been interrupted — whatever its source.
-    if (tab.agentBusy > 0) tab.interruptedAt = this.now();
+    const interrupted = tab.agentBusy > 0;
+    if (interrupted) tab.interruptedAt = this.now();
     tab.lastHumanInputAt = this.now();
     tab.generation += 1;
     tab.staleReason = "the human interacted";
-    this.journalControl(tab, "human");
+    this.journalControl(tab, "human", { interrupted });
     this.emitState(tab.scopeKey);
     return true;
   }
@@ -1527,7 +1535,30 @@ class DesktopBrowserManager {
       this.agentTabClosed.delete(scope);
     }
     const view = this.createViewForTab(tab);
+    const humanTabBefore = this.activeTabIds.get(scope);
     await this.readyHostForTab(tab, view);
+    /**
+     * AND THE EXTENSION HOST DOES NOT MOVE IT EITHER.
+     *
+     * Registering a tab with the partition's 1Password host makes the library
+     * treat it as that window's active tab, and the shell wires the library's
+     * selection back to `selectTab` — the HUMAN's pointer (main.js). So an
+     * agent opening a page still stole the screen, through a second door,
+     * after the decision above had correctly declined to. Measured against a
+     * real nightly: the new tab came back marked `(current)`.
+     *
+     * Re-asserted rather than prevented, because the library's notion of an
+     * active tab is its own and it is welcome to it — what must not survive is
+     * that notion reaching the person's view.
+     */
+    if (
+      openedBy === "agent" &&
+      humanTabBefore !== undefined &&
+      this.activeTabIds.get(scope) !== humanTabBefore &&
+      this.tabs.some((candidate) => candidate.id === humanTabBefore)
+    ) {
+      this.activeTabIds.set(scope, humanTabBefore);
+    }
     this.applyVisibility();
     // A human's fresh tab starts in their hands. Nobody has observed a new
     // tab's page yet — the first mutation on it needs a look first.

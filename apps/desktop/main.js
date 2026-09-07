@@ -1136,7 +1136,11 @@ function reportBrowserControl(change) {
   }
   const discovery = engineDiscovery;
   if (!discovery?.port || !discovery?.token) return;
-  const payload = JSON.stringify({ controller: change.controller, ...(change.tabId ? { tabId: change.tabId } : {}) });
+  const payload = JSON.stringify({
+    controller: change.controller,
+    ...(change.tabId ? { tabId: change.tabId } : {}),
+    ...(change.interrupted ? { interrupted: true } : {}),
+  });
   const request = http.request({
     host: discovery.host || "127.0.0.1",
     port: discovery.port,

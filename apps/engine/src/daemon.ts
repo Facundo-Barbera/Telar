@@ -2711,7 +2711,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           if (controller !== "agent" && controller !== "human" && controller !== "idle") {
             throw new HttpError(400, "invalid_request", "controller must be agent, human or idle");
           }
-          store.recordBrowserControl(session.sessionId, controller, stringValue(input.tabId, "tab id", true));
+          store.recordBrowserControl(session.sessionId, controller, stringValue(input.tabId, "tab id", true), input.interrupted === true);
           writeJson(response, 200, {});
           return;
         }
