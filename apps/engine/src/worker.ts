@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
+import { clientDsCapability } from "./ds/client-capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
@@ -57,6 +58,7 @@ type WorkerClient = Pick<
   // true of the worker's own reach and not only of the tool names: a handler
   // that tried would not compile.
   | "liveSessions"
+  | "ds"
   | "createSession"
   | "submitTurn"
   | "events"
@@ -552,6 +554,13 @@ export class EngineWorker {
           resolveRequest: async (id, requestId, input) =>
             (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
         },
+        /**
+         * THE KERNEL, WHEN THE CLAIM SAYS THE PROJECT OPTED IN. Every verb is
+         * an HTTP call to the daemon, which owns the kernel — the worker holds
+         * no process and no store, exactly as with the spool. Absent on the
+         * claim means absent here, and the driver registers no toolkit.
+         */
+        ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
         onRequest: askEngine,
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the

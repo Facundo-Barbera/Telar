@@ -58,8 +58,11 @@ import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox } from "./steering";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
+import { notebookTools } from "./ds/notebook-tools";
+import { dsTools } from "./ds/ds-tools";
+import type { DsCapability } from "./ds/capability";
 
-export type { SpoolCapability, SessionsCapability };
+export type { SpoolCapability, SessionsCapability, DsCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -145,6 +148,13 @@ export type DriverRun = {
    * the design rather than a gap in it.
    */
   sessions?: SessionsCapability;
+  /**
+   * The session's kernel, notebooks and analysis tools — present only when
+   * the project opted in (the claim carried `dataScience`). Per-run like the
+   * spool: assembled from the worker's client, scoped to this session.
+   * ABSENT MEANS THE TOOLKITS DO NOT EXIST, never an empty kernel.
+   */
+  ds?: DsCapability;
   /**
    * Which model to run, resolved by the engine from the session.
    *
@@ -412,6 +422,7 @@ type ClaudeTurnBindings = {
   canUseTool: SdkCanUseTool | undefined;
   spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
+  ds: DsCapability | undefined;
   warpSpawn: WarpSpawn;
   onWarpTask: (seed: TaskSeed) => void;
 };
@@ -1136,6 +1147,7 @@ export function createClaudeDriver(
       browserSocket,
       spool,
       sessions,
+      ds,
       steer,
       tasks: seededTasks,
       session: sessionHooks,
@@ -1807,6 +1819,7 @@ export function createClaudeDriver(
         canUseTool,
         spool,
         sessions,
+        ds,
         warpSpawn,
         onWarpTask,
       };
@@ -1838,6 +1851,9 @@ export function createClaudeDriver(
         browser: browserSocket ?? null,
         spool: Boolean(spool),
         sessions: Boolean(sessions),
+        // Toggling the project's data-science switch must cold-start: the
+        // toolkits are baked into the query at creation.
+        ds: Boolean(ds),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
       });
@@ -1889,6 +1905,17 @@ export function createClaudeDriver(
        * `sessions_create` is fan-out wearing another hat.
        */
         if (sessions && sdk.tool) telarTools.push(...sessionsTools(sdk.tool, delegatingCapability(() => bindings.current.sessions)));
+
+        /**
+         * THE DATA-SCIENCE TOOLKITS, WHEN THE PROJECT OPTED IN. No approval
+         * gate: a kernel runs in the session's own working directory under
+         * the same permissions the agent's Bash tool already has, and every
+         * write these do is to a notebook the file tools could write anyway.
+         */
+        if (ds && sdk.tool) {
+          telarTools.push(...notebookTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
+          telarTools.push(...dsTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
+        }
 
         const warp = warpTool(sdk, {
           // Both delegate through the bindings — the tool is registered once
