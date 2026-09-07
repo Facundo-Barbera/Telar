@@ -19,6 +19,7 @@ import type {
   ComputerUseStatus,
   DataScienceConfig,
   DataScienceDetection,
+  DataSciencePreflight,
   DataScienceVenvOutcome,
   InboxPolicy,
   EnvMode,
@@ -153,6 +154,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<DataScienceDetection>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/detect`),
     dataScienceVenv: (projectId: string, input: { basePython: string; stack?: boolean }) =>
       request<{ venv: DataScienceVenvOutcome }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/venv`, input),
+    dataScienceProjectVenv: (projectId: string, input: { basePython: string; stack?: boolean }) =>
+      request<{ venv: DataScienceVenvOutcome & { relativePath?: string } }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/project-venv`, input),
+    dataScienceProbe: (projectId: string, path: string) =>
+      request<{ probe: DataSciencePreflight & { relativePath?: string } }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path }),
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
