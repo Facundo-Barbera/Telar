@@ -60,6 +60,8 @@ import type { SteerMailbox } from "./steering";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
+import { latexTools } from "./latex/latex-tools";
+import type { LatexCapability } from "./latex/capability";
 import type { DsCapability } from "./ds/capability";
 
 export type { SpoolCapability, SessionsCapability, DsCapability };
@@ -155,6 +157,12 @@ export type DriverRun = {
    * ABSENT MEANS THE TOOLKITS DO NOT EXIST, never an empty kernel.
    */
   ds?: DsCapability;
+  /**
+   * The session's TeX compiles and packages — present only when the project
+   * opted in (the claim carried `latex`). Same rules as `ds` above.
+   * ABSENT MEANS THE TOOLKIT DOES NOT EXIST, never an empty toolchain.
+   */
+  latex?: LatexCapability;
   /**
    * Which model to run, resolved by the engine from the session.
    *
@@ -432,6 +440,7 @@ type ClaudeTurnBindings = {
   spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
   ds: DsCapability | undefined;
+  latex: LatexCapability | undefined;
   warpSpawn: WarpSpawn;
   onWarpTask: (seed: TaskSeed) => void;
 };
@@ -1157,6 +1166,7 @@ export function createClaudeDriver(
       spool,
       sessions,
       ds,
+      latex,
       steer,
       tasks: seededTasks,
       session: sessionHooks,
@@ -1829,6 +1839,7 @@ export function createClaudeDriver(
         spool,
         sessions,
         ds,
+        latex,
         warpSpawn,
         onWarpTask,
       };
@@ -1863,6 +1874,8 @@ export function createClaudeDriver(
         // Toggling the project's data-science switch must cold-start: the
         // toolkits are baked into the query at creation.
         ds: Boolean(ds),
+        // Same rule for the LaTeX switch.
+        latex: Boolean(latex),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
       });
@@ -1925,6 +1938,14 @@ export function createClaudeDriver(
           telarTools.push(...notebookTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
           telarTools.push(...dsTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
         }
+
+        /**
+         * THE LATEX TOOLKIT, WHEN THE PROJECT OPTED IN. No approval gate, the
+         * data-science judgement again: a compile runs in the session's own
+         * tree under the permissions Bash already has, and tlmgr writes to a
+         * distribution the person configured for exactly this.
+         */
+        if (latex && sdk.tool) telarTools.push(...latexTools(sdk.tool, delegatingCapability(() => bindings.current.latex)));
 
         const warp = warpTool(sdk, {
           // Both delegate through the bindings — the tool is registered once

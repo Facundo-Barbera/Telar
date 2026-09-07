@@ -11,6 +11,7 @@ import {
   ENGINE_PROTOCOL_VERSION,
   DataScienceBootstrap,
   DataScienceCreateEnvironment,
+  LatexBootstrap,
   parseForgeQuery,
   RequestOpenInput,
   ProviderTurnOpenInput,
@@ -2129,6 +2130,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
           patch.dataScience = input.dataScience as Parameters<typeof store.updateProject>[1]["dataScience"];
         }
+        if ("latex" in input) {
+          if (input.latex !== null && (typeof input.latex !== "object" || Array.isArray(input.latex))) {
+            throw new HttpError(400, "invalid_request", "latex must be an object or null");
+          }
+          patch.latex = input.latex as Parameters<typeof store.updateProject>[1]["latex"];
+        }
         writeJson(response, 200, { project: store.updateProject(decodeURIComponent(projectPatch[1]), patch) });
         return;
       }
@@ -2200,6 +2207,54 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       if (request.method === "POST" && projectDsProbe) {
         const input = await body(request);
         writeJson(response, 200, { probe: await store.dataScienceProbe(decodeURIComponent(projectDsProbe[1]), stringValue(input.path, "python path")!) });
+        return;
+      }
+      /** Every TeX distribution the machine carries, plus main-file candidates.
+       *  A LIST for a person to choose from, like the environments route. */
+      const projectLatexDists = /^\/v2\/projects\/([^/]+)\/latex\/distributions$/.exec(url.pathname);
+      if (request.method === "GET" && projectLatexDists) {
+        writeJson(response, 200, await store.latexDistributions(decodeURIComponent(projectLatexDists[1])));
+        return;
+      }
+      /** What the project's TeX distribution has installed — or why nothing lists. */
+      const projectLatexPackages = /^\/v2\/projects\/([^/]+)\/latex\/packages$/.exec(url.pathname);
+      if (request.method === "GET" && projectLatexPackages) {
+        writeJson(response, 200, await store.latexPackages(decodeURIComponent(projectLatexPackages[1])));
+        return;
+      }
+      /** tlmgr install / remove, as a job. */
+      if (request.method === "POST" && projectLatexPackages) {
+        const input = await body(request);
+        const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined);
+        writeJson(response, 202, await store.latexInstall(decodeURIComponent(projectLatexPackages[1]), {
+          ...(list("add") ? { add: list("add")! } : {}),
+          ...(list("remove") ? { remove: list("remove")! } : {}),
+        }));
+        return;
+      }
+      /** Install Tectonic or TinyTeX. Machine-wide, so no project in the path. */
+      if (request.method === "POST" && url.pathname === "/v2/latex/bootstrap") {
+        const input = await body(request);
+        const parsed = LatexBootstrap.safeParse(input);
+        if (!parsed.success) throw new HttpError(400, "invalid_request", "not a valid bootstrap request");
+        writeJson(response, 202, await store.latexBootstrap(parsed.data));
+        return;
+      }
+      /** The TeX toolchain alone, for pages that do not need the candidates. */
+      if (request.method === "GET" && url.pathname === "/v2/latex/toolchain") {
+        writeJson(response, 200, { toolchain: await store.latexToolchain(url.searchParams.get("fresh") === "1") });
+        return;
+      }
+      /** Read a latex job by cursor; DELETE cancels it. */
+      const latexJob = /^\/v2\/latex\/jobs\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && latexJob) {
+        const after = Number(url.searchParams.get("after") ?? "0");
+        writeJson(response, 200, { job: store.latexJob(decodeURIComponent(latexJob[1]), Number.isFinite(after) ? after : 0) });
+        return;
+      }
+      if (request.method === "DELETE" && latexJob) {
+        store.latexCancelJob(decodeURIComponent(latexJob[1]));
+        writeJson(response, 200, {});
         return;
       }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
@@ -2863,6 +2918,41 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, result ?? {});
           return;
         }
+        /**
+         * THE LATEX DOOR, shaped like the kernel's above: every verb is a
+         * POST under `/latex/<method>`, dispatched to the store's capability
+         * — the same object the worker's toolkit reaches through
+         * `EngineClient.latex`. Not opted in → `invalid_request`, the gate.
+         */
+        const latexMethod = /^\/latex\/([a-z]+)$/.exec(session.tail)?.[1];
+        if (request.method === "POST" && latexMethod) {
+          const input = await body(request);
+          const latex = store.latex(session.sessionId);
+          // Same rule as dsAnswer: a compile's refusal is an answer, not a crash.
+          const latexAnswer = async <T,>(work: () => Promise<T>): Promise<T> => {
+            try {
+              return await work();
+            } catch (error) {
+              if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+              throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
+            }
+          };
+          const str = (key: string, optional = false) => stringValue(input[key], key, optional);
+          const num = (key: string): number | undefined => (typeof input[key] === "number" ? (input[key] as number) : undefined);
+          let result: unknown;
+          switch (latexMethod) {
+            case "toolchain": result = await latexAnswer(() => latex.toolchain()); break;
+            case "compile": result = await latexAnswer(() => latex.compile({ ...(str("path", true) ? { path: str("path", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}) })); break;
+            case "status": result = await latexAnswer(() => latex.status()); break;
+            case "log": result = await latexAnswer(() => latex.log({ ...(num("tail") !== undefined ? { tail: num("tail")! } : {}), ...(num("around") !== undefined ? { around: num("around")! } : {}), ...(str("find", true) ? { find: str("find", true)! } : {}) })); break;
+            case "packages": result = await latexAnswer(() => latex.packages()); break;
+            case "install": result = await latexAnswer(() => latex.install({ ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}), ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}) })); break;
+            case "clean": result = await latexAnswer(() => latex.clean({ ...(input.pdf === true ? { pdf: true } : {}) })); break;
+            default: throw new HttpError(404, "not_found", `no latex method ${latexMethod}`);
+          }
+          writeJson(response, 200, result ?? {});
+          return;
+        }
         /** The CSV / Parquet table viewer's backend: a window of rows. */
         if (request.method === "GET" && session.tail === "/data/table") {
           const target = url.searchParams.get("path");
@@ -3238,6 +3328,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // Kernels beside the browser: both are processes a turn borrowed and
         // the daemon owns, and both leak past a daemon that does not stop them.
         await kernels?.disposeAll("engine shutting down");
+        // Compile and tlmgr jobs are subprocesses of the same kind.
+        store.latexJobs.disposeAll();
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");
