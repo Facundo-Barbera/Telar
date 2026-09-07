@@ -27,6 +27,14 @@ import type {
   DataSciencePreflight,
   DataScienceRequirementsSource,
   DataScienceToolchain,
+  LatexBootstrap,
+  LatexCompileStatus,
+  LatexConfig,
+  LatexDiagnostic,
+  LatexDistributions,
+  LatexJob,
+  LatexPackagesAnswer,
+  LatexToolchain,
   InboxPolicy,
   EnvMode,
   SessionDefaults,
@@ -153,7 +161,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     removeHost: (hostId: string) => request<{ ok: boolean }>(fetcher, "DELETE", `/api/hosts/${encodeURIComponent(hostId)}`),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
-    updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null }) =>
+    updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }) =>
       request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
     /** Spawns each interpreter it finds — open a page, never poll. */
     dataScienceEnvironments: (projectId: string) =>
@@ -170,6 +178,17 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     dataScienceCancelJob: (jobId: string) => request<Record<string, never>>(fetcher, "DELETE", `/api/data-science/jobs/${encodeURIComponent(jobId)}`),
     dataScienceProbe: (projectId: string, path: string) =>
       request<{ probe: DataSciencePreflight & { relativePath?: string; root?: string; manager?: DataScienceManager } }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path }),
+    /** Spawns `--version` probes for each TeX root — open a page, never poll. */
+    latexDistributions: (projectId: string) =>
+      request<LatexDistributions>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/latex/distributions`),
+    latexPackages: (projectId: string) =>
+      request<LatexPackagesAnswer>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/latex/packages`),
+    latexInstall: (projectId: string, input: { add?: string[]; remove?: string[] }) =>
+      request<{ jobId: string }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/latex/packages`, input),
+    latexBootstrap: (input: LatexBootstrap) => request<{ jobId: string }>(fetcher, "POST", "/api/latex/bootstrap", input),
+    latexToolchain: (fresh = false) => request<{ toolchain: LatexToolchain }>(fetcher, "GET", `/api/latex/toolchain${fresh ? "?fresh=1" : ""}`),
+    latexJob: (jobId: string, after = 0) => request<{ job: LatexJob }>(fetcher, "GET", `/api/latex/jobs/${encodeURIComponent(jobId)}?after=${after}`),
+    latexCancelJob: (jobId: string) => request<Record<string, never>>(fetcher, "DELETE", `/api/latex/jobs/${encodeURIComponent(jobId)}`),
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
@@ -494,6 +513,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ ok: boolean; lines: string[]; error?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/install`, input),
     kernelInspect: (sessionId: string, name: string, depth = 10) =>
       request<Record<string, unknown>>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/inspect`, { name, depth }),
+    /**
+     * THE SESSION'S LATEX DOOR — the same capability the agent's `latex_*`
+     * tools use, so a compile pressed here and one the model ran land on the
+     * same job runner and the same last-compile memory.
+     */
+    latexCompile: (sessionId: string, input: { path?: string; timeoutMs?: number } = {}) =>
+      request<{ ok: boolean; path: string; pdfPath?: string; diagnostics: LatexDiagnostic[]; logTail: string[]; error?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/latex/compile`, input),
+    latexStatus: (sessionId: string) =>
+      request<LatexCompileStatus | { status: "never" }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/latex/status`, {}),
+    latexLog: (sessionId: string, input: { tail?: number; around?: number; find?: string } = {}) =>
+      request<{ lines: string[] }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/latex/log`, input),
+    sessionLatexToolchain: (sessionId: string) =>
+      request<{ kind: "tectonic" | "texlive"; binPath: string; engine?: string; version?: string; tlmgr: boolean; mainFile?: string; available: LatexToolchain }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/latex/toolchain`, {}),
+    latexClean: (sessionId: string, input: { pdf?: boolean } = {}) =>
+      request<{ removed: string[] }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/latex/clean`, input),
     notebook: (sessionId: string, path: string, options: { from?: number; to?: number; withOutputs?: boolean } = {}) =>
       request<NotebookRead>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/notebook/read`, { path, ...options }),
     notebookEdit: (

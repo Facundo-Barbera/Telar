@@ -169,6 +169,10 @@ const BY_EXTENSION: Record<string, FileKind> = {
   // Markup and prose.
   md: KIND("Markdown", "doc", "blue", "markdown"),
   mdx: KIND("MDX", "doc", "blue", "mdx"),
+  tex: KIND("LaTeX", "doc", "green", "latex"),
+  bib: KIND("BibTeX", "doc", "green", "bibtex"),
+  sty: KIND("LaTeX package", "doc", "green", "latex"),
+  cls: KIND("LaTeX class", "doc", "green", "latex"),
   txt: KIND("plain text", "text", "plain"),
   html: KIND("HTML", "code", "orange", "html"),
   htm: KIND("HTML", "code", "orange", "html"),
