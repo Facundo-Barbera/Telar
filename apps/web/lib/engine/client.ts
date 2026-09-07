@@ -17,6 +17,9 @@ import type {
   GitOverview,
   ComputerUseBackend,
   ComputerUseStatus,
+  DataScienceConfig,
+  DataScienceDetection,
+  DataScienceVenvOutcome,
   InboxPolicy,
   EnvMode,
   SessionDefaults,
@@ -142,6 +145,13 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     removeHost: (hostId: string) => request<{ ok: boolean }>(fetcher, "DELETE", `/api/hosts/${encodeURIComponent(hostId)}`),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
+    updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null }) =>
+      request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
+    /** Spawns each interpreter it finds — open a dialog, never poll. */
+    dataScienceDetect: (projectId: string) =>
+      request<DataScienceDetection>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/detect`),
+    dataScienceVenv: (projectId: string, input: { basePython: string; stack?: boolean }) =>
+      request<{ venv: DataScienceVenvOutcome }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/venv`, input),
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
