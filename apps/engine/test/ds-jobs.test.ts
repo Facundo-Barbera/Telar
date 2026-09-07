@@ -16,7 +16,10 @@ test("steps run in order, every line lands in the log, and the result comes from
   const read = await settle(runner, jobId);
   expect(read.status).toBe("ok");
   expect(read.result).toEqual({ made: true });
-  expect(read.lines).toEqual(["$ sh -c echo first; echo err >&2", "first", "err", "$ sh -c printf 'no newline'", "no newline"]);
+  expect(read.lines[0]).toBe("$ sh -c echo first; echo err >&2");
+  // Separate stdout/stderr pipes have no cross-stream arrival ordering.
+  expect(read.lines.slice(1, 3).sort()).toEqual(["err", "first"]);
+  expect(read.lines.slice(3)).toEqual(["$ sh -c printf 'no newline'", "no newline"]);
   expect(read.cursor).toBe(5);
   expect(read.finishedAt).toBeDefined();
 });
