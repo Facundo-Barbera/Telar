@@ -76,10 +76,16 @@ import {
   type McpServerSpec,
   type TurnAttachment,
   type TurnModelSelection,
+  type DataScienceBootstrap,
   type DataScienceConfig,
-  type DataScienceDetection,
+  type DataScienceCreateEnvironment,
+  type DataScienceEnvironments,
+  type DataScienceJob,
+  type DataScienceManager,
+  type DataSciencePackage,
   type DataSciencePreflight,
-  type DataScienceVenvOutcome,
+  type DataScienceRequirementsSource,
+  type DataScienceToolchain,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -317,25 +323,49 @@ export class EngineClient {
     return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);
   }
 
-  /** The Pythons a project could run its data-science tooling on, each probed.
-   *  Spawns interpreters; call it from a dialog, never from a poll. */
-  dataScienceDetect(projectId: string): Promise<DataScienceDetection> {
-    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/detect`);
+  /** Every environment a project could run on, each probed, with the toolchain
+   *  and the checkout's dependency manifests. Spawns interpreters; call it from
+   *  a page, never from a poll. */
+  dataScienceEnvironments(projectId: string): Promise<DataScienceEnvironments> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/environments`);
   }
 
-  /** Build Telar's own venv for a project on `basePython`; `stack` also installs
-   *  pandas, matplotlib, duckdb and pyarrow. Slow — minutes with the stack. */
-  dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<{ venv: DataScienceVenvOutcome }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/venv`, input);
+  /** Start making an environment. Returns a job to poll with `dataScienceJob`;
+   *  its `result` is a `DataScienceCreatedEnvironment`. */
+  dataScienceCreateEnvironment(projectId: string, request: DataScienceCreateEnvironment): Promise<{ jobId: string }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/environments`, request);
   }
 
-  /** `uv venv .venv` inside the project on `basePython`. Refuses if one exists. */
-  dataScienceProjectVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<{ venv: DataScienceVenvOutcome & { relativePath?: string } }> {
-    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/project-venv`, input);
+  /** What is installed in the project's configured environment. */
+  dataSciencePackages(projectId: string): Promise<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string } }> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/packages`);
   }
 
-  /** Probe one interpreter or venv directory a person named. */
-  dataScienceProbe(projectId: string, path: string): Promise<{ probe: DataSciencePreflight & { relativePath?: string } }> {
+  /** Install into / remove from the project's environment, as a job. */
+  dataScienceInstall(projectId: string, input: { add?: string[]; remove?: string[]; requirements?: DataScienceRequirementsSource }): Promise<{ jobId: string }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/packages`, input);
+  }
+
+  /** Install uv, a Python version, or Miniforge — machine-wide, as a job. */
+  dataScienceBootstrap(request: DataScienceBootstrap): Promise<{ jobId: string }> {
+    return this.request("POST", "/v2/data-science/bootstrap", request);
+  }
+
+  dataScienceToolchain(fresh = false): Promise<{ toolchain: DataScienceToolchain }> {
+    return this.request("GET", `/v2/data-science/toolchain${fresh ? "?fresh=1" : ""}`);
+  }
+
+  /** A job's status and the log lines after `after`. */
+  dataScienceJob(jobId: string, after = 0): Promise<{ job: DataScienceJob }> {
+    return this.request("GET", `/v2/data-science/jobs/${encodeURIComponent(jobId)}?after=${after}`);
+  }
+
+  dataScienceCancelJob(jobId: string): Promise<Record<string, never>> {
+    return this.request("DELETE", `/v2/data-science/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  /** Probe one interpreter, venv or conda env directory a person named. */
+  dataScienceProbe(projectId: string, path: string): Promise<{ probe: DataSciencePreflight & { relativePath?: string; root?: string; manager?: DataScienceManager } }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path });
   }
 

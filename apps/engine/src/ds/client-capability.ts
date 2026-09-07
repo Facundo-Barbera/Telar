@@ -27,5 +27,7 @@ export function clientDsCapability(client: Pick<EngineClient, "ds">, sessionId: 
     watches: () => ds("watches"),
     watch: (input) => ds("watch", input),
     experiment: (input) => ds("experiment", input),
+    packages: () => ds("packages"),
+    install: (input) => ds("install", input),
   };
 }

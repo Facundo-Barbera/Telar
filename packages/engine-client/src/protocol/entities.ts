@@ -40,10 +40,18 @@ import {
  * it lives inside the checkout — a worktree session resolves it against its
  * OWN tree, never the project's, so `.venv/bin/python` means "this tree's".
  */
+export const DataScienceManager = z.enum(["venv", "conda", "system", "telar"]);
+export type DataScienceManager = z.infer<typeof DataScienceManager>;
+
 export const DataSciencePython = z.object({
   source: z.enum(["detected", "chosen", "telar"]),
   path: z.string().min(1),
   resolvedAt: Timestamp,
+  /** Which package manager writes to this environment. Derived from the
+   *  path when absent (older configs). */
+  manager: DataScienceManager.optional(),
+  /** The environment's directory, relative like `path` when in the checkout. */
+  root: z.string().min(1).optional(),
 });
 export type DataSciencePython = z.infer<typeof DataSciencePython>;
 
@@ -73,27 +81,96 @@ export const DataSciencePreflight = z.object({
 });
 export type DataSciencePreflight = z.infer<typeof DataSciencePreflight>;
 
-export const DataScienceCandidate = z.object({
-  kind: z.enum(["project-venv", "uv", "pyenv", "path", "telar"]),
+/**
+ * ONE PYTHON ENVIRONMENT, the way a person thinks of it: a thing with a name,
+ * a manager that installs into it, and a place. `python` is absolute — the
+ * interpreter the kernel runs; `path` is what gets STORED (relative inside the
+ * checkout, so a worktree resolves it against its own tree).
+ */
+export const DataScienceEnvironment = z.object({
+  id: z.string().min(1),
+  manager: DataScienceManager,
+  name: z.string(),
+  root: z.string(),
+  python: z.string(),
   path: z.string(),
+  location: z.enum(["project", "user", "telar"]),
   reason: z.string(),
   preflight: DataSciencePreflight,
 });
-export type DataScienceCandidate = z.infer<typeof DataScienceCandidate>;
+export type DataScienceEnvironment = z.infer<typeof DataScienceEnvironment>;
 
-/** `GET /v2/projects/:id/data-science/detect`. `uv` says whether Telar can build its own venv here. */
-export const DataScienceDetection = z.object({
-  candidates: z.array(DataScienceCandidate),
-  uv: z.boolean(),
+export const DataScienceTool = z.object({ path: z.string(), version: z.string() });
+export const DataSciencePythonVersion = z.object({
+  version: z.string(),
+  minor: z.string(),
+  path: z.string().optional(),
+  installed: z.boolean(),
+  prerelease: z.boolean(),
 });
-export type DataScienceDetection = z.infer<typeof DataScienceDetection>;
+export type DataSciencePythonVersion = z.infer<typeof DataSciencePythonVersion>;
 
-/** `POST /v2/projects/:id/data-science/venv`. A refusal is a result: the reason names the fix. */
-export const DataScienceVenvOutcome = z.discriminatedUnion("ok", [
-  z.object({ ok: z.literal(true), python: z.string(), installed: z.array(z.string()) }),
-  z.object({ ok: z.literal(false), reason: z.string() }),
+/** The tools environments are made with, and the Pythons uv can see or fetch. */
+export const DataScienceToolchain = z.object({
+  uv: DataScienceTool.optional(),
+  conda: DataScienceTool.extend({ flavour: z.enum(["conda", "mamba", "micromamba"]) }).optional(),
+  brew: DataScienceTool.optional(),
+  pythons: z.array(DataSciencePythonVersion),
+});
+export type DataScienceToolchain = z.infer<typeof DataScienceToolchain>;
+
+export const DataScienceRequirementsSource = z.enum(["requirements.txt", "pyproject.toml", "uv.lock", "environment.yml", "Pipfile"]);
+export type DataScienceRequirementsSource = z.infer<typeof DataScienceRequirementsSource>;
+
+/** `GET /v2/projects/:id/data-science/environments`. */
+export const DataScienceEnvironments = z.object({
+  toolchain: DataScienceToolchain,
+  environments: z.array(DataScienceEnvironment),
+  /** Dependency manifests the checkout carries. */
+  requirements: z.array(DataScienceRequirementsSource),
+  /** The id of the environment the project is configured on, when it was found. */
+  currentId: z.string().optional(),
+});
+export type DataScienceEnvironments = z.infer<typeof DataScienceEnvironments>;
+
+/** A toolchain job — an install, a build — read by cursor. */
+export const DataScienceJob = z.object({
+  jobId: z.string(),
+  kind: z.string(),
+  status: z.enum(["running", "ok", "failed", "cancelled"]),
+  lines: z.array(z.string()),
+  cursor: z.number().int().min(0),
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+  startedAt: Timestamp,
+  finishedAt: Timestamp.optional(),
+});
+export type DataScienceJob = z.infer<typeof DataScienceJob>;
+
+export const DataSciencePackage = z.object({ name: z.string(), version: z.string(), channel: z.string().optional() });
+export type DataSciencePackage = z.infer<typeof DataSciencePackage>;
+
+export const DataScienceCreateEnvironment = z.discriminatedUnion("manager", [
+  z.object({ manager: z.literal("venv"), location: z.enum(["project", "telar"]), python: z.string().min(1), stack: z.boolean().optional() }),
+  z.object({ manager: z.literal("conda"), name: z.string().min(1), python: z.string().min(1), stack: z.boolean().optional() }),
 ]);
-export type DataScienceVenvOutcome = z.infer<typeof DataScienceVenvOutcome>;
+export type DataScienceCreateEnvironment = z.infer<typeof DataScienceCreateEnvironment>;
+
+export const DataScienceBootstrap = z.discriminatedUnion("what", [
+  z.object({ what: z.literal("uv") }),
+  z.object({ what: z.literal("python"), version: z.string().min(1) }),
+  z.object({ what: z.literal("conda") }),
+]);
+export type DataScienceBootstrap = z.infer<typeof DataScienceBootstrap>;
+
+/** What a finished create-environment job carries in `result`. */
+export const DataScienceCreatedEnvironment = z.object({
+  path: z.string(),
+  root: z.string(),
+  manager: DataScienceManager,
+  source: z.enum(["detected", "chosen", "telar"]),
+});
+export type DataScienceCreatedEnvironment = z.infer<typeof DataScienceCreatedEnvironment>;
 
 export const Project = z.object({
   id: Id,

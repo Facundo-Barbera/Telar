@@ -2,15 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  detectPythonCandidates,
-  preflightPython,
-  projectEnvSignals,
-  relativisePythonPath,
-  resolvePythonPath,
-  type Exec,
-} from "../src/ds/python-env";
+import { preflightPython, projectEnvSignals, relativisePythonPath, resolvePythonPath, type Exec } from "../src/ds/python-env";
 import { telarVenvDir } from "../src/ds/telar-venv";
+import { discoverEnvironments, environmentRootOf, isCondaEnv, isVenv } from "../src/ds/environments";
+import type { Toolchain } from "../src/ds/toolchain";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -22,67 +17,96 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-function fakeVenv(dir: string): string {
+function fakeVenv(dir: string, kind: "venv" | "conda" | "bare" = "venv"): string {
   const bin = path.join(dir, "bin");
   fs.mkdirSync(bin, { recursive: true });
   const python = path.join(bin, "python");
   fs.writeFileSync(python, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  if (kind === "venv") fs.writeFileSync(path.join(dir, "pyvenv.cfg"), "home = /usr/bin\n");
+  if (kind === "conda") fs.mkdirSync(path.join(dir, "conda-meta"), { recursive: true });
   return python;
 }
 
-/** An exec that answers only what the test scripts, and fails everything else. */
+const PROBE_OK = JSON.stringify({ version: "3.12.1", versionInfo: [3, 12], sitePackages: [], modules: {} });
+
+/** An exec that answers only what the test scripts. Any python binary probes ok. */
 function scriptedExec(answers: Record<string, { status: number; stdout: string }>): Exec {
   return async (file, args) => {
     const key = `${file} ${args.join(" ")}`;
     for (const [pattern, answer] of Object.entries(answers)) {
       if (key.startsWith(pattern)) return { ...answer, stderr: "" };
     }
+    if (file.endsWith("/python") || file.endsWith("/python3")) return { status: 0, stdout: `${PROBE_OK}\n`, stderr: "" };
     return { status: 127, stdout: "", stderr: "not scripted" };
   };
 }
 
-test("a project venv is listed first, uv second, and the same literal path shows once", async () => {
+const NO_TOOLS: Toolchain = { pythons: [] };
+const WITH_UV: Toolchain = { uv: { path: "/opt/homebrew/bin/uv", version: "0.12.5" }, pythons: [] };
+
+test("a project venv is listed first, uv's pick second, and the same environment shows once", async () => {
   const project = root();
   const venvPython = fakeVenv(path.join(project, ".venv"));
   fs.writeFileSync(path.join(project, "uv.lock"), "", "utf8");
-  const exec = scriptedExec({
-    // uv resolves to the same interpreter the venv scan found — must appear once.
-    "uv python find": { status: 0, stdout: `${venvPython}\n` },
-    "sh -c command -v python3": { status: 0, stdout: "/usr/bin/python3\n" },
-  });
-  const candidates = await detectPythonCandidates(project, { exec });
-  expect(candidates.map((c) => c.kind)).toEqual(["project-venv", "path"]);
-  expect(candidates[0]!.reason).toBe("found .venv/");
+  const exec = scriptedExec({ "/opt/homebrew/bin/uv python find": { status: 0, stdout: `${venvPython}\n` } });
+  const environments = await discoverEnvironments(project, { exec, toolchain: { ...WITH_UV, pythons: [{ version: "3.14.7", minor: "3.14", path: "/opt/homebrew/bin/python3.14", installed: true, prerelease: false }] } });
+  expect(environments.map((e) => [e.manager, e.name, e.location])).toEqual([["venv", ".venv", "project"], ["system", "Python 3.14.7", "user"]]);
+  expect(environments[0]!.reason).toBe("found .venv/ in the checkout");
+  expect(environments[0]!.preflight.ok).toBe(true);
   expect(projectEnvSignals(project)).toEqual(["uv.lock"]);
 });
 
-test("a venv whose python is a symlink to the base interpreter is still its own candidate", async () => {
+test("a venv whose python is a symlink to the base interpreter is still its own environment", async () => {
   const project = root();
-  const base = fakeVenv(root());
-  const venvBin = path.join(project, ".venv", "bin");
-  fs.mkdirSync(venvBin, { recursive: true });
-  fs.symlinkSync(base, path.join(venvBin, "python"));
-  const exec = scriptedExec({ "uv python find": { status: 0, stdout: `${base}\n` } });
-  const candidates = await detectPythonCandidates(project, { exec });
-  expect(candidates.map((c) => c.kind)).toEqual(["project-venv", "uv"]);
+  const base = fakeVenv(root(), "bare");
+  const venvDir = path.join(project, ".venv");
+  fs.mkdirSync(path.join(venvDir, "bin"), { recursive: true });
+  fs.symlinkSync(base, path.join(venvDir, "bin", "python"));
+  fs.writeFileSync(path.join(venvDir, "pyvenv.cfg"), "");
+  const exec = scriptedExec({ "/opt/homebrew/bin/uv python find": { status: 0, stdout: `${base}\n` } });
+  const environments = await discoverEnvironments(project, { exec, toolchain: WITH_UV });
+  expect(environments.map((e) => e.manager)).toEqual(["venv", "system"]);
 });
 
-test("pyenv is consulted only when .python-version is present; Telar's venv is offered when it exists", async () => {
+test("conda environments come from `conda env list` and the registry file, deduped; Telar's venv is offered when it exists", async () => {
   const project = root();
+  const condaHome = root();
+  fakeVenv(condaHome, "conda");
+  fs.mkdirSync(path.join(condaHome, "condabin"));
+  const named = path.join(condaHome, "envs", "ds-3.12");
+  fakeVenv(named, "conda");
+  const registry = path.join(root(), "environments.txt");
+  fs.writeFileSync(registry, `${condaHome}\n${named}\n`);
   const engine = root();
   const telar = telarVenvDir(engine, "project_x");
-  const telarPython = fakeVenv(telar);
-  const exec = scriptedExec({
-    "pyenv which python": { status: 0, stdout: "/opt/pyenv/versions/3.12.1/bin/python\n" },
+  fakeVenv(telar);
+  const exec = scriptedExec({ "/opt/conda/bin/conda env list --json": { status: 0, stdout: JSON.stringify({ envs: [condaHome, named] }) } });
+  const environments = await discoverEnvironments(project, {
+    exec,
+    toolchain: { conda: { path: "/opt/conda/bin/conda", version: "24.1", flavour: "conda" }, pythons: [] },
+    telarVenv: telar,
+    condaEnvironmentsFile: registry,
   });
+  expect(environments.map((e) => [e.manager, e.name])).toEqual([["conda", `base (${path.basename(condaHome)})`], ["conda", "ds-3.12"], ["telar", "Telar's environment"]]);
+  expect(environments[2]!.location).toBe("telar");
+});
 
-  const without = await detectPythonCandidates(project, { exec, telarVenv: telar });
-  expect(without.map((c) => c.kind)).toEqual(["telar"]);
-  expect(without[0]!.path).toBe(telarPython);
+test("nothing installed, nothing found — an empty list rather than a throw", async () => {
+  expect(await discoverEnvironments(root(), { exec: scriptedExec({}), toolchain: NO_TOOLS })).toEqual([]);
+});
 
-  fs.writeFileSync(path.join(project, ".python-version"), "3.12.1\n", "utf8");
-  const withPyenv = await detectPythonCandidates(project, { exec, telarVenv: telar });
-  expect(withPyenv.map((c) => c.kind)).toEqual(["pyenv", "telar"]);
+test("an environment's root and manager are read off the directory", () => {
+  const venv = root();
+  fakeVenv(venv, "venv");
+  const conda = root();
+  fakeVenv(conda, "conda");
+  const bare = root();
+  fakeVenv(bare, "bare");
+  expect(isVenv(venv)).toBe(true);
+  expect(isCondaEnv(conda)).toBe(true);
+  expect(environmentRootOf(path.join(venv, "bin", "python"))).toEqual({ root: venv, manager: "venv" });
+  expect(environmentRootOf(path.join(conda, "bin", "python"))).toEqual({ root: conda, manager: "conda" });
+  expect(environmentRootOf(path.join(bare, "bin", "python"))).toBeUndefined();
 });
 
 test("preflight refuses a path that is not executable and parses the probe's answer", async () => {

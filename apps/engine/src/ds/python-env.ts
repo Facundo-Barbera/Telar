@@ -1,38 +1,18 @@
 /**
- * Finding a Python for a project, and proving it works.
- *
- * DETECTION PRODUCES A LIST, NEVER A CHOICE. The engine can see a `.venv`, a
- * `uv.lock`, a `.python-version` and a `python3` on PATH, and any of them may
- * be the one the person actually uses. Picking silently is how a kernel ends up
- * importing the wrong pandas — or none — with no line anywhere saying why. So
- * `detectPythonCandidates` returns every plausible interpreter in priority
- * order and the settings page asks. What gets stored is the answer, as a path.
+ * Proving a Python works, and the path rules for storing one.
  *
  * PREFLIGHT IS A SUBPROCESS, NOT A GUESS. The only honest way to know whether
  * `pandas` imports under an interpreter is to ask that interpreter. The probe
  * script is tiny, prints one JSON line, and never imports anything the caller
  * did not name — so a broken optional library reports as missing rather than
  * taking the probe down with it.
+ *
+ * Finding interpreters is `environments.ts`'s job; this file is what every
+ * finder calls on each one it finds.
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-
-/** Where a candidate came from — the settings page explains each in a phrase. */
-export type PythonCandidateKind =
-  | "project-venv"      // .venv / venv / env inside the checkout
-  | "uv"                // `uv python find` from the project root — honours .python-version, uv.lock
-  | "pyenv"             // a .python-version resolved through pyenv
-  | "path"              // `python3` / `python` on PATH
-  | "telar";            // Telar's own managed venv for this project
-
-export type PythonCandidate = {
-  kind: PythonCandidateKind;
-  /** Absolute. Callers relativise against the project root when storing. */
-  path: string;
-  /** What made this a candidate: "found .venv", "uv.lock present", … */
-  reason: string;
-};
 
 /** The libraries the `ds_*` tools gate on. Probed, never assumed. */
 export const STACK_MODULES = ["pandas", "matplotlib", "duckdb", "pyarrow"] as const;
@@ -95,80 +75,11 @@ function isExecutable(file: string): boolean {
   }
 }
 
-function venvPython(dir: string): string | undefined {
-  const unix = path.join(dir, "bin", "python");
-  if (isExecutable(unix)) return unix;
-  const win = path.join(dir, "Scripts", "python.exe");
-  if (isExecutable(win)) return win;
-  return undefined;
-}
-
 /** Marker files whose presence says "this project has a Python environment story". */
 const ENV_SIGNALS = ["uv.lock", "pyproject.toml", "poetry.lock", "Pipfile.lock", "requirements.txt", "environment.yml"] as const;
 
 export function projectEnvSignals(root: string): string[] {
   return ENV_SIGNALS.filter((name) => fs.existsSync(path.join(root, name)));
-}
-
-export type DetectOptions = {
-  exec?: Exec;
-  /** Telar's managed venv for this project, if one already exists. */
-  telarVenv?: string;
-};
-
-/**
- * Every interpreter worth offering, most specific first. Duplicates by LITERAL
- * path are dropped so `uv python find` returning the project's `.venv` shows
- * once. Not by real path: a venv's `bin/python` is usually a symlink to the
- * base interpreter, and the two are different environments — `pyvenv.cfg`
- * gives the venv its own site-packages — so collapsing them would hide every
- * venv behind the Python it was built from.
- */
-export async function detectPythonCandidates(root: string, options: DetectOptions = {}): Promise<PythonCandidate[]> {
-  const exec = options.exec ?? defaultExec;
-  const found: PythonCandidate[] = [];
-  const seen = new Set<string>();
-  const add = (candidate: PythonCandidate) => {
-    // `.venv/bin/python` and `.venv/bin/python3.12` are one environment: key
-    // by the bin directory, so uv naming the same venv as the scan shows once.
-    const key = path.dirname(path.normalize(candidate.path));
-    if (seen.has(key)) return;
-    seen.add(key);
-    found.push(candidate);
-  };
-
-  for (const name of [".venv", "venv", "env"]) {
-    const python = venvPython(path.join(root, name));
-    if (python) add({ kind: "project-venv", path: python, reason: `found ${name}/` });
-  }
-
-  const signals = projectEnvSignals(root);
-  const uv = await exec("uv", ["python", "find"], { cwd: root, timeoutMs: 10_000 }).catch(() => undefined);
-  if (uv && uv.status === 0 && uv.stdout.trim()) {
-    const reason = signals.length ? `uv, honouring ${signals.join(", ")}` : "uv python find";
-    add({ kind: "uv", path: uv.stdout.trim(), reason });
-  }
-
-  if (fs.existsSync(path.join(root, ".python-version"))) {
-    const pyenv = await exec("pyenv", ["which", "python"], { cwd: root, timeoutMs: 10_000 }).catch(() => undefined);
-    if (pyenv && pyenv.status === 0 && pyenv.stdout.trim()) {
-      add({ kind: "pyenv", path: pyenv.stdout.trim(), reason: "pyenv via .python-version" });
-    }
-  }
-
-  for (const name of ["python3", "python"]) {
-    const which = await exec("sh", ["-c", `command -v ${name}`], { cwd: root, timeoutMs: 5_000 }).catch(() => undefined);
-    if (which && which.status === 0 && which.stdout.trim()) {
-      add({ kind: "path", path: which.stdout.trim(), reason: `${name} on PATH` });
-    }
-  }
-
-  if (options.telarVenv) {
-    const python = venvPython(options.telarVenv);
-    if (python) add({ kind: "telar", path: python, reason: "Telar's managed environment" });
-  }
-
-  return found;
 }
 
 /** Ask an interpreter what it is and which of `modules` it can import. */
