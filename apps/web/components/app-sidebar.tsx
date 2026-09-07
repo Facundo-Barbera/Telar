@@ -76,6 +76,8 @@ import {
   sessionHref,
   sessionKey,
   toSidebarSession,
+  windowFor,
+  type SessionBand,
   type SidebarSession,
 } from "@/lib/session-list";
 import { hostFetcher } from "@/lib/hosts/client";
@@ -97,7 +99,7 @@ import {
 } from "@/components/ui/sidebar";
 import { SessionRow } from "@/components/session/session-row";
 import { ProjectGroupSection } from "@/components/session/project-group";
-import { groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, railRowsForCommandKeys, useCollapsedGroups } from "@/lib/session-groups";
+import { dedupeAcrossHosts, groupSessions, moveProjectGroup, PROJECT_GROUP_MIME, railRowsForCommandKeys, useCollapsedGroups } from "@/lib/session-groups";
 import { useSidebarLayout } from "@/lib/sidebar-layout";
 import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { RegisterProjectDialog } from "@/components/projects/register-dialog";
@@ -243,7 +245,7 @@ function SessionShelf({
   activeSessionId,
   showProject,
   renderedAt,
-  autoSettleAfterHours,
+  bandFor,
   onRefresh,
 }: {
   label: string;
@@ -257,7 +259,10 @@ function SessionShelf({
   activeSessionId?: string;
   showProject: boolean;
   renderedAt: number;
-  autoSettleAfterHours: number | null;
+  /** The list's own banding — one function, so a shelf cannot band a row
+   *  differently from the list that put it there (a paired Mac's row is
+   *  banded by that Mac's clock; see `windowFor`). */
+  bandFor: (session: SidebarSession) => SessionBand;
   onRefresh: () => void;
 }) {
   if (count === 0) return null;
@@ -276,7 +281,7 @@ function SessionShelf({
               // ahead of you — so its rows give their space back, one dim line
               // each. See session-row.tsx for the two volumes.
               variant="slim"
-              band={bandOf(session, { now: renderedAt, autoSettleAfterHours })}
+              band={bandFor(session)}
               renderedAt={renderedAt}
               onRefresh={onRefresh}
             />
@@ -295,6 +300,9 @@ function SessionShelf({
     </SidebarGroup>
   );
 }
+
+/** A paired Mac's project, with the Mac it lives on — what the New menu lists. */
+type RemoteProject = Pick<Project, "id" | "name" | "icon"> & { hostId: string; hostName: string };
 
 function SidebarBody() {
   const pathname = usePathname();
@@ -362,6 +370,17 @@ function SidebarBody() {
    */
   const [hosts, setHosts] = useState<PublicHost[]>([]);
   const [unreachable, setUnreachable] = useState<Set<string>>(() => new Set());
+  /**
+   * THE OTHER MACS' PROJECTS, so a conversation can be STARTED over there.
+   * Their sessions have always sat in this rail; their canvases did not —
+   * the New button only ever opened a local project's, which left "start
+   * something on the mini" with no button at all. Read on every pass beside
+   * the sessions; a Mac that is this Mac contributes nothing here.
+   */
+  const [remoteProjects, setRemoteProjects] = useState<RemoteProject[]>([]);
+  /** Each Mac's own settling window, read with its rows — keyed like the
+   *  sidebar cache (LOCAL_HOST for this engine). See `loadHost`. */
+  const [hostWindows, setHostWindows] = useState<Map<string, number | null>>(() => new Map());
   /** An away Mac's remembered rows, dimmed under its retry line. Filled by
    *  `loadAll` from the sidebar cache; empty for a host never read. */
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
@@ -383,7 +402,20 @@ function SidebarBody() {
    */
   const loadHost = useCallback(async (host: { id: string; name: string } | undefined) => {
     const hostApi = host ? createEngineApi(hostFetcher(host.id)) : api;
-    const result = await hostApi.liveSessions();
+    // The engine's identity rides beside its rows, so two reads that reached
+    // ONE engine (a Mac paired with itself, or under two addresses) can be
+    // folded into one — see `dedupeAcrossHosts`. Best-effort: a health that
+    // fails leaves the rows undeduplicated rather than dropped.
+    //
+    // ITS SETTLING WINDOW COMES WITH IT. A row is banded by the clock of the
+    // engine it lives on — the inbox policy is that engine's document — so a
+    // paired Mac's "72 hours" cannot shelve a row this Mac's "off" would keep,
+    // which is how a conversation read as settled here and live over there.
+    const [result, daemonId, policy] = await Promise.all([
+      hostApi.liveSessions(),
+      hostApi.health().then((health) => health.daemonId, () => undefined),
+      hostApi.inbox().then((answer) => answer.inbox, () => undefined),
+    ]);
     const names = new Map(result.projects.map((project) => [project.id, project.name]));
     // The checkout's current branch, for the local sessions that share it —
     // they have no branch of their own. Derived per project by the engine.
@@ -402,7 +434,7 @@ function SidebarBody() {
         host,
       ),
     );
-    return { projects: result.projects, sessions };
+    return { projects: result.projects, sessions, ...(daemonId ? { daemonId } : {}), ...(policy ? { policy } : {}) };
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -434,7 +466,10 @@ function SidebarBody() {
       setUnavailable(false);
       setProjects(local.value.projects);
       const away = new Set<string>();
-      const remoteSessions: SidebarSession[] = [];
+      const reads: { daemonId?: string; sessions: SidebarSession[] }[] = [local.value];
+      const remoteProjects: RemoteProject[] = [];
+      const windows = new Map<string, number | null>();
+      if (local.value.policy) windows.set(LOCAL_HOST, local.value.policy.autoSettleAfterHours);
       // Each Mac's last read, kept so a host going away dims its rows instead
       // of vanishing them. The local engine writes under LOCAL_HOST; every
       // remote writes under its own id — one host's rows never touch another's.
@@ -443,12 +478,20 @@ function SidebarBody() {
         const host = book[index]!;
         if (page.status === "fulfilled") {
           next = rememberRows(next, host.id, page.value.sessions);
-          remoteSessions.push(...page.value.sessions);
+          reads.push(page.value);
+          if (page.value.policy) windows.set(host.id, page.value.policy.autoSettleAfterHours);
+          // A paired Mac that is THIS Mac offers nothing the local list does
+          // not; its projects are the local ones, reachable without the hop.
+          if (!page.value.daemonId || page.value.daemonId !== local.value.daemonId) {
+            remoteProjects.push(...page.value.projects.map((project) => ({ ...project, hostId: host.id, hostName: host.name })));
+          }
         } else {
           away.add(host.id);
         }
       });
       writeSidebarCache(next);
+      setRemoteProjects(remoteProjects);
+      setHostWindows(windows);
       // A host that did not answer keeps its LAST rows, dimmed under its retry
       // line — read out of the cache on the pass that noticed it was away.
       const remembered = new Map<string, SidebarSession[]>();
@@ -458,7 +501,7 @@ function SidebarBody() {
       }
       setStaleByHost(remembered);
       setUnreachable(away);
-      setSessions([...local.value.sessions, ...remoteSessions]);
+      setSessions(dedupeAcrossHosts(reads));
       setRenderedAt(Date.now());
     } finally {
       loadAllRunning.current = false;
@@ -549,6 +592,7 @@ function SidebarBody() {
     ...(activeSessionId ? { activeSessionId } : {}),
     now: renderedAt,
     autoSettleAfterHours,
+    windowsByHost: hostWindows,
     limit: sessionLimit,
     settledLimit,
   });
@@ -559,7 +603,7 @@ function SidebarBody() {
   // The counting pass that badged the chips went with them: nothing displays a
   // total any more, and `deriveSessionList` was being run twice per render to
   // produce two numbers.
-  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterHours });
+  const bandFor = (session: SidebarSession) => bandOf(session, { now: renderedAt, autoSettleAfterHours: windowFor(session, autoSettleAfterHours, hostWindows) });
   // The Work surface's arrangement of the same page: a pure regrouping of
   // `list`, so paging, search and scope are untouched. Only in the banded view;
   // a search stays flat. The groups sit in the reader's own order — nothing a
@@ -682,15 +726,28 @@ function SidebarBody() {
    * Only a cockpit with NO projects at all falls back, because then there is
    * genuinely nothing to open a conversation against.
    */
-  const composerProjectId =
-    selectedScope ??
-    sessions.find((session) => sessionKey(session) === activeSessionId)?.projectId ??
-    [...sessions].sort((left, right) => right.updatedAt - left.updatedAt)[0]?.projectId ??
-    projects[0]?.id;
+  /**
+   * ON WHICHEVER MAC THAT PROJECT IS. The guess used to drop the host, so a
+   * reader looking at a conversation on the mini pressed New and landed on a
+   * canvas for a project of the same id on THIS Mac — or, when the id did not
+   * exist here, on a canvas that could never send. The session you are reading
+   * carries its host; the guess carries it too.
+   */
+  const composerTarget: { projectId: string; hostId?: string } | undefined = (() => {
+    if (selectedScope) return { projectId: selectedScope };
+    const active = sessions.find((session) => sessionKey(session) === activeSessionId);
+    if (active?.projectId) return { projectId: active.projectId, ...(active.hostId ? { hostId: active.hostId } : {}) };
+    const recent = [...sessions].sort((left, right) => right.updatedAt - left.updatedAt).find((session) => session.projectId);
+    if (recent?.projectId) return { projectId: recent.projectId, ...(recent.hostId ? { hostId: recent.hostId } : {}) };
+    if (projects[0]) return { projectId: projects[0].id };
+    const remote = remoteProjects[0];
+    return remote ? { projectId: remote.id, hostId: remote.hostId } : undefined;
+  })();
+  const composerProjectId = composerTarget?.projectId;
 
-  const startSession = () => {
+  const startSession = (target = composerTarget) => {
     onNavigate();
-    router.push(composerProjectId ? canvasHref(composerProjectId) : "/");
+    router.push(target ? canvasHref(target.projectId, target.hostId) : "/");
   };
 
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -784,16 +841,70 @@ function SidebarBody() {
                 }
               />
             </div>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="shrink-0"
-              aria-label="New conversation"
-              title={composerProjectId ? "New conversation" : "Register a project first"}
-              onClick={startSession}
-            >
-              <MessageSquarePlusIcon />
-            </Button>
+            {/* A PRESS OPENS THE GUESS; A LONG PRESS (or right-click) PICKS THE
+                MAC. One paired Mac and the whole choice is "here or there",
+                which is exactly what was missing: there was no way to say
+                "start this on the mini" without first finding one of its
+                conversations. No paired Mac and the menu never appears — the
+                button is the button it always was. */}
+            {remoteProjects.length > 0 ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="shrink-0"
+                      aria-label="New conversation"
+                      title="New conversation — choose where"
+                    />
+                  }
+                >
+                  <MessageSquarePlusIcon />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-64">
+                  <DropdownMenuGroup>
+                    <DropdownMenuLabel>On this Mac</DropdownMenuLabel>
+                    {projects.map((project) => (
+                      <DropdownMenuItem key={project.id} onClick={() => startSession({ projectId: project.id })}>
+                        <ProjectAvatar name={project.name} projectId={project.id} {...(project.icon ? { icon: project.icon } : {})} size={14} />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                    {projects.length === 0 && <DropdownMenuItem disabled>No projects here yet</DropdownMenuItem>}
+                  </DropdownMenuGroup>
+                  {hosts
+                    .filter((host) => remoteProjects.some((project) => project.hostId === host.id))
+                    .map((host) => (
+                      <DropdownMenuGroup key={host.id}>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel className="flex items-center gap-1.5">
+                          <MonitorIcon className="size-3" /> On {host.name}
+                        </DropdownMenuLabel>
+                        {remoteProjects
+                          .filter((project) => project.hostId === host.id)
+                          .map((project) => (
+                            <DropdownMenuItem key={`${host.id}:${project.id}`} onClick={() => startSession({ projectId: project.id, hostId: host.id })}>
+                              <ProjectAvatar name={project.name} size={14} />
+                              <span className="truncate">{project.name}</span>
+                            </DropdownMenuItem>
+                          ))}
+                      </DropdownMenuGroup>
+                    ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0"
+                aria-label="New conversation"
+                title={composerProjectId ? "New conversation" : "Register a project first"}
+                onClick={() => startSession()}
+              >
+                <MessageSquarePlusIcon />
+              </Button>
+            )}
           </div>
 
           <div className="flex items-center gap-1">
@@ -1005,7 +1116,7 @@ function SidebarBody() {
                   onNavigate={onNavigate}
                   {...(activeSessionId ? { activeSessionId } : {})}
                   renderedAt={renderedAt}
-                  autoSettleAfterHours={autoSettleAfterHours}
+                  bandFor={bandFor}
                   onRefresh={() => void loadAll()}
                   dragging={draggingGroup === group.key}
                   insert={groupInsert?.key === group.key ? groupInsert.position : null}
@@ -1099,7 +1210,7 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}
               renderedAt={renderedAt}
-              autoSettleAfterHours={autoSettleAfterHours}
+              bandFor={bandFor}
               onRefresh={() => void loadAll()}
             />
             <SessionShelf
@@ -1121,7 +1232,7 @@ function SidebarBody() {
               {...(activeSessionId ? { activeSessionId } : {})}
               showProject={showProject}
               renderedAt={renderedAt}
-              autoSettleAfterHours={autoSettleAfterHours}
+              bandFor={bandFor}
               onRefresh={() => void loadAll()}
             />
           </>
