@@ -126,7 +126,8 @@ export async function probeTexliveRoot(candidate: RootCandidate, exec: Exec = de
     const result = await exec(file, ["--version"], { timeoutMs: 10_000 }).catch(() => undefined);
     if (!result || result.status !== 0) continue;
     const banner = result.stdout || result.stderr;
-    const found = /(\d+\.\d+(?:\.\d+)?(?:[.-][\d.]+)?)/.exec(banner)?.[1];
+    // tlmgr says "revision 70671" and never a dotted version; take either.
+    const found = /(\d+\.\d+(?:\.\d+)?(?:[.-][\d.]+)?)/.exec(banner)?.[1] ?? /revision (\d+)/.exec(banner)?.[1];
     if (!found) continue;
     tools[name] = { path: file, version: found };
     if (name === "pdflatex") year = parseTexliveYear(banner);

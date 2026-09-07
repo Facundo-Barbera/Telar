@@ -59,6 +59,13 @@ function joinBlock(lines: string[], start: number): { text: string; end: number 
   let end = start;
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i] ?? "";
+    // "(hyperref)      removing …" is how a package continues its own warning.
+    const continuation = /^\((\S+)\)\s{2,}(.*)$/.exec(line);
+    if (continuation) {
+      text += ` ${continuation[2]}`;
+      end = i;
+      continue;
+    }
     if (line.trim() === "" || /^[!(]/.test(line) || /^(LaTeX|Package|Class|Overfull|Underfull)/.test(line)) break;
     text += ` ${line.trim()}`;
     end = i;
