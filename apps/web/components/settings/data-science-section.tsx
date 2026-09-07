@@ -51,7 +51,25 @@ const STACK = ["pandas", "matplotlib", "duckdb", "pyarrow"] as const;
 
 const LOCATION_LABEL: Record<DataScienceEnvironment["location"], string> = { project: "In this project", user: "On this machine", telar: "Telar's" };
 
-function ModuleChips({ modules }: { modules?: Record<string, boolean> }) {
+/**
+ * WHAT THE PROJECT DECLARES, WHEN IT DECLARES ANYTHING. A struck-through
+ * `duckdb` on someone's `.venv` reads as "your project is missing duckdb" —
+ * but duckdb is Telar's helper, not their dependency. So chips show the
+ * project's own manifest when there is one, and Telar's analysis stack only
+ * for a project with no manifest at all.
+ */
+function ModuleChips({ modules, dists }: { modules?: Record<string, boolean>; dists?: Record<string, string | null> }) {
+  if (dists && Object.keys(dists).length > 0) {
+    return (
+      <span className="flex flex-wrap gap-1">
+        {Object.entries(dists).map(([name, version]) => (
+          <Badge key={name} variant={version ? "secondary" : "outline"} className={version ? "" : "opacity-50 line-through"} title={version ? `${name} ${version}` : `${name} is not installed here`}>
+            {name}
+          </Badge>
+        ))}
+      </span>
+    );
+  }
   if (!modules) return null;
   return (
     <span className="flex flex-wrap gap-1">
@@ -117,6 +135,11 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
 
   const currentEnv = data?.environments.find((env) => env.id === data.currentId);
   const toolchain = data?.toolchain;
+  // ENVIRONMENTS GET CARDS; BARE INTERPRETERS DO NOT. Nobody should install
+  // pandas into /usr/bin — a system Python is a base to build an environment
+  // on, so it is listed as that, unless it is somehow the one in use.
+  const cards = data?.environments.filter((env) => env.manager !== "system" || env.id === data.currentId) ?? [];
+  const interpreters = data?.environments.filter((env) => env.manager === "system" && env.id !== data.currentId) ?? [];
 
   return (
     <>
@@ -200,14 +223,14 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
 
         <div className="flex flex-col gap-2 py-3">
           {!data && loading && <span className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" /> Probing interpreters…</span>}
-          {data && data.environments.length === 0 && (
+          {data && cards.length === 0 && (
             <p className="text-xs text-muted-foreground">No Python environment found in this checkout or on this machine. Make one with New environment — uv will fetch a Python if there is none.</p>
           )}
-          {data?.environments.map((env) => (
+          {cards.map((env) => (
             <EnvironmentCard
               key={env.id}
               env={env}
-              inUse={env.id === data.currentId}
+              inUse={env.id === data!.currentId}
               onUse={() => void save(toConfig({ path: env.path, root: env.location === "project" ? relativeRoot(env) : env.root, manager: env.manager }, env.manager === "telar" ? "telar" : "detected"))}
               saving={saving}
             />
@@ -216,6 +239,20 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
             <p className="text-xs text-warning">
               The configured interpreter <code className="font-mono">{current.path}</code> was not found. Pick another, or add it under Add existing.
             </p>
+          )}
+          {interpreters.length > 0 && (
+            <div className="flex flex-col gap-1 pt-1">
+              <span className="text-xs font-medium text-muted-foreground">Bare interpreters</span>
+              <p className="text-xs text-muted-foreground">Pythons to build a new environment on — the kernel does not run on these and nothing installs into them.</p>
+              <div className="flex flex-wrap gap-1.5">
+                {interpreters.map((env) => (
+                  <span key={env.id} className="flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground" title={env.python}>
+                    {env.name}
+                    <span className="text-[0.625rem] opacity-70">{env.reason}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </SettingsGroup>
@@ -335,7 +372,7 @@ function EnvironmentCard({ env, inUse, onUse, saving }: { env: DataScienceEnviro
         </span>
       </div>
       <code className="truncate font-mono text-[0.6875rem] text-muted-foreground" title={env.python}>{env.root}</code>
-      {ok ? <ModuleChips modules={env.preflight.modules} /> : <span className="text-xs text-destructive">{env.preflight.reason}</span>}
+      {ok ? <ModuleChips modules={env.preflight.modules} dists={env.preflight.dists} /> : <span className="text-xs text-destructive">{env.preflight.reason}</span>}
     </div>
   );
 }
@@ -510,7 +547,7 @@ function AddExistingForm({ projectId, onUse, onCancel }: { projectId: string; on
             <span className="ml-auto">{probe.ok && <Button size="xs" onClick={() => onUse(probe)}>Use this</Button>}</span>
           </div>
           <code className="truncate font-mono text-[0.6875rem] text-muted-foreground">{probe.root ?? probe.path}</code>
-          {probe.ok ? <ModuleChips modules={probe.modules} /> : <span className="text-xs text-destructive">{probe.reason}</span>}
+          {probe.ok ? <ModuleChips modules={probe.modules} dists={probe.dists} /> : <span className="text-xs text-destructive">{probe.reason}</span>}
         </div>
       )}
     </div>

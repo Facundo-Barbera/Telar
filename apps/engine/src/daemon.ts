@@ -2855,6 +2855,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             case "lineage": result = await dsAnswer(() => ds.lineage(str("of", true))); break;
             case "watches": result = await dsAnswer(() => ds.watches()); break;
             case "watch": result = await dsAnswer(() => ds.watch({ name: str("name")!, ...(str("assert", true) ? { assert: str("assert", true)! } : {}), ...(input.remove === true ? { remove: true } : {}) })); break;
+            case "env": result = await dsAnswer(() => ds.environment({ ...(str("use", true) ? { use: str("use", true)! } : {}) })); break;
             case "packages": result = await dsAnswer(() => ds.packages()); break;
             case "install": result = await dsAnswer(() => ds.install({ ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}), ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}), ...(str("requirements", true) ? { requirements: str("requirements", true)! } : {}) })); break;
             case "experiment": result = await dsAnswer(() => ds.experiment({ action: str("action")! as "start" | "log" | "end" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}), ...(input.params && typeof input.params === "object" ? { params: input.params as Record<string, unknown> } : {}), ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}) })); break;

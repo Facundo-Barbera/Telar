@@ -1,0 +1,45 @@
+"use client";
+
+/**
+ * LINKS — where a link in a conversation opens.
+ *
+ * One switch. Off is the web's own behavior (system browser, new tab); on
+ * keeps the reading in the cockpit: issues and pull requests the session
+ * mentions open as right-panel tabs, and everything else opens in the
+ * session's integrated browser — the tabs the agent can see and act on.
+ *
+ * Stored per browser (`lib/link-policy.ts`), because the desktop shell has a
+ * native browser to open into and a phone does not; this is the one settings
+ * row here that is honestly about THIS window.
+ */
+
+import { ExternalLinkIcon } from "lucide-react";
+import { useLinkPolicy } from "@/lib/link-policy";
+import { Switch } from "@/components/ui/switch";
+import { Row, SettingsGroup } from "./settings-shell";
+
+export function LinksSection() {
+  const { openInSessionBrowser, setOpenInSessionBrowser } = useLinkPolicy();
+
+  return (
+    <SettingsGroup title="Links" description="What a link in a conversation does when you click it.">
+      <Row
+        label="Open in the session's browser"
+        icon={ExternalLinkIcon}
+        hint={
+          openInSessionBrowser
+            ? "Issues and pull requests open in the right panel; other links open as tabs in the session's integrated browser, where the agent can see them."
+            : "Links open in your system browser."
+        }
+        {...(openInSessionBrowser ? { onRevert: () => setOpenInSessionBrowser(false) } : {})}
+        control={
+          <Switch
+            checked={openInSessionBrowser}
+            onCheckedChange={setOpenInSessionBrowser}
+            aria-label="Open links in the session's browser"
+          />
+        }
+      />
+    </SettingsGroup>
+  );
+}

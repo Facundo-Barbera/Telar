@@ -177,6 +177,9 @@ const PATTERNS: { kind: ReferenceKind; pattern: RegExp; label: (match: RegExpExe
   { kind: "pull", pattern: /PR #(\d+) "[^"]*" \(\S+?\)/g, label: (match) => `PR #${match[1]}` },
   { kind: "issue", pattern: /#(\d+) "[^"]*" \(\S+?\)/g, label: (match) => `#${match[1]}` },
   { kind: "task", pattern: /the "([^"]*)" sub-agent \([^)]*\)/g, label: (match) => match[1] ?? "sub-agent" },
+  // A page the session's browser has open — `browserPageReference`. Starts
+  // before its own URL, so it wins the overlap against the bare-URL pattern.
+  { kind: "page", pattern: /the "([^"]*)" page open in the session's browser \(\S+?\)/g, label: (match) => match[1] || "page" },
   // The head line only. A failing check drags its log in as a fenced block
   // underneath, and a chip that swallowed the fence would hide the thing the
   // reader dropped it FOR.
@@ -184,6 +187,28 @@ const PATTERNS: { kind: ReferenceKind; pattern: RegExp; label: (match: RegExpExe
   { kind: "file", pattern: /`([^`\n]+)`/g, label: (match) => chipBasename(match[1] ?? "") },
   { kind: "page", pattern: /https?:\/\/\S+/g, label: (match) => match[0].replace(/^https?:\/\//, "").replace(/\/$/, "") },
 ];
+
+/**
+ * A BARE URL DOES NOT OWN THE PUNCTUATION AFTER IT. `\S+` happily swallows the
+ * `)` of a sentence the URL sits inside — and then the chip's text is a URL
+ * that 404s. Trailing sentence punctuation is peeled off; a closing paren stays
+ * only while the URL itself still has an unmatched `(` (Wikipedia-style paths).
+ */
+function trimUrlEnd(url: string): string {
+  let end = url.length;
+  while (end > 0) {
+    const char = url[end - 1]!;
+    if (!/[),.;:!?'"]/.test(char)) break;
+    if (char === ")") {
+      const body = url.slice(0, end - 1);
+      const opens = (body.match(/\(/g) ?? []).length;
+      const closes = (body.match(/\)/g) ?? []).length;
+      if (opens > closes) break;
+    }
+    end -= 1;
+  }
+  return url.slice(0, end);
+}
 
 /**
  * Cut a draft into the runs that draw as chips and the prose between them.
@@ -199,12 +224,14 @@ export function segmentDraft(draft: string): ComposerSegment[] {
   for (const { kind, pattern, label } of PATTERNS) {
     pattern.lastIndex = 0;
     for (let match = pattern.exec(draft); match; match = pattern.exec(draft)) {
-      const text = match[0];
+      let text = match[0];
       if (kind === "file") {
         const inner = match[1] ?? "";
         if (!looksLikePath(inner)) continue;
       }
-      found.push({ start: match.index, end: match.index + text.length, reference: { kind, label: label(match), text } });
+      if (kind === "page" && text.startsWith("http")) text = trimUrlEnd(text);
+      const chipLabel = kind === "page" && text.startsWith("http") ? text.replace(/^https?:\/\//, "").replace(/\/$/, "") : label(match);
+      found.push({ start: match.index, end: match.index + text.length, reference: { kind, label: chipLabel, text } });
     }
   }
 

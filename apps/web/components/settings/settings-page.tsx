@@ -29,6 +29,7 @@ import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { AppearanceSection } from "./appearance-section";
 import { InboxSection } from "./inbox-section";
+import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
@@ -193,6 +194,7 @@ export function SettingsPage() {
       {active === "general" && (
         <>
           <WorkspaceSection />
+          <LinksSection />
           <InboxSection />
           <TextGenSection />
         </>

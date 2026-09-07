@@ -77,6 +77,8 @@ export const DataSciencePreflight = z.object({
   versionInfo: z.tuple([z.number(), z.number()]).optional(),
   sitePackages: z.array(z.string()).optional(),
   modules: z.record(z.string(), z.boolean()).optional(),
+  /** The project's declared dependencies: distribution name → installed version, null when absent. */
+  dists: z.record(z.string(), z.string().nullable()).optional(),
   reason: z.string().optional(),
 });
 export type DataSciencePreflight = z.infer<typeof DataSciencePreflight>;
@@ -128,6 +130,8 @@ export const DataScienceEnvironments = z.object({
   environments: z.array(DataScienceEnvironment),
   /** Dependency manifests the checkout carries. */
   requirements: z.array(DataScienceRequirementsSource),
+  /** What the project declares (canonical distribution names); each environment's preflight `dists` answers for these. */
+  declared: z.array(z.string()).optional(),
   /** The id of the environment the project is configured on, when it was found. */
   currentId: z.string().optional(),
 });
@@ -147,8 +151,13 @@ export const DataScienceJob = z.object({
 });
 export type DataScienceJob = z.infer<typeof DataScienceJob>;
 
-export const DataSciencePackage = z.object({ name: z.string(), version: z.string(), channel: z.string().optional() });
+/** `direct` is set only when the project declares dependencies: true for a declared one, false for what came along with them. */
+export const DataSciencePackage = z.object({ name: z.string(), version: z.string(), channel: z.string().optional(), direct: z.boolean().optional() });
 export type DataSciencePackage = z.infer<typeof DataSciencePackage>;
+
+/** Which command package installs run, so the page can say so up front. */
+export const DataScienceInstallCommand = z.enum(["uv add", "uv pip", "conda", "pip"]);
+export type DataScienceInstallCommand = z.infer<typeof DataScienceInstallCommand>;
 
 export const DataScienceCreateEnvironment = z.discriminatedUnion("manager", [
   z.object({ manager: z.literal("venv"), location: z.enum(["project", "telar"]), python: z.string().min(1), stack: z.boolean().optional() }),

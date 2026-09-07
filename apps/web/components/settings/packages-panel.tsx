@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DownloadIcon, PackageIcon, RotateCwIcon, SearchIcon, Trash2Icon } from "lucide-react";
-import type { DataScienceManager, DataSciencePackage, DataScienceRequirementsSource } from "@telar/engine-client";
+import type { DataScienceInstallCommand, DataScienceManager, DataSciencePackage, DataScienceRequirementsSource } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,9 +30,17 @@ const api = createEngineApi();
 
 export type PackagesScope = { projectId: string } | { sessionId: string };
 
-type Environment = { manager: DataScienceManager; root: string; python: string };
+type Environment = { manager: DataScienceManager; root: string; python: string; command?: DataScienceInstallCommand };
 
 export const MANAGER_LABEL: Record<DataScienceManager, string> = { venv: "uv venv", conda: "conda", system: "system Python", telar: "Telar's venv" };
+
+/** What pressing Install actually runs — `uv add` writes the manifest, `uv pip` does not, and that difference is worth a sentence. */
+const COMMAND_HINT: Record<DataScienceInstallCommand, string> = {
+  "uv add": "Installs run uv add — pyproject.toml and uv.lock stay in step with the environment.",
+  "uv pip": "Installs run uv pip install into this environment; no manifest is updated.",
+  conda: "Installs run conda install.",
+  pip: "Installs run pip install.",
+};
 
 export function PackagesPanel({
   scope, requirements = [], kernelLive, onRestartKernel, dense,
@@ -105,6 +113,16 @@ export function PackagesPanel({
     return (packages ?? []).filter((p) => !q || p.name.toLowerCase().includes(q));
   }, [packages, filter]);
 
+  /**
+   * DIRECT DEPS ARE THE ONLY REMOVABLE ONES when the project declares any:
+   * deleting a transitive dep (asttokens, say) breaks its dependents and the
+   * next sync just reinstalls it. A project with no manifest keeps the flat
+   * list, where every install was a deliberate act and removal is fair game.
+   */
+  const manifested = useMemo(() => (packages ?? []).some((p) => p.direct !== undefined), [packages]);
+  const direct = manifested ? shown.filter((p) => p.direct) : shown;
+  const transitive = manifested ? shown.filter((p) => !p.direct) : [];
+
   const installable = requirements.filter((r) => r !== "Pipfile" && (environment?.manager === "conda" ? true : r !== "environment.yml"));
 
   return (
@@ -131,6 +149,7 @@ export function PackagesPanel({
           {busy ? <Spinner className="size-3" /> : <DownloadIcon className="size-3" />} Install
         </Button>
       </div>
+      {environment?.command && <p className="text-[0.625rem] text-muted-foreground">{COMMAND_HINT[environment.command]}</p>}
       {installable.length > 0 && !dense && (
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <span>Or the project&apos;s own dependencies:</span>
@@ -183,23 +202,34 @@ export function PackagesPanel({
             {packages.length === 0 ? "Nothing installed yet." : "No package matches."}
           </div>
         ) : (
-          shown.map((pkg) => (
-            <div key={pkg.name} className="group flex items-center gap-2 border-b border-border/60 px-3 py-1 last:border-b-0 hover:bg-muted/40">
-              <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">{pkg.name}</span>
-              <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{pkg.version}</span>
-              {pkg.channel && !dense && <span className="shrink-0 text-[0.5625rem] text-muted-foreground/70">{pkg.channel}</span>}
-              {confirmRemove === pkg.name ? (
-                <span className="flex shrink-0 items-center gap-1">
-                  <Button variant="destructive" size="xs" disabled={busy} onClick={() => { setConfirmRemove(undefined); void change(`Removing ${pkg.name}`, { remove: [pkg.name] }); }}>Remove</Button>
-                  <Button variant="ghost" size="xs" onClick={() => setConfirmRemove(undefined)}>Keep</Button>
-                </span>
-              ) : (
-                <button type="button" title={`Remove ${pkg.name}`} aria-label={`Remove ${pkg.name}`} disabled={busy} onClick={() => setConfirmRemove(pkg.name)} className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive disabled:opacity-0">
-                  <Trash2Icon className="size-3" />
-                </button>
-              )}
-            </div>
-          ))
+          <>
+            {manifested && direct.length > 0 && <div className="border-b border-border/60 bg-muted/30 px-3 py-1 text-[0.625rem] font-medium text-muted-foreground">Declared by the project ({direct.length})</div>}
+            {direct.map((pkg) => (
+              <div key={pkg.name} className="group flex items-center gap-2 border-b border-border/60 px-3 py-1 last:border-b-0 hover:bg-muted/40">
+                <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem]">{pkg.name}</span>
+                <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{pkg.version}</span>
+                {pkg.channel && !dense && <span className="shrink-0 text-[0.5625rem] text-muted-foreground/70">{pkg.channel}</span>}
+                {confirmRemove === pkg.name ? (
+                  <span className="flex shrink-0 items-center gap-1">
+                    <Button variant="destructive" size="xs" disabled={busy} onClick={() => { setConfirmRemove(undefined); void change(`Removing ${pkg.name}`, { remove: [pkg.name] }); }}>Remove</Button>
+                    <Button variant="ghost" size="xs" onClick={() => setConfirmRemove(undefined)}>Keep</Button>
+                  </span>
+                ) : (
+                  <button type="button" title={`Remove ${pkg.name}`} aria-label={`Remove ${pkg.name}`} disabled={busy} onClick={() => setConfirmRemove(pkg.name)} className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive disabled:opacity-0">
+                    <Trash2Icon className="size-3" />
+                  </button>
+                )}
+              </div>
+            ))}
+            {manifested && transitive.length > 0 && <div className="border-b border-border/60 bg-muted/30 px-3 py-1 text-[0.625rem] font-medium text-muted-foreground">Installed with them ({transitive.length})</div>}
+            {transitive.map((pkg) => (
+              <div key={pkg.name} className="flex items-center gap-2 border-b border-border/60 px-3 py-1 last:border-b-0 hover:bg-muted/40">
+                <span className="min-w-0 flex-1 truncate font-mono text-[0.6875rem] text-muted-foreground">{pkg.name}</span>
+                <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{pkg.version}</span>
+                {pkg.channel && !dense && <span className="shrink-0 text-[0.5625rem] text-muted-foreground/70">{pkg.channel}</span>}
+              </div>
+            ))}
+          </>
         )}
       </div>
     </div>

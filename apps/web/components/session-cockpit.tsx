@@ -36,8 +36,10 @@ import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snap
 import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
 import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
+import { openLinksInSessionBrowser } from "@/lib/link-policy";
+import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { PromptText } from "./session/prompt-text";
 import {
@@ -1179,6 +1181,52 @@ export function SessionCockpit({
   );
 
   /**
+   * LINK CLICKS IN THE CONVERSATION, when the Links setting says "keep them
+   * here" (`lib/link-policy.ts`): an issue or pull request OF THIS PROJECT
+   * opens as its right-panel tab, anything else as a tab in the session's
+   * integrated browser, and only when neither is possible does the click fall
+   * through to the system browser.
+   *
+   * A CAPTURE HANDLER OVER THE VIEWPORT, not a component per anchor: the
+   * anchors are Streamdown's, deep inside markdown this component does not
+   * render. Modified clicks (cmd, middle) keep the browser's own meaning.
+   *
+   * The repository is fetched ONCE, lazily, on the first GitHub-shaped click —
+   * the engine caches the snapshot, and routing `other-org/other-repo#12` into
+   * a surface that queries THIS project's issue 12 would show the wrong thing.
+   */
+  const projectRepo = useRef<Promise<string | undefined> | undefined>(undefined);
+  const onConversationClick = useCallback(
+    (event: React.MouseEvent) => {
+      if (!openLinksInSessionBrowser()) return;
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const anchor = (event.target as HTMLElement).closest?.("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href") ?? "";
+      if (!/^https?:\/\//i.test(href)) return;
+      event.preventDefault();
+      const forge = parseForgeLink(href);
+      void (async () => {
+        if (forge && projectId) {
+          projectRepo.current ??= createEngineApi(hostFetcher(hostId))
+            .projectGitHub(projectId)
+            .then((answer) => answer.github.repository, () => undefined);
+          if (sameRepository(await projectRepo.current, forge.repository)) {
+            showPanelTab(forge.kind === "issue" ? issuePanelTab(forge.number) : pullPanelTab(forge.number));
+            return;
+          }
+        }
+        if (await openUrlInSessionBrowser(sessionId, projectId, href)) {
+          showPanelTab(LIVE_BROWSER_TAB);
+          return;
+        }
+        window.open(href, "_blank", "noopener,noreferrer");
+      })();
+    },
+    [hostId, projectId, sessionId, showPanelTab],
+  );
+
+  /**
    * Launch the session's browser by hand. The engine journals what it opened,
    * so the tab ALSO arrives through the ordinary event fold — the direct
    * `showPanelTab` here is only what makes the gesture feel immediate instead
@@ -1961,6 +2009,8 @@ export function SessionCockpit({
             </>
           }
         />
+        {/* `display: contents` — a click boundary, never a layout box. */}
+        <div className="contents" onClickCapture={onConversationClick}>
         <ConversationViewport className="min-w-0 flex-1">
           <ConversationContent>
             {projectId !== session?.projectId && session && (
@@ -2022,6 +2072,7 @@ export function SessionCockpit({
           </ConversationContent>
           <ConversationScrollButton />
         </ConversationViewport>
+        </div>
         {observe ? (
           <div className="mx-auto mb-4 flex w-full max-w-[50rem] items-center gap-2 rounded-xl border border-border/60 bg-muted/25 px-4 py-2.5 text-xs text-muted-foreground">
             <EyeIcon className="size-3.5 shrink-0" />

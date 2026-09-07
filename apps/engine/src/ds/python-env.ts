@@ -29,12 +29,15 @@ export type PythonPreflight = {
   versionInfo?: [number, number];
   sitePackages?: string[];
   modules?: Record<string, boolean>;
+  /** Distribution name → installed version, null when absent. Only the names the caller asked about. */
+  dists?: Record<string, string | null>;
   reason?: string;
 };
 
 const PROBE = `
 import json, sys, importlib.util
 mods = sys.argv[1].split(",") if len(sys.argv) > 1 and sys.argv[1] else []
+dists = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else []
 try:
     import site
     sp = [p for p in site.getsitepackages()] if hasattr(site, "getsitepackages") else []
@@ -42,11 +45,18 @@ try:
     if usp and usp not in sp: sp.append(usp)
 except Exception:
     sp = []
+installed = {}
+if dists:
+    import importlib.metadata
+    for d in dists:
+        try: installed[d] = importlib.metadata.version(d)
+        except Exception: installed[d] = None
 print(json.dumps({
     "version": sys.version.split()[0],
     "versionInfo": [sys.version_info[0], sys.version_info[1]],
     "sitePackages": sp,
     "modules": {m: importlib.util.find_spec(m) is not None for m in mods},
+    "dists": installed,
 }))
 `.trim();
 
@@ -82,14 +92,15 @@ export function projectEnvSignals(root: string): string[] {
   return ENV_SIGNALS.filter((name) => fs.existsSync(path.join(root, name)));
 }
 
-/** Ask an interpreter what it is and which of `modules` it can import. */
+/** Ask an interpreter what it is, which of `modules` it can import, and which of `dists` (distribution names) are installed. */
 export async function preflightPython(
   pythonPath: string,
   modules: readonly string[] = [...STACK_MODULES],
   exec: Exec = defaultExec,
+  dists: readonly string[] = [],
 ): Promise<PythonPreflight> {
   if (!isExecutable(pythonPath)) return { ok: false, path: pythonPath, reason: "not an executable file" };
-  const result = await exec(pythonPath, ["-I", "-c", PROBE, modules.join(",")], { timeoutMs: 15_000 }).catch(
+  const result = await exec(pythonPath, ["-I", "-c", PROBE, modules.join(","), dists.join(",")], { timeoutMs: 15_000 }).catch(
     (error: unknown) => ({ status: 1, stdout: "", stderr: error instanceof Error ? error.message : String(error) }),
   );
   if (result.status !== 0) {
@@ -97,9 +108,9 @@ export async function preflightPython(
   }
   try {
     const parsed = JSON.parse(result.stdout.trim().split("\n").pop() ?? "") as {
-      version: string; versionInfo: [number, number]; sitePackages: string[]; modules: Record<string, boolean>;
+      version: string; versionInfo: [number, number]; sitePackages: string[]; modules: Record<string, boolean>; dists?: Record<string, string | null>;
     };
-    return { ok: true, path: pythonPath, version: parsed.version, versionInfo: parsed.versionInfo, sitePackages: parsed.sitePackages, modules: parsed.modules };
+    return { ok: true, path: pythonPath, version: parsed.version, versionInfo: parsed.versionInfo, sitePackages: parsed.sitePackages, modules: parsed.modules, ...(parsed.dists && Object.keys(parsed.dists).length ? { dists: parsed.dists } : {}) };
   } catch {
     return { ok: false, path: pythonPath, reason: "probe printed something that was not JSON" };
   }

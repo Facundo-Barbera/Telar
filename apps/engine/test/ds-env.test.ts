@@ -130,6 +130,16 @@ test("preflight refuses a path that is not executable and parses the probe's ans
   expect(broken.ok).toBe(false);
 });
 
+test("preflight asks about declared distributions and carries the answers", async () => {
+  const python = fakeVenv(root());
+  const exec: Exec = async (_file, args) => {
+    expect(args.at(-1)).toBe("scikit-learn,numpy");
+    return { status: 0, stdout: JSON.stringify({ version: "3.12.1", versionInfo: [3, 12], sitePackages: [], modules: {}, dists: { "scikit-learn": "1.5.0", numpy: null } }), stderr: "" };
+  };
+  const probe = await preflightPython(python, [], exec, ["scikit-learn", "numpy"]);
+  expect(probe.dists).toEqual({ "scikit-learn": "1.5.0", numpy: null });
+});
+
 test("a python inside the project stores relative and resolves back; one outside stays absolute", () => {
   const project = root();
   const inside = path.join(project, ".venv", "bin", "python");

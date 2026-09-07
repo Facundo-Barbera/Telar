@@ -36,7 +36,7 @@ import type {
 import { createEngineApi } from "@/lib/engine/client";
 import { DesktopBrowserSurface, desktopBrowserBridge } from "@/components/browser-live";
 import type { JournalTask } from "@/lib/engine/journal";
-import { pageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
+import { browserPageReference, startReferenceDrag, taskReference } from "@/lib/drag-reference";
 import { TranscriptItem } from "@/components/transcript";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
@@ -604,7 +604,7 @@ function BrowserScreenshotSurface({ pageId, state, sessionId }: { pageId: string
     <div className="flex h-full min-h-0 flex-col">
       <div
         draggable
-        onDragStart={(event) => startReferenceDrag(event.dataTransfer, pageReference({ title: page.title, url: page.url }))}
+        onDragStart={(event) => startReferenceDrag(event.dataTransfer, browserPageReference({ title: page.title, url: page.url }))}
         title="Drag into the message to reference this page"
         className="flex shrink-0 cursor-grab items-center gap-2 border-b border-border px-3 py-2 active:cursor-grabbing"
       >

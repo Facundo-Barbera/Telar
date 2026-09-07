@@ -228,9 +228,9 @@ import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVen
 import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
 import { adoptBinaryDir, findBinary, toolchainStatus, type Toolchain } from "./ds/toolchain";
 import { JobRunner, type JobRead } from "./ds/jobs";
-import { installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, type PackageInfo, type RequirementsSource } from "./ds/packages";
+import { canonicalName, declaredDependencies, installCommandFor, installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, type InstallCommand, type PackageInfo, type RequirementsSource } from "./ds/packages";
 import type { KernelHost } from "./ds/kernel-host";
-import type { DsCapability } from "./ds/capability";
+import type { DsCapability, EnvironmentRow } from "./ds/capability";
 import { DsFiles } from "./ds/state-files";
 import { NOTEBOOK_MAX_BYTES, storeDsCapability } from "./ds/store-capability";
 import { windowCsv, type TableWindow } from "./ds/table";
@@ -1309,6 +1309,8 @@ export class EngineStore {
       packages: () => this.dataSciencePackages(session.projectId!, session.workspace.path),
       startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], session.workspace.path),
       waitJob: (jobId, timeoutMs) => this.dsJobs.wait(jobId, timeoutMs),
+      environments: async () => ({ environments: await this.dsEnvironmentRows(session.projectId!, session.workspace.path) }),
+      useEnvironment: (target) => this.dataScienceUseEnvironment(sessionId, target),
     });
   }
 
@@ -3911,14 +3913,75 @@ export class EngineStore {
    * inside the checkout, so a worktree session resolves `.venv/bin/python`
    * against its own tree.
    */
-  async dataScienceEnvironments(projectId: string): Promise<{ toolchain: Toolchain; environments: (PythonEnvironment & { path: string })[]; requirements: RequirementsSource[]; currentId?: string }> {
+  async dataScienceEnvironments(projectId: string, workspace?: string): Promise<{ toolchain: Toolchain; environments: (PythonEnvironment & { path: string })[]; requirements: RequirementsSource[]; declared?: string[]; currentId?: string }> {
     const project = this.getProject(projectId);
+    const base = workspace ?? project.root;
     const toolchain = await this.dataScienceToolchain(true);
     const telarVenv = telarVenvDir(this.paths.root, projectId);
-    const found = await discoverEnvironments(project.root, { toolchain, ...(telarVenvPython(telarVenv) ? { telarVenv } : {}) });
-    const environments = found.map((env) => ({ ...env, path: relativisePythonPath(project.root, env.python) }));
-    const current = project.dataScience?.python ? this.currentEnvironment(project) : undefined;
-    return { toolchain, environments, requirements: projectRequirements(project.root), ...(current ? { currentId: current.id } : {}) };
+    // The project's own declared dependencies, asked of every interpreter — so
+    // the page shows "is what this project needs actually here", not Telar's
+    // helper stack presented as the person's problem.
+    const declared = declaredDependencies(base);
+    const found = await discoverEnvironments(base, { toolchain, ...(telarVenvPython(telarVenv) ? { telarVenv } : {}), ...(declared.length ? { dists: declared } : {}) });
+    const environments = found.map((env) => ({ ...env, path: relativisePythonPath(base, env.python) }));
+    const current = project.dataScience?.python ? this.currentEnvironment(project, base) : undefined;
+    return { toolchain, environments, requirements: projectRequirements(base), ...(declared.length ? { declared } : {}), ...(current ? { currentId: current.id } : {}) };
+  }
+
+  /** The environments as `ds_env` lists them: small rows, the one in use flagged. */
+  private async dsEnvironmentRows(projectId: string, workspace: string): Promise<EnvironmentRow[]> {
+    const { environments, currentId } = await this.dataScienceEnvironments(projectId, workspace);
+    return environments.map((env) => ({
+      id: env.id,
+      name: env.name,
+      manager: env.manager,
+      root: env.root,
+      python: env.python,
+      ...(env.preflight.version ? { version: env.preflight.version } : {}),
+      inUse: env.id === currentId,
+    }));
+  }
+
+  /**
+   * WHAT THE SETTINGS PAGE'S USE BUTTON DOES, FOR THE AGENT: persist the
+   * choice on the project, then restart the session's kernel into it. The
+   * fresh capability resolves the new interpreter; its ensure() disposes a
+   * kernel running elsewhere. `target` matches an environment's id, name,
+   * root or interpreter path from the list.
+   */
+  async dataScienceUseEnvironment(sessionId: string, target: string): Promise<{ environments: EnvironmentRow[]; switched: string }> {
+    const session = this.getSession(sessionId);
+    if (!session.projectId) throw new EngineStateError("invalid_request", "this session has no project");
+    const workspace = session.workspace.path;
+    const { environments } = await this.dataScienceEnvironments(session.projectId, workspace);
+    const match = environments.find((env) => env.id === target || env.name === target || env.root === target || env.python === target || env.path === target);
+    if (!match) throw new EngineStateError("invalid_request", `no environment matches "${target}" — the choices are ${environments.map((env) => `${env.name} (${env.id})`).join(", ") || "none"}`);
+    if (!match.preflight.ok) throw new EngineStateError("invalid_request", `${match.name} is unusable: ${match.preflight.reason}`);
+    this.updateProject(session.projectId, {
+      dataScience: {
+        enabled: true,
+        python: {
+          source: match.manager === "telar" ? "telar" : "chosen",
+          path: match.path,
+          resolvedAt: this.now(),
+          manager: match.manager,
+          root: relativisePythonPath(workspace, match.root),
+        },
+      },
+    });
+    await this.dataScience(sessionId).restart();
+    return {
+      environments: environments.map((env) => ({
+        id: env.id,
+        name: env.name,
+        manager: env.manager,
+        root: env.root,
+        python: env.python,
+        ...(env.preflight.version ? { version: env.preflight.version } : {}),
+        inUse: env.id === match.id,
+      })),
+      switched: match.name,
+    };
   }
 
   /**
@@ -3970,14 +4033,17 @@ export class EngineStore {
     });
   }
 
-  /** The packages in the project's configured environment. */
-  async dataSciencePackages(projectId: string, workspace?: string): Promise<{ packages: PackageInfo[]; environment: { manager: EnvManager; root: string; python: string } }> {
+  /** The packages in the project's configured environment. `direct` marks the ones the project declares, when it declares any. */
+  async dataSciencePackages(projectId: string, workspace?: string): Promise<{ packages: (PackageInfo & { direct?: boolean })[]; environment: { manager: EnvManager; root: string; python: string; command: InstallCommand } }> {
     const project = this.getProject(projectId);
+    const root = workspace ?? project.root;
     const env = this.currentEnvironment(project, workspace);
     if (!env) throw new EngineStateError("invalid_request", "this project has no Python environment configured");
     const toolchain = await this.dataScienceToolchain();
+    const declared = new Set(declaredDependencies(root, 500));
     try {
-      return { packages: await listPackages(env, toolchain), environment: { manager: env.manager, root: env.root, python: env.python } };
+      const packages = (await listPackages(env, toolchain)).map((pkg) => (declared.size ? { ...pkg, direct: declared.has(canonicalName(pkg.name)) } : pkg));
+      return { packages, environment: { manager: env.manager, root: env.root, python: env.python, command: installCommandFor(env, toolchain, { root }) } };
     } catch (error) {
       throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
     }
@@ -3994,11 +4060,12 @@ export class EngineStore {
     const env = this.currentEnvironment(project, workspace);
     if (!env) throw new EngineStateError("invalid_request", "this project has no Python environment configured");
     const toolchain = await this.dataScienceToolchain();
+    const context = { root: workspace ?? project.root };
     try {
       const steps = [
-        ...(input.remove?.length ? removeSteps(env, input.remove, toolchain) : []),
-        ...(input.add?.length ? installSteps(env, input.add, toolchain) : []),
-        ...(input.requirements ? [requirementsStep(env, workspace ?? project.root, input.requirements, toolchain)] : []),
+        ...(input.remove?.length ? removeSteps(env, input.remove, toolchain, context) : []),
+        ...(input.add?.length ? installSteps(env, input.add, toolchain, context) : []),
+        ...(input.requirements ? [requirementsStep(env, context.root, input.requirements, toolchain)] : []),
       ];
       if (!steps.length) throw new Error("nothing to install or remove");
       return this.dsJobs.start({ kind: "install", lock: `${env.id}:packages`, steps });
@@ -4055,7 +4122,7 @@ export class EngineStore {
     const project = this.getProject(projectId);
     const resolved = resolvePythonPath(project.root, target.trim());
     const python = telarVenvPython(resolved) ?? resolved;
-    const probe = await preflightPython(python);
+    const probe = await preflightPython(python, undefined, undefined, declaredDependencies(project.root));
     if (!probe.ok) return probe;
     const env = environmentRootOf(python);
     return {

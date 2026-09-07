@@ -31,7 +31,21 @@ export type KernelStatus = {
   state: KernelState | "none";
   executionCount?: number;
   modules?: Record<string, boolean>;
+  /** The interpreter of the environment marked "In use". */
   python?: string;
+  /** `sys.executable` as the live kernel reports it — the proof they agree. */
+  executable?: string;
+};
+
+/** One environment `ds_env` can list or switch to. */
+export type EnvironmentRow = {
+  id: string;
+  name: string;
+  manager: string;
+  root: string;
+  python: string;
+  version?: string;
+  inUse: boolean;
 };
 
 export type VarRow = { name: string; type: string; shape?: number[]; len?: number; sizeBytes?: number; repr?: string };
@@ -62,6 +76,12 @@ export type DsCapability = {
   watch(input: { name: string; assert?: string; remove?: boolean }): Promise<Watch[]>;
   experiment(input: { action: "start" | "log" | "end" | "list"; name?: string; params?: Record<string, unknown>; metrics?: Record<string, number> }): Promise<Experiment[]>;
 
+  /**
+   * The environments this project could run on; `use` (an id, name or path
+   * from the list) switches to one and restarts the kernel into it.
+   */
+  environment(input?: { use?: string }): Promise<{ environments: EnvironmentRow[]; switched?: string }>;
+
   /** The project's environment as this session resolves it, and what is installed in it. */
   packages(): Promise<{ packages: PackageRow[]; environment: { manager: string; root: string; python: string } }>;
   /**
@@ -72,7 +92,8 @@ export type DsCapability = {
   install(input: { add?: string[]; remove?: string[]; requirements?: string }): Promise<{ ok: boolean; lines: string[]; error?: string }>;
 };
 
-export type PackageRow = { name: string; version: string; channel?: string };
+/** `direct` is set only when the project declares dependencies: true for a declared one, false for what came along with them. */
+export type PackageRow = { name: string; version: string; channel?: string; direct?: boolean };
 
 export type NotebookEdit =
   | { kind: "set"; cellId?: string; index?: number; source?: string; cellType?: "code" | "markdown" | "raw" }

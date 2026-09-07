@@ -920,7 +920,9 @@ export function Composer({
    * produce the same six characters on the wire and the same chip on screen.
    */
   const dragDepth = useRef(0);
-  const [dropping, setDropping] = useState(false);
+  /** What is being dragged over the box — a panel reference gets its own words,
+   *  because "drop to reference" is the label that teaches the gesture. */
+  const [dropping, setDropping] = useState<false | "reference" | "content">(false);
 
   const onDrop = (event: React.DragEvent) => {
     dragDepth.current = 0;
@@ -1100,7 +1102,7 @@ export function Composer({
           onDragEnter={(event) => {
             if (!dragging(event)) return;
             dragDepth.current += 1;
-            setDropping(true);
+            setDropping(event.dataTransfer.types.includes(REFERENCE_MIME) ? "reference" : "content");
           }}
           onDragOver={(event) => {
             if (!dragging(event)) return;
@@ -1121,9 +1123,21 @@ export function Composer({
             // the one ink no theme has, and under a light or warm palette it
             // smudges grey instead of deepening the surface. See globals.css.
             "rounded-2xl border-border/80 bg-card/95 shadow-[0_18px_60px_-30px_var(--shadow-tint)] backdrop-blur-xl",
-            dropping && "border-ring ring-2 ring-ring/40",
+            dropping && "relative border-ring ring-2 ring-ring/40",
           )}
         >
+          {/* THE GESTURE, NAMED WHILE IT HAPPENS. The ring says "this accepts
+              drops"; the pill says what a drop DOES — a reference for a panel
+              row, an attachment for a file — which is how the drag from the
+              browser strip teaches itself. Pointer-transparent so it can never
+              swallow the drop it is describing. */}
+          {dropping && (
+            <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-3.5 z-10 flex justify-center">
+              <span className="rounded-full border border-ring/50 bg-card px-2.5 py-0.5 text-[0.6875rem] font-medium text-foreground shadow-sm">
+                {dropping === "reference" ? "Drop to reference it in your message" : "Drop to add it to your message"}
+              </span>
+            </div>
+          )}
           <label className="sr-only" htmlFor="turn-prompt">
             Message
           </label>

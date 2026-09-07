@@ -32,7 +32,12 @@ export type KernelSpec = {
   sessionId: string;
   /** Telar's venv python — the one with jupyter_client. */
   bridgePython: string;
-  /** The project's site-packages, prepended to the kernel's PYTHONPATH. */
+  /** The interpreter the KERNEL runs — the environment marked "In use". */
+  kernelPython: string;
+  /**
+   * Telar's venv site-packages, put on the kernel's PYTHONPATH so ipykernel
+   * imports when the project's environment lacks it. Empty when it has it.
+   */
   sitePackages: string[];
   cwd: string;
 };
@@ -45,6 +50,10 @@ export type KernelInfo = {
   executionCount?: number;
   pid?: number;
   modules?: Record<string, boolean>;
+  /** The interpreter this kernel was spawned on. */
+  kernelPython?: string;
+  /** `sys.executable` as the live kernel reports it. */
+  executable?: string;
 };
 
 export type KernelHostEvents = {
@@ -140,7 +149,7 @@ export class KernelHost {
     }
 
     const bridge = new KernelBridge(spec.bridgePython, this.bridgeFile(), { cwd: spec.cwd, ...(this.options.spawnImpl ? { spawnImpl: this.options.spawnImpl } : {}) });
-    const info: KernelInfo = { sessionId: spec.sessionId, state: "starting", startedAt: this.now(), lastUsedAt: this.now(), pid: bridge.pid };
+    const info: KernelInfo = { sessionId: spec.sessionId, state: "starting", startedAt: this.now(), lastUsedAt: this.now(), pid: bridge.pid, kernelPython: spec.kernelPython };
     const entry: Entry = { bridge, info, waiters: new Map(), chain: Promise.resolve() };
     this.kernels.set(spec.sessionId, entry);
 
@@ -171,11 +180,13 @@ export class KernelHost {
     };
 
     try {
-      const started = await bridge.request<{ pid?: number }>("start", { cwd: spec.cwd, sitePackages: spec.sitePackages });
+      const started = await bridge.request<{ pid?: number }>("start", { cwd: spec.cwd, sitePackages: spec.sitePackages, kernelPython: spec.kernelPython });
       const record = { pid: bridge.pid, kernelPid: started.pid ?? null, startedAt: info.startedAt };
       fs.mkdirSync(path.dirname(this.pidFile(spec.sessionId)), { recursive: true });
       fs.writeFileSync(this.pidFile(spec.sessionId), JSON.stringify(record), { mode: 0o600 });
-      info.modules = (await bridge.request<{ modules: Record<string, boolean> }>("probe", { modules: ["pandas", "matplotlib", "duckdb", "pyarrow", "polars"] })).modules;
+      const probe = await bridge.request<{ modules: Record<string, boolean>; executable?: string }>("probe", { modules: ["pandas", "matplotlib", "duckdb", "pyarrow", "polars"] });
+      info.modules = probe.modules;
+      if (probe.executable) info.executable = probe.executable;
     } catch (error) {
       bridge.kill();
       this.kernels.delete(spec.sessionId);

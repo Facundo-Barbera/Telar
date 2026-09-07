@@ -81,6 +81,7 @@ import {
   type DataScienceCreateEnvironment,
   type DataScienceEnvironments,
   type DataScienceJob,
+  type DataScienceInstallCommand,
   type DataScienceManager,
   type DataSciencePackage,
   type DataSciencePreflight,
@@ -337,7 +338,7 @@ export class EngineClient {
   }
 
   /** What is installed in the project's configured environment. */
-  dataSciencePackages(projectId: string): Promise<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string } }> {
+  dataSciencePackages(projectId: string): Promise<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string; command: DataScienceInstallCommand } }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/packages`);
   }
 

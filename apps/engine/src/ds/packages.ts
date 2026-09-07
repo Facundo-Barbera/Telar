@@ -55,6 +55,85 @@ export function assertNames(names: string[]): string[] {
 
 type EnvRef = Pick<PythonEnvironment, "manager" | "root" | "python">;
 
+/** Where the checkout is, when a mutation may act on the project rather than just the env. */
+export type ProjectContext = { root: string };
+
+/** PEP 503: one spelling per distribution, so `Scikit-Learn` and `scikit_learn` compare equal. */
+export function canonicalName(name: string): string {
+  return name.toLowerCase().replace(/[-_.]+/g, "-");
+}
+
+const specName = (spec: string): string | undefined => {
+  const match = /^[A-Za-z0-9][A-Za-z0-9._-]*/.exec(spec.trim());
+  return match ? canonicalName(match[0]) : undefined;
+};
+
+/**
+ * The dependencies a project DECLARES — pyproject's `[project] dependencies`
+ * and requirements.txt lines — as canonical distribution names. A best-effort
+ * read, never a resolver: enough to show "is what this project asked for
+ * actually in this environment", not to install from.
+ */
+export function declaredDependencies(root: string, cap = 24): string[] {
+  const names: string[] = [];
+  const push = (spec: string) => {
+    const name = specName(spec);
+    if (name && !names.includes(name)) names.push(name);
+  };
+  try {
+    const toml = fs.readFileSync(path.join(root, "pyproject.toml"), "utf8");
+    const start = toml.search(/^\[project\]\s*$/m);
+    if (start >= 0) {
+      const rest = toml.slice(start).split("\n").slice(1).join("\n");
+      const end = rest.search(/^\[/m);
+      const body = end >= 0 ? rest.slice(0, end) : rest;
+      // A bracket scanner, not a regex over the array: `"uvicorn[standard]"`
+      // carries a `]` inside its quotes.
+      const at = body.search(/(?:^|\n)dependencies\s*=\s*\[/);
+      if (at >= 0) {
+        const open = body.indexOf("[", body.indexOf("=", at));
+        let index = open + 1;
+        let depth = 1;
+        let quote: string | undefined;
+        for (; index < body.length && depth > 0; index++) {
+          const char = body[index];
+          if (quote) { if (char === quote) quote = undefined; }
+          else if (char === '"' || char === "'") quote = char;
+          else if (char === "[") depth += 1;
+          else if (char === "]") depth -= 1;
+        }
+        for (const match of body.slice(open + 1, index - 1).matchAll(/"([^"]+)"|'([^']+)'/g)) push((match[1] ?? match[2])!);
+      }
+    }
+  } catch { /* no pyproject */ }
+  try {
+    for (const line of fs.readFileSync(path.join(root, "requirements.txt"), "utf8").split("\n")) {
+      const spec = line.trim();
+      if (!spec || spec.startsWith("#") || spec.startsWith("-")) continue;
+      push(spec);
+    }
+  } catch { /* no requirements.txt */ }
+  return names.slice(0, cap);
+}
+
+/** True when `env` is uv's own project environment: `.venv` beside a `pyproject.toml`. */
+function isUvProject(env: EnvRef, project: ProjectContext | undefined, toolchain: Toolchain): boolean {
+  return Boolean(
+    project && toolchain.uv && env.manager === "venv"
+    && path.resolve(env.root) === path.join(path.resolve(project.root), ".venv")
+    && fs.existsSync(path.join(project.root, "pyproject.toml")),
+  );
+}
+
+export type InstallCommand = "uv add" | "uv pip" | "conda" | "pip";
+
+/** Which command a package mutation will run — so the page can say so before the button is pressed. */
+export function installCommandFor(env: EnvRef, toolchain: Toolchain, project?: ProjectContext): InstallCommand {
+  if (env.manager === "conda" && toolchain.conda) return "conda";
+  if (isUvProject(env, project, toolchain)) return "uv add";
+  return toolchain.uv ? "uv pip" : "pip";
+}
+
 export async function listPackages(env: EnvRef, toolchain: Toolchain, exec: Exec = defaultExec): Promise<PackageInfo[]> {
   if (env.manager === "conda" && toolchain.conda) {
     const result = await exec(toolchain.conda.path, ["list", "-p", env.root, "--json"], { timeoutMs: 60_000 });
@@ -71,21 +150,27 @@ export async function listPackages(env: EnvRef, toolchain: Toolchain, exec: Exec
 }
 
 /** The steps that add `specs` to `env`. Validated first. */
-export function installSteps(env: EnvRef, specs: string[], toolchain: Toolchain): JobStep[] {
+export function installSteps(env: EnvRef, specs: string[], toolchain: Toolchain, project?: ProjectContext): JobStep[] {
   const clean = assertSpecs(specs);
-  return [mutationStep(env, toolchain, "install", clean)];
+  return [mutationStep(env, toolchain, "install", clean, project)];
 }
 
-export function removeSteps(env: EnvRef, names: string[], toolchain: Toolchain): JobStep[] {
+export function removeSteps(env: EnvRef, names: string[], toolchain: Toolchain, project?: ProjectContext): JobStep[] {
   const clean = assertNames(names);
-  return [mutationStep(env, toolchain, "remove", clean)];
+  return [mutationStep(env, toolchain, "remove", clean, project)];
 }
 
-function mutationStep(env: EnvRef, toolchain: Toolchain, verb: "install" | "remove", items: string[]): JobStep {
+function mutationStep(env: EnvRef, toolchain: Toolchain, verb: "install" | "remove", items: string[], project?: ProjectContext): JobStep {
   const title = `${verb === "install" ? "Installing" : "Removing"} ${items.join(", ")}`;
   if (env.manager === "conda") {
     if (!toolchain.conda) throw new Error("this is a conda environment and conda is not installed");
     return { title, file: toolchain.conda.path, args: [verb, "-p", env.root, "-y", ...items] };
+  }
+  // A uv project's `.venv` is written with `uv add` / `uv remove` so
+  // pyproject.toml and uv.lock stay in step with the environment; `uv pip`
+  // there would silently drift the env from the manifest.
+  if (isUvProject(env, project, toolchain)) {
+    return { title, file: toolchain.uv!.path, args: [verb === "install" ? "add" : "remove", ...items], cwd: project!.root, env: { UV_PROJECT_ENVIRONMENT: env.root } };
   }
   if (toolchain.uv) return { title, file: toolchain.uv.path, args: ["pip", verb === "install" ? "install" : "uninstall", "--python", env.python, ...items] };
   return { title, file: env.python, args: ["-m", "pip", verb === "install" ? "install" : "uninstall", ...(verb === "remove" ? ["-y"] : []), ...items] };

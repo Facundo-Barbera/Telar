@@ -23,6 +23,7 @@ import { ArrowLeftIcon, ArrowRightIcon, KeyRoundIcon, Loader2Icon, MoonIcon, Plu
 import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
 import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
+import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { makeScopeGuard } from "@/lib/scope-guard";
 import { hostFromPathname, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { cn } from "@/lib/utils";
@@ -625,7 +626,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
           <div
             key={tab.id}
             className={cn(
-              "flex min-w-0 max-w-44 items-center gap-1 rounded-md px-2 py-1",
+              "flex min-w-0 max-w-44 cursor-grab items-center gap-1 rounded-md px-2 py-1 active:cursor-grabbing",
               tab.active ? "bg-muted" : "hover:bg-muted/50",
               // A tab the agent is acting on right now wears a faint ring...
               tab.controller === "agent" && "ring-1 ring-primary/40",
@@ -634,6 +635,12 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
               // something else rather than only flickering as it clicks.
               tab.agentFocus && tab.controller !== "agent" && "ring-1 ring-primary/20",
             )}
+            // THE PULL GESTURE: a tab drags into the composer as a reference
+            // that names it as open in the session's browser — the words that
+            // tell the agent to reach for its browser tools rather than fetch
+            // the URL cold. Same drag `drag-reference.ts` gives every panel row.
+            draggable
+            onDragStart={(event) => startReferenceDrag(event.dataTransfer, browserPageReference({ title: tab.title, url: tab.url }))}
             // Middle-click closes, the way every browser's strip does.
             onAuxClick={(event) => {
               if (event.button === 1) void act({ action: "close", index: tab.index });
@@ -663,7 +670,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
               role="tab"
               aria-selected={tab.active}
               className="min-w-0 flex-1 truncate text-left text-xs"
-              title={tab.url}
+              title={`${tab.url}\nDrag into the message to reference this page`}
               onClick={() => void act({ action: "select", index: tab.index })}
             >
               {tab.title || "New tab"}

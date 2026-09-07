@@ -1,6 +1,10 @@
 /**
- * The real thing: a Telar venv built with uv, a kernel started through the
- * host, cells executed, images persisted, a notebook run and written back.
+ * The real thing: a PROJECT `.venv` built with uv (analysis stack, NO
+ * ipykernel — exactly what a person's checkout looks like), marked in use,
+ * a kernel started through the host, cells executed, images persisted, a
+ * notebook run and written back. Telar's bridge venv is built lazily by the
+ * first ensure(), and the kernel must run the PROJECT'S interpreter — the
+ * regression that motivated issue #167.
  * SKIPPED WHEN UV IS ABSENT — the unit of value here is the bridge and the
  * host working against a live ipykernel, which no stub can stand in for.
  * One venv per test file, cached under a temp dir; ~10s cold.
@@ -12,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
 import { KernelHost } from "../src/ds/kernel-host";
-import { ensureTelarVenv, telarVenvDir, telarVenvPython } from "../src/ds/telar-venv";
+import { telarVenvDir, telarVenvPython } from "../src/ds/telar-venv";
 import { parseNotebook } from "../src/ds/notebook-file";
 
 function hasUv(): boolean {
@@ -24,21 +28,25 @@ const skip = !hasUv() || process.env.TELAR_SKIP_KERNEL_TESTS === "1";
 describe.skipIf(skip)("kernel host against a real ipykernel", () => {
   let root: string;
   let project: string;
+  let projectPython: string;
   let store: EngineStore;
   let host: KernelHost;
   const states: string[] = [];
 
   beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-kernel-"));
+    // realpathed: the store realpaths project roots, and ids hash paths as spelled.
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "telar-kernel-")));
     project = path.join(root, "project");
     fs.mkdirSync(project);
     fs.writeFileSync(path.join(project, "data.csv"), "a,b\n1,x\n2,y\n3,z\n");
     store = new EngineStore(path.join(root, "engine"), Date.now);
     store.registerProject({ id: "project_k", name: "K", root: project });
     const base = execFileSync("uv", ["python", "find", "3.12"], { encoding: "utf8" }).trim();
-    const venv = await ensureTelarVenv(telarVenvDir(store.paths.root, "project_k"), { basePython: base, stack: true });
-    if (!venv.ok) throw new Error(venv.reason);
-    store.updateProject("project_k", { dataScience: { enabled: true, python: { source: "telar", path: venv.python, resolvedAt: 1 } } });
+    const venvDir = path.join(project, ".venv");
+    execFileSync("uv", ["venv", "--python", base, venvDir], { stdio: "ignore" });
+    projectPython = telarVenvPython(venvDir)!;
+    execFileSync("uv", ["pip", "install", "--python", projectPython, "pandas", "matplotlib", "duckdb", "pyarrow"], { stdio: "ignore" });
+    store.updateProject("project_k", { dataScience: { enabled: true, python: { source: "detected", path: projectPython, resolvedAt: 1 } } });
     host = new KernelHost({
       engineRoot: store.paths.root,
       sessionDir: (id) => path.join(store.paths.sessions, id),
@@ -56,12 +64,29 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("the claim carries dataScience, and the venv python is the one resolved", () => {
+  test("the claim carries dataScience, and the project's venv python is the one resolved", () => {
     store.submitTurn("session_k", { runId: "run_1", input: "hi" });
     const claim = store.claimNextTurn("worker_1");
-    expect(claim?.dataScience?.pythonPath).toBe(telarVenvPython(telarVenvDir(store.paths.root, "project_k")));
+    expect(claim?.dataScience?.pythonPath).toBe(projectPython);
     store.stopTurn("session_k", "run_1");
   });
+
+  test("the kernel runs the environment marked in use, even without ipykernel in it", async () => {
+    const ds = store.dataScience("session_k");
+    const result = await ds.execute({ code: "import sys; print(sys.executable)" });
+    expect(result.ok).toBe(true);
+    const printed = (result.outputs[0] as { text: string }).text.trim();
+    expect(printed).toBe(projectPython);
+    const status = await ds.kernel();
+    expect(status.python).toBe(projectPython);
+    expect(status.executable).toBe(projectPython);
+    // The bridge venv was built lazily on the same interpreter and grafted in;
+    // the kernel imports ipykernel while the project's env stays untouched.
+    expect(fs.existsSync(telarVenvPython(telarVenvDir(store.paths.root, "project_k"))!)).toBe(true);
+    const spec = await ds.execute({ code: "import importlib.util, json; print(json.dumps(importlib.util.find_spec('ipykernel') is not None))" });
+    expect((spec.outputs[0] as { text: string }).text.trim()).toBe("true");
+    expect(() => execFileSync(projectPython, ["-I", "-c", "import ipykernel"], { stdio: "ignore" })).toThrow();
+  }, 300_000);
 
   test("execute prints, returns a dataframe preview, persists a plot, and journals outputs", async () => {
     const ds = store.dataScience("session_k");
@@ -140,6 +165,24 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     expect(table.total).toBe(3);
     expect(table.rows[0]).toEqual([1, "x"]);
   }, 120_000);
+
+  test("ds_env lists the environments and switching restarts the kernel into the chosen one", async () => {
+    const listed = await store.dataScience("session_k").environment();
+    expect(listed.environments.find((env) => env.name === ".venv")?.inUse).toBe(true);
+    expect(listed.environments.some((env) => env.name === "Telar's environment")).toBe(true);
+
+    const answer = await store.dataScienceUseEnvironment("session_k", "Telar's environment");
+    expect(answer.switched).toBe("Telar's environment");
+    const telarPython = telarVenvPython(telarVenvDir(store.paths.root, "project_k"))!;
+    const status = await store.dataScience("session_k").kernel();
+    expect(status.python).toBe(telarPython);
+    expect(status.executable).toBe(telarPython);
+    expect(await store.dataScience("session_k").vars()).toEqual([]);
+
+    // And back, so the archive test below kills a kernel on the project venv.
+    await store.dataScienceUseEnvironment("session_k", ".venv");
+    expect((await store.dataScience("session_k").kernel()).executable).toBe(projectPython);
+  }, 300_000);
 
   test("archiving the session kills its kernel", async () => {
     expect(host.info("session_k")?.state).not.toBe("dead");
