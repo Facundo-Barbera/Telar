@@ -180,6 +180,10 @@ test("the session is inherited and the call overrides it, including Claude conte
   await spawn(call({ opts: { model: "claude-opus-5[1m]" } }));
   expect(seen.options.model).toBe("claude-opus-5[1m]");
   expect(seen.options.env).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" });
+
+  await spawn(call({ opts: { model: undefined } }));
+  expect(seen.options.model).toBe("claude-fable-5-1[1m]");
+  expect(seen.options.env).toMatchObject({ CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" });
 });
 
 test("an effort word the SDK has never heard of is dropped, not forwarded", async () => {

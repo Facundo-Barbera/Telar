@@ -76,9 +76,18 @@ class FakeWebContents extends EventEmitter {
     this.mainFrame = {
       get framesInSubtree() {
         return self.probeAnswers.map((answer) => ({
-          executeJavaScript: () => {
+          executeJavaScript: (source) => {
+            if (String(source).includes("active.blur()")) {
+              if (answer && typeof answer === "object" && answer.emptyFocused) {
+                answer.blurred = true;
+                answer.probe = false;
+                return Promise.resolve(true);
+              }
+              return Promise.resolve(false);
+            }
             if (answer === "__hang__") return new Promise(() => {}); // never settles
             if (answer instanceof Error) return Promise.reject(answer);
+            if (answer && typeof answer === "object" && "probe" in answer) return Promise.resolve(answer.probe);
             return Promise.resolve(answer);
           },
         }));
@@ -1150,6 +1159,19 @@ describe("the automatic credential lifecycle", () => {
     views[0].webContents.probeAnswers = [false];
     await settle();
     expect(manager.state("s").privacy.private).toBe(false);
+  });
+
+  test("closing extension chrome blurs empty credential focus so privacy can auto-release", async () => {
+    const { manager, views } = lifecycleHarness();
+    await manager.createTab("s", "https://example.com");
+    const password = { probe: true, emptyFocused: true, blurred: false };
+    views[0].webContents.probeAnswers = [password];
+    manager.addUiHold("p:popup", "1Password");
+    manager.noteCredentialFieldFromWebContents(views[0].webContents, { kind: "focus" });
+    expect(manager.state("s").privacy.private).toBe(true);
+    manager.removeUiHold("p:popup");
+    expect(await until(() => manager.state("s").privacy.private === false)).toBe(true);
+    expect(password.blurred).toBe(true);
   });
 
   test("opening and closing 1Password never pauses browser tools, even if page probes cannot answer", async () => {

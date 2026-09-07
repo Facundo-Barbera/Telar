@@ -255,7 +255,7 @@ function isClaudeLongContextFamily(model: string): boolean {
 }
 
 function contextEnvForModel(model: string | undefined): Record<string, string> | undefined {
-  if (!model || !isClaudeLongContextFamily(model)) return undefined;
+  if (model && !isClaudeLongContextFamily(model)) return undefined;
   return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
 }
 

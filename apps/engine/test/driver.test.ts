@@ -316,6 +316,26 @@ test("a result with NO stop reason stated but main-loop tools unresolved also ho
   expect(toolClose?.kind === "item.completed" && toolClose.status).toBe("completed");
 });
 
+test("a tool-use result with no unresolved top-level tools ends the turn", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "not blocking on the background work" }], stop_reason: "end_turn" },
+      };
+      yield { type: "result", subtype: "success", stop_reason: "tool_use" };
+      await new Promise(() => undefined);
+    },
+  }));
+  const { result } = run(driver);
+  const raced = await Promise.race([
+    result.then((value) => ({ kind: "resolved" as const, value })),
+    new Promise<{ kind: "timeout" }>((resolve) => setTimeout(() => resolve({ kind: "timeout" }), 250)),
+  ]);
+  expect(raced.kind).toBe("resolved");
+  expect(raced.kind === "resolved" && raced.value.text).toBe("not blocking on the background work");
+});
+
 test("a sub-agent's result never completes the parent turn", async () => {
   // Every message produced inside a sub-agent carries `parent_tool_use_id`.
   // A child's result completing the PARENT would end a turn whose main loop
@@ -399,16 +419,16 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   // Occupancy is the NEWEST message's input+cacheRead+cacheCreate+output.
   expect(usages[0]?.kind === "usage" && usages[0].usage.contextUsed).toBe(115);
   expect(usages[1]?.kind === "usage" && usages[1].usage.contextUsed).toBe(219);
-  // The window is the LARGEST model's — the main loop's, not a sidechain's —
-  // and it lands on the final snapshot from the result's modelUsage table.
+  // Claude's default is now Telar's long-context row. A provider-reported 200k
+  // window cannot lower the meter below the selected/default 1M floor.
   const last = usages[2];
-  expect(last?.kind === "usage" && last.usage.contextMax).toBe(200_000);
+  expect(last?.kind === "usage" && last.usage.contextMax).toBe(1_000_000);
   expect(last?.kind === "usage" && last.usage.contextUsed).toBe(219);
   // Tokens still come from the result's own usage, never from modelUsage.
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
 });
 
-test("a selected Claude [1m] row is the context-meter floor", async () => {
+test("a selected or default Claude 1M row is the context-meter floor", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
       yield {
@@ -423,11 +443,17 @@ test("a selected Claude [1m] row is the context-meter floor", async () => {
       };
     },
   }));
-  const { sink, result } = run(driver, { model: "claude-fable-5-1[1m]" });
-  await result;
-  const last = sink.observations.filter((o) => o.kind === "usage").at(-1);
-  expect(last?.kind === "usage" && last.usage.contextMax).toBe(1_000_000);
-  expect(last?.kind === "usage" && last.usage.contextUsed).toBe(400_002);
+  const selected = run(driver, { model: "claude-fable-5-1[1m]" });
+  await selected.result;
+  const selectedUsage = selected.sink.observations.filter((o) => o.kind === "usage").at(-1);
+  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextMax).toBe(1_000_000);
+  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextUsed).toBe(400_002);
+
+  const fallback = run(driver);
+  await fallback.result;
+  const fallbackUsage = fallback.sink.observations.filter((o) => o.kind === "usage").at(-1);
+  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextMax).toBe(1_000_000);
+  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextUsed).toBe(400_002);
 });
 
 test("compaction is a timeline row, not a dropped message", async () => {
@@ -1341,7 +1367,7 @@ test("the user's MCP servers reach the SDK, and Telar's own key wins a collision
   expect(servers?.tools).toEqual({ type: "stdio", command: "node", args: ["s.js"] });
 });
 
-test("fast mode stays explicit, and Claude long-context families keep 1M enabled", async () => {
+test("fast mode stays explicit, and Claude turns keep 1M enabled", async () => {
   // A settings override is a request for non-default behaviour, so absence has
   // to stay absence. Telar no longer offers 200k Claude rows, so both `[1m]`
   // rows and legacy bare family aliases explicitly keep 1M enabled even if the
@@ -1358,7 +1384,7 @@ test("fast mode stays explicit, and Claude long-context families keep 1M enabled
   await run(driver, {}).result;
   expect(seen[0]).toMatchObject({ model: "claude-fable-5-1[1m]", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: { fastMode: true } });
   expect(seen[1]).toMatchObject({ model: "claude-opus-5", env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
-  expect(seen[2]).toEqual({ model: undefined, env: undefined, settings: undefined });
+  expect(seen[2]).toMatchObject({ model: undefined, env: { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" }, settings: undefined });
 });
 
 /**

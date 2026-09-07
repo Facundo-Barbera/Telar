@@ -134,6 +134,7 @@ const DEFER_POLL_MS = 100;
 const CREDENTIAL_PROBE_TIMEOUT_MS = 750;
 /** Distinguishes a probe that timed out from one that answered. */
 const PROBE_TIMEOUT = Symbol("probe-timeout");
+const BLOCKING_CREDENTIAL_SELECTOR = 'input[type="password"], input[autocomplete="current-password"], input[autocomplete="new-password"], input[autocomplete="one-time-code"]';
 /** How often the automatic-release loop re-checks whether the credential
  *  interaction is over. Short enough to feel immediate after a submit. */
 const AUTO_RELEASE_POLL_MS = 300;
@@ -590,7 +591,27 @@ class DesktopBrowserManager {
     const key = String(id);
     if (this.uiHolds.delete(key)) {
       this.holdRevision += 1;
+      if (!this.uiHolds.size) this.blurEmptyCredentialFocus().catch(() => {});
     }
+  }
+
+  async blurEmptyCredentialFocus() {
+    const live = this.tabs.filter((tab) => tab.view && !tab.view.webContents.isDestroyed());
+    await Promise.all(live.map(async (tab) => {
+      const wc = tab.view.webContents;
+      const frames = wc.mainFrame ? wc.mainFrame.framesInSubtree : [];
+      await Promise.all(frames.map((frame) => frame.executeJavaScript(
+        `(() => {
+          const active = document.activeElement;
+          if (!(active instanceof HTMLInputElement)) return false;
+          if (!active.matches(${JSON.stringify(BLOCKING_CREDENTIAL_SELECTOR)})) return false;
+          if (active.value.length > 0) return false;
+          active.blur();
+          return true;
+        })()`,
+        true,
+      ).catch(() => false)));
+    }));
   }
 
   /** A credential field was focused, typed, or filled: hold privacy until a
