@@ -109,6 +109,15 @@ export const TurnObservation = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("browser.state"), provider: BrowserProvider, tabs: z.array(BrowserTab) }),
 
   /**
+   * The agent asked the cockpit to SHOW the human one workspace file — the
+   * `display_open` tool. The path was fenced inside the turn's checkout by the
+   * worker before it was reported; the engine journals it as `display.opened`
+   * and the panel does the opening. No bytes travel here, ever: the file is
+   * on disk and the cockpit reads it through the file routes.
+   */
+  z.object({ kind: z.literal("display.opened"), path: z.string().min(1), title: z.string().optional() }),
+
+  /**
    * The provider's own session id, THE MOMENT THE DRIVER LEARNS IT.
    *
    * It used to travel only in the driver's RESULT, which `completeTurn` alone
