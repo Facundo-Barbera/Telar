@@ -78,6 +78,32 @@ export async function ensureTelarVenv(dir: string, options: EnsureVenvOptions): 
   return { ok: true, python, installed: packages };
 }
 
+/**
+ * `uv venv .venv` in the project, with the analysis stack if asked. NO BRIDGE
+ * PACKAGES — those stay in Telar's own venv, which the kernel host builds on
+ * this interpreter at first start. Refuses if `.venv` already exists: adopting
+ * one is a different door, and overwriting somebody's environment is not a
+ * thing a button should do.
+ */
+export async function createProjectVenv(projectRoot: string, options: EnsureVenvOptions): Promise<VenvOutcome> {
+  const exec = options.exec ?? defaultExec;
+  if (!(await uvAvailable(exec))) {
+    return { ok: false, reason: "uv is not installed — see https://docs.astral.sh/uv/getting-started/installation/" };
+  }
+  const dir = path.join(projectRoot, ".venv");
+  if (fs.existsSync(dir)) return { ok: false, reason: ".venv already exists in this project — pick it from the list instead" };
+  const created = await exec("uv", ["venv", "--python", options.basePython, dir], { cwd: projectRoot, timeoutMs: 60_000 });
+  if (created.status !== 0) return { ok: false, reason: lastLine(created.stderr) || "uv venv failed" };
+  const python = telarVenvPython(dir);
+  if (!python) return { ok: false, reason: "venv was created but has no python executable" };
+  const packages = options.stack ? [...STACK_MODULES] : [];
+  if (packages.length) {
+    const installed = await exec("uv", ["pip", "install", "--python", python, ...packages], { cwd: projectRoot, timeoutMs: 300_000 });
+    if (installed.status !== 0) return { ok: false, reason: lastLine(installed.stderr) || "uv pip install failed" };
+  }
+  return { ok: true, python, installed: packages };
+}
+
 export function removeTelarVenv(dir: string): boolean {
   fs.rmSync(dir, { recursive: true, force: true });
   return !fs.existsSync(dir);
