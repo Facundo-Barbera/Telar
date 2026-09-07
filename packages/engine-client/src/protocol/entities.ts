@@ -172,6 +172,143 @@ export const DataScienceCreatedEnvironment = z.object({
 });
 export type DataScienceCreatedEnvironment = z.infer<typeof DataScienceCreatedEnvironment>;
 
+/**
+ * Which program family compiles this project's documents. Two managers, both
+ * first-class: `tectonic` is a single self-contained binary that fetches TeX
+ * packages on first use; `texlive` is a distribution root (MacTeX, TinyTeX, a
+ * vanilla TeX Live) whose packages tlmgr manages.
+ */
+export const LatexToolchainKind = z.enum(["tectonic", "texlive"]);
+export type LatexToolchainKind = z.infer<typeof LatexToolchainKind>;
+
+/** What latexmk drives. Tectonic ignores it — it is XeTeX inside. */
+export const LatexEngine = z.enum(["pdflatex", "lualatex", "xelatex"]);
+export type LatexEngine = z.infer<typeof LatexEngine>;
+
+/**
+ * The distribution a project compiles with. `path` is ABSOLUTE — the tectonic
+ * binary, or a TeX Live bin directory — because a TeX distribution is a
+ * machine-level thing that can never live inside a checkout, so the relative
+ * worktree rule `DataSciencePython.path` follows would be a lie here.
+ */
+export const LatexToolchainChoice = z.object({
+  kind: LatexToolchainKind,
+  path: z.string().min(1).optional(),
+  engine: LatexEngine.optional(),
+});
+export type LatexToolchainChoice = z.infer<typeof LatexToolchainChoice>;
+
+/**
+ * The per-project LaTeX switch. ABSENT MEANS OFF, exactly like `dataScience`:
+ * a project that never asked gets no `latex_*` tools and no LaTeX surface.
+ * `mainFile` is RELATIVE to the checkout and the worktree rule applies — a
+ * worktree session resolves it against its OWN tree, never the project's.
+ */
+export const LatexConfig = z.object({
+  enabled: z.boolean(),
+  toolchain: LatexToolchainChoice.optional(),
+  mainFile: z.string().min(1).optional(),
+});
+export type LatexConfig = z.infer<typeof LatexConfig>;
+
+export const LatexTool = z.object({ path: z.string(), version: z.string() });
+export type LatexTool = z.infer<typeof LatexTool>;
+
+/** One TeX Live root the engine found, and which programs it actually holds. */
+export const LatexTexliveDistribution = z.object({
+  binDir: z.string(),
+  flavour: z.enum(["mactex", "tinytex", "texlive"]),
+  year: z.string().optional(),
+  latexmk: LatexTool.optional(),
+  pdflatex: LatexTool.optional(),
+  lualatex: LatexTool.optional(),
+  xelatex: LatexTool.optional(),
+  tlmgr: LatexTool.optional(),
+  kpsewhich: LatexTool.optional(),
+});
+export type LatexTexliveDistribution = z.infer<typeof LatexTexliveDistribution>;
+
+/** The TeX programs this machine carries. A LIST, never a choice. */
+export const LatexToolchain = z.object({
+  tectonic: LatexTool.optional(),
+  texlive: z.array(LatexTexliveDistribution),
+  brew: LatexTool.optional(),
+});
+export type LatexToolchain = z.infer<typeof LatexToolchain>;
+
+/** `GET /v2/projects/:id/latex/distributions`. */
+export const LatexDistributions = z.object({
+  toolchain: LatexToolchain,
+  /** `.tex` files carrying `\documentclass`, candidates for `mainFile`. */
+  mainCandidates: z.array(z.string()),
+  /** The configured choice, echoed so the UI can mark the current card. */
+  current: LatexToolchainChoice.optional(),
+});
+export type LatexDistributions = z.infer<typeof LatexDistributions>;
+
+export const LatexBootstrap = z.discriminatedUnion("what", [
+  z.object({ what: z.literal("tectonic") }),
+  z.object({ what: z.literal("tinytex") }),
+]);
+export type LatexBootstrap = z.infer<typeof LatexBootstrap>;
+
+/** One thing the log parser understood, phrased for a person or an agent. */
+export const LatexDiagnostic = z.object({
+  severity: z.enum(["error", "warning"]),
+  file: z.string().optional(),
+  line: z.number().int().optional(),
+  message: z.string(),
+  code: z
+    .enum([
+      "missing-package",
+      "missing-file",
+      "undefined-control-sequence",
+      "undefined-reference",
+      "citation-undefined",
+      "overfull",
+      "other",
+    ])
+    .optional(),
+  detail: z.string().optional(),
+  suggestion: z.string().optional(),
+});
+export type LatexDiagnostic = z.infer<typeof LatexDiagnostic>;
+
+/** The last compile a session ran, kept whole for the surface and the tools. */
+export const LatexCompileStatus = z.object({
+  status: z.enum(["running", "ok", "failed", "cancelled"]),
+  path: z.string(),
+  pdfPath: z.string().optional(),
+  diagnostics: z.array(LatexDiagnostic),
+  logTail: z.array(z.string()),
+  jobId: z.string(),
+  startedAt: Timestamp,
+  finishedAt: Timestamp.optional(),
+});
+export type LatexCompileStatus = z.infer<typeof LatexCompileStatus>;
+
+/**
+ * The two managers disagree about what "packages" even means, and this answer
+ * refuses to paper over it: tectonic fetches automatically (nothing to list),
+ * tlmgr manages a real inventory, and a TeX Live without a usable tlmgr says
+ * so instead of showing an empty list that reads as "none installed".
+ */
+export const LatexPackagesAnswer = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("automatic"), note: z.string() }),
+  z.object({
+    mode: z.literal("managed"),
+    packages: z.array(
+      z.object({ name: z.string(), revision: z.string().optional(), description: z.string().optional() }),
+    ),
+  }),
+  z.object({ mode: z.literal("unavailable"), reason: z.string() }),
+]);
+export type LatexPackagesAnswer = z.infer<typeof LatexPackagesAnswer>;
+
+/** Same wire shape as a data-science job — one JobRunner, one job format. */
+export const LatexJob = DataScienceJob;
+export type LatexJob = z.infer<typeof LatexJob>;
+
 export const Project = z.object({
   id: Id,
   environmentId: EnvironmentId,
@@ -210,6 +347,8 @@ export const Project = z.object({
   icon: z.string().min(1).max(64).optional(),
   /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
   dataScience: DataScienceConfig.optional(),
+  /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
+  latex: LatexConfig.optional(),
 });
 export type Project = z.infer<typeof Project>;
 
