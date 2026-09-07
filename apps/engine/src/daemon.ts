@@ -48,7 +48,7 @@ import {
   writeSettings,
   writeTheme,
 } from "./appearance-home";
-import { readUsageReport } from "./usage";
+import { readUsageReport, warmUsageScanCache } from "./usage";
 import { collectWallTools, ensureSocketSecret, handleSocketMessage, socketConnectCard } from "./spool/socket";
 import type { SocketTool } from "./mcp-socket";
 import type { SpoolCapability } from "./spool/tools";
@@ -106,6 +106,14 @@ export type EngineDaemonOptions = {
    * in this repo depends on that.
    */
   embeddedWorker?: boolean | { workerId?: string; pollMs?: number; createDriver?: () => Promise<DriverSelector> | DriverSelector };
+  /**
+   * Read the provider transcripts into the usage scan cache shortly after
+   * start-up, so the first Usage page after an update does not pay for a
+   * cold gigabyte. Milliseconds to wait before starting; `false` never warms.
+   * OFF BY DEFAULT because every test constructs a daemon and none of them
+   * should be reading this machine's real `~/.claude`. `main.ts` turns it on.
+   */
+  warmUsageCacheAfterMs?: number | false;
   /**
    * How a provider's version is measured. The default runs `<bin> --version`;
    * a test supplies its own so the suite never depends on which CLIs happen to
@@ -452,6 +460,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   });
   const lock = acquireDaemonLock(statePaths(root));
+  /** The per-transcript parse cache behind /v2/usage — beside the rates
+   *  snapshot it prices with. See usage.ts. */
+  const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
   const daemonId = crypto.randomUUID();
   const token = crypto.randomBytes(32).toString("base64url");
   const startedAt = (options.now ?? Date.now)();
@@ -804,7 +815,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         writeJson(response, 200, {
           usage: await readUsageReport(
             { sinceMs, untilMs, resolution, timeZone },
-            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json") },
+            { ratesCachePath: path.join(store.paths.root, "usage-model-rates.json"), scanCachePath: usageScanCachePath },
           ),
         });
         return;
@@ -2977,6 +2988,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       };
     }
 
+    /**
+     * THE WARM-UP, after everything that matters has started. Deferred so the
+     * embedded worker, the browser socket and the first client reads are not
+     * competing with a gigabyte of transcript I/O for the event loop; unref'd
+     * so it never holds the process open. A warm-up that fails costs nothing
+     * — the next /v2/usage read simply does the work itself.
+     */
+    let warmUp: ReturnType<typeof setTimeout> | undefined;
+    if (options.warmUsageCacheAfterMs !== undefined && options.warmUsageCacheAfterMs !== false) {
+      warmUp = setTimeout(() => {
+        warmUp = undefined;
+        void warmUsageScanCache({ scanCachePath: usageScanCachePath }).catch(() => undefined);
+      }, options.warmUsageCacheAfterMs);
+      warmUp.unref();
+    }
+
     let closed = false;
     return {
       discovery,
@@ -2986,6 +3013,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       async close() {
         if (closed) return;
         closed = true;
+        if (warmUp) clearTimeout(warmUp);
         // The worker stops FIRST: it holds claims, and a claim outliving the
         // server it reports to becomes an ambiguous turn on the next start.
         await embedded?.stop();

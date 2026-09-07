@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readUsageReport, type UsageScanRoots } from "../src/usage";
+import { flushUsageScanCaches, readUsageReport, resetUsageScanCaches, warmUsageScanCache, type UsageScanRoots } from "../src/usage";
 import { normalizeModelName, priceTokens, resetRatesMemo, type RatesTable } from "../src/usage-pricing";
 
 const roots: string[] = [];
@@ -12,7 +12,9 @@ const tmp = (): string => {
   return directory;
 };
 
-afterEach(() => {
+afterEach(async () => {
+  await flushUsageScanCaches();
+  resetUsageScanCaches();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
   resetRatesMemo();
 });
@@ -79,9 +81,24 @@ const RATES: RatesTable = {
 
 const WINDOW = { sinceMs: AT - 86_400_000, untilMs: AT + 86_400_000, resolution: "day" as const, timeZone: "UTC" };
 
-async function read(scan: UsageScanRoots, window = WINDOW, rates: RatesTable = RATES) {
+async function read(scan: UsageScanRoots, window = WINDOW, rates: RatesTable = RATES, scanCachePath?: string) {
   // memo off: every test reuses WINDOW with different fixture roots.
-  return readUsageReport(window, { roots: scan, ratesCachePath: path.join(tmp(), "rates.json"), loadRatesTable: () => Promise.resolve(rates), memo: false });
+  return readUsageReport(window, {
+    roots: scan,
+    ratesCachePath: path.join(tmp(), "rates.json"),
+    ...(scanCachePath ? { scanCachePath } : {}),
+    loadRatesTable: () => Promise.resolve(rates),
+    memo: false,
+  });
+}
+
+const turns = (report: Awaited<ReturnType<typeof read>>) => report.buckets.reduce((sum, bucket) => sum + bucket.turns, 0);
+
+/** Bump a file's mtime past what the OS may have coalesced with the last
+ *  write, so "grew" and "same size, new mtime" are both observable. */
+function touch(file: string, plusMs = 5_000): void {
+  const later = new Date(fs.statSync(file).mtimeMs + plusMs);
+  fs.utimesSync(file, later, later);
 }
 
 test("both transcripts land with their REAL model names, priced from the table when unreported", async () => {
@@ -178,6 +195,159 @@ test("an appended transcript is re-read on the next report", async () => {
   expect((await read(scan)).buckets[0]!.turns).toBe(1);
   fs.appendFileSync(file, claudeLine({ mid: "msg_2" }) + "\n");
   expect((await read(scan)).buckets[0]!.turns).toBe(2);
+});
+
+describe("the scan cache", () => {
+  test("a record still being written counts once, and once only, as the line completes", async () => {
+    // THE TAIL RULE. A transcript is appended one line at a time, and a read
+    // can land mid-line. The half-line must not vanish (it is spend), and it
+    // must not be counted again when the rest of it arrives.
+    const scan = scanRoots();
+    const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
+    const whole = claudeLine({ mid: "msg_2" });
+    fs.writeFileSync(file, claudeLine({ mid: "msg_1" }) + "\n" + whole.slice(0, 40));
+    // The cut line is not JSON yet: one turn.
+    expect(turns(await read(scan))).toBe(1);
+    fs.appendFileSync(file, whole.slice(40));
+    // Complete but unterminated: it counts, from the tail.
+    expect(turns(await read(scan))).toBe(2);
+    fs.appendFileSync(file, "\n" + claudeLine({ mid: "msg_3" }) + "\n");
+    // Terminated and committed, plus one more: still each once.
+    expect(turns(await read(scan))).toBe(3);
+  });
+
+  test("a grown transcript is read from where the last read stopped, not from the top", async () => {
+    const scan = scanRoots();
+    const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
+    const cachePath = path.join(tmp(), "scan.json");
+    fs.writeFileSync(file, claudeLine({ mid: "msg_1" }) + "\n");
+    expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(1);
+    await flushUsageScanCaches();
+    const before = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { files: Record<string, { offset: number; size: number }> };
+    const first = before.files[file]!;
+    expect(first.offset).toBe(first.size);
+
+    // Corrupt the committed prefix on disk. A read from the top would now
+    // lose msg_1; a read from the cursor never looks at it.
+    const original = fs.readFileSync(file);
+    const mangled = Buffer.from(original);
+    mangled.write("xxxxxxxxxx", 2);
+    fs.writeFileSync(file, mangled);
+    fs.appendFileSync(file, claudeLine({ mid: "msg_2" }) + "\n");
+    touch(file);
+    expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(2);
+  });
+
+  test("a rewritten transcript — same size, new mtime, or shrunk — is re-read from the top", async () => {
+    const scan = scanRoots();
+    const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
+    const one = claudeLine({ mid: "msg_1", input: 10 });
+    fs.writeFileSync(file, one + "\n");
+    expect((await read(scan)).buckets[0]!.tokens.input).toBe(10);
+    // Same length, different content: the cursor cannot be trusted.
+    fs.writeFileSync(file, claudeLine({ mid: "msg_1", input: 99 }).padEnd(one.length) + "\n");
+    touch(file);
+    expect((await read(scan)).buckets[0]!.tokens.input).toBe(99);
+    // Shrunk: likewise.
+    fs.writeFileSync(file, claudeLine({ mid: "msg_9", input: 5 }) + "\n");
+    expect((await read(scan)).buckets[0]!.tokens.input).toBe(5);
+  });
+
+  test("the cache survives a restart: a fresh process answers from disk without reading the transcripts", async () => {
+    const scan = scanRoots();
+    const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
+    const cachePath = path.join(tmp(), "scan.json");
+    fs.writeFileSync(file, claudeLine({ mid: "msg_1" }) + "\n" + claudeLine({ mid: "msg_2" }) + "\n");
+    // A whole-second mtime, so the rewrite below can reproduce it exactly:
+    // APFS stamps sub-millisecond, and utimes cannot put that back.
+    const pinned = new Date(Math.floor(Date.now() / 1000) * 1000);
+    fs.utimesSync(file, pinned, pinned);
+    expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(2);
+    await flushUsageScanCaches();
+    expect(fs.statSync(cachePath).mode & 0o777).toBe(0o600);
+
+    // "Restart": forget everything in memory, then make the transcript
+    // unreadable-as-usage while keeping its size and mtime. Only a process
+    // that trusts the disk cache still sees two turns.
+    resetUsageScanCaches();
+    fs.writeFileSync(file, "x".repeat(fs.statSync(file).size));
+    fs.utimesSync(file, pinned, pinned);
+    expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(2);
+  });
+
+  test("a cache file that is not one costs a re-scan, never the report", async () => {
+    const scan = scanRoots();
+    const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
+    fs.writeFileSync(file, claudeLine({ mid: "msg_1" }) + "\n");
+    for (const garbage of ["not json", '{"version":99,"files":{}}', `{"version":1,"files":{${JSON.stringify(file)}:{"size":"big"}}}`]) {
+      const cachePath = path.join(tmp(), "scan.json");
+      fs.writeFileSync(cachePath, garbage);
+      expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(1);
+    }
+  });
+
+  test("a deleted transcript leaves the cache on the next save", async () => {
+    const scan = scanRoots();
+    const keep = path.join(scan.claude, "-tmp-proj", "keep.jsonl");
+    const gone = path.join(scan.claude, "-tmp-proj", "gone.jsonl");
+    const cachePath = path.join(tmp(), "scan.json");
+    fs.writeFileSync(keep, claudeLine({ mid: "msg_k" }) + "\n");
+    fs.writeFileSync(gone, claudeLine({ mid: "msg_g" }) + "\n");
+    expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(2);
+    await flushUsageScanCaches();
+    fs.rmSync(gone);
+    expect(turns(await read(scan, WINDOW, RATES, cachePath))).toBe(1);
+    await flushUsageScanCaches();
+    const stored = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { files: Record<string, unknown> };
+    expect(Object.keys(stored.files)).toEqual([keep]);
+  });
+
+  test("a transcript older than the widest window leaves the cache too — the file is bounded by recent activity", async () => {
+    const scan = scanRoots();
+    const fresh = path.join(scan.claude, "-tmp-proj", "fresh.jsonl");
+    const ancient = path.join(scan.claude, "-tmp-proj", "ancient.jsonl");
+    const cachePath = path.join(tmp(), "scan.json");
+    fs.writeFileSync(fresh, claudeLine({ mid: "msg_f" }) + "\n");
+    fs.writeFileSync(ancient, claudeLine({ mid: "msg_a" }) + "\n");
+    // A year-old mtime: inside no window the page can ask for.
+    const longAgo = new Date(Date.now() - 365 * 86_400_000);
+    fs.utimesSync(ancient, longAgo, longAgo);
+    // A window wide enough to make the scanner READ the ancient file...
+    await read(scan, { ...WINDOW, sinceMs: longAgo.getTime() - 86_400_000 }, RATES, cachePath);
+    await flushUsageScanCaches();
+    const stored = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { files: Record<string, unknown> };
+    // ...and it still is not kept: the widest window the page offers is 90 days.
+    expect(Object.keys(stored.files)).toEqual([fresh]);
+  });
+
+  test("Codex state resumes across a growth: a model named before the cut still owns the tokens after it", async () => {
+    const scan = scanRoots();
+    const file = path.join(scan.codex, "2026", "08", "30", "rollout-a.jsonl");
+    const [meta, context, count] = codexLines({ input: 100, cached: 0, write: 0, output: 10 });
+    fs.writeFileSync(file, [meta, context, count].join("\n") + "\n");
+    expect((await read(scan)).buckets.map((bucket) => `${bucket.model}:${bucket.turns}`)).toEqual(["gpt-5.6-sol:1"]);
+    // A second token_count with new figures and NO turn_context of its own:
+    // the model comes from the state the cursor carried, not from the file.
+    const [, , later] = codexLines({ input: 300, cached: 0, write: 0, output: 30 }, AT + 60_000);
+    fs.appendFileSync(file, later + "\n");
+    touch(file);
+    expect((await read(scan)).buckets.map((bucket) => `${bucket.model}:${bucket.turns}`)).toEqual(["gpt-5.6-sol:2"]);
+    // …and a re-stamp of the same figures across the cut is still not spend.
+    fs.appendFileSync(file, later + "\n");
+    touch(file);
+    expect((await read(scan)).buckets[0]!.turns).toBe(2);
+  });
+
+  test("warming reads the transcripts into the disk cache without a report or a rates fetch", async () => {
+    const scan = scanRoots();
+    const file = path.join(scan.claude, "-tmp-proj", "sess-claude-1.jsonl");
+    const cachePath = path.join(tmp(), "scan.json");
+    fs.writeFileSync(file, claudeLine({ at: Date.now() - 60_000, mid: "msg_1" }) + "\n");
+    await warmUsageScanCache({ roots: scan, scanCachePath: cachePath });
+    const stored = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { version: number; files: Record<string, { records: unknown[] }> };
+    expect(stored.version).toBe(1);
+    expect(stored.files[file]!.records).toHaveLength(1);
+  });
 });
 
 describe("pricing", () => {
