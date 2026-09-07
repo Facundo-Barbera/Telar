@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } from "@telar/engine-client";
 import { clientDsCapability } from "./ds/client-capability";
+import { createDisplayCapability } from "./display/capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
@@ -466,6 +467,9 @@ export class EngineWorker {
           // Sessions are the browser's natural boundary: two sessions must not
           // share a tab, and a session's tabs must survive between its turns.
           scopeKey: sessionId,
+          // Where a `file:` navigation may point — the session's own checkout,
+          // and nowhere else. Stable for the session's life, like the scope.
+          workspaceRoot: cwd,
           gate: (input) => refs.gate(input),
           onNavigated: (state) => refs.onNavigated(state),
           fillSecret: (args, callBrowser) => refs.fillSecret(args, callBrowser),
@@ -648,6 +652,19 @@ export class EngineWorker {
          * claim means absent here, and the driver registers no toolkit.
          */
         ...(claim.dataScience ? { ds: clientDsCapability(this.options.client, sessionId) } : {}),
+        /**
+         * `display_open` — show the human one file in the cockpit. The fence
+         * is this turn's own checkout; the report rides the same observation
+         * channel as everything else the worker sees, so the engine journals
+         * it under this turn and a stop refuses it like any late report.
+         */
+        display: createDisplayCapability({
+          cwd,
+          report: (observation) =>
+            this.options.client
+              .reportObservations(sessionId, runId, claimToken, [{ kind: "display.opened", ...observation }])
+              .then(() => undefined),
+        }),
         onRequest: askEngine,
         onObservations: async (observations) => {
           // A stop is terminal the moment the engine records it, and the

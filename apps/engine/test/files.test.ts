@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
-import { listWorkspaceFilesAsync, readWorkspaceFileAsync, walkWorkspaceFilesAsync, contentHash, listWorkspaceFiles, MAX_WORKSPACE_FILES, readWorkspaceFile, walkWorkspaceFiles, writeWorkspaceFile } from "../src/files";
+import { listWorkspaceFilesAsync, mediaTypeFor, readWorkspaceFileAsync, readWorkspaceFileBytes, walkWorkspaceFilesAsync, contentHash, listWorkspaceFiles, MAX_WORKSPACE_FILES, readWorkspaceFile, walkWorkspaceFiles, writeWorkspaceFile } from "../src/files";
 import type { GitResult, GitRunner } from "../src/worktree";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
@@ -302,4 +302,32 @@ test("async file preview hashes the whole file while retaining text and binary s
   expect(preview.sha256).toBe(contentHash(text));
   expect(preview.text).toHaveLength(17);
   await expect(readWorkspaceFileAsync({ cwd: root, path: "missing" })).rejects.toThrow();
+});
+
+describe("the raw bytes read (the media viewers' route)", () => {
+  test("serves a binary file whole, with the media type its name declares", async () => {
+    const root = scratch();
+    // A minimal PNG header — bytes the TEXT read refuses to decode.
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02]);
+    writeFileSync(path.join(root, "plot.png"), bytes);
+    const raw = await readWorkspaceFileBytes({ cwd: root, path: "plot.png" });
+    expect(raw.mediaType).toBe("image/png");
+    expect(raw.bytes).toBe(bytes.length);
+    expect(Buffer.compare(raw.data, bytes)).toBe(0);
+  });
+
+  test("refuses past the ceiling instead of truncating — half a PDF is not a smaller PDF", async () => {
+    const root = scratch();
+    writeFileSync(path.join(root, "big.pdf"), Buffer.alloc(32));
+    await expect(readWorkspaceFileBytes({ cwd: root, path: "big.pdf", maxBytes: 16 })).rejects.toThrow(/larger than/);
+  });
+
+  test("the media-type table answers by extension and falls back to opaque bytes", () => {
+    expect(mediaTypeFor("docs/guide.pdf")).toBe("application/pdf");
+    expect(mediaTypeFor("a/b/movie.MOV")).toBe("video/quicktime");
+    expect(mediaTypeFor("notes.md")).toContain("text/markdown");
+    expect(mediaTypeFor("mystery.bin")).toBe("application/octet-stream");
+    // A dotfile has a NAME, not an extension — same rule as file-kinds.
+    expect(mediaTypeFor(".gitignore")).toBe("application/octet-stream");
+  });
 });
