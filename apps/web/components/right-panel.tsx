@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import {
   BotIcon,
-  BracesIcon,
-  ChartLineIcon,
   ChevronRightIcon,
   CircleDotIcon,
+  FlaskConicalIcon,
   NotebookIcon,
   TableIcon,
   FileDiffIcon,
@@ -55,8 +54,7 @@ import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
 import { NotebookSurface } from "@/components/session/notebook-surface";
 import { TableSurface } from "@/components/session/table-surface";
-import { PlotsSurface } from "@/components/session/plots-surface";
-import { VariablesSurface } from "@/components/session/variables-surface";
+import { DataSurface } from "@/components/session/data-surface";
 import { ImageLightbox } from "@/components/session/image-lightbox";
 import { fileKind } from "@/lib/file-kinds";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
@@ -123,18 +121,29 @@ const SURFACES = [
   { id: "issues", label: "Issues", icon: CircleDotIcon, blurb: "Open issues" },
   { id: "pulls", label: "Pull requests", icon: GitPullRequestIcon, blurb: "Open pull requests" },
   /**
-   * THE DATA-SCIENCE SURFACES, present only on a project that opted in. They
-   * stay in this list so a restored tab id validates; the panel filters them
+   * THE DATA-SCIENCE SURFACE, present only on a project that opted in. ONE
+   * tab, because plots, variables and the environment are three views of one
+   * thing — the session's kernel — and three top-level tabs for it crowded a
+   * strip that already holds files, issues and browser pages. Inside it a
+   * browser-style sub-strip (session/data-surface.tsx) does the switching. It
+   * stays in this list so a restored tab id validates; the panel filters it
    * out of the chooser and the empty state when `dataScience` is off.
    */
-  { id: "plots", label: "Plots", icon: ChartLineIcon, blurb: "Every figure this session drew" },
-  { id: "variables", label: "Variables", icon: BracesIcon, blurb: "The kernel's namespace" },
+  { id: "data", label: "Data", icon: FlaskConicalIcon, blurb: "Plots, variables and the Python environment" },
 ] as const;
 
 type SurfaceId = (typeof SURFACES)[number]["id"];
 
 /** Surfaces that exist only when the project opted into data science. */
-const DS_SURFACES: ReadonlySet<string> = new Set(["plots", "variables"]);
+const DS_SURFACES: ReadonlySet<string> = new Set(["data"]);
+
+/** The two tabs "data" replaced. A layout saved by the previous build names
+ *  them; they restore as the one tab rather than vanishing. */
+const LEGACY_DS_TABS: ReadonlySet<string> = new Set(["plots", "variables"]);
+
+export function migratePanelTab(value: string): string {
+  return LEGACY_DS_TABS.has(value) ? "data" : value;
+}
 
 function surfacesFor(dataScience: boolean): typeof SURFACES[number][] {
   return SURFACES.filter((surface) => dataScience || !DS_SURFACES.has(surface.id));
@@ -287,8 +296,7 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => issuePanelNumber(tab) !== undefined,
   (tab) => pullPanelNumber(tab) !== undefined,
   (tab) => tab === "files",
-  (tab) => tab === "plots",
-  (tab) => tab === "variables",
+  (tab) => tab === "data",
 ];
 
 /** Which numbers are already open, so a list row can say so instead of opening a
@@ -1009,8 +1017,7 @@ export function PanelSurface({
     return <NotebookSurface path={notebookPath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   const tablePath = tablePanelPath(tab);
   if (tablePath !== undefined) return <TableSurface path={tablePath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
-  if (tab === "plots") return <PlotsSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
-  if (tab === "variables") return <VariablesSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
+  if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)
     return (

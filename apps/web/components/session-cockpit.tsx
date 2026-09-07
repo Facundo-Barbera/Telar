@@ -36,7 +36,7 @@ import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snap
 import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
 import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, latestBrowserState, LIVE_BROWSER_TAB, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { PromptText } from "./session/prompt-text";
@@ -1092,7 +1092,7 @@ export function SessionCockpit({
     // setState there is a cascading render, and it is the same rule the git
     // readout in workspace-environment.tsx follows.
     const task = window.setTimeout(() => {
-      const restored = readPanelTabs<PanelTab>(panelKey, isPanelTab);
+      const restored = readPanelTabs<PanelTab>(panelKey, isPanelTab, migratePanelTab);
       // On desktop the native strip owns the pages: collapse any per-page
       // browser tabs persisted before this change into one "Browser" tab, so
       // an upgraded session does not still show the old per-page outer tabs.

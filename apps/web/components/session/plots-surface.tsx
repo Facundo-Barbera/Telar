@@ -18,7 +18,8 @@ import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
-export function PlotsSurface({ sessionId, active, onOpenImage }: { sessionId?: string; active?: TurnState; onOpenImage?: (attachmentId: string) => void }) {
+/** `embedded`: drawn inside the Data tab's sub-strip, which already carries the kernel pill — so no header of its own. */
+export function PlotsSurface({ sessionId, active, onOpenImage, embedded }: { sessionId?: string; active?: TurnState; onOpenImage?: (attachmentId: string) => void; embedded?: boolean }) {
   const [plots, setPlots] = useState<TurnAttachment[]>();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -51,8 +52,9 @@ export function PlotsSurface({ sessionId, active, onOpenImage }: { sessionId?: s
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PanelHeader
-        icon={<ChartLineIcon />}
-        label="Plots"
+        {...(embedded ? {} : { icon: <ChartLineIcon /> })}
+        label={embedded ? "" : "Plots"}
+        className={cn(embedded && "border-b-0 py-1")}
         {...(plots ? { count: plots.length } : {})}
         actions={
           <button type="button" aria-label="Refresh" onClick={() => { setRefreshing(true); void load().finally(() => setRefreshing(false)); }} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
