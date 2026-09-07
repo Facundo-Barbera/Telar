@@ -29,6 +29,7 @@ import http from "node:http";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { bearerIsValid } from "../http-auth";
 import { handleSocketMessage, readSocketBody, type SocketTool } from "../mcp-socket";
+import { fileUrlViolation } from "./helpers";
 
 /** The engine's browser, narrowed to what the socket may do with it. The same
  *  shape `driver.ts` used to consume in-process — see `browserCapability` in
@@ -49,6 +50,13 @@ export type BrowserRunBinding = {
   /** Sessions are the browser's natural boundary: two sessions must not share
    *  a tab, and a session's tabs must survive between its turns. */
   scopeKey: string;
+  /**
+   * The one directory a `file:` navigation may point into — the session's own
+   * checkout. ABSENT MEANS NO FILE URLS AT ALL (`fileUrlViolation` fails
+   * closed), never "anywhere": a browser reading a local file is a file read,
+   * and it gets the same fence every other read has.
+   */
+  workspaceRoot?: string;
   /**
    * The turn's approval gate. THE SOCKET IS THE ONE ENFORCEMENT POINT — both
    * drivers' native gates are suppressed for this server so one click yields
@@ -250,6 +258,10 @@ export class BrowserToolSocket {
           if (!result.isError) await this.reportState(binding.scopeKey);
           return result;
         }
+        // BEFORE the gate: a refusal the engine already knows must not spend a
+        // human's attention on an approval card for a call that cannot run.
+        const fenced = fileUrlViolation(definition.name, args, binding.workspaceRoot);
+        if (fenced) return { content: [{ type: "text", text: fenced }], isError: true };
         const readOnly = this.capability.isReadOnly(definition.name, args);
         if (binding.gate && !(await this.consultGate(binding, definition.name, args, readOnly))) {
           // A DECLINE IS A RESULT, NEVER A THROW. A thrown handler reads to the

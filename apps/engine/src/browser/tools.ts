@@ -165,7 +165,8 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
   },
   {
     name: "browser_navigate",
-    description: "Navigate to an http or https URL — in the tab you are working in, or the tabId you name. Does not change what the human is looking at.",
+    description:
+      "Navigate to an http or https URL — in the tab you are working in, or the tabId you name. Does not change what the human is looking at. Also opens local files from this session's checkout as file:// URLs (an HTML page you built, a PDF you downloaded) — files elsewhere on the machine are refused. To put a file IN FRONT of the human rather than browse it yourself, use display_open instead.",
     input: z.object({ url: z.url(), ...tabId }),
   },
   {

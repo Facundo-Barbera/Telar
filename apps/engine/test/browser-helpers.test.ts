@@ -16,6 +16,7 @@ import {
   imageDataUrlOf,
   isReadOnlyBrowserCall,
   normalizeBrowserToolCall,
+  fileUrlViolation,
   parseBrowserTabs,
   parseBrowserToolInput,
   textOf,
@@ -329,5 +330,42 @@ describe("multi-tab additions", () => {
       // Omitted still means "the tab I am working in", so it must stay optional.
       expect(parseBrowserToolInput(name, base)).not.toHaveProperty("tabId");
     }
+  });
+});
+
+describe("the file: fence (fileUrlViolation)", () => {
+  const root = "/tmp/telar-checkout";
+
+  test("http and https pass untouched, workspace or not", () => {
+    expect(fileUrlViolation("browser_navigate", { url: "https://example.com" }, root)).toBeNull();
+    expect(fileUrlViolation("browser_navigate", { url: "http://localhost:3000" }, undefined)).toBeNull();
+  });
+
+  test("a file URL inside the checkout passes; outside is refused with the fence named", () => {
+    expect(fileUrlViolation("browser_navigate", { url: `file://${root}/guide.html` }, root)).toBeNull();
+    expect(fileUrlViolation("browser_navigate", { url: "file:///etc/hosts" }, root)).toMatch(/only inside this session's checkout/);
+    // Dot segments must not walk out — the URL normalises them, but the check
+    // is on the RESOLVED path, so this is the case that proves it.
+    expect(fileUrlViolation("browser_navigate", { url: `file://${root}/../secrets.txt` }, root)).toMatch(/checkout/);
+    // The sibling-prefix classic: /tmp/telar-checkout-evil must not pass a
+    // startsWith over the unterminated root.
+    expect(fileUrlViolation("browser_navigate", { url: `file://${root}-evil/x.html` }, root)).toMatch(/checkout/);
+  });
+
+  test("no workspace bound means no file URLs at all — the fence fails closed", () => {
+    expect(fileUrlViolation("browser_navigate", { url: `file://${root}/guide.html` }, undefined)).toMatch(/cannot open file URLs/);
+  });
+
+  test("browser_tabs new is the other door and gets the same fence; other actions do not", () => {
+    expect(fileUrlViolation("browser_tabs", { action: "new", url: "file:///etc/hosts" }, root)).toMatch(/checkout/);
+    expect(fileUrlViolation("browser_tabs", { action: "new", url: `file://${root}/a.html` }, root)).toBeNull();
+    // `select` carries no navigation; a stray url field must not refuse it.
+    expect(fileUrlViolation("browser_tabs", { action: "select", url: "file:///etc/hosts" }, root)).toBeNull();
+    expect(fileUrlViolation("browser_click", { target: "e1" }, root)).toBeNull();
+  });
+
+  test("an unparseable or scheme-relative url is not this fence's question", () => {
+    expect(fileUrlViolation("browser_navigate", { url: "not a url" }, root)).toBeNull();
+    expect(fileUrlViolation("browser_navigate", { url: "example.com/page" }, root)).toBeNull();
   });
 });

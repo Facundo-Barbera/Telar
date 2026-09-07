@@ -6,6 +6,8 @@
  * Ported from `apps/web_old/lib/server/browser-runtime.ts` and
  * `apps/web_old/lib/browser-mcp.ts`.
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { BROWSER_TOOL_NAMES, BROWSER_VIEWPORT_PRESETS, type BrowserToolResult, type BrowserViewportPreset } from "./tools";
 
 /** One tab as Playwright MCP reports it. `index` IS the handle — the MCP tab
@@ -98,6 +100,49 @@ export function isReadOnlyBrowserCall(name: string, args: Record<string, unknown
   const call = normalizeBrowserToolCall(name, args);
   if (call.name === "browser_tabs") return call.args.action === "list";
   return BROWSER_TOOL_NAMES.has(call.name) && !MUTATING_TOOLS.has(call.name);
+}
+
+/**
+ * The `file:` fence: why a call carrying a file URL may not proceed, or null.
+ *
+ * A BROWSER READING A LOCAL FILE IS A FILE READ WEARING NAVIGATION'S CLOTHES.
+ * Navigation is classified read-only-adjacent enough that the mode ladder
+ * auto-accepts much of it, so an unfenced `file:` navigate would let an agent
+ * read `~/.ssh/id_ed25519` by screenshotting it — a walk straight past the
+ * file-read gate. The fence is the same one every other read has: the
+ * session's own checkout, and nothing else. No workspace bound (a test, an
+ * older worker) means no file URLs at all — the direction that fails closed.
+ *
+ * Checked HERE, at the socket, because both backends sit behind it: the
+ * headless runtime would happily `page.goto("file:...")` and the desktop host
+ * now accepts `file:` for the human's own address bar.
+ */
+export function fileUrlViolation(name: string, args: Record<string, unknown>, workspaceRoot?: string): string | null {
+  const raw =
+    name === "browser_navigate" || (name === "browser_tabs" && args.action === "new")
+      ? args.url
+      : undefined;
+  if (typeof raw !== "string") return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null; // Not this fence's question — the schema or the browser answers it.
+  }
+  if (parsed.protocol !== "file:") return null;
+  if (!workspaceRoot) return "The integrated browser cannot open file URLs in this session.";
+  let target: string;
+  try {
+    target = fileURLToPath(parsed);
+  } catch {
+    return "That file URL does not name a local path this machine can read.";
+  }
+  const resolved = path.resolve(target);
+  const prefix = workspaceRoot.endsWith(path.sep) ? workspaceRoot : `${workspaceRoot}${path.sep}`;
+  if (!resolved.startsWith(prefix)) {
+    return `The integrated browser opens local files only inside this session's checkout (${workspaceRoot}).`;
+  }
+  return null;
 }
 
 /**

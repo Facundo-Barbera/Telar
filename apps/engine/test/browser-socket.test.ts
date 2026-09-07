@@ -358,3 +358,50 @@ test("without a handler, browser_fill_secret answers a sentence — not a hang, 
   expect(answer.result.isError).toBe(true);
   expect(answer.result.content[0]?.text).toContain("not available");
 });
+
+test("a file: URL is fenced at the socket — refused before the gate and before the browser", async () => {
+  const gateAsked: string[] = [];
+  const called: string[] = [];
+  const socket = makeSocket(
+    fakeCapability({
+      call: async (_scope, name) => {
+        called.push(name);
+        return { content: [{ type: "text", text: "ok" }] };
+      },
+    }),
+  );
+  const lease = await socket.bind({
+    scopeKey: "session_one",
+    workspaceRoot: "/tmp/telar-checkout",
+    gate: async ({ name }) => {
+      gateAsked.push(name);
+      return true;
+    },
+  });
+
+  // Outside the checkout: an isError RESULT (the model adapts), the gate is
+  // never consulted (no approval card for a call that cannot run), and the
+  // browser never sees it.
+  const outside = await rpc(lease.url, lease.token, call("browser_navigate", { url: "file:///etc/hosts" }));
+  const outsideBody = (await outside.json()) as { result: { isError?: boolean; content: { text: string }[] } };
+  expect(outsideBody.result.isError).toBe(true);
+  expect(outsideBody.result.content[0]!.text).toMatch(/checkout/);
+  expect(gateAsked).toEqual([]);
+  expect(called).toEqual([]);
+
+  // Inside: an ordinary gated navigation.
+  const inside = await rpc(lease.url, lease.token, call("browser_navigate", { url: "file:///tmp/telar-checkout/guide.html" }));
+  const insideBody = (await inside.json()) as { result: { isError?: boolean } };
+  expect(insideBody.result.isError).toBeUndefined();
+  expect(gateAsked).toEqual(["browser_navigate"]);
+  expect(called).toEqual(["browser_navigate"]);
+});
+
+test("a binding with NO workspace refuses every file: URL — the fence fails closed", async () => {
+  const socket = makeSocket(fakeCapability());
+  const lease = await socket.bind({ scopeKey: "session_one" });
+  const refused = await rpc(lease.url, lease.token, call("browser_navigate", { url: "file:///tmp/anything.html" }));
+  const body = (await refused.json()) as { result: { isError?: boolean; content: { text: string }[] } };
+  expect(body.result.isError).toBe(true);
+  expect(body.result.content[0]!.text).toMatch(/cannot open file URLs/);
+});
