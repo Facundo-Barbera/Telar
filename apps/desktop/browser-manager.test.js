@@ -1930,3 +1930,60 @@ describe("the agent's pointer follows the tabs through a scope's life", () => {
     expect(manager.agentTabClosed.has("real")).toBe(false);
   });
 });
+
+test("an extension host that re-selects a newly added tab cannot move the human's view", async () => {
+  /**
+   * THE SECOND DOOR, found by running the shipped nightly rather than the
+   * tests: `createTab` correctly declines to move the human's pointer for an
+   * agent tab, and then `readyHostForTab` hands the tab to the 1Password host,
+   * whose library selects it — and the shell wires that to `selectTab`, the
+   * human's pointer. The tab came back `(current)` and the screen moved.
+   */
+  const { manager } = makeHarness();
+  manager.declareProfile("s", "none");
+  const host = {
+    added: [],
+    // Exactly main.js's wiring: the host's selection drives the HUMAN's view.
+    addTab(webContents) {
+      this.added.push(webContents);
+      const tab = manager.tabs.find((candidate) => candidate.view && candidate.view.webContents === webContents);
+      if (tab) void manager.selectTab(tab.scopeKey, manager.scopeTabs(tab.scopeKey).indexOf(tab));
+    },
+    removeTab() {},
+    selectTab() {},
+    whenReady: async () => ({}),
+  };
+  manager.createExtensionHost = () => host;
+
+  await manager.createTab("s", "https://yours.example/", "human");
+  await manager.callTool("s", "browser_tabs", { action: "new", url: "https://mine.example/" });
+
+  const tabs = manager.state("s").tabs;
+  expect(host.added).toHaveLength(2); // the host really was told about both
+  expect(tabs.map((tab) => [tab.url, tab.active, tab.agentFocus])).toEqual([
+    ["https://yours.example/", true, false],
+    ["https://mine.example/", false, true],
+  ]);
+});
+
+test("only an interruption is reported as the human taking the browser", async () => {
+  const clock = { t: 1_000_000 };
+  const changes = [];
+  const { manager } = makeHarness({ now: () => clock.t, onControlChanged: (change) => changes.push(change), wait: async (ms) => { clock.t += ms; } });
+  await manager.createTab("s", "https://example.com/", "human");
+
+  // Touching a tab with no agent action in flight: a control change, but not
+  // an interruption — nothing for the transcript to explain.
+  clock.t += 10_000;
+  manager.noteHumanInput("s", { force: true });
+  expect(changes.at(-1)).toMatchObject({ controller: "human" });
+  expect(changes.at(-1).interrupted).toBeUndefined();
+
+  // Cutting into an agent action IS worth saying.
+  const tab = manager.scopeTabs("s")[0];
+  tab.agentBusy = 1;
+  tab.lastJournaled = "agent";
+  clock.t += 10_000;
+  manager.noteHumanInput("s", { force: true });
+  expect(changes.at(-1)).toMatchObject({ controller: "human", interrupted: true });
+});
