@@ -32,13 +32,30 @@ export function dsTools(tool: ToolFactory, capability: DsCapability): unknown[] 
   return [
     tool(
       "ds_kernel",
-      "The session's kernel: its state, which analysis libraries import (pandas, matplotlib, duckdb, pyarrow, polars), and which interpreter. Cheap. Call it once before leaning on ds_query or ds_plot.",
+      "The session's kernel: its state, which analysis libraries import (pandas, matplotlib, duckdb, pyarrow, polars), and which interpreter. `python` is the environment marked in use; `executable` is what the live kernel reports as sys.executable — they should agree. Cheap. Call it once before leaning on ds_query or ds_plot.",
       {},
       async () => {
         try {
           return json(await capability.kernel());
         } catch (error) {
           return err(`Could not read the kernel: ${failure(error)}`);
+        }
+      },
+    ),
+
+    tool(
+      "ds_env",
+      "The Python environments this project could run on, and the switch between them. With no arguments, lists them — the one marked in use is where the kernel runs. Pass `use` (an id, name or path from the list) to select a different one and restart the kernel into it; that drops every variable, like any restart.",
+      {
+        use: z.string().min(1).optional().describe("An environment's id, name, root or interpreter path from the list. Omit to just list."),
+      },
+      async (args) => {
+        try {
+          const answer = await capability.environment(typeof args.use === "string" ? { use: args.use } : undefined);
+          const lines = answer.environments.map((env) => `${env.inUse ? "→" : " "} ${env.name}  [${env.manager}${env.version ? ` · ${env.version}` : ""}]  ${env.root}  (id ${env.id})`);
+          return ok(`${answer.switched ? `Switched to ${answer.switched}; the kernel restarted there and the namespace is empty.\n` : ""}${lines.join("\n") || "No environment found on this machine."}`);
+        } catch (error) {
+          return err(`Could not ${typeof args.use === "string" ? "switch environments" : "list environments"}: ${failure(error)}`);
         }
       },
     ),
@@ -353,7 +370,7 @@ ${target ? `${target} = _res\n${py(`{"stored": ${JSON.stringify(target)}, "shape
 
     tool(
       "ds_install",
-      "Install packages into, or remove them from, the PROJECT'S Python environment — the one the kernel imports from. This writes to the person's environment, so it asks for their approval. Waits for the install and returns the manager's log. Restart the kernel afterwards (ds_kernel / notebook_restart) so new imports resolve. Accepts pip requirement specs like `seaborn` or `polars>=1.0`; `requirements` installs the project's own manifest instead.",
+      "Install packages into, or remove them from, the PROJECT'S Python environment — the one the kernel runs in. This writes to the person's environment, so it asks for their approval. In a uv project (a .venv beside pyproject.toml) this runs `uv add`/`uv remove`, keeping the manifest and lockfile in step; elsewhere it is the manager's plain install. Waits for the install and returns the manager's log. Restart the kernel afterwards (notebook_restart) so new imports resolve. Accepts pip requirement specs like `seaborn` or `polars>=1.0`; `requirements` installs the project's own manifest instead.",
       {
         add: z.array(z.string().min(1)).optional().describe("Requirement specs to install."),
         remove: z.array(z.string().min(1)).optional().describe("Package names to uninstall."),

@@ -22,6 +22,7 @@ import type {
   DataScienceCreateEnvironment,
   DataScienceEnvironments,
   DataScienceJob,
+  DataScienceInstallCommand,
   DataScienceManager,
   DataSciencePackage,
   DataSciencePreflight,
@@ -161,7 +162,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     dataScienceCreateEnvironment: (projectId: string, input: DataScienceCreateEnvironment) =>
       request<{ jobId: string }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/environments`, input),
     dataSciencePackages: (projectId: string) =>
-      request<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string } }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/packages`),
+      request<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string; command: DataScienceInstallCommand } }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/packages`),
     dataScienceInstall: (projectId: string, input: { add?: string[]; remove?: string[]; requirements?: DataScienceRequirementsSource }) =>
       request<{ jobId: string }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/packages`, input),
     dataScienceBootstrap: (input: DataScienceBootstrap) => request<{ jobId: string }>(fetcher, "POST", "/api/data-science/bootstrap", input),
@@ -481,14 +482,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
      * in the same kernel and write the same file.
      */
     kernel: (sessionId: string) =>
-      request<{ state: KernelState; executionCount?: number; modules?: Record<string, boolean>; python?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/kernel`, {}),
+      request<{ state: KernelState; executionCount?: number; modules?: Record<string, boolean>; python?: string; executable?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/kernel`, {}),
     kernelInterrupt: (sessionId: string) => request<object>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/interrupt`, {}),
     kernelRestart: (sessionId: string) => request<object>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/restart`, {}),
     kernelExecute: (sessionId: string, code: string) => request<ExecResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/execute`, { code, producer: "cockpit" }),
     kernelVars: (sessionId: string, limit = 200) => request<VarRow[]>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/vars`, { limit }),
     /** The project's environment as THIS session resolves it (worktree rule), and its packages. */
     sessionPackages: (sessionId: string) =>
-      request<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string } }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/packages`, {}),
+      request<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string; command: DataScienceInstallCommand } }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/packages`, {}),
     /** Install / remove in the session's environment. WAITS for the job (the engine's tool does the same). */
     sessionInstall: (sessionId: string, input: { add?: string[]; remove?: string[]; requirements?: DataScienceRequirementsSource }) =>
       request<{ ok: boolean; lines: string[]; error?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/install`, input),

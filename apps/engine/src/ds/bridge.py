@@ -13,10 +13,12 @@ into one closed union (`text | html | image | json | dataframe | error`) with
 size caps applied BEFORE the bytes leave this process — a `print` loop of ten
 thousand lines becomes one truncated text output, not ten thousand stdio lines.
 
-Runs on Telar's own venv (ipykernel + jupyter_client). The kernel it launches is
-the SAME interpreter with the project's site-packages prepended to PYTHONPATH,
-so compiled wheels are ABI-matched and the project's environment is never
-written to.
+Runs on Telar's own venv (ipykernel + jupyter_client). The kernel it launches
+is the PROJECT'S interpreter — the one the person marked "In use" — so
+`sys.executable` and every import resolve exactly as they would in that
+environment. When that environment lacks ipykernel, Telar's venv (built on the
+same interpreter, so wheels are ABI-matched) is appended to the kernel's
+PYTHONPATH; the project's environment is never written to.
 """
 from __future__ import annotations
 
@@ -225,8 +227,8 @@ def _telar_restore(path):
 
 PROBE = r'''
 def _telar_probe(mods):
-    import json as _j, importlib.util as _u
-    return _j.dumps({m: _u.find_spec(m) is not None for m in mods})
+    import json as _j, importlib.util as _u, sys as _s
+    return _j.dumps({"modules": {m: _u.find_spec(m) is not None for m in mods}, "executable": _s.executable})
 '''
 
 HELPERS = STARTUP + INSPECT + LIST_VARS + SNAPSHOT + CHECKPOINT + PROBE
@@ -246,7 +248,7 @@ class Bridge:
         self.msg_to_exec: dict[str, str] = {}
 
     # ── lifecycle ─────────────────────────────────────────────────────────
-    def start(self, cwd: str, site_packages: list[str], env: dict) -> dict:
+    def start(self, cwd: str, site_packages: list[str], env: dict, kernel_python: str | None = None) -> dict:
         from jupyter_client import KernelManager
 
         kernel_env = dict(os.environ)
@@ -261,11 +263,13 @@ class Bridge:
 
         # NEVER A KERNELSPEC LOOKUP. `kernel_name="python3"` resolves to whatever
         # spec a past install left on this machine — a deleted venv, another
-        # project's — and the kernel silently runs there. The spec is built
-        # here, on THIS interpreter, so the ABI matches the site-packages above.
+        # project's — and the kernel silently runs there. The spec is built here,
+        # on the PROJECT'S interpreter, so `sys.executable` in the kernel is the
+        # environment the person marked "In use". `site_packages` above is
+        # Telar's graft for ipykernel when that environment lacks it.
         self.km = KernelManager(kernel_name="telar")
         self.km._kernel_spec = KernelSpec(
-            argv=[sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+            argv=[kernel_python or sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}"],
             language="python",
             display_name="telar",
         )
@@ -504,13 +508,13 @@ class Bridge:
         return self._call(f"_telar_restore({path!r})", timeout=600)
 
     def probe(self, modules: list[str]) -> dict:
-        return {"modules": self._call(f"_telar_probe({list(modules)!r})")}
+        return self._call(f"_telar_probe({list(modules)!r})")
 
 
 def main() -> None:
     bridge = Bridge()
     handlers = {
-        "start": lambda p: bridge.start(p.get("cwd") or os.getcwd(), p.get("sitePackages") or [], p.get("env") or {}),
+        "start": lambda p: bridge.start(p.get("cwd") or os.getcwd(), p.get("sitePackages") or [], p.get("env") or {}, p.get("kernelPython")),
         "execute": lambda p: bridge.execute(p["code"], p.get("cellId"), p.get("timeoutMs")),
         "interrupt": lambda p: bridge.interrupt(),
         "restart": lambda p: bridge.restart(bool(p.get("clearState", True))),

@@ -83,6 +83,8 @@ export type DiscoverOptions = {
   toolchain: Toolchain;
   /** Telar's managed venv for this project, if any. */
   telarVenv?: string;
+  /** The project's declared dependencies (distribution names), asked of every interpreter. */
+  dists?: string[];
   /** Test seam: the user's conda registry file. */
   condaEnvironmentsFile?: string;
 };
@@ -157,7 +159,7 @@ export async function discoverEnvironments(projectRoot: string, options: Discove
     if (python) add({ manager: "telar", name: "Telar's environment", root: options.telarVenv, python, location: "telar", reason: "built by Telar for this project" });
   }
 
-  return Promise.all(found.map(async (env) => ({ ...env, id: environmentId(env.root), preflight: await preflightPython(env.python, undefined, exec) })));
+  return Promise.all(found.map(async (env) => ({ ...env, id: environmentId(env.root), preflight: await preflightPython(env.python, undefined, exec, options.dists) })));
 }
 
 function versionFromPath(python: string): string {

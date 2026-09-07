@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceFile, WorkspaceWriteResult, TurnAttachment, EngineEvent } from "@telar/engine-client";
-import type { DsCapability, KernelStatus, NotebookEdit, NotebookRead, PackageRow, SnapshotDiff, VarRow } from "./capability";
+import type { DsCapability, EnvironmentRow, KernelStatus, NotebookEdit, NotebookRead, PackageRow, SnapshotDiff, VarRow } from "./capability";
 import type { KernelHost } from "./kernel-host";
 import { emptyNotebook, findCell, fromNbOutputs, mintCellId, parseNotebook, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
 import { type CellOutput, type ExecResult, plainTraceback } from "./outputs";
@@ -50,40 +50,70 @@ export type StoreDsDeps = {
   /** Starts the job; the capability waits on it. */
   startInstall: (input: { add?: string[]; remove?: string[]; requirements?: string }) => Promise<{ jobId: string }>;
   waitJob: (jobId: string, timeoutMs: number) => Promise<{ status: string; lines: string[]; error?: string }>;
+  /** Every environment this project could run on, discovered against this session's workspace. */
+  environments: () => Promise<{ environments: EnvironmentRow[] }>;
+  /** Persist a choice and restart the kernel into it — what the settings page's Use button does. */
+  useEnvironment: (target: string) => Promise<{ environments: EnvironmentRow[]; switched: string }>;
 };
 
 export function storeDsCapability(deps: StoreDsDeps): DsCapability {
   const { sessionId, host, files } = deps;
 
   /**
-   * The bridge runs on Telar's venv; the kernel imports from the project's.
+   * The bridge runs on Telar's venv; THE KERNEL RUNS THE PROJECT'S OWN
+   * INTERPRETER — the environment marked "In use" — so `sys.executable` and
+   * every import are exactly what that environment says, and what `ds_install`
+   * writes is what the kernel sees.
    *
    * TELAR'S VENV IS BUILT HERE, LAZILY, ON THE PROJECT'S INTERPRETER. A person
    * who picked `.venv/bin/python` should never be told to go build a second
    * environment they did not ask for — the bridge's two packages are Telar's
    * concern. Built (or rebuilt on an ABI mismatch) at first kernel start:
-   * a few seconds with uv, once per project. When `deps.python` already IS
-   * Telar's venv, this is a no-op.
+   * a few seconds with uv, once per project. When the project's environment
+   * lacks ipykernel, Telar's venv — same interpreter, so wheels ABI-match —
+   * is grafted onto the kernel's PYTHONPATH; the project's environment is
+   * never written to.
+   *
+   * A KERNEL ALREADY RUNNING ON A DIFFERENT INTERPRETER IS DISPOSED FIRST, so
+   * pressing Use on another environment takes effect on the next call instead
+   * of being silently ignored until the kernel happens to die.
+   *
+   * Returns true when a kernel was started fresh, false when a live one was
+   * reused — so restart() can skip a redundant second restart.
    */
-  async function ensure(): Promise<void> {
-    if (host.info(sessionId)?.state && host.info(sessionId)!.state !== "dead") return;
-    const probe = await preflightPython(deps.python, []);
+  async function ensure(): Promise<boolean> {
+    const live = host.info(sessionId);
+    if (live && live.state !== "dead") {
+      if (live.kernelPython === deps.python) return false;
+      await host.dispose(sessionId, "the environment in use changed");
+    }
+    const probe = await preflightPython(deps.python, ["ipykernel"]);
     if (!probe.ok) throw new Error(`the project's interpreter is unusable: ${probe.reason}`);
     let bridgePython = telarVenvPython(deps.telarVenv);
+    let bridgeSitePackages: string[] | undefined;
     if (bridgePython) {
       const bridgeProbe = await preflightPython(bridgePython, []);
       const mismatch = bridgeProbe.ok && probe.versionInfo && bridgeProbe.versionInfo && (probe.versionInfo[0] !== bridgeProbe.versionInfo[0] || probe.versionInfo[1] !== bridgeProbe.versionInfo[1]);
       if (!bridgeProbe.ok || mismatch) {
         removeTelarVenv(deps.telarVenv);
         bridgePython = undefined;
+      } else {
+        bridgeSitePackages = bridgeProbe.sitePackages;
       }
     }
     if (!bridgePython) {
       const built = await ensureTelarVenv(deps.telarVenv, { basePython: deps.python });
       if (!built.ok) throw new Error(`could not build the kernel's environment on ${deps.python}: ${built.reason}`);
       bridgePython = built.python;
+      bridgeSitePackages = undefined;
     }
-    await host.ensure({ sessionId, bridgePython, sitePackages: probe.sitePackages ?? [], cwd: deps.cwd });
+    let sitePackages: string[] = [];
+    if (!probe.modules?.ipykernel) {
+      bridgeSitePackages ??= (await preflightPython(bridgePython, [])).sitePackages;
+      sitePackages = bridgeSitePackages ?? [];
+    }
+    await host.ensure({ sessionId, bridgePython, kernelPython: deps.python, sitePackages, cwd: deps.cwd });
+    return true;
   }
 
   async function run(input: { code: string; cellId?: string; timeoutMs?: number; producer?: string }): Promise<ExecResult> {
@@ -162,11 +192,26 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
   return {
     async kernel(): Promise<KernelStatus> {
       const info = host.info(sessionId);
-      return { state: info?.state ?? "none", ...(info?.executionCount !== undefined ? { executionCount: info.executionCount } : {}), ...(info?.modules ? { modules: info.modules } : {}), python: deps.python };
+      return {
+        state: info?.state ?? "none",
+        ...(info?.executionCount !== undefined ? { executionCount: info.executionCount } : {}),
+        ...(info?.modules ? { modules: info.modules } : {}),
+        python: deps.python,
+        // What the LIVE kernel reports as sys.executable — after a start it
+        // matches `python`; a mismatch is the bug the two fields exist to show.
+        ...(info?.executable ? { executable: info.executable } : {}),
+      };
     },
     execute: run,
     async interrupt() { await host.interrupt(sessionId); },
-    async restart() { await ensure(); await host.restart(sessionId); },
+    async restart() {
+      const started = await ensure();
+      if (!started) await host.restart(sessionId);
+    },
+    async environment(input) {
+      if (input?.use) return deps.useEnvironment(input.use);
+      return deps.environments();
+    },
     async vars(limit = 100): Promise<VarRow[]> {
       await ensure();
       return (await host.call<{ vars: VarRow[] }>(sessionId, "list_vars", { limit })).vars;

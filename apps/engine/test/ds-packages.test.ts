@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, validSpec } from "../src/ds/packages";
+import { canonicalName, declaredDependencies, installCommandFor, installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, validSpec } from "../src/ds/packages";
 import { condaEnvRoot, planBootstrap, planEnvironment } from "../src/ds/telar-venv";
 import type { Toolchain } from "../src/ds/toolchain";
 import type { Exec } from "../src/ds/python-env";
@@ -37,6 +37,37 @@ test("the manager decides the command: uv pip for venvs, conda for conda envs, p
   expect(installSteps(venv, ["seaborn"], { pythons: [] })[0]).toMatchObject({ file: venv.python, args: ["-m", "pip", "install", "seaborn"] });
   expect(removeSteps(venv, ["seaborn"], { pythons: [] })[0]!.args).toContain("-y");
   expect(() => installSteps(conda, ["x"], UV)).toThrow(/conda is not installed/);
+});
+
+test("a uv project's .venv is written with uv add / uv remove, so the manifest stays in step", () => {
+  const project = root();
+  fs.writeFileSync(path.join(project, "pyproject.toml"), "[project]\nname = \"x\"\n");
+  const projectVenv = { manager: "venv" as const, root: path.join(project, ".venv"), python: path.join(project, ".venv", "bin", "python") };
+  const add = installSteps(projectVenv, ["seaborn", "polars>=1"], UV, { root: project })[0]!;
+  expect(add).toMatchObject({ file: UV.uv!.path, args: ["add", "seaborn", "polars>=1"], cwd: project });
+  expect(add.env).toEqual({ UV_PROJECT_ENVIRONMENT: projectVenv.root });
+  expect(removeSteps(projectVenv, ["seaborn"], UV, { root: project })[0]!.args).toEqual(["remove", "seaborn"]);
+  // Another env keeps uv pip even beside the manifest; no manifest keeps uv pip in the .venv too.
+  expect(installSteps(venv, ["seaborn"], UV, { root: project })[0]!.args[0]).toBe("pip");
+  const bare = root();
+  expect(installSteps({ ...projectVenv, root: path.join(bare, ".venv"), python: path.join(bare, ".venv", "bin", "python") }, ["seaborn"], UV, { root: bare })[0]!.args[0]).toBe("pip");
+
+  expect(installCommandFor(projectVenv, UV, { root: project })).toBe("uv add");
+  expect(installCommandFor(venv, UV, { root: project })).toBe("uv pip");
+  expect(installCommandFor(conda, CONDA)).toBe("conda");
+  expect(installCommandFor(venv, { pythons: [] })).toBe("pip");
+});
+
+test("declared dependencies come from pyproject and requirements.txt, canonical and deduped", () => {
+  const project = root();
+  expect(declaredDependencies(project)).toEqual([]);
+  fs.writeFileSync(
+    path.join(project, "pyproject.toml"),
+    `[build-system]\nrequires = ["hatchling"]\n\n[project]\nname = "x"\ndependencies = [\n  "scikit-learn>=1.4",\n  'uvicorn[standard]==0.30',\n  "NumPy",\n]\n\n[dependency-groups]\ndev = ["pytest"]\n`,
+  );
+  fs.writeFileSync(path.join(project, "requirements.txt"), "# pinned\n-r base.txt\nnumpy\nrequests >=2\n");
+  expect(declaredDependencies(project)).toEqual(["scikit-learn", "uvicorn", "numpy", "requests"]);
+  expect(canonicalName("Scikit_Learn")).toBe("scikit-learn");
 });
 
 test("listPackages parses uv pip list and conda list", async () => {
