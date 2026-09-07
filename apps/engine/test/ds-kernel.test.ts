@@ -97,7 +97,7 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     const bad = await ds.execute({ code: "1/0" });
     expect(bad.ok).toBe(false);
     expect(bad.error?.ename).toBe("ZeroDivisionError");
-    expect(bad.error?.traceback.join("")).not.toContain("[");
+    expect(bad.error?.traceback.join("")).not.toContain("\u001b[");
 
     await ds.watch({ name: "rows", assert: "df.shape[0] > 10" });
     const watches = await ds.watches();

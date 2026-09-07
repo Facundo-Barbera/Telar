@@ -62,7 +62,7 @@ export type ExecResult = {
 /** Strip ANSI escapes IPython puts in tracebacks — a model reads them as noise. */
 export function plainTraceback(lines: string[]): string[] {
   // eslint-disable-next-line no-control-regex
-  return lines.map((line) => line.replace(/\[[0-9;]*m/g, ""));
+  return lines.map((line) => line.replace(/\u001b\[[0-9;]*m/g, ""));
 }
 
 /**
