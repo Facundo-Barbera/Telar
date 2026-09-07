@@ -337,6 +337,41 @@ async function playTurn() {
       return;
     }
 
+    // The SAME elicitation for Telar's SESSIONS socket. Unlike the browser's,
+    // this one MUST reach `onRequest`: the sessions socket carries no gate of
+    // its own, so the engine's ladder is the one card.
+    case "mcp-elicitation-telar-sessions": {
+      const reply = ask("mcpServer/elicitation/request", {
+        threadId,
+        turnId,
+        serverName: "telar-sessions",
+        mode: "form",
+        _meta: {
+          codex_approval_kind: "mcp_tool_call",
+          persist: ["session", "always"],
+          tool_description: "Starts a new Telar session.",
+          tool_params: { projectId: "proj_1", envMode: "worktree" },
+          tool_params_display: [],
+        },
+        message: 'Allow the telar-sessions MCP server to run tool "sessions_create"?',
+        requestedSchema: { type: "object", properties: {} },
+      });
+      const action = (await reply).result?.action;
+      done({
+        type: "mcpToolCall",
+        id: "item-mcp-telar-sessions",
+        server: "telar-sessions",
+        tool: "sessions_create",
+        arguments: { projectId: "proj_1", envMode: "worktree" },
+        status: action === "accept" ? "completed" : "declined",
+        ...(action === "accept"
+          ? { result: { content: [{ type: "text", text: "created" }] } }
+          : { error: { message: "user rejected MCP tool call" } }),
+      });
+      finish(`action=${action}`);
+      return;
+    }
+
     // A turn long enough to be steered: it finishes only once a turn/steer
     // has arrived, which is what makes the test deterministic.
     case "steer": {

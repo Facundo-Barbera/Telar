@@ -26,11 +26,13 @@ import path from "node:path";
 import { EngineClient, type Session } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "../src/driver";
+import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
 import { EngineWorker } from "../src/worker";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
+const sockets: SessionsToolSocket[] = [];
 
 const tmp = (prefix: string): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -40,6 +42,7 @@ const tmp = (prefix: string): string => {
 
 afterEach(async () => {
   for (const worker of workers.splice(0).reverse()) await worker.stop();
+  for (const socket of sockets.splice(0)) await socket.close();
   for (const daemon of daemons.splice(0).reverse()) await daemon.close();
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -288,4 +291,69 @@ test("a turn's capability knows who it is, and a subscription made mid-turn wake
   // A REAL TURN: the worker on this daemon may already have claimed and run
   // it by the time we look — which is the point. Queued or done, never lost.
   expect(["queued", "claimed", "running", "completed"]).toContain(wake!.state);
+});
+
+// ── 3. the codex transport seam ─────────────────────────────────────────────
+
+test("a Codex turn is handed the wall over the socket with its own self bound; a Claude turn is not", async () => {
+  // THE TRANSPORT HALF OF THE WORKER SEAM. Claude gets the capability
+  // in-process (seam 1); a Codex claim additionally gets `{url, token}` for
+  // the worker-hosted socket, and the token must serve the SAME wall with the
+  // SAME `self` — proven by subscribing over plain HTTP and reading the
+  // subscription back through the ordinary API as the codex session's own.
+  const daemon = await startEngine({ engineRoot: tmp("telar-sessions-run-seam-"), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const { project } = await client.registerProject({ name: "aurora", root: repo() });
+  const codex = (await client.createSession({ projectId: project.id, title: "the codex one", driver: "codex" })).session;
+  const claude = (await client.createSession({ projectId: project.id, title: "the claude one" })).session;
+
+  const handed = new Map<string, { url: string; token: string } | undefined>();
+  const driver: TurnDriver = {
+    async run({ sessionId, sessionsSocket, sessions }) {
+      handed.set(sessionId, sessionsSocket);
+      // The in-process capability is NOT withdrawn by the socket's arrival.
+      expect(sessions).toBeDefined();
+      return { text: "done" };
+    },
+  };
+  const socket = new SessionsToolSocket();
+  sockets.push(socket);
+  const worker = new EngineWorker({ client, workerId: "worker_seam3", driver, sessionsSocket: socket, pollMs: 60_000 });
+  workers.push(worker);
+  await worker.start();
+  await client.submitTurn(codex.id, { runId: "run_codex", input: "go" });
+  await client.submitTurn(claude.id, { runId: "run_claude", input: "go" });
+  for (let attempt = 0; attempt < 200; attempt++) {
+    await worker.tick();
+    const settled = await Promise.all(
+      [codex.id, claude.id].map(async (id) => (await client.session(id)).turns[0]?.state === "completed"),
+    );
+    if (settled.every(Boolean)) break;
+    await Bun.sleep(5);
+  }
+
+  const lease = handed.get(codex.id);
+  expect(lease).toBeDefined();
+  // Claude's registration is in-process; a lease for it would be a credential
+  // nobody redeems.
+  expect(handed.get(claude.id)).toBeUndefined();
+
+  // The token opens the wall AS the codex session, over nothing but HTTP —
+  // exactly what the provider subprocess will hold.
+  const answered = await fetch(lease!.url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${lease!.token}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "sessions_subscribe", arguments: { sessionId: claude.id, events: ["turn_completed"] } },
+    }),
+  });
+  const { result } = (await answered.json()) as { result: { content: Array<{ text: string }>; isError?: boolean } };
+  expect(result.isError).not.toBe(true);
+  const { subscriptions } = await client.subscriptions(codex.id);
+  expect(subscriptions).toHaveLength(1);
+  expect(subscriptions[0]).toMatchObject({ subscriberSessionId: codex.id, targetSessionId: claude.id });
 });

@@ -26,6 +26,7 @@
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
+import type http from "node:http";
 import { z } from "zod";
 import { atomicWrite } from "./atomic";
 
@@ -106,6 +107,31 @@ export function connectCard(name: string, url: string, secret: string): { url: s
     secret,
     addCommand: `claude mcp add --transport http ${name} ${url} --header "Authorization: Bearer ${secret}"`,
   };
+}
+
+/**
+ * One request body as a JSON object, or `undefined` for anything else — too
+ * big, not JSON, not an object. The 1MB cap mirrors the daemon's `body()`:
+ * one guard, same number, stated where it applies. Shared by the worker-hosted
+ * leased sockets (browser, sessions) so the cap cannot drift between them.
+ */
+export async function readSocketBody(request: http.IncomingMessage): Promise<Record<string, unknown> | undefined> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > 1_000_000) return undefined;
+    chunks.push(buffer);
+  }
+  if (total === 0) return {};
+  try {
+    const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The newest protocol revision this file implements. A client asking for a

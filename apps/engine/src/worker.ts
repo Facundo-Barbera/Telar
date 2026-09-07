@@ -6,7 +6,8 @@ import { clientDsCapability } from "./ds/client-capability";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
-import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type TurnDriver } from "./driver";
+import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
+import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./driver";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
@@ -143,6 +144,14 @@ export type EngineWorkerOptions = {
    */
   browserSocket?: BrowserToolSocket;
   /**
+   * The `sessions_*` wall as the worker-hosted MCP socket CODEX turns are
+   * pointed at — Claude's registration stays in-process (see
+   * `DriverRun.sessionsSocket`). Absent means a Codex session simply has no
+   * sessions tools, which is what a test gets and what every deployment
+   * produced before this existed.
+   */
+  sessionsSocket?: SessionsToolSocket;
+  /**
    * The password-manager read path for `browser_fill_secret`. Defaults to the
    * real `op` CLI adapter; injected by tests so no suite ever spawns one. The
    * default degrades cleanly on a machine without `op` — a sentence, not a
@@ -235,6 +244,14 @@ export class EngineWorker {
       };
     }
   >();
+  /**
+   * Each CODEX session's sessions-wall lease, kept across turns for the same
+   * reason the browser's is: the url+token are baked into the provider process
+   * at creation and that process outlives the turn. No per-turn refs here —
+   * the capability closes over the session id and the worker's client, both
+   * stable for the session's life. Revoked in `stop()`.
+   */
+  private readonly sessionsLeases = new Map<string, SessionsSocketLease>();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -256,6 +273,8 @@ export class EngineWorker {
     // ones deliberately kept alive between turns — is closed.
     for (const { lease } of this.browserLeases.values()) lease.release();
     this.browserLeases.clear();
+    for (const lease of this.sessionsLeases.values()) lease.release();
+    this.sessionsLeases.clear();
     const selector = this.options.driver;
     if (typeof selector === "function") {
       try {
@@ -451,6 +470,69 @@ export class EngineWorker {
         });
         this.browserLeases.set(sessionId, { lease, refs });
       }
+      /**
+       * THE SESSIONS TOOLKIT — a session's door to OTHER sessions. Hoisted out
+       * of the `driver.run` call because it now has TWO consumers: Claude's
+       * in-process registration (the `sessions` field below) and the socket
+       * lease a Codex turn is pointed at.
+       *
+       * UNSCOPED, unlike the spool, and that is not an oversight: there is no
+       * scope to apply. A session created here is a PEER of the one that
+       * asked — no parent, no child, no link recorded anywhere — so there is
+       * nothing about this turn for the capability to be narrowed by, and
+       * nothing counts how many it creates.
+       *
+       * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
+       * do: the worker holds no store handle, and routing through the same
+       * HTTP surface the cockpit uses means there is exactly one
+       * implementation of every rule about a session, whichever door
+       * reached it.
+       *
+       * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
+       * on the wall carries it — the same construction as the spool's
+       * `source: "session"`.
+       */
+      const sessionsCapability: SessionsCapability = {
+        /**
+         * THE ONE SCOPED THING ON THIS CAPABILITY: who is asking, so a
+         * subscription can name the session to wake. Closed over the claim
+         * exactly as the spool's `project` is. The daemon's socket builds
+         * this same capability WITHOUT it — a chat client has no session
+         * to be woken in — and the wall refuses to subscribe there.
+         */
+        self: { sessionId },
+        list: () => this.options.client.liveSessions(),
+        create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
+        send: async (id, input) => {
+          const accepted = await this.options.client.submitTurn(id, input);
+          return { turn: accepted.turn, replayed: accepted.replayed };
+        },
+        read: async (id, after) => (await this.options.client.events(id, after)).events,
+        status: async (id) => {
+          const snapshot = await this.options.client.session(id);
+          return { session: snapshot.session, turns: snapshot.turns };
+        },
+        stop: (id) => this.options.client.stopTurn(id),
+        diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
+        subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
+        unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
+        subscriptions: async (subscriber) => (await this.options.client.subscriptions(subscriber)).subscriptions,
+        requests: async (id) => (await this.options.client.session(id)).requests,
+        resolveRequest: async (id, requestId, input) =>
+          (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
+      };
+      /**
+       * THE SESSIONS WALL FOR CODEX, leased on the worker-hosted socket —
+       * see `sessions-tools/run-socket.ts`. Bound only for a Codex claim:
+       * Claude gets the same capability in-process, so a lease for it would
+       * be a credential nobody redeems. Cached per SESSION like the browser's
+       * lease and revoked in `stop()`.
+       */
+      let sessionsLease = this.sessionsLeases.get(sessionId);
+      if (!sessionsLease && driverKind === "codex" && this.options.sessionsSocket) {
+        sessionsLease = await this.options.sessionsSocket.bind(sessionsCapability);
+        this.sessionsLeases.set(sessionId, sessionsLease);
+      }
       const result = await driver.run({
         prompt,
         sessionId,
@@ -551,54 +633,11 @@ export class EngineWorker {
           search: async (query, subject) =>
             (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
         },
-        /**
-         * THE SESSIONS TOOLKIT — a session's door to OTHER sessions.
-         *
-         * UNSCOPED, unlike the spool, and that is not an oversight: there is no
-         * scope to apply. A session created here is a PEER of the one that
-         * asked — no parent, no child, no link recorded anywhere — so there is
-         * nothing about this turn for the capability to be narrowed by, and
-         * nothing counts how many it creates.
-         *
-         * EVERY VERB GOES BACK THROUGH THE CLIENT, for the reason the spool's
-         * do: the worker holds no store handle, and routing through the same
-         * HTTP surface the cockpit uses means there is exactly one
-         * implementation of every rule about a session, whichever door
-         * reached it.
-         *
-         * `origin: "session"` IS DECLARED HERE, in this code, and no tool shape
-         * on the wall carries it — the same construction as the spool's
-         * `source: "session"`.
-         */
-        sessions: {
-          /**
-           * THE ONE SCOPED THING ON THIS CAPABILITY: who is asking, so a
-           * subscription can name the session to wake. Closed over the claim
-           * exactly as the spool's `project` is. The daemon's socket builds
-           * this same capability WITHOUT it — a chat client has no session
-           * to be woken in — and the wall refuses to subscribe there.
-           */
-          self: { sessionId },
-          list: () => this.options.client.liveSessions(),
-          create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
-          send: async (id, input) => {
-            const accepted = await this.options.client.submitTurn(id, input);
-            return { turn: accepted.turn, replayed: accepted.replayed };
-          },
-          read: async (id, after) => (await this.options.client.events(id, after)).events,
-          status: async (id) => {
-            const snapshot = await this.options.client.session(id);
-            return { session: snapshot.session, turns: snapshot.turns };
-          },
-          stop: (id) => this.options.client.stopTurn(id),
-          diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
-          subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,
-          unsubscribe: async (id, subscriber) => (await this.options.client.unsubscribe(id, { subscriberSessionId: subscriber })).removed,
-          subscriptions: async (subscriber) => (await this.options.client.subscriptions(subscriber)).subscriptions,
-          requests: async (id) => (await this.options.client.session(id)).requests,
-          resolveRequest: async (id, requestId, input) =>
-            (await this.options.client.resolveRequest(id, requestId, { ...input, resolvedBy: "session" })).request,
-        },
+        // The sessions toolkit, hoisted above — one assembly, two consumers.
+        sessions: sessionsCapability,
+        // The sessions wall over HTTP, for the provider that takes servers as
+        // config. Same absent-means-absent rule as `browserSocket`.
+        ...(sessionsLease ? { sessionsSocket: { url: sessionsLease.url, token: sessionsLease.token } } : {}),
         /**
          * THE KERNEL, WHEN THE CLAIM SAYS THE PROJECT OPTED IN. Every verb is
          * an HTTP call to the daemon, which owns the kernel — the worker holds

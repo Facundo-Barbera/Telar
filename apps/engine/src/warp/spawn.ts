@@ -175,6 +175,23 @@ export const WARP_CHILD_DISALLOWED_TOOLS = [
   "mcp__telar__sessions_subscriptions",
   "mcp__telar__sessions_requests",
   "mcp__telar__sessions_resolve_request",
+  // The SAME wall under its HTTP key (`sessions-tools/run-socket.ts`). A warp
+  // child is Claude-run and the worker leases the socket to Codex turns only,
+  // so today these names are unreachable twice over — listed for the same
+  // brace reason as the daemon-socket spellings above: a user could point a
+  // server named `telar-sessions` at either sessions door themselves.
+  "mcp__telar-sessions__sessions_list",
+  "mcp__telar-sessions__sessions_create",
+  "mcp__telar-sessions__sessions_send",
+  "mcp__telar-sessions__sessions_read",
+  "mcp__telar-sessions__sessions_status",
+  "mcp__telar-sessions__sessions_stop",
+  "mcp__telar-sessions__sessions_diff",
+  "mcp__telar-sessions__sessions_subscribe",
+  "mcp__telar-sessions__sessions_unsubscribe",
+  "mcp__telar-sessions__sessions_subscriptions",
+  "mcp__telar-sessions__sessions_requests",
+  "mcp__telar-sessions__sessions_resolve_request",
 ] as const;
 
 const userMessage = (text: string): WarpUserMessage => ({

@@ -3082,6 +3082,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
+    let sessionsRunSocket: import("./sessions-tools/run-socket").SessionsToolSocket | undefined;
     let kernels: KernelHost | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
@@ -3130,6 +3131,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // BOTH providers — see `./browser/socket.ts`. The daemon owns the socket
       // the way it owns the browser: it outlives any turn and is closed once.
       browserSocket = (await import("./drivers")).createBrowserToolSocket(routed);
+      // The sessions wall for Codex turns — worker-hosted like the browser's,
+      // per-session tokens, no persisted secret. Distinct from the daemon's
+      // outward `/v2/sessions/mcp` door below, deliberately: two doors, two
+      // credentials, and only this one carries a `self` to be woken in.
+      sessionsRunSocket = new (await import("./sessions-tools/run-socket")).SessionsToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");
@@ -3143,6 +3149,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // distinguish a dead worker from a stalled daemon. Its supervisor owns
       // liveness; remote workers still need the ordinary heartbeat lease.
       const socket = browserSocket;
+      const sessionsSocket = sessionsRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
           const client = new EngineClient(discovery);
@@ -3167,6 +3174,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             workerId,
             driver,
             browserSocket: socket,
+            ...(sessionsSocket ? { sessionsSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
             onConnectionLost,
@@ -3225,6 +3233,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // The socket before the browser it fronts: a listener that outlived
         // its browser would answer tool calls with a runtime already closing.
         await browserSocket?.close();
+        await sessionsRunSocket?.close();
         // Kernels beside the browser: both are processes a turn borrowed and
         // the daemon owns, and both leak past a daemon that does not stop them.
         await kernels?.disposeAll("engine shutting down");

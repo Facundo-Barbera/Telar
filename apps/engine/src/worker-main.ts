@@ -4,6 +4,7 @@ import { connectEngine } from "@telar/engine-client/node";
 import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
 import { hydrateHostPath } from "./host-path";
+import { SessionsToolSocket } from "./sessions-tools/run-socket";
 import { engineRootFromEnv } from "./state";
 import { EngineWorker, workerConcurrencyFromEnv } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
@@ -43,6 +44,9 @@ let stopping = false;
  */
 const browser = new BrowserRuntime();
 const browserSocket = createBrowserToolSocket(browser);
+// The sessions wall for Codex turns, served from the same place and for the
+// same reason: the tools live where the worker's client is.
+const sessionsSocket = new SessionsToolSocket();
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 // The SAME factory the daemon's embedded worker uses. Both deployments must
@@ -58,6 +62,7 @@ const supervisor = new WorkerReconnectController({
       workerId,
       driver: drivers,
       browserSocket,
+      sessionsSocket,
       ...(concurrency === undefined ? {} : { concurrency }),
       onConnectionLost,
     });
@@ -76,6 +81,7 @@ const stop = async (exitCode: number) => {
   // live Chromium holding a profile lock outlives the process that spawned it
   // otherwise.
   await browserSocket.close();
+  await sessionsSocket.close();
   await browser.close("worker shutting down");
   process.exit(exitCode);
 };

@@ -48,8 +48,19 @@ export const TELAR_MCP_SERVER = "telar";
  */
 export const TELAR_BROWSER_MCP_SERVER = "telar-browser";
 
+/**
+ * The sessions wall's HTTP registration, for the same wire reason as the
+ * browser's: Codex takes MCP servers as CONFIG (a url), so the worker serves
+ * the `sessions_*` wall over a session-scoped socket and points Codex at it.
+ * Claude keeps its in-process registration under `telar` — renaming a shipped
+ * tool would split its identity — so this key exists only where the in-process
+ * handle cannot reach. Same character constraint as the browser's: Codex
+ * server ids must match `^[a-zA-Z0-9_-]+$`.
+ */
+export const TELAR_SESSIONS_MCP_SERVER = "telar-sessions";
+
 /** Every server key Telar registers its own tools under. */
-export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER] as const;
+export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER] as const;
 
 /** Whether a parsed server key is one of Telar's own. */
 export function isTelarMcpServer(server: string | undefined): boolean {

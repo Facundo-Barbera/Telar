@@ -218,6 +218,15 @@ export type DriverRun = {
    * bound behind it.
    */
   browserSocket?: { url: string; token: string };
+  /**
+   * The `sessions_*` wall as an HTTP MCP server the WORKER hosts — see
+   * `sessions-tools/run-socket.ts`. FOR PROVIDERS THAT TAKE SERVERS AS CONFIG
+   * (Codex): the Claude driver ignores it and keeps its in-process
+   * registration under `telar`, because renaming a shipped tool would split
+   * its identity. The token is per-session — the bound capability closes over
+   * `self`, so a subscription made through it wakes the right session.
+   */
+  sessionsSocket?: { url: string; token: string };
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /**

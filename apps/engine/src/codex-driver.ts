@@ -47,7 +47,7 @@
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
-import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
+import { TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
@@ -278,6 +278,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       binaryPath,
       mcpServers: userMcpServers,
       browserSocket,
+      sessionsSocket,
       onObservations,
       onRequest,
       steer,
@@ -657,9 +658,23 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         // entry is applied LAST, the same shadowing rule as the Claude merge:
         // there is no `strictMcpConfig` on this path, so shadowing a colliding
         // user server is the only defence available.
-        const telarTable = browserSocket
-          ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
-          : undefined;
+        // The sessions wall rides the same shape — see the DriverRun field's
+        // header for why it exists only on this path. Its elicitations are NOT
+        // auto-accepted the way the browser's are: the sessions socket carries
+        // no gate of its own, so the ordinary elicitation→approval arm below
+        // is the one card, exactly the ladder a Claude session's `sessions_*`
+        // call answers to.
+        const telarTable =
+          browserSocket || sessionsSocket
+            ? {
+                ...(browserSocket
+                  ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
+                  : {}),
+                ...(sessionsSocket
+                  ? { [TELAR_SESSIONS_MCP_SERVER]: { url: sessionsSocket.url, http_headers: { Authorization: `Bearer ${sessionsSocket.token}` } } }
+                  : {}),
+              }
+            : undefined;
         const mcpServers = userTable || telarTable ? { ...(userTable ?? {}), ...(telarTable ?? {}) } : undefined;
         /**
          * TELAR OWNS COMPUTER USE WHEN IT SUPPLIES IT. When the claim carries
