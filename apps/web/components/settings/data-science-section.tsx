@@ -21,6 +21,7 @@
  * interpreter, so nobody's lockfile learns about jupyter_client.
  */
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CheckIcon, DownloadIcon, FlaskConicalIcon, FolderPlusIcon, PlusIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import type {
   DataScienceConfig,
@@ -44,6 +45,8 @@ import { Row, Segmented, SettingsGroup } from "./settings-shell";
 import { JobLog, type JobHandle } from "./job-log";
 import { MANAGER_LABEL, PackagesPanel } from "./packages-panel";
 import { cn } from "@/lib/utils";
+import { writeDraft } from "@/lib/composer-draft";
+import { canvasHref } from "@/lib/session-list";
 
 const api = createEngineApi();
 
@@ -73,6 +76,7 @@ function toConfig(env: { path: string; root?: string; manager: DataScienceEnviro
 /* ────────────────────────────────────────────────────────────────────────── */
 
 export function DataScienceSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
+  const router = useRouter();
   const config = project.dataScience;
   const enabled = config?.enabled === true;
   const current = config?.python;
@@ -117,21 +121,34 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
 
   const currentEnv = data?.environments.find((env) => env.id === data.currentId);
   const toolchain = data?.toolchain;
+  const askAgentToSetUp = () => {
+    writeDraft(
+      undefined,
+      project.id,
+      "Set up Data Science for this workspace. Please inspect the project, create or choose the right Python environment, install the usual analysis stack, and confirm the notebook/ds tools can run.",
+    );
+    router.push(canvasHref(project.id));
+  };
 
   return (
     <>
       <SettingsGroup
         title="Data science"
-        description="A Python kernel per session, notebooks in the panel, and analysis tools for agents. Images of your data are stored beside the session."
+        description="Enable the project first. Then pick an environment here, create one, or ask the agent to set it up from the workspace."
+        action={
+          <Button variant="outline" size="sm" onClick={askAgentToSetUp}>
+            <FlaskConicalIcon className="size-3" /> Ask agent to set up
+          </Button>
+        }
       >
         <Row
-          label="Enable for this project"
-          hint={error ?? (enabled ? "Sessions on this project get notebook and ds_* tools." : current ? "Off. The chosen environment is kept." : "Pick an environment below to turn it on.")}
+          label="Enabled"
+          hint={error ?? (enabled ? (current ? "Sessions get notebook and ds_* tools." : "On, but no environment is selected yet. Set one up below or ask the agent.") : current ? "Off. The chosen environment is kept." : "Off. You can turn it on before the environment exists.")}
           control={
             <Switch
               checked={enabled}
-              disabled={saving || (!enabled && !current)}
-              onCheckedChange={(next: boolean) => void save(next && current ? { ...config, enabled: true, python: current } : current ? { enabled: false, python: current } : null)}
+              disabled={saving}
+              onCheckedChange={(next: boolean) => void save(next ? { ...(config ?? {}), enabled: true, ...(current ? { python: current } : {}) } : current ? { enabled: false, python: current } : null)}
               aria-label="Enable data science for this project"
             />
           }
