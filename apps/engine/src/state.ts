@@ -223,12 +223,12 @@ import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
-import { defaultExec, detectPythonCandidates, preflightPython, resolvePythonPath, type PythonCandidate, type PythonPreflight } from "./ds/python-env";
-import { ensureTelarVenv, removeTelarVenv, telarVenvDir, telarVenvPython, type VenvOutcome } from "./ds/telar-venv";
+import { defaultExec, detectPythonCandidates, preflightPython, relativisePythonPath, resolvePythonPath, type PythonCandidate, type PythonPreflight } from "./ds/python-env";
+import { createProjectVenv, ensureTelarVenv, removeTelarVenv, telarVenvDir, telarVenvPython, type VenvOutcome } from "./ds/telar-venv";
 import type { KernelHost } from "./ds/kernel-host";
 import type { DsCapability } from "./ds/capability";
 import { DsFiles } from "./ds/state-files";
-import { storeDsCapability } from "./ds/store-capability";
+import { NOTEBOOK_MAX_BYTES, storeDsCapability } from "./ds/store-capability";
 import { windowCsv, type TableWindow } from "./ds/table";
 
 /** The human-facing one-liner for a parked request's notification. */
@@ -1282,8 +1282,10 @@ export class EngineStore {
       telarVenv: telarVenvDir(this.paths.root, session.projectId!, session.workspace.mode === "worktree" ? path.basename(session.workspace.path) : undefined),
       host: this.kernels,
       files: new DsFiles(path.join(sessionDir(this.paths, sessionId), "ds")),
-      readFile: (target) => this.sessionFile(sessionId, target),
-      writeFile: (target, text, expected) => this.sessionFileWrite(sessionId, target, text, expected),
+      // A notebook with plots in it passes the editor's 512 KB ceiling in one
+      // cell; both fences take the notebook-sized cap instead.
+      readFile: (target) => this.readFenced(session.workspace.path, target, "session workspace", NOTEBOOK_MAX_BYTES),
+      writeFile: (target, text, expected) => this.writeFenced(session.workspace.path, target, text, expected, "session workspace", NOTEBOOK_MAX_BYTES),
       putAttachment: (input) => this.putAttachment(sessionId, input),
       attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
       appendEvent: (event) => { this.appendEvent(sessionId, event); },
@@ -3877,7 +3879,10 @@ export class EngineStore {
     const project = this.getProject(projectId);
     const telarVenv = telarVenvDir(this.paths.root, projectId);
     const found = await detectPythonCandidates(project.root, { ...(telarVenvPython(telarVenv) ? { telarVenv } : {}) });
-    const candidates = await Promise.all(found.map(async (candidate) => ({ ...candidate, preflight: await preflightPython(candidate.path) })));
+    // Stored RELATIVE when inside the checkout, so a worktree session resolves
+    // `.venv/bin/python` against its own tree. The preflight keeps the absolute
+    // path it actually probed.
+    const candidates = await Promise.all(found.map(async (candidate) => ({ ...candidate, path: relativisePythonPath(project.root, candidate.path), preflight: await preflightPython(candidate.path) })));
     const uv = await defaultExec("uv", ["--version"], { timeoutMs: 5_000 }).then((r) => r.status === 0, () => false);
     return { candidates, uv };
   }
@@ -3895,6 +3900,36 @@ export class EngineStore {
     const probe = await preflightPython(base, []);
     if (!probe.ok) throw new EngineStateError("invalid_request", `base interpreter is unusable: ${probe.reason}`);
     return ensureTelarVenv(telarVenvDir(this.paths.root, projectId), { basePython: base, ...(input.stack ? { stack: true } : {}) });
+  }
+
+  /**
+   * A `.venv` INSIDE THE PROJECT, the way `uv venv` makes one. The one time
+   * Telar writes into a checkout on this feature, and only because a human
+   * pressed "create" on a project that had none — the resulting directory is
+   * theirs, gitignored by the same helper that ignores Telar's own files.
+   * Returns the new interpreter, relativised, ready to store.
+   */
+  async dataScienceCreateProjectVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<VenvOutcome & { relativePath?: string }> {
+    const project = this.getProject(projectId);
+    const base = resolvePythonPath(project.root, input.basePython);
+    const probe = await preflightPython(base, []);
+    if (!probe.ok) throw new EngineStateError("invalid_request", `base interpreter is unusable: ${probe.reason}`);
+    const outcome = await createProjectVenv(project.root, { basePython: base, ...(input.stack ? { stack: true } : {}) });
+    if (!outcome.ok) return outcome;
+    try {
+      ensureTelarGitignore(project.root, [{ rule: ".venv/", alreadyCovered: [".venv", "/.venv", "/.venv/", ".venv/"], why: "the Python environment uv created for this project" }]);
+    } catch { /* not a repo, or unwritable — the venv still works */ }
+    return { ...outcome, relativePath: relativisePythonPath(project.root, outcome.python) };
+  }
+
+  /** Probe ONE interpreter a person typed or picked — the "use an existing
+   *  environment" door. Accepts a python binary or a venv directory. */
+  async dataScienceProbe(projectId: string, target: string): Promise<PythonPreflight & { relativePath?: string }> {
+    const project = this.getProject(projectId);
+    const resolved = resolvePythonPath(project.root, target.trim());
+    const python = telarVenvPython(resolved) ?? resolved;
+    const probe = await preflightPython(python);
+    return { ...probe, ...(probe.ok ? { relativePath: relativisePythonPath(project.root, python) } : {}) };
   }
 
   /** Coalesce polling reads and keep results briefly. Bounded so browsing patches
@@ -4427,7 +4462,7 @@ export class EngineStore {
    * A DIRECTORY IS NOT A FILE, and saying so beats letting `readFileSync` throw
    * EISDIR at a surface that would render the errno.
    */
-  private readFenced(root: string, target: string, label: string): WorkspaceFile {
+  private readFenced(root: string, target: string, label: string, maxBytes?: number): WorkspaceFile {
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     const resolved = path.resolve(root, target);
     const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
@@ -4440,7 +4475,7 @@ export class EngineStore {
     }
     if (stats.isDirectory()) throw new EngineStateError("invalid_request", "that path is a directory");
     if (!stats.isFile()) throw new EngineStateError("invalid_request", "that path is not a regular file");
-    return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved) });
+    return readWorkspaceFile({ cwd: root, path: path.relative(root, resolved), ...(maxBytes ? { maxBytes } : {}) });
   }
 
   private async readFencedAsync(root: string, target: string, label: string): Promise<WorkspaceFile> {
@@ -4467,14 +4502,14 @@ export class EngineStore {
    * renders inline (`not_found`), so the two disagree about what a missing file
    * means and merging them would have to invent a third answer.
    */
-  private writeFenced(root: string, target: string, text: string, expected: string, label: string): WorkspaceWriteResult {
+  private writeFenced(root: string, target: string, text: string, expected: string, label: string, maxBytes?: number): WorkspaceWriteResult {
     if (!target.trim()) throw new EngineStateError("invalid_request", "a file path is required");
     if (!expected.trim()) throw new EngineStateError("invalid_request", "a write must carry the hash it expects on disk");
-    if (text.length > MAX_TEXT_LENGTH * 10) throw new EngineStateError("invalid_request", "that file is too large to save");
+    if (text.length > (maxBytes ?? MAX_TEXT_LENGTH * 10)) throw new EngineStateError("invalid_request", "that file is too large to save");
     const resolved = path.resolve(root, target);
     const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
     if (!resolved.startsWith(prefix)) throw new EngineStateError("invalid_request", `that path is outside the ${label}`);
-    return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected });
+    return writeWorkspaceFile({ cwd: root, path: path.relative(root, resolved), text, expected, ...(maxBytes ? { maxBytes } : {}) });
   }
 
   createSession(input: {

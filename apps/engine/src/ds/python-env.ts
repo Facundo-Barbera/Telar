@@ -129,7 +129,9 @@ export async function detectPythonCandidates(root: string, options: DetectOption
   const found: PythonCandidate[] = [];
   const seen = new Set<string>();
   const add = (candidate: PythonCandidate) => {
-    const key = path.normalize(candidate.path);
+    // `.venv/bin/python` and `.venv/bin/python3.12` are one environment: key
+    // by the bin directory, so uv naming the same venv as the scan shows once.
+    const key = path.dirname(path.normalize(candidate.path));
     if (seen.has(key)) return;
     seen.add(key);
     found.push(candidate);

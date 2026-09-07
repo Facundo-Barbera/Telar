@@ -78,6 +78,7 @@ import {
   type TurnModelSelection,
   type DataScienceConfig,
   type DataScienceDetection,
+  type DataSciencePreflight,
   type DataScienceVenvOutcome,
   type EngineErrorBody,
   type EngineErrorCode,
@@ -326,6 +327,16 @@ export class EngineClient {
    *  pandas, matplotlib, duckdb and pyarrow. Slow — minutes with the stack. */
   dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<{ venv: DataScienceVenvOutcome }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/venv`, input);
+  }
+
+  /** `uv venv .venv` inside the project on `basePython`. Refuses if one exists. */
+  dataScienceProjectVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<{ venv: DataScienceVenvOutcome & { relativePath?: string } }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/project-venv`, input);
+  }
+
+  /** Probe one interpreter or venv directory a person named. */
+  dataScienceProbe(projectId: string, path: string): Promise<{ probe: DataSciencePreflight & { relativePath?: string } }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path });
   }
 
   /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every

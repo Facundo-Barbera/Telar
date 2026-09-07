@@ -38,7 +38,7 @@ import type { GitignoreResult } from "@telar/engine-client";
  * grow a fifth line saying it again — that is how a `.gitignore` ends up with the
  * same rule four times in four different hands.
  */
-type IgnoreRule = { rule: string; alreadyCovered: string[]; why: string };
+export type IgnoreRule = { rule: string; alreadyCovered: string[]; why: string };
 
 export const TELAR_IGNORE_RULES: IgnoreRule[] = [
   {

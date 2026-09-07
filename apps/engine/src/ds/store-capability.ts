@@ -16,8 +16,15 @@ import type { KernelHost } from "./kernel-host";
 import { emptyNotebook, findCell, fromNbOutputs, mintCellId, parseNotebook, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
 import { type CellOutput, type ExecResult, plainTraceback } from "./outputs";
 import { preflightPython } from "./python-env";
-import { telarVenvPython } from "./telar-venv";
+import { ensureTelarVenv, removeTelarVenv, telarVenvPython } from "./telar-venv";
 import { namesIn, type DsFiles, type Snapshot, type SnapshotVar, type Watch } from "./state-files";
+
+/**
+ * A NOTEBOOK IS BIGGER THAN A SOURCE FILE — a few plots in it and it passes
+ * the workspace's 512 KB ceiling, which is sized for things a person edits in
+ * a textarea. 32 MB is where nbformat itself starts to hurt.
+ */
+export const NOTEBOOK_MAX_BYTES = 32 * 1024 * 1024;
 
 type JournalEntry = Omit<Extract<EngineEvent, { type: "notebook.cell.output" }>, "id" | "at" | "sessionId" | "runId">
   | Omit<Extract<EngineEvent, { type: "kernel.state.changed" }>, "id" | "at" | "sessionId" | "runId">
@@ -43,18 +50,33 @@ export type StoreDsDeps = {
 export function storeDsCapability(deps: StoreDsDeps): DsCapability {
   const { sessionId, host, files } = deps;
 
-  /** The bridge runs on Telar's venv; the kernel imports from the project's. */
+  /**
+   * The bridge runs on Telar's venv; the kernel imports from the project's.
+   *
+   * TELAR'S VENV IS BUILT HERE, LAZILY, ON THE PROJECT'S INTERPRETER. A person
+   * who picked `.venv/bin/python` should never be told to go build a second
+   * environment they did not ask for — the bridge's two packages are Telar's
+   * concern. Built (or rebuilt on an ABI mismatch) at first kernel start:
+   * a few seconds with uv, once per project. When `deps.python` already IS
+   * Telar's venv, this is a no-op.
+   */
   async function ensure(): Promise<void> {
     if (host.info(sessionId)?.state && host.info(sessionId)!.state !== "dead") return;
-    const bridgePython = telarVenvPython(deps.telarVenv);
-    if (!bridgePython) {
-      throw new Error("Telar's Python environment for this project has not been built. Open the project's Data science settings and create it.");
-    }
     const probe = await preflightPython(deps.python, []);
     if (!probe.ok) throw new Error(`the project's interpreter is unusable: ${probe.reason}`);
-    const bridgeProbe = await preflightPython(bridgePython, []);
-    if (bridgeProbe.ok && probe.versionInfo && bridgeProbe.versionInfo && (probe.versionInfo[0] !== bridgeProbe.versionInfo[0] || probe.versionInfo[1] !== bridgeProbe.versionInfo[1])) {
-      throw new Error(`Telar's environment is Python ${bridgeProbe.version} but the project's is ${probe.version}; rebuild Telar's environment on the project's interpreter in Data science settings.`);
+    let bridgePython = telarVenvPython(deps.telarVenv);
+    if (bridgePython) {
+      const bridgeProbe = await preflightPython(bridgePython, []);
+      const mismatch = bridgeProbe.ok && probe.versionInfo && bridgeProbe.versionInfo && (probe.versionInfo[0] !== bridgeProbe.versionInfo[0] || probe.versionInfo[1] !== bridgeProbe.versionInfo[1]);
+      if (!bridgeProbe.ok || mismatch) {
+        removeTelarVenv(deps.telarVenv);
+        bridgePython = undefined;
+      }
+    }
+    if (!bridgePython) {
+      const built = await ensureTelarVenv(deps.telarVenv, { basePython: deps.python });
+      if (!built.ok) throw new Error(`could not build the kernel's environment on ${deps.python}: ${built.reason}`);
+      bridgePython = built.python;
     }
     await host.ensure({ sessionId, bridgePython, sitePackages: probe.sitePackages ?? [], cwd: deps.cwd });
   }
@@ -94,8 +116,12 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
   function readNotebook(target: string): { nb: Notebook; file: WorkspaceFile } {
     const file = deps.readFile(target);
     if (file.binary) throw new Error("that file is not text");
-    if (file.truncated) throw new Error("that notebook is larger than the engine reads");
-    return { nb: parseNotebook(file.text), file };
+    if (file.truncated) throw new Error(`that notebook is ${Math.round(file.bytes / 1024 / 1024)} MB, larger than the ${Math.round(NOTEBOOK_MAX_BYTES / 1024 / 1024)} MB the engine reads`);
+    try {
+      return { nb: parseNotebook(file.text), file };
+    } catch (error) {
+      throw new Error(`could not parse the notebook: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   function writeNotebook(target: string, nb: Notebook, expected: string): WorkspaceFile {
