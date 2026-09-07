@@ -1476,6 +1476,50 @@ export class EngineClient {
   }
 
   /**
+   * ONE DOOR TO THE SESSION'S KERNEL. `method` is the verb — `execute`,
+   * `notebook/run`, `snapshot`… — and it is always a POST, because even a read
+   * of the namespace may start the kernel. The daemon's `storeDsCapability`
+   * is the implementation; this is its wire.
+   */
+  ds<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/ds/${method}`, body ?? {});
+  }
+
+  /** The session's attachment index, optionally by tag (`plot`). Newest first. */
+  attachments(sessionId: string, options: { tag?: string } = {}): Promise<{ attachments: TurnAttachment[] }> {
+    const suffix = options.tag ? `?tag=${encodeURIComponent(options.tag)}` : "";
+    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/attachments${suffix}`);
+  }
+
+  /** Replace an attachment's tags — how a plot is pinned. */
+  tagAttachment(sessionId: string, attachmentId: string, tags: string[]): Promise<{ attachment: TurnAttachment }> {
+    return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, { tags });
+  }
+
+  /** The bytes behind an attachment. Immutable: the id is minted per write. */
+  async attachmentBytes(sessionId: string, attachmentId: string): Promise<{ data: Uint8Array; contentType: string }> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, {
+        method: "GET",
+        headers: { authorization: `Bearer ${this.discovery.token}` },
+      });
+    } catch {
+      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+    }
+    if (!response.ok) {
+      let code: EngineErrorCode = "engine_unavailable";
+      let message = "engine request failed";
+      try {
+        const error = ((await response.json()) as EngineErrorBody | null)?.error;
+        if (error) ({ code, message } = error);
+      } catch { /* keep defaults */ }
+      throw new EngineClientError(code, message, response.status);
+    }
+    return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
+  }
+
+  /**
    * Put a file where the session's provider can reach it, BEFORE the message
    * that refers to it.
    *

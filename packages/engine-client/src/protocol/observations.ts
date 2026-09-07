@@ -173,6 +173,14 @@ export const WorkerClaim = z.object({
    */
   mcpServers: z.array(McpServer).optional(),
   /**
+   * THE PROJECT OPTED INTO DATA SCIENCE, resolved at claim time like the
+   * rest: present means the `notebook_*` and `ds_*` toolkits register for this
+   * turn, absent means they do not exist. A worktree session whose configured
+   * interpreter is not in ITS tree gets nothing here — no fallback to the
+   * project root, so a worktree stays the isolated thing it was cut to be.
+   */
+  dataScience: z.object({ pythonPath: z.string().min(1) }).optional(),
+  /**
    * The configured login this session runs as, RESOLVED — sensitive environment
    * values included, unlike every other read of the registry.
    *

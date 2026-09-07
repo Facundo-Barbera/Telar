@@ -150,6 +150,31 @@ const McpStatusUpdated = event("mcp.status.updated", {
   status: z.enum(["connecting", "ready", "failed", "disabled"]),
   message: z.string().optional(),
 });
+// ── data science: the session's kernel ─────────────────────────────────────
+/** The kernel process changed state. `dead` with a reason is how a crash is told. */
+const KernelStateChanged = event("kernel.state.changed", {
+  state: z.enum(["starting", "idle", "busy", "restarting", "dead"]),
+  reason: z.string().optional(),
+});
+/**
+ * One output from one execution, as it happens. IMAGES CARRY AN ATTACHMENT ID,
+ * never bytes: the plot is already on disk beside the session by the time this
+ * is written, and the journal stays a journal rather than a picture store.
+ */
+const NotebookCellOutput = event("notebook.cell.output", {
+  execId: z.string(),
+  cellId: z.string().optional(),
+  /** What produced it: a notebook path, `ds_scratch`, `ds_plot`… */
+  producer: z.string().optional(),
+  output: z.unknown(),
+});
+/** A registered watch evaluated false after an execution. */
+const DsWatchViolated = event("ds.watch.violated", {
+  watch: z.string(),
+  assert: z.string(),
+  detail: z.string().optional(),
+});
+
 /** Recoverable. The turn continues. */
 const RuntimeWarning = event("runtime.warning", { message: z.string() });
 /** Not recoverable by the engine, but not necessarily fatal to the session. */
@@ -195,6 +220,9 @@ export const EngineEvent = z.discriminatedUnion("type", [
   BrowserControlChanged,
   UsageUpdated,
   McpStatusUpdated,
+  KernelStateChanged,
+  NotebookCellOutput,
+  DsWatchViolated,
   RuntimeWarning,
   RuntimeError,
 ]);

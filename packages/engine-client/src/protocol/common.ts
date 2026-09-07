@@ -404,6 +404,13 @@ export const TurnAttachment = z.object({
   /** Absolute, engine-owned. Present on a stored attachment, which is the only
    *  kind that exists — an attachment is written before it is referenced. */
   path: z.string().min(1),
+  /** Free labels: `plot` marks a rendered figure for the gallery, `pinned`
+   *  keeps it at the top. Absent on a human upload. */
+  tags: z.array(z.string().min(1)).optional(),
+  /** What made it — a cell id, a tool name — for a gallery caption. */
+  producer: z.string().optional(),
+  /** When it was stored. Absent on attachments written before this existed. */
+  createdAt: Timestamp.optional(),
 });
 export type TurnAttachment = z.infer<typeof TurnAttachment>;
 
