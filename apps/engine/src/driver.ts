@@ -508,17 +508,18 @@ function isClaudeLongContextFamily(model: string): boolean {
 }
 
 /**
- * Telar no longer offers Claude's 200k variants. Keep 1M enabled for every
- * supported Claude family spelling, including older sessions that stored the
- * bare alias before the catalogue stopped publishing it.
+ * Telar no longer offers Claude's 200k variants. Keep 1M enabled for the
+ * provider default too, because an absent model means "run Claude Code's
+ * default", not "run a short-context row". Explicit unsupported custom ids are
+ * left alone rather than given a fabricated meter.
  */
 function claudeContextEnvForModel(model: string | undefined): Record<string, string> | undefined {
-  if (!model || !isClaudeLongContextFamily(model)) return undefined;
+  if (model && !isClaudeLongContextFamily(model)) return undefined;
   return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
 }
 
 function selectedContextMaxFromModel(model: string | undefined): number | undefined {
-  if (!model || !isClaudeLongContextFamily(model)) return undefined;
+  if (model && !isClaudeLongContextFamily(model)) return undefined;
   return 1_000_000;
 }
 
@@ -2447,7 +2448,7 @@ export function createClaudeDriver(
              * closing as failed rather than parking the pump forever.
              */
             const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
-            const toolsStillRunning = stopReason === "tool_use" || (stopReason === null && openTopLevelTools.size > 0);
+            const toolsStillRunning = openTopLevelTools.size > 0 && (stopReason === "tool_use" || stopReason === null);
             if (persistent && toolsStillRunning) {
               await flush();
               continue;
@@ -2838,7 +2839,7 @@ export function createClaudeDriver(
 
               if (item.type === "result" && !parentToolUseId) {
                 const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
-                if (stopReason === "tool_use" || (stopReason === null && wake.tools.size > 0)) continue;
+                if (wake.tools.size > 0 && (stopReason === "tool_use" || stopReason === null)) continue;
                 const failed = item.subtype !== "success";
                 await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });
                 continue;
