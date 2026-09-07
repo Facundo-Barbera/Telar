@@ -223,8 +223,12 @@ import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
-import { defaultExec, detectPythonCandidates, preflightPython, relativisePythonPath, resolvePythonPath, type PythonCandidate, type PythonPreflight } from "./ds/python-env";
-import { createProjectVenv, ensureTelarVenv, removeTelarVenv, telarVenvDir, telarVenvPython, type VenvOutcome } from "./ds/telar-venv";
+import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
+import { planBootstrap, planEnvironment, removeTelarVenv, telarVenvDir, telarVenvPython, type BootstrapRequest, type CreateEnvironmentRequest } from "./ds/telar-venv";
+import { discoverEnvironments, environmentId, environmentRootOf, type EnvManager, type PythonEnvironment } from "./ds/environments";
+import { adoptBinaryDir, findBinary, toolchainStatus, type Toolchain } from "./ds/toolchain";
+import { JobRunner, type JobRead } from "./ds/jobs";
+import { installSteps, listPackages, projectRequirements, removeSteps, requirementsStep, type PackageInfo, type RequirementsSource } from "./ds/packages";
 import type { KernelHost } from "./ds/kernel-host";
 import type { DsCapability } from "./ds/capability";
 import { DsFiles } from "./ds/state-files";
@@ -1264,6 +1268,9 @@ export class EngineStore {
     this.kernels = host;
   }
 
+  /** Environment builds and package installs, as jobs the settings page polls. */
+  readonly dsJobs = new JobRunner(() => this.now());
+
   /**
    * THE DATA-SCIENCE DOOR FOR ONE SESSION. Resolves the project's interpreter
    * with the worktree rule, builds the capability over the daemon's kernel
@@ -1290,6 +1297,11 @@ export class EngineStore {
       attachmentBytes: (id) => this.attachmentBytes(sessionId, id).data,
       appendEvent: (event) => { this.appendEvent(sessionId, event); },
       now: () => this.now(),
+      // Package operations resolve the environment against THIS session's
+      // workspace — the worktree rule again — and run as the store's jobs.
+      packages: () => this.dataSciencePackages(session.projectId!, session.workspace.path),
+      startInstall: (input) => this.dataScienceInstall(session.projectId!, input as Parameters<EngineStore["dataScienceInstall"]>[1], session.workspace.path),
+      waitJob: (jobId, timeoutMs) => this.dsJobs.wait(jobId, timeoutMs),
     });
   }
 
@@ -3871,65 +3883,180 @@ export class EngineStore {
   }
 
   /**
-   * The interpreters a project could run its data-science tooling on, each
-   * probed. A list for a human to choose from — see `ds/python-env.ts` for why
-   * the engine never picks. Telar's own venv is listed when it already exists.
+   * THE TOOLCHAIN, MEASURED. uv, conda and Homebrew where they are, and the
+   * Pythons uv can see or fetch. Cached for a few seconds because the page
+   * asks for it beside every environment list and each answer is four spawns.
    */
-  async dataScienceDetect(projectId: string): Promise<{ candidates: (PythonCandidate & { preflight: PythonPreflight })[]; uv: boolean }> {
+  private toolchainCache?: { until: number; value: Promise<Toolchain> };
+
+  dataScienceToolchain(fresh = false): Promise<Toolchain> {
+    if (!fresh && this.toolchainCache && this.now() < this.toolchainCache.until) return this.toolchainCache.value;
+    const value = toolchainStatus();
+    this.toolchainCache = { until: this.now() + 5_000, value };
+    void value.catch(() => { this.toolchainCache = undefined; });
+    return value;
+  }
+
+  /**
+   * Every environment a project could run on, each probed, plus the toolchain
+   * and which dependency manifests the checkout carries. A LIST for a person
+   * to choose from — see `ds/environments.ts`. Paths are stored RELATIVE when
+   * inside the checkout, so a worktree session resolves `.venv/bin/python`
+   * against its own tree.
+   */
+  async dataScienceEnvironments(projectId: string): Promise<{ toolchain: Toolchain; environments: (PythonEnvironment & { path: string })[]; requirements: RequirementsSource[]; currentId?: string }> {
     const project = this.getProject(projectId);
+    const toolchain = await this.dataScienceToolchain(true);
     const telarVenv = telarVenvDir(this.paths.root, projectId);
-    const found = await detectPythonCandidates(project.root, { ...(telarVenvPython(telarVenv) ? { telarVenv } : {}) });
-    // Stored RELATIVE when inside the checkout, so a worktree session resolves
-    // `.venv/bin/python` against its own tree. The preflight keeps the absolute
-    // path it actually probed.
-    const candidates = await Promise.all(found.map(async (candidate) => ({ ...candidate, path: relativisePythonPath(project.root, candidate.path), preflight: await preflightPython(candidate.path) })));
-    const uv = await defaultExec("uv", ["--version"], { timeoutMs: 5_000 }).then((r) => r.status === 0, () => false);
-    return { candidates, uv };
+    const found = await discoverEnvironments(project.root, { toolchain, ...(telarVenvPython(telarVenv) ? { telarVenv } : {}) });
+    const environments = found.map((env) => ({ ...env, path: relativisePythonPath(project.root, env.python) }));
+    const current = project.dataScience?.python ? this.currentEnvironment(project) : undefined;
+    return { toolchain, environments, requirements: projectRequirements(project.root), ...(current ? { currentId: current.id } : {}) };
   }
 
   /**
-   * Build or repair Telar's venv for a project, on the interpreter the person
-   * chose. Returns the venv's python so the caller can store it with
-   * `source: "telar"`. `stack` also installs the optional analysis libraries;
-   * the answer says which packages were asked for, and the next preflight says
-   * which actually import.
+   * The environment a project is configured on, as `packages.ts` needs it:
+   * manager, root, interpreter. Older configs stored only the path; the
+   * manager is read off the directory then (`pyvenv.cfg`, `conda-meta/`).
    */
-  async dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<VenvOutcome> {
-    const project = this.getProject(projectId);
-    const base = resolvePythonPath(project.root, input.basePython);
-    const probe = await preflightPython(base, []);
-    if (!probe.ok) throw new EngineStateError("invalid_request", `base interpreter is unusable: ${probe.reason}`);
-    return ensureTelarVenv(telarVenvDir(this.paths.root, projectId), { basePython: base, ...(input.stack ? { stack: true } : {}) });
+  private currentEnvironment(project: Project, workspace = project.root): { id: string; manager: EnvManager; root: string; python: string } | undefined {
+    const config = project.dataScience?.python;
+    if (!config) return undefined;
+    const python = resolvePythonPath(workspace, config.path);
+    if (!fs.existsSync(python)) return undefined;
+    const detected = environmentRootOf(python);
+    const root = config.root ? resolvePythonPath(workspace, config.root) : detected?.root ?? path.dirname(python);
+    const manager: EnvManager = config.manager ?? (root.startsWith(telarVenvDir(this.paths.root, project.id)) ? "telar" : detected?.manager ?? "system");
+    return { id: environmentId(root), manager, root, python };
   }
 
   /**
-   * A `.venv` INSIDE THE PROJECT, the way `uv venv` makes one. The one time
-   * Telar writes into a checkout on this feature, and only because a human
-   * pressed "create" on a project that had none — the resulting directory is
-   * theirs, gitignored by the same helper that ignores Telar's own files.
-   * Returns the new interpreter, relativised, ready to store.
+   * MAKE AN ENVIRONMENT, as a job. `uv venv` or `conda create` on a Python
+   * version the tool fetches if it must, then the stack if asked. A `.venv`
+   * in the project is gitignored the way Telar's own files are. The job's
+   * result is what to store: path, root, manager, source.
    */
-  async dataScienceCreateProjectVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<VenvOutcome & { relativePath?: string }> {
+  async dataScienceCreateEnvironment(projectId: string, request: CreateEnvironmentRequest): Promise<{ jobId: string }> {
     const project = this.getProject(projectId);
-    const base = resolvePythonPath(project.root, input.basePython);
-    const probe = await preflightPython(base, []);
-    if (!probe.ok) throw new EngineStateError("invalid_request", `base interpreter is unusable: ${probe.reason}`);
-    const outcome = await createProjectVenv(project.root, { basePython: base, ...(input.stack ? { stack: true } : {}) });
-    if (!outcome.ok) return outcome;
+    const toolchain = await this.dataScienceToolchain(true);
+    let plan;
     try {
-      ensureTelarGitignore(project.root, [{ rule: ".venv/", alreadyCovered: [".venv", "/.venv", "/.venv/", ".venv/"], why: "the Python environment uv created for this project" }]);
-    } catch { /* not a repo, or unwritable — the venv still works */ }
-    return { ...outcome, relativePath: relativisePythonPath(project.root, outcome.python) };
+      plan = planEnvironment(request, toolchain, { projectRoot: project.root, telarVenv: telarVenvDir(this.paths.root, projectId) });
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+    const { root, python } = plan;
+    return this.dsJobs.start({
+      kind: "create",
+      lock: `${projectId}:env`,
+      steps: plan.steps,
+      onDone: async () => {
+        if (!fs.existsSync(python)) throw new Error("the environment was created but has no python executable");
+        if (request.manager === "venv" && request.location === "project") {
+          try {
+            ensureTelarGitignore(project.root, [{ rule: ".venv/", alreadyCovered: [".venv", "/.venv", "/.venv/", ".venv/"], why: "the Python environment uv created for this project" }]);
+          } catch { /* not a repo, or unwritable — the venv still works */ }
+        }
+        const manager: EnvManager = request.manager === "venv" && request.location === "telar" ? "telar" : request.manager;
+        return { path: relativisePythonPath(project.root, python), root: relativisePythonPath(project.root, root), manager, source: manager === "telar" ? "telar" : "detected" };
+      },
+    });
   }
 
-  /** Probe ONE interpreter a person typed or picked — the "use an existing
-   *  environment" door. Accepts a python binary or a venv directory. */
-  async dataScienceProbe(projectId: string, target: string): Promise<PythonPreflight & { relativePath?: string }> {
+  /** The packages in the project's configured environment. */
+  async dataSciencePackages(projectId: string, workspace?: string): Promise<{ packages: PackageInfo[]; environment: { manager: EnvManager; root: string; python: string } }> {
+    const project = this.getProject(projectId);
+    const env = this.currentEnvironment(project, workspace);
+    if (!env) throw new EngineStateError("invalid_request", "this project has no Python environment configured");
+    const toolchain = await this.dataScienceToolchain();
+    try {
+      return { packages: await listPackages(env, toolchain), environment: { manager: env.manager, root: env.root, python: env.python } };
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * INSTALL INTO, OR REMOVE FROM, THE PROJECT'S ENVIRONMENT — the one write
+   * this feature makes into an environment Telar did not build, and only
+   * because a person pressed the button or approved the agent asking. The
+   * manager's own tool does the work so a conda env stays solvable.
+   */
+  async dataScienceInstall(projectId: string, input: { add?: string[]; remove?: string[]; requirements?: RequirementsSource }, workspace?: string): Promise<{ jobId: string }> {
+    const project = this.getProject(projectId);
+    const env = this.currentEnvironment(project, workspace);
+    if (!env) throw new EngineStateError("invalid_request", "this project has no Python environment configured");
+    const toolchain = await this.dataScienceToolchain();
+    try {
+      const steps = [
+        ...(input.remove?.length ? removeSteps(env, input.remove, toolchain) : []),
+        ...(input.add?.length ? installSteps(env, input.add, toolchain) : []),
+        ...(input.requirements ? [requirementsStep(env, workspace ?? project.root, input.requirements, toolchain)] : []),
+      ];
+      if (!steps.length) throw new Error("nothing to install or remove");
+      return this.dsJobs.start({ kind: "install", lock: `${env.id}:packages`, steps });
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * INSTALL A TOOL: uv, a Python version, Miniforge. Homebrew when present,
+   * the vendor's installer otherwise. When it lands somewhere PATH does not
+   * yet look, that directory is adopted for this process so the next probe
+   * and the next kernel find it without a restart.
+   */
+  async dataScienceBootstrap(request: BootstrapRequest): Promise<{ jobId: string }> {
+    const toolchain = await this.dataScienceToolchain(true);
+    let plan;
+    try {
+      plan = planBootstrap(request, toolchain);
+    } catch (error) {
+      throw new EngineStateError("invalid_request", error instanceof Error ? error.message : String(error));
+    }
+    const expect = plan.expectBinary;
+    return this.dsJobs.start({
+      kind: `bootstrap:${request.what}`,
+      lock: `bootstrap:${request.what}`,
+      steps: plan.steps,
+      onDone: () => {
+        this.toolchainCache = undefined;
+        if (!expect) return {};
+        const found = findBinary(expect);
+        if (!found) throw new Error(`${expect} was installed but cannot be found — open a new terminal, check your PATH, then detect again`);
+        adoptBinaryDir(found);
+        return { binary: found };
+      },
+    });
+  }
+
+  dataScienceJob(jobId: string, after?: number): JobRead {
+    try {
+      return this.dsJobs.read(jobId, after);
+    } catch (error) {
+      throw new EngineStateError("not_found", error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  dataScienceCancelJob(jobId: string): void {
+    this.dsJobs.cancel(jobId);
+  }
+
+  /** Probe ONE interpreter a person typed or picked — the "add an existing
+   *  environment" door. Accepts a python binary, a venv or a conda env dir. */
+  async dataScienceProbe(projectId: string, target: string): Promise<PythonPreflight & { relativePath?: string; root?: string; manager?: EnvManager }> {
     const project = this.getProject(projectId);
     const resolved = resolvePythonPath(project.root, target.trim());
     const python = telarVenvPython(resolved) ?? resolved;
     const probe = await preflightPython(python);
-    return { ...probe, ...(probe.ok ? { relativePath: relativisePythonPath(project.root, python) } : {}) };
+    if (!probe.ok) return probe;
+    const env = environmentRootOf(python);
+    return {
+      ...probe,
+      relativePath: relativisePythonPath(project.root, python),
+      root: relativisePythonPath(project.root, env?.root ?? path.dirname(python)),
+      manager: env?.manager ?? "system",
+    };
   }
 
   /** Coalesce polling reads and keep results briefly. Bounded so browsing patches

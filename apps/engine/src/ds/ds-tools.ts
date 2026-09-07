@@ -22,7 +22,7 @@ const py = (expr: string) => `import json as _tj\nprint(_tj.dumps(${expr}, defau
 async function needs(capability: DsCapability, module: string): Promise<string | undefined> {
   const kernel = await capability.kernel();
   if (kernel.state === "none") return undefined; // starts on first use; probe then
-  if (kernel.modules && kernel.modules[module] === false) return `${module} is not importable in this session's kernel. Enable the analysis stack in the project's Data science settings, or install it into the chosen interpreter.`;
+  if (kernel.modules && kernel.modules[module] === false) return `${module} is not importable in this session's kernel. Install it with ds_install (the person will be asked to approve), then restart the kernel.`;
   return undefined;
 }
 
@@ -333,6 +333,43 @@ ${target ? `${target} = _res\n${py(`{"stored": ${JSON.stringify(target)}, "shape
           return ok(runs.map((r) => `${r.name}${r.endedAt ? "" : " (open)"}  params ${JSON.stringify(r.params)}  last ${JSON.stringify(r.metrics.at(-1) ?? {})}  (${r.metrics.length} logs)`).join("\n"));
         } catch (error) {
           return err(`Experiment failed: ${failure(error)}`);
+        }
+      },
+    ),
+
+    tool(
+      "ds_packages",
+      "What is installed in the project's Python environment, with versions, and which manager (uv, conda) owns it. Read-only and cheap. Check here before assuming a library is available.",
+      {},
+      async () => {
+        try {
+          const { packages, environment } = await capability.packages();
+          return ok(`${environment.manager} environment at ${environment.root} (${packages.length} packages)\n${packages.map((p) => `${p.name} ${p.version}`).join("\n")}`);
+        } catch (error) {
+          return err(`Could not list packages: ${failure(error)}`);
+        }
+      },
+    ),
+
+    tool(
+      "ds_install",
+      "Install packages into, or remove them from, the PROJECT'S Python environment — the one the kernel imports from. This writes to the person's environment, so it asks for their approval. Waits for the install and returns the manager's log. Restart the kernel afterwards (ds_kernel / notebook_restart) so new imports resolve. Accepts pip requirement specs like `seaborn` or `polars>=1.0`; `requirements` installs the project's own manifest instead.",
+      {
+        add: z.array(z.string().min(1)).optional().describe("Requirement specs to install."),
+        remove: z.array(z.string().min(1)).optional().describe("Package names to uninstall."),
+        requirements: z.enum(["requirements.txt", "pyproject.toml", "uv.lock", "environment.yml"]).optional().describe("Install the project's declared dependencies from this file."),
+      },
+      async (args) => {
+        try {
+          const outcome = await capability.install({
+            ...(Array.isArray(args.add) ? { add: args.add.map(String) } : {}),
+            ...(Array.isArray(args.remove) ? { remove: args.remove.map(String) } : {}),
+            ...(typeof args.requirements === "string" ? { requirements: args.requirements } : {}),
+          });
+          const tail = outcome.lines.slice(-40).join("\n");
+          return outcome.ok ? ok(`Done. Restart the kernel to pick up new imports.\n${tail}`) : err(`${outcome.error ?? "install failed"}\n${tail}`);
+        } catch (error) {
+          return err(`Could not install: ${failure(error)}`);
         }
       },
     ),

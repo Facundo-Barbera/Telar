@@ -751,7 +751,7 @@ function warpTool(
  * "anything that sounds like a read" would silently adopt the next tool whose
  * name starts well.
  */
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes"]);
+const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "ds_packages", "ds_kernel"]);
 
 export function requestKindForTool(name: string): RequestKind {
   if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";

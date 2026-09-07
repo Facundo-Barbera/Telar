@@ -17,10 +17,16 @@ import type {
   GitOverview,
   ComputerUseBackend,
   ComputerUseStatus,
+  DataScienceBootstrap,
   DataScienceConfig,
-  DataScienceDetection,
+  DataScienceCreateEnvironment,
+  DataScienceEnvironments,
+  DataScienceJob,
+  DataScienceManager,
+  DataSciencePackage,
   DataSciencePreflight,
-  DataScienceVenvOutcome,
+  DataScienceRequirementsSource,
+  DataScienceToolchain,
   InboxPolicy,
   EnvMode,
   SessionDefaults,
@@ -149,15 +155,21 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null }) =>
       request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
-    /** Spawns each interpreter it finds — open a dialog, never poll. */
-    dataScienceDetect: (projectId: string) =>
-      request<DataScienceDetection>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/detect`),
-    dataScienceVenv: (projectId: string, input: { basePython: string; stack?: boolean }) =>
-      request<{ venv: DataScienceVenvOutcome }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/venv`, input),
-    dataScienceProjectVenv: (projectId: string, input: { basePython: string; stack?: boolean }) =>
-      request<{ venv: DataScienceVenvOutcome & { relativePath?: string } }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/project-venv`, input),
+    /** Spawns each interpreter it finds — open a page, never poll. */
+    dataScienceEnvironments: (projectId: string) =>
+      request<DataScienceEnvironments>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/environments`),
+    dataScienceCreateEnvironment: (projectId: string, input: DataScienceCreateEnvironment) =>
+      request<{ jobId: string }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/environments`, input),
+    dataSciencePackages: (projectId: string) =>
+      request<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string } }>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/packages`),
+    dataScienceInstall: (projectId: string, input: { add?: string[]; remove?: string[]; requirements?: DataScienceRequirementsSource }) =>
+      request<{ jobId: string }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/packages`, input),
+    dataScienceBootstrap: (input: DataScienceBootstrap) => request<{ jobId: string }>(fetcher, "POST", "/api/data-science/bootstrap", input),
+    dataScienceToolchain: (fresh = false) => request<{ toolchain: DataScienceToolchain }>(fetcher, "GET", `/api/data-science/toolchain${fresh ? "?fresh=1" : ""}`),
+    dataScienceJob: (jobId: string, after = 0) => request<{ job: DataScienceJob }>(fetcher, "GET", `/api/data-science/jobs/${encodeURIComponent(jobId)}?after=${after}`),
+    dataScienceCancelJob: (jobId: string) => request<Record<string, never>>(fetcher, "DELETE", `/api/data-science/jobs/${encodeURIComponent(jobId)}`),
     dataScienceProbe: (projectId: string, path: string) =>
-      request<{ probe: DataSciencePreflight & { relativePath?: string } }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path }),
+      request<{ probe: DataSciencePreflight & { relativePath?: string; root?: string; manager?: DataScienceManager } }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/data-science/probe`, { path }),
     /** How this machine's inbox bands — the auto-settle window, or `null` for
      *  no clock at all. One answer for every client of this engine. */
     inbox: () => request<{ inbox: InboxPolicy }>(fetcher, "GET", "/api/inbox"),
@@ -474,6 +486,12 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     kernelRestart: (sessionId: string) => request<object>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/restart`, {}),
     kernelExecute: (sessionId: string, code: string) => request<ExecResult>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/execute`, { code, producer: "cockpit" }),
     kernelVars: (sessionId: string, limit = 200) => request<VarRow[]>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/vars`, { limit }),
+    /** The project's environment as THIS session resolves it (worktree rule), and its packages. */
+    sessionPackages: (sessionId: string) =>
+      request<{ packages: DataSciencePackage[]; environment: { manager: DataScienceManager; root: string; python: string } }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/packages`, {}),
+    /** Install / remove in the session's environment. WAITS for the job (the engine's tool does the same). */
+    sessionInstall: (sessionId: string, input: { add?: string[]; remove?: string[]; requirements?: DataScienceRequirementsSource }) =>
+      request<{ ok: boolean; lines: string[]; error?: string }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/install`, input),
     kernelInspect: (sessionId: string, name: string, depth = 10) =>
       request<Record<string, unknown>>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/ds/inspect`, { name, depth }),
     notebook: (sessionId: string, path: string, options: { from?: number; to?: number; withOutputs?: boolean } = {}) =>

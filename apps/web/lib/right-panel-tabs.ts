@@ -129,11 +129,14 @@ export function canvasPanelKey(projectId: string): string {
   return `new:${projectId}`;
 }
 
-export function readPanelTabs<Tab extends string>(sessionId: string, isKnown: (tab: string) => tab is Tab): PanelTabState<Tab> {
+export function readPanelTabs<Tab extends string>(sessionId: string, isKnown: (tab: string) => tab is Tab, migrate: (tab: string) => string = (tab) => tab): PanelTabState<Tab> {
   const stored = readStore().sessions[sessionId];
   if (!stored) return emptyPanelTabs<Tab>();
-  const tabs = (Array.isArray(stored.tabs) ? stored.tabs : []).filter(isKnown);
-  const activeTab = tabs.find((tab) => tab === stored.activeTab) ?? tabs[0];
+  // A renamed tab id restores under its new name — once, and deduped, so a
+  // layout that held both of two merged tabs holds one of the merger.
+  const migrated = (Array.isArray(stored.tabs) ? stored.tabs : []).map(migrate).filter((tab, index, all) => all.indexOf(tab) === index);
+  const tabs = migrated.filter(isKnown);
+  const activeTab = tabs.find((tab) => tab === (stored.activeTab === undefined ? undefined : migrate(stored.activeTab))) ?? tabs[0];
   return { tabs, ...(activeTab ? { activeTab } : {}), open: Boolean(stored.open) && tabs.length > 0 };
 }
 

@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceFile, WorkspaceWriteResult, TurnAttachment, EngineEvent } from "@telar/engine-client";
-import type { DsCapability, KernelStatus, NotebookEdit, NotebookRead, SnapshotDiff, VarRow } from "./capability";
+import type { DsCapability, KernelStatus, NotebookEdit, NotebookRead, PackageRow, SnapshotDiff, VarRow } from "./capability";
 import type { KernelHost } from "./kernel-host";
 import { emptyNotebook, findCell, fromNbOutputs, mintCellId, parseNotebook, serializeNotebook, toNbOutputs, type Notebook } from "./notebook-file";
 import { type CellOutput, type ExecResult, plainTraceback } from "./outputs";
@@ -45,6 +45,11 @@ export type StoreDsDeps = {
   attachmentBytes: (id: string) => Uint8Array;
   appendEvent: (event: JournalEntry) => void;
   now: () => number;
+  /** The store's package operations for this session's project, resolved against its workspace. */
+  packages: () => Promise<{ packages: PackageRow[]; environment: { manager: string; root: string; python: string } }>;
+  /** Starts the job; the capability waits on it. */
+  startInstall: (input: { add?: string[]; remove?: string[]; requirements?: string }) => Promise<{ jobId: string }>;
+  waitJob: (jobId: string, timeoutMs: number) => Promise<{ status: string; lines: string[]; error?: string }>;
 };
 
 export function storeDsCapability(deps: StoreDsDeps): DsCapability {
@@ -279,6 +284,12 @@ export function storeDsCapability(deps: StoreDsDeps): DsCapability {
       }
       files.saveExperiments(runs);
       return runs;
+    },
+    packages: () => deps.packages(),
+    async install(input) {
+      const { jobId } = await deps.startInstall(input);
+      const read = await deps.waitJob(jobId, 10 * 60 * 1000);
+      return { ok: read.status === "ok", lines: read.lines, ...(read.error ? { error: read.error } : {}) };
     },
   };
 }

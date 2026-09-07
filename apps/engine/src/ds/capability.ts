@@ -61,7 +61,18 @@ export type DsCapability = {
   watches(): Promise<Watch[]>;
   watch(input: { name: string; assert?: string; remove?: boolean }): Promise<Watch[]>;
   experiment(input: { action: "start" | "log" | "end" | "list"; name?: string; params?: Record<string, unknown>; metrics?: Record<string, number> }): Promise<Experiment[]>;
+
+  /** The project's environment as this session resolves it, and what is installed in it. */
+  packages(): Promise<{ packages: PackageRow[]; environment: { manager: string; root: string; python: string } }>;
+  /**
+   * Install into or remove from the project's environment, WAITING for the
+   * result. The store runs it as a job; this returns the job's log once it
+   * has finished, because a model wants an answer rather than a cursor.
+   */
+  install(input: { add?: string[]; remove?: string[]; requirements?: string }): Promise<{ ok: boolean; lines: string[]; error?: string }>;
 };
+
+export type PackageRow = { name: string; version: string; channel?: string };
 
 export type NotebookEdit =
   | { kind: "set"; cellId?: string; index?: number; source?: string; cellType?: "code" | "markdown" | "raw" }

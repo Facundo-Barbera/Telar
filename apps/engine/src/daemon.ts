@@ -9,6 +9,8 @@ import path from "node:path";
 import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
+  DataScienceBootstrap,
+  DataScienceCreateEnvironment,
   parseForgeQuery,
   RequestOpenInput,
   ProviderTurnOpenInput,
@@ -2130,38 +2132,66 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * Which Pythons a project could run on, each probed. A LIST, so the
-       * settings page can ask rather than the engine guessing — see
-       * `ds/python-env.ts`. Slow by nature (it spawns each interpreter), and
-       * only a human opening the dialog calls it.
+       * THE ENVIRONMENT MANAGER'S READ: every environment a project could run
+       * on, each probed, plus the toolchain and the checkout's dependency
+       * manifests. A LIST, so the settings page can ask rather than the engine
+       * guessing — see `ds/environments.ts`. Slow by nature (it spawns each
+       * interpreter); only a human opening the page calls it.
        */
-      const projectDsDetect = /^\/v2\/projects\/([^/]+)\/data-science\/detect$/.exec(url.pathname);
-      if (request.method === "GET" && projectDsDetect) {
-        writeJson(response, 200, await store.dataScienceDetect(decodeURIComponent(projectDsDetect[1])));
+      const projectDsEnvs = /^\/v2\/projects\/([^/]+)\/data-science\/environments$/.exec(url.pathname);
+      if (request.method === "GET" && projectDsEnvs) {
+        writeJson(response, 200, await store.dataScienceEnvironments(decodeURIComponent(projectDsEnvs[1])));
         return;
       }
-      /** Build Telar's own venv for a project on the interpreter the person chose. */
-      const projectDsVenv = /^\/v2\/projects\/([^/]+)\/data-science\/venv$/.exec(url.pathname);
-      if (request.method === "POST" && projectDsVenv) {
+      /** Make an environment — `uv venv` or `conda create` — as a job. Body is a `DataScienceCreateEnvironment`. */
+      const projectDsCreate = /^\/v2\/projects\/([^/]+)\/data-science\/environments$/.exec(url.pathname);
+      if (request.method === "POST" && projectDsCreate) {
         const input = await body(request);
-        writeJson(response, 200, {
-          venv: await store.dataScienceVenv(decodeURIComponent(projectDsVenv[1]), {
-            basePython: stringValue(input.basePython, "base python")!,
-            ...(typeof input.stack === "boolean" ? { stack: input.stack } : {}),
-          }),
-        });
+        const parsed = DataScienceCreateEnvironment.safeParse(input);
+        if (!parsed.success) throw new HttpError(400, "invalid_request", "not a valid environment request");
+        writeJson(response, 202, await store.dataScienceCreateEnvironment(decodeURIComponent(projectDsCreate[1]), parsed.data));
         return;
       }
-      /** `uv venv .venv` inside the project — the one write into a checkout this feature makes. */
-      const projectDsProjectVenv = /^\/v2\/projects\/([^/]+)\/data-science\/project-venv$/.exec(url.pathname);
-      if (request.method === "POST" && projectDsProjectVenv) {
+      /** What is installed in the project's configured environment. */
+      const projectDsPackages = /^\/v2\/projects\/([^/]+)\/data-science\/packages$/.exec(url.pathname);
+      if (request.method === "GET" && projectDsPackages) {
+        writeJson(response, 200, await store.dataSciencePackages(decodeURIComponent(projectDsPackages[1])));
+        return;
+      }
+      /** Install into / remove from the project's environment, as a job. */
+      if (request.method === "POST" && projectDsPackages) {
         const input = await body(request);
-        writeJson(response, 200, {
-          venv: await store.dataScienceCreateProjectVenv(decodeURIComponent(projectDsProjectVenv[1]), {
-            basePython: stringValue(input.basePython, "base python")!,
-            ...(typeof input.stack === "boolean" ? { stack: input.stack } : {}),
-          }),
-        });
+        const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]).map(String) : undefined);
+        writeJson(response, 202, await store.dataScienceInstall(decodeURIComponent(projectDsPackages[1]), {
+          ...(list("add") ? { add: list("add")! } : {}),
+          ...(list("remove") ? { remove: list("remove")! } : {}),
+          ...(typeof input.requirements === "string" ? { requirements: input.requirements as Parameters<typeof store.dataScienceInstall>[1]["requirements"] } : {}),
+        }));
+        return;
+      }
+      /** Install a tool: uv, a Python version, Miniforge. Machine-wide, so no project in the path. */
+      if (request.method === "POST" && url.pathname === "/v2/data-science/bootstrap") {
+        const input = await body(request);
+        const parsed = DataScienceBootstrap.safeParse(input);
+        if (!parsed.success) throw new HttpError(400, "invalid_request", "not a valid bootstrap request");
+        writeJson(response, 202, await store.dataScienceBootstrap(parsed.data));
+        return;
+      }
+      /** The toolchain alone, for pages that do not need the environment list. */
+      if (request.method === "GET" && url.pathname === "/v2/data-science/toolchain") {
+        writeJson(response, 200, { toolchain: await store.dataScienceToolchain(url.searchParams.get("fresh") === "1") });
+        return;
+      }
+      /** Read a job by cursor; DELETE cancels it. */
+      const dsJob = /^\/v2\/data-science\/jobs\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "GET" && dsJob) {
+        const after = Number(url.searchParams.get("after") ?? "0");
+        writeJson(response, 200, { job: store.dataScienceJob(decodeURIComponent(dsJob[1]), Number.isFinite(after) ? after : 0) });
+        return;
+      }
+      if (request.method === "DELETE" && dsJob) {
+        store.dataScienceCancelJob(decodeURIComponent(dsJob[1]));
+        writeJson(response, 200, {});
         return;
       }
       /** Probe one interpreter or venv directory a person named. */
@@ -2824,6 +2854,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             case "lineage": result = await dsAnswer(() => ds.lineage(str("of", true))); break;
             case "watches": result = await dsAnswer(() => ds.watches()); break;
             case "watch": result = await dsAnswer(() => ds.watch({ name: str("name")!, ...(str("assert", true) ? { assert: str("assert", true)! } : {}), ...(input.remove === true ? { remove: true } : {}) })); break;
+            case "packages": result = await dsAnswer(() => ds.packages()); break;
+            case "install": result = await dsAnswer(() => ds.install({ ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}), ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}), ...(str("requirements", true) ? { requirements: str("requirements", true)! } : {}) })); break;
             case "experiment": result = await dsAnswer(() => ds.experiment({ action: str("action")! as "start" | "log" | "end" | "list", ...(str("name", true) ? { name: str("name", true)! } : {}), ...(input.params && typeof input.params === "object" ? { params: input.params as Record<string, unknown> } : {}), ...(input.metrics && typeof input.metrics === "object" ? { metrics: input.metrics as Record<string, number> } : {}) })); break;
             default: throw new HttpError(404, "not_found", `no data-science method ${dsMethod}`);
           }

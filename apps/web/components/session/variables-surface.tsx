@@ -16,7 +16,8 @@ import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
 
-export function VariablesSurface({ sessionId, active }: { sessionId?: string; active?: TurnState }) {
+/** `embedded`: inside the Data tab, whose strip already shows the kernel pill. */
+export function VariablesSurface({ sessionId, active, embedded }: { sessionId?: string; active?: TurnState; embedded?: boolean }) {
   const [kernel, setKernel] = useState<KernelState>("none");
   const [vars, setVars] = useState<VarRow[]>([]);
   const [open, setOpen] = useState<string>();
@@ -53,12 +54,13 @@ export function VariablesSurface({ sessionId, active }: { sessionId?: string; ac
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PanelHeader
-        icon={<BracesIcon />}
-        label="Variables"
+        {...(embedded ? {} : { icon: <BracesIcon /> })}
+        label={embedded ? "" : "Variables"}
+        className={cn(embedded && "border-b-0 py-1")}
         count={vars.length}
         actions={
           <span className="flex items-center gap-1.5">
-            <KernelPill state={kernel} />
+            {!embedded && <KernelPill state={kernel} />}
             <button type="button" aria-label="Refresh" onClick={() => { setRefreshing(true); void load().finally(() => setRefreshing(false)); }} className="rounded p-0.5 text-muted-foreground hover:text-foreground">
               <RotateCwIcon className={cn("size-3", refreshing && "animate-spin")} />
             </button>
