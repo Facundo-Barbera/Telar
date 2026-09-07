@@ -18,6 +18,7 @@ import {
   sessionKey,
   SETTLED_AFTER_MS,
   settlingActivity,
+  windowFor,
   toSidebarSession,
   type SidebarSession,
 } from "./session-list";
@@ -375,4 +376,30 @@ describe("canvasProjectFromPathname", () => {
   expect(bandOf({ ...draft, settledOverride: "settled" }, opts)).toBe("settled");
   expect(bandOf({ ...draft, archived: true }, opts)).toBe("settled");
   expect(bandOf({ ...draft, settledOverride: "active" }, opts)).toBe("pinned");
+});
+
+describe("a paired Mac's rows are banded by that Mac's clock", () => {
+  test("windowFor answers each row's own host, and the default for one nobody read", () => {
+    const windows = new Map<string, number | null>([["local", null], ["host_x", 72]]);
+    expect(windowFor({}, 24, windows)).toBeNull();
+    expect(windowFor({ hostId: "host_x" }, 24, windows)).toBe(72);
+    expect(windowFor({ hostId: "host_unread" }, 24, windows)).toBe(24);
+    expect(windowFor({ hostId: "host_x" }, 24)).toBe(24);
+  });
+
+  test("a quiet row on a Mac whose clock is off stays live while this Mac's clock would shelve it", () => {
+    // The bug: a conversation read as settled here and live on the Mac that
+    // owns it, because the rail banded every row with THIS engine's window.
+    const quiet = row("s1", "Quiet on the mini", { hostId: "host_x", hostName: "mini", updatedAt: NOW - 10 * DAY });
+    const windows = new Map<string, number | null>([["host_x", null]]);
+    const banded = deriveSessionList({ sessions: [quiet], now: NOW, autoSettleAfterHours: 72, windowsByHost: windows });
+    expect(banded.sessions.map((session) => session.id)).toEqual(["s1"]);
+    expect(banded.settledCount).toBe(0);
+    // And the reverse: this Mac's clock is off, the mini's is not.
+    const local = row("s2", "Quiet here", { updatedAt: NOW - 10 * DAY });
+    const strict = new Map<string, number | null>([["local", null], ["host_x", 72]]);
+    const mixed = deriveSessionList({ sessions: [local, quiet], now: NOW, autoSettleAfterHours: null, windowsByHost: strict });
+    expect(mixed.sessions.map((session) => session.id)).toEqual(["s2"]);
+    expect(mixed.settled.map((session) => session.id)).toEqual(["s1"]);
+  });
 });

@@ -19,12 +19,18 @@
  * would silently show the wrong issue. A GitHub link whose repo is unknown or
  * different is just a page, and goes to the browser like any other link.
  *
- * NON-DESKTOP CLIENTS FALL BACK to the system browser: the screenshot client
- * watches the session's browser but has no channel to command it, and a click
- * that does nothing is worse than a tab in the wrong place.
+ * A CLIENT WITHOUT A SHELL — a phone, or this cockpit reading a paired Mac —
+ * goes through the ENGINE's door instead (`POST …/browser/open`), which opens
+ * the tab on that session's own browser: the other Mac's desktop shell when
+ * it is up, its headless Chromium otherwise. The screenshot surface then
+ * shows it. Only when neither route exists does the click fall through to
+ * the system browser, because a click that does nothing is worse than a tab
+ * in the wrong place.
  */
 
 import { desktopBrowserBridge } from "@/components/browser-live";
+import { createEngineApi } from "@/lib/engine/client";
+import { hostFetcher } from "@/lib/hosts/client";
 
 export type ForgeLink = { kind: "issue" | "pull"; number: number; repository: string };
 
@@ -49,20 +55,35 @@ export function sameRepository(a: string | undefined, b: string): boolean {
 }
 
 /**
- * Open `url` as a new tab in the session's integrated browser. True when it
- * landed there; false when this client has no way to (not the desktop shell,
- * or no session yet) — the caller falls back to the system browser.
+ * Open `url` as a new tab in the session's integrated browser. Resolves to
+ * where it landed — `"native"` for this window's own shell, `"engine"` for
+ * the session's engine (whose panel surface will show it), or `undefined`
+ * when neither could — so the caller can open the matching panel tab, or
+ * fall back to the system browser.
  */
-export async function openUrlInSessionBrowser(sessionId: string | undefined, projectId: string | undefined, url: string): Promise<boolean> {
+export async function openUrlInSessionBrowser(
+  sessionId: string | undefined,
+  projectId: string | undefined,
+  url: string,
+  hostId?: string,
+): Promise<"native" | "engine" | undefined> {
+  if (!sessionId) return undefined;
   const bridge = desktopBrowserBridge();
-  if (!bridge || !sessionId) return false;
+  if (bridge) {
+    try {
+      // The host refuses tabs for an unbound scope; binding is idempotent and
+      // re-declared here exactly as the browser panel does before its actions.
+      await bridge.bindProfile?.(sessionId, projectId ?? "none");
+      await bridge.action(sessionId, { action: "new", url });
+      return "native";
+    } catch {
+      return undefined;
+    }
+  }
   try {
-    // The host refuses tabs for an unbound scope; binding is idempotent and
-    // re-declared here exactly as the browser panel does before its actions.
-    await bridge.bindProfile?.(sessionId, projectId ?? "none");
-    await bridge.action(sessionId, { action: "new", url });
-    return true;
+    const answer = await createEngineApi(hostFetcher(hostId ?? "local")).browserOpen(sessionId, url);
+    return answer.browser.tabs.length > 0 ? "engine" : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }

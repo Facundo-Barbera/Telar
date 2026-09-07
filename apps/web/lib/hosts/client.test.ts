@@ -49,3 +49,18 @@ describe("hostFetcher", () => {
     expect(seen).toEqual(["/api/hosts/host_ab/projects", "/api/projects"]);
   });
 });
+
+describe("a row's own Mac", () => {
+  test("a fetcher for a remote row hops; a local row does not", async () => {
+    // What `sessionFetch` in session-inbox-menu.tsx relies on: settle, snooze,
+    // rename and delete on a paired Mac's row must land on THAT engine.
+    const seen: string[] = [];
+    const base = (async (input: string | URL | Request) => {
+      seen.push(typeof input === "string" ? input : String(input));
+      return new Response("{}");
+    }) as typeof fetch;
+    await hostFetcher("host_ab", base)("/api/sessions/s1", { method: "PATCH" });
+    await hostFetcher(LOCAL_HOST_ID, base)("/api/sessions/s1", { method: "PATCH" });
+    expect(seen).toEqual(["/api/hosts/host_ab/sessions/s1", "/api/sessions/s1"]);
+  });
+});

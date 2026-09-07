@@ -238,8 +238,8 @@ export function SessionRow({
     // writes nothing — so nothing would change. Setting an override first makes
     // the clearing patch a real change, and a real change stamps `updatedAt`,
     // which is what actually restarts the inactivity clock.
-    if (!settledByDecision) await patchSession(session.id, { settledOverride: "active" });
-    await patchSession(session.id, { settledOverride: null });
+    if (!settledByDecision) await patchSession(session,{ settledOverride: "active" });
+    await patchSession(session,{ settledOverride: null });
     onRefresh();
   };
 
@@ -252,7 +252,9 @@ export function SessionRow({
   // stranding people on a management table nobody had asked for. A composer in
   // the project you were just working in is where you were going anyway.
   const leaveIfActive = () => {
-    if (active && session.projectId) router.push(canvasHref(session.projectId));
+    // On the row's own Mac: a canvas for the same project id on THIS Mac is a
+    // different project, or none at all.
+    if (active && session.projectId) router.push(canvasHref(session.projectId, session.hostId));
   };
 
   const beginRename = () => {
@@ -267,11 +269,7 @@ export function SessionRow({
     // reject the empty one anyway, and a no-op PATCH writes no event but still
     // costs a round trip and a refresh of every surface.
     if (!next || next === session.title) return;
-    await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ title: next.slice(0, 120) }),
-    });
+    await patchSession(session, { title: next.slice(0, 120) });
     onRefresh();
   };
 
@@ -641,7 +639,7 @@ export function SessionRow({
               disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                void (unsettles ? unsettle() : patchSession(session.id, { settledOverride: "settled" }).then(onRefresh));
+                void (unsettles ? unsettle() : patchSession(session,{ settledOverride: "settled" }).then(onRefresh));
               }}
             >
               {unsettles ? <UndoIcon /> : <CircleCheckIcon />}
@@ -676,7 +674,7 @@ export function SessionRow({
               aria-label="Wake session now"
               title="Wake now"
               className="text-muted-foreground hover:text-foreground"
-              onClick={() => void patchSession(session.id, { snoozedUntil: null }).then(onRefresh)}
+              onClick={() => void patchSession(session,{ snoozedUntil: null }).then(onRefresh)}
             >
               <AlarmClockIcon />
             </Button>
@@ -703,7 +701,7 @@ export function SessionRow({
                   {snoozePresets(new Date(renderedAt)).map((preset) => (
                     <DropdownMenuItem
                       key={preset.id}
-                      onClick={() => void patchSession(session.id, { snoozedUntil: preset.until }).then(onRefresh)}
+                      onClick={() => void patchSession(session,{ snoozedUntil: preset.until }).then(onRefresh)}
                     >
                       <span className="flex-1">{preset.label}</span>
                       <span className="font-mono text-[0.625rem] tabular-nums text-muted-foreground/60">{preset.when}</span>

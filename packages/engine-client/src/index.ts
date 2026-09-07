@@ -1640,6 +1640,13 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
   }
 
+  /** Open an http(s) page as a new tab in the session's browser, as the human
+   *  would — for clients without a desktop shell of their own. Journals the
+   *  tab set like a hand-started browser does. */
+  browserOpen(sessionId: string, url: string): Promise<{ browser: BrowserSnapshot }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/browser/open`, { url });
+  }
+
   /**
    * The MACHINE-WIDE MCP servers — the ones every project sees.
    *

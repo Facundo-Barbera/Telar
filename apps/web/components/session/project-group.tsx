@@ -6,7 +6,7 @@ import { ProjectAvatar } from "@/components/projects/project-avatar";
 import { SessionRow } from "@/components/session/session-row";
 import { SidebarGroup, SidebarGroupContent } from "@/components/ui/sidebar";
 import type { ProjectGroup as Group } from "@/lib/session-groups";
-import { bandOf, canvasHref, sessionKey } from "@/lib/session-list";
+import { canvasHref, sessionKey, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { cn } from "@/lib/utils";
 
 /**
@@ -34,7 +34,7 @@ export function ProjectGroupSection({
   onNavigate,
   activeSessionId,
   renderedAt,
-  autoSettleAfterHours,
+  bandFor,
   onRefresh,
   dragging,
   insert,
@@ -50,7 +50,9 @@ export function ProjectGroupSection({
   onNavigate: () => void;
   activeSessionId?: string;
   renderedAt: number;
-  autoSettleAfterHours: number | null;
+  /** The rail's own banding — a paired Mac's row is banded by that Mac's
+   *  clock, and the group must not re-derive it with this Mac's. */
+  bandFor: (session: SidebarSession) => SessionBand;
   onRefresh: () => void;
   /** This group is the one being carried. */
   dragging: boolean;
@@ -124,7 +126,7 @@ export function ProjectGroupSection({
               // Slim: the header already names the project, and a card's
               // status/branch lines are mostly empty on an idle row.
               variant="slim"
-              band={bandOf(session, { now: renderedAt, autoSettleAfterHours })}
+              band={bandFor(session)}
               renderedAt={renderedAt}
               onRefresh={onRefresh}
             />

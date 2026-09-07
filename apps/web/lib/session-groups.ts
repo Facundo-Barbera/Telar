@@ -72,6 +72,40 @@ export function projectGroupKey(session: Pick<SidebarSession, "projectId" | "hos
   return session.hostId ? `${session.hostId}:${session.projectId ?? ""}` : (session.projectId ?? "");
 }
 
+/**
+ * THE SAME MAC, READ TWICE, DRAWS ONCE.
+ *
+ * A paired host can be THIS cockpit's own engine — its own pairing link pasted
+ * back in, or the desktop shell opened against a Mac that is also in its book
+ * — and two hosts in the book can be one Mac under two addresses before the
+ * merge in `hosts/book.ts` has had a daemon id to merge on. Every session then
+ * arrives twice with two keys, and the rail draws two groups with one name and
+ * the same rows, which is the "sessions duplicate" report.
+ *
+ * `daemonId` is the engine's own identity for its current run, and every read
+ * carries it. Rows are folded by (daemonId, session id): the LOCAL read wins,
+ * because its rows open without a hop; between two remotes the first in book
+ * order wins. Rows from a read that could not name its engine are kept as
+ * they are — a Mac that did not say cannot be proven to be another.
+ */
+export function dedupeAcrossHosts<T extends Pick<SidebarSession, "id" | "hostId">>(
+  reads: readonly { daemonId?: string; sessions: readonly T[] }[],
+): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const read of reads) {
+    for (const session of read.sessions) {
+      if (read.daemonId) {
+        const key = `${read.daemonId}:${session.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      out.push(session);
+    }
+  }
+  return out;
+}
+
 /** Blocked is the engine's own "waiting on you" — the only attention state the rail can honestly claim. */
 export function needsAttention(session: SidebarSession): boolean {
   return session.activity === "blocked";

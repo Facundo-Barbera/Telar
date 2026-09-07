@@ -23,8 +23,20 @@
 import { useState } from "react";
 import { AlarmClockIcon, MoreHorizontalIcon, PencilIcon, PinIcon, PinOffIcon, Trash2Icon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import type { SidebarSession } from "@/lib/session-list";
 import { canSnooze, isSnoozed, snoozePresets, wakeLabel, type SettlingActivity } from "@/lib/session-settling";
+
+/**
+ * A ROW'S REQUESTS GO TO THE ROW'S MAC. The rail draws a paired Mac's
+ * sessions beside the local ones, and every verb on one of them must land on
+ * the engine that owns it. A bare `fetch("/api/sessions/…")` reaches THIS
+ * Mac's engine whatever the row says — which is a 404 at best, and at worst
+ * settles a local session that happens to share the id.
+ */
+export function sessionFetch(session: Pick<SidebarSession, "hostId">, path: string, init?: RequestInit): Promise<Response> {
+  return hostFetcher(session.hostId ?? LOCAL_HOST_ID)(path, init);
+}
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -39,8 +51,11 @@ import { Spinner } from "@/components/ui/spinner";
 
 /** One PATCH, one shape. Both verbs are the same call with different fields,
  *  which is what keeps "settle" and "snooze" from drifting into two protocols. */
-export async function patchSession(sessionId: string, patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null }): Promise<void> {
-  await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+export async function patchSession(
+  session: Pick<SidebarSession, "id" | "hostId">,
+  patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null; title?: string },
+): Promise<void> {
+  await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),
@@ -130,19 +145,19 @@ export function SessionInboxMenu({
              * is to remember it exists.
              */}
             {session.settledOverride === "active" ? (
-              <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { settledOverride: null }))}>
+              <DropdownMenuItem onClick={() => void run(() => patchSession(session,{ settledOverride: null }))}>
                 <PinOffIcon />
                 Unpin
               </DropdownMenuItem>
             ) : (
-              <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { settledOverride: "active" }))}>
+              <DropdownMenuItem onClick={() => void run(() => patchSession(session,{ settledOverride: "active" }))}>
                 <PinIcon />
                 Pin to the list
               </DropdownMenuItem>
             )}
 
             {snoozing ? (
-              <DropdownMenuItem onClick={() => void run(() => patchSession(session.id, { snoozedUntil: null }))}>
+              <DropdownMenuItem onClick={() => void run(() => patchSession(session,{ snoozedUntil: null }))}>
                 <AlarmClockIcon />
                 <span className="flex-1">Wake now</span>
                 <span className="text-xs text-muted-foreground">{wakeLabel(session.snoozedUntil!, now)}</span>
@@ -159,7 +174,7 @@ export function SessionInboxMenu({
                   <DropdownMenuItem
                     key={preset.id}
                     disabled={!canSnooze(activity)}
-                    onClick={() => void run(() => patchSession(session.id, { snoozedUntil: preset.until }))}
+                    onClick={() => void run(() => patchSession(session,{ snoozedUntil: preset.until }))}
                   >
                     <AlarmClockIcon />
                     <span className="flex-1">{preset.label}</span>
@@ -201,7 +216,7 @@ export function SessionInboxMenu({
             // the consequence that is not recoverable.
             if (!window.confirm(`Delete "${name}"?`)) return;
             if (!window.confirm(`This removes the transcript and the worktree for "${name}". It cannot be undone.`)) return;
-            void run(() => fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" })).then(() => {
+            void run(() => sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" })).then(() => {
               if (active) onLeave?.();
             });
           }}

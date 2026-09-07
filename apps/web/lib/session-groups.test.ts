@@ -1,6 +1,6 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import { groupSessions, moveProjectGroup, orderProjectGroups, projectGroupKey, type ProjectGroup } from "./session-groups";
+import { dedupeAcrossHosts, groupSessions, moveProjectGroup, orderProjectGroups, projectGroupKey, type ProjectGroup } from "./session-groups";
 import type { SidebarSession } from "./session-list";
 
 const row = (id: string, over: Partial<SidebarSession> = {}): SidebarSession => ({
@@ -135,5 +135,27 @@ describe("moveProjectGroup", () => {
     // A stored key whose every neighbour moved still lands somewhere sane —
     // after the last stored key that IS drawn before it.
     expect(moveProjectGroup(["x", "a", "b"], ["a", "b"], "b", "a", "above")).toEqual(["x", "b", "a"]);
+  });
+});
+
+describe("dedupeAcrossHosts", () => {
+  test("the same engine read twice draws once, and the local read wins", () => {
+    // A Mac paired with itself, or paired under two addresses: both reads
+    // carry one daemonId, so their rows are one set. The local read comes
+    // first and keeps its rows (no hop); the remote's twins are dropped.
+    const local = { daemonId: "d1", sessions: [row("a"), row("b")] };
+    const twin = { daemonId: "d1", sessions: [row("a", { hostId: "host_x", hostName: "mini" }), row("c", { hostId: "host_x", hostName: "mini" })] };
+    const other = { daemonId: "d2", sessions: [row("a", { hostId: "host_y", hostName: "studio" })] };
+    const out = dedupeAcrossHosts([local, twin, other]);
+    expect(out.map((session) => `${session.hostId ?? "local"}:${session.id}`)).toEqual(["local:a", "local:b", "host_x:c", "host_y:a"]);
+  });
+
+  test("a read that could not name its engine is kept as it is", () => {
+    // Unproven identity never drops a row: a Mac whose health did not answer
+    // may or may not be another read's twin, and showing twice is the
+    // recoverable mistake.
+    const local = { daemonId: "d1", sessions: [row("a")] };
+    const unknown = { sessions: [row("a", { hostId: "host_x", hostName: "mini" })] };
+    expect(dedupeAcrossHosts([local, unknown])).toHaveLength(2);
   });
 });

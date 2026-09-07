@@ -1131,7 +1131,16 @@ export function SessionCockpit({
     const task = window.setTimeout(() => {
       setBrowserCanStart(false);
       if (!sessionId) {
-        setBrowserCanStart(Boolean(projectId && hostId === LOCAL_HOST_ID && desktopBrowserBridge()));
+        /**
+         * A FRESH CANVAS ON ANOTHER MAC CAN OPEN A BROWSER TOO — that Mac's,
+         * through its engine, watched from here as screenshots. The gate used
+         * to require this window's native bridge, which a remote screen never
+         * has, so a remote canvas had no browser button at all; the button's
+         * own path (`openBrowser`) already speaks to the right engine via
+         * `hostFetcher(hostId)`. Locally the bridge is still the tell: without
+         * it the local engine's worker owns the browser out of process.
+         */
+        setBrowserCanStart(Boolean(projectId && (hostId !== LOCAL_HOST_ID || desktopBrowserBridge())));
         return;
       }
       api.browserState(sessionId).then(
@@ -1216,14 +1225,22 @@ export function SessionCockpit({
             return;
           }
         }
-        if (await openUrlInSessionBrowser(sessionId, projectId, href)) {
+        const landed = await openUrlInSessionBrowser(sessionId, projectId, href, hostId);
+        if (landed === "native") {
           showPanelTab(LIVE_BROWSER_TAB);
+          return;
+        }
+        if (landed === "engine") {
+          // The screenshot surface's tab arrives through the journal fold
+          // (`browser.state.changed`) on the next sync; the panel opens the
+          // page as its own tab then — see the `seenPages` effect.
+          updatePanel((current) => ({ ...current, open: true }));
           return;
         }
         window.open(href, "_blank", "noopener,noreferrer");
       })();
     },
-    [hostId, projectId, sessionId, showPanelTab],
+    [hostId, projectId, sessionId, showPanelTab, updatePanel],
   );
 
   /**

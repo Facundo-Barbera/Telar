@@ -554,6 +554,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       const suffix = query.size > 0 ? `?${query.toString()}` : "";
       return request<{ browser: BrowserSnapshot }>(fetcher, "GET", `/api/sessions/${encodeURIComponent(sessionId)}/browser${suffix}`);
     },
+    /** Open a page in the session's browser as the human — the engine's door,
+     *  for a client with no native shell (a remote cockpit, a phone). */
+    browserOpen: (sessionId: string, url: string) =>
+      request<{ browser: BrowserSnapshot }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/browser/open`, { url }),
     /** The MACHINE-WIDE MCP servers — the ones every project sees. A project's
      *  own live under `projectMcpServers`, and the URL is what says which scope
      *  a write lands in. */

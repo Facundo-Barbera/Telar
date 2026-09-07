@@ -2502,3 +2502,32 @@ describe("worker queries scale with live turns, not with the number of sessions"
     expect(store.claimNextTurn("worker_two")?.turn.runId).toBe("run_second");
   });
 });
+
+test("browserOpen opens an http(s) page as the human on the session's browser and journals the tab set", async () => {
+  const { store } = readyStore();
+  const calls: Array<{ op: string; name?: string; args?: Record<string, unknown>; profileKey?: string }> = [];
+  let tabs: { id: string; url: string; title: string; active: boolean }[] = [];
+  store.attachBrowser({
+    bindProfile: async (_scopeKey: string, profileKey: string) => { calls.push({ op: "bind", profileKey }); },
+    call: async (_scopeKey: string, name: string, args: Record<string, unknown>) => {
+      calls.push({ op: "call", name, args });
+      tabs = [{ id: "0", url: String(args.url), title: "Docs", active: true }];
+      return { content: [{ type: "text", text: "opened" }] };
+    },
+    state: async () => ({ provider: "attached" as const, running: true, tabs }),
+    release: async () => undefined,
+  } as never);
+  const answer = await store.browserOpen("session_one", "https://example.test/docs");
+  expect(answer.tabs.map((tab) => tab.url)).toEqual(["https://example.test/docs"]);
+  expect(calls).toEqual([
+    { op: "bind", profileKey: "project_one" },
+    { op: "call", name: "browser_tabs", args: { action: "new", url: "https://example.test/docs" } },
+    // browserState({start}) binds again before its read — idempotent, and the
+    // one write that journals the tab set for the panel.
+    { op: "bind", profileKey: "project_one" },
+  ]);
+  const events = store.readEvents("session_one").filter((event) => event.type === "browser.state.changed");
+  expect(events).toHaveLength(1);
+  await expect(store.browserOpen("session_one", "file:///etc/passwd")).rejects.toThrow(/only http and https/);
+  await expect(store.browserOpen("session_one", "not a url")).rejects.toThrow(/not a URL/);
+});

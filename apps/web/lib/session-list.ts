@@ -204,9 +204,27 @@ export type SessionListInput = {
   /** `null` turns the inactivity clock off. Comes from the engine — one answer
    *  per machine, not per browser. See `InboxPolicy`. */
   autoSettleAfterHours?: number | null;
+  /**
+   * A PAIRED MAC'S ROWS ARE BANDED BY THAT MAC'S CLOCK. The settling window is
+   * an engine's own document, so a row from the mini is shelved when the mini
+   * would shelve it — not when this Mac would. Keyed by host id (`LOCAL_HOST`
+   * for this engine); a host with no entry falls back to `autoSettleAfterHours`.
+   */
+  windowsByHost?: ReadonlyMap<string, number | null>;
   limit?: number;
   settledLimit?: number;
 };
+
+/** The settling window that applies to ONE row: its own Mac's, else the default. */
+export function windowFor(
+  session: Pick<SidebarSession, "hostId">,
+  fallback: number | null,
+  windowsByHost?: ReadonlyMap<string, number | null>,
+): number | null {
+  if (!windowsByHost) return fallback;
+  const own = windowsByHost.get(session.hostId ?? "local");
+  return own === undefined ? fallback : own;
+}
 
 export type SessionListResult = {
   /** Fixed at the top, unpaged, and outside `sessions` so the rail can rule a
@@ -273,10 +291,11 @@ export function deriveSessionList({
   activeSessionId,
   now = Date.now(),
   autoSettleAfterHours = DEFAULT_AUTO_SETTLE_HOURS,
+  windowsByHost,
   limit = SESSION_PAGE_SIZE,
   settledLimit = limit,
 }: SessionListInput): SessionListResult {
-  const options: SettlingOptions = { now, autoSettleAfterHours };
+  const optionsFor = (session: SidebarSession): SettlingOptions => ({ now, autoSettleAfterHours: windowFor(session, autoSettleAfterHours, windowsByHost) });
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const eligible = sessions
     .filter((session) => !projectId || session.projectId === projectId)
@@ -309,7 +328,7 @@ export function deriveSessionList({
   const snoozed: SidebarSession[] = [];
   const settled: SidebarSession[] = [];
   for (const session of eligible) {
-    const band = bandOf(session, options);
+    const band = bandOf(session, optionsFor(session));
     (band === "pinned" ? pinned : band === "snoozed" ? snoozed : band === "settled" ? settled : current).push(session);
   }
 

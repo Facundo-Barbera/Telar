@@ -2796,6 +2796,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        if (request.method === "POST" && session.tail === "/browser/open") {
+          // A human opening a page in the session's browser from a client
+          // with no desktop shell of its own — see EngineStore.browserOpen.
+          const input = await body(request);
+          writeJson(response, 200, { browser: await store.browserOpen(session.sessionId, stringValue(input.url, "url")!) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/browser/control") {
           // The desktop shell reporting whose hands are on the shared browser
           // — see EngineStore.recordBrowserControl. Idempotent by dedupe.
