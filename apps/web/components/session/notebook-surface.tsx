@@ -93,7 +93,8 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
       const draft = drafts.get(cellId);
       if (draft === undefined) return nb;
       try {
-        const next = await api.notebookEdit(sessionId, path, { kind: "set", cellId, source: draft });
+        await api.notebookEdit(sessionId, path, { kind: "set", cellId, source: draft });
+        const next = await api.notebook(sessionId, path, { withOutputs: true });
         setDrafts((current) => {
           const copy = new Map(current);
           if (copy.get(cellId) === draft) copy.delete(cellId);
@@ -134,8 +135,10 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
     setRunning((current) => new Set(current).add(cellId ?? "*"));
     setKernel((state) => (state === "none" ? "starting" : "busy"));
     try {
-      const outcome = await api.notebookRun(sessionId, path, cellId ? { cellId } : { all: true });
-      setNb(outcome.notebook);
+      await api.notebookRun(sessionId, path, cellId ? { cellId } : { all: true });
+      // The run's own summary carries only each cell's LAST output; re-read
+      // with outputs so a print above a table is not lost on screen.
+      setNb(await api.notebook(sessionId, path, { withOutputs: true }));
       setProblem(undefined);
     } catch (cause) {
       setProblem(cause instanceof Error ? cause.message : "Could not run.");
@@ -153,7 +156,8 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
     if (!sessionId) return;
     setBusy(true);
     try {
-      setNb(await api.notebookEdit(sessionId, path, edit));
+      await api.notebookEdit(sessionId, path, edit);
+      setNb(await api.notebook(sessionId, path, { withOutputs: true }));
       setProblem(undefined);
     } catch (cause) {
       setProblem(cause instanceof Error ? cause.message : "Could not edit.");
