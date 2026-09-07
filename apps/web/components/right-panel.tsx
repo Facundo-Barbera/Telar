@@ -53,6 +53,7 @@ import { DiffSurface } from "@/components/session/diff-surface";
 import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
 import { NotebookSurface } from "@/components/session/notebook-surface";
+import { PdfSurface } from "@/components/session/pdf-surface";
 import { TableSurface } from "@/components/session/table-surface";
 import { DataSurface } from "@/components/session/data-surface";
 import { ImageLightbox } from "@/components/session/image-lightbox";
@@ -171,6 +172,7 @@ export type PanelTab =
   | `file:${string}`
   | `notebook:${string}`
   | `table:${string}`
+  | `pdf:${string}`
   | `issue:${number}`
   | `pull:${number}`;
 
@@ -178,6 +180,7 @@ const BROWSER_PREFIX = "browser:";
 const FILE_PREFIX = "file:";
 const NOTEBOOK_PREFIX = "notebook:";
 const TABLE_PREFIX = "table:";
+const PDF_PREFIX = "pdf:";
 const ISSUE_PREFIX = "issue:";
 const PULL_PREFIX = "pull:";
 
@@ -196,13 +199,22 @@ export function tablePanelTab(path: string): PanelTab {
 export function tablePanelPath(tab: PanelTab): string | undefined {
   return tab.startsWith(TABLE_PREFIX) ? tab.slice(TABLE_PREFIX.length) : undefined;
 }
+export function pdfPanelTab(path: string): PanelTab {
+  return `${PDF_PREFIX}${path}`;
+}
+export function pdfPanelPath(tab: PanelTab): string | undefined {
+  return tab.startsWith(PDF_PREFIX) ? tab.slice(PDF_PREFIX.length) : undefined;
+}
 
-/** Which tab a path opens as: notebook, table or plain file — by file kind,
- *  and only when the project opted into data science. */
+/** Which tab a path opens as: notebook, table, PDF or plain file — by file
+ *  kind. The data-science pair is gated on the project's opt-in; the PDF
+ *  viewer is NOT — a document renders wherever it is opened from (the tree,
+ *  the agent's display tool, another feature's compiled output). */
 export function panelTabForPath(path: string, dataScience: boolean): PanelTab {
   const viewer = fileKind(path).viewer;
   if (dataScience && viewer === "notebook") return notebookPanelTab(path);
   if (dataScience && viewer === "table") return tablePanelTab(path);
+  if (viewer === "pdf") return pdfPanelTab(path);
   return filePanelTab(path);
 }
 
@@ -240,7 +252,7 @@ export function filePanelPath(tab: PanelTab): string | undefined {
 /** Every open file, as plain paths — what the tree marks as already open. */
 export function openFilePaths(tabs: readonly PanelTab[]): string[] {
   return tabs
-    .map((tab) => filePanelPath(tab) ?? notebookPanelPath(tab) ?? tablePanelPath(tab))
+    .map((tab) => filePanelPath(tab) ?? notebookPanelPath(tab) ?? tablePanelPath(tab) ?? pdfPanelPath(tab))
     .filter((path): path is string => path !== undefined);
 }
 
@@ -293,6 +305,7 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => filePanelPath(tab) !== undefined,
   (tab) => notebookPanelPath(tab) !== undefined,
   (tab) => tablePanelPath(tab) !== undefined,
+  (tab) => pdfPanelPath(tab) !== undefined,
   (tab) => issuePanelNumber(tab) !== undefined,
   (tab) => pullPanelNumber(tab) !== undefined,
   (tab) => tab === "files",
@@ -316,6 +329,7 @@ export function isPanelTab(value: string): value is PanelTab {
   if (value.startsWith(FILE_PREFIX)) return value.length > FILE_PREFIX.length;
   if (value.startsWith(NOTEBOOK_PREFIX)) return value.length > NOTEBOOK_PREFIX.length;
   if (value.startsWith(TABLE_PREFIX)) return value.length > TABLE_PREFIX.length;
+  if (value.startsWith(PDF_PREFIX)) return value.length > PDF_PREFIX.length;
   // `issue:` and `pull:` must carry a number, because the surface behind them
   // asks gh for exactly that number.
   if (value.startsWith(ISSUE_PREFIX) || value.startsWith(PULL_PREFIX)) {
@@ -363,6 +377,8 @@ export function describePanelTab(
   if (notebookPath !== undefined) return { label: notebookPath.slice(notebookPath.lastIndexOf("/") + 1), icon: NotebookIcon, blurb: notebookPath };
   const tablePath = tablePanelPath(tab);
   if (tablePath !== undefined) return { label: tablePath.slice(tablePath.lastIndexOf("/") + 1), icon: TableIcon, blurb: tablePath };
+  const pdfPath = pdfPanelPath(tab);
+  if (pdfPath !== undefined) return { label: pdfPath.slice(pdfPath.lastIndexOf("/") + 1), icon: FileIcon, blurb: pdfPath };
   const issueNumber = issuePanelNumber(tab);
   if (issueNumber !== undefined) return { label: `#${issueNumber}`, icon: CircleDotIcon, blurb: `Issue #${issueNumber}` };
   const pullNumber = pullPanelNumber(tab);
@@ -1017,6 +1033,9 @@ export function PanelSurface({
     return <NotebookSurface path={notebookPath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   const tablePath = tablePanelPath(tab);
   if (tablePath !== undefined) return <TableSurface path={tablePath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
+  const pdfPath = pdfPanelPath(tab);
+  if (pdfPath !== undefined)
+    return <PdfSurface path={pdfPath} {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} />;
   if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   const filePath = filePanelPath(tab);
   if (filePath !== undefined)

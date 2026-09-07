@@ -20,6 +20,9 @@ import {
   latestBrowserState,
   openFilePaths,
   openForgeNumbers,
+  panelTabForPath,
+  pdfPanelPath,
+  pdfPanelTab,
   pullPanelNumber,
   pullPanelTab,
   splitRoster,
@@ -92,6 +95,28 @@ describe("file tabs", () => {
     expect(isPanelTab("files")).toBe(true);
     expect(isPanelTab("changes")).toBe(false);
     expect(isPanelTab("git")).toBe(false);
+  });
+});
+
+describe("pdf tabs", () => {
+  test("a .pdf path routes to its own tab, data science or not", () => {
+    // The PDF viewer is deliberately ungated: compiled LaTeX output, a
+    // downloaded paper — a document renders wherever it is opened from.
+    expect(panelTabForPath("docs/paper.pdf", false)).toBe("pdf:docs/paper.pdf");
+    expect(panelTabForPath("docs/paper.pdf", true)).toBe("pdf:docs/paper.pdf");
+    // While the data-science pair keeps its gate.
+    expect(panelTabForPath("analysis.ipynb", false)).toBe("file:analysis.ipynb");
+    expect(panelTabForPath("analysis.ipynb", true)).toBe("notebook:analysis.ipynb");
+    // And markdown stays a `file:` tab — the file view renders it itself.
+    expect(panelTabForPath("README.md", false)).toBe("file:README.md");
+  });
+
+  test("the tab round-trips, validates, and counts as an open file", () => {
+    expect(pdfPanelPath(pdfPanelTab("a/b.pdf"))).toBe("a/b.pdf");
+    expect(isPanelTab("pdf:docs/paper.pdf")).toBe(true);
+    expect(isPanelTab("pdf:")).toBe(false);
+    expect(describePanelTab("pdf:docs/paper.pdf").label).toBe("paper.pdf");
+    expect(openFilePaths(["pdf:docs/paper.pdf", "file:a.ts"])).toEqual(["docs/paper.pdf", "a.ts"]);
   });
 });
 
