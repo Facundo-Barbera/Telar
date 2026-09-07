@@ -33,6 +33,8 @@ import {
   resolveMcpServers,
   EngineRequest as RequestSchema,
   Project as ProjectSchema,
+  DataScienceConfig as DataScienceConfigSchema,
+  type DataScienceConfig,
   Session as SessionSchema,
   Subscription as SubscriptionSchema,
   Task as TaskSchema,
@@ -221,6 +223,8 @@ import { readModelCatalogue } from "./models";
 import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
+import { defaultExec, detectPythonCandidates, preflightPython, resolvePythonPath, type PythonCandidate, type PythonPreflight } from "./ds/python-env";
+import { ensureTelarVenv, telarVenvDir, telarVenvPython, type VenvOutcome } from "./ds/telar-venv";
 
 /** The human-facing one-liner for a parked request's notification. */
 /**
@@ -3686,6 +3690,62 @@ export class EngineStore {
     const project = registry === undefined ? undefined : parseRegistry(registry).projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
     return structuredClone(project);
+  }
+
+  /**
+   * Change what a project OPTS INTO. Identity — name, root — is not patchable:
+   * moving a project means registering it again, and this method refuses any
+   * key it does not know rather than storing it. `dataScience: null` removes
+   * the block, which is how "off" is spelled so the registry does not grow a
+   * `{enabled: false}` for every project that tried it once.
+   */
+  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null }): Project {
+    assertId(projectId, "project id");
+    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registry);
+    const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
+    if (index < 0) throw new EngineStateError("not_found", "project does not exist");
+    const current = parsed.projects[index]!;
+    const next: Project = { ...current, updatedAt: this.now() };
+    if (patch.dataScience === null) {
+      delete next.dataScience;
+    } else if (patch.dataScience !== undefined) {
+      const config = DataScienceConfigSchema.safeParse(patch.dataScience);
+      if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
+      next.dataScience = config.data;
+    }
+    parsed.projects[index] = next;
+    atomicWrite(this.paths.projects, parsed);
+    return structuredClone(next);
+  }
+
+  /**
+   * The interpreters a project could run its data-science tooling on, each
+   * probed. A list for a human to choose from — see `ds/python-env.ts` for why
+   * the engine never picks. Telar's own venv is listed when it already exists.
+   */
+  async dataScienceDetect(projectId: string): Promise<{ candidates: (PythonCandidate & { preflight: PythonPreflight })[]; uv: boolean }> {
+    const project = this.getProject(projectId);
+    const telarVenv = telarVenvDir(this.paths.root, projectId);
+    const found = await detectPythonCandidates(project.root, { ...(telarVenvPython(telarVenv) ? { telarVenv } : {}) });
+    const candidates = await Promise.all(found.map(async (candidate) => ({ ...candidate, preflight: await preflightPython(candidate.path) })));
+    const uv = await defaultExec("uv", ["--version"], { timeoutMs: 5_000 }).then((r) => r.status === 0, () => false);
+    return { candidates, uv };
+  }
+
+  /**
+   * Build or repair Telar's venv for a project, on the interpreter the person
+   * chose. Returns the venv's python so the caller can store it with
+   * `source: "telar"`. `stack` also installs the optional analysis libraries;
+   * the answer says which packages were asked for, and the next preflight says
+   * which actually import.
+   */
+  async dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<VenvOutcome> {
+    const project = this.getProject(projectId);
+    const base = resolvePythonPath(project.root, input.basePython);
+    const probe = await preflightPython(base, []);
+    if (!probe.ok) throw new EngineStateError("invalid_request", `base interpreter is unusable: ${probe.reason}`);
+    return ensureTelarVenv(telarVenvDir(this.paths.root, projectId), { basePython: base, ...(input.stack ? { stack: true } : {}) });
   }
 
   /** Coalesce polling reads and keep results briefly. Bounded so browsing patches

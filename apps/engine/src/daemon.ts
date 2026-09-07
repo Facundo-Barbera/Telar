@@ -2109,6 +2109,48 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         );
         return;
       }
+      /**
+       * What a project OPTS INTO. `PATCH`, not `PUT`: identity stays where
+       * `registerProject` put it, and the body names only the switches it
+       * means to move. `dataScience: null` turns the feature off and removes
+       * the block, which is the difference between "never asked" and "off".
+       */
+      const projectPatch = /^\/v2\/projects\/([^/]+)$/.exec(url.pathname);
+      if (request.method === "PATCH" && projectPatch) {
+        const input = await body(request);
+        const patch: Parameters<typeof store.updateProject>[1] = {};
+        if ("dataScience" in input) {
+          if (input.dataScience !== null && (typeof input.dataScience !== "object" || Array.isArray(input.dataScience))) {
+            throw new HttpError(400, "invalid_request", "dataScience must be an object or null");
+          }
+          patch.dataScience = input.dataScience as Parameters<typeof store.updateProject>[1]["dataScience"];
+        }
+        writeJson(response, 200, { project: store.updateProject(decodeURIComponent(projectPatch[1]), patch) });
+        return;
+      }
+      /**
+       * Which Pythons a project could run on, each probed. A LIST, so the
+       * settings page can ask rather than the engine guessing — see
+       * `ds/python-env.ts`. Slow by nature (it spawns each interpreter), and
+       * only a human opening the dialog calls it.
+       */
+      const projectDsDetect = /^\/v2\/projects\/([^/]+)\/data-science\/detect$/.exec(url.pathname);
+      if (request.method === "GET" && projectDsDetect) {
+        writeJson(response, 200, await store.dataScienceDetect(decodeURIComponent(projectDsDetect[1])));
+        return;
+      }
+      /** Build Telar's own venv for a project on the interpreter the person chose. */
+      const projectDsVenv = /^\/v2\/projects\/([^/]+)\/data-science\/venv$/.exec(url.pathname);
+      if (request.method === "POST" && projectDsVenv) {
+        const input = await body(request);
+        writeJson(response, 200, {
+          venv: await store.dataScienceVenv(decodeURIComponent(projectDsVenv[1]), {
+            basePython: stringValue(input.basePython, "base python")!,
+            ...(typeof input.stack === "boolean" ? { stack: input.stack } : {}),
+          }),
+        });
+        return;
+      }
       if (request.method === "POST" && url.pathname === "/v2/projects") {
         const input = await body(request);
         writeJson(response, 201, {

@@ -76,6 +76,9 @@ import {
   type McpServerSpec,
   type TurnAttachment,
   type TurnModelSelection,
+  type DataScienceConfig,
+  type DataScienceDetection,
+  type DataScienceVenvOutcome,
   type EngineErrorBody,
   type EngineErrorCode,
   type EngineEvent,
@@ -306,6 +309,23 @@ export class EngineClient {
 
   registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
     return this.request("POST", "/v2/projects", input);
+  }
+
+  /** Move a project's opt-in switches. `dataScience: null` turns it off. */
+  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null }): Promise<{ project: Project }> {
+    return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);
+  }
+
+  /** The Pythons a project could run its data-science tooling on, each probed.
+   *  Spawns interpreters; call it from a dialog, never from a poll. */
+  dataScienceDetect(projectId: string): Promise<DataScienceDetection> {
+    return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/data-science/detect`);
+  }
+
+  /** Build Telar's own venv for a project on `basePython`; `stack` also installs
+   *  pandas, matplotlib, duckdb and pyarrow. Slow — minutes with the stack. */
+  dataScienceVenv(projectId: string, input: { basePython: string; stack?: boolean }): Promise<{ venv: DataScienceVenvOutcome }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/data-science/venv`, input);
   }
 
   /** The inbox's standing rule — see `InboxPolicy`. Environment-wide, so every
