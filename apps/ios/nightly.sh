@@ -41,7 +41,7 @@ xcodebuild \
   ${TELAR_ASC_ISSUER_ID:+-authenticationKeyIssuerID "$TELAR_ASC_ISSUER_ID"} \
   ${TELAR_ASC_KEY_PATH:+-authenticationKeyPath "$TELAR_ASC_KEY_PATH"} \
   DEVELOPMENT_TEAM="$TEAM" \
-  PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE" \
+  TELAR_APP_BUNDLE_ID="$BUNDLE" \
   INFOPLIST_KEY_CFBundleDisplayName="Telar" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   archive

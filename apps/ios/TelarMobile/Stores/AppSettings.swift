@@ -80,11 +80,15 @@ import Observation
     /// Removing a Mac clears everything scoped to it: credential and
     /// pending-send drafts.
     func remove(_ id: HostID) {
+        let pushAPI = api(for: id)
         vault.delete(account: HostMigration.tokenAccount(id))
         let prefix = HostMigration.pendingSendPrefix + id.uuidString + "."
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
             defaults.removeObject(forKey: key)
         }
+        MobileDrafts.shared.remove(host: id)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("telar.draft.\(id).") || key.hasPrefix("telar.lastVisit.\(id).") { defaults.removeObject(forKey: key) }
+        Task { await MobileNotifications.shared.removeHost(id, api: pushAPI) }
         book.remove(id)
         persist()
     }

@@ -18,6 +18,12 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 24) {
+                NavigationLink { NotificationSettingsView() } label: {
+                    Label("Notifications & activities", systemImage: "bell.badge")
+                        .frame(maxWidth: .infinity, alignment: .leading).padding()
+                        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.radiusCard))
+                }
+
                 VStack(spacing: 0) {
                     SettingsSectionLabel("Cockpits")
                     SettingsCard {

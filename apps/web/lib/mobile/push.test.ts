@@ -1,0 +1,86 @@
+// @ts-expect-error bun:test has no types in this app's tsconfig
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { activityDelivery, notification, parseRegistration, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import { deliverRecord } from "./worker";
+
+const registration: MobileRegistration = {
+  hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "com.telar.mobile", sandbox: true,
+  enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
+};
+const working: SessionSignal = { id: "session/a?b", title: "Private repository task", activity: "working", activityAt: 1000 };
+const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
+const record = (): PushRecord => ({ ...registration, deviceId: "paired", revision: "r1", updatedAt: 1000, seen: {}, activitySent: {} });
+
+describe("mobile push delivery", () => {
+  test("rejects arbitrary topics, malformed tokens and oversized subscriptions", () => {
+    expect(parseRegistration(registration)).toEqual(registration);
+    for (const patch of [{ topic: "com.someone.else" }, { token: "not-a-token" }, { hostId: "wrong" }, { enabled: "yes" }, { activities: Array(9).fill({}) }]) {
+      expect(() => parseRegistration({ ...registration, ...patch })).toThrow();
+    }
+  });
+  test("baseline and duplicate polls do not alert; attention transitions do", () => {
+    expect(notification(registration, blocked, undefined)).toBeUndefined();
+    expect(notification(registration, blocked, signalKey(blocked))).toBeUndefined();
+    const delivery = notification(registration, blocked, signalKey(working))!;
+    expect(delivery.payload.aps.alert).toEqual({ title: "Telar", body: "A session needs your input or approval." });
+    expect(JSON.stringify(delivery.payload)).not.toContain(working.title);
+    expect(new URL(delivery.payload.url!).searchParams.get("id")).toBe(working.id);
+    expect(new URL(delivery.payload.url!).searchParams.get("host")).toBe(registration.hostId);
+  });
+  test("sessions created after the initial baseline can alert on their first sight", async () => {
+    const initial = await deliverRecord(record(), [], async () => 200);
+    let sent = 0;
+    await deliverRecord(initial!, [blocked], async () => { sent++; return 200; });
+    expect(sent).toBe(1);
+  });
+  test("mute and completion preferences are enforced independently", () => {
+    expect(notification({ ...registration, mutedSessions: [working.id] }, blocked, signalKey(working))).toBeUndefined();
+    const done = { ...working, activity: "idle", lastTurnEndedAt: 3000 };
+    expect(notification({ ...registration, completions: false }, done, signalKey(working))).toBeUndefined();
+    expect(notification({ ...registration, completions: false }, { ...done, lastTurnFailed: true }, signalKey(working))).toBeDefined();
+    expect(notification({ ...registration, enabled: false }, blocked, signalKey(working))).toBeUndefined();
+  });
+  test("failed delivery retries and successful delivery checkpoints", async () => {
+    const initial = record(); initial.seen[working.id] = signalKey(working);
+    const failed = await deliverRecord(initial, [blocked], async () => 503, 1000);
+    expect(failed?.seen[working.id]).toBe(signalKey(working));
+    let retries = 0;
+    await deliverRecord(failed!, [blocked], async () => { retries++; return 200; }, 1001);
+    expect(retries).toBe(0);
+    expect(failed?.retryAt).toBe(1005);
+    const sent = await deliverRecord(failed!, [blocked], async () => 200, 1010);
+    expect(sent?.seen[working.id]).toBe(signalKey(blocked));
+    let count = 0;
+    await deliverRecord(sent!, [blocked], async () => { count++; return 200; });
+    expect(count).toBe(0);
+    expect(await deliverRecord(initial, [blocked], async () => 410)).toBeUndefined();
+  });
+  test("Live Activity uses the widget contract, separate topic and ends on completion", async () => {
+    const follow = { sessionId: working.id, token: "b".repeat(64), startedAt: 1800000000 };
+    const r = { ...record(), activities: [follow] };
+    const payload = activityDelivery(r, follow, working, 1800000060);
+    expect(payload.topic).toBe("com.telar.mobile.push-type.liveactivity");
+    expect(payload.payload.aps.event).toBe("update");
+    expect(payload.payload.aps["content-state"]).toMatchObject({ title: "Telar session", updatedAt: 821692860, ended: false });
+    expect(activityDelivery(r, follow, undefined, 1800000060).payload.aps.event).toBe("end");
+    const ended = await deliverRecord(r, [{ ...working, activity: "idle" }], async () => 200, 1800000060);
+    expect(ended?.activities).toEqual([]);
+  });
+  test("registrations are device scoped, private on disk, and preserve checkpoints", () => {
+    const folder = mkdtempSync(path.join(os.tmpdir(), "telar-push-")); const file = path.join(folder, "push.json");
+    try {
+      saveRegistration("one", registration, file);
+      saveRegistration("two", registration, file);
+      expect(readPushRecords(file).length).toBe(2);
+      const revision = readPushRecords(file)[0].revision;
+      saveRegistration("one", { ...registration, enabled: false }, file);
+      const rows = readPushRecords(file);
+      expect(rows.length).toBe(2);
+      expect(rows.find(r => r.deviceId === "one")?.revision).not.toBe(revision);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    } finally { rmSync(folder, { recursive: true, force: true }); }
+  });
+});
