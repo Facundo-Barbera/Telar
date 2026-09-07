@@ -80,3 +80,23 @@ describe("fileKind", () => {
     expect(fileKind("mystery.qqq").tint).toBe("text-muted-foreground");
   });
 });
+
+describe("media kinds", () => {
+  test("renderable bytes name their media element; opaque bytes name none", () => {
+    expect(fileKind("shot.png").media).toBe("image");
+    expect(fileKind("clip.mp4").media).toBe("video");
+    expect(fileKind("voice.mp3").media).toBe("audio");
+    expect(fileKind("paper.pdf").media).toBe("pdf");
+    // A font is bytes with no viewer — the named empty state, not a broken tag.
+    expect(fileKind("font.woff2").media).toBeUndefined();
+    expect(fileKind("lib.wasm").media).toBeUndefined();
+  });
+
+  test("the pdf kind also names the pdf viewer, ungated by data science", () => {
+    // `viewer: "pdf"` is the seam other features (compiled LaTeX output)
+    // route through — panelTabForPath reads it without a dataScience gate.
+    expect(fileKind("out/main.pdf").viewer).toBe("pdf");
+    expect(fileKind("data.csv").viewer).toBe("table");
+    expect(fileKind("notes.md").viewer).toBeUndefined();
+  });
+});

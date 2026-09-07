@@ -55,6 +55,18 @@ export const MAX_WORKSPACE_FILES = 5_000;
  */
 export const MAX_FILE_BYTES = 512 * 1024;
 
+/**
+ * How much of a file the RAW route serves.
+ *
+ * A different ceiling from `MAX_FILE_BYTES` because it answers a different
+ * question: the text route feeds an editor, where 512KB is already past what
+ * anybody edits, while the raw route feeds an `<img>`, a PDF viewer or a
+ * `<video>` — things that are legitimately tens of megabytes. Past this a
+ * file is a download, not a preview, and the route refuses rather than
+ * buffering half a gigabyte into the daemon.
+ */
+export const MAX_RAW_FILE_BYTES = 64 * 1024 * 1024;
+
 /** How deep a walk goes. Only reached in an unversioned directory; deep enough
  *  for a real source tree, shallow enough that a symlink cycle cannot hang the
  *  daemon. */
@@ -277,6 +289,59 @@ export function writeWorkspaceFile(input: {
   };
 }
 
+
+/**
+ * The media type the raw route declares, FROM THE NAME — the same trade
+ * `file-kinds.ts` makes in the cockpit. Sniffing bytes would be more honest
+ * about a mislabelled file, but the consumer is a browser rendering `<img>`,
+ * `<iframe>` or `<video>`, and a browser presented with a wrong declared type
+ * fails safe (it refuses to render) rather than dangerously. Only the types a
+ * viewer exists for are named; everything else is opaque bytes.
+ */
+const MEDIA_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+  svg: "image/svg+xml",
+  ico: "image/x-icon",
+  pdf: "application/pdf",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  md: "text/markdown; charset=utf-8",
+  html: "text/html; charset=utf-8",
+  htm: "text/html; charset=utf-8",
+  txt: "text/plain; charset=utf-8",
+  json: "application/json; charset=utf-8",
+};
+
+export function mediaTypeFor(target: string): string {
+  const name = target.split("/").at(-1) ?? target;
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return MEDIA_TYPES[extension] ?? "application/octet-stream";
+}
+
+/**
+ * One file's BYTES, whole — what the media viewers eat.
+ *
+ * The text read above deliberately withholds a binary file's content; this is
+ * the counterpart that serves it. REFUSED over the raw ceiling rather than
+ * truncated: half a PNG is not a smaller picture, it is a broken one, and a
+ * viewer fed a cut PDF renders an error page that looks like engine failure.
+ */
+export async function readWorkspaceFileBytes(input: { cwd: string; path: string; maxBytes?: number }): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
+  const limit = input.maxBytes ?? MAX_RAW_FILE_BYTES;
+  const absolute = path.resolve(input.cwd, input.path);
+  const bytes = (await fsAsync.stat(absolute)).size;
+  if (bytes > limit) throw new Error(`this file is ${bytes} bytes, larger than the ${limit}-byte preview ceiling`);
+  return { data: await fsAsync.readFile(absolute), mediaType: mediaTypeFor(input.path), bytes };
+}
 
 /** Async reads keep Files and the composer's file picker off the daemon loop. */
 export async function gitWorkspaceFilesAsync(git: AsyncGitRunner, cwd: string): Promise<string[] | undefined> {

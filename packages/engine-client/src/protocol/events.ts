@@ -154,6 +154,22 @@ const BrowserControlChanged = event("browser.control.changed", {
   interrupted: z.boolean().optional(),
 });
 
+// ── display: the agent showing the human something ─────────────────────────
+/**
+ * The agent asked the cockpit to open one workspace file for the HUMAN — a
+ * guide it wrote, a plot it rendered, a PDF it fetched. Carries the path and
+ * never the bytes: the file is already on disk in the session's checkout, and
+ * the panel reads it through the same file routes every other surface uses.
+ * Unlike a browser page, this MAY open the panel — showing you something is
+ * the tool's entire purpose, so arriving quietly would be failure.
+ */
+const DisplayOpened = event("display.opened", {
+  /** Workspace-relative, fenced by the worker before it was reported. */
+  path: z.string().min(1),
+  /** What the agent calls it — "Setup guide" — for the toast/row, not the tab. */
+  title: z.string().optional(),
+});
+
 // ── diagnostics ────────────────────────────────────────────────────────────
 const UsageUpdated = event("usage.updated", { usage: UsageSnapshot });
 const McpStatusUpdated = event("mcp.status.updated", {
@@ -184,6 +200,22 @@ const DsWatchViolated = event("ds.watch.violated", {
   watch: z.string(),
   assert: z.string(),
   detail: z.string().optional(),
+});
+
+// ── latex: the session's compiles ──────────────────────────────────────────
+const LatexCompileStarted = event("latex.compile.started", { path: z.string() });
+/**
+ * COUNTS AND ONE SENTENCE, never the log and never the diagnostics array: the
+ * journal stays a journal. The surface reads full diagnostics through the
+ * session's latex door.
+ */
+const LatexCompileFinished = event("latex.compile.finished", {
+  path: z.string(),
+  ok: z.boolean(),
+  pdfPath: z.string().optional(),
+  errors: z.number().int(),
+  warnings: z.number().int(),
+  firstError: z.string().optional(),
 });
 
 /** Recoverable. The turn continues. */
@@ -229,11 +261,14 @@ export const EngineEvent = z.discriminatedUnion("type", [
   TaskCompleted,
   BrowserStateChanged,
   BrowserControlChanged,
+  DisplayOpened,
   UsageUpdated,
   McpStatusUpdated,
   KernelStateChanged,
   NotebookCellOutput,
   DsWatchViolated,
+  LatexCompileStarted,
+  LatexCompileFinished,
   RuntimeWarning,
   RuntimeError,
 ]);

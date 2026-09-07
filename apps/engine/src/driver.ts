@@ -55,14 +55,17 @@ import { countDiffLines, patchHunksOf, unifiedDiff } from "./diff";
 import { createWarpRunner, type WarpSpawn } from "./warp/runner";
 import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
+import { displayTools, type DisplayCapability } from "./display/tools";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox } from "./steering";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
+import { latexTools } from "./latex/latex-tools";
+import type { LatexCapability } from "./latex/capability";
 import type { DsCapability } from "./ds/capability";
 
-export type { SpoolCapability, SessionsCapability, DsCapability };
+export type { SpoolCapability, SessionsCapability, DsCapability, DisplayCapability, LatexCapability };
 
 /** What the provider wants to do, in the contract's vocabulary. */
 export type DriverRequest = {
@@ -155,6 +158,20 @@ export type DriverRun = {
    * ABSENT MEANS THE TOOLKITS DO NOT EXIST, never an empty kernel.
    */
   ds?: DsCapability;
+  /**
+   * The session's TeX compiles and packages — present only when the project
+   * opted in (the claim carried `latex`). Same rules as `ds` above.
+   * ABSENT MEANS THE TOOLKIT DOES NOT EXIST, never an empty toolchain.
+   */
+  latex?: LatexCapability;
+  /**
+   * The session's door to the human's SCREEN — `display_open`, the tool that
+   * shows one workspace file in the cockpit's right panel. Per-run like the
+   * spool: the worker assembles it around this turn's checkout, so the fence
+   * is the turn's own. ABSENT MEANS THE TOOL DOES NOT EXIST, which is what a
+   * test gets and what an older worker produces.
+   */
+  display?: DisplayCapability;
   /**
    * Which model to run, resolved by the engine from the session.
    *
@@ -432,6 +449,8 @@ type ClaudeTurnBindings = {
   spool: SpoolCapability | undefined;
   sessions: SessionsCapability | undefined;
   ds: DsCapability | undefined;
+  display: DisplayCapability | undefined;
+  latex: LatexCapability | undefined;
   warpSpawn: WarpSpawn;
   onWarpTask: (seed: TaskSeed) => void;
 };
@@ -775,7 +794,11 @@ function warpTool(
  * "anything that sounds like a read" would silently adopt the next tool whose
  * name starts well.
  */
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "ds_packages", "ds_kernel"]);
+// `display_open` is not literally a read, but it is read-SHAPED: it writes
+// nothing, spends nothing, and its whole effect is a panel opening on the
+// human's own screen — which they watch happen. Parking an approval card for
+// "may I show you this?" would be the card answering itself.
+const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "ds_packages", "ds_kernel", "display_open"]);
 
 export function requestKindForTool(name: string): RequestKind {
   if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";
@@ -1172,6 +1195,8 @@ export function createClaudeDriver(
       spool,
       sessions,
       ds,
+      display,
+      latex,
       steer,
       tasks: seededTasks,
       session: sessionHooks,
@@ -1845,6 +1870,8 @@ export function createClaudeDriver(
         spool,
         sessions,
         ds,
+        display,
+        latex,
         warpSpawn,
         onWarpTask,
       };
@@ -1880,6 +1907,9 @@ export function createClaudeDriver(
         // Toggling the project's data-science switch must cold-start: the
         // toolkits are baked into the query at creation.
         ds: Boolean(ds),
+        // Same rule for the LaTeX switch.
+        latex: Boolean(latex),
+        display: Boolean(display),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
       });
@@ -1942,6 +1972,23 @@ export function createClaudeDriver(
           telarTools.push(...notebookTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
           telarTools.push(...dsTools(sdk.tool, delegatingCapability(() => bindings.current.ds)));
         }
+
+        /**
+         * THE LATEX TOOLKIT, WHEN THE PROJECT OPTED IN. No approval gate, the
+         * data-science judgement again: a compile runs in the session's own
+         * tree under the permissions Bash already has, and tlmgr writes to a
+         * distribution the person configured for exactly this.
+         */
+        if (latex && sdk.tool) telarTools.push(...latexTools(sdk.tool, delegatingCapability(() => bindings.current.latex)));
+
+        /**
+         * THE DISPLAY TOOLKIT, WHEN THE TURN CARRIES ONE. No approval gate,
+         * the spool's judgement again: opening a panel on a file the human
+         * could open themselves commits nothing. The worker's capability owns
+         * the one check that matters — the path stays inside this turn's own
+         * checkout.
+         */
+        if (display && sdk.tool) telarTools.push(...displayTools(sdk.tool, delegatingCapability(() => bindings.current.display)));
 
         const warp = warpTool(sdk, {
           // Both delegate through the bindings — the tool is registered once

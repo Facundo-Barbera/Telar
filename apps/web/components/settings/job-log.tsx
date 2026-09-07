@@ -21,8 +21,20 @@ const api = createEngineApi();
 
 export type JobHandle = { jobId: string; title: string };
 
+/** Which job endpoints a log polls. Data science is the default; the LaTeX
+ *  section passes its own pair — the component is otherwise identical. */
+export type JobIo = {
+  read: (jobId: string, after: number) => Promise<{ job: DataScienceJob }>;
+  cancel: (jobId: string) => Promise<unknown>;
+};
+
+const DS_IO: JobIo = {
+  read: (jobId, after) => api.dataScienceJob(jobId, after),
+  cancel: (jobId) => api.dataScienceCancelJob(jobId),
+};
+
 /** Polls the job; calls `onDone` once with the final read. */
-export function useJob(handle: JobHandle | undefined, onDone?: (job: DataScienceJob) => void) {
+export function useJob(handle: JobHandle | undefined, onDone?: (job: DataScienceJob) => void, io: JobIo = DS_IO) {
   const [job, setJob] = useState<DataScienceJob>();
   const [lines, setLines] = useState<string[]>([]);
   // The latest `onDone` without re-arming the poll: written in an effect, read by the tick.
@@ -41,7 +53,7 @@ export function useJob(handle: JobHandle | undefined, onDone?: (job: DataScience
     setJob(undefined);
     const tick = async () => {
       try {
-        const { job: read } = await api.dataScienceJob(handle.jobId, cursor);
+        const { job: read } = await io.read(handle.jobId, cursor);
         if (cancelled) return;
         cursor = read.cursor;
         if (read.lines.length) setLines((prev) => [...prev, ...read.lines].slice(-2000));
@@ -58,13 +70,14 @@ export function useJob(handle: JobHandle | undefined, onDone?: (job: DataScience
       cancelled = true;
       if (timer) window.clearTimeout(timer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `io` is a stable endpoint pair, not state
   }, [handle]);
 
   return { job, lines };
 }
 
-export function JobLog({ handle, onDone, onDismiss, className }: { handle: JobHandle; onDone?: (job: DataScienceJob) => void; onDismiss: () => void; className?: string }) {
-  const { job, lines } = useJob(handle, onDone);
+export function JobLog({ handle, onDone, onDismiss, className, io = DS_IO }: { handle: JobHandle; onDone?: (job: DataScienceJob) => void; onDismiss: () => void; className?: string; io?: JobIo }) {
+  const { job, lines } = useJob(handle, onDone, io);
   const pre = useRef<HTMLPreElement>(null);
   useEffect(() => {
     pre.current?.scrollTo({ top: pre.current.scrollHeight });
@@ -78,7 +91,7 @@ export function JobLog({ handle, onDone, onDismiss, className }: { handle: JobHa
         <span className="min-w-0 flex-1 truncate font-medium">{handle.title}</span>
         <span className="text-muted-foreground">{running ? "Running…" : job.status === "ok" ? "Done" : job.status === "cancelled" ? "Cancelled" : job.error ?? "Failed"}</span>
         {running ? (
-          <Button variant="ghost" size="xs" onClick={() => void api.dataScienceCancelJob(handle.jobId)}>Cancel</Button>
+          <Button variant="ghost" size="xs" onClick={() => void io.cancel(handle.jobId)}>Cancel</Button>
         ) : (
           <button type="button" aria-label="Dismiss" onClick={onDismiss} className="rounded p-0.5 text-muted-foreground hover:text-foreground"><XIcon className="size-3" /></button>
         )}

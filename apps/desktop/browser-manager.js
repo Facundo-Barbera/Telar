@@ -1,4 +1,5 @@
 const { randomUUID } = require("node:crypto");
+const { pathToFileURL } = require("node:url");
 const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
 const { partitionFor } = require("./browser-profiles");
 const { serializeInventory, parseInventory } = require("./browser-tab-store");
@@ -198,10 +199,21 @@ function errorResult(error) {
 function normalizeUrl(value) {
   const trimmed = String(value || "").trim();
   if (!trimmed || trimmed === "about:blank") return "about:blank";
-  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  // A bare local path in the address bar means the file, the way every
+  // browser reads it. Only absolute paths — a relative one has no base here.
+  const candidate = trimmed.startsWith("/")
+    ? pathToFileURL(trimmed).href
+    : /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)
+      ? trimmed
+      : `http://${trimmed}`;
   const parsed = new URL(candidate);
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("The integrated browser only opens http and https URLs.");
+  // file: renders IN the sandboxed tab — createExternalLinkPolicy below still
+  // refuses to hand it to shell.openExternal, which is the dangerous half.
+  // The agent-side fence (which files a session may name) is the engine
+  // socket's `fileUrlViolation`; here a human typing a path into their own
+  // browser on their own machine is the same act as `open <file>`.
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" && parsed.protocol !== "file:") {
+    throw new Error("The integrated browser only opens http, https and file URLs.");
   }
   return parsed.href;
 }
@@ -1259,6 +1271,9 @@ class DesktopBrowserManager {
         // The human-input reporter (see browser-tab-preload.js) — how a click
         // in the page becomes a control-model takeover in the main process.
         preload: require("node:path").join(__dirname, "browser-tab-preload.js"),
+        // Chromium's built-in PDF viewer is a "plugin"; without this a PDF
+        // navigation downloads instead of rendering. Enables nothing else.
+        plugins: true,
       },
     });
     // Let the themed renderer host show through while a page is navigating.

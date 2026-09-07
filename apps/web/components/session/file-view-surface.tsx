@@ -36,16 +36,33 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FileIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  BoldIcon,
+  CodeIcon,
+  EyeIcon,
+  FileIcon,
+  Heading2Icon,
+  ItalicIcon,
+  LinkIcon,
+  ListIcon,
+  PencilIcon,
+  QuoteIcon,
+  RotateCwIcon,
+  StrikethroughIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { fileKind } from "@/lib/file-kinds";
+import { rawFileUrl } from "@/lib/file-urls";
 import { highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
+import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
 import { SaveCoordinator, type SaveOutcome } from "@/lib/save-coordinator";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MessageResponse } from "@/components/ui/message";
 import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -93,6 +110,22 @@ const REFUSAL: Record<string, string> = {
  */
 const CODE_GEOMETRY = "font-mono text-[0.6875rem] leading-[1.55] tracking-normal";
 
+/**
+ * The markdown toolbar's buttons, in the order writing uses them. The math
+ * lives in lib/markdown-edit.ts (pure, tested); each button here is only
+ * "read the selection, apply, write both halves back".
+ */
+const MARKDOWN_ACTIONS: { action: MarkdownEditAction; label: string; icon: typeof BoldIcon }[] = [
+  { action: "bold", label: "Bold", icon: BoldIcon },
+  { action: "italic", label: "Italic", icon: ItalicIcon },
+  { action: "strike", label: "Strikethrough", icon: StrikethroughIcon },
+  { action: "code", label: "Inline code", icon: CodeIcon },
+  { action: "link", label: "Link", icon: LinkIcon },
+  { action: "heading", label: "Heading", icon: Heading2Icon },
+  { action: "bullet", label: "Bulleted list", icon: ListIcon },
+  { action: "quote", label: "Quote", icon: QuoteIcon },
+];
+
 export function FileViewSurface({
   path,
   sessionId,
@@ -123,6 +156,16 @@ export function FileViewSurface({
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState<{ refused: boolean; reason: string }>();
   const kind = fileKind(path);
+  /**
+   * MARKDOWN RENDERS BY DEFAULT. A .md file opened from the tree — or put in
+   * front of you by the agent's display tool — is a document to READ; the
+   * source is one toggle away and everything about editing (the saver, the
+   * conflict hash, ⌘S) is shared with it, so switching costs nothing. `source`
+   * rather than `preview` so the boolean's false state is the default state.
+   */
+  const markdown = kind.lang === "markdown";
+  const [source, setSource] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const load = useCallback(async () => {
     if (!sessionId && !projectId) return;
@@ -249,8 +292,38 @@ export function FileViewSurface({
    *  from text this tab has already moved past. */
   const coloured = tokenised && tokenised.of === draft ? tokenised.lines : undefined;
 
+  /**
+   * One toolbar press: read the textarea's own selection, run the pure edit,
+   * write text through the SAME two sinks a keystroke uses (draft + saver — a
+   * third path would be a way to type that does not save), then put the
+   * selection back where the edit says it lands. The selection write waits a
+   * frame because React has to paint the new value first; setting a range
+   * against the old text puts the caret in the wrong place on longer inserts.
+   */
+  const applyEdit = useCallback(
+    (action: MarkdownEditAction) => {
+      const area = textareaRef.current;
+      if (!area || draft === undefined) return;
+      const edit = applyMarkdownEdit(draft, area.selectionStart, area.selectionEnd, action);
+      setDraft(edit.text);
+      saverRef.current?.change(edit.text);
+      requestAnimationFrame(() => {
+        area.focus();
+        area.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+      });
+    },
+    [draft],
+  );
+
   const cut = path.lastIndexOf("/");
   const dirty = pending || Boolean(problem);
+  /** The bytes URL for a binary the panel can RENDER (image, audio, video —
+   *  a .pdf normally opens as its own `pdf:` tab; this covers a restored
+   *  `file:` tab). Versioned by the read's hash so new bytes mean a new URL. */
+  const mediaUrl =
+    file && kind.media
+      ? rawFileUrl(path, { ...(sessionId ? { sessionId } : {}), ...(projectId ? { projectId } : {}), version: file.sha256 })
+      : undefined;
 
   if (!sessionId && !projectId) {
     return (
@@ -286,6 +359,32 @@ export function FileViewSurface({
           />
         )}
         {file && <span className="shrink-0 font-mono text-[0.625rem] text-muted-foreground tabular-nums">{size(file.bytes)}</span>}
+        {/* THE MARKDOWN TOGGLE — rendered or source, one press apart. In the
+            header rather than floating over the text so it cannot cover what
+            it switches, and icon-only because the header row is 44px of
+            everything already. */}
+        {markdown && file && !file.binary && (
+          <div role="group" aria-label="Markdown view" className="flex shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">
+            <button
+              type="button"
+              aria-pressed={!source}
+              title="Rendered"
+              onClick={() => setSource(false)}
+              className={cn("rounded p-0.5 transition-colors", source ? "text-muted-foreground hover:text-foreground" : "bg-secondary text-foreground")}
+            >
+              <EyeIcon className="size-3" />
+            </button>
+            <button
+              type="button"
+              aria-pressed={source}
+              title="Edit source"
+              onClick={() => setSource(true)}
+              className={cn("rounded p-0.5 transition-colors", source ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground")}
+            >
+              <PencilIcon className="size-3" />
+            </button>
+          </div>
+        )}
         <button
           type="button"
           aria-label="Re-read this file"
@@ -339,18 +438,79 @@ export function FileViewSurface({
         </PanelEmpty>
       ) : !file || draft === undefined ? (
         file?.binary ? (
-          /* NAMED, NOT JUST "BINARY". The table knows this is a PNG image or a
-             font, and "PNG image · 190 KB" is a different sentence from "bytes" —
-             it tells you the read worked and the file is what you expected. */
-          <PanelEmpty icon={<FileKindIcon path={path} className="size-5" />} title={`${kind.label} · ${size(file.bytes)}`}>
-            Bytes rather than text, so nothing was sent — rendering it as UTF-8 would show line noise instead of the file.
-          </PanelEmpty>
+          kind.media && mediaUrl ? (
+            /**
+             * BYTES THE PANEL CAN RENDER. The text route sent nothing (binary),
+             * so the media element reads the raw route itself — the browser
+             * streams it, and the viewer is the browser's own. Which element is
+             * the kind table's `media` verdict; the pdf arm here only serves a
+             * restored `file:` tab, since a .pdf normally opens as `pdf:`.
+             */
+            kind.media === "image" ? (
+              <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-3">
+                {/* eslint-disable-next-line @next/next/no-img-element -- raw workspace bytes; next/image cannot optimise a token-gated local route */}
+                <img src={mediaUrl} alt={path} className="max-w-full rounded-md border border-border" />
+              </div>
+            ) : kind.media === "audio" ? (
+              <div className="px-3 py-4">
+                <audio controls src={mediaUrl} className="w-full" />
+              </div>
+            ) : kind.media === "video" ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-2">
+                <video controls src={mediaUrl} className="max-h-full max-w-full rounded-md" />
+              </div>
+            ) : (
+              <iframe src={mediaUrl} title={path} className="min-h-0 w-full flex-1 border-0" />
+            )
+          ) : (
+            /* NAMED, NOT JUST "BINARY". The table knows this is a font or a
+               lockfile, and "font · 190 KB" is a different sentence from
+               "bytes" — it tells you the read worked and the file is what you
+               expected. Only kinds with no media viewer land here now. */
+            <PanelEmpty icon={<FileKindIcon path={path} className="size-5" />} title={`${kind.label} · ${size(file.bytes)}`}>
+              Bytes rather than text, so nothing was sent — rendering it as UTF-8 would show line noise instead of the file.
+            </PanelEmpty>
+          )
         ) : (
           <p className="flex items-center gap-2 px-4 py-3 text-[0.6875rem] text-muted-foreground">
             <Spinner className="size-3" /> reading the file…
           </p>
         )
+      ) : markdown && !source ? (
+        /**
+         * THE RENDERED DOCUMENT — Streamdown via MessageResponse, so a README
+         * in the panel is coloured by the same engine as markdown in the
+         * transcript (the seam this cockpit keeps closing). It renders the
+         * DRAFT, not the file: mid-edit, the preview is one toggle away and
+         * must show what would be saved, not what was loaded.
+         */
+        <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+          <MessageResponse className="text-[0.8125rem]">{draft}</MessageResponse>
+        </div>
       ) : (
+        <>
+          {/* THE FORMATTING ROW, only where its edits can land: markdown, in
+              source view, editable. Every button routes through the same
+              draft + saver pair a keystroke uses. `onMouseDown` prevention
+              keeps the textarea's selection alive through the click — a
+              focused button has no selection to format. */}
+          {markdown && source && editable && (
+            <div role="toolbar" aria-label="Markdown formatting" className="flex shrink-0 items-center gap-0.5 border-b border-border px-2 py-1">
+              {MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
+                <button
+                  key={action}
+                  type="button"
+                  title={label}
+                  aria-label={label}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => applyEdit(action)}
+                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  <Icon className="size-3" />
+                </button>
+              ))}
+            </div>
+          )}
         <div className="min-h-0 flex-1 overflow-auto">
           <div className="flex min-w-max">
             {/**
@@ -401,6 +561,7 @@ export function FileViewSurface({
                 ))}
               </pre>
               <textarea
+                ref={textareaRef}
                 value={draft}
                 readOnly={!editable}
                 spellCheck={false}
@@ -451,6 +612,7 @@ export function FileViewSurface({
             </p>
           )}
         </div>
+        </>
       )}
     </div>
   );

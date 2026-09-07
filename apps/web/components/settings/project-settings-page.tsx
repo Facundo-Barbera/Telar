@@ -17,12 +17,13 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleAlertIcon, FlaskConicalIcon, FolderGitIcon, WrenchIcon } from "lucide-react";
+import { CircleAlertIcon, FlaskConicalIcon, FolderGitIcon, SigmaIcon, WrenchIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { canvasHref } from "@/lib/session-list";
 import { Badge } from "@/components/ui/badge";
 import { DataScienceSection } from "./data-science-section";
+import { LatexSection } from "./latex-section";
 import { McpSection } from "./mcp-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
@@ -32,6 +33,7 @@ const api = createEngineApi();
 const SECTIONS: SettingsSection[] = [
   { id: "mcp", label: "MCP servers", icon: WrenchIcon, group: "This project" },
   { id: "data-science", label: "Data science", icon: FlaskConicalIcon, group: "This project" },
+  { id: "latex", label: "LaTeX", icon: SigmaIcon, group: "This project" },
   { id: "project", label: "Project", icon: FolderGitIcon, group: "This project" },
 ];
 
@@ -101,6 +103,15 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
           <DataScienceSection project={project} onChange={setProject} />
         ) : (
           <SettingsGroup title="Data science">
+            <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
+          </SettingsGroup>
+        ))}
+
+      {active === "latex" &&
+        (project ? (
+          <LatexSection project={project} onChange={setProject} />
+        ) : (
+          <SettingsGroup title="LaTeX">
             <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
           </SettingsGroup>
         ))}

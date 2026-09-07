@@ -36,7 +36,7 @@ import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snap
 import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
 import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
-import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
+import { browserPanelTab, browserTabId, describeBrowserStart, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
@@ -904,6 +904,8 @@ export function SessionCockpit({
   const [projectName, setProjectName] = useState<string | undefined>(serverProjectName);
   /** The project's data-science opt-in, read with its name. Off until known. */
   const [dataScience, setDataScience] = useState(false);
+  /** The project's LaTeX opt-in — same lifecycle. */
+  const [latex, setLatex] = useState(false);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
   const syncSession = useRef(sessionId);
@@ -1275,6 +1277,35 @@ export function SessionCockpit({
   }, [browser, updatePanel]);
 
   /**
+   * A FILE THE AGENT ASKED TO SHOW OPENS THE PANEL — the deliberate exception
+   * to `seenPages`' "may not interrupt what you are reading" rule, because
+   * `display_open`'s entire contract is putting a finished thing in front of
+   * you; arriving quietly would be the failure.
+   *
+   * ONLY EVENTS FROM AFTER THIS MOUNT ACT. The journal replays from zero on
+   * every load, so without the timestamp guard, every reload would re-open
+   * whatever the agent displayed last week. `seenDisplays` then keeps one
+   * event from acting twice as the array grows behind it, and — same reason
+   * `seenPages` is a ref — closing the tab must not reopen it on the next poll.
+   */
+  const seenDisplays = useRef<Set<number>>(new Set());
+  // Stamped in the effect, not at render: reading the clock during render is
+  // impure (react-hooks/purity). The first run of this effect precedes any
+  // display event being acted on, so the guard holds identically.
+  const mountedAt = useRef(0);
+  useEffect(() => {
+    if (mountedAt.current === 0) mountedAt.current = Date.now();
+    const fresh = events.filter(
+      (event) => event.type === "display.opened" && event.at >= mountedAt.current && !seenDisplays.current.has(event.id),
+    );
+    if (fresh.length === 0) return;
+    for (const event of fresh) seenDisplays.current.add(event.id);
+    const last = fresh.at(-1)!;
+    if (last.type !== "display.opened") return;
+    showPanelTab(panelTabForPath(last.path, dataScience));
+  }, [events, dataScience, showPanelTab]);
+
+  /**
    * Restore an unsent draft, and keep it saved as it is typed.
    *
    * Read in an effect for the same reason the panel state is: `localStorage`
@@ -1423,6 +1454,7 @@ export function SessionCockpit({
         const found = result.projects.find((project) => project.id === projectId);
         setProjectName(found?.name);
         setDataScience(found?.dataScience?.enabled === true);
+        setLatex(found?.latex?.enabled === true);
       },
       () => undefined,
     );
@@ -2178,6 +2210,7 @@ export function SessionCockpit({
           onCloseTab={(tab) => updatePanel((current) => closePanelTab(current, tab))}
           onClose={() => updatePanel((current) => ({ ...current, open: false }))}
           dataScience={dataScience}
+          latex={latex}
         />
       )}
     </main>
