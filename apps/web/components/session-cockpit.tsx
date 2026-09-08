@@ -19,7 +19,7 @@ import {
   type Turn,
   type TurnState,
 } from "@telar/engine-client";
-import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
+import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { actionableRequests, continuationDraft, recoverableFailedTurn } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
@@ -327,21 +327,61 @@ function SessionMasthead({
   );
 }
 
-function RecoveryActions({ sending, onRetry, onDiscard }: { sending: boolean; onRetry: () => void; onDiscard: () => void }) {
+/**
+ * THE THREE VERBS OF AN UNCERTAIN RUN, and their order is the fix.
+ *
+ * This card used to offer two: "Retry as new run" (which resubmits the original
+ * prompt) and "Discard recovered run". Discard was the good path — it keeps the
+ * transcript and the provider cursor, and the next thing you type continues the
+ * same conversation — but it is named like a bin, so people pressed Retry and
+ * watched the agent redo work the transcript above them already showed.
+ *
+ * So: CONTINUE first, saying what it actually does. RE-RUN second, naming the
+ * risk instead of hiding it — the lost run may have already pushed, deleted or
+ * called something, and no discard takes that back. DISCARD last, for when the
+ * answer is "nothing more".
+ *
+ * `backlog` is the count of messages queued behind this decision. The engine
+ * holds them rather than replaying them on boot, and saying so is the
+ * difference between a session that looks stuck and one that is waiting.
+ */
+function RecoveryActions({
+  sending,
+  backlog,
+  onContinue,
+  onRetry,
+  onDiscard,
+}: {
+  sending: boolean;
+  backlog: number;
+  onContinue: () => void;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
   return (
     <Alert className="mt-2" aria-label="Recovered turn decision">
       <TriangleAlertIcon />
-      <AlertTitle>Recovered work needs your decision</AlertTitle>
+      <AlertTitle>This turn was cut off — and may have already done some of it</AlertTitle>
       <AlertDescription className="flex flex-col gap-2">
-        <p>This run may have reached the provider before recovery. Retrying first records a discard and creates a new run.</p>
+        <p>
+          Everything above is kept. Telar cannot tell how far this run got before it was lost, so nothing re-runs unless you ask for it.
+          {backlog > 0 ? ` ${backlog} ${backlog === 1 ? "message is" : "messages are"} waiting behind this decision.` : ""}
+        </p>
         <div className="flex flex-wrap gap-2">
+          <Button size="sm" disabled={sending} onClick={onContinue}>
+            Continue
+          </Button>
           <Button size="sm" variant="outline" disabled={sending} onClick={onRetry}>
-            Retry as new run
+            Re-run this prompt
           </Button>
           <Button size="sm" variant="ghost" disabled={sending} onClick={onDiscard}>
-            Discard recovered run
+            Discard
           </Button>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Continue keeps this conversation and lets you write the next message. Re-running sends the original prompt again, which may repeat work
+          or tool calls that already happened.
+        </p>
       </AlertDescription>
     </Alert>
   );
@@ -501,6 +541,8 @@ export function SessionTurn({
   onDecide,
   onRetry,
   onDiscard,
+  onContinueAmbiguous,
+  backlog = 0,
   onContinue,
   onOpenAgent,
   onOpenTab,
@@ -534,6 +576,14 @@ export function SessionTurn({
   now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
   onDiscard: (turn: Pick<Turn, "runId">) => void;
+  /** Abandon an ambiguous run's execution and keep talking — the recovery
+   *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
+   *  an ordinary FAILED turn and submits nothing. */
+  onContinueAmbiguous: (turn: Pick<Turn, "runId" | "state">) => void;
+  /** How many messages are queued behind an undecided ambiguous turn. The
+   *  engine holds them; the card says so rather than letting the session look
+   *  stuck. */
+  backlog?: number;
   /** Offered on the ONE failed turn the session can continue from (see
    *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
    *  the turn only renders. */
@@ -689,7 +739,13 @@ export function SessionTurn({
             </div>
           )}
           {turn.state === "ambiguous" && (
-            <RecoveryActions sending={sending} onRetry={() => onRetry(retryInputForJournalTurn(turn))} onDiscard={() => onDiscard(turn)} />
+            <RecoveryActions
+              sending={sending}
+              backlog={backlog}
+              onContinue={() => onContinueAmbiguous(retryInputForJournalTurn(turn))}
+              onRetry={() => onRetry(retryInputForJournalTurn(turn))}
+              onDiscard={() => onDiscard(turn)}
+            />
           )}
           {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
         </MessageContent>
@@ -1572,8 +1628,9 @@ export function SessionCockpit({
   const compacting = isCompacting(active);
   /**
    * The one ordinary failure the session can continue from — the latest human
-   * turn, failed, with nothing running or queued behind it and no ambiguous
-   * turn awaiting its own decision. `undefined` hides the affordance.
+   * turn, failed, with nothing running or queued behind it. `undefined` hides
+   * the affordance. A turn Telar interrupted by quitting lands here too, which
+   * is the whole point of recording it as a failure rather than as ambiguity.
    */
   const recoverable = recoverableFailedTurn(transcript);
   /**
@@ -1583,9 +1640,18 @@ export function SessionCockpit({
    */
   const prepareContinuation = () => {
     if (!recoverable) return;
-    setDraft((current) => continuationDraft(current, recoverable));
+    setDraft((current) => continuationDraft(current, recoverable, Boolean(session?.resumeCursor)));
     setDraftRunId(undefined);
   };
+  /**
+   * Messages the engine is HOLDING behind an undecided ambiguous turn. They
+   * were written before the crash, they keep their order, and nothing
+   * dispatches them until the decision is made — so the recovery card counts
+   * them rather than leaving the session looking mysteriously idle.
+   */
+  const heldBacklog = transcript.some((turn) => turn.state === "ambiguous")
+    ? transcript.filter((turn) => turn.state === "queued").length
+    : 0;
 
   // A clock, only while something is running. An always-on interval re-renders a
   // settled transcript once a second for nothing.
@@ -1690,6 +1756,32 @@ export function SessionCockpit({
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not discard the ambiguous turn."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /**
+   * CONTINUE, from an uncertain run. Releases the engine's held dispatch and
+   * puts a continuation in the composer — it SENDS NOTHING. The original prompt
+   * is never resubmitted: the transcript above already holds whatever the lost
+   * run managed, and the person writes the next message themselves.
+   *
+   * The draft's wording depends on whether the conversation can actually be
+   * resumed; with no provider cursor the agent will not remember any of this,
+   * and saying "continue from the work above" would point at something only the
+   * human can see.
+   */
+  const continueAmbiguous = async (turn: Pick<Turn, "runId" | "state">) => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await continueAfterAmbiguousTurn(api, sessionId, turn);
+      setDraft((current) => continuationDraft(current, { failure: "Telar was restarted" }, Boolean(session?.resumeCursor)));
+      setDraftRunId(undefined);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not continue from the recovered turn."));
     } finally {
       setSending(false);
     }
@@ -2188,6 +2280,8 @@ export function SessionCockpit({
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
                 onDiscard={(item) => void discardAmbiguous(item)}
+                onContinueAmbiguous={(item) => void continueAmbiguous(item)}
+                backlog={heldBacklog}
                 {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}

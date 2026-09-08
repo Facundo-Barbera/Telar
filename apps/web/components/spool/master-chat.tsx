@@ -576,6 +576,7 @@ export function MasterChat({
                 onDecide={decide}
                 onRetry={() => undefined}
                 onDiscard={() => undefined}
+                onContinueAmbiguous={() => undefined}
               />
             ))}
           </ConversationContent>
