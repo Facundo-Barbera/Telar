@@ -127,6 +127,7 @@ import {
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
+  type WorkerTurnFailureCode,
   type WorkspaceWriteResult,
 } from "./protocol";
 
@@ -1924,6 +1925,11 @@ export class EngineClient {
   }
 
   /** Explicit human resolution for a turn whose provider effects are uncertain. */
+  /** Let a message recovery held run after a human has re-read it. */
+  releaseHeldTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/release`, {});
+  }
+
   discardAmbiguousTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
   }
@@ -2053,7 +2059,7 @@ export class EngineClient {
     sessionId: string,
     runId: string,
     claimToken: string,
-    failure: { code: "provider_unavailable" | "driver_failed" | "budget_exhausted"; message: string },
+    failure: { code: WorkerTurnFailureCode; message: string },
   ): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/fail`, {
       claimToken,

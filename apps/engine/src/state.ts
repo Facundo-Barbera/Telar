@@ -43,6 +43,7 @@ import {
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
+  WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserProvider,
   type BrowserSnapshot,
   type BrowserTab,
@@ -352,7 +353,9 @@ type TurnFailure = { code: TurnFailureCode; message: string };
  * `internal_error` is the engine's; a worker claiming either would let a
  * provider crash masquerade as a control-plane decision.
  */
-const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "driver_failed", "budget_exhausted"]);
+/** The codes a WORKER may report, from the contract's own list rather than a
+ *  fourth copy of it — see `WorkerTurnFailureCode`. */
+const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.options);
 
 /**
  * How deep a session's backlog may get.
@@ -5939,9 +5942,27 @@ export class EngineStore {
     if (queued >= MAX_QUEUED_TURNS) {
       throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
     }
-    if (queue.turns.some((turn) => turn.state === "ambiguous")) {
-      throw new EngineStateError("conflict", "session has an ambiguous turn that must be resolved first");
-    }
+    /**
+     * AN AMBIGUOUS TURN NO LONGER REFUSES THE HUMAN'S NEXT MESSAGE, and the
+     * refusal that used to live here was the whole of the reported bug.
+     *
+     * It read "session has an ambiguous turn that must be resolved first" and
+     * it was on the wrong verb. Measured before the change: a session that lost
+     * a turn to a restart accepted NO new message, so the only way forward was
+     * the recovery card's "Retry", which resubmits the ORIGINAL prompt — and
+     * the thing a person actually wanted, "carry on from what you have", was
+     * the one thing the engine would not take. Meanwhile the same ambiguity did
+     * not stop `claimTurn` from dispatching work queued BEFORE the crash, so
+     * un-reviewed pre-crash messages resumed the provider conversation with
+     * nobody's decision behind them. Exactly backwards.
+     *
+     * The invariant the refusal was reaching for is real, and it now lives on
+     * `claimTurn` where it belongs: nothing EXECUTES in this session until a
+     * human has decided about the ambiguous turn. Accepting a message costs
+     * nothing and settles nothing; running one is the act that can duplicate a
+     * side effect.
+     */
+
     /**
      * ONE COMPACTION AT A TIME. The gesture is idempotent in meaning — "squeeze
      * the context" — so a second press while the first is queued or running
@@ -6057,7 +6078,31 @@ export class EngineStore {
     assertId(workerId, "worker id");
     const queue = this.readQueue(sessionId);
     if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
-    const turn = queue.turns.find((candidate) => candidate.state === "queued");
+    /**
+     * AN UNDECIDED AMBIGUOUS TURN HOLDS THIS SESSION'S DISPATCH.
+     *
+     * This is where the recovery gate belongs — `submitTurn` used to carry it,
+     * which refused the human and let the machine through. A backlog written
+     * BEFORE the crash was claimed and run against the resumed provider
+     * conversation while the ambiguity was still undecided: measured, a
+     * `steering` follow-up requeued by `recover()` was handed the lost run's
+     * `resumeCursor` and dispatched with no human anywhere near it.
+     *
+     * Held rather than dropped. The messages keep their place and their order,
+     * and they run the moment the human resolves the ambiguous turn — which is
+     * also the moment somebody has decided whether the work they assumed had
+     * happened actually did. A queued turn is not lost by waiting; a turn that
+     * runs against a conversation nobody vouched for cannot be un-run.
+     */
+    if (queue.turns.some((turn) => turn.state === "ambiguous")) return undefined;
+    /**
+     * A HELD MESSAGE IS SKIPPED, NOT WAITED ON. It was written before the turn
+     * this session lost, so it waits for a human to re-read it — but it must
+     * not stand in front of a message written AFTER, which is the whole
+     * substance of continuing a recovered conversation. Order is preserved
+     * among the turns that may actually run.
+     */
+    const turn = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
     if (!turn) return undefined;
     const at = this.now();
     turn.state = "claimed";
@@ -6174,7 +6219,15 @@ export class EngineStore {
       // One turn per session at a time — the engine's own invariant, checked
       // here so a busy session costs nothing further.
       if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
-      const next = queue.turns.find((candidate) => candidate.state === "queued");
+      // Held for a human decision — `claimTurn` is authoritative about this and
+      // would refuse anyway; skipping here keeps a held session from being the
+      // candidate that wins the sort and then claims nothing, which would stall
+      // every OTHER session's queued work behind it for a poll interval.
+      if (queue.turns.some((candidate) => candidate.state === "ambiguous")) continue;
+      // `!held` matches `claimTurn`'s own choice — a session whose only queued
+      // work is held has nothing to offer, and listing it as a candidate would
+      // win the sort and then claim nothing.
+      const next = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
       if (next) candidates.push({ sessionId, acceptedAt: next.acceptedAt });
     }
     candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
@@ -6384,6 +6437,26 @@ export class EngineStore {
     turn.updatedAt = at;
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+    /**
+     * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash
+     * backlog — and they were the one route around that rule.
+     *
+     * `recover()` marks the hold when it finds an AMBIGUOUS turn, which is what
+     * a lost run becomes when nobody settled it. But a clean quit now settles
+     * its run here, as `interrupted`, so the next boot sees a terminal turn,
+     * marks nothing, and claims the requeued steer immediately. Measured: a
+     * message typed while the lost turn was running was dispatched on the next
+     * launch with nobody having re-read it — exactly the thing the hold exists
+     * to prevent, reached by the path that was supposed to be the safe one.
+     *
+     * ONLY FOR `interrupted`. An ordinary failure happens with the person
+     * there, watching, and the session left idle: their in-flight message
+     * running next is what they are expecting. A shutdown means they walked
+     * away, and what they come back to should wait for them.
+     */
+    if (failure.code === "interrupted") {
+      for (const reverted of requeued) reverted.held = { at, reason: "engine_restart" };
+    }
     this.writeQueue(sessionId, queue);
     // A failed turn means the provider process died — background shells died
     // with it, whichever turn started them.
@@ -6525,9 +6598,59 @@ export class EngineStore {
   }
 
   /**
+   * RUN A MESSAGE THAT WAS HELD — the human has re-read it and still means it.
+   *
+   * The other two exits from a hold already exist and are not duplicated here:
+   * `stopTurn` drops it (it is `queued`, which that already handles), and
+   * simply reading it in the transcript is the review. This one only clears the
+   * flag; the ordinary claim path takes it from there, in its original place in
+   * the queue.
+   */
+  releaseHeldTurn(sessionId: string, runId: string): Turn {
+    assertId(runId, "run id");
+    const session = this.getSession(sessionId);
+    /**
+     * RELEASING IS STARTING WORK, so it answers to the same gate as submitting.
+     * Without this a message held since before the project was put away could
+     * be released into it — resuming a provider on a project the person removed
+     * from Telar, which is exactly what `assertProjectAvailable` exists to stop
+     * at the other two doors (a new session, a new turn).
+     */
+    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    /**
+     * THE STATE IS CHECKED FIRST AND UNCONDITIONALLY.
+     *
+     * It used to live inside the `!turn.held` branch, so a turn that had since
+     * been stopped or run but still carried a stale `held` flag skipped the
+     * check entirely and was cheerfully "released" — reporting success about a
+     * terminal turn, and clearing a flag on it as if that meant something.
+     */
+    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
+    // Already runnable: nothing to do, and saying so is kinder than a conflict
+    // for a button pressed twice.
+    if (!turn.held) return structuredClone(turn);
+    const at = this.now();
+    delete turn.held;
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
    * An ambiguous turn may already have reached a provider, so it is never
    * replayed or deleted.  A human must make this one-way decision before the
    * session can accept fresh work.
+   *
+   * DISCARDING IT DOES NOT RELEASE THE BACKLOG. Messages `recover()` marked
+   * `held` stay held: this decision is about THIS turn, and the pre-crash
+   * messages behind it each need their own. Before `held` existed the hold was
+   * inferred from the presence of an ambiguous turn, so this call — which is
+   * exactly what "Continue" performs — released every one of them at once.
    */
   discardAmbiguousTurn(sessionId: string, runId: string): Turn {
     assertId(runId, "run id");
@@ -7127,8 +7250,21 @@ export class EngineStore {
         this.closeOpenItems(session.id, turn.runId, this.now());
         // And for requests: a question parked on a turn that already ended
         // kept a persisted session `blocked` with nothing left to answer it.
-        // An ambiguous turn is skipped — its decision is still pending.
-        if (turn.state !== "ambiguous") this.closeOpenRequests(session.id, turn.runId, this.now());
+        //
+        // AN AMBIGUOUS TURN'S REQUEST IS RETIRED TOO, and it used to be the one
+        // exception. The reasoning for keeping it — "its decision is still
+        // pending" — confused two different decisions. The TURN's fate is
+        // pending and stays so; the REQUEST is a question a worker asked and
+        // then died waiting on, and no answer can ever reach it. Measured:
+        // across every subsequent boot it stayed `open`, holding the session
+        // `blocked` — sidebar "Waiting on you", composer in answer mode — over
+        // a tool call nothing was going to run. The web client already worked
+        // around this client-side (`actionableRequests`); the engine should not
+        // have needed the workaround.
+        //
+        // The row stays in the transcript, resolved, as part of the record of
+        // what the lost turn was doing when it died.
+        this.closeOpenRequests(session.id, turn.runId, this.now());
       }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.requeued" | "turn.ambiguous"; runId: string }> = [];
@@ -7162,6 +7298,12 @@ export class EngineStore {
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
           this.closeOpenItems(session.id, turn.runId, at);
+          // HERE, NOT ONLY IN THE SWEEP ABOVE, and the ordering is the reason:
+          // that sweep skips live turns, so THIS turn — still `running` when it
+          // ran — was passed over, and by the next boot it is `ambiguous`.
+          // Closing it only there meant a question opened by the lost run was
+          // retired on no boot at all, and the session read `blocked` forever.
+          this.closeOpenRequests(session.id, turn.runId, at);
           changed = true;
         } else if (turn.state === "steering") {
           // Delivery is unknowable across a restart; requeue is the side the
@@ -7171,6 +7313,33 @@ export class EngineStore {
           turn.updatedAt = at;
           requeued.push(turn.runId);
           recoveryEvents.push({ type: "turn.requeued", runId: turn.runId });
+          changed = true;
+        }
+      }
+      /**
+       * EVERY MESSAGE THAT WAS ALREADY WAITING IS HELD, once this session lost
+       * a turn to the restart.
+       *
+       * Marked on the TURNS, in a second pass, rather than inferred later from
+       * "does this session have an ambiguous turn". Inferring it meant the hold
+       * evaporated the instant the ambiguity was resolved — so pressing
+       * Continue, which resolves it, released the whole pre-crash backlog in
+       * the same breath and ran messages nobody had re-read. A second pass
+       * because the first one is still deciding which turns are queued at all:
+       * a `steering` message becomes one halfway through it.
+       *
+       * Only when something became ambiguous. A session whose turn was merely
+       * `claimed` never reached a provider, so nothing about its backlog is in
+       * doubt and it dispatches as it always did.
+       */
+      // THIS session's queue, not the `ambiguous` accumulator — that one spans
+      // every session the sweep has walked, and reading it here would hold the
+      // backlog of every session processed after the first unlucky one.
+      if (queue.turns.some((turn) => turn.state === "ambiguous")) {
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" || turn.held) continue;
+          turn.held = { at, reason: "engine_restart" };
+          turn.updatedAt = at;
           changed = true;
         }
       }
@@ -7243,12 +7412,29 @@ export class EngineStore {
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
           this.closeOpenItems(session.id, turn.runId, at);
+          // And the question the vanished worker was waiting on: no answer can
+          // reach it now, and leaving it open holds the session `blocked`. Same
+          // rule as the boot sweep's — the TURN's fate stays undecided, the
+          // dead REQUEST does not.
+          this.closeOpenRequests(session.id, turn.runId, at);
           // A promoted message aimed at this turn was never delivered by the
           // vanished worker; back to the queue rather than gone.
           for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
             requeued.push(reverted.runId);
             this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, reverted.runId);
           }
+          changed = true;
+        }
+      }
+      // Same hold as the boot sweep, for the same reason: a message written
+      // before this worker vanished was written against a state its lost turn
+      // took with it. Scoped to THIS session's queue, never the cross-session
+      // `ambiguous` accumulator.
+      if (queue.turns.some((turn) => turn.state === "ambiguous")) {
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" || turn.held) continue;
+          turn.held = { at, reason: "worker_unavailable" };
+          turn.updatedAt = at;
           changed = true;
         }
       }

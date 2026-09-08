@@ -661,3 +661,58 @@ test("a turn the PROVIDER opened does not hold an execution slot shut", async ()
 
   for (const resolve of release.splice(0)) resolve();
 });
+
+test("a shutdown landing inside an in-flight claim leaves the turn claimed, never running", async () => {
+  /**
+   * THE RACE. `claimTurn` is a round trip, and `stop()` runs on its own
+   * schedule: it can set `stopped`, abort what it knows about and finish
+   * waiting on the in-flight runs entirely BETWEEN the claim request and its
+   * response. Without the re-check after the await, `execute` starts anyway —
+   * it calls `markTurnRunning` on a worker that is already dismantling itself,
+   * after the only wait that would have settled the turn, so the next boot
+   * finds it `running` and calls it `ambiguous`. Ambiguous for a turn that
+   * never reached a provider at all.
+   *
+   * Driven deterministically rather than by timing: the client's `claimTurn` is
+   * wrapped so `stop()` completes inside the call.
+   */
+  const spawned: string[] = [];
+  const driver: TurnDriver = {
+    async run({ prompt }) {
+      spawned.push(prompt);
+      return { text: "should never run" };
+    },
+  };
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  const realClaim = client.claimTurn.bind(client);
+  client.claimTurn = async (workerId: string) => {
+    const claimed = await realClaim(workerId);
+    // The quit lands here — after the engine has handed out the claim, before
+    // this worker has done anything with it.
+    if (claimed.claim) await worker.stop();
+    return claimed;
+  };
+  await worker.start();
+  await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  await worker.tick();
+
+  // No provider was spawned, and the turn is left exactly where the engine put
+  // it: `claimed`. That is the safe state — `markTurnRunning` is ordered before
+  // the driver is constructed precisely so `claimed` proves no provider ran,
+  // which is why recovery requeues such a turn rather than holding it.
+  expect(spawned).toEqual([]);
+  const turns = (await client.session("session_one")).turns;
+  expect(turns[0]?.state).toBe("claimed");
+
+  // And recovery does exactly that: back to `queued`, unheld, ready to run.
+  daemon.store.recover();
+  const recovered = (await client.session("session_one")).turns[0];
+  expect(recovered?.state).toBe("queued");
+  expect(recovered?.held).toBeUndefined();
+});

@@ -878,8 +878,43 @@ export const TurnFailureCode = z.enum([
   "cancelled",
   "budget_exhausted",
   "internal_error",
+  /**
+   * THE ENGINE WAS SHUT DOWN WHILE THIS TURN WAS RUNNING — and it said so on
+   * the way out, rather than leaving the turn `running` for the next boot to
+   * find and call `ambiguous`.
+   *
+   * A `failed` STATE rather than a state of its own, and that is the whole
+   * economy of the thing: every client already treats `failed` as terminal and
+   * non-blocking, and the cockpit already offers a continuation on one. A new
+   * state would have meant teaching the web app, the iOS app and every
+   * projection what it means, with each of them defaulting to "unknown, so
+   * block" until they were.
+   *
+   * IT DOES NOT MEAN NOTHING HAPPENED. We know the turn was interrupted; we do
+   * NOT know what it had already done — a push, an `rm`, an outbound call are
+   * all committed to the world before any abort reaches us. So the copy on
+   * this failure names the interruption and claims nothing about its effects,
+   * and `interrupted` must never be read as "safe to replay".
+   */
+  "interrupted",
 ]);
 export type TurnFailureCode = z.infer<typeof TurnFailureCode>;
+
+/**
+ * The subset a WORKER may report — not every code above.
+ *
+ * `cancelled` and `internal_error` are the engine's own to write; a worker
+ * claiming either would be describing a decision it did not make. The fail
+ * route enforces this list and the store's `TURN_FAILURE_CODES` repeats it.
+ *
+ * NAMED, rather than spelled out at each of those places, because adding
+ * `interrupted` found THREE hand-maintained copies of it — the route, the
+ * store, and the client's `failTurn` signature — and the first two accepted the
+ * new code while the third still rejected it at compile time. One definition
+ * means the next code added is added once.
+ */
+export const WorkerTurnFailureCode = TurnFailureCode.exclude(["cancelled", "internal_error"]);
+export type WorkerTurnFailureCode = z.infer<typeof WorkerTurnFailureCode>;
 
 /** A worker's exclusive lease on a queued turn. The token is what stops two
  *  workers running the same turn after a partition. */
@@ -1026,6 +1061,33 @@ export const Turn = z.object({
       intoRunId: Id,
       requestedAt: Timestamp,
       deliveredAt: Timestamp.optional(),
+    })
+    .optional(),
+
+  /**
+   * QUEUED, BUT WRITTEN FOR A CONVERSATION THAT NO LONGER EXISTS.
+   *
+   * Set by recovery on messages that were already waiting when a turn was lost.
+   * They keep their place and their order and are never dropped — but no worker
+   * may claim one until a human has looked at it, because it was composed
+   * against a state of the world that the interrupted turn took with it. "Also
+   * update the docs" means something different when you no longer know whether
+   * the docs were updated.
+   *
+   * A PROPERTY OF THE TURN, NOT OF THE SESSION, and that distinction is the
+   * whole reason this field exists. The hold was first derived from "this
+   * session has an ambiguous turn", which meant resolving the ambiguity — the
+   * very act of pressing Continue — released the entire pre-crash backlog in
+   * the same instant, unreviewed. Marking the turns themselves lets the
+   * ambiguity be settled and the backlog stay held, and lets a FRESH message
+   * typed after Continue run immediately, which is the point of continuing.
+   *
+   * Cleared by `releaseHeldTurn` (run it) or ended by `stopTurn` (drop it).
+   */
+  held: z
+    .object({
+      at: Timestamp,
+      reason: z.enum(["engine_restart", "worker_unavailable"]),
     })
     .optional(),
 });
