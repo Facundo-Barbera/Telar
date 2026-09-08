@@ -300,9 +300,9 @@ describe("multi-tab additions", () => {
     expect(parseBrowserTabs("- 0: [Yours truly](https://a.example/) {opened-by=agent}")[0]?.agentFocus).toBeUndefined();
   });
 
-  test("a tab carries the profile it is signed into, and absent means unknown", () => {
+  test("a tab carries its own id and the profile it is signed into; absent means unknown", () => {
     const [tab] = parseBrowserTabs(
-      "- 0: (current) [Mail](https://mail.example/) {controller=idle, opened-by=agent, profile=bp_00000000000000a1, profile-label=Work%20%2F%20Ana, yours}",
+      "- 0: (current) [Mail](https://mail.example/) {tab=tab-7, controller=idle, opened-by=agent, profile=bp_00000000000000a1, profile-label=Work%20%2F%20Ana, yours}",
     );
     expect(tab).toEqual({
       index: 0,
@@ -310,14 +310,20 @@ describe("multi-tab additions", () => {
       url: "https://mail.example/",
       active: true,
       agentFocus: true,
+      // `index` is a POSITION — closing an earlier tab renumbers this one — so
+      // anything that must act on the tab it inspected compares this instead.
+      tabUid: "tab-7",
       profileId: "bp_00000000000000a1",
       // Percent-encoded on the wire: a label is a person's free text inside a
       // comma-separated suffix.
       profileLabel: "Work / Ana",
     });
-    // A host with no named profiles says nothing, and nothing is invented for
-    // it — the credential path treats this as "ask a human".
-    expect(parseBrowserTabs("- 0: [Mail](https://mail.example/) {opened-by=agent}")[0]?.profileId).toBeUndefined();
+    // A host with no named profiles, and no per-tab id, says nothing — and
+    // nothing is invented for it: the credential path treats an unknown
+    // identity as "ask a human", and an unknown tab id as "cannot verify".
+    const bare = parseBrowserTabs("- 0: [Mail](https://mail.example/) {opened-by=agent}")[0];
+    expect(bare?.profileId).toBeUndefined();
+    expect(bare?.tabUid).toBeUndefined();
     // A label that will not decode costs the label, never the identity.
     const [broken] = parseBrowserTabs("- 0: [Mail](https://mail.example/) {profile=bp_00000000000000a1, profile-label=%E0%A4%A}");
     expect(broken?.profileId).toBe("bp_00000000000000a1");

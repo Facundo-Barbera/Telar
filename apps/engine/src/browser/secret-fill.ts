@@ -96,9 +96,17 @@ type ParsedArgs = { fields: ParsedField[]; item?: string; submit?: { target: str
  * would authorize a fill against an identity this page is not in.
  */
 type FillTarget = {
-  /** How the host addresses this tab (`tabId`), so the checks and the write
-   *  name the same page rather than both saying "whatever is focused". */
+  /**
+   * How the host addresses this tab (`tabId`), so the checks and the write name
+   * the same page rather than both saying "whatever is focused".
+   *
+   * IT IS A POSITION, NOT AN IDENTITY — `tabAt` indexes the scope's tab list —
+   * so closing a tab renumbers everything after it. That is what `uid` is for.
+   */
   index: number;
+  /** The host's own id for the tab, when it reports one. Compared across every
+   *  await so a renumbered index cannot substitute another page. */
+  uid?: string;
   url: string;
   origin: string;
   /** Absent means the host does not name identities — never "the default one". */
@@ -116,6 +124,7 @@ async function readFillTarget(callBrowser: SecretFillDeps["callBrowser"]): Promi
   if (!origin) return null;
   return {
     index: tab.index,
+    ...(tab.tabUid ? { uid: tab.tabUid } : {}),
     url: tab.url,
     origin,
     ...(tab.profileId ? { profileId: tab.profileId } : {}),
@@ -144,6 +153,12 @@ async function confirmTarget(
   const now = await readFillTarget(callBrowser);
   if (!now) return "The browser has no page open to fill credentials into any more — credentials were not filled.";
   if (now.index !== expected.index) return "The browser's tabs changed while preparing the fill — credentials were not filled.";
+  // The index matched — but the index is a POSITION. If the host names its
+  // tabs, the name has to match too, or a closed tab has quietly shifted
+  // another page into the slot this fill was approved for.
+  if (expected.uid !== undefined && now.uid !== expected.uid) {
+    return "The browser's tabs changed while preparing the fill — credentials were not filled.";
+  }
   if (originMustMatchExactly) {
     if (now.origin !== expected.origin) return "The page changed while preparing the fill — the remembered login was not used.";
   } else if (registrableDomainOfUrl(now.origin) !== registrableDomainOfUrl(expected.origin)) {
@@ -283,11 +298,29 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
   }
 
   /**
+   * WHEN AN EXACT ORIGIN IS THE PROMISE, IT IS ENFORCED FROM HERE ON.
+   *
+   * A human's ordinary approval is for a page, and stays bound to its
+   * registrable domain — a login that redirects within its own site is the
+   * common case and must keep working. But two situations are promises about
+   * ONE EXACT ORIGIN and are held to it:
+   *
+   *   - a remembered authorization being SPENT (`usedGrant`), which was granted
+   *     for that origin and nothing else;
+   *   - a remembered authorization being CREATED (`rememberThis`). The card the
+   *     person ticked named an exact origin. If the page moves — even within
+   *     the same domain — the fill that would create it is no longer happening
+   *     where they were told it would, so it is refused rather than quietly
+   *     writing a standing permission for an address they never saw.
+   */
+  const exactOriginRequired = Boolean(usedGrant) || rememberThis;
+
+  /**
    * CHECK ONE, before the vault is opened: is this still the same page, in the
    * same identity, at the same tab? Cheap, and it means a navigation during the
    * approval costs no vault read at all.
    */
-  const beforeRead = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: Boolean(usedGrant) });
+  const beforeRead = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: exactOriginRequired });
   if (beforeRead) return errorResult(beforeRead);
   if (usedGrant && !stillAuthorizes(deps, usedGrant, wants)) {
     return errorResult("That remembered login was revoked — credentials were not filled.");
@@ -309,7 +342,7 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
    * again here, with values in hand and nothing sent yet, and a failure drops
    * them unused.
    */
-  const beforeDispatch = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: Boolean(usedGrant) });
+  const beforeDispatch = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: exactOriginRequired });
   if (beforeDispatch) return errorResult(beforeDispatch);
   if (usedGrant && !stillAuthorizes(deps, usedGrant, wants)) {
     return errorResult("That remembered login was revoked — credentials were not filled.");
@@ -337,9 +370,17 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
     // The submit is part of the same authorized act — it posts the credential
     // that was just typed — so it is checked and addressed exactly like the
     // fill. A page that moved between the two must not be submitted into.
-    const beforeSubmit = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: Boolean(usedGrant) });
+    const beforeSubmit = await confirmTarget(deps.callBrowser, target, { originMustMatchExactly: exactOriginRequired });
     if (beforeSubmit) {
       return errorResult(`Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but did not submit: ${beforeSubmit}`);
+    }
+    // And the authorization must still exist for the submit as well: pressing
+    // the button is what actually spends the credential, and a revoke that
+    // landed while the form was being filled has to stop it here too.
+    if (usedGrant && !stillAuthorizes(deps, usedGrant, wants)) {
+      return errorResult(
+        `Filled ${describeFields(args.fields)} from “${chosen.title}” on ${origin}, but did not submit: that remembered login was revoked.`,
+      );
     }
     const click = asToolResult(await deps.callBrowser("browser_click", {
       tabId: target.index,
@@ -361,22 +402,33 @@ export async function runSecretFill(deps: SecretFillDeps, rawArgs: Record<string
    */
   if (rememberThis && profile && deps.grants) {
     /**
-     * STORED UNDER THE IDENTITY AND ADDRESS THE FILL ACTUALLY LANDED IN. The
-     * approval named a page and a profile; `confirmTarget` above proved the
-     * dispatch happened on the same tab, same profile, and within the same
-     * registrable domain — but a human's approval tolerates a move WITHIN that
-     * domain, so the exact origin is re-read here rather than assumed. An
-     * authorization for `https://accounts.example.com` must not be written
-     * because the approval started on `https://example.com`.
+     * STORED FOR THE ORIGIN THE PERSON WAS SHOWN, AND ONLY IF NOTHING MOVED.
+     *
+     * The card named `origin` — this exact address, in this exact profile — and
+     * that string, unmodified, is what gets written. It is deliberately NOT
+     * re-read from the page here: reading it back would mean a navigation
+     * during the fill could silently widen the authorization to an address
+     * nobody agreed to, which is the failure this whole path exists to prevent.
+     *
+     * The confirmations above already ran with `originMustMatchExactly` (see
+     * `exactOriginRequired`), so reaching this line means the fill happened on
+     * that exact origin. This last read is the belt: same tab, same identity,
+     * same origin, one more time, after the values went out — and if anything
+     * differs the fill stands but no standing permission is created.
      */
     const landed = await readFillTarget(deps.callBrowser);
-    const sameIdentity = landed && landed.index === target.index && landed.profileId === target.profileId;
-    if (sameIdentity && registrableDomainOfUrl(landed.origin) === domain) {
+    const unmoved =
+      landed !== null &&
+      landed.index === target.index &&
+      landed.uid === target.uid &&
+      landed.profileId === target.profileId &&
+      landed.origin === origin;
+    if (unmoved) {
       try {
         deps.grants.remember({
           profileId: profile.id,
           ...(profile.label ? { profileLabel: profile.label } : {}),
-          origin: landed.origin,
+          origin,
           itemId: chosen.id,
           itemTitle: chosen.title,
           ...(chosen.vault ? { vault: chosen.vault } : {}),

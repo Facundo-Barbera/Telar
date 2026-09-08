@@ -2570,7 +2570,14 @@ class DesktopBrowserManager {
     return okText(
       tabs
         .map((tab, index) => {
-          const meta = [`controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
+          /**
+           * THE TAB'S OWN IDENTITY, because `tabId` is a POSITION. Every tool
+           * addresses a tab by its index in this list (`tabAt`), so closing a
+           * tab renumbers the ones after it and an index captured a moment ago
+           * can name a different page. Callers that must act on the SAME tab
+           * they inspected — the credential path — compare this instead.
+           */
+          const meta = [`tab=${tab.id}`, `controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
           /**
            * WHICH IDENTITY THIS TAB IS SIGNED INTO, per tab and not per
            * session. After a profile switch a session's tabs are of two

@@ -32,6 +32,13 @@ export type BrowserTabInfo = {
    */
   profileId?: string;
   profileLabel?: string;
+  /**
+   * The HOST's id for this tab. `index` is a position: closing a tab renumbers
+   * every tab after it, so an index captured before an await can name a
+   * different page afterwards. A caller that must act on the tab it inspected
+   * compares this. Absent from hosts that only address by position.
+   */
+  tabUid?: string;
 };
 
 /**
@@ -229,6 +236,13 @@ export function imageDataUrlOf(result: BrowserToolResult): string | null {
  */
 /** `profile=<id>, profile-label=<percent-encoded>` out of the host's per-tab
  *  metadata suffix. A malformed label costs the label, never the id. */
+/** The host's own id for this tab, which — unlike `index` — survives another
+ *  tab closing. Absent from hosts that address tabs only by position. */
+function tabUidFromMeta(meta: string): { tabUid?: string } {
+  const uid = /(?:^|,)\s*tab=([^,\s}]+)/i.exec(meta)?.[1];
+  return uid ? { tabUid: uid } : {};
+}
+
 function profileFromMeta(meta: string): { profileId?: string; profileLabel?: string } {
   const id = /(?:^|,)\s*profile=([^,\s}]+)/i.exec(meta)?.[1];
   if (!id) return {};
@@ -269,6 +283,7 @@ export function parseBrowserTabs(text: string): BrowserTabInfo[] {
       // The browser profile THIS TAB is signed into. Present only from a host
       // with named profiles; the credential path treats absent as "unknown"
       // and asks a human rather than assuming the session's default.
+      ...tabUidFromMeta(meta),
       ...profileFromMeta(meta),
     });
   }

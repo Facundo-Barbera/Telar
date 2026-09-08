@@ -35,10 +35,10 @@ type Call = { name: string; args: Record<string, unknown> };
  * to simulate (during the approval, during the vault read), rather than
  * counting reads and hoping the count does not change.
  */
-type Page = { index?: number; url: string; profileId?: string; profileLabel?: string };
+type Page = { index?: number; uid?: string; url: string; profileId?: string; profileLabel?: string };
 
 function tabLine(page: Page): string {
-  const meta = ["controller=idle", "opened-by=agent", "yours"];
+  const meta = [`tab=${page.uid ?? "tab-0"}`, "controller=idle", "opened-by=agent", "yours"];
   if (page.profileId) meta.push(`profile=${page.profileId}`);
   if (page.profileLabel) meta.push(`profile-label=${encodeURIComponent(page.profileLabel)}`);
   return `- ${page.index ?? 0}: (current) [Sign in](${page.url}) {${meta.join(", ")}}`;
@@ -513,19 +513,116 @@ test("a navigation during the vault read on the HUMAN path also denies, and stor
   expect(grants.list()).toHaveLength(0);
 });
 
-test("a grant is stored for the origin the fill LANDED on, not the one the approval started on", async () => {
+/**
+ * A FIRST REMEMBER IS A PROMISE ABOUT ONE EXACT ORIGIN, and the card said which.
+ * These four are the ways that promise could be broken by a navigation under an
+ * await — including one to a DIFFERENT ORIGIN OF THE SAME DOMAIN, which an
+ * ordinary approval tolerates and this one must not.
+ */
+const REMEMBER = { decision: "accept" as const, itemId: "item_gh", remember: true };
+
+test("ticking remember holds the fill to the EXACT origin the card showed — a same-domain move denies it", async () => {
+  const grants = grantStore();
+  const page = githubPage();
+  const { deps, calls } = fakeDeps({
+    page,
+    grants,
+    outcome: REMEMBER,
+    // Same registrable domain, different origin. Without the opt-in this is a
+    // legitimate fill (see the test below); with it, it is a permission for an
+    // address the person never saw.
+    onAsk: () => { page.url = "https://gist.github.com/login"; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+  expect(grants.list()).toHaveLength(0);
+});
+
+test("the same same-domain move WITHOUT the opt-in still fills, and still stores nothing", async () => {
   const grants = grantStore();
   const page = githubPage();
   const { deps } = fakeDeps({
     page,
     grants,
-    outcome: { decision: "accept", itemId: "item_gh", remember: true },
-    // Within the same registrable domain, which a human's approval tolerates.
+    outcome: { decision: "accept", itemId: "item_gh" },
     onAsk: () => { page.url = "https://gist.github.com/login"; },
   });
   const result = await runSecretFill(deps, { fields: FIELDS });
   expect(result.isError).toBeUndefined();
-  expect(grants.list()[0]!.origin).toBe("https://gist.github.com");
+  expect(grants.list()).toHaveLength(0);
+});
+
+test("a same-domain move DURING the vault read denies a first remember and stores nothing", async () => {
+  const grants = grantStore();
+  const page = githubPage();
+  const { deps, calls } = fakeDeps({
+    page,
+    grants,
+    outcome: REMEMBER,
+    onVaultRead: () => { page.url = "https://gist.github.com/login"; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+  expect(grants.list()).toHaveLength(0);
+});
+
+test("a move AFTER the values went out keeps the fill but creates no standing permission", async () => {
+  const grants = grantStore();
+  const page = githubPage();
+  const { deps } = fakeDeps({
+    page,
+    grants,
+    outcome: REMEMBER,
+    // The last read before storing is the belt: the fill already happened.
+    onTabRead: (nth) => { if (nth === 4) page.url = "https://gist.github.com/x"; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBeUndefined();
+  expect(textOf(result)).not.toContain("Allowed for this profile");
+  expect(grants.list()).toHaveLength(0);
+});
+
+test("an unmoved first remember stores exactly the origin the card named", async () => {
+  const grants = grantStore();
+  const { deps } = fakeDeps({ page: { ...githubPage(), url: "https://github.com/session/new" }, grants, outcome: REMEMBER });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBeUndefined();
+  // The path is not part of an origin, and the origin is not re-derived.
+  expect(grants.list()[0]!.origin).toBe("https://github.com");
+  expect(textOf(result)).toContain("Allowed for this profile from now on.");
+});
+
+// ── THE TAB IS A POSITION, SO ITS IDENTITY IS CHECKED TOO ──────────────────
+
+test("another tab shifted into the same index is refused, even at the same origin and profile", async () => {
+  const page: Page = { ...githubPage(), uid: "tab-a" };
+  const { deps, calls } = fakeDeps({
+    page,
+    // A tab before this one closed: the index still resolves, to a different
+    // page. Same origin, same profile — only the host's own id says otherwise.
+    onVaultRead: () => { page.uid = "tab-b"; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("tabs changed");
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+});
+
+test("a revoke while the form is being filled stops the submit", async () => {
+  const grants = grantStore();
+  const grant = rememberUsernameAndPassword(grants);
+  const { deps, calls } = fakeDeps({
+    grants,
+    // Read 4 is the pre-submit check; the values are already on the page.
+    onTabRead: (nth) => { if (nth === 4) grants.revoke(grant.id); },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS, submit: { target: "e14" } });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("did not submit");
+  expect(textOf(result)).toContain("revoked");
+  expect(calls.map((call) => call.name)).not.toContain("browser_click");
 });
 
 // ── WHICH AUTHORIZED ITEM (the several-accounts case) ─────────────────────
