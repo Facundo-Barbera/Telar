@@ -42,7 +42,7 @@ xcodebuild \
   ${TELAR_ASC_KEY_PATH:+-authenticationKeyPath "$TELAR_ASC_KEY_PATH"} \
   DEVELOPMENT_TEAM="$TEAM" \
   TELAR_APP_BUNDLE_ID="$BUNDLE" \
-  CODE_SIGN_IDENTITY="Apple Distribution" \
+  CODE_SIGNING_ALLOWED=NO \
   INFOPLIST_KEY_CFBundleDisplayName="Telar" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
   archive
