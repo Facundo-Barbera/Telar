@@ -4,6 +4,7 @@ import type { SettleableSession } from "./session-settling";
 import {
   canSettle,
   canSnooze,
+  hasUnreadResult,
   isSettled,
   isSnoozed,
   raisedHandWhileSnoozed,
@@ -131,6 +132,86 @@ describe("snoozing", () => {
 
   test("a session that never slept never woke", () => {
     expect(wokeAt(session(), {}, { now: NOW })).toBeUndefined();
+  });
+});
+
+describe("an unread answer is never shelved by the clock", () => {
+  const HOUR = 60 * 60 * 1000;
+  // The reported case: three hours configured, and a session that answered
+  // four hours ago with nobody having looked at it.
+  const threeHours = { now: NOW, autoSettleAfterHours: 3 };
+  const unread = session({ updatedAt: NOW - 4 * HOUR, lastTurnSequence: 7 });
+
+  test("unread is the two sequences, not a clock", () => {
+    expect(hasUnreadResult(unread)).toBe(true);
+    expect(hasUnreadResult(session({ lastTurnSequence: 7, lastReadTurnSequence: 7 }))).toBe(false);
+    expect(hasUnreadResult(session({ lastTurnSequence: 8, lastReadTurnSequence: 7 }))).toBe(true);
+  });
+
+  test("a session with no result at all has nothing to read", () => {
+    // Absent means "never answered", not "unknown" — see `hasUnreadResult`.
+    expect(hasUnreadResult(session())).toBe(false);
+    expect(isSettled(session({ updatedAt: NOW - 4 * HOUR }), {}, threeHours)).toBe(true);
+  });
+
+  test("the inactivity window does not hide it", () => {
+    expect(isSettled(unread, {}, threeHours)).toBe(false);
+  });
+
+  test("…and reading it hands the session back to the clock", () => {
+    const read = { ...unread, lastReadTurnSequence: 7, readAt: NOW - 4 * HOUR };
+    expect(isSettled(read, {}, threeHours)).toBe(true);
+    // Read a moment ago: the window runs from the read, not from the work.
+    expect(isSettled({ ...read, readAt: NOW - HOUR }, {}, threeHours)).toBe(false);
+  });
+
+  test("a NEWER answer makes a read session unread again", () => {
+    expect(isSettled({ ...unread, lastTurnSequence: 8, lastReadTurnSequence: 7 }, {}, threeHours)).toBe(false);
+  });
+
+  test("but an explicit settle still shelves it — a human said so", () => {
+    // Manual settling, and settling by an agent, both go through the override.
+    expect(isSettled({ ...unread, settledOverride: "settled" }, {}, threeHours)).toBe(true);
+    // And it is still the pin, not the clock: with the clock off, same answer.
+    expect(isSettled({ ...unread, settledOverride: "settled" }, {}, { now: NOW, autoSettleAfterHours: null })).toBe(true);
+  });
+
+  test("an archived session is shelved whether or not anyone read it", () => {
+    expect(isSettled({ ...unread, archived: true }, {}, threeHours)).toBe(true);
+  });
+
+  test("a blocker still outranks it in the other direction", () => {
+    // Unread keeps a row visible; a parked request keeps it visible too. The
+    // interesting case is that neither turns into a settle.
+    expect(isSettled(unread, { waitingOnYou: true }, threeHours)).toBe(false);
+    expect(isSettled(unread, { working: true }, threeHours)).toBe(false);
+  });
+});
+
+describe("a snooze outlives a shorter auto-settle window", () => {
+  const HOUR = 60 * 60 * 1000;
+  const threeHours = { now: NOW, autoSettleAfterHours: 3 };
+  // "Tomorrow at 9", set last night, on a machine that shelves after 3h.
+  const tomorrow = session({ updatedAt: NOW - 10 * HOUR, snoozedAt: NOW - 10 * HOUR, snoozedUntil: NOW + 6 * HOUR });
+
+  test("the clock cannot shelve a session that is still asleep", () => {
+    expect(isSettled(tomorrow, {}, threeHours)).toBe(false);
+    // And it is genuinely hidden meanwhile — by the snooze, which is the band
+    // that can wake it, rather than by the shelf, which cannot.
+    expect(isSnoozed(tomorrow, {}, { now: NOW })).toBe(true);
+  });
+
+  test("waking gives it a full window to be noticed, not an instant shelf", () => {
+    const justWoke = { now: NOW + 6 * HOUR + 60_000, autoSettleAfterHours: 3 };
+    expect(isSnoozed(tomorrow, {}, justWoke)).toBe(false);
+    expect(isSettled(tomorrow, {}, justWoke)).toBe(false);
+    // Three hours after the WAKE, with nothing else happening, it shelves.
+    expect(isSettled(tomorrow, {}, { now: NOW + 6 * HOUR + 3 * HOUR + 1, autoSettleAfterHours: 3 })).toBe(true);
+  });
+
+  test("a malformed wake time is ignored by the baseline too", () => {
+    const broken = session({ updatedAt: NOW - 10 * HOUR, snoozedUntil: Number.NaN });
+    expect(isSettled(broken, {}, threeHours)).toBe(true);
   });
 });
 

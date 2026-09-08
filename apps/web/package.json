@@ -12,9 +12,11 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
+    "@streamdown/math": "^1.0.2",
     "@telar/engine-client": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "katex": "^0.16.27",
     "lucide-react": "^1.31.0",
     "next": "^16.3.0",
     "qrcode": "^1.5.4",

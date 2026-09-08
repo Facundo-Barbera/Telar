@@ -3138,6 +3138,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        /**
+         * A HUMAN SAW A RESULT. Its own verb rather than a PATCH field: the
+         * receipt names the turn that was on screen and the store decides
+         * whether that moves the mark, so there is nothing here for a client
+         * to get wrong by sending a timestamp of its own. See
+         * `EngineStore.markSessionRead`.
+         */
+        if (request.method === "POST" && session.tail === "/read") {
+          const input = await body(request);
+          writeJson(response, 200, { session: store.markSessionRead(session.sessionId, stringValue(input.runId, "run id")!) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/archive") {
           await body(request);
           writeJson(response, 200, { session: store.archiveSession(session.sessionId) });

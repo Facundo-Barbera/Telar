@@ -94,6 +94,24 @@ describe("bandOf", () => {
     expect(bandOf(finished, opts)).toBe("active");
   });
 
+  test("an unread answer keeps a quiet row in the list, and reading it lets go", () => {
+    const quiet = { updatedAt: NOW - SETTLED_AFTER_MS - 1, lastTurnEndedAt: NOW - SETTLED_AFTER_MS - 1 };
+    expect(bandOf(row("s1", "Answered", { ...quiet, lastTurnSequence: 3 }), opts)).toBe("active");
+    // Read, and long ago: the clock takes it from here.
+    expect(
+      bandOf(row("s1", "Answered", { ...quiet, lastTurnSequence: 3, lastReadTurnSequence: 3, readAt: quiet.updatedAt }), opts),
+    ).toBe("settled");
+    // A human shelving it anyway is a decision, and decisions come first.
+    expect(bandOf(row("s1", "Answered", { ...quiet, lastTurnSequence: 3, settledOverride: "settled" }), opts)).toBe("settled");
+  });
+
+  test("a snooze still hides a row with an unread answer under it", () => {
+    // Both keep the clock away; the snooze is the one that decides the BAND,
+    // because it is the band that knows how to wake.
+    const later = row("s1", "Later", { snoozedUntil: NOW + HOUR, snoozedAt: NOW - 60_000, lastTurnSequence: 2 });
+    expect(bandOf(later, opts)).toBe("snoozed");
+  });
+
   test("a blocker outranks a settle, however it was reached", () => {
     const blocked = row("s1", "Shelved but asking", { settledOverride: "settled", activity: "blocked" });
     expect(bandOf(blocked, opts)).toBe("active");
