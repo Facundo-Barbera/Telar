@@ -1952,7 +1952,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
       if (request.method === "GET" && projectIcon) {
         const icon = await store.projectIconFileAsync(decodeURIComponent(projectIcon[1]));
-        const bytes = await fs.promises.readFile(icon.path);
+        // The file can go between the resolve and the read — a `git checkout`
+        // mid-request is enough. That is the same answer as "this project has
+        // no icon", and the avatar already falls back on it; a 500 would make
+        // an ordinary race look like a broken engine.
+        let bytes: Buffer;
+        try {
+          bytes = await fs.promises.readFile(icon.path);
+        } catch {
+          throw new HttpError(404, "not_found", "this project has no icon");
+        }
         response.writeHead(200, {
           "content-type": icon.contentType,
           "content-length": bytes.byteLength,

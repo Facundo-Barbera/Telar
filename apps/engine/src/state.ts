@@ -133,7 +133,7 @@ import {
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
-import { findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
+import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import {
   addSubtask as addSpoolSubtask,
@@ -3834,22 +3834,78 @@ export class EngineStore {
   }
 
   /**
-   * The project's icon, found in its checkout and cached for a minute.
+   * The project's icon, found in its checkout and cached.
    *
-   * A TTL CACHE because `listProjects` is on the sidebar's poll path and the
-   * find is a dozen stats per project. In memory like the caches above: it
-   * describes files in somebody's working tree, which change without telling
-   * the engine — sixty seconds is the stated staleness bound.
+   * A CACHE, BECAUSE THE FIND IS NOT FREE. `listProjects` is on the sidebar's
+   * poll path and the metadata refresh below runs every ten seconds per
+   * project; resolving from scratch each time meant a hundred-odd `stat`s per
+   * project per poll, forever, to re-learn an answer that almost never
+   * changes.
+   *
+   * TWO TTLs, BECAUSE THE TWO ANSWERS AGE DIFFERENTLY. "This file is the
+   * icon" stays true for as long as the file does, and a HIT IS CONFIRMED
+   * WITH ONE `stat` rather than trusted — which is what makes a REPLACED icon
+   * visible on the very next poll (the etag is derived from mtime and size, so
+   * the confirmation re-derives it) and a DELETED one fall back at once
+   * instead of leaving the serve route reading a path that is gone. "This
+   * project has no icon" is the answer a person is most likely to be in the
+   * middle of falsifying — they just added `public/favicon.ico` and are
+   * waiting to see it — so it is held for seconds, not minutes.
+   *
+   * Bounded, because it is keyed by project id and nothing evicts on
+   * unregistration alone; oldest-first, which for a poll-driven map is close
+   * enough to least-recently-used and costs no bookkeeping.
    */
   private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; at: number }>();
+  private static readonly ICON_TTL_FOUND = 300_000;
+  private static readonly ICON_TTL_MISSING = 15_000;
+  private static readonly ICON_CACHE_CAPACITY = 512;
+
+  private rememberProjectIcon(projectId: string, icon: ProjectIcon | undefined): ProjectIcon | undefined {
+    this.projectIconCache.delete(projectId);
+    this.projectIconCache.set(projectId, { ...(icon ? { icon } : {}), at: this.now() });
+    while (this.projectIconCache.size > EngineStore.ICON_CACHE_CAPACITY) {
+      const oldest = this.projectIconCache.keys().next();
+      if (oldest.done) break;
+      this.projectIconCache.delete(oldest.value);
+    }
+    return icon;
+  }
+
+  /** The cached answer, or `undefined` when the cache cannot speak — which is
+   *  NOT the same as "no icon" and is why this returns a wrapper. */
+  private cachedProjectIcon(projectId: string): { icon?: ProjectIcon } | undefined {
+    const cached = this.projectIconCache.get(projectId);
+    if (!cached) return undefined;
+    const age = this.now() - cached.at;
+    if (cached.icon) return age < EngineStore.ICON_TTL_FOUND ? { icon: cached.icon } : undefined;
+    return age < EngineStore.ICON_TTL_MISSING ? {} : undefined;
+  }
 
   private projectIcon(project: Pick<Project, "id" | "root">): ProjectIcon | undefined {
-    const cached = this.projectIconCache.get(project.id);
-    const at = this.now();
-    if (cached && at - cached.at < 60_000) return cached.icon;
-    const icon = findProjectIcon(project.root);
-    this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at });
-    return icon;
+    const cached = this.cachedProjectIcon(project.id);
+    if (cached) {
+      if (!cached.icon) return undefined;
+      const confirmed = confirmProjectIconSync(cached.icon);
+      if (confirmed) return this.rememberProjectIcon(project.id, confirmed);
+    }
+    return this.rememberProjectIcon(project.id, findProjectIcon(project.root));
+  }
+
+  private async projectIconAsync(project: Pick<Project, "id" | "root">): Promise<ProjectIcon | undefined> {
+    const cached = this.cachedProjectIcon(project.id);
+    if (cached) {
+      if (!cached.icon) return undefined;
+      const confirmed = await confirmProjectIcon(cached.icon);
+      if (confirmed) return this.rememberProjectIcon(project.id, confirmed);
+    }
+    return this.rememberProjectIcon(project.id, await findProjectIconAsync(project.root));
+  }
+
+  /** Forget what was found for a project, so the next read resolves afresh.
+   *  Called wherever the engine's own idea of the project changes under it. */
+  private forgetProjectIcon(projectId: string): void {
+    this.projectIconCache.delete(projectId);
   }
 
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
@@ -3863,9 +3919,7 @@ export class EngineStore {
 
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
     const project = this.getProject(projectId);
-    const cached = this.projectIconCache.get(project.id);
-    const icon = cached && this.now() - cached.at < 60_000
-      ? cached.icon : await findProjectIconAsync(project.root);
+    const icon = await this.projectIconAsync(project);
     if (!icon) throw new EngineStateError("not_found", "this project has no icon");
     return icon;
   }
@@ -3894,7 +3948,10 @@ export class EngineStore {
       const current = entry;
       current.pending = Promise.all([
         this.asyncGit(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 }),
-        findProjectIconAsync(project.root),
+        // THROUGH THE CACHE, not around it. This runs every ten seconds per
+        // project; resolving from scratch here made the cache above dead
+        // weight and re-walked every checkout on the poll path.
+        this.projectIconAsync(project),
       ]).then(([head, icon]) => {
         if (this.projectMetadataCache.get(project.id) !== current) return;
         const branch = head.status === 0 ? head.stdout.trim() : "";
@@ -3902,7 +3959,6 @@ export class EngineStore {
           ...(branch && branch !== "HEAD" ? { branch } : {}),
           ...(icon ? { icon: icon.etag } : {}),
         };
-        this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at: this.now() });
       }).catch(() => {
         // A stalled checkout must not hold up the registry or lose its row.
       }).finally(() => {
@@ -3947,7 +4003,7 @@ export class EngineStore {
     atomicWrite(this.paths.projects, parsed);
     // A fresh registration must not inherit a stale "no icon" answer cached
     // for a project that briefly shared this id.
-    this.projectIconCache.delete(id);
+    this.forgetProjectIcon(id);
     this.projectMetadataCache.delete(id);
     return structuredClone(project);
   }
