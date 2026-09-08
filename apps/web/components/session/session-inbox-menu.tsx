@@ -9,9 +9,15 @@
 //
 // THE DONOR'S MENU WAS LONGER, AND MOST OF IT NOW HAS SOMETHING TO CALL. This
 // file used to say settle, unsettle, snooze and wake were transitions on state
-// the engine did not model; `Session.settledOverride` and `snoozedUntil`
-// exist now, so they are here. Mark read/unread still is not — `readAt` remains
-// unmodelled, and a chip counting a number nothing backs is worse than no chip.
+// the engine did not model; `Session.settledOverride` and `snoozedUntil` exist
+// now, so they are here.
+//
+// UNREAD IS MODELLED TOO, and is deliberately still not a menu item. The engine
+// records which result a human was shown (`markSessionRead`) and the list uses
+// it for one rule — the clock may not shelve an unread answer — so there is a
+// number behind it now. A "mark unread" verb is a different feature: it asks
+// people to curate a second inbox by hand, and the whole point of deriving this
+// from what was actually on screen is that nobody has to.
 //
 // ARCHIVE IS GONE; THE PAIR IS SETTLE AND DELETE. Archiving and settling were
 // two names for "off my list", and keeping both cost a chip, a menu item and a
@@ -49,17 +55,57 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 
-/** One PATCH, one shape. Both verbs are the same call with different fields,
- *  which is what keeps "settle" and "snooze" from drifting into two protocols. */
+/**
+ * One PATCH, one shape. Both verbs are the same call with different fields,
+ * which is what keeps "settle" and "snooze" from drifting into two protocols.
+ *
+ * A FAILED PATCH IS A FAILURE NOW. This used to `await` the response and throw
+ * the result away, so an engine that refused — or was not there — produced a
+ * menu that closed, a row that did not change, and no way to tell "it did
+ * nothing" from "it worked and the list has not caught up". Pinning is a
+ * decision a person made on purpose; silently losing one is the same class of
+ * bug as clearing it on the next turn.
+ */
 export async function patchSession(
   session: Pick<SidebarSession, "id" | "hostId">,
   patch: { settledOverride?: "settled" | "active" | null; snoozedUntil?: number | null; title?: string },
 ): Promise<void> {
-  await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, {
+  const response = await sessionFetch(session, `/api/sessions/${encodeURIComponent(session.id)}`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(patch),
   });
+  if (!response.ok) throw new Error(await patchFailureMessage(response));
+}
+
+async function patchFailureMessage(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as { error?: { message?: string } } | null;
+    if (payload?.error?.message) return payload.error.message;
+  } catch {
+    // A non-JSON body is a proxy or a dead socket; the status is all there is.
+  }
+  return response.status === 0 ? "The engine is not answering." : `The engine refused (${response.status}).`;
+}
+
+/**
+ * Run one of these verbs and TELL THE TRUTH ABOUT WHAT HAPPENED.
+ *
+ * The refresh runs either way, which is the important half: on failure it
+ * repaints the row from the engine, so what is on screen is what is stored
+ * rather than what was clicked. The alert is the second half, and it is an
+ * alert because this rail has no error surface of its own — a toast system
+ * introduced for this would be a larger change than the bug. It fires only on
+ * a real refusal, so nobody who is not already stuck sees one.
+ */
+export async function runSessionPatch(action: () => Promise<void>, onRefresh?: () => void): Promise<void> {
+  try {
+    await action();
+  } catch (cause) {
+    window.alert(cause instanceof Error ? cause.message : "The engine refused that change.");
+  } finally {
+    onRefresh?.();
+  }
 }
 
 export function SessionInboxMenu({
@@ -96,11 +142,16 @@ export function SessionInboxMenu({
   const [open, setOpen] = useState(false);
   const snoozing = isSnoozed(session, activity, { now });
 
+  // `onDone` is the list's refresh, and it runs on the failure path too — see
+  // `runSessionPatch`, whose reasoning this shares: after a refusal the row
+  // must show what the engine stored, not what the menu item promised.
   const run = async (action: () => Promise<unknown>) => {
     if (busy) return;
     setBusy(true);
     try {
       await action();
+    } catch (cause) {
+      window.alert(cause instanceof Error ? cause.message : "The engine refused that change.");
     } finally {
       onDone?.();
       setBusy(false);
