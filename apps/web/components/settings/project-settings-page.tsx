@@ -49,7 +49,11 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
 
   const load = useCallback(async () => {
     try {
-      const answer = await api.projects();
+      // INCLUDES REMOVED ONES, and only here. A project put away is absent
+      // from every other surface; this page is the one that has to name it, so
+      // it can say it is removed and offer to put it back rather than showing
+      // the "no project with that id" notice for a record that still exists.
+      const answer = await api.projects({ includeRemoved: true });
       const found = answer.projects.find((entry) => entry.id === projectId);
       setProject(found);
       setMissing(!found);
@@ -129,11 +133,11 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
         </SettingsGroup>
       )}
 
-      {/* BENEATH THE IDENTITY IT FORGETS, and rendered even while the project
+      {/* BENEATH THE IDENTITY IT PUTS AWAY, and rendered even while the project
           is still loading — the button is disabled until it arrives, so the
           action is discoverable on the pane it belongs to rather than
           appearing a beat later. */}
-      {active === "project" && !missing && <RemoveProjectSection project={project} />}
+      {active === "project" && !missing && <RemoveProjectSection project={project} onChange={setProject} />}
     </SettingsShell>
   );
 }

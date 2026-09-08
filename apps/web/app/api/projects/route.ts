@@ -9,9 +9,12 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return Response.json(await (await engineClient()).listProjects());
+    // `?includeRemoved=1` is forwarded, not inferred: every existing caller
+    // asks without it and keeps getting only the live registry.
+    const includeRemoved = new URL(request.url).searchParams.get("includeRemoved") === "1";
+    return Response.json(await (await engineClient()).listProjects({ includeRemoved }));
   } catch (error) {
     return engineErrorResponse(error);
   }

@@ -152,7 +152,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         "GET",
         "/api/about",
       ),
-    projects: () => request<{ projects: Project[] }>(fetcher, "GET", "/api/projects"),
+    /** `includeRemoved` also returns put-away projects, which carry `removedAt`.
+     *  Only the project settings page asks for them. */
+    projects: (options: { includeRemoved?: boolean } = {}) =>
+      request<{ projects: Project[] }>(fetcher, "GET", options.includeRemoved ? "/api/projects?includeRemoved=1" : "/api/projects"),
     /** The other Macs this cockpit is paired with — always THIS cockpit's book,
      *  whichever host the fetcher points at (lib/hosts/client.ts). */
     hosts: () => request<{ hosts: PublicHost[] }>(fetcher, "GET", "/api/hosts"),
@@ -164,11 +167,14 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }) =>
       request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
-    /** Take a project off the registry. Nothing on disk is touched — see the
-     *  engine client's `unregisterProject`. 409 while a session on it is
-     *  working. */
+    /** Remove a project from Telar. Nothing on disk is touched and the record
+     *  is kept — see the engine client's `unregisterProject`. 409 while a
+     *  session on it is working. */
     unregisterProject: (projectId: string) =>
       request<{ project: Project; sessions: number }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}`),
+    /** Put a removed project back: same id, same settings, same sessions. */
+    restoreProject: (projectId: string) =>
+      request<{ project: Project }>(fetcher, "POST", `/api/projects/${encodeURIComponent(projectId)}/restore`, {}),
     /** Spawns each interpreter it finds — open a page, never poll. */
     dataScienceEnvironments: (projectId: string) =>
       request<DataScienceEnvironments>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/environments`),

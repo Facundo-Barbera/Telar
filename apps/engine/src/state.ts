@@ -3943,12 +3943,27 @@ export class EngineStore {
     return icon;
   }
 
-  listProjects(): Project[] {
+  /**
+   * The registered projects.
+   *
+   * REMOVED ONES ARE NOT REGISTERED. Their records stay in the file so a
+   * restore can give back the same id and settings, but they are absent from
+   * this list — which is the list every picker, the sidebar and the
+   * new-session surfaces read, so removal is complete without a single one of
+   * them learning a new concept. `includeRemoved` exists for the one screen
+   * that has to name a removed project in order to offer to put it back.
+   */
+  listProjects(options: { includeRemoved?: boolean } = {}): Project[] {
     const registry = readJson(this.paths.projects);
     if (registry === undefined) return [];
-    return structuredClone(parseRegistry(registry).projects).map((project) => {
-      return { ...project, ...this.projectMetadata(project) };
-    });
+    return structuredClone(parseRegistry(registry).projects)
+      .filter((project) => options.includeRemoved || project.removedAt === undefined)
+      .map((project) => {
+        // A removed project's checkout is not polled: it is not on any surface
+        // that shows a branch or an icon, and a removed row must not keep a
+        // `git rev-parse` running against somebody's disk every ten seconds.
+        return project.removedAt === undefined ? { ...project, ...this.projectMetadata(project) } : project;
+      });
   }
 
   /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
@@ -4004,9 +4019,31 @@ export class EngineStore {
     const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const id = input.id ?? `project_${crypto.randomUUID().replaceAll("-", "")}`;
+    /**
+     * REGISTERING A REMOVED PROJECT'S CHECKOUT RESTORES IT, rather than minting
+     * a stranger with the same path.
+     *
+     * The match is on the canonical root, because that is what the person is
+     * actually doing: pointing Telar at this folder again. Giving them a new id
+     * would leave every session that ran here bound to an id nothing resolves,
+     * their MCP servers scoped to it, and their browser profile keyed to it —
+     * three silent losses from an action that reads like an undo. So the record
+     * comes back whole: same id, same name unless a new one was typed, same
+     * data-science and LaTeX blocks.
+     */
+    const tombstone = parsed.projects.find((project) => project.root === projectRoot && project.removedAt !== undefined);
+    if (tombstone && (input.id === undefined || input.id === tombstone.id)) {
+      delete tombstone.removedAt;
+      tombstone.name = input.name.trim();
+      tombstone.updatedAt = this.now();
+      atomicWrite(this.paths.projects, parsed);
+      this.forgetProjectIcon(tombstone.id);
+      this.projectMetadataCache.delete(tombstone.id);
+      return structuredClone(tombstone);
+    }
     const existing = parsed.projects.find((project) => project.id === id || project.root === projectRoot);
     if (existing) {
-      if (existing.id === id && existing.root === projectRoot) return structuredClone(existing);
+      if (existing.id === id && existing.root === projectRoot && existing.removedAt === undefined) return structuredClone(existing);
       throw new EngineStateError("conflict", "project id or root is already registered");
     }
     const at = this.now();
@@ -4028,48 +4065,109 @@ export class EngineStore {
   }
 
   /**
-   * TAKE A PROJECT OFF THE REGISTRY. Nothing on disk is touched.
+   * PUT A PROJECT AWAY. Nothing on disk is touched, and nothing is thrown out.
    *
-   * WHAT THIS IS: the inverse of `registerProject` and nothing more. The
-   * repository, its git metadata, every worktree cut from it, the session
-   * journal of every session that ran on it and the browser profiles those
-   * sessions used all stay exactly where they are. Telar forgets WHERE the
-   * project is; it does not forget, move or delete anything the project owns.
-   * Registering the same path again brings it back — under a NEW id, because
-   * the id is Telar's handle on the registration and not on the directory.
+   * WHAT THIS IS: the reversible inverse of `registerProject`. The repository,
+   * its git metadata, every worktree cut from it, the journal of every session
+   * that ran on it and the browser profiles those sessions used all stay
+   * exactly where they are — and so does the REGISTRATION RECORD, marked with
+   * `removedAt`. Telar stops offering the project; it does not forget it.
    *
-   * WHY IT REFUSES WITH WORK IN FLIGHT. A session's turns are claimed by a
-   * worker that resolves its project by id on every step, so pulling the
-   * registration out from under a running turn turns a live conversation into
-   * a stream of "project does not exist" — silently, in a surface the person
-   * is not looking at. Refusing is the conservative half of that choice: the
-   * ONLY safe alternatives are stopping their work or letting it break, and
-   * neither is something a settings row should do without being asked. Idle
-   * sessions are left registered against a project id that no longer resolves,
-   * which every surface already renders as the honest "no registered project"
-   * — the same state a session whose checkout was deleted has always been in.
+   * WHY A TOMBSTONE RATHER THAN A SPLICE. Three things in this engine are
+   * keyed by a project id and outlive any one registration: a session's
+   * `projectId`, an MCP server's scope, and a browser profile's binding.
+   * Deleting the row and minting a new id on the way back in would silently
+   * strand all three — the person would point at the same folder, get a different
+   * project, and find their logged-in browser profile and their servers gone.
+   * Keeping the record makes restoring an actual undo.
+   *
+   * WHY IT REFUSES WITH WORK IN FLIGHT. A worker resolves its project by id on
+   * every step, so putting the registration away under a running turn turns a
+   * live conversation into a stream of refusals — silently, in a surface the
+   * person is not looking at. The ONLY alternatives are stopping their work or
+   * letting it break, and neither is something a settings row should do
+   * without being asked.
+   *
+   * WHAT COUNTS AS IN FLIGHT, stated rather than guessed at: every turn state
+   * that is not terminal (`queued`, `claimed`, `running`, `steering`), plus
+   * `ambiguous` — whose whole meaning is that the engine does not know whether
+   * a provider run is still out there, and a "maybe" is not a green light —
+   * plus any live backgrounded task, which by contract OUTLIVES the turn that
+   * started it and would otherwise walk straight past a turns-only check.
+   *
+   * Idle sessions keep working as READS while the project is away: their
+   * history, diffs and files all still resolve. What they cannot do is start
+   * new work — see `assertProjectAvailable`.
    */
   unregisterProject(projectId: string): { project: Project; sessions: number } {
     assertId(projectId, "project id");
     const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
-    const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
-    if (index < 0) throw new EngineStateError("not_found", "project does not exist");
+    const project = parsed.projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw new EngineStateError("not_found", "project does not exist");
+    if (project.removedAt !== undefined) throw new EngineStateError("conflict", "this project is already removed");
     const sessions = this.readSessions().filter((session) => session.projectId === projectId);
-    const busy = sessions.filter((session) =>
-      this.turns(session.id).some((turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running"),
-    );
+    const busy = sessions.filter((session) => this.sessionHasWorkInFlight(session.id));
     if (busy.length > 0) {
       throw new EngineStateError(
         "conflict",
         `this project has ${busy.length === 1 ? "a session with work in flight" : `${busy.length} sessions with work in flight`} — let them finish or stop them first`,
       );
     }
-    const [project] = parsed.projects.splice(index, 1);
+    project.removedAt = this.now();
+    project.updatedAt = project.removedAt;
     atomicWrite(this.paths.projects, parsed);
     this.forgetProjectIcon(projectId);
     this.projectMetadataCache.delete(projectId);
-    return { project: structuredClone(project!), sessions: sessions.length };
+    return { project: structuredClone(project), sessions: sessions.length };
+  }
+
+  /** Put a removed project back without needing its path — the settings page's
+   *  Restore. Registering its checkout again does the same thing. */
+  restoreProject(projectId: string): Project {
+    assertId(projectId, "project id");
+    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registry);
+    const project = parsed.projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw new EngineStateError("not_found", "project does not exist");
+    if (project.removedAt === undefined) return structuredClone(project);
+    delete project.removedAt;
+    project.updatedAt = this.now();
+    atomicWrite(this.paths.projects, parsed);
+    this.forgetProjectIcon(projectId);
+    this.projectMetadataCache.delete(projectId);
+    return structuredClone(project);
+  }
+
+  /**
+   * Whether a session still has something running, or something that might be.
+   *
+   * The turn states here are the NON-TERMINAL ones plus `ambiguous`; see
+   * `unregisterProject` for why "we do not know" is counted as busy. Live
+   * backgrounded tasks are checked separately because they are exactly the
+   * work a turn-state check misses: `TaskKind` says a backgrounded task
+   * continues after the turn that started it settles.
+   */
+  private sessionHasWorkInFlight(sessionId: string): boolean {
+    const unsettled: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>(["queued", "claimed", "running", "steering", "ambiguous"]);
+    if (this.turns(sessionId).some((turn) => unsettled.has(turn.state))) return true;
+    return [...this.readTasks(sessionId).values()].some(isLiveTask);
+  }
+
+  /**
+   * REFUSE TO START NEW WORK ON A PUT-AWAY PROJECT.
+   *
+   * Reading stays open — history, diffs, files and the session's own record all
+   * still answer, which is what keeps a removed project's past coherent instead
+   * of blank. This guards the three places where new work BEGINS: a new
+   * session, a new turn (which is also how a peer's wake arrives, so a
+   * subscription firing later cannot quietly resume a provider on a project
+   * the person put away), and a settings change (frozen, so what comes back on
+   * restore is what was put away).
+   */
+  private assertProjectAvailable(projectId: string): void {
+    if (this.getProject(projectId).removedAt === undefined) return;
+    throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
   }
 
   getProject(projectId: string): Project {
@@ -4094,6 +4192,11 @@ export class EngineStore {
     const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
     if (index < 0) throw new EngineStateError("not_found", "project does not exist");
     const current = parsed.projects[index]!;
+    // A removed project's settings are FROZEN, so what comes back on restore is
+    // exactly what was put away.
+    if (current.removedAt !== undefined) {
+      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to change its settings");
+    }
     const next: Project = { ...current, updatedAt: this.now() };
     if (patch.dataScience === null) {
       delete next.dataScience;
@@ -5154,6 +5257,7 @@ export class EngineStore {
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
+    this.assertProjectAvailable(input.projectId);
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
     const existing = readJson(metadata);
@@ -5703,6 +5807,16 @@ export class EngineStore {
       if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
       return { turn: structuredClone(known), replayed: true };
     }
+    /**
+     * NO NEW WORK ON A PUT-AWAY PROJECT — and this is the line that makes that
+     * true for the turns nobody typed. A peer's subscription firing an hour
+     * from now arrives here as an `origin: "session"` wake, and without this it
+     * would start a provider on a project the person removed. `fireSubscriptions`
+     * already treats a `conflict` as "the subscriber cannot take this" and
+     * writes the reason to that session's own journal, so the wake is dropped
+     * visibly rather than lost.
+     */
+    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
     /**
      * A MESSAGE WHILE A TURN RUNS IS A STEER, not a queued follow-up. This
      * went through three shapes: a conflict (the human waited), then a queue

@@ -720,7 +720,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
-        writeJson(response, 200, { projects: store.listProjects() });
+        // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
+        // so every picker and the sidebar drop a removed project without
+        // knowing the concept exists; its own settings page is the one caller
+        // that has to name it in order to offer to restore it.
+        writeJson(response, 200, { projects: store.listProjects({ includeRemoved: url.searchParams.get("includeRemoved") === "1" }) });
         return;
       }
       /**
@@ -2166,15 +2170,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
-       * UNREGISTER. A DELETE on the registration, NOT on the project: the
-       * checkout, its worktrees, its sessions' journals and their browser
-       * profiles are all untouched, and re-POSTing the same root registers it
-       * again. `sessions` in the answer is how many session records are now
-       * pointed at an id that no longer resolves — the surface says so rather
-       * than the engine tidying them away.
+       * REMOVE. A DELETE on the registration, NOT on the project: the checkout,
+       * its worktrees, its sessions' journals and their browser profiles are
+       * all untouched, and the registration RECORD is kept and marked rather
+       * than deleted — so restoring gives back the same id and settings.
+       * `sessions` in the answer is how many session records now belong to a
+       * put-away project; the surface says so rather than the engine tidying
+       * them away.
        */
       if (request.method === "DELETE" && projectPatch) {
         writeJson(response, 200, store.unregisterProject(decodeURIComponent(projectPatch[1])));
+        return;
+      }
+      /** Put a removed project back: same id, same settings, same sessions. */
+      const projectRestore = /^\/v2\/projects\/([^/]+)\/restore$/.exec(url.pathname);
+      if (request.method === "POST" && projectRestore) {
+        writeJson(response, 200, { project: store.restoreProject(decodeURIComponent(projectRestore[1])) });
         return;
       }
       /**

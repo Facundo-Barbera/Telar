@@ -317,8 +317,10 @@ export class EngineClient {
     };
   }
 
-  listProjects(): Promise<{ projects: Project[] }> {
-    return this.request("GET", "/v2/projects");
+  /** The registered projects. `includeRemoved` also returns the put-away ones,
+   *  which carry `removedAt`; without it they are absent entirely. */
+  listProjects(options: { includeRemoved?: boolean } = {}): Promise<{ projects: Project[] }> {
+    return this.request("GET", options.includeRemoved ? "/v2/projects?includeRemoved=1" : "/v2/projects");
   }
 
   registerProject(input: { id?: string; name: string; root: string }): Promise<{ project: Project }> {
@@ -326,18 +328,24 @@ export class EngineClient {
   }
 
   /**
-   * Take a project off the registry. NOT A DELETE OF THE PROJECT: the
-   * checkout, its git metadata, its worktrees, the journals of every session
-   * that ran on it and those sessions' browser profiles are all left alone,
-   * and `registerProject` on the same root brings it back under a new id.
+   * Remove a project from Telar. NOT A DELETE OF THE PROJECT, and REVERSIBLE:
+   * the checkout, its git metadata, its worktrees, the journals of every
+   * session that ran on it and those sessions' browser profiles are all left
+   * alone, and so is the registration record — it is marked `removedAt` and
+   * dropped from `listProjects`. `restoreProject`, or `registerProject` on the
+   * same root, brings it back with the SAME id and settings.
    *
    * 409 when a session on that project has work in flight — the engine will
-   * not quietly pull a registration out from under a running turn.
-   * `sessions` counts the session records now pointing at an id that no
-   * longer resolves.
+   * not quietly put a registration away under a running turn. `sessions`
+   * counts the session records that now belong to a put-away project.
    */
   unregisterProject(projectId: string): Promise<{ project: Project; sessions: number }> {
     return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}`);
+  }
+
+  /** Put a removed project back: same id, same settings, same sessions. */
+  restoreProject(projectId: string): Promise<{ project: Project }> {
+    return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/restore`, {});
   }
 
   /** Move a project's opt-in switches. `dataScience: null` / `latex: null` turn them off. */

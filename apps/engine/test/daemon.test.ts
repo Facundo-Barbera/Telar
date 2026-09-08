@@ -421,10 +421,20 @@ test("DELETE on a project unregisters it, and refuses while a turn is in flight"
   const removed = await client.unregisterProject(project.id);
   expect(removed.project.id).toBe(project.id);
   expect(removed.sessions).toBe(1);
+  // Gone from the list every surface reads; present, and marked, for the one
+  // that offers to put it back.
   expect((await client.listProjects()).projects).toEqual([]);
-  await expect(client.unregisterProject(project.id)).rejects.toMatchObject({ code: "not_found", status: 404 });
+  const withRemoved = (await client.listProjects({ includeRemoved: true })).projects;
+  expect(withRemoved.map((each) => each.id)).toEqual([project.id]);
+  expect(typeof withRemoved[0]!.removedAt).toBe("number");
+  await expect(client.unregisterProject(project.id)).rejects.toMatchObject({ code: "conflict", status: 409 });
 
   // Nothing on disk moved, and the session's own record is still readable.
   expect(fs.readFileSync(path.join(checkout, "source.ts"), "utf8")).toBe("export const kept = true;\n");
   expect((await client.session(session.id)).session.id).toBe(session.id);
+
+  // Restoring is an undo: the same id, back on the live list.
+  expect((await client.restoreProject(project.id)).project.id).toBe(project.id);
+  expect((await client.listProjects()).projects.map((each) => each.id)).toEqual([project.id]);
+  await expect(client.restoreProject("project_nope")).rejects.toMatchObject({ code: "not_found", status: 404 });
 });
