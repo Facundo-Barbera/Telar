@@ -55,11 +55,11 @@ export type EditorDraft = {
 /** Who may mutate a key: one mount of one editor. Opaque and per-mount. */
 export type DraftOwner = string;
 
-let owners = 0;
+let minted = 0;
 
 export function newDraftOwner(): DraftOwner {
-  owners += 1;
-  return `owner_${owners}`;
+  minted += 1;
+  return `owner_${minted}`;
 }
 
 /**
@@ -77,12 +77,36 @@ export function draftScope(hostId: string | undefined, sessionId?: string, proje
   return `${host} ${sessionId ? `session:${sessionId}` : projectId ? `project:${projectId}` : "none"}`;
 }
 
-type Held<T> = { owner: DraftOwner; value: T };
-
-const drafts = new Map<string, Held<EditorDraft>>();
+const drafts = new Map<string, EditorDraft>();
 /** Notebook cell text, which is the same problem one level down — see
  *  `rememberCellDraft`. */
-const cells = new Map<string, Held<string>>();
+const cells = new Map<string, string>();
+
+/**
+ * WHO HOLDS EACH KEY — kept SEPARATELY from the text, and that separation is
+ * the whole point.
+ *
+ * Ownership stored ON the draft only exists while a draft does, which leaves a
+ * window exactly where the danger is. Take: mount A's write is in the air, you
+ * re-open the file so mount B claims it, B types and B's write LANDS — clearing
+ * the text, and with it A's lock-out. A's answer arrives a moment later, finds
+ * an empty key, and is allowed to write its stale text back. The file is clean
+ * on disk and the Editor now offers to restore an edit from two mounts ago. A
+ * deliberate discard had the same hole: emptying the key re-opened it.
+ *
+ * So the key is owned whether or not it holds anything. Claiming an EMPTY key
+ * is meaningful — it says "this mount is the one that speaks for this file
+ * now" — clearing the text leaves the ownership standing, and a discard bumps
+ * it to a generation nobody holds, so the only way to write again is to claim.
+ */
+const owners = new Map<string, DraftOwner>();
+/**
+ * How many keys keep an ownership record. They outlive their drafts by design,
+ * so without a cap a long session accumulates one per file ever opened. Oldest
+ * first, which is the least dangerous thing to forget: resurrecting a draft
+ * would need a write still pending from more than this many files ago.
+ */
+const OWNER_CAP = 512;
 
 /** A separator no scope, path or cell id can contain, written as an ESCAPE
  *  rather than typed — a literal control character in source is what
@@ -91,26 +115,44 @@ function key(scope: string, path: string, cellId?: string): string {
   return cellId === undefined ? `${scope}\u0000${path}` : `${scope}\u0000${path}\u0000${cellId}`;
 }
 
-function claim<T>(store: Map<string, Held<T>>, at: string, owner: DraftOwner): T | undefined {
-  const held = store.get(at);
-  if (!held) return undefined;
-  // Ownership TRANSFERS on adoption: the mount that is now showing this text is
-  // the one allowed to change it, and the previous mount's late answer is not.
-  store.set(at, { owner, value: held.value });
-  return held.value;
+/** Take the key — with or without text on it — and answer what was there. */
+function claim<T>(store: Map<string, T>, at: string, owner: DraftOwner): T | undefined {
+  take(at, owner);
+  return store.get(at);
 }
 
-function put<T>(store: Map<string, Held<T>>, at: string, owner: DraftOwner, value: T): boolean {
-  const held = store.get(at);
-  // Unowned means nobody has newer text here; otherwise only the owner writes.
-  if (held && held.owner !== owner) return false;
-  store.set(at, { owner, value });
+function take(at: string, owner: DraftOwner): void {
+  // Re-inserted rather than updated in place, so the eviction order below is
+  // "least recently claimed" rather than "first ever seen".
+  owners.delete(at);
+  owners.set(at, owner);
+  if (owners.size > OWNER_CAP) {
+    const oldest = owners.keys().next();
+    if (!oldest.done) owners.delete(oldest.value);
+  }
+}
+
+/** May this owner write here? Yes if it holds the key, or if nobody does —
+ *  an unclaimed key belongs to whoever gets there first. */
+function held(at: string, owner: DraftOwner): boolean {
+  const current = owners.get(at);
+  return current === undefined || current === owner;
+}
+
+function put<T>(store: Map<string, T>, at: string, owner: DraftOwner, value: T): boolean {
+  if (!held(at, owner)) return false;
+  take(at, owner);
+  store.set(at, value);
   return true;
 }
 
-function drop<T>(store: Map<string, Held<T>>, at: string, owner: DraftOwner): boolean {
-  const held = store.get(at);
-  if (!held || held.owner !== owner) return false;
+/**
+ * Clear the text, KEEPING the ownership. The key stays this mount's until
+ * somebody else claims it, so a slower answer from a mount that has gone
+ * cannot write into the gap the clearing just opened.
+ */
+function drop<T>(store: Map<string, T>, at: string, owner: DraftOwner): boolean {
+  if (owners.get(at) !== owner || !store.has(at)) return false;
   store.delete(at);
   return true;
 }
@@ -122,7 +164,7 @@ export function rememberDraft(scope: string, path: string, draft: EditorDraft, o
 
 /** Read WITHOUT taking the key — for deciding what to show. */
 export function readDraft(scope: string, path: string): EditorDraft | undefined {
-  return drafts.get(key(scope, path))?.value;
+  return drafts.get(key(scope, path));
 }
 
 /** Read AND take the key: what a mount does when it adopts unsaved text, so
@@ -154,7 +196,13 @@ export function forgetDraft(scope: string, path: string, owner: DraftOwner): boo
  * come back the next time the file was opened.
  */
 export function discardDraft(scope: string, path: string): void {
-  drafts.delete(key(scope, path));
+  const at = key(scope, path);
+  drafts.delete(at);
+  // AND THE KEY CHANGES HANDS, to a generation nobody is holding. Deleting the
+  // ownership instead would leave the key unclaimed, and an unclaimed key
+  // accepts the next writer — including the mount whose refused write is still
+  // in the air, which would put the discarded text straight back.
+  owners.set(at, newDraftOwner());
 }
 
 /**
@@ -178,18 +226,28 @@ export function forgetCellDraft(scope: string, path: string, cellId: string, own
 export function claimCellDrafts(scope: string, path: string, owner: DraftOwner): Map<string, string> {
   const prefix = key(scope, path, "");
   const adopted = new Map<string, string>();
-  for (const [at, held] of cells) {
+  for (const [at, text] of cells) {
     if (!at.startsWith(prefix)) continue;
-    cells.set(at, { owner, value: held.value });
-    adopted.set(at.slice(prefix.length), held.value);
+    take(at, owner);
+    adopted.set(at.slice(prefix.length), text);
   }
   return adopted;
+}
+
+/**
+ * Take one cell's key without reading it — what a mount does for a cell it is
+ * about to edit but that had nothing stashed, so a previous mount's pending
+ * write cannot land on it afterwards.
+ */
+export function claimCellDraft(scope: string, path: string, cellId: string, owner: DraftOwner): string | undefined {
+  return claim(cells, key(scope, path, cellId), owner);
 }
 
 /** Only for tests: the store is a singleton for the life of the page. */
 export function clearDrafts(): void {
   drafts.clear();
   cells.clear();
+  owners.clear();
 }
 
 /** How many files and cells are holding unsaved text — for a test to assert

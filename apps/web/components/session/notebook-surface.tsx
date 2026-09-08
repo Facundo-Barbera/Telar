@@ -25,7 +25,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { MessageResponse } from "@/components/ui/message";
 import { OverlayEditor } from "./overlay-editor";
 import { CellOutputView } from "./cell-output";
-import { claimCellDrafts, draftScope, forgetCellDraft, newDraftOwner, rememberCellDraft } from "@/lib/editor-drafts";
+import { claimCellDraft, claimCellDrafts, draftScope, forgetCellDraft, newDraftOwner, rememberCellDraft } from "@/lib/editor-drafts";
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { KernelPill } from "./kernel-pill";
 import { cn } from "@/lib/utils";
@@ -173,6 +173,15 @@ export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }
   const edit = (cellId: string, source: string) => {
     setDrafts((current) => new Map(current).set(cellId, source));
     stash.current.set(cellId, source);
+    /**
+     * CLAIMED BEFORE IT IS WRITTEN. A cell whose previous mount saved it
+     * successfully still has that mount's name on the key (ownership outlives
+     * the text — see lib/editor-drafts.ts), and `claimCellDrafts` on arrival
+     * only adopts the cells that were still holding something. Without this,
+     * typing into such a cell would be refused by the guard and quietly not
+     * stashed at all.
+     */
+    claimCellDraft(scope, path, cellId, owner.current);
     rememberCellDraft(scope, path, cellId, source, owner.current);
     const existing = timers.current.get(cellId);
     if (existing) window.clearTimeout(existing);

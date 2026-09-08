@@ -28,6 +28,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { SaveCoordinator, type SaveOutcome } from "./save-coordinator";
 import {
+  claimCellDraft,
   claimCellDrafts,
   claimDraft,
   clearDrafts,
@@ -248,6 +249,101 @@ describe("overlapping mounts of the same file", () => {
   });
 });
 
+describe("an old mount answering after the key has been EMPTIED", () => {
+  /**
+   * THE WINDOW THE FIRST OWNERSHIP FIX STILL LEFT OPEN.
+   *
+   * Ownership used to live on the draft, so it only existed while a draft did.
+   * Every test above settles the old mount while the new one is still HOLDING
+   * something — which is exactly the case the guard covered. The dangerous case
+   * is the opposite one: the newer mount's write LANDS (or the text is
+   * deliberately discarded), the key goes empty, and the lock-out goes with it.
+   * The old mount's answer then finds an unclaimed key and is allowed to write
+   * its stale text back — a file clean on disk, offering to restore an edit
+   * from two mounts ago the next time it is opened.
+   *
+   * Ownership is now kept beside the key rather than on the value, so an empty
+   * key is still SOMEBODY's.
+   */
+  test("a delayed SUCCESS cannot resurrect its text after the newer mount saved", async () => {
+    const first = deferred();
+    const old = mount(first.persist);
+    old.type("older text");
+    const flight = old.flush();
+    old.unmount();
+
+    const fresh = mount(async () => ({ status: "saved" }));
+    fresh.type("newer text");
+    await fresh.flush();
+    // B is clean: its write landed and the stash is empty. This is the moment.
+    expect(readDraft(SCOPE, PATH)).toBeUndefined();
+
+    first.settle({ status: "saved" });
+    await flight;
+    expect(readDraft(SCOPE, PATH)).toBeUndefined();
+    expect(draftCount()).toBe(0);
+  });
+
+  test("a delayed REFUSAL cannot resurrect its text after the newer mount saved", async () => {
+    const first = deferred();
+    const old = mount(first.persist);
+    old.type("older text");
+    const flight = old.flush();
+    old.unmount();
+
+    const fresh = mount(async () => ({ status: "saved" }));
+    fresh.type("newer text");
+    await fresh.flush();
+
+    first.settle({ status: "refused", reason: "conflict" });
+    await flight;
+    expect(readDraft(SCOPE, PATH)).toBeUndefined();
+  });
+
+  test("a delayed transport FAILURE cannot either", async () => {
+    const first = deferred();
+    const old = mount(first.persist);
+    old.type("older text");
+    const flight = old.flush();
+    old.unmount();
+
+    const fresh = mount(async () => ({ status: "saved" }));
+    fresh.type("newer text");
+    await fresh.flush();
+
+    first.settle({ status: "failed", reason: "The save could not be sent." });
+    await flight;
+    expect(readDraft(SCOPE, PATH)).toBeUndefined();
+  });
+
+  test("a delayed answer cannot undo an explicit DISCARD", async () => {
+    // Closing a refused tab after the second, deliberate click. The text is
+    // gone because a person said so, and a write still in the air from the
+    // mount that was refused must not put it back.
+    const first = deferred();
+    const old = mount(first.persist);
+    old.type("older text");
+    const flight = old.flush();
+    old.unmount();
+
+    discardDraft(SCOPE, PATH);
+
+    first.settle({ status: "refused", reason: "conflict" });
+    await flight;
+    expect(readDraft(SCOPE, PATH)).toBeUndefined();
+  });
+
+  test("…and the key is still writable by whoever claims it next", async () => {
+    // The guard must not brick the key: after a discard, the next mount to
+    // open the file takes it and saves normally.
+    discardDraft(SCOPE, PATH);
+    const fresh = mount(async () => ({ status: "refused", reason: "conflict" }));
+    fresh.type("typed after the discard");
+    await fresh.flush();
+    expect(readDraft(SCOPE, PATH)?.text).toBe("typed after the discard");
+  });
+});
+
 describe("a write still open when the file goes away", () => {
   test("a delayed SUCCESS after the unmount clears the stash", async () => {
     // The ordinary case, and it must not leave an edit behind to be resurrected
@@ -388,6 +484,35 @@ describe("notebook cells", () => {
     expect(forgetCellDraft(SCOPE, NOTEBOOK, "cell_1", old)).toBe(false);
     expect(rememberCellDraft(SCOPE, NOTEBOOK, "cell_1", "older", old)).toBe(false);
     expect([...claimCellDrafts(SCOPE, NOTEBOOK, fresh)]).toEqual([["cell_1", "newer"]]);
+  });
+
+  test("an old mount's late answer cannot resurrect a cell the newer mount SAVED", () => {
+    // The emptied-key window, one level down: the new mount's cell write landed
+    // and cleared the stash, and the old mount's `notebookEdit` is still open.
+    const old = newDraftOwner();
+    rememberCellDraft(SCOPE, NOTEBOOK, "cell_1", "older", old);
+    const fresh = newDraftOwner();
+    claimCellDrafts(SCOPE, NOTEBOOK, fresh);
+    rememberCellDraft(SCOPE, NOTEBOOK, "cell_1", "newer", fresh);
+    // The newer write lands: the cell is clean, and the key is empty.
+    forgetCellDraft(SCOPE, NOTEBOOK, "cell_1", fresh);
+    // Now the old mount answers — either way.
+    expect(rememberCellDraft(SCOPE, NOTEBOOK, "cell_1", "older", old)).toBe(false);
+    expect([...claimCellDrafts(SCOPE, NOTEBOOK, newDraftOwner())]).toEqual([]);
+  });
+
+  test("a live mount can type into a cell an earlier mount still owns", () => {
+    // The other side of the guard: ownership outlives the text, and arrival
+    // only adopts cells that were still holding something — so typing into a
+    // cell the previous mount saved has to CLAIM it, or it would be refused
+    // and quietly not stashed at all.
+    const old = newDraftOwner();
+    rememberCellDraft(SCOPE, NOTEBOOK, "cell_1", "saved by the last mount", old);
+    forgetCellDraft(SCOPE, NOTEBOOK, "cell_1", old);
+    const fresh = newDraftOwner();
+    claimCellDrafts(SCOPE, NOTEBOOK, fresh); // nothing to adopt: the key is empty
+    claimCellDraft(SCOPE, NOTEBOOK, "cell_1", fresh);
+    expect(rememberCellDraft(SCOPE, NOTEBOOK, "cell_1", "typed now", fresh)).toBe(true);
   });
 
   test("cells of two notebooks, and of two Macs, do not mix", () => {
