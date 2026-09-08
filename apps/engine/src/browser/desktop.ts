@@ -48,6 +48,32 @@ export type DesktopBrowserState = {
   controller: "agent" | "human" | "idle";
 };
 
+/**
+ * What the host answers a `/bind` with: the project key the engine declared,
+ * and the NAMED PROFILE the host resolved it to. The profile is what a person
+ * sees and what a remembered credential authorization is scoped to, so it
+ * travels back rather than being re-derived on this side — the resolution
+ * ladder (assignment, existing jar, default) lives in the shell, with the
+ * partitions it is about.
+ *
+ * `profileId` is absent from an OLDER SHELL that predates named profiles. A
+ * caller that needs an identity must treat absent as "unknown", never as a
+ * default one.
+ */
+export type DesktopProfileBinding = {
+  scopeKey: string;
+  profileKey: string | null;
+  partition: string;
+  profileId?: string;
+  label?: string;
+  /** The account this profile is MEANT to be signed into. Intent stated by a
+   *  person, never a verified login. */
+  account?: string;
+};
+
+/** The identity a scope's browser is running under, as the engine reports it. */
+export type BrowserProfileIdentity = { id: string; label?: string; account?: string };
+
 function errorResult(text: string): BrowserToolResult {
   return { content: [{ type: "text", text }], isError: true };
 }
@@ -149,7 +175,7 @@ export class DesktopBrowserClient {
    * the cockpit before the panel shows. `profileKey` is a project id or the
    * explicit `none` for a projectless session.
    */
-  async bind(scopeKey: string, profileKey: string): Promise<{ scopeKey: string; profileKey: string; partition: string }> {
+  async bind(scopeKey: string, profileKey: string): Promise<DesktopProfileBinding> {
     const response = await this.fetchImpl(this.url("/bind"), {
       method: "POST",
       headers: this.headers(),
@@ -160,7 +186,7 @@ export class DesktopBrowserClient {
       const message = payload && typeof payload === "object" && typeof (payload as { error?: unknown }).error === "string" ? (payload as { error: string }).error : `The desktop browser host answered ${response.status}.`;
       throw new Error(message);
     }
-    return payload as { scopeKey: string; profileKey: string; partition: string };
+    return payload as DesktopProfileBinding;
   }
 
   async openForHuman(scopeKey: string, url = "about:blank"): Promise<DesktopBrowserState> {

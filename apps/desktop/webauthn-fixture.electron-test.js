@@ -17,10 +17,29 @@
  *      with a random challenge on a localhost RP — resolve, reject (name),
  *      or hang past 4 s? Classification only.
  *
+ *   D. PER PROFILE. The same probe in a SECOND partition — a second named
+ *      browser profile — so "profiles are separate identities" is measured for
+ *      WebAuthn too: each profile loads its own extension instance, into its
+ *      own storage, and one profile's state is not the other's.
+ *
+ * WHAT THIS DOES NOT SHOW, STATED SO NOBODY READS IT AS MORE. It says whether
+ * 1Password's interception CODE is present. It says nothing about whether a
+ * passkey can be used, and NOTHING here makes one usable unattended: a
+ * remembered login authorization (secrets/login-grants.ts) covers vault FIELDS
+ * a person approved — username, password, a one-time code — and no part of it
+ * reaches `navigator.credentials`. The account on a profile is intent, not a
+ * verified login, and this fixture pairs with nothing and signs into nothing.
+ *
  * No pairing, no vault, no real site. Fixture: http://localhost:<port>/
  * (1Password's script matches http://localhost/*).
  *
  *   TELAR_1P_CRX=<crx> env -u ELECTRON_RUN_AS_NODE electron ./webauthn-fixture.electron-test.js
+ *
+ * Or, with no packaged crx to hand, against the app's OWN verified install —
+ * read-only, copied into a temp dir before anything loads it:
+ *
+ *   TELAR_1P_UNPACKED="$HOME/Library/Application Support/Telar/extensions/aeblfdkhhhdcdjpifhhbdiojplfjncoa/<version>" \
+ *     env -u ELECTRON_RUN_AS_NODE electron ./webauthn-fixture.electron-test.js
  */
 const fs = require("node:fs");
 const http = require("node:http");
@@ -31,6 +50,8 @@ const { attachExtensionSupport, registerShimPreload, unpackVerified } = require(
 const { ONE_PASSWORD } = require("./extension-host");
 
 const PARTITION = "persist:telar-webauthn-fixture";
+/** A SECOND named profile: its own partition, its own extension instance. */
+const PARTITION_B = "persist:telar-webauthn-fixture-b";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const FIXTURE = `<!doctype html><title>WebAuthn fixture</title><h1>WebAuthn fixture</h1><input autocomplete="username webauthn">`;
 
@@ -54,9 +75,28 @@ const BASELINE = `(async () => {
   return Promise.race([call, timeout]);
 })()`;
 
-async function main() {
+/**
+ * The extension bundle to probe, COPIED INTO THE TEMP DIR before it is loaded.
+ * Either a packaged crx (verified on unpack, the original path) or an already
+ * unpacked directory — the app's own verified install is the practical source,
+ * and it is READ, never loaded from in place and never written to.
+ */
+function stageExtension(work) {
   const crx = process.env.TELAR_1P_CRX;
-  if (!crx || !fs.existsSync(crx)) throw new Error("TELAR_1P_CRX must point at the cached official package");
+  const unpacked = path.join(work, "ext");
+  if (crx && fs.existsSync(crx)) {
+    unpackVerified(crx, unpacked, ONE_PASSWORD.id);
+    return { source: "crx", dir: unpacked };
+  }
+  const already = process.env.TELAR_1P_UNPACKED;
+  if (already && fs.existsSync(path.join(already, "manifest.json"))) {
+    fs.cpSync(already, unpacked, { recursive: true });
+    return { source: "unpacked", dir: unpacked };
+  }
+  throw new Error("Set TELAR_1P_CRX to the packaged extension, or TELAR_1P_UNPACKED to a verified unpacked one.");
+}
+
+async function main() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "telar-webauthn-"));
   const note = (line) => console.log(`WEBAUTHN ${line}`);
   const report = {};
@@ -65,8 +105,10 @@ async function main() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://localhost:${server.address().port}/`;
 
-  const unpacked = path.join(work, "ext");
-  unpackVerified(crx, unpacked, ONE_PASSWORD.id);
+  const staged = stageExtension(work);
+  const unpacked = staged.dir;
+  report.extensionSource = staged.source;
+  note(`extension source: ${staged.source}`);
   const manifest = JSON.parse(fs.readFileSync(path.join(unpacked, "manifest.json"), "utf8"));
   report.manifestWebauthnScripts = manifest.content_scripts.filter((c) => c.js.some((j) => /webauthn/.test(j))).map((c) => ({ js: c.js, world: c.world || "(default ISOLATED)", run_at: c.run_at, all_frames: c.all_frames }));
   note(`manifest webauthn scripts: ${JSON.stringify(report.manifestWebauthnScripts)}`);
@@ -74,8 +116,8 @@ async function main() {
   const ses = session.fromPartition(PARTITION);
   await ses.clearStorageData();
   const window = new BrowserWindow({ show: false, width: 1000, height: 700 });
-  const openTab = (url) => {
-    const view = new WebContentsView({ webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  const openTab = (partition = PARTITION) => {
+    const view = new WebContentsView({ webPreferences: { partition, contextIsolation: true, nodeIntegration: false, sandbox: true } });
     window.contentView.addChildView(view);
     view.setBounds({ x: 0, y: 0, width: 1000, height: 700 });
     return view;
@@ -112,6 +154,43 @@ async function main() {
   // C. With the extension loaded (unpaired), what does get() do?
   report.baselineWithExtension = await view.webContents.executeJavaScript(BASELINE, true);
   note(`get() with extension loaded (unpaired): ${JSON.stringify(report.baselineWithExtension)}`);
+
+  /**
+   * D. A SECOND PROFILE. Named profiles are separate `persist:` partitions, so
+   * a second one gets its own extension instance and its own storage. Probed
+   * here so the WebAuthn half of "profiles are separate identities" is
+   * measured rather than assumed — and so the reverse claim is visible too: an
+   * extension loaded in profile A installs NOTHING in profile B until B loads
+   * it as well.
+   */
+  const sesB = session.fromPartition(PARTITION_B);
+  await sesB.clearStorageData();
+  const viewB = openTab(PARTITION_B);
+  await viewB.webContents.loadURL(base);
+  await sleep(500);
+  report.probeSecondProfileBeforeLoad = await viewB.webContents.executeJavaScript(PROBE, true);
+  note(`probe (second profile, extension NOT loaded there): ${JSON.stringify(report.probeSecondProfileBeforeLoad)}`);
+  registerShimPreload(sesB, work, [ONE_PASSWORD.id]);
+  const extensionsB = attachExtensionSupport(sesB, {
+    createTab: async () => { throw new Error("fixture opens no tabs"); }, selectTab: () => undefined, removeTab: () => undefined,
+  }, { preloadDir: work, window });
+  await sesB.extensions.loadExtension(unpacked, { allowFileAccess: false });
+  await sleep(2500);
+  const viewB2 = openTab(PARTITION_B);
+  extensionsB.addTab(viewB2.webContents, window);
+  await viewB2.webContents.loadURL(base);
+  await sleep(1500);
+  report.probeSecondProfileAfterLoad = await viewB2.webContents.executeJavaScript(PROBE, true);
+  report.secondProfileHookInstalled =
+    report.probeSecondProfileAfterLoad.credentialsGet.own && report.probeSecondProfileAfterLoad.credentialsGet.accessor;
+  note(`second profile hook installed after its own load: ${report.secondProfileHookInstalled}`);
+  // Storage is per profile: what one profile's extension wrote is not the
+  // other's. Checked through the page's own localStorage, which shares the
+  // partition — a cheap, honest proxy for "separate jar".
+  await view.webContents.executeJavaScript("localStorage.setItem('telar-probe','profile-a'), true", true);
+  report.secondProfileSeesFirstsStorage = await viewB2.webContents.executeJavaScript("localStorage.getItem('telar-probe')", true);
+  note(`second profile reads first profile's storage: ${JSON.stringify(report.secondProfileSeesFirstsStorage)}`);
+  if (report.secondProfileSeesFirstsStorage !== null) throw new Error("two profiles shared storage — they are not separate identities");
 
   fs.writeFileSync(path.join(work, "report.json"), JSON.stringify(report, null, 2));
   note(`report ${path.join(work, "report.json")}`);

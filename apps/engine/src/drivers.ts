@@ -44,6 +44,7 @@ export function browserCapability(browser: EngineBrowser): BrowserSocketCapabili
       return { provider: state.provider, tabs: state.tabs };
     },
     ...(browser.bindProfile ? { bindProfile: (scopeKey, profileKey) => browser.bindProfile!(scopeKey, profileKey) } : {}),
+    ...(browser.profileIdentity ? { profileIdentity: (scopeKey) => browser.profileIdentity!(scopeKey) } : {}),
   };
 }
 

@@ -28,6 +28,7 @@ import {
   type ComputerUseBackend,
   type ComputerUseStatus,
   type InboxPolicy,
+  type RememberedLogin,
   type SessionDefaults,
   type SidebarLayout,
   type TextGenPolicy,
@@ -459,6 +460,19 @@ export class EngineClient {
    *  Screen Recording, attributed to itself). A no-op for the Sky backend. */
   grantComputerUseAccess(): Promise<{ started: boolean; backend?: ComputerUseBackend }> {
     return this.request("POST", "/v2/computer-use/grant", {});
+  }
+
+  /**
+   * The logins a person allowed agents to fill without being asked again —
+   * metadata only (profile, origin, item title, field kinds), never a value.
+   */
+  browserLogins(): Promise<{ logins: RememberedLogin[] }> {
+    return this.request("GET", "/v2/browser/logins");
+  }
+
+  /** Take one back. The next fill of that item asks again. */
+  revokeBrowserLogin(id: string): Promise<{ ok: boolean }> {
+    return this.request("DELETE", `/v2/browser/logins/${encodeURIComponent(id)}`);
   }
 
   /** Spend over time, folded from the engine's journals — see `UsageReport`. */

@@ -7,19 +7,44 @@
  * not the request detail shown to a human, not the tool result handed back
  * to the model, not the process's own stdout/stderr.
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { expect, test } from "bun:test";
 import type { SecretAccessDetail } from "@telar/engine-client";
 import { runSecretFill, scrubSecrets, type SecretAskOutcome, type SecretFillDeps } from "../src/browser/secret-fill";
+import { createLoginGrantStore, type LoginGrantStore } from "../src/secrets/login-grants";
 import type { SecretsProvider } from "../src/secrets/onepassword";
 import { textOf } from "../src/browser/helpers";
 
 const SENTINEL = "SENTINEL-s3cr3t-a1b2c3";
 const USERNAME = "facundo";
 
-const TABS_GITHUB = "0: (current) [Sign in](https://github.com/login)";
-const TABS_EVIL = "0: (current) [Sign in](https://evil.example/login)";
+const WORK = { id: "bp_00000000000000a1", label: "Work" };
+const PERSONAL = { id: "bp_00000000000000b2", label: "Personal" };
 
 type Call = { name: string; args: Record<string, unknown> };
+
+/**
+ * THE PAGE THE BROWSER IS ON, as a mutable object the test owns.
+ *
+ * The orchestrator re-reads the tab list several times — before the vault, and
+ * again with the values in hand — and the whole point of those reads is that
+ * the world may have MOVED between them. So the fake renders the tab line from
+ * this object on every read, and a test changes it at the exact moment it wants
+ * to simulate (during the approval, during the vault read), rather than
+ * counting reads and hoping the count does not change.
+ */
+type Page = { index?: number; url: string; profileId?: string; profileLabel?: string };
+
+function tabLine(page: Page): string {
+  const meta = ["controller=idle", "opened-by=agent", "yours"];
+  if (page.profileId) meta.push(`profile=${page.profileId}`);
+  if (page.profileLabel) meta.push(`profile-label=${encodeURIComponent(page.profileLabel)}`);
+  return `- ${page.index ?? 0}: (current) [Sign in](${page.url}) {${meta.join(", ")}}`;
+}
+
+const githubPage = (): Page => ({ url: "https://github.com/login", profileId: WORK.id, profileLabel: WORK.label });
 
 function fakeSecrets(overrides: Partial<SecretsProvider> = {}): SecretsProvider {
   return {
@@ -39,36 +64,61 @@ function fakeSecrets(overrides: Partial<SecretsProvider> = {}): SecretsProvider 
 }
 
 function fakeDeps(options: {
-  tabs?: string[] | undefined;
+  /** The live page. Mutate it mid-run to move the browser under the fill. */
+  page?: Page;
+  /** Rendered instead of the page — for "no tab at all" / unparseable cases. */
+  rawTabs?: string;
   secrets?: SecretsProvider;
   outcome?: SecretAskOutcome;
-  onAsk?: (detail: SecretAccessDetail) => void;
+  onAsk?: (detail: SecretAccessDetail) => void | Promise<void>;
+  /** Runs INSIDE the vault read, before it resolves: the deterministic stand-in
+   *  for a Touch ID prompt a person leaves sitting while the world changes. */
+  onVaultRead?: () => void | Promise<void>;
+  /** Runs on the Nth tab read (1-based), so a test can change the world at one
+   *  named checkpoint rather than at "some await". */
+  onTabRead?: (nth: number) => void;
   fillError?: string;
-} = {}): { deps: SecretFillDeps; calls: Call[]; asked: SecretAccessDetail[] } {
+  /** The SESSION's profile, which is not the tab's — used only for labelling,
+   *  and deliberately allowed to disagree with the page. */
+  sessionProfile?: { id: string; label?: string; account?: string } | null;
+  grants?: LoginGrantStore;
+} = {}): { deps: SecretFillDeps; calls: Call[]; asked: SecretAccessDetail[]; page: Page } {
   const calls: Call[] = [];
   const asked: SecretAccessDetail[] = [];
-  const tabs = options.tabs ?? [TABS_GITHUB, TABS_GITHUB];
-  let tabRead = 0;
+  const page = options.page ?? githubPage();
+  let tabReads = 0;
+  const baseSecrets = options.secrets ?? fakeSecrets();
   return {
     calls,
     asked,
+    page,
     deps: {
+      ...(options.sessionProfile !== undefined
+        ? { profile: async () => options.sessionProfile ?? null }
+        : { profile: async () => (page.profileId ? { id: page.profileId, ...(page.profileLabel ? { label: page.profileLabel } : {}) } : null) }),
+      ...(options.grants ? { grants: options.grants } : {}),
       callBrowser: async (name, args) => {
         calls.push({ name, args });
         if (name === "browser_list_tabs") {
-          const text = tabs[Math.min(tabRead, tabs.length - 1)]!;
-          tabRead += 1;
-          return { content: [{ type: "text", text }] };
+          tabReads += 1;
+          options.onTabRead?.(tabReads);
+          return { content: [{ type: "text", text: options.rawTabs ?? tabLine(page) }] };
         }
         if (name === "browser_fill_form" && options.fillError) {
           return { content: [{ type: "text", text: options.fillError }], isError: true };
         }
         return { content: [{ type: "text", text: "ok" }] };
       },
-      secrets: options.secrets ?? fakeSecrets(),
+      secrets: {
+        ...baseSecrets,
+        readItemFields: async (id, wants) => {
+          await options.onVaultRead?.();
+          return baseSecrets.readItemFields(id, wants);
+        },
+      },
       ask: async (detail) => {
         asked.push(detail);
-        options.onAsk?.(detail);
+        await options.onAsk?.(detail);
         return options.outcome ?? { decision: "accept", itemId: "item_gh" };
       },
     },
@@ -93,14 +143,21 @@ test("the happy path: origin from the tab, human-picked item, fill, prose result
   expect(asked[0]!.candidates.map((candidate) => candidate.id)).toEqual(["item_gh", "item_work"]);
   expect(asked[0]!.fields).toEqual([{ kind: "username" }, { kind: "password" }]);
 
-  // Browser traffic: tabs read before AND after approval, then fill, then submit.
+  /**
+   * Browser traffic, and every read in it is load-bearing: where does this
+   * land (1), is it still there after the approval (2), is it STILL there with
+   * the values in hand (3) — then the fill — and is it still there for the
+   * submit (4), which posts what was just typed.
+   */
   expect(calls.map((call) => call.name)).toEqual([
     "browser_list_tabs",
     "browser_list_tabs",
+    "browser_list_tabs",
     "browser_fill_form",
+    "browser_list_tabs",
     "browser_click",
   ]);
-  const fill = calls[2]!.args as { fields: { target: string; value: string }[] };
+  const fill = calls.find((call) => call.name === "browser_fill_form")!.args as { fields: { target: string; value: string }[] };
   expect(fill.fields.map((field) => field.target)).toEqual(["e12", "e13"]);
   expect(fill.fields[1]!.value).toBe(SENTINEL);
 });
@@ -116,7 +173,7 @@ test("an item hint reorders the candidates but the human's pick still wins", asy
 test("no page open → refused before the vault is ever consulted", async () => {
   let listed = 0;
   const { deps } = fakeDeps({
-    tabs: ["nothing that parses as a tab"],
+    rawTabs: "nothing that parses as a tab",
     secrets: fakeSecrets({
       listLoginCandidates: async () => {
         listed += 1;
@@ -158,8 +215,11 @@ test("a decline is a result, not a throw, and nothing is read from the vault", a
 
 test("the page navigating off-domain while parked aborts the fill — approval is for a page", async () => {
   let reads = 0;
+  const page = githubPage();
   const { deps } = fakeDeps({
-    tabs: [TABS_GITHUB, TABS_EVIL],
+    page,
+    // The human is still deciding when the page leaves the domain.
+    onAsk: () => { page.url = "https://evil.example/login"; },
     secrets: fakeSecrets({
       readItemFields: async () => {
         reads += 1;
@@ -186,6 +246,372 @@ test('kind "field" without a label is refused with instructions', async () => {
   expect(result.isError).toBe(true);
   expect(textOf(result)).toContain("label");
   expect(asked).toHaveLength(0);
+});
+
+// ── REMEMBERED LOGINS — what the opt-in does, and everything it does not ───
+
+function grantStore(): LoginGrantStore {
+  return createLoginGrantStore(fs.mkdtempSync(path.join(os.tmpdir(), "telar-grants-")));
+}
+
+/** The grant a person would have made by ticking the box on a username +
+ *  password fill of GitHub in the Work profile. */
+function rememberUsernameAndPassword(grants: LoginGrantStore, profileId = WORK.id, origin = "https://github.com") {
+  return grants.remember({
+    profileId,
+    profileLabel: "Work",
+    origin,
+    itemId: "item_gh",
+    itemTitle: "GitHub",
+    fields: [{ kind: "username" }, { kind: "password" }],
+  });
+}
+
+test("the opt-in is what stores a grant: unticked stores nothing, ticked stores exactly what was approved", async () => {
+  const grants = grantStore();
+  const plain = fakeDeps({ grants, outcome: { decision: "accept", itemId: "item_gh" } });
+  await runSecretFill(plain.deps, { fields: FIELDS });
+  expect(grants.list()).toHaveLength(0);
+
+  const ticked = fakeDeps({ grants, outcome: { decision: "accept", itemId: "item_gh", remember: true } });
+  const result = await runSecretFill(ticked.deps, { fields: FIELDS });
+  expect(result.isError).toBeUndefined();
+  const [grant] = grants.list();
+  expect(grant).toMatchObject({
+    profileId: WORK.id,
+    origin: "https://github.com",
+    itemId: "item_gh",
+    itemTitle: "GitHub",
+    fields: [{ kind: "username" }, { kind: "password" }],
+  });
+  // The record is a POINTER a person authorized — never a value.
+  expect(JSON.stringify(grants.list())).not.toContain(SENTINEL);
+});
+
+test("a grant is only written when the fill actually worked", async () => {
+  const grants = grantStore();
+  const { deps } = fakeDeps({
+    grants,
+    outcome: { decision: "accept", itemId: "item_gh", remember: true },
+    fillError: "could not find the field",
+  });
+  expect((await runSecretFill(deps, { fields: FIELDS })).isError).toBe(true);
+  expect(grants.list()).toHaveLength(0);
+});
+
+test("a matching grant fills without asking anyone, and the card is never opened", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants);
+  const { deps, asked, calls } = fakeDeps({ grants });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(0);
+  expect(result.isError).toBeUndefined();
+  expect(textOf(result)).toContain("Used a login you allowed for this profile.");
+  const fill = calls.find((call) => call.name === "browser_fill_form")!.args as { fields: { value: string }[] };
+  expect(fill.fields[1]!.value).toBe(SENTINEL);
+  expect(grants.list()[0]!.lastUsedAt).toBeGreaterThan(0);
+});
+
+test("a grant is scoped to ONE profile: the same site in another identity asks again", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants, WORK.id);
+  const { deps, asked } = fakeDeps({ page: { url: "https://github.com/login", profileId: PERSONAL.id, profileLabel: PERSONAL.label }, grants });
+  await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+  // And the card names the identity the human is deciding about.
+  expect(asked[0]!.profile).toEqual(PERSONAL);
+});
+
+test("a grant is scoped to ONE exact origin — not the registrable domain", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants, WORK.id, "https://gist.github.com");
+  const { deps, asked } = fakeDeps({ grants });
+  await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+});
+
+test("a grant never widens to more fields than the human saw — a one-time code asks again", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants);
+  const { deps, asked } = fakeDeps({ grants });
+  await runSecretFill(deps, { fields: [...FIELDS, { target: "e15", kind: "otp" }] });
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.fields).toEqual([{ kind: "username" }, { kind: "password" }, { kind: "otp" }]);
+  // Asking for FEWER than were approved is still inside the authorization.
+  const narrower = fakeDeps({ grants });
+  await runSecretFill(narrower.deps, { fields: [{ target: "e13", kind: "password" }] });
+  expect(narrower.asked).toHaveLength(0);
+});
+
+test("a labelled field matches only under the same label", async () => {
+  const grants = grantStore();
+  grants.remember({
+    profileId: WORK.id,
+    origin: "https://github.com",
+    itemId: "item_gh",
+    itemTitle: "GitHub",
+    fields: [{ kind: "field", label: "Employee ID" }],
+  });
+  const same = fakeDeps({ grants });
+  await runSecretFill(same.deps, { fields: [{ target: "e1", kind: "field", label: "employee id" }] });
+  expect(same.asked).toHaveLength(0);
+  const other = fakeDeps({ grants });
+  await runSecretFill(other.deps, { fields: [{ target: "e1", kind: "field", label: "Recovery code" }] });
+  expect(other.asked).toHaveLength(1);
+});
+
+test("no title match and no first-candidate fallback: a grant whose item is gone asks a human", async () => {
+  const grants = grantStore();
+  grants.remember({
+    profileId: WORK.id,
+    // Same TITLE as a real candidate, different id — the remembered path must
+    // not resolve by title, or a renamed item would silently take over.
+    origin: "https://github.com",
+    itemId: "item_deleted",
+    itemTitle: "GitHub",
+    fields: [{ kind: "username" }, { kind: "password" }],
+  });
+  const { deps, asked } = fakeDeps({ grants });
+  await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+});
+
+test("the page moving to another host of the same domain denies a remembered fill (an approval widened to a domain does not)", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants);
+  const page = githubPage();
+  const { deps } = fakeDeps({ page, grants, onVaultRead: () => { page.url = "https://gist.github.com/x"; } });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("page changed while preparing the fill");
+});
+
+test("with no identity on the tab nothing is remembered and nothing remembered is spent", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants);
+  // An older desktop shell, or the headless runtime: the tab names no profile.
+  const { deps, asked } = fakeDeps({
+    page: { url: "https://github.com/login" },
+    grants,
+    outcome: { decision: "accept", itemId: "item_gh", remember: true },
+  });
+  await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.profile).toBeUndefined();
+  expect(grants.list()).toHaveLength(1); // the pre-existing one, unchanged
+});
+
+// ── THE TAB'S IDENTITY, NOT THE SESSION'S ─────────────────────────────────
+
+test("the grant is matched against the TAB's profile, not the session's next-tab default", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants, WORK.id);
+  // The person switched the session to Personal; this tab was opened before
+  // that and is still signed into Work. The fill lands in Work, so the Work
+  // grant is the one that applies — and the session default must not decide.
+  const { deps, asked, calls } = fakeDeps({ grants, sessionProfile: PERSONAL });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(0);
+  expect(result.isError).toBeUndefined();
+  expect(calls.some((call) => call.name === "browser_fill_form")).toBe(true);
+});
+
+test("a tab in another profile than the grant asks, even when the session default matches the grant", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants, WORK.id);
+  const { deps, asked } = fakeDeps({
+    page: { url: "https://github.com/login", profileId: PERSONAL.id, profileLabel: PERSONAL.label },
+    grants,
+    sessionProfile: WORK,
+  });
+  await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+  // The card names the identity the page is actually in.
+  expect(asked[0]!.profile).toEqual({ id: PERSONAL.id, label: PERSONAL.label });
+});
+
+test("the fill and the submit are addressed to the tab that was checked", async () => {
+  const { deps, calls } = fakeDeps({ page: { ...githubPage(), index: 3 } });
+  await runSecretFill(deps, { fields: FIELDS, submit: { target: "e14" } });
+  expect((calls.find((call) => call.name === "browser_fill_form")!.args as { tabId: number }).tabId).toBe(3);
+  expect((calls.find((call) => call.name === "browser_click")!.args as { tabId: number }).tabId).toBe(3);
+});
+
+test("a tab set that shifted under the fill denies it — the index is not blindly reused", async () => {
+  const page = githubPage();
+  const { deps, calls } = fakeDeps({ page, onVaultRead: () => { page.index = 1; } });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("tabs changed");
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+});
+
+// ── WHAT CHANGES DURING THE VAULT READ (the unbounded await) ───────────────
+
+test("a navigation DURING the vault read denies the fill and the values are dropped unused", async () => {
+  const page = githubPage();
+  const { deps, calls } = fakeDeps({ page, onVaultRead: () => { page.url = "https://evil.example/login"; } });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("page changed");
+  // The values existed in memory and went nowhere.
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+  expect(JSON.stringify(calls)).not.toContain(SENTINEL);
+});
+
+test("a profile switch DURING the vault read denies the fill", async () => {
+  const page = githubPage();
+  const { deps, calls } = fakeDeps({
+    page,
+    onVaultRead: () => { page.profileId = PERSONAL.id; page.profileLabel = PERSONAL.label; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("no longer in the profile");
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+});
+
+test("a revoke DURING the vault read denies the remembered fill", async () => {
+  const grants = grantStore();
+  const grant = rememberUsernameAndPassword(grants);
+  const { deps, asked, calls } = fakeDeps({ grants, onVaultRead: () => { grants.revoke(grant.id); } });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(0); // it took the remembered path, then lost it
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("revoked");
+  expect(calls.map((call) => call.name)).not.toContain("browser_fill_form");
+});
+
+test("a revoke BEFORE the vault read denies the fill without opening the vault at all", async () => {
+  const grants = grantStore();
+  const grant = rememberUsernameAndPassword(grants);
+  let reads = 0;
+  const { deps } = fakeDeps({
+    grants,
+    // Read 2 IS the pre-vault re-check: the person revokes in settings after
+    // the grant matched and before anything is read from the vault.
+    onTabRead: (nth) => { if (nth === 2) grants.revoke(grant.id); },
+    secrets: fakeSecrets({ readItemFields: async () => { reads += 1; return { ok: false, error: "unreachable" }; } }),
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toContain("revoked");
+  expect(reads).toBe(0);
+});
+
+test("a navigation during the vault read on the HUMAN path also denies, and stores no grant", async () => {
+  const grants = grantStore();
+  const page = githubPage();
+  const { deps } = fakeDeps({
+    page,
+    grants,
+    outcome: { decision: "accept", itemId: "item_gh", remember: true },
+    onVaultRead: () => { page.url = "https://evil.example/login"; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBe(true);
+  expect(grants.list()).toHaveLength(0);
+});
+
+test("a grant is stored for the origin the fill LANDED on, not the one the approval started on", async () => {
+  const grants = grantStore();
+  const page = githubPage();
+  const { deps } = fakeDeps({
+    page,
+    grants,
+    outcome: { decision: "accept", itemId: "item_gh", remember: true },
+    // Within the same registrable domain, which a human's approval tolerates.
+    onAsk: () => { page.url = "https://gist.github.com/login"; },
+  });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(result.isError).toBeUndefined();
+  expect(grants.list()[0]!.origin).toBe("https://gist.github.com");
+});
+
+// ── WHICH AUTHORIZED ITEM (the several-accounts case) ─────────────────────
+
+/** Two authorized logins for one site in one profile — the shape of "several
+ *  Google identities", which is the reason this feature exists. */
+function rememberBoth(grants: LoginGrantStore) {
+  rememberUsernameAndPassword(grants); // item_gh, "GitHub"
+  grants.remember({
+    profileId: WORK.id,
+    origin: "https://github.com",
+    itemId: "item_work",
+    itemTitle: "GitHub (work)",
+    fields: [{ kind: "username" }, { kind: "password" }],
+  });
+}
+
+test("two authorized logins and nothing to choose between them: a human is asked, never the first", async () => {
+  const grants = grantStore();
+  rememberBoth(grants);
+  const { deps, asked } = fakeDeps({ grants });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.candidates.map((candidate) => candidate.id)).toEqual(["item_gh", "item_work"]);
+  expect(textOf(result)).not.toContain("Used a login you allowed");
+});
+
+test("an exact item selection among two authorized logins is honoured without asking", async () => {
+  const grants = grantStore();
+  rememberBoth(grants);
+  const byId = fakeDeps({ grants });
+  expect(textOf(await runSecretFill(byId.deps, { fields: FIELDS, item: "item_work" }))).toContain("“GitHub (work)”");
+  expect(byId.asked).toHaveLength(0);
+
+  const byTitle = fakeDeps({ grants });
+  expect(textOf(await runSecretFill(byTitle.deps, { fields: FIELDS, item: "GitHub (work)" }))).toContain("“GitHub (work)”");
+  expect(byTitle.asked).toHaveLength(0);
+});
+
+test("an AMBIGUOUS item hint asks rather than guessing between authorized logins", async () => {
+  const grants = grantStore();
+  rememberBoth(grants);
+  // "hub" is a substring of both titles and the exact title of neither, so it
+  // selects nothing — which is the whole point: a loose hint must not pick an
+  // account. ("GitHub" WOULD be exact for one of them; see the test above.)
+  const { deps, asked } = fakeDeps({ grants });
+  await runSecretFill(deps, { fields: FIELDS, item: "hub" });
+  expect(asked).toHaveLength(1);
+  expect(asked[0]!.hint).toBe("hub");
+});
+
+test("an item selection that is NOT authorized asks, even when another item is", async () => {
+  const grants = grantStore();
+  rememberUsernameAndPassword(grants); // only item_gh is authorized
+  const { deps, asked } = fakeDeps({ grants });
+  await runSecretFill(deps, { fields: FIELDS, item: "item_work" });
+  expect(asked).toHaveLength(1);
+});
+
+test("the human's own pick is what gets filled when a grant existed but did not decide", async () => {
+  const grants = grantStore();
+  rememberBoth(grants);
+  const { deps, asked } = fakeDeps({ grants, outcome: { decision: "accept", itemId: "item_work" } });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+  expect(textOf(result)).toBe("Filled username and password from “GitHub (work)” on https://github.com.");
+  // The prose must not claim an authorization that was not spent, and the
+  // grant that did not decide must not be marked as used.
+  expect(textOf(result)).not.toContain("Used a login you allowed");
+  expect(grants.list().every((grant) => grant.lastUsedAt === undefined)).toBe(true);
+});
+
+test("a grant whose item is gone falls back to the human WITHOUT claiming it was used", async () => {
+  const grants = grantStore();
+  grants.remember({
+    profileId: WORK.id,
+    origin: "https://github.com",
+    itemId: "item_deleted",
+    itemTitle: "GitHub",
+    fields: [{ kind: "username" }, { kind: "password" }],
+  });
+  const { deps, asked } = fakeDeps({ grants, outcome: { decision: "accept", itemId: "item_gh" } });
+  const result = await runSecretFill(deps, { fields: FIELDS });
+  expect(asked).toHaveLength(1);
+  expect(textOf(result)).not.toContain("Used a login you allowed");
+  expect(grants.list()[0]!.lastUsedAt).toBeUndefined();
 });
 
 // ── REDACTION — the suite this feature stands on ───────────────────────────

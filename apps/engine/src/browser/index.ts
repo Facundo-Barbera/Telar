@@ -29,7 +29,7 @@ import {
   parseBrowserTabs,
   textOf,
 } from "./helpers";
-import type { DesktopBrowserClient, DesktopBrowserState } from "./desktop";
+import type { BrowserProfileIdentity, DesktopBrowserClient, DesktopBrowserState } from "./desktop";
 import { ScopedRuntimePool, type ScopedRuntimeResource } from "./pool";
 import { installBrowser, PlaywrightMcpTransport, type BrowserTransportOptions } from "./transport";
 import { BrowserToolResult, parseBrowserToolInput } from "./tools";
@@ -87,6 +87,16 @@ export type BrowserRuntimeOptions = BrowserTransportOptions & {
    * `<profileRoot>/<scopeKey>` as `--user-data-dir`, so a session's logins
    * survive turns, evictions and daemon restarts. Absent ⇒ `--isolated`, the
    * pre-PR4 behaviour and what tests want.
+   *
+   * NAMED PROFILES ARE A DESKTOP-HOST CAPABILITY, AND THAT IS A SUBSTRATE
+   * CONSTRAINT, NOT AN OMISSION. Sharing one identity between sessions means
+   * two live browsers on one cookie store; Electron's `persist:` partitions are
+   * built for exactly that, and Chromium's `--user-data-dir` is not — a second
+   * process on the same directory either refuses to start or hands the request
+   * to the first. So the headless runtime keeps ONE DIRECTORY PER SCOPE:
+   * isolation is preserved, reuse is not offered, and `profileIdentity` names
+   * the scope rather than a profile so a remembered authorization made here can
+   * never be spent against a desktop profile.
    */
   profileRoot?: string;
   maxScopes?: number;
@@ -336,6 +346,11 @@ export type EngineBrowser = {
   /** Bind a scope to its project's browser profile (desktop host only; the
    *  headless runtime already isolates per scope by user-data-dir). */
   bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
+  /** WHICH NAMED IDENTITY this scope's browser is running under, or null when
+   *  nothing has bound it yet. Read by the credential path: a remembered
+   *  authorization is scoped to a profile, so "which profile" must be a fact
+   *  the engine can state, not one the model may claim. */
+  profileIdentity?(scopeKey: string): Promise<BrowserProfileIdentity | null>;
   release(scopeKey: string, reason?: string): Promise<boolean>;
   close(reason?: string): Promise<void>;
 };
@@ -405,12 +420,59 @@ export class BrowserRouter implements EngineBrowser {
     const previous = this.profiles.get(scopeKey);
     if (previous !== undefined && previous !== profileKey) throw new Error("Browser session is already bound to a different project profile.");
     this.profiles.set(scopeKey, profileKey);
-    if (await this.useDesktop()) await this.desktop!.bind(scopeKey, profileKey);
+    if (await this.useDesktop()) this.rememberIdentity(scopeKey, await this.desktop!.bind(scopeKey, profileKey));
+  }
+
+  /**
+   * THE IDENTITY, AS OF NOW, NOT AS OF THE LAST BIND. Re-asked through the host
+   * rather than answered from the cache, because a person may switch a
+   * session's profile in the panel between two of its turns, and a remembered
+   * credential authorization that matched a stale identity is exactly the grant
+   * that must NOT be reused.
+   *
+   * The headless runtime has no named profiles (see the substrate note on
+   * `BrowserRuntimeOptions.profileRoot`): its identity is the scope's own
+   * user-data-dir, named so that a grant made against it can never match a
+   * desktop profile.
+   */
+  async profileIdentity(scopeKey: string): Promise<BrowserProfileIdentity | null> {
+    if (!(await this.useDesktop())) {
+      return this.headless.isRunning(scopeKey) || this.profiles.has(scopeKey)
+        ? { id: `headless:${scopeKey}`, label: "Headless session browser" }
+        : null;
+    }
+    const profileKey = this.profiles.get(scopeKey);
+    if (profileKey === undefined) return this.identities.get(scopeKey) ?? null;
+    try {
+      this.rememberIdentity(scopeKey, await this.desktop!.bind(scopeKey, profileKey));
+    } catch {
+      // A host that cannot answer is an UNKNOWN identity, never the last one:
+      // the caller then asks a human rather than spending a remembered grant.
+      this.identities.delete(scopeKey);
+    }
+    return this.identities.get(scopeKey) ?? null;
+  }
+
+  /** The last identity the host reported per scope. */
+  private readonly identities = new Map<string, BrowserProfileIdentity>();
+
+  private rememberIdentity(scopeKey: string, binding: { profileId?: string; label?: string; account?: string }): void {
+    if (!binding.profileId) {
+      // An older shell that has no named profiles reports none, and the engine
+      // says so rather than inventing one.
+      this.identities.delete(scopeKey);
+      return;
+    }
+    this.identities.set(scopeKey, {
+      id: binding.profileId,
+      ...(binding.label ? { label: binding.label } : {}),
+      ...(binding.account ? { account: binding.account } : {}),
+    });
   }
 
   private async restoreProfile(scopeKey: string): Promise<void> {
     const profile = this.profiles.get(scopeKey);
-    if (profile !== undefined) await this.desktop!.bind(scopeKey, profile);
+    if (profile !== undefined) this.rememberIdentity(scopeKey, await this.desktop!.bind(scopeKey, profile));
   }
 
   async state(scopeKey: string, options: { start?: boolean; screenshot?: boolean } = {}): Promise<BrowserState> {
@@ -454,6 +516,7 @@ export class BrowserRouter implements EngineBrowser {
 
   close(reason?: string): Promise<void> {
     this.profiles.clear();
+    this.identities.clear();
     return this.headless.close(reason);
   }
 }

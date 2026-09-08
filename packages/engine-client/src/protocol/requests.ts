@@ -102,6 +102,30 @@ export const SecretFieldKind = z.enum(["username", "password", "otp", "field"]);
 export type SecretFieldKind = z.infer<typeof SecretFieldKind>;
 
 /**
+ * ONE REMEMBERED LOGIN, as the cockpit lists it.
+ *
+ * METADATA ONLY, for the same reason `SecretCandidate` is: this shape crosses
+ * the settings page and the phone. It names WHICH item, in which vault, for
+ * which browser profile and origin, and which kinds of field were approved —
+ * never a value, and never a way to read one.
+ */
+export const RememberedLogin = z.object({
+  id: z.string().min(1),
+  profileId: z.string().min(1),
+  profileLabel: z.string().optional(),
+  /** The exact origin, scheme included. A grant for one says nothing about
+   *  another host of the same registrable domain. */
+  origin: z.string().min(1),
+  itemId: z.string().min(1),
+  itemTitle: z.string().min(1),
+  vault: z.string().optional(),
+  fields: z.array(z.object({ kind: SecretFieldKind, label: z.string().optional() })).min(1),
+  createdAt: z.number(),
+  lastUsedAt: z.number().optional(),
+});
+export type RememberedLogin = z.infer<typeof RememberedLogin>;
+
+/**
  * What a `secret_access` request shows the human: where the fill lands, which
  * kinds of values are wanted, and which items qualify. The human's pick comes
  * back as `answers.item` (a candidate `id`).
@@ -116,6 +140,15 @@ export const SecretAccessDetail = z.object({
   candidates: z.array(SecretCandidate).min(1),
   /** The agent's item hint, surfaced so the human sees what was asked for. */
   hint: z.string().optional(),
+  /**
+   * WHICH BROWSER IDENTITY this fill lands in — the named profile the session's
+   * browser is running under. Shown because a person with several accounts is
+   * deciding about ONE of them, and it is what a remembered authorization is
+   * scoped to. Metadata only, like everything else on this shape. Absent when
+   * the host has no named profiles (an older desktop shell), which is also when
+   * `remember` is not offered.
+   */
+  profile: z.object({ id: z.string().min(1), label: z.string().optional(), account: z.string().optional() }).optional(),
 });
 export type SecretAccessDetail = z.infer<typeof SecretAccessDetail>;
 
@@ -167,8 +200,16 @@ export const EngineRequest = z.object({
    *  can adapt rather than simply retrying the same thing. */
   reason: z.string().optional(),
 
-  /** Answers to a `user_input` request, keyed by `UserInputField.key` — and
-   *  the item pick of a `secret_access` request, under the key `item`. */
+  /**
+   * Answers to a `user_input` request, keyed by `UserInputField.key` — and the
+   * item pick of a `secret_access` request, under the key `item`.
+   *
+   * `remember: true` on a `secret_access` answer is the human ticking the
+   * card's opt-in box: it authorizes LATER fills of the same item, in the same
+   * browser profile, on the same origin, for the same field kinds — and
+   * nothing else. Absent and false are the same thing, which is why the box is
+   * unchecked by default and no mode can supply it.
+   */
   answers: z.record(z.string(), z.unknown()).optional(),
 
   providerRefs: ProviderRefs.optional(),

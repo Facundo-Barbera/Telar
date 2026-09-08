@@ -36,6 +36,7 @@ import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openC
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
+import { createLoginGrantStore } from "./secrets/login-grants";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
 import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
@@ -802,6 +803,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // probe is the grant), so this reports what it did.
       if (request.method === "POST" && url.pathname === "/v2/computer-use/grant") {
         writeJson(response, 200, grantComputerUseAccess());
+        return;
+      }
+      /**
+       * REMEMBERED LOGINS — what a person allowed agents to fill without being
+       * asked again, and the one place to take it back. READ AND DELETE ONLY:
+       * a grant can be created in exactly one way, by ticking an unchecked box
+       * on an approval card the person was already answering, so there is no
+       * route here that could mint one.
+       */
+      if (request.method === "GET" && url.pathname === "/v2/browser/logins") {
+        writeJson(response, 200, { logins: createLoginGrantStore(store.paths.root).list() });
+        return;
+      }
+      if (request.method === "DELETE" && url.pathname.startsWith("/v2/browser/logins/")) {
+        const id = decodeURIComponent(url.pathname.slice("/v2/browser/logins/".length));
+        if (!createLoginGrantStore(store.paths.root).revoke(id)) throw new HttpError(404, "not_found", "no such remembered login");
+        writeJson(response, 200, { ok: true });
         return;
       }
       /**
@@ -3303,6 +3321,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             workerId,
             driver,
             browserSocket: socket,
+            // The same file the settings list and revoke path read — see the
+            // note on `createLoginGrantStore`.
+            loginGrants: createLoginGrantStore(store.paths.root),
             ...(sessionsSocket ? { sessionsSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
