@@ -315,3 +315,144 @@ test("serving a deleted icon answers undefined, which the route turns into a 404
   fs.rmSync(target);
   expect(await readProjectIconBytes(icon)).toBeUndefined();
 });
+
+/* ------------------------------------------------------------------ *
+ * Controlled races
+ *
+ * The tests above swap files BEFORE the call, which only proves the checks
+ * run. These run the swap INSIDE the call's own window, by hooking the very
+ * fs primitive whose return opens the window, so the refusal is exercised
+ * where a real race would land rather than where it is convenient.
+ * ------------------------------------------------------------------ */
+
+/** Run `body` with `fs.promises[name]` wrapped so `during` fires immediately
+ *  after the real call returns — i.e. inside the caller's window. */
+async function racing<T>(name: "realpath" | "open", during: () => void, body: () => Promise<T>): Promise<T> {
+  const original = fs.promises[name] as (...args: never[]) => Promise<unknown>;
+  let fired = false;
+  (fs.promises as Record<string, unknown>)[name] = async (...args: never[]) => {
+    const answer = await original(...args);
+    if (!fired) {
+      fired = true;
+      during();
+    }
+    return answer;
+  };
+  try {
+    return await body();
+  } finally {
+    (fs.promises as Record<string, unknown>)[name] = original;
+  }
+}
+
+/** Run `body` with the file handles it opens wrapped so `during` fires just
+ *  before the FIRST read — i.e. after the size has been measured and while the
+ *  bytes are being taken. */
+async function racingOnRead<T>(during: () => void, body: () => Promise<T>): Promise<T> {
+  const open = fs.promises.open;
+  let fired = false;
+  (fs.promises as Record<string, unknown>).open = async (...args: never[]) => {
+    const handle = (await (open as (...a: never[]) => Promise<fs.promises.FileHandle>)(...args)) as fs.promises.FileHandle;
+    const read = handle.read.bind(handle);
+    (handle as unknown as Record<string, unknown>).read = (...readArgs: never[]) => {
+      if (!fired) {
+        fired = true;
+        during();
+      }
+      return (read as (...a: never[]) => unknown)(...readArgs);
+    };
+    return handle;
+  };
+  try {
+    return await body();
+  } finally {
+    (fs.promises as Record<string, unknown>).open = open;
+  }
+}
+
+test("a symlink swapped in AFTER the path check but BEFORE the open is refused", async () => {
+  // The realpath -> open window. `realpath` answers "a regular file, inside the
+  // checkout"; the swap lands before the open; O_NOFOLLOW is what stops the
+  // link from being opened at all.
+  const project = root();
+  const outside = put(root(), "secret.png", png("outside-bytes"));
+  const target = put(project, "icon.png", png("inside-bytes"));
+  const icon = findProjectIcon(project)!;
+
+  const served = await racing("realpath", () => {
+    fs.rmSync(target);
+    fs.symlinkSync(outside, target);
+  }, () => readProjectIconBytes(icon));
+
+  expect(served).toBeUndefined();
+  // …and the same window on the confirmation path.
+  fs.rmSync(target);
+  fs.writeFileSync(target, png("inside-bytes"));
+  const confirmed = await racing("realpath", () => {
+    fs.rmSync(target);
+    fs.symlinkSync(outside, target);
+  }, () => confirmProjectIcon(icon));
+  expect(confirmed).toBeUndefined();
+});
+
+test("a file that GROWS past the cap after it was measured is refused, not truncated", async () => {
+  // THE EXACT BUG THIS REPLACED: the buffer was sized from the earlier stat, so
+  // a file that grew afterwards was read only up to the OLD size — and the
+  // result looked like a complete, in-bounds image. The mutation has to land
+  // after the measurement to exercise it, which is why it hangs off the first
+  // read rather than off the open.
+  const project = root();
+  const target = put(project, "icon.png", png("small"));
+  const icon = findProjectIcon(project)!;
+
+  const served = await racingOnRead(() => {
+    fs.writeFileSync(target, Buffer.concat([png("grown"), Buffer.alloc(1024 * 1024)]));
+  }, () => readProjectIconBytes(icon));
+
+  expect(served).toBeUndefined();
+});
+
+test("a file rewritten WHILE it is being read is refused rather than served half-and-half", async () => {
+  // The etag has to describe the bytes that were actually sent: this response
+  // is cached immutably, so a mix of two versions under one key would stick.
+  const project = root();
+  const target = put(project, "icon.png", png("the-original-contents"));
+  const icon = findProjectIcon(project)!;
+
+  const served = await racingOnRead(() => {
+    // Same inode, different length and mtime: the descriptor stays valid, the
+    // measurement already happened, and the post-read stat is what catches it.
+    fs.writeFileSync(target, png("a-completely-different-and-longer-body"));
+  }, () => readProjectIconBytes(icon));
+
+  expect(served).toBeUndefined();
+  // Undisturbed, the same file serves normally — the guard is not just
+  // refusing everything.
+  const calm = (await readProjectIconBytes(icon))!;
+  expect(calm.bytes.toString()).toContain("a-completely-different-and-longer-body");
+  expect(calm.contentType).toBe("image/png");
+});
+
+test("a short read is completed rather than truncated", async () => {
+  // One `read` is not a file. A body larger than the first request is
+  // assembled by the loop; the etag and the bytes agree at the end.
+  const project = root();
+  const body = Buffer.concat([png("head"), Buffer.alloc(300 * 1024, 0x7a)]);
+  put(project, "icon.png", body);
+  const icon = findProjectIcon(project)!;
+  const served = (await readProjectIconBytes(icon))!;
+  expect(served.bytes.byteLength).toBe(body.byteLength);
+  expect(served.bytes.equals(body)).toBe(true);
+  expect(served.etag).toBe(icon.etag);
+});
+
+test("a file exactly at the cap is served; one byte more is refused", async () => {
+  const project = root();
+  const atCap = Buffer.concat([png(""), Buffer.alloc(1024 * 1024 - 8, 0x7a)]);
+  expect(atCap.byteLength).toBe(1024 * 1024);
+  const target = put(project, "icon.png", atCap);
+  const icon = findProjectIcon(project)!;
+  expect((await readProjectIconBytes(icon))!.bytes.byteLength).toBe(1024 * 1024);
+  fs.writeFileSync(target, Buffer.concat([atCap, Buffer.from([0x7a])]));
+  expect(await readProjectIconBytes(icon)).toBeUndefined();
+});

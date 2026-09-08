@@ -481,31 +481,30 @@ export async function findProjectIconAsync(root: string): Promise<ProjectIcon | 
  * longer exists. `undefined` means "ask again properly", never "no icon".
  */
 export async function confirmProjectIcon(icon: ProjectIcon): Promise<ProjectIcon | undefined> {
-  const real = await realConfined(icon);
-  if (!real) return undefined;
-  let stats: fs.Stats;
+  const opened = await openConfined(icon);
+  if (!opened) return undefined;
+  const { handle, path: real } = opened;
   try {
-    stats = await fs.promises.stat(real);
+    const stats = await handle.stat();
+    if (!statAcceptable(stats)) return undefined;
+    const etag = etagFor(real, stats);
+    if (etag === icon.etag) return icon;
+    // THE BYTES CHANGED, SO THE TYPE IS UNKNOWN AGAIN. `icon.png` replaced by
+    // an SVG, or by a text file, is the same path with the same name and a
+    // different format; carrying the old content type forward would serve the
+    // new bytes under the old declaration. Re-sniffing costs one small read,
+    // and only on a change — and it reads through the descriptor already
+    // proved above rather than re-opening the path.
+    const head = Buffer.alloc(Math.min(stats.size, SNIFF_BYTES));
+    const { bytesRead } = await handle.read(head, 0, head.byteLength, 0);
+    const contentType = sniffContentType(head.subarray(0, bytesRead));
+    if (!contentType) return undefined;
+    return { ...icon, etag, contentType };
   } catch {
     return undefined;
+  } finally {
+    await handle.close();
   }
-  if (!statAcceptable(stats)) return undefined;
-  const etag = etagFor(real, stats);
-  if (etag === icon.etag) return icon;
-  // THE BYTES CHANGED, SO THE TYPE IS UNKNOWN AGAIN. `icon.png` replaced by an
-  // SVG, or by a text file, is the same path with the same name and a different
-  // format; carrying the old content type forward would serve the new bytes
-  // under the old declaration. Re-sniffing costs one small read, and only on a
-  // change.
-  let head: Buffer;
-  try {
-    head = await readHead(real, Math.min(stats.size, SNIFF_BYTES));
-  } catch {
-    return undefined;
-  }
-  const contentType = sniffContentType(head);
-  if (!contentType) return undefined;
-  return { ...icon, etag, contentType };
 }
 
 export function confirmProjectIconSync(icon: ProjectIcon): ProjectIcon | undefined {
@@ -548,32 +547,67 @@ export function confirmProjectIconSync(icon: ProjectIcon): ProjectIcon | undefin
  * turns into a 404 and the avatar renders as its fallback.
  */
 export async function readProjectIconBytes(icon: ProjectIcon): Promise<{ bytes: Buffer; contentType: string; etag: string } | undefined> {
-  const real = await realConfined(icon);
-  if (!real) return undefined;
-  let handle: fs.promises.FileHandle;
+  const opened = await openConfined(icon);
+  if (!opened) return undefined;
+  const { handle, path: real } = opened;
   try {
-    handle = await fs.promises.open(real, "r");
-  } catch {
-    return undefined;
-  }
-  try {
-    const stats = await handle.stat();
-    if (!statAcceptable(stats)) return undefined;
-    // Read one byte past the bound: a file that grew between the stat and the
-    // read is refused rather than truncated into something the etag does not
-    // describe.
-    const buffer = Buffer.alloc(Math.min(stats.size, MAX_ICON_BYTES) + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead === 0 || bytesRead > MAX_ICON_BYTES) return undefined;
-    const bytes = buffer.subarray(0, bytesRead);
+    const before = await handle.stat();
+    if (!before.isFile() || before.size === 0 || before.size > MAX_ICON_BYTES) return undefined;
+    const bytes = await readAllBounded(handle, before.size);
+    if (!bytes) return undefined;
+    /**
+     * THE ETAG MUST DESCRIBE THE BYTES THAT WERE ACTUALLY SENT, and the file
+     * is somebody's working tree — it can be rewritten while this loop runs.
+     * The size we ended up reading and the mtime both have to still agree with
+     * the file after the read; if they do not, the bytes in hand are half of
+     * one version and half of another, and shipping them under a
+     * `max-age=31536000, immutable` etag would cache that mess forever.
+     * Refusing is a 404 and one retry.
+     */
+    const after = await handle.stat();
+    if (after.mtimeMs !== before.mtimeMs || after.size !== bytes.byteLength) return undefined;
     const contentType = sniffContentType(bytes.subarray(0, SNIFF_BYTES));
     if (!contentType) return undefined;
-    return { bytes, contentType, etag: etagFor(real, stats) };
+    return { bytes, contentType, etag: etagFor(real, after) };
   } catch {
     return undefined;
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * The whole file, or `undefined` if it does not fit.
+ *
+ * A LOOP, BECAUSE ONE `read` IS NOT A FILE. A single read may come back short
+ * for reasons that have nothing to do with the file's length, which would
+ * quietly serve a truncated image. And the buffer cannot be sized from an
+ * earlier `stat`: a file that grew after the stat would be read only up to the
+ * old size and the result would look like a complete, in-bounds image. So the
+ * loop runs to EOF against a CEILING of one byte past the maximum — reaching
+ * that ceiling means the file is too big and the answer is a refusal, never a
+ * truncation.
+ *
+ * Allocation stays bounded: the first read is sized to the file as it was last
+ * seen, and any further reads (a short read, or growth) come in fixed chunks
+ * up to the ceiling.
+ */
+const READ_CHUNK_BYTES = 64 * 1024;
+
+async function readAllBounded(handle: fs.promises.FileHandle, expected: number): Promise<Buffer | undefined> {
+  const ceiling = MAX_ICON_BYTES + 1;
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (total < ceiling) {
+    const want = Math.min(total === 0 ? Math.max(expected, 1) : READ_CHUNK_BYTES, ceiling - total);
+    const chunk = Buffer.alloc(want);
+    const { bytesRead } = await handle.read(chunk, 0, want, total);
+    if (bytesRead === 0) break;
+    chunks.push(chunk.subarray(0, bytesRead));
+    total += bytesRead;
+  }
+  if (total === 0 || total > MAX_ICON_BYTES) return undefined;
+  return Buffer.concat(chunks, total);
 }
 
 /**
@@ -586,6 +620,10 @@ export async function readProjectIconBytes(icon: ProjectIcon): Promise<{ bytes: 
  * resolves to itself is refused rather than re-confined: the cached answer is
  * about a file that no longer exists in the form it was found, so the caller
  * should resolve the project again from the top.
+ *
+ * ON ITS OWN THIS IS A CHECK WITH A WINDOW: whatever happens between the
+ * answer and the open is not covered. Callers that go on to read bytes use
+ * `openConfined`, which closes it.
  */
 async function realConfined(icon: ProjectIcon): Promise<string | undefined> {
   let real: string;
@@ -605,6 +643,52 @@ function realConfinedSync(icon: ProjectIcon): string | undefined {
     return undefined;
   }
   return real === icon.path && confined(real, icon.root) ? real : undefined;
+}
+
+/**
+ * An open descriptor on the icon's own file, with the check-to-use window shut.
+ *
+ * CHECKING A PATH AND THEN OPENING IT IS TWO OPERATIONS, and a working tree is
+ * writable between them — `realpath` can say "a regular file, inside the
+ * checkout" and the thing that gets opened a moment later can be a symlink
+ * somebody just put there. Two measures close that:
+ *
+ *   `O_NOFOLLOW` makes the open itself fail if the FINAL component is a
+ *   symlink, so the swapped-in link cannot be opened at all rather than being
+ *   followed out of the checkout. (The finder is free to follow links on the
+ *   way in — a repository keeping its assets behind one is ordinary — which is
+ *   why the stored path is a realpath and why refusing links HERE costs
+ *   nothing.)
+ *
+ *   Comparing the descriptor's identity with `lstat` of the same path
+ *   afterwards proves the file that was opened is still the file that path
+ *   names. This is what catches a swap that lands in the gap between the two
+ *   calls: the open succeeds against the old inode, and the mismatch is
+ *   visible immediately after.
+ *
+ * Everything above the final component is already resolved: `path` is a
+ * realpath, so no parent in it is a link at the time it was taken.
+ */
+async function openConfined(icon: ProjectIcon): Promise<{ handle: fs.promises.FileHandle; path: string } | undefined> {
+  const real = await realConfined(icon);
+  if (!real) return undefined;
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch {
+    return undefined;
+  }
+  try {
+    const [opened, named] = await Promise.all([handle.stat(), fs.promises.lstat(real)]);
+    if (opened.dev !== named.dev || opened.ino !== named.ino || !named.isFile()) {
+      await handle.close();
+      return undefined;
+    }
+  } catch {
+    await handle.close();
+    return undefined;
+  }
+  return { handle, path: real };
 }
 
 /* --- the one primitive both drivers need that `fs` does not offer directly --- */
