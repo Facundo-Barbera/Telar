@@ -35,6 +35,7 @@ import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
+import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
@@ -719,7 +720,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       if (request.method === "GET" && url.pathname === "/v2/projects") {
-        writeJson(response, 200, { projects: store.listProjects() });
+        // `?includeRemoved=1` OPTS IN to the put-away ones. Absent by default,
+        // so every picker and the sidebar drop a removed project without
+        // knowing the concept exists; its own settings page is the one caller
+        // that has to name it in order to offer to restore it.
+        writeJson(response, 200, { projects: store.listProjects({ includeRemoved: url.searchParams.get("includeRemoved") === "1" }) });
         return;
       }
       /**
@@ -1952,14 +1957,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
       if (request.method === "GET" && projectIcon) {
         const icon = await store.projectIconFileAsync(decodeURIComponent(projectIcon[1]));
-        const bytes = await fs.promises.readFile(icon.path);
+        // REVALIDATED AT THE READ, not trusted from the record. The file can
+        // change or go between the resolve and the read — a `git checkout`
+        // mid-request is enough — and this is where the bytes leave the
+        // machine, so confinement, the size bound and the content type are all
+        // re-established against what is being sent. A file that no longer
+        // qualifies is the same answer as "this project has no icon", which
+        // the avatar already falls back on; a 500 would make an ordinary race
+        // look like a broken engine.
+        const served = await readProjectIconBytes(icon);
+        if (!served) throw new HttpError(404, "not_found", "this project has no icon");
         response.writeHead(200, {
-          "content-type": icon.contentType,
-          "content-length": bytes.byteLength,
+          "content-type": served.contentType,
+          "content-length": served.bytes.byteLength,
           "cache-control": "public, max-age=31536000, immutable",
-          etag: `"${icon.etag}"`,
+          etag: `"${served.etag}"`,
         });
-        response.end(bytes);
+        response.end(served.bytes);
         return;
       }
       /**
@@ -2153,6 +2167,25 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           patch.latex = input.latex as Parameters<typeof store.updateProject>[1]["latex"];
         }
         writeJson(response, 200, { project: store.updateProject(decodeURIComponent(projectPatch[1]), patch) });
+        return;
+      }
+      /**
+       * REMOVE. A DELETE on the registration, NOT on the project: the checkout,
+       * its worktrees, its sessions' journals and their browser profiles are
+       * all untouched, and the registration RECORD is kept and marked rather
+       * than deleted — so restoring gives back the same id and settings.
+       * `sessions` in the answer is how many session records now belong to a
+       * put-away project; the surface says so rather than the engine tidying
+       * them away.
+       */
+      if (request.method === "DELETE" && projectPatch) {
+        writeJson(response, 200, store.unregisterProject(decodeURIComponent(projectPatch[1])));
+        return;
+      }
+      /** Put a removed project back: same id, same settings, same sessions. */
+      const projectRestore = /^\/v2\/projects\/([^/]+)\/restore$/.exec(url.pathname);
+      if (request.method === "POST" && projectRestore) {
+        writeJson(response, 200, { project: store.restoreProject(decodeURIComponent(projectRestore[1])) });
         return;
       }
       /**

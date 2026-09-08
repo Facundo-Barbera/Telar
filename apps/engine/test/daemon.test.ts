@@ -432,3 +432,41 @@ test("the appearance home is served, written and refuses what is not an image", 
   expect(wrongVerb.status).toBe(405);
   expect(wrongVerb.headers.get("allow")).toBe("GET");
 });
+
+test("DELETE on a project unregisters it, and refuses while a turn is in flight", async () => {
+  // The wire half of the settings row: a DELETE on the REGISTRATION. The
+  // checkout is a temporary directory here and is asserted intact afterwards —
+  // this route must never be able to reach into somebody's repository.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const checkout = root();
+  fs.writeFileSync(path.join(checkout, "source.ts"), "export const kept = true;\n");
+  const { project } = await client.registerProject({ name: "Removable", root: checkout });
+  const { session } = await client.createSession({ projectId: project.id });
+
+  await client.registerWorker("worker_one");
+  await client.submitTurn(session.id, { runId: "run_one", input: "keep going" });
+  await expect(client.unregisterProject(project.id)).rejects.toMatchObject({ code: "conflict", status: 409 });
+
+  await client.stopTurn(session.id, "run_one");
+  const removed = await client.unregisterProject(project.id);
+  expect(removed.project.id).toBe(project.id);
+  expect(removed.sessions).toBe(1);
+  // Gone from the list every surface reads; present, and marked, for the one
+  // that offers to put it back.
+  expect((await client.listProjects()).projects).toEqual([]);
+  const withRemoved = (await client.listProjects({ includeRemoved: true })).projects;
+  expect(withRemoved.map((each) => each.id)).toEqual([project.id]);
+  expect(typeof withRemoved[0]!.removedAt).toBe("number");
+  await expect(client.unregisterProject(project.id)).rejects.toMatchObject({ code: "conflict", status: 409 });
+
+  // Nothing on disk moved, and the session's own record is still readable.
+  expect(fs.readFileSync(path.join(checkout, "source.ts"), "utf8")).toBe("export const kept = true;\n");
+  expect((await client.session(session.id)).session.id).toBe(session.id);
+
+  // Restoring is an undo: the same id, back on the live list.
+  expect((await client.restoreProject(project.id)).project.id).toBe(project.id);
+  expect((await client.listProjects()).projects.map((each) => each.id)).toEqual([project.id]);
+  await expect(client.restoreProject("project_nope")).rejects.toMatchObject({ code: "not_found", status: 404 });
+});
