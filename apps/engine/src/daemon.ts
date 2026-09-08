@@ -19,6 +19,7 @@ import {
   resolveMcpServers,
   TurnModelSelection,
   WakeKind as WakeKindSchema,
+  WorkerTurnFailureCode,
   type WakeKind,
   type EngineDiscovery,
   type EngineErrorCode,
@@ -337,10 +338,10 @@ function sessionPath(pathname: string): { sessionId: string; tail: string } | un
   return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
 }
 
-type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "promote" | "steer-ack";
+type TurnAction = "running" | "observe" | "request" | "complete" | "fail" | "discard" | "release" | "promote" | "steer-ack";
 
 function turnPath(pathname: string): { sessionId: string; runId: string; action: TurnAction } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|promote|steer-ack)$/.exec(pathname);
+  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)\/turns\/([A-Za-z0-9_-]+)\/(running|observe|request|complete|fail|discard|release|promote|steer-ack)$/.exec(pathname);
   if (!match) return undefined;
   return { sessionId: decodeURIComponent(match[1]), runId: decodeURIComponent(match[2]), action: match[3] as TurnAction };
 }
@@ -2692,6 +2693,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
 
       const turn = turnPath(url.pathname);
       if (turn && request.method === "POST") {
+        if (turn.action === "release") {
+          // A HUMAN gesture, like discard: no claim token, because the person
+          // re-reading a held message is not a worker reporting on a run.
+          writeJson(response, 200, { turn: store.releaseHeldTurn(turn.sessionId, turn.runId) });
+          return;
+        }
         if (turn.action === "discard") {
           await body(request);
           writeJson(response, 200, { turn: store.discardAmbiguousTurn(turn.sessionId, turn.runId) });
@@ -2743,10 +2750,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             }),
           });
         } else {
-          const code = stringValue(input.code, "failure code")!;
-          if (code !== "provider_unavailable" && code !== "driver_failed" && code !== "budget_exhausted") {
+          // FROM THE CONTRACT'S LIST, not a hand-written copy of it. This was
+          // one of three places spelling the same codes out, and adding
+          // `interrupted` found them by watching two accept it while the third
+          // still refused. `WorkerTurnFailureCode` is the single definition.
+          const parsedCode = WorkerTurnFailureCode.safeParse(stringValue(input.code, "failure code"));
+          if (!parsedCode.success) {
             throw new HttpError(400, "invalid_request", "failure code is invalid");
           }
+          const code = parsedCode.data;
           writeJson(response, 200, {
             turn: store.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }),
           });

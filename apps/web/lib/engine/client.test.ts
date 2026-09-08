@@ -1,7 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { Turn } from "@telar/engine-client";
-import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "./client";
+import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "./client";
 
 describe("engine browser adapter", () => {
   test("uses only standalone /api routes and preserves generated run ids", async () => {
@@ -71,6 +71,39 @@ describe("engine browser adapter", () => {
       () => "fresh_run",
     );
     expect(calls).toEqual(["discard:session_a:uncertain_run", "submit:session_a:fresh_run:hello"]);
+  });
+
+  test("continuing releases the held run and submits NOTHING — the prompt is never resent", async () => {
+    /**
+     * The recovery card's primary verb. It is a discard and only a discard:
+     * that clears the engine's held dispatch, and the transcript, the provider
+     * cursor and the record of the interruption all stay exactly where they
+     * are. Whatever runs next is what the person types.
+     */
+    const calls: string[] = [];
+    await continueAfterAmbiguousTurn(
+      {
+        discardAmbiguousTurn: async (sessionId: string, runId: string) => {
+          calls.push(`discard:${sessionId}:${runId}`);
+          return { turn: { runId, state: "discarded" } as Turn };
+        },
+      },
+      "session_a",
+      { runId: "uncertain_run", state: "ambiguous" },
+    );
+    // A discard and nothing else. The signature does not even offer `submitTurn`,
+    // so "Continue resends the prompt" is not a regression that can be written.
+    expect(calls).toEqual(["discard:session_a:uncertain_run"]);
+  });
+
+  test("continue refuses a turn that is not ambiguous", async () => {
+    await expect(
+      continueAfterAmbiguousTurn(
+        { discardAmbiguousTurn: async () => ({ turn: {} as Turn }) },
+        "session_a",
+        { runId: "run_done", state: "completed" },
+      ),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
 
   test("retry refuses to resolve or replay a turn that is not ambiguous", async () => {

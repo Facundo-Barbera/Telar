@@ -22,10 +22,26 @@ describe("recoverableFailedTurn", () => {
     }
   });
 
-  test("never treats an ambiguous turn as an ordinary failure, and defers to it", () => {
+  test("never treats an ambiguous turn as an ordinary failure, but no longer hides behind one", () => {
     expect(recoverableFailedTurn([turn("run_1", "ambiguous")])).toBeUndefined();
-    // An ambiguous turn elsewhere in the session has its own decision pending.
-    expect(recoverableFailedTurn([turn("run_1", "ambiguous"), turn("run_2", "failed")])).toBeUndefined();
+    /**
+     * An ambiguous turn elsewhere USED to suppress this, and that suppression
+     * was the last thing keeping a recovered session from behaving like an
+     * ordinary conversation. The two decisions are separate: the ambiguous
+     * turn's card offers its own verbs, and this offers a continuation for the
+     * failed one. Dispatch is held engine-side either way, so nothing runs
+     * before somebody decides.
+     */
+    const failed = turn("run_2", "failed");
+    expect(recoverableFailedTurn([turn("run_1", "ambiguous"), failed])).toBe(failed);
+  });
+
+  test("offers a continuation for a turn Telar interrupted by quitting", () => {
+    // A clean quit now settles the turn as `failed` with `interrupted` rather
+    // than leaving it for the next boot to call ambiguous — so it arrives here,
+    // at the ordinary continuation, with no decision to make.
+    const interrupted = turn("run_1", "failed", { failure: "Telar shut down while this turn was running." });
+    expect(recoverableFailedTurn([interrupted])).toBe(interrupted);
   });
 
   test("looks past compaction and provider-started turns to the last human one", () => {
@@ -81,5 +97,14 @@ describe("continuationDraft", () => {
     const draft = continuationDraft("Also fix the tests  \n", { failure: "boom" });
     expect(draft.startsWith("Also fix the tests\n\n")).toBe(true);
     expect(draft.endsWith("do not redo it.")).toBe(true);
+  });
+
+  test("with no provider cursor it says the agent will not remember, and never points at work it cannot see", () => {
+    // The lost turn died before the provider announced itself, so the next turn
+    // cold-starts: Telar still has the transcript, the agent has nothing.
+    const draft = continuationDraft("", { failure: "Telar was restarted" }, false);
+    expect(draft).toContain("could not be resumed");
+    expect(draft).toContain("you will not remember it");
+    expect(draft).not.toContain("Continue from the work that already exists above");
   });
 });

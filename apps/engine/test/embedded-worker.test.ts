@@ -206,3 +206,77 @@ test("a daemon started WITHOUT an embedded worker never loads the provider SDK",
   expect(exploding).toBeInstanceOf(Error);
   expect((exploding as Error).message).toBe("driver was constructed");
 });
+
+/**
+ * A provider that says who it is, streams a little, opens a tool row, and then
+ * never finishes on its own — the shape of a real turn caught mid-work.
+ */
+const workingForever: TurnDriver = {
+  run: async ({ onObservations, signal }) => {
+    await onObservations?.([
+      { kind: "provider.session", providerSessionId: "provider-thread-xyz" },
+      { kind: "item.started", item: { id: "msg_1", detail: { type: "assistant_message", text: "Working on it…" } } },
+      { kind: "item.completed", itemId: "msg_1", status: "completed" },
+      { kind: "item.started", item: { id: "tool_1", detail: { type: "command_execution", command: { command: "bun test" } } } },
+    ]);
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { text: "" };
+  },
+};
+
+test("quitting mid-turn records the interruption, and the next boot offers an ordinary continuation", async () => {
+  /**
+   * THE BUG THIS PINS, END TO END. Before it: a clean quit left the turn
+   * `running` on disk, the next boot called it `ambiguous`, and the session
+   * then refused every new message — so the only way forward was the recovery
+   * card's replay of the original prompt.
+   *
+   * The provider here is a FAKE. What is proven is Telar's own bookkeeping —
+   * turn states, transcript, resume cursor, what the next boot will accept.
+   * Whether a real Claude or Codex conversation can still see the partial turn
+   * after its process was killed is a PROVIDER question this does not touch.
+   */
+  const stateRoot = root();
+  const first = await startEngine({
+    engineRoot: stateRoot,
+    workerLeaseMs: 5_000,
+    embeddedWorker: { createDriver: () => workingForever, pollMs: 25 },
+  });
+  const client = new EngineClient(first.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "Refactor the parser and run the tests" });
+  await eventually(async () => {
+    const live = await client.session("session_one");
+    expect(live.turns[0]?.state).toBe("running");
+    expect(live.items.length).toBeGreaterThan(0);
+  });
+
+  // The human quits Telar. This is the exact call the desktop's `will-quit`
+  // SIGTERM reaches, and the settle has to land before the server closes.
+  await first.close();
+
+  const second = await startEngine({
+    engineRoot: stateRoot,
+    workerLeaseMs: 5_000,
+    embeddedWorker: { createDriver: () => workingForever, pollMs: 25 },
+  });
+  daemons.push(second);
+  const client2 = new EngineClient(second.discovery);
+  const recovered = await client2.session("session_one");
+
+  // Honest about what happened, and terminal — NOT ambiguous.
+  expect(recovered.turns[0]).toMatchObject({ runId: "run_one", state: "failed", failure: { code: "interrupted" } });
+  // Everything it streamed is kept; the open tool row is closed as failed.
+  expect(recovered.items.map((item) => [item.id, item.status])).toEqual([
+    ["msg_1", "completed"],
+    ["tool_1", "failed"],
+  ]);
+  // And the conversation is still reachable.
+  expect(recovered.session.resumeCursor).toBe("provider-thread-xyz");
+
+  // THE POINT: an ordinary next message, with no decision to make and no
+  // replay of the original prompt.
+  const next = await client2.submitTurn("session_one", { runId: "run_two", input: "Just tell me what you found." });
+  expect(next.turn.state).toBe("queued");
+});
