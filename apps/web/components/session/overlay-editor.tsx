@@ -16,6 +16,58 @@ import { cn } from "@/lib/utils";
 
 export const CODE_GEOMETRY = "font-mono text-[0.6875rem] leading-[1.55] tracking-normal";
 
+/**
+ * THE COLOURED LAYER'S LINES — one `<div>` per SOURCE line, always.
+ *
+ * A BLANK LINE STILL HAS TO OCCUPY A LINE BOX, and this is the whole reason
+ * this is a component rather than three lines inlined twice. Shiki hands back an
+ * EMPTY TOKEN ARRAY for a blank line, and `[]` is truthy — so the highlighted
+ * branch used to draw `<div></div>`, which has no inline content and therefore
+ * no height. Every blank line in a Python file collapsed the moment the colours
+ * landed: the code slid up under a gutter that had not moved, the caret in the
+ * textarea above pointed at the wrong line, and the height those lines were owed
+ * reappeared as dead space at the end of the file — which is why this read as
+ * "my blank lines moved to the bottom" rather than as a rendering bug.
+ *
+ * The plain branch never had it, because it already substituted a space. So the
+ * rule is one rule for both: a line with nothing VISIBLE in it draws that same
+ * space, coloured or not. Nothing here touches the text — the textarea holds the
+ * source, and this layer only paints under it.
+ */
+export function CodeLines({
+  lines,
+  coloured,
+  /** Draw at least this many lines, so a one-line cell is still a box you can
+   *  aim at. Never fewer than the source has. */
+  minRows = 0,
+}: {
+  lines: readonly string[];
+  coloured?: readonly HighlightedLine[] | undefined;
+  minRows?: number;
+}) {
+  return (
+    <>
+      {Array.from({ length: Math.max(lines.length, minRows) }, (_, index) => {
+        const tokens = coloured?.[index];
+        // `some`, not `length`: a grammar may emit a single empty token for a
+        // line, which draws exactly as nothing does.
+        const painted = tokens?.some((token) => token.text !== "") ? tokens : undefined;
+        return (
+          <div key={index}>
+            {painted
+              ? painted.map((token, at) => (
+                  <span key={at} style={token.style as React.CSSProperties}>
+                    {token.text}
+                  </span>
+                ))
+              : lines[index] || " "}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 export function OverlayEditor({
   value,
   onChange,
@@ -58,17 +110,7 @@ export function OverlayEditor({
   return (
     <div className={cn("relative min-w-0", className)}>
       <pre aria-hidden data-shiki className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
-        {Array.from({ length: padded }, (_, index) => (
-          <div key={index}>
-            {coloured?.[index]
-              ? coloured[index].map((token, at) => (
-                  <span key={at} style={token.style as React.CSSProperties}>
-                    {token.text}
-                  </span>
-                ))
-              : lines[index] || " "}
-          </div>
-        ))}
+        <CodeLines lines={lines} coloured={coloured} minRows={padded} />
       </pre>
       <textarea
         value={value}
