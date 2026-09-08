@@ -56,6 +56,19 @@ function createBrowserSuggestions(userData, dependencies = {}) {
       Object.defineProperty(profiles, profile, { value: [{ url }, ...entries.filter(entry => entry.url !== url)].slice(0, 8), enumerable: true, configurable: true, writable: true });
       persist();
     },
+    /**
+     * Metadata migration only: move one key's remembered sites to another
+     * (a project key that became a named profile id). A no-op when the source
+     * has nothing or the target already has history — this never merges two
+     * identities' browsing into one list.
+     */
+    adopt(fromProfile, toProfile) {
+      if (!fromProfile || !toProfile || fromProfile === toProfile) return;
+      if (!Object.hasOwn(profiles, fromProfile) || Object.hasOwn(profiles, toProfile)) return;
+      Object.defineProperty(profiles, toProfile, { value: recent(fromProfile), enumerable: true, configurable: true, writable: true });
+      delete profiles[fromProfile];
+      persist();
+    },
     remove(profile, raw) {
       if (!Object.hasOwn(profiles, profile)) return;
       profiles[profile] = recent(profile).filter(entry => entry.url !== raw);

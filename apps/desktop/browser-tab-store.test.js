@@ -5,14 +5,28 @@ const { describe, expect, test } = require("bun:test");
 
 const { createTabStore, serializeInventory, parseInventory, rememberableUrl, INVENTORY_VERSION } = require("./browser-tab-store");
 
+const { ProfileRegistry } = require("./browser-profiles");
+
 const PROJECT = "project_0123456789abcdef0123456789abcdef";
 const OTHER = "project_fedcba9876543210fedcba9876543210";
-const mapping = { legacyOwnerProjectId: null };
 
-function inventory(tabs, { profiles, active } = {}) {
+/** An ephemeral registry with predictable ids — the resolution the manager
+ *  would do at restore, without a shell or a file. */
+function registry() {
+  let next = 0;
+  const made = new ProfileRegistry(null, { randomId: () => `bp_${String(++next).padStart(16, "0")}`, now: () => next });
+  return made;
+}
+
+const P1 = "bp_0000000000000001";
+const P2 = "bp_0000000000000002";
+
+function inventory(tabs, { profiles, projects, overrides, active } = {}) {
   return serializeInventory({
     tabs,
-    profiles: new Map(profiles ?? [["s1", PROJECT]]),
+    profiles: new Map(profiles ?? [["s1", P1]]),
+    projects: new Map(projects ?? [["s1", PROJECT]]),
+    overrides: new Map(overrides ?? []),
     active: new Map(active ?? []),
   });
 }
@@ -30,7 +44,8 @@ describe("what the inventory remembers", () => {
     );
     expect(doc.version).toBe(INVENTORY_VERSION);
     expect(doc.scopes.s1).toEqual({
-      profileKey: PROJECT,
+      profileId: P1,
+      projectKey: PROJECT,
       activeTabId: "b",
       tabs: [
         { id: "a", url: "https://one.example/", title: "One", openedBy: "human", viewport: { width: 390, height: 844 } },
@@ -75,30 +90,104 @@ describe("what a restore accepts", () => {
         { scopeKey: "s1", id: "b", url: "https://two.example/", title: "Two", openedBy: "agent", viewport: { width: 768, height: 1024 } },
         { scopeKey: "s2", id: "c", url: "https://three.example/", title: "Three", openedBy: "agent" },
       ],
-      { profiles: [["s1", PROJECT], ["s2", "none"]], active: [["s1", "a"], ["s2", "c"]] },
+      {
+        profiles: [["s1", P1], ["s2", P2]],
+        projects: [["s1", PROJECT], ["s2", "none"]],
+        active: [["s1", "a"], ["s2", "c"]],
+      },
     );
-    const scopes = parseInventory(JSON.parse(JSON.stringify(doc)), mapping);
+    const store = registry();
+    const one = store.create({ label: "One" });
+    const two = store.create({ label: "Two" });
+    expect([one.id, two.id]).toEqual([P1, P2]);
+    const scopes = parseInventory(JSON.parse(JSON.stringify(doc)), store);
     expect(scopes).toEqual([
       {
         scopeKey: "s1",
-        profileKey: PROJECT,
+        profile: store.get(P1),
+        projectKey: PROJECT,
+        overridden: false,
         activeTabId: "a",
         tabs: [
           { id: "a", url: "https://one.example/", title: "One", openedBy: "human" },
           { id: "b", url: "https://two.example/", title: "Two", openedBy: "agent", viewport: { width: 768, height: 1024 } },
         ],
       },
-      { scopeKey: "s2", profileKey: "none", activeTabId: "c", tabs: [{ id: "c", url: "https://three.example/", title: "Three", openedBy: "agent" }] },
+      {
+        scopeKey: "s2",
+        profile: store.get(P2),
+        projectKey: "none",
+        overridden: false,
+        activeTabId: "c",
+        tabs: [{ id: "c", url: "https://three.example/", title: "Three", openedBy: "agent" }],
+      },
     ]);
   });
 
+  test("a v1 inventory restores through the profile ladder, onto the cookie jar its project already had", () => {
+    const store = registry();
+    const scopes = parseInventory(
+      {
+        version: 1,
+        scopes: {
+          s1: { profileKey: PROJECT, activeTabId: "a", tabs: [{ id: "a", url: "https://one.example/", title: "One" }] },
+          s2: { profileKey: "not-a-project", tabs: [{ id: "b", url: "https://two.example/" }] },
+        },
+      },
+      store,
+    );
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0].projectKey).toBe(PROJECT);
+    // The partition is EXACTLY the pre-profile one: nothing was copied.
+    expect(scopes[0].profile.partition).toBe(`persist:telar-project-${PROJECT.slice("project_".length)}`);
+    // And the ladder recorded the metadata move for the caches that follow it.
+    expect(store.migrations).toEqual([]);
+  });
+
+  test("a scope whose profile the registry no longer has is dropped, never rehomed", () => {
+    const store = registry();
+    store.create({ label: "Kept" });
+    const scopes = parseInventory(
+      {
+        version: INVENTORY_VERSION,
+        scopes: {
+          kept: { profileId: P1, activeTabId: "a", tabs: [{ id: "a", url: "https://kept.example/" }] },
+          dangling: { profileId: "bp_00000000000000ff", tabs: [{ id: "b", url: "https://gone.example/" }] },
+        },
+      },
+      store,
+    );
+    expect(scopes.map((scope) => scope.scopeKey)).toEqual(["kept"]);
+  });
+
+  test("a tab remembers its own profile, so a session that switched identities comes back with both", () => {
+    const store = registry();
+    store.create({ label: "One" });
+    store.create({ label: "Two" });
+    const doc = inventory(
+      [
+        { scopeKey: "s1", id: "old", url: "https://one.example/", title: "One", openedBy: "human", profileId: P1 },
+        { scopeKey: "s1", id: "new", url: "https://two.example/", title: "Two", openedBy: "agent", profileId: P2 },
+        { scopeKey: "s1", id: "gone", url: "https://three.example/", title: "Three", openedBy: "agent", profileId: "bp_00000000000000ff" },
+      ],
+      { profiles: [["s1", P2]], overrides: [["s1", P2]] },
+    );
+    const scopes = parseInventory(JSON.parse(JSON.stringify(doc)), store);
+    expect(scopes[0].overridden).toBe(true);
+    expect(scopes[0].profile.id).toBe(P2);
+    expect(scopes[0].tabs.map((tab) => tab.profileId)).toEqual([P1, P2, undefined]);
+  });
+
   test("a hand-edited file cannot smuggle an extension page, a duplicate id, a bad viewport, or an unmappable profile", () => {
+    const store = registry();
+    store.create({ label: "One" });
+    store.create({ label: "Two" });
     const scopes = parseInventory(
       {
         version: INVENTORY_VERSION,
         scopes: {
           good: {
-            profileKey: PROJECT,
+            profileId: P1,
             activeTabId: "zzz",
             tabs: [
               { id: "a", url: "chrome-extension://abc/unlock.html", title: "Unlock" },
@@ -108,23 +197,24 @@ describe("what a restore accepts", () => {
               { id: "", url: "https://noid.example/" },
             ],
           },
-          legacyGrab: { profileKey: "legacy", tabs: [{ id: "x", url: "https://x.example/" }] },
-          wrongShape: { profileKey: OTHER, tabs: [{ id: "y", url: "https://y.example/" }] },
-          "": { profileKey: OTHER, tabs: [{ id: "z", url: "https://z.example/" }] },
+          legacyGrab: { profileId: "legacy", tabs: [{ id: "x", url: "https://x.example/" }] },
+          wrongShape: { profileId: P2, tabs: [{ id: "y", url: "https://y.example/" }] },
+          "": { profileId: P2, tabs: [{ id: "z", url: "https://z.example/" }] },
         },
       },
-      mapping,
+      store,
     );
     expect(scopes).toEqual([
-      { scopeKey: "good", profileKey: PROJECT, activeTabId: "b", tabs: [{ id: "b", url: "https://ok.example/", title: "ok", openedBy: "agent" }] },
-      { scopeKey: "wrongShape", profileKey: OTHER, activeTabId: "y", tabs: [{ id: "y", url: "https://y.example/", title: "New tab", openedBy: "agent" }] },
+      { scopeKey: "good", profile: store.get(P1), overridden: false, activeTabId: "b", tabs: [{ id: "b", url: "https://ok.example/", title: "ok", openedBy: "agent" }] },
+      { scopeKey: "wrongShape", profile: store.get(P2), overridden: false, activeTabId: "y", tabs: [{ id: "y", url: "https://y.example/", title: "New tab", openedBy: "agent" }] },
     ]);
   });
 
   test("an unknown version, a null document, or a non-object is nothing to restore", () => {
-    expect(parseInventory(null, mapping)).toEqual([]);
-    expect(parseInventory({ version: 99, scopes: { s: { profileKey: PROJECT, tabs: [{ id: "a", url: "https://a.example/" }] } } }, mapping)).toEqual([]);
-    expect(parseInventory("nonsense", mapping)).toEqual([]);
+    const store = registry();
+    expect(parseInventory(null, store)).toEqual([]);
+    expect(parseInventory({ version: 99, scopes: { s: { profileId: P1, tabs: [{ id: "a", url: "https://a.example/" }] } } }, store)).toEqual([]);
+    expect(parseInventory("nonsense", store)).toEqual([]);
   });
 });
 
