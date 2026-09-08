@@ -15,7 +15,7 @@
     "test:desktop:unit": "bun test ./browser-manager.test.js ./external-links.test.js ./browser-control-server.test.js ./window-chrome.test.js ./packaging.test.js ./extension-compat.test.js ./private-interaction.test.js ./extension-host.test.js ./browser-profiles.test.js ./browser-tab-store.test.js ./browser-suggestions.test.js",
     "test:desktop:smoke": "electron . --smoke",
     "test:desktop:e2e": "bun ./desktop-e2e-launcher.js",
-    "test:desktop:browser": "electron ./browser-manager.electron-test.js",
+    "test:desktop:browser": "env -u ELECTRON_RUN_AS_NODE electron ./browser-manager.electron-test.js",
     "test:desktop:fit-zoom": "env -u ELECTRON_RUN_AS_NODE electron ./browser-fit-zoom.electron-test.js",
     "test:desktop:persistence": "env -u ELECTRON_RUN_AS_NODE electron ./browser-persistence.electron-test.js",
     "test:desktop:credentials": "env -u ELECTRON_RUN_AS_NODE electron ./credential-frames.electron-test.js",

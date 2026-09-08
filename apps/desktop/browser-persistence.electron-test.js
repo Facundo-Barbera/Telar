@@ -349,7 +349,11 @@ async function main() {
     assert(restored.tabs.length === 2, `expected 2 restored tabs, got ${restored.tabs.length}`);
     assert(restored.tabs.every((t) => t.sleeping), "restored tabs must be sleeping (no eager navigation)");
     assert(restored.tabs[0].active && restored.tabs[0].url.endsWith("?page=landed"), "active tab / order not restored");
-    assert(restored.tabs[1].viewport.preset === "tablet", "per-tab viewport not restored");
+    // The resize above was applied to `activeTab("s1")` — which is the tab the
+    // HUMAN is on (index 0), not the one the agent just opened: an agent's new
+    // tab deliberately does not take the screen. Asserting index 1 here was
+    // reading the wrong tab and had been failing since fit mode landed.
+    assert(restored.tabs[0].viewport.preset === "tablet", "per-tab viewport not restored");
     assert(manager.profileOf("s1") === PROJECT && manager.profileOf("s2") === "none", "profiles not restored");
     assert(manager.state("s2").tabs.length === 1, "the extension page came back");
     assert(manager.tabs.every((t) => !t.view), "a restore navigated something at startup");
