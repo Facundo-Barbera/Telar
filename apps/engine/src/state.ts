@@ -134,7 +134,7 @@ import {
 } from "@telar/engine-client";
 import { atomicWrite } from "./atomic";
 import { withComputerUse, type ResolvedComputerUse } from "./computer-use";
-import { findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
+import { confirmProjectIcon, confirmProjectIconSync, findProjectIcon, findProjectIconAsync, type ProjectIcon } from "./project-icon";
 import { listWorkspaceFiles, listWorkspaceFilesAsync, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, writeWorkspaceFile } from "./files";
 import {
   addSubtask as addSpoolSubtask,
@@ -3882,22 +3882,97 @@ export class EngineStore {
   }
 
   /**
-   * The project's icon, found in its checkout and cached for a minute.
+   * The project's icon, found in its checkout and cached.
    *
-   * A TTL CACHE because `listProjects` is on the sidebar's poll path and the
-   * find is a dozen stats per project. In memory like the caches above: it
-   * describes files in somebody's working tree, which change without telling
-   * the engine — sixty seconds is the stated staleness bound.
+   * A CACHE, BECAUSE THE FIND IS NOT FREE. `listProjects` is on the sidebar's
+   * poll path and the metadata refresh below runs every ten seconds per
+   * project; resolving from scratch each time meant a hundred-odd `stat`s per
+   * project per poll, forever, to re-learn an answer that almost never
+   * changes.
+   *
+   * TWO TTLs, BECAUSE THE TWO ANSWERS AGE DIFFERENTLY. "This file is the
+   * icon" stays true for as long as the file does, and a HIT IS CONFIRMED
+   * WITH ONE `stat` rather than trusted — which is what makes a REPLACED icon
+   * visible on the very next poll (the etag is derived from mtime and size, so
+   * the confirmation re-derives it) and a DELETED one fall back at once
+   * instead of leaving the serve route reading a path that is gone. "This
+   * project has no icon" is the answer a person is most likely to be in the
+   * middle of falsifying — they just added `public/favicon.ico` and are
+   * waiting to see it — so it is held for seconds, not minutes.
+   *
+   * `resolvedAt` IS NOT `at`, AND CONFIRMING NEVER MOVES IT. A confirmation
+   * proves the file it already knows about is still there; it cannot see a
+   * NEW file that now outranks it — a `.telar/icon.svg` added beside the
+   * `favicon.ico` currently winning, or an `index.html` whose href moved to a
+   * different file. If a confirmed hit refreshed the discovery clock, the
+   * sidebar's ten-second poll would keep resetting a five-minute TTL and the
+   * full search would never run again: the higher-priority icon would stay
+   * invisible for as long as the old one existed. So the discovery deadline is
+   * measured from the last FULL resolution and nothing else touches it.
+   *
+   * Bounded, because it is keyed by project id and nothing evicts on
+   * unregistration alone; oldest-first, which for a poll-driven map is close
+   * enough to least-recently-used and costs no bookkeeping.
    */
-  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; at: number }>();
+  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; resolvedAt: number }>();
+  private static readonly ICON_TTL_FOUND = 300_000;
+  private static readonly ICON_TTL_MISSING = 15_000;
+  private static readonly ICON_CACHE_CAPACITY = 512;
+
+  /** Record a FULL resolution. Starts the discovery clock. */
+  private rememberProjectIcon(projectId: string, icon: ProjectIcon | undefined): ProjectIcon | undefined {
+    this.projectIconCache.delete(projectId);
+    this.projectIconCache.set(projectId, { ...(icon ? { icon } : {}), resolvedAt: this.now() });
+    while (this.projectIconCache.size > EngineStore.ICON_CACHE_CAPACITY) {
+      const oldest = this.projectIconCache.keys().next();
+      if (oldest.done) break;
+      this.projectIconCache.delete(oldest.value);
+    }
+    return icon;
+  }
+
+  /** Record a CONFIRMATION of the icon already known. Deliberately leaves
+   *  `resolvedAt` alone — see the note above. */
+  private refreshProjectIcon(projectId: string, icon: ProjectIcon): ProjectIcon {
+    const cached = this.projectIconCache.get(projectId);
+    if (cached) cached.icon = icon;
+    return icon;
+  }
+
+  /** The cached answer, or `undefined` when the cache cannot speak — which is
+   *  NOT the same as "no icon" and is why this returns a wrapper. */
+  private cachedProjectIcon(projectId: string): { icon?: ProjectIcon } | undefined {
+    const cached = this.projectIconCache.get(projectId);
+    if (!cached) return undefined;
+    const age = this.now() - cached.resolvedAt;
+    if (cached.icon) return age < EngineStore.ICON_TTL_FOUND ? { icon: cached.icon } : undefined;
+    return age < EngineStore.ICON_TTL_MISSING ? {} : undefined;
+  }
 
   private projectIcon(project: Pick<Project, "id" | "root">): ProjectIcon | undefined {
-    const cached = this.projectIconCache.get(project.id);
-    const at = this.now();
-    if (cached && at - cached.at < 60_000) return cached.icon;
-    const icon = findProjectIcon(project.root);
-    this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at });
-    return icon;
+    const cached = this.cachedProjectIcon(project.id);
+    if (cached) {
+      if (!cached.icon) return undefined;
+      const confirmed = confirmProjectIconSync(cached.icon);
+      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
+    }
+    return this.rememberProjectIcon(project.id, findProjectIcon(project.root));
+  }
+
+  private async projectIconAsync(project: Pick<Project, "id" | "root">): Promise<ProjectIcon | undefined> {
+    const cached = this.cachedProjectIcon(project.id);
+    if (cached) {
+      if (!cached.icon) return undefined;
+      const confirmed = await confirmProjectIcon(cached.icon);
+      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
+    }
+    return this.rememberProjectIcon(project.id, await findProjectIconAsync(project.root));
+  }
+
+  /** Forget what was found for a project, so the next read resolves afresh.
+   *  Called wherever the engine's own idea of the project changes under it. */
+  private forgetProjectIcon(projectId: string): void {
+    this.projectIconCache.delete(projectId);
   }
 
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
@@ -3911,19 +3986,32 @@ export class EngineStore {
 
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
     const project = this.getProject(projectId);
-    const cached = this.projectIconCache.get(project.id);
-    const icon = cached && this.now() - cached.at < 60_000
-      ? cached.icon : await findProjectIconAsync(project.root);
+    const icon = await this.projectIconAsync(project);
     if (!icon) throw new EngineStateError("not_found", "this project has no icon");
     return icon;
   }
 
-  listProjects(): Project[] {
+  /**
+   * The registered projects.
+   *
+   * REMOVED ONES ARE NOT REGISTERED. Their records stay in the file so a
+   * restore can give back the same id and settings, but they are absent from
+   * this list — which is the list every picker, the sidebar and the
+   * new-session surfaces read, so removal is complete without a single one of
+   * them learning a new concept. `includeRemoved` exists for the one screen
+   * that has to name a removed project in order to offer to put it back.
+   */
+  listProjects(options: { includeRemoved?: boolean } = {}): Project[] {
     const registry = readJson(this.paths.projects);
     if (registry === undefined) return [];
-    return structuredClone(parseRegistry(registry).projects).map((project) => {
-      return { ...project, ...this.projectMetadata(project) };
-    });
+    return structuredClone(parseRegistry(registry).projects)
+      .filter((project) => options.includeRemoved || project.removedAt === undefined)
+      .map((project) => {
+        // A removed project's checkout is not polled: it is not on any surface
+        // that shows a branch or an icon, and a removed row must not keep a
+        // `git rev-parse` running against somebody's disk every ten seconds.
+        return project.removedAt === undefined ? { ...project, ...this.projectMetadata(project) } : project;
+      });
   }
 
   /** Sidebar metadata refreshes off the request path. Cold rows appear immediately;
@@ -3942,7 +4030,10 @@ export class EngineStore {
       const current = entry;
       current.pending = Promise.all([
         this.asyncGit(project.root, ["rev-parse", "--abbrev-ref", "HEAD"], { timeoutMs: 5_000 }),
-        findProjectIconAsync(project.root),
+        // THROUGH THE CACHE, not around it. This runs every ten seconds per
+        // project; resolving from scratch here made the cache above dead
+        // weight and re-walked every checkout on the poll path.
+        this.projectIconAsync(project),
       ]).then(([head, icon]) => {
         if (this.projectMetadataCache.get(project.id) !== current) return;
         const branch = head.status === 0 ? head.stdout.trim() : "";
@@ -3950,7 +4041,6 @@ export class EngineStore {
           ...(branch && branch !== "HEAD" ? { branch } : {}),
           ...(icon ? { icon: icon.etag } : {}),
         };
-        this.projectIconCache.set(project.id, { ...(icon ? { icon } : {}), at: this.now() });
       }).catch(() => {
         // A stalled checkout must not hold up the registry or lose its row.
       }).finally(() => {
@@ -3977,9 +4067,31 @@ export class EngineStore {
     const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const id = input.id ?? `project_${crypto.randomUUID().replaceAll("-", "")}`;
+    /**
+     * REGISTERING A REMOVED PROJECT'S CHECKOUT RESTORES IT, rather than minting
+     * a stranger with the same path.
+     *
+     * The match is on the canonical root, because that is what the person is
+     * actually doing: pointing Telar at this folder again. Giving them a new id
+     * would leave every session that ran here bound to an id nothing resolves,
+     * their MCP servers scoped to it, and their browser profile keyed to it —
+     * three silent losses from an action that reads like an undo. So the record
+     * comes back whole: same id, same name unless a new one was typed, same
+     * data-science and LaTeX blocks.
+     */
+    const tombstone = parsed.projects.find((project) => project.root === projectRoot && project.removedAt !== undefined);
+    if (tombstone && (input.id === undefined || input.id === tombstone.id)) {
+      delete tombstone.removedAt;
+      tombstone.name = input.name.trim();
+      tombstone.updatedAt = this.now();
+      atomicWrite(this.paths.projects, parsed);
+      this.forgetProjectIcon(tombstone.id);
+      this.projectMetadataCache.delete(tombstone.id);
+      return structuredClone(tombstone);
+    }
     const existing = parsed.projects.find((project) => project.id === id || project.root === projectRoot);
     if (existing) {
-      if (existing.id === id && existing.root === projectRoot) return structuredClone(existing);
+      if (existing.id === id && existing.root === projectRoot && existing.removedAt === undefined) return structuredClone(existing);
       throw new EngineStateError("conflict", "project id or root is already registered");
     }
     const at = this.now();
@@ -3995,9 +4107,115 @@ export class EngineStore {
     atomicWrite(this.paths.projects, parsed);
     // A fresh registration must not inherit a stale "no icon" answer cached
     // for a project that briefly shared this id.
-    this.projectIconCache.delete(id);
+    this.forgetProjectIcon(id);
     this.projectMetadataCache.delete(id);
     return structuredClone(project);
+  }
+
+  /**
+   * PUT A PROJECT AWAY. Nothing on disk is touched, and nothing is thrown out.
+   *
+   * WHAT THIS IS: the reversible inverse of `registerProject`. The repository,
+   * its git metadata, every worktree cut from it, the journal of every session
+   * that ran on it and the browser profiles those sessions used all stay
+   * exactly where they are — and so does the REGISTRATION RECORD, marked with
+   * `removedAt`. Telar stops offering the project; it does not forget it.
+   *
+   * WHY A TOMBSTONE RATHER THAN A SPLICE. Three things in this engine are
+   * keyed by a project id and outlive any one registration: a session's
+   * `projectId`, an MCP server's scope, and a browser profile's binding.
+   * Deleting the row and minting a new id on the way back in would silently
+   * strand all three — the person would point at the same folder, get a different
+   * project, and find their logged-in browser profile and their servers gone.
+   * Keeping the record makes restoring an actual undo.
+   *
+   * WHY IT REFUSES WITH WORK IN FLIGHT. A worker resolves its project by id on
+   * every step, so putting the registration away under a running turn turns a
+   * live conversation into a stream of refusals — silently, in a surface the
+   * person is not looking at. The ONLY alternatives are stopping their work or
+   * letting it break, and neither is something a settings row should do
+   * without being asked.
+   *
+   * WHAT COUNTS AS IN FLIGHT, stated rather than guessed at: every turn state
+   * that is not terminal (`queued`, `claimed`, `running`, `steering`), plus
+   * `ambiguous` — whose whole meaning is that the engine does not know whether
+   * a provider run is still out there, and a "maybe" is not a green light —
+   * plus any live backgrounded task, which by contract OUTLIVES the turn that
+   * started it and would otherwise walk straight past a turns-only check.
+   *
+   * Idle sessions keep working as READS while the project is away: their
+   * history, diffs and files all still resolve. What they cannot do is start
+   * new work — see `assertProjectAvailable`.
+   */
+  unregisterProject(projectId: string): { project: Project; sessions: number } {
+    assertId(projectId, "project id");
+    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registry);
+    const project = parsed.projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw new EngineStateError("not_found", "project does not exist");
+    if (project.removedAt !== undefined) throw new EngineStateError("conflict", "this project is already removed");
+    const sessions = this.readSessions().filter((session) => session.projectId === projectId);
+    const busy = sessions.filter((session) => this.sessionHasWorkInFlight(session.id));
+    if (busy.length > 0) {
+      throw new EngineStateError(
+        "conflict",
+        `this project has ${busy.length === 1 ? "a session with work in flight" : `${busy.length} sessions with work in flight`} — let them finish or stop them first`,
+      );
+    }
+    project.removedAt = this.now();
+    project.updatedAt = project.removedAt;
+    atomicWrite(this.paths.projects, parsed);
+    this.forgetProjectIcon(projectId);
+    this.projectMetadataCache.delete(projectId);
+    return { project: structuredClone(project), sessions: sessions.length };
+  }
+
+  /** Put a removed project back without needing its path — the settings page's
+   *  Restore. Registering its checkout again does the same thing. */
+  restoreProject(projectId: string): Project {
+    assertId(projectId, "project id");
+    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registry);
+    const project = parsed.projects.find((candidate) => candidate.id === projectId);
+    if (!project) throw new EngineStateError("not_found", "project does not exist");
+    if (project.removedAt === undefined) return structuredClone(project);
+    delete project.removedAt;
+    project.updatedAt = this.now();
+    atomicWrite(this.paths.projects, parsed);
+    this.forgetProjectIcon(projectId);
+    this.projectMetadataCache.delete(projectId);
+    return structuredClone(project);
+  }
+
+  /**
+   * Whether a session still has something running, or something that might be.
+   *
+   * The turn states here are the NON-TERMINAL ones plus `ambiguous`; see
+   * `unregisterProject` for why "we do not know" is counted as busy. Live
+   * backgrounded tasks are checked separately because they are exactly the
+   * work a turn-state check misses: `TaskKind` says a backgrounded task
+   * continues after the turn that started it settles.
+   */
+  private sessionHasWorkInFlight(sessionId: string): boolean {
+    const unsettled: ReadonlySet<Turn["state"]> = new Set<Turn["state"]>(["queued", "claimed", "running", "steering", "ambiguous"]);
+    if (this.turns(sessionId).some((turn) => unsettled.has(turn.state))) return true;
+    return [...this.readTasks(sessionId).values()].some(isLiveTask);
+  }
+
+  /**
+   * REFUSE TO START NEW WORK ON A PUT-AWAY PROJECT.
+   *
+   * Reading stays open — history, diffs, files and the session's own record all
+   * still answer, which is what keeps a removed project's past coherent instead
+   * of blank. This guards the three places where new work BEGINS: a new
+   * session, a new turn (which is also how a peer's wake arrives, so a
+   * subscription firing later cannot quietly resume a provider on a project
+   * the person put away), and a settings change (frozen, so what comes back on
+   * restore is what was put away).
+   */
+  private assertProjectAvailable(projectId: string): void {
+    if (this.getProject(projectId).removedAt === undefined) return;
+    throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
   }
 
   getProject(projectId: string): Project {
@@ -4022,6 +4240,11 @@ export class EngineStore {
     const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
     if (index < 0) throw new EngineStateError("not_found", "project does not exist");
     const current = parsed.projects[index]!;
+    // A removed project's settings are FROZEN, so what comes back on restore is
+    // exactly what was put away.
+    if (current.removedAt !== undefined) {
+      throw new EngineStateError("conflict", "this project was removed from Telar; restore it to change its settings");
+    }
     const next: Project = { ...current, updatedAt: this.now() };
     if (patch.dataScience === null) {
       delete next.dataScience;
@@ -5082,6 +5305,7 @@ export class EngineStore {
   }): Session {
     if (input.id !== undefined) assertId(input.id, "session id");
     const project = this.getProject(input.projectId);
+    this.assertProjectAvailable(input.projectId);
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
     const existing = readJson(metadata);
@@ -5688,6 +5912,16 @@ export class EngineStore {
       if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
       return { turn: structuredClone(known), replayed: true };
     }
+    /**
+     * NO NEW WORK ON A PUT-AWAY PROJECT — and this is the line that makes that
+     * true for the turns nobody typed. A peer's subscription firing an hour
+     * from now arrives here as an `origin: "session"` wake, and without this it
+     * would start a provider on a project the person removed. `fireSubscriptions`
+     * already treats a `conflict` as "the subscriber cannot take this" and
+     * writes the reason to that session's own journal, so the wake is dropped
+     * visibly rather than lost.
+     */
+    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
     /**
      * A MESSAGE WHILE A TURN RUNS IS A STEER, not a queued follow-up. This
      * went through three shapes: a conflict (the human waited), then a queue

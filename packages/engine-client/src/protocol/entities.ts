@@ -354,6 +354,23 @@ export const Project = z.object({
    * lives in somebody's working tree and changes without telling the engine.
    */
   icon: z.string().min(1).max(64).optional(),
+  /**
+   * WHEN THIS REGISTRATION WAS PUT AWAY, if it was.
+   *
+   * Removing a project from Telar is REVERSIBLE and keeps this record whole:
+   * the id, the name, the checkout path and every opt-in block below stay
+   * exactly as they were, and only this timestamp is added. That is what makes
+   * restoring the same folder give back the SAME project rather than a
+   * stranger wearing its name — sessions store a project id, MCP servers are
+   * scoped by one, and browser profiles are keyed by one, so a new id on
+   * re-registration would orphan all three.
+   *
+   * ABSENT FROM `listProjects` BY DEFAULT: a removed project is gone from every
+   * picker, the sidebar and the new-session surfaces, and the engine refuses to
+   * start new work on it. `?includeRemoved=1` is how the one surface that has
+   * to name it — its own settings page, offering to put it back — asks.
+   */
+  removedAt: Timestamp.optional(),
   /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
