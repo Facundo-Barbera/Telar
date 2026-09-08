@@ -649,27 +649,34 @@ function realConfinedSync(icon: ProjectIcon): string | undefined {
  * An open descriptor on the icon's own file, with the check-to-use window shut.
  *
  * CHECKING A PATH AND THEN OPENING IT IS TWO OPERATIONS, and a working tree is
- * writable between them — `realpath` can say "a regular file, inside the
- * checkout" and the thing that gets opened a moment later can be a symlink
- * somebody just put there. Two measures close that:
+ * writable between them. Three measures close that, and each catches something
+ * the others do not:
  *
- *   `O_NOFOLLOW` makes the open itself fail if the FINAL component is a
- *   symlink, so the swapped-in link cannot be opened at all rather than being
- *   followed out of the checkout. (The finder is free to follow links on the
- *   way in — a repository keeping its assets behind one is ordinary — which is
- *   why the stored path is a realpath and why refusing links HERE costs
- *   nothing.)
+ *   `O_NOFOLLOW` makes the open fail if the FINAL component is a symlink, so a
+ *   link swapped in under the icon's own name cannot be opened at all. (The
+ *   finder is free to follow links on the way IN — a repository keeping its
+ *   assets behind one is ordinary — which is why the stored path is a realpath
+ *   and why refusing links here costs nothing.)
  *
- *   Comparing the descriptor's identity with `lstat` of the same path
- *   afterwards proves the file that was opened is still the file that path
- *   names. This is what catches a swap that lands in the gap between the two
- *   calls: the open succeeds against the old inode, and the mismatch is
- *   visible immediately after.
+ *   RE-RESOLVING THE WHOLE PATH AFTER THE OPEN is what catches a swapped
+ *   PARENT. `O_NOFOLLOW` guards one component; replacing a DIRECTORY on the
+ *   way to the icon defeats it completely, because the open follows the new
+ *   parent without complaint and the descriptor and an `lstat` of the same
+ *   path then agree with each other — they are both looking through it.
+ *   Nothing taken BEFORE the open can see this: a pre-open check describes a
+ *   tree that no longer exists. Only asking where the path leads now, and
+ *   confining that answer, does.
  *
- * Everything above the final component is already resolved: `path` is a
- * realpath, so no parent in it is a link at the time it was taken.
+ *   COMPARING THE DESCRIPTOR'S IDENTITY with an `lstat` of that re-resolved
+ *   path ties the two together, so what is read is provably the file the
+ *   confined path names rather than merely a file that was there once.
+ *
+ * Anything unexpected fails closed — the caller resolves the project again
+ * from the top, and the worst case is a 404 and one retry.
  */
 async function openConfined(icon: ProjectIcon): Promise<{ handle: fs.promises.FileHandle; path: string } | undefined> {
+  // A cheap early exit for the ordinary "it is simply gone" case. It proves
+  // nothing about the open that follows; the checks below do that.
   const real = await realConfined(icon);
   if (!real) return undefined;
   let handle: fs.promises.FileHandle;
@@ -679,16 +686,21 @@ async function openConfined(icon: ProjectIcon): Promise<{ handle: fs.promises.Fi
     return undefined;
   }
   try {
-    const [opened, named] = await Promise.all([handle.stat(), fs.promises.lstat(real)]);
+    const settled = await fs.promises.realpath(real);
+    if (settled !== real || !confined(settled, icon.root)) {
+      await handle.close();
+      return undefined;
+    }
+    const [opened, named] = await Promise.all([handle.stat(), fs.promises.lstat(settled)]);
     if (opened.dev !== named.dev || opened.ino !== named.ino || !named.isFile()) {
       await handle.close();
       return undefined;
     }
+    return { handle, path: settled };
   } catch {
     await handle.close();
     return undefined;
   }
-  return { handle, path: real };
 }
 
 /* --- the one primitive both drivers need that `fs` does not offer directly --- */

@@ -456,3 +456,31 @@ test("a file exactly at the cap is served; one byte more is refused", async () =
   fs.writeFileSync(target, Buffer.concat([atCap, Buffer.from([0x7a])]));
   expect(await readProjectIconBytes(icon)).toBeUndefined();
 });
+
+test("a PARENT DIRECTORY swapped for an external symlink in the same window is refused", async () => {
+  // O_NOFOLLOW GUARDS ONE COMPONENT — the last one. Replacing a DIRECTORY on
+  // the way to the icon defeats it: the open follows the new parent happily,
+  // and the descriptor and an lstat of the same path then agree with each
+  // other because both resolve through it. The only thing that catches this is
+  // re-resolving the whole path after the open and confining it again.
+  const project = root();
+  const elsewhere = root();
+  put(project, "assets/icon.png", png("inside-bytes"));
+  put(elsewhere, "assets/icon.png", png("outside-bytes"));
+  const icon = findProjectIcon(project)!;
+  expect(icon.path.includes(path.join("assets", "icon.png"))).toBe(true);
+
+  const swapParent = () => {
+    fs.rmSync(path.join(project, "assets"), { recursive: true, force: true });
+    fs.symlinkSync(path.join(elsewhere, "assets"), path.join(project, "assets"));
+  };
+
+  const served = await racing("realpath", swapParent, () => readProjectIconBytes(icon));
+  expect(served).toBeUndefined();
+
+  // Same window on the confirmation path.
+  fs.rmSync(path.join(project, "assets"));
+  put(project, "assets/icon.png", png("inside-bytes"));
+  const confirmed = await racing("realpath", swapParent, () => confirmProjectIcon(icon));
+  expect(confirmed).toBeUndefined();
+});
