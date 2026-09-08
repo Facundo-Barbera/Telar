@@ -429,9 +429,28 @@ export class EngineWorker {
        * conversation would not start.
        */
       const cap = Math.max(1, this.options.concurrency ?? defaultWorkerConcurrency());
-      while (this.activeClaims.size < cap) {
+      while (this.activeClaims.size < cap && !this.stopped) {
         const { claim } = await this.options.client.claimTurn(this.options.workerId);
         if (!claim) break;
+        /**
+         * THE SHUTDOWN CAN LAND INSIDE THAT AWAIT.
+         *
+         * A claim is a round trip, and `stop()` runs on its own schedule: it
+         * can set `stopped`, abort what it knows about and snapshot `inFlight`
+         * entirely between this request and its response. Starting the run
+         * anyway would put a turn into `running` on a worker that is already
+         * dismantling itself — after the only wait that would have settled it,
+         * so it lands on the next boot as `ambiguous` for a turn that never
+         * reached a provider at all.
+         *
+         * LEFT `claimed`, DELIBERATELY. `markTurnRunning` has not been called,
+         * and `worker.ts` orders it before the driver is constructed precisely
+         * so `claimed` PROVES no provider was spawned — which is why recovery
+         * requeues such a turn instead of holding it for a human. Handing it
+         * back by doing nothing is the safest of the three options, and the
+         * only one that needs no new engine verb.
+         */
+        if (this.stopped) break;
         // Held so `stop()` can wait for the run to unwind and record its
         // interruption, rather than aborting into the dark.
         const run = this.execute(claim);
