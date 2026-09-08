@@ -2899,3 +2899,98 @@ test("browserOpen opens an http(s) page as the human on the session's browser an
   await expect(store.browserOpen("session_one", "file:///etc/passwd")).rejects.toThrow(/only http and https/);
   await expect(store.browserOpen("session_one", "not a url")).rejects.toThrow(/not a URL/);
 });
+
+test("a clean shutdown holds the message it was still carrying, and an ordinary failure does not", () => {
+  /**
+   * THE ROUTE AROUND THE HOLD. `recover()` marks held work when it finds an
+   * AMBIGUOUS turn — but a clean quit now settles its run as `interrupted`, so
+   * the next boot sees a terminal turn and marks nothing. Measured before the
+   * fix: the steer requeued by that settle was claimed on the next launch with
+   * nobody having re-read it, reached by the path that is supposed to be the
+   * careful one.
+   */
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor the parser" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  // Typed while it ran, so it is `steering` — promoted into the live turn and
+  // never delivered.
+  store.submitTurn("session_one", { runId: "run_steer", input: "also update the docs" });
+  expect(store.turns("session_one")[1]?.state).toBe("steering");
+
+  store.failTurn("session_one", "run_lost", claim.claim!.token, { code: "interrupted", message: "Telar shut down while this turn was running." });
+  // Requeued — never lost — AND held, because nobody was there to see it end.
+  expect(store.turns("session_one")[1]).toMatchObject({ state: "queued", held: { reason: "engine_restart" } });
+
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+  expect(rebooted.claimNextTurn("worker_two")).toBeUndefined();
+  rebooted.releaseHeldTurn("session_one", "run_steer");
+  expect(rebooted.claimNextTurn("worker_two")?.turn.runId).toBe("run_steer");
+
+  /**
+   * AN ORDINARY FAILURE IS THE OTHER CASE, deliberately. The person is there,
+   * watching, and the session is left idle; the message they just typed running
+   * next is what they expect, not something to re-approve.
+   */
+  const { store: crashed } = readyStore();
+  crashed.submitTurn("session_one", { runId: "run_crash", input: "Refactor" });
+  const crashClaim = crashed.claimTurn("session_one", "worker_one")!;
+  crashed.markRunning("session_one", "run_crash", crashClaim.claim!.token);
+  crashed.submitTurn("session_one", { runId: "run_after", input: "and the docs" });
+  crashed.failTurn("session_one", "run_crash", crashClaim.claim!.token, { code: "driver_failed", message: "the CLI died" });
+  expect(crashed.turns("session_one")[1]).toMatchObject({ state: "queued" });
+  expect(crashed.turns("session_one")[1]?.held).toBeUndefined();
+  expect(crashed.claimNextTurn("worker_two")?.turn.runId).toBe("run_after");
+});
+
+test("releasing checks the turn's state before its hold, and refuses a removed project", () => {
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  store.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+  rebooted.discardAmbiguousTurn("session_one", "run_lost");
+
+  /**
+   * THE STATE GUARD RAN ONLY WHEN THE TURN WAS UNHELD, so a terminal turn that
+   * still carried a stale `held` flag skipped it — and was reported as
+   * "released", which is a lie about a turn that has already ended.
+   */
+  const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+  const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+  const stale = queue.turns.find((turn: { runId: string }) => turn.runId === "run_held");
+  stale.state = "stopped";
+  stale.completedAt = 150;
+  fs.writeFileSync(queueFile, JSON.stringify(queue), "utf8");
+  const withStale = new EngineStore(stateRoot, () => 300);
+  expect(() => withStale.releaseHeldTurn("session_one", "run_held")).toThrow(/only a queued turn can be released/);
+
+  /**
+   * DEFENCE IN DEPTH, and worth being straight about: this pairing is currently
+   * UNREACHABLE through the API. `unregisterProject` refuses while a session has
+   * work in flight, and `sessionHasWorkInFlight` counts `queued` — which a held
+   * turn is — so a removed project cannot acquire one. Releasing nonetheless
+   * STARTS work, which is the thing `assertProjectAvailable` guards at the other
+   * two doors, and a gate that only holds because a neighbouring gate happens to
+   * hold is one refactor away from not holding. Built here by writing the state
+   * a future change might make reachable.
+   */
+  const { store: away, root: awayRoot } = readyStore();
+  away.submitTurn("session_one", { runId: "run_held", input: "before the crash" });
+  const awayFile = path.join(awayRoot, "sessions", "session_one", "queue.json");
+  const awayQueue = JSON.parse(fs.readFileSync(awayFile, "utf8"));
+  awayQueue.turns[0].held = { at: 100, reason: "engine_restart" };
+  fs.writeFileSync(awayFile, JSON.stringify(awayQueue), "utf8");
+  const registryFile = path.join(awayRoot, "projects.json");
+  const registry = JSON.parse(fs.readFileSync(registryFile, "utf8"));
+  registry.projects[0].removedAt = 150;
+  fs.writeFileSync(registryFile, JSON.stringify(registry), "utf8");
+
+  const awayBoot = new EngineStore(awayRoot, () => 300);
+  expect(() => awayBoot.releaseHeldTurn("session_one", "run_held")).toThrow(/removed from Telar/);
+  // ...and it is still held afterwards, rather than half-released by a throw.
+  expect(awayBoot.turns("session_one")[0]?.held).toBeDefined();
+});

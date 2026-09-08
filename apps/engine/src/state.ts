@@ -6437,6 +6437,26 @@ export class EngineStore {
     turn.updatedAt = at;
     turn.failure = { code: failure.code, message: failure.message.slice(0, 4_000) };
     const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+    /**
+     * A SHUTDOWN'S UNDELIVERED MESSAGES ARE HELD, like any other pre-crash
+     * backlog — and they were the one route around that rule.
+     *
+     * `recover()` marks the hold when it finds an AMBIGUOUS turn, which is what
+     * a lost run becomes when nobody settled it. But a clean quit now settles
+     * its run here, as `interrupted`, so the next boot sees a terminal turn,
+     * marks nothing, and claims the requeued steer immediately. Measured: a
+     * message typed while the lost turn was running was dispatched on the next
+     * launch with nobody having re-read it — exactly the thing the hold exists
+     * to prevent, reached by the path that was supposed to be the safe one.
+     *
+     * ONLY FOR `interrupted`. An ordinary failure happens with the person
+     * there, watching, and the session left idle: their in-flight message
+     * running next is what they are expecting. A shutdown means they walked
+     * away, and what they come back to should wait for them.
+     */
+    if (failure.code === "interrupted") {
+      for (const reverted of requeued) reverted.held = { at, reason: "engine_restart" };
+    }
     this.writeQueue(sessionId, queue);
     // A failed turn means the provider process died — background shells died
     // with it, whichever turn started them.
@@ -6588,16 +6608,30 @@ export class EngineStore {
    */
   releaseHeldTurn(sessionId: string, runId: string): Turn {
     assertId(runId, "run id");
+    const session = this.getSession(sessionId);
+    /**
+     * RELEASING IS STARTING WORK, so it answers to the same gate as submitting.
+     * Without this a message held since before the project was put away could
+     * be released into it — resuming a provider on a project the person removed
+     * from Telar, which is exactly what `assertProjectAvailable` exists to stop
+     * at the other two doors (a new session, a new turn).
+     */
+    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
     const queue = this.readQueue(sessionId);
     const turn = queue.turns.find((candidate) => candidate.runId === runId);
     if (!turn) throw new EngineStateError("not_found", "turn does not exist");
-    if (!turn.held) {
-      // Not an error worth throwing over if it is already runnable — but a turn
-      // that has since been stopped or run is a different thing entirely, and
-      // saying "released" about it would be a lie.
-      if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
-      return structuredClone(turn);
-    }
+    /**
+     * THE STATE IS CHECKED FIRST AND UNCONDITIONALLY.
+     *
+     * It used to live inside the `!turn.held` branch, so a turn that had since
+     * been stopped or run but still carried a stale `held` flag skipped the
+     * check entirely and was cheerfully "released" — reporting success about a
+     * terminal turn, and clearing a flag on it as if that meant something.
+     */
+    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
+    // Already runnable: nothing to do, and saying so is kinder than a conflict
+    // for a button pressed twice.
+    if (!turn.held) return structuredClone(turn);
     const at = this.now();
     delete turn.held;
     turn.updatedAt = at;
