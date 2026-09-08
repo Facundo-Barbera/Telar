@@ -300,6 +300,30 @@ describe("multi-tab additions", () => {
     expect(parseBrowserTabs("- 0: [Yours truly](https://a.example/) {opened-by=agent}")[0]?.agentFocus).toBeUndefined();
   });
 
+  test("a tab carries the profile it is signed into, and absent means unknown", () => {
+    const [tab] = parseBrowserTabs(
+      "- 0: (current) [Mail](https://mail.example/) {controller=idle, opened-by=agent, profile=bp_00000000000000a1, profile-label=Work%20%2F%20Ana, yours}",
+    );
+    expect(tab).toEqual({
+      index: 0,
+      title: "Mail",
+      url: "https://mail.example/",
+      active: true,
+      agentFocus: true,
+      profileId: "bp_00000000000000a1",
+      // Percent-encoded on the wire: a label is a person's free text inside a
+      // comma-separated suffix.
+      profileLabel: "Work / Ana",
+    });
+    // A host with no named profiles says nothing, and nothing is invented for
+    // it — the credential path treats this as "ask a human".
+    expect(parseBrowserTabs("- 0: [Mail](https://mail.example/) {opened-by=agent}")[0]?.profileId).toBeUndefined();
+    // A label that will not decode costs the label, never the identity.
+    const [broken] = parseBrowserTabs("- 0: [Mail](https://mail.example/) {profile=bp_00000000000000a1, profile-label=%E0%A4%A}");
+    expect(broken?.profileId).toBe("bp_00000000000000a1");
+    expect(broken?.profileLabel).toBeUndefined();
+  });
+
   test("every tool accepts tabId — a write may name a tab, and a bad index is still refused", () => {
     /**
      * REVERSED DELIBERATELY. Withholding `tabId` from writes was meant to keep

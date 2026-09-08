@@ -874,7 +874,12 @@ describe("the shared-browser interaction model — human input wins, agent defer
     expect(manager.state("s").tabs[0].controller).toBe("human");
     // `yours` rides in the same braces: the one tab is both what the human is
     // looking at and where the agent's calls land.
-    expect(textOf(await manager.callTool("s", "browser_tabs", { action: "list" }))).toMatch(/\{controller=human, opened-by=agent, yours\}/);
+    // The braces also carry the tab's profile now (the credential path binds
+    // to the identity of the page it types into), so this asserts the two
+    // control facts and `yours` rather than the exact suffix.
+    const listed = textOf(await manager.callTool("s", "browser_tabs", { action: "list" }));
+    expect(listed).toMatch(/\{controller=human, opened-by=agent,[^}]*\byours\}/);
+    expect(listed).toMatch(/profile=bp_[a-f0-9]{16}/);
     clock.t += 2_000;
     expect(manager.state("s").tabs[0].controller).toBe("idle");
     expect(typeof manager.handBack).toBe("undefined");
