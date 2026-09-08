@@ -35,6 +35,7 @@ import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
 import { computerUseStatus, grantComputerUseAccess, launchComputerUseHost, openComputerUseHost, resolveComputerUse } from "./computer-use";
 import { bearerIsValid } from "./http-auth";
 import { beginConnect, checkMcpHealth, completeConnect, NO_CLIENT_STRATEGY, probeMcpAuth } from "./mcp-oauth";
+import { readProjectIconBytes } from "./project-icon";
 import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
@@ -1952,23 +1953,23 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectIcon = /^\/v2\/projects\/([^/]+)\/icon$/.exec(url.pathname);
       if (request.method === "GET" && projectIcon) {
         const icon = await store.projectIconFileAsync(decodeURIComponent(projectIcon[1]));
-        // The file can go between the resolve and the read — a `git checkout`
-        // mid-request is enough. That is the same answer as "this project has
-        // no icon", and the avatar already falls back on it; a 500 would make
-        // an ordinary race look like a broken engine.
-        let bytes: Buffer;
-        try {
-          bytes = await fs.promises.readFile(icon.path);
-        } catch {
-          throw new HttpError(404, "not_found", "this project has no icon");
-        }
+        // REVALIDATED AT THE READ, not trusted from the record. The file can
+        // change or go between the resolve and the read — a `git checkout`
+        // mid-request is enough — and this is where the bytes leave the
+        // machine, so confinement, the size bound and the content type are all
+        // re-established against what is being sent. A file that no longer
+        // qualifies is the same answer as "this project has no icon", which
+        // the avatar already falls back on; a 500 would make an ordinary race
+        // look like a broken engine.
+        const served = await readProjectIconBytes(icon);
+        if (!served) throw new HttpError(404, "not_found", "this project has no icon");
         response.writeHead(200, {
-          "content-type": icon.contentType,
-          "content-length": bytes.byteLength,
+          "content-type": served.contentType,
+          "content-length": served.bytes.byteLength,
           "cache-control": "public, max-age=31536000, immutable",
-          etag: `"${icon.etag}"`,
+          etag: `"${served.etag}"`,
         });
-        response.end(bytes);
+        response.end(served.bytes);
         return;
       }
       /**

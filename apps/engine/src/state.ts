@@ -3852,18 +3852,29 @@ export class EngineStore {
    * middle of falsifying — they just added `public/favicon.ico` and are
    * waiting to see it — so it is held for seconds, not minutes.
    *
+   * `resolvedAt` IS NOT `at`, AND CONFIRMING NEVER MOVES IT. A confirmation
+   * proves the file it already knows about is still there; it cannot see a
+   * NEW file that now outranks it — a `.telar/icon.svg` added beside the
+   * `favicon.ico` currently winning, or an `index.html` whose href moved to a
+   * different file. If a confirmed hit refreshed the discovery clock, the
+   * sidebar's ten-second poll would keep resetting a five-minute TTL and the
+   * full search would never run again: the higher-priority icon would stay
+   * invisible for as long as the old one existed. So the discovery deadline is
+   * measured from the last FULL resolution and nothing else touches it.
+   *
    * Bounded, because it is keyed by project id and nothing evicts on
    * unregistration alone; oldest-first, which for a poll-driven map is close
    * enough to least-recently-used and costs no bookkeeping.
    */
-  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; at: number }>();
+  private readonly projectIconCache = new Map<string, { icon?: ProjectIcon; resolvedAt: number }>();
   private static readonly ICON_TTL_FOUND = 300_000;
   private static readonly ICON_TTL_MISSING = 15_000;
   private static readonly ICON_CACHE_CAPACITY = 512;
 
+  /** Record a FULL resolution. Starts the discovery clock. */
   private rememberProjectIcon(projectId: string, icon: ProjectIcon | undefined): ProjectIcon | undefined {
     this.projectIconCache.delete(projectId);
-    this.projectIconCache.set(projectId, { ...(icon ? { icon } : {}), at: this.now() });
+    this.projectIconCache.set(projectId, { ...(icon ? { icon } : {}), resolvedAt: this.now() });
     while (this.projectIconCache.size > EngineStore.ICON_CACHE_CAPACITY) {
       const oldest = this.projectIconCache.keys().next();
       if (oldest.done) break;
@@ -3872,12 +3883,20 @@ export class EngineStore {
     return icon;
   }
 
+  /** Record a CONFIRMATION of the icon already known. Deliberately leaves
+   *  `resolvedAt` alone — see the note above. */
+  private refreshProjectIcon(projectId: string, icon: ProjectIcon): ProjectIcon {
+    const cached = this.projectIconCache.get(projectId);
+    if (cached) cached.icon = icon;
+    return icon;
+  }
+
   /** The cached answer, or `undefined` when the cache cannot speak — which is
    *  NOT the same as "no icon" and is why this returns a wrapper. */
   private cachedProjectIcon(projectId: string): { icon?: ProjectIcon } | undefined {
     const cached = this.projectIconCache.get(projectId);
     if (!cached) return undefined;
-    const age = this.now() - cached.at;
+    const age = this.now() - cached.resolvedAt;
     if (cached.icon) return age < EngineStore.ICON_TTL_FOUND ? { icon: cached.icon } : undefined;
     return age < EngineStore.ICON_TTL_MISSING ? {} : undefined;
   }
@@ -3887,7 +3906,7 @@ export class EngineStore {
     if (cached) {
       if (!cached.icon) return undefined;
       const confirmed = confirmProjectIconSync(cached.icon);
-      if (confirmed) return this.rememberProjectIcon(project.id, confirmed);
+      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
     }
     return this.rememberProjectIcon(project.id, findProjectIcon(project.root));
   }
@@ -3897,7 +3916,7 @@ export class EngineStore {
     if (cached) {
       if (!cached.icon) return undefined;
       const confirmed = await confirmProjectIcon(cached.icon);
-      if (confirmed) return this.rememberProjectIcon(project.id, confirmed);
+      if (confirmed) return this.refreshProjectIcon(project.id, confirmed);
     }
     return this.rememberProjectIcon(project.id, await findProjectIconAsync(project.root));
   }

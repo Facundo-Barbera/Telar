@@ -27,6 +27,25 @@ afterEach(() => {
 });
 
 const png = (tail = "one"): Buffer => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from(tail)]);
+const ico = (tail = "one"): Buffer => Buffer.concat([Buffer.from([0x00, 0x00, 0x01, 0x00]), Buffer.from(tail)]);
+const svg = (tail = ""): Buffer => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1">${tail}</svg>`);
+
+/**
+ * How many paths the finder has resolved since the process started.
+ *
+ * The cache's whole justification is that a poll should not re-walk a
+ * checkout, and "it is cached" is only a claim until something counts. Every
+ * candidate probe goes through `realpathSync.native`, so wrapping it once is
+ * enough to tell a confirmation (one path) from a full resolution (the
+ * candidate list).
+ */
+let resolvedPaths = 0;
+const realpathNative = fs.realpathSync.native;
+fs.realpathSync.native = ((target: fs.PathLike, options?: never) => {
+  resolvedPaths += 1;
+  return realpathNative(target, options);
+}) as typeof fs.realpathSync.native;
+const reads = (): number => resolvedPaths;
 
 /** A store whose clock this test drives, so the TTLs are exercised rather than
  *  waited out. */
@@ -91,4 +110,78 @@ test("the async read agrees with the sync one against the same cache", async () 
   const { store, projectRoot } = ready();
   fs.writeFileSync(path.join(projectRoot, "icon.png"), png());
   expect(await store.projectIconFileAsync("project_one")).toEqual(store.projectIconFile("project_one"));
+});
+
+/* ------------------------------------------------------------------ *
+ * The discovery clock is not the confirmation clock
+ *
+ * A confirmation proves the file it ALREADY KNOWS is still there. It cannot
+ * see a new file that now outranks it. If confirming refreshed the discovery
+ * deadline, a ten-second poll would hold a five-minute TTL open forever and
+ * the full search would never run again.
+ * ------------------------------------------------------------------ */
+
+test("a higher-priority icon added later is found, however often the old one was polled", () => {
+  const { store, projectRoot, tick } = ready();
+  fs.writeFileSync(path.join(projectRoot, "favicon.ico"), ico());
+  const first = store.projectIconFile("project_one");
+  expect(first.path.endsWith("favicon.ico")).toBe(true);
+
+  // The sidebar's poll, for eleven minutes. Every one of these is a cache hit
+  // that confirms the same untouched file.
+  for (let elapsed = 0; elapsed < 660_000; elapsed += 10_000) {
+    tick(10_000);
+    expect(store.projectIconFile("project_one").path.endsWith("favicon.ico")).toBe(true);
+  }
+
+  // Now the project states its own choice, which outranks every convention.
+  fs.mkdirSync(path.join(projectRoot, ".telar"), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, ".telar/icon.svg"), svg());
+  // The old file is still there and still confirms, so only a full resolution
+  // can notice. Within one discovery TTL of polling, it must.
+  let found = false;
+  for (let i = 0; i < 32 && !found; i++) {
+    tick(10_000);
+    found = store.projectIconFile("project_one").path.endsWith(path.join(".telar", "icon.svg"));
+  }
+  expect(found).toBe(true);
+});
+
+test("a declared href that moves to a different file is picked up too", () => {
+  // Same failure, without an explicit icon: the source file still exists and
+  // the old target still exists, so nothing about the cached answer looks
+  // stale — only re-reading index.html finds the new href.
+  const { store, projectRoot, tick } = ready();
+  fs.mkdirSync(path.join(projectRoot, "public"), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, "public/old.svg"), svg("<rect/>"));
+  fs.writeFileSync(path.join(projectRoot, "public/new.svg"), svg("<circle/>"));
+  fs.writeFileSync(path.join(projectRoot, "index.html"), `<link rel="icon" href="/old.svg">`);
+  expect(store.projectIconFile("project_one").path.endsWith("old.svg")).toBe(true);
+
+  for (let elapsed = 0; elapsed < 600_000; elapsed += 10_000) {
+    tick(10_000);
+    store.projectIconFile("project_one");
+  }
+  fs.writeFileSync(path.join(projectRoot, "index.html"), `<link rel="icon" href="/new.svg">`);
+  let found = false;
+  for (let i = 0; i < 32 && !found; i++) {
+    tick(10_000);
+    found = store.projectIconFile("project_one").path.endsWith("new.svg");
+  }
+  expect(found).toBe(true);
+});
+
+test("polling does not re-walk the checkout on every hit — the cache still earns its keep", () => {
+  // The other half of the same bargain: confirmation must be cheap. A full
+  // resolution touches the candidate list; a confirmed hit touches one file.
+  const { store, projectRoot, tick } = ready();
+  fs.writeFileSync(path.join(projectRoot, "favicon.ico"), ico());
+  store.projectIconFile("project_one");
+  const before = reads();
+  for (let i = 0; i < 10; i++) {
+    tick(10_000);
+    store.projectIconFile("project_one");
+  }
+  // Ten polls resolve nothing: no candidate that does not exist is probed.
+  expect(reads() - before).toBeLessThan(10 * 5);
 });

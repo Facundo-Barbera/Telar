@@ -13,7 +13,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { candidatesForHref, confirmProjectIcon, extractIconHref, findProjectIcon, findProjectIconAsync } from "../src/project-icon";
+import { candidatesForHref, confirmProjectIcon, confirmProjectIconSync, extractIconHref, findProjectIcon, findProjectIconAsync, readProjectIconBytes } from "../src/project-icon";
 
 const roots: string[] = [];
 const root = (): string => {
@@ -249,4 +249,69 @@ test("the href parser reads both forms and ignores a rel without an href", () =>
   // ending the search.
   expect(extractIconHref(`links: [{ rel: "icon" }, { rel: "icon", href: "/d.png" }]`)).toBe("/d.png");
   expect(extractIconHref("nothing here")).toBeNull();
+});
+
+/* ------------------------------------------------------------------ *
+ * A cached answer is a memory, not a standing guarantee
+ *
+ * Everything a stored ProjectIcon asserts was true when it was resolved.
+ * Confirmation and serving both re-establish it, because between those two
+ * moments the file is somebody's working tree and can become anything.
+ * ------------------------------------------------------------------ */
+
+test("a cached PNG replaced by an SVG is re-typed, not served under the old type", async () => {
+  const project = root();
+  const target = put(project, "icon.png", png("one"));
+  const icon = findProjectIcon(project)!;
+  expect(icon.contentType).toBe("image/png");
+  fs.writeFileSync(target, svg("<rect/>"));
+  const confirmed = (await confirmProjectIcon(icon))!;
+  expect(confirmed.contentType).toBe("image/svg+xml");
+  expect(confirmed.etag).not.toBe(icon.etag);
+  expect(confirmProjectIconSync(icon)!.contentType).toBe("image/svg+xml");
+});
+
+test("a cached icon replaced by something that is not an image is refused", async () => {
+  const project = root();
+  const target = put(project, "icon.png", png("one"));
+  const icon = findProjectIcon(project)!;
+  fs.writeFileSync(target, "<!doctype html><title>whoops</title>");
+  expect(await confirmProjectIcon(icon)).toBeUndefined();
+  expect(confirmProjectIconSync(icon)).toBeUndefined();
+  expect(await readProjectIconBytes(icon)).toBeUndefined();
+});
+
+test("a cached icon replaced by a symlink out of the checkout is refused, not followed", async () => {
+  // The confinement check ran once, when the file was found. Without redoing
+  // it, swapping that file for a link to /etc/hosts publishes /etc/hosts —
+  // the record still says "this path was inside the checkout".
+  const project = root();
+  const outside = put(root(), "secret.png", png("outside-bytes"));
+  const target = put(project, "icon.png", png("inside"));
+  const icon = findProjectIcon(project)!;
+  expect((await readProjectIconBytes(icon))!.bytes.toString()).toContain("inside");
+  fs.rmSync(target);
+  fs.symlinkSync(outside, target);
+  expect(await confirmProjectIcon(icon)).toBeUndefined();
+  expect(confirmProjectIconSync(icon)).toBeUndefined();
+  expect(await readProjectIconBytes(icon)).toBeUndefined();
+});
+
+test("serving re-checks the size bound against the file being read", async () => {
+  const project = root();
+  const target = put(project, "icon.png", png("small"));
+  const icon = findProjectIcon(project)!;
+  expect(await readProjectIconBytes(icon)).toBeDefined();
+  // Grown past the bound since it was resolved: refused rather than truncated
+  // into bytes the etag does not describe.
+  fs.writeFileSync(target, Buffer.concat([png(), Buffer.alloc(1024 * 1024)]));
+  expect(await readProjectIconBytes(icon)).toBeUndefined();
+});
+
+test("serving a deleted icon answers undefined, which the route turns into a 404", async () => {
+  const project = root();
+  const target = put(project, "icon.png", png());
+  const icon = findProjectIcon(project)!;
+  fs.rmSync(target);
+  expect(await readProjectIconBytes(icon)).toBeUndefined();
 });

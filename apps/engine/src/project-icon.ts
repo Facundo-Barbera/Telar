@@ -60,6 +60,16 @@ import path from "node:path";
 export type ProjectIcon = {
   /** Absolute path, already realpath-confined under the project root. */
   path: string;
+  /**
+   * The confined root `path` was checked against, carried with the answer.
+   *
+   * WITHOUT IT, CONFINEMENT IS A ONE-TIME CLAIM. A cached icon is re-checked
+   * on every confirmation and again before its bytes are served, and both of
+   * those need to know what "inside" meant — otherwise the only proof that
+   * this file is still in the checkout is that it was, once, when it was
+   * found. Not on the wire: clients see `Project.icon`, which is the etag.
+   */
+  root: string;
   /** Opaque cache key; changes whenever the file does. */
   etag: string;
   contentType: string;
@@ -340,7 +350,7 @@ export function findProjectIcon(root: string): ProjectIcon | undefined {
     }
     const contentType = sniffContentType(head);
     if (!contentType) return undefined;
-    return { path: real, etag: etagFor(real, stats), contentType };
+    return { path: real, root: confinedRoot, etag: etagFor(real, stats), contentType };
   };
 
   for (const relative of [...EXPLICIT_CANDIDATES, ...ROOT_CANDIDATES]) {
@@ -414,7 +424,7 @@ export async function findProjectIconAsync(root: string): Promise<ProjectIcon | 
     }
     const contentType = sniffContentType(head);
     if (!contentType) return undefined;
-    return { path: real, etag: etagFor(real, stats), contentType };
+    return { path: real, root: confinedRoot, etag: etagFor(real, stats), contentType };
   };
 
   for (const relative of [...EXPLICIT_CANDIDATES, ...ROOT_CANDIDATES]) {
@@ -471,27 +481,130 @@ export async function findProjectIconAsync(root: string): Promise<ProjectIcon | 
  * longer exists. `undefined` means "ask again properly", never "no icon".
  */
 export async function confirmProjectIcon(icon: ProjectIcon): Promise<ProjectIcon | undefined> {
+  const real = await realConfined(icon);
+  if (!real) return undefined;
   let stats: fs.Stats;
   try {
-    stats = await fs.promises.stat(icon.path);
+    stats = await fs.promises.stat(real);
   } catch {
     return undefined;
   }
   if (!statAcceptable(stats)) return undefined;
-  const etag = etagFor(icon.path, stats);
-  return etag === icon.etag ? icon : { ...icon, etag };
+  const etag = etagFor(real, stats);
+  if (etag === icon.etag) return icon;
+  // THE BYTES CHANGED, SO THE TYPE IS UNKNOWN AGAIN. `icon.png` replaced by an
+  // SVG, or by a text file, is the same path with the same name and a different
+  // format; carrying the old content type forward would serve the new bytes
+  // under the old declaration. Re-sniffing costs one small read, and only on a
+  // change.
+  let head: Buffer;
+  try {
+    head = await readHead(real, Math.min(stats.size, SNIFF_BYTES));
+  } catch {
+    return undefined;
+  }
+  const contentType = sniffContentType(head);
+  if (!contentType) return undefined;
+  return { ...icon, etag, contentType };
 }
 
 export function confirmProjectIconSync(icon: ProjectIcon): ProjectIcon | undefined {
+  const real = realConfinedSync(icon);
+  if (!real) return undefined;
   let stats: fs.Stats;
   try {
-    stats = fs.statSync(icon.path);
+    stats = fs.statSync(real);
   } catch {
     return undefined;
   }
   if (!statAcceptable(stats)) return undefined;
-  const etag = etagFor(icon.path, stats);
-  return etag === icon.etag ? icon : { ...icon, etag };
+  const etag = etagFor(real, stats);
+  if (etag === icon.etag) return icon;
+  let head: Buffer;
+  try {
+    head = readHeadSync(real, Math.min(stats.size, SNIFF_BYTES));
+  } catch {
+    return undefined;
+  }
+  const contentType = sniffContentType(head);
+  if (!contentType) return undefined;
+  return { ...icon, etag, contentType };
+}
+
+/**
+ * The icon's bytes, revalidated, for the one binary route the daemon serves.
+ *
+ * WHY NOT JUST `readFile(icon.path)`. Everything a cached `ProjectIcon` asserts
+ * — that the path is inside the checkout, that it is a file of a sane size,
+ * that its bytes are the image its content type claims — was true when it was
+ * resolved and is only a memory by the time somebody asks for it. This is the
+ * point where those bytes leave the machine, so it re-establishes all three
+ * rather than trusting the record: realpath and confinement (a file swapped for
+ * a symlink pointing out of the checkout would otherwise be followed), the size
+ * bound AT THE ACTUAL READ rather than against a remembered `stat`, and the
+ * sniffed type of the bytes being sent.
+ *
+ * `undefined` is the honest "there is no icon here to serve", which the route
+ * turns into a 404 and the avatar renders as its fallback.
+ */
+export async function readProjectIconBytes(icon: ProjectIcon): Promise<{ bytes: Buffer; contentType: string; etag: string } | undefined> {
+  const real = await realConfined(icon);
+  if (!real) return undefined;
+  let handle: fs.promises.FileHandle;
+  try {
+    handle = await fs.promises.open(real, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const stats = await handle.stat();
+    if (!statAcceptable(stats)) return undefined;
+    // Read one byte past the bound: a file that grew between the stat and the
+    // read is refused rather than truncated into something the etag does not
+    // describe.
+    const buffer = Buffer.alloc(Math.min(stats.size, MAX_ICON_BYTES) + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead === 0 || bytesRead > MAX_ICON_BYTES) return undefined;
+    const bytes = buffer.subarray(0, bytesRead);
+    const contentType = sniffContentType(bytes.subarray(0, SNIFF_BYTES));
+    if (!contentType) return undefined;
+    return { bytes, contentType, etag: etagFor(real, stats) };
+  } catch {
+    return undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * The icon's path as it is RIGHT NOW, if that is still inside the checkout.
+ *
+ * A stored `ProjectIcon.path` is already a realpath, so resolving it again
+ * normally returns itself. It does NOT when the file has since been replaced
+ * by a symlink pointing somewhere else — which is exactly the case worth
+ * catching, because every later read would follow it. A path that no longer
+ * resolves to itself is refused rather than re-confined: the cached answer is
+ * about a file that no longer exists in the form it was found, so the caller
+ * should resolve the project again from the top.
+ */
+async function realConfined(icon: ProjectIcon): Promise<string | undefined> {
+  let real: string;
+  try {
+    real = await fs.promises.realpath(icon.path);
+  } catch {
+    return undefined;
+  }
+  return real === icon.path && confined(real, icon.root) ? real : undefined;
+}
+
+function realConfinedSync(icon: ProjectIcon): string | undefined {
+  let real: string;
+  try {
+    real = fs.realpathSync.native(icon.path);
+  } catch {
+    return undefined;
+  }
+  return real === icon.path && confined(real, icon.root) ? real : undefined;
 }
 
 /* --- the one primitive both drivers need that `fs` does not offer directly --- */
