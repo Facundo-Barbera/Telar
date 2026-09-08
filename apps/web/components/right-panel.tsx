@@ -1059,6 +1059,7 @@ export function PanelSurface({
   onOpenImage,
   editor,
   onEditorChange,
+  hostId,
 }: {
   tab: PanelTab;
   /** What the journal says was written, path → count. The Diff surface's half of
@@ -1100,6 +1101,9 @@ export function PanelSurface({
    *  gestures from the conversation land. */
   editor?: EditorState;
   onEditorChange?: (next: (current: EditorState) => EditorState) => void;
+  /** WHICH MAC this session is on. The Editor pins its engine client and keys
+   *  its unsaved-text stash with it — see session/file-view-surface.tsx. */
+  hostId?: string;
 }) {
   /**
    * THE FILE ARMS ARE A FALLBACK NOW, not a route anybody takes. A file opens
@@ -1128,11 +1132,12 @@ export function PanelSurface({
        * scope and outlives every one of these mounts).
        */
       <EditorSurface
-        key={sessionId ?? projectId ?? "none"}
+        key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}`}
         state={editor}
         onState={onEditorChange}
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
+        {...(hostId ? { hostId } : {})}
         {...(active ? { active } : {})}
         dataScience={dataScience === true}
         {...(onOpenImage ? { onOpenImage } : {})}
@@ -1513,6 +1518,7 @@ export function RightPanel({
   latex = false,
   editor,
   onEditorChange,
+  hostId,
 }: {
   active?: TurnState;
   /** The project opted into data science — shows Plots and Variables, and
@@ -1552,6 +1558,8 @@ export function RightPanel({
   /** The Editor's open files — see `PanelSurface`. */
   editor?: EditorState;
   onEditorChange?: (next: (current: EditorState) => EditorState) => void;
+  /** Which Mac this cockpit is about. */
+  hostId?: string;
   /**
    * OPEN/CLOSE ANIMATION. Kept mounted by the cockpit during the close so the
    * shell can animate OUT (its WIDTH, from the panel width to 0, and back).
@@ -1848,6 +1856,7 @@ export function RightPanel({
               onOpenImage={setLightbox}
               {...(editor ? { editor } : {})}
               {...(onEditorChange ? { onEditorChange } : {})}
+              {...(hostId ? { hostId } : {})}
             />
             {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
           </>

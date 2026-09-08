@@ -25,13 +25,23 @@ import { Spinner } from "@/components/ui/spinner";
 import { MessageResponse } from "@/components/ui/message";
 import { OverlayEditor } from "./overlay-editor";
 import { CellOutputView } from "./cell-output";
+import { claimCellDrafts, draftScope, forgetCellDraft, newDraftOwner, rememberCellDraft } from "@/lib/editor-drafts";
+import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { KernelPill } from "./kernel-pill";
 import { cn } from "@/lib/utils";
 
-const api = createEngineApi();
+/**
+ * THE ENGINE THIS NOTEBOOK BELONGS TO, PINNED — the same argument as the file
+ * editor's (session/file-view-surface.tsx `engineFor`): a cell save is
+ * debounced and flushed on unmount, so it can leave after a navigation, and
+ * the default client resolves the host from the pathname AT CALL TIME.
+ */
+function engineFor(hostId: string | undefined) {
+  return createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
+}
 const SAVE_DEBOUNCE_MS = 600;
 
-export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path: string; sessionId?: string; active?: TurnState; onOpenImage?: (attachmentId: string) => void }) {
+export function NotebookSurface({ path, sessionId, hostId, active, onOpenImage }: { path: string; sessionId?: string; hostId?: string; active?: TurnState; onOpenImage?: (attachmentId: string) => void }) {
   const [nb, setNb] = useState<NotebookRead>();
   const [error, setError] = useState<string>();
   const [kernel, setKernel] = useState<KernelState>("none");
@@ -41,6 +51,23 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
   const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
   const [problem, setProblem] = useState<string>();
   const timers = useRef<Map<string, number>>(new Map());
+  const api = useMemo(() => engineFor(hostId), [hostId]);
+  /**
+   * UNSAVED CELL SOURCE, KEPT OUTSIDE THIS COMPONENT.
+   *
+   * Flushing the debounce on unmount saves the cells whose write SUCCEEDS. It
+   * does nothing for the one that fails — the engine unreachable, the notebook
+   * rewritten under it — and that text had nowhere to go but a component that
+   * was already being thrown away. So every keystroke is stashed
+   * (lib/editor-drafts.ts), a landed write clears it, and a re-opened notebook
+   * adopts whatever is still owed. Owner-scoped for the same reason a file's
+   * is: the mount you switched away from is still answering.
+   */
+  const owner = useRef(newDraftOwner());
+  const scope = draftScope(hostId, sessionId);
+  /** What the stash holds, mirrored for the save callbacks — which run after
+   *  the render that armed them, and sometimes after the unmount. */
+  const stash = useRef(new Map<string, string>());
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -53,7 +80,7 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
         setError("notfound");
       } else setError(cause instanceof EngineApiError ? cause.message : "The engine did not answer.");
     }
-  }, [sessionId, path]);
+  }, [sessionId, path, api]);
 
   const refreshKernel = useCallback(async () => {
     if (!sessionId) return;
@@ -63,7 +90,7 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
     } catch {
       setKernel("none");
     }
-  }, [sessionId]);
+  }, [sessionId, api]);
 
   useEffect(() => {
     const first = window.setTimeout(() => {
@@ -72,6 +99,24 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
     }, 0);
     return () => window.clearTimeout(first);
   }, [load, refreshKernel, active]);
+
+  /**
+   * ADOPT WHAT AN EARLIER MOUNT COULD NOT SAVE. A cell whose write failed left
+   * its text in the stash; without this, re-opening the notebook would show the
+   * file's version and the edit would be gone with no trace. Claimed, so the
+   * mount that failed can no longer clear or overwrite it.
+   */
+  useEffect(() => {
+    const adopted = claimCellDrafts(scope, path, owner.current);
+    if (adopted.size === 0) return;
+    stash.current = new Map(adopted);
+    setDrafts((current) => {
+      const merged = new Map(current);
+      // What is on screen wins: it is either the same text or newer.
+      for (const [cellId, text] of adopted) if (!merged.has(cellId)) merged.set(cellId, text);
+      return merged;
+    });
+  }, [scope, path]);
 
   const create = async () => {
     if (!sessionId) return;
@@ -100,15 +145,23 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
           if (copy.get(cellId) === draft) copy.delete(cellId);
           return copy;
         });
+        // It reached the notebook, so it is no longer owed to anybody — unless
+        // something newer was typed while this write was open, which the owner
+        // guard and the equality check both have to respect.
+        if (stash.current.get(cellId) === draft) forgetCellDraft(scope, path, cellId, owner.current);
         setNb(next);
         setProblem(undefined);
         return next;
       } catch (cause) {
+        // THE CASE FLUSHING ALONE NEVER COVERED. The write failed, this
+        // component may already be unmounted, and the stash is now the only
+        // copy of the cell — it stays until a write lands or the cell is
+        // re-saved from a later mount.
         setProblem(cause instanceof Error ? cause.message : "Could not save.");
         return undefined;
       }
     },
-    [sessionId, path, drafts, nb],
+    [sessionId, path, drafts, nb, api, scope],
   );
 
   /** The latest saver, read by a timer that outlives the render that armed it.
@@ -119,6 +172,8 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
   }, [saveCell]);
   const edit = (cellId: string, source: string) => {
     setDrafts((current) => new Map(current).set(cellId, source));
+    stash.current.set(cellId, source);
+    rememberCellDraft(scope, path, cellId, source, owner.current);
     const existing = timers.current.get(cellId);
     if (existing) window.clearTimeout(existing);
     timers.current.set(cellId, window.setTimeout(() => void saveCellRef.current(cellId), SAVE_DEBOUNCE_MS));

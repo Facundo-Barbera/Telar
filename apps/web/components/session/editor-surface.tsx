@@ -41,7 +41,7 @@ import {
   type EditorViewState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
-import { draftScope, forgetDraft } from "@/lib/editor-drafts";
+import { discardDraft, draftScope } from "@/lib/editor-drafts";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
@@ -63,6 +63,7 @@ export function EditorSurface({
   onState,
   sessionId,
   projectId,
+  hostId,
   active,
   dataScience = false,
   onOpenImage,
@@ -73,6 +74,8 @@ export function EditorSurface({
   onState: (next: (current: EditorState) => EditorState) => void;
   sessionId?: string;
   projectId?: string;
+  /** WHICH MAC these files live on — see `FileViewSurface`'s own note. */
+  hostId?: string;
   active?: TurnState;
   dataScience?: boolean;
   onOpenImage?: (attachmentId: string) => void;
@@ -118,7 +121,7 @@ export function EditorSurface({
   const open = editorPaths(state);
   /** Which checkout the unsaved text belongs to — the same key the file
    *  surface stashes under. */
-  const scope = draftScope(sessionId, projectId);
+  const scope = draftScope(hostId, sessionId, projectId);
 
   const openFile = useCallback(
     (path: string, intent: OpenIntent) => {
@@ -159,7 +162,7 @@ export function EditorSurface({
           setConfirming(path);
           return;
         }
-        forgetDraft(scope, path);
+        discardDraft(scope, path);
         forget(path);
         return;
       }
@@ -210,13 +213,14 @@ export function EditorSurface({
         </PanelEmpty>
       );
     }
-    const key = `${sessionId ?? projectId ?? "none"}:${file.path}`;
+    const key = `${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}:${file.path}`;
     if (file.view === "notebook") {
       return (
         <NotebookSurface
           key={key}
           path={file.path}
           {...(sessionId ? { sessionId } : {})}
+          {...(hostId ? { hostId } : {})}
           {...(active ? { active } : {})}
           {...(onOpenImage ? { onOpenImage } : {})}
         />
@@ -236,6 +240,7 @@ export function EditorSurface({
         path={file.path}
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
+        {...(hostId ? { hostId } : {})}
         {...(active ? { active } : {})}
         readView={() => views.current.get(file.path)}
         onView={(where) => views.current.set(file.path, where)}

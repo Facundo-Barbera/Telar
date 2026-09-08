@@ -53,7 +53,8 @@ import {
 } from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import { draftScope, forgetDraft, readDraft, rememberDraft } from "@/lib/editor-drafts";
+import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft } from "@/lib/editor-drafts";
+import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import type { EditorViewState } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { rawFileUrl } from "@/lib/file-urls";
@@ -82,7 +83,22 @@ import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
-const api = createEngineApi();
+/**
+ * THE ENGINE THIS FILE BELONGS TO, PINNED — not "whichever engine the address
+ * bar names when the request finally goes out".
+ *
+ * The default client resolves the host FROM THE PATHNAME AT CALL TIME
+ * (lib/hosts/client.ts `pathnameFetcher`), which is right for a screen that is
+ * only ever about the Mac you are looking at. This editor is not that: a write
+ * is debounced, retried and FLUSHED ON UNMOUNT, so it can leave after you have
+ * navigated to a session on another host — and a session id minted on one
+ * engine is a perfectly valid-looking id on another. Pinning the fetcher at
+ * mount means every read, write and late retry for this file goes to the Mac
+ * the file was opened on, whatever the address bar says by then.
+ */
+function engineFor(hostId: string | undefined) {
+  return createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
+}
 
 /**
  * How long after the last keystroke a save goes out.
@@ -135,6 +151,7 @@ export function FileViewSurface({
   path,
   sessionId,
   projectId,
+  hostId,
   /** A turn settling is the moment the file on disk may have changed. */
   active,
   onSaveState,
@@ -145,6 +162,10 @@ export function FileViewSurface({
   path: string;
   sessionId?: string;
   projectId?: string;
+  /** WHICH MAC this file lives on. Pins the engine client (see `engineFor`) and
+   *  keys the unsaved-text stash, because two engines mint session ids
+   *  independently and can mint the same one. */
+  hostId?: string;
   active?: TurnState;
   /**
    * WHAT THE SAVER IS DOING, for a strip that outlives this component.
@@ -233,9 +254,23 @@ export function FileViewSurface({
    */
   const latest = useRef<string>("");
   const baselineRef = useRef<string | undefined>(undefined);
-  /** Which checkout this path is in. Two sessions can hold the same path with
-   *  different bytes, and one must never adopt the other's unsaved text. */
-  const scope = draftScope(sessionId, projectId);
+  /** Which checkout on which Mac this path is in. Two sessions can hold the
+   *  same path with different bytes, and two engines can mint the same session
+   *  id — either would hand one editor another's unsaved text. */
+  const scope = draftScope(hostId, sessionId, projectId);
+  /**
+   * WHO THIS MOUNT IS, for the stash.
+   *
+   * A write outlives the mount that started it, so the editor you switched away
+   * from and the one you re-opened overlap in time. This token is what lets the
+   * store drop the old one's late answer instead of letting it clear — or
+   * overwrite with older text — what you have typed since. Claimed on adoption,
+   * in `load`.
+   */
+  const owner = useRef(newDraftOwner());
+  /** The engine this file belongs to, pinned for the life of the mount so a
+   *  flush that leaves after a navigation still goes to the right Mac. */
+  const api = useMemo(() => engineFor(hostId), [hostId]);
   /** Restored once — and only once it has actually LANDED (see the effect):
    *  doing it again would fight the caret you just moved. */
   const restored = useRef(false);
@@ -265,8 +300,18 @@ export function FileViewSurface({
       try {
         const read = sessionId ? await api.sessionFile(sessionId, path) : await api.projectFile(projectId!, path);
         setFile(read.file);
-        if (discard) forgetDraft(scope, path);
-        const stashed = read.file.binary ? undefined : readDraft(scope, path);
+        /**
+         * CLAIMED FIRST, whichever kind of read this is, and not merely read.
+         * Taking the key is what makes the previous mount's answer harmless:
+         * from here its `forgetDraft` and its `rememberDraft` are dropped, so a
+         * write it started before you switched away cannot clear — or overwrite
+         * with its older text — what you are about to type. It also has to
+         * happen before the discard below, or "re-read from disk" would fail to
+         * delete a stash somebody else still owns and then adopt it anyway.
+         */
+        const claimed = read.file.binary ? undefined : claimDraft(scope, path, owner.current);
+        if (discard) forgetDraft(scope, path, owner.current);
+        const stashed = discard ? undefined : claimed;
         const text = read.file.binary ? undefined : (stashed?.text ?? read.file.text);
         const hash = read.file.binary ? undefined : (stashed?.baseline ?? read.file.sha256);
         latest.current = text ?? "";
@@ -285,7 +330,7 @@ export function FileViewSurface({
         return undefined;
       }
     },
-    [sessionId, projectId, path, scope],
+    [sessionId, projectId, path, scope, api],
   );
 
   useEffect(() => {
@@ -362,10 +407,10 @@ export function FileViewSurface({
         setProblem(undefined);
         // It reached disk. Anything still stashed would resurrect an older edit
         // the next time this file was opened.
-        forgetDraft(scope, path);
+        forgetDraft(scope, path, owner.current);
         // Except for text typed WHILE that write was open — the coordinator is
         // already saving it, and it must stay recoverable until it lands.
-        if (latest.current !== text) rememberDraft(scope, path, { text: latest.current, baseline: current });
+        if (latest.current !== text) rememberDraft(scope, path, { text: latest.current, baseline: current }, owner.current);
       },
       onProblem: (outcome) => {
         const failure = { refused: outcome.status === "refused", reason: outcome.reason };
@@ -373,7 +418,7 @@ export function FileViewSurface({
         // THE ONE THAT MADE THIS STORE NECESSARY. A refusal means the only copy
         // of this text is in the box; kept with the baseline it was edited
         // against, so a re-opened file is refused again rather than winning.
-        rememberDraft(scope, path, { text: latest.current, baseline: current, problem: failure });
+        rememberDraft(scope, path, { text: latest.current, baseline: current, problem: failure }, owner.current);
         saveStateRef.current?.("problem");
       },
     });
@@ -386,7 +431,8 @@ export function FileViewSurface({
      * and refused again if the file is still moved, which is the honest answer
      * rather than a retry loop (the coordinator stops itself after a refusal).
      */
-    const stashed = readDraft(scope, path);
+    // Ours to re-arm only if this mount still holds the key — claimed in `load`.
+    const stashed = claimDraft(scope, path, owner.current);
     if (stashed && stashed.baseline === baseline) saver.change(stashed.text);
     return () => {
       // FLUSHES, not cancels — see `dispose`. Closing the tab a moment after
@@ -396,7 +442,7 @@ export function FileViewSurface({
     };
     // `scope` is derived from sessionId/projectId, which are already here — it
     // is listed so the stash key and the coordinator can never disagree.
-  }, [editable, baseline, sessionId, projectId, path, scope]);
+  }, [editable, baseline, sessionId, projectId, path, scope, api]);
 
   /**
    * LINE NUMBERS AS A SEPARATE COLUMN, so selecting the text and copying it does
@@ -517,7 +563,7 @@ export function FileViewSurface({
       latest.current = text;
       setDraft(text);
       saverRef.current?.change(text);
-      if (baselineRef.current) rememberDraft(scope, path, { text, baseline: baselineRef.current });
+      if (baselineRef.current) rememberDraft(scope, path, { text, baseline: baselineRef.current }, owner.current);
     },
     [scope, path],
   );

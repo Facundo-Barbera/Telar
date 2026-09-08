@@ -2360,6 +2360,7 @@ export function SessionCockpit({
           onClose={() => updatePanel((current) => ({ ...current, open: false }))}
           editor={editor}
           onEditorChange={updateEditor}
+          hostId={hostId}
           dataScience={dataScience}
           latex={latex}
         />
