@@ -246,7 +246,17 @@ test("a request left open on an already-ended turn is retired at boot; one on an
   expect(reopened.recover()).toEqual({ requeued: [], ambiguous: [] });
   expect(reopened.readEvents("session_one").filter((event) => event.type === "request.resolved")).toHaveLength(1);
 
-  // An AMBIGUOUS turn's request is a decision still pending; the sweep leaves it.
+  /**
+   * AN AMBIGUOUS TURN'S REQUEST IS RETIRED TOO, and this assertion used to say
+   * the opposite — "a decision still pending; the sweep leaves it".
+   *
+   * That conflated two decisions. The TURN's fate is genuinely pending and the
+   * sweep still leaves that alone. The REQUEST is a question the dead worker
+   * asked and no answer can now reach, and keeping it open held the session
+   * `blocked` — sidebar "Waiting on you", composer in answer mode — on every
+   * boot forever, because the running turn is skipped by the sweep above and
+   * `ambiguous` was exempt from it afterwards.
+   */
   const other = readyStore().store;
   other.updateSession("session_one", { runtimeMode: "approval-required" });
   other.submitTurn("session_one", { runId: "run_amb", input: "Hello" });
@@ -258,9 +268,13 @@ test("a request left open on an already-ended turn is retired at boot; one on an
     detail: { kind: "command_execution", command: { command: "ls" } },
   });
   expect(other.recover()).toEqual({ requeued: [], ambiguous: ["run_amb"] });
-  expect(other.requests("session_one")[0]?.state).toBe("open");
-  expect(other.getSession("session_one").activity).toBe("blocked");
-  // Discarding the ambiguous turn is what finally retires it.
+  // Retired on the FIRST boot, which is the half that was missing: the turn was
+  // still `running` when the request sweep passed over it, so closing it only
+  // in that loop would have cured this on no boot at all.
+  expect(other.requests("session_one")[0]).toMatchObject({ state: "resolved", resolvedBy: "cancelled" });
+  expect(other.getSession("session_one").activity).not.toBe("blocked");
+  // The turn itself is still undecided — that is the human's, and it holds.
+  expect(other.turns("session_one")[0]?.state).toBe("ambiguous");
   other.discardAmbiguousTurn("session_one", "run_amb");
   expect(other.requests("session_one")[0]).toMatchObject({ state: "resolved", resolvedBy: "cancelled" });
 });
@@ -275,8 +289,25 @@ test("recovery returns merely claimed work to queued and makes running work expl
   store.markRunning("session_one", "claimed_turn", claimed!.claim!.token);
   expect(store.recover()).toEqual({ requeued: [], ambiguous: ["claimed_turn"] });
   expect(store.turns("session_one")[0]?.state).toBe("ambiguous");
-  expect(() => store.submitTurn("session_one", { runId: "later_turn", input: "must wait" })).toThrow(/ambiguous/);
-  expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "turn.ambiguous", runId: "claimed_turn" });
+  /**
+   * THE HUMAN MAY STILL TALK; THE MACHINE MAY NOT RUN.
+   *
+   * This line asserted the opposite — that `submitTurn` threw — and that was
+   * the reported bug, entire. The gate was on the wrong verb: it refused the
+   * one message a person was present to write, while `claimTurn` happily
+   * dispatched work queued before the crash. Accepting a message settles
+   * nothing and duplicates nothing; RUNNING one is the act that can repeat a
+   * side effect, so that is what waits for the decision.
+   */
+  expect(store.submitTurn("session_one", { runId: "later_turn", input: "carry on from what you have" }).turn.state).toBe("queued");
+  expect(store.claimTurn("session_one", "worker_two")).toBeUndefined();
+  expect(store.claimNextTurn("worker_two")).toBeUndefined();
+  // Decided — and the held message runs, in the order it was written.
+  store.discardAmbiguousTurn("session_one", "claimed_turn");
+  expect(store.claimTurn("session_one", "worker_two")?.runId).toBe("later_turn");
+  expect(store.readEvents("session_one").filter((event) => event.type === "turn.ambiguous")).toMatchObject([
+    { type: "turn.ambiguous", runId: "claimed_turn" },
+  ]);
 });
 
 test("a human discard resolves only an ambiguous turn and permits a fresh submitted run", () => {
@@ -439,7 +470,7 @@ test("a message while a turn runs STEERS into it; one that cannot be delivered r
   expect(idle.submitTurn("session_one", { runId: "run_early", input: "and this" }).turn.state).toBe("queued");
 });
 
-test("an ambiguous turn still blocks new work, and the backlog is bounded", () => {
+test("an ambiguous turn holds dispatch rather than the composer, and the backlog is bounded", () => {
   const { store } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "First" });
   const claimed = store.claimTurn("session_one", "worker_one")!;
@@ -450,13 +481,74 @@ test("an ambiguous turn still blocks new work, and the backlog is bounded", () =
   for (let i = 0; i < 16; i += 1) store.submitTurn("session_one", { runId: `run_q${i}`, input: "more" });
   expect(() => store.submitTurn("session_one", { runId: "run_over", input: "one too many" })).toThrow(/maximum number of queued/);
 
-  // Ambiguity is different from busy: it needs a human decision first.
+  // Ambiguity is different from busy: it needs a human decision first — and
+  // what waits for that decision is EXECUTION, not the person's typing.
   const { store: other } = readyStore();
   other.submitTurn("session_one", { runId: "run_a", input: "First" });
   const held = other.claimTurn("session_one", "worker_one")!;
   other.markRunning("session_one", "run_a", held.claim!.token);
   other.recover();
-  expect(() => other.submitTurn("session_one", { runId: "run_b", input: "next" })).toThrow(/ambiguous/);
+  expect(other.submitTurn("session_one", { runId: "run_b", input: "next" }).turn.state).toBe("queued");
+  expect(other.claimTurn("session_one", "worker_two")).toBeUndefined();
+});
+
+test("work queued BEFORE the crash is held for the decision, not replayed on boot", () => {
+  /**
+   * The half of the gate that was missing, and the more dangerous half. A
+   * message typed while the lost turn was running is `steering`; `recover()`
+   * puts it back to `queued`, and it used to be claimed immediately — handed
+   * the lost run's `resumeCursor` and run against the resumed provider
+   * conversation with nobody's decision behind it.
+   */
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor the parser" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  store.ingestObservations("session_one", "run_lost", claim.claim!.token, [
+    { kind: "provider.session", providerSessionId: "provider-thread-abc" },
+  ]);
+  store.submitTurn("session_one", { runId: "run_followup", input: "also update the docs" });
+  expect(store.turns("session_one")[1]?.state).toBe("steering");
+
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  expect(rebooted.recover()).toEqual({ requeued: ["run_followup"], ambiguous: ["run_lost"] });
+  // Requeued — never lost — but nothing dispatches it while the decision stands.
+  expect(rebooted.turns("session_one")[1]?.state).toBe("queued");
+  expect(rebooted.claimNextTurn("worker_two")).toBeUndefined();
+
+  // The human decides. Only then does the backlog run, in the order it was typed.
+  rebooted.discardAmbiguousTurn("session_one", "run_lost");
+  const resumed = rebooted.claimNextTurn("worker_two");
+  expect(resumed?.turn.runId).toBe("run_followup");
+  // And it continues the same provider conversation rather than cold-starting.
+  expect(resumed?.resumeCursor).toBe("provider-thread-abc");
+});
+
+test("a fresh message after a discard continues the conversation without replaying the lost prompt", () => {
+  // The path the cockpit's "Continue" drives, at the engine level: discard the
+  // undecided turn, then say something NEW. The transcript and the provider
+  // cursor both survive, and the original prompt is never resent.
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor the parser and run the tests" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  store.ingestObservations("session_one", "run_lost", claim.claim!.token, [
+    { kind: "provider.session", providerSessionId: "provider-thread-abc" },
+    { kind: "item.started", item: { id: "msg_1", detail: { type: "assistant_message", text: "Reading the parser…" } } },
+    { kind: "item.completed", itemId: "msg_1", status: "completed" },
+  ]);
+
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+  rebooted.discardAmbiguousTurn("session_one", "run_lost");
+  rebooted.submitTurn("session_one", { runId: "run_next", input: "What did you find?" });
+  const claimed = rebooted.claimNextTurn("worker_two");
+
+  expect(claimed?.turn.input).toBe("What did you find?");
+  expect(claimed?.resumeCursor).toBe("provider-thread-abc");
+  // The lost run stays in the record, and so does everything it streamed.
+  expect(rebooted.turns("session_one")[0]).toMatchObject({ runId: "run_lost", state: "discarded" });
+  expect(rebooted.items("session_one").map((item) => item.id)).toContain("msg_1");
 });
 
 test("runtime mode can be tightened mid-session and binds the very next tool call", () => {
