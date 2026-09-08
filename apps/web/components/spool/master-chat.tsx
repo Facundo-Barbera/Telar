@@ -576,6 +576,9 @@ export function MasterChat({
                 onDecide={decide}
                 onRetry={() => undefined}
                 onDiscard={() => undefined}
+                onContinueAmbiguous={() => undefined}
+                onReleaseHeld={() => undefined}
+                onDropHeld={() => undefined}
               />
             ))}
           </ConversationContent>

@@ -728,6 +728,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ stopped: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop-background`, {}),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
+    /** Run a message recovery held, now that a person has re-read it. Dropping
+     *  one instead is `stopTurn` — it is still an ordinary queued turn. */
+    releaseHeldTurn: (sessionId: string, runId: string) =>
+      request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/release`, {}),
     /** SEND NOW: promote a queued message into the running turn. */
     promoteTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {}),
@@ -770,9 +774,37 @@ export function newRunId(uuid: () => string = randomUuid): string {
 type TurnApi = Pick<ReturnType<typeof createEngineApi>, "discardAmbiguousTurn" | "submitTurn">;
 
 /**
- * Retrying uncertain work is deliberately a two-command flow: first persist
- * the human discard decision, then submit the same prompt under a new id.
- * The ambiguous run id is never replayed.
+ * CONTINUE — abandon the lost run's execution and carry on talking.
+ *
+ * The discard is the whole of it, and that is the point: it releases the
+ * session's held dispatch and leaves EVERYTHING else standing — the partial
+ * transcript, the provider cursor, the record that a turn was cut off. Nothing
+ * is submitted here; the caller prepares a message and the person sends it, so
+ * the next turn is whatever they choose to say rather than a replay.
+ *
+ * WHY IT IS NOT MERELY `discardAmbiguousTurn` UNDER A NICER NAME: it is that
+ * call, but the name is the fix. The cockpit's only non-replaying door was
+ * labelled "Discard recovered run", which reads as "throw my work away" — so
+ * people pressed "Retry", which resends the original prompt and redoes work.
+ * The capability was always there; nobody could tell.
+ */
+export async function continueAfterAmbiguousTurn(
+  api: Pick<ReturnType<typeof createEngineApi>, "discardAmbiguousTurn">,
+  sessionId: string,
+  turn: Pick<Turn, "runId" | "state">,
+): Promise<void> {
+  if (turn.state !== "ambiguous") {
+    throw new EngineApiError("conflict", "Only an ambiguous turn needs a recovery decision.");
+  }
+  await api.discardAmbiguousTurn(sessionId, turn.runId);
+}
+
+/**
+ * RE-RUN THE LOST PROMPT — deliberately the other thing, and deliberately not
+ * the default. Two commands: persist the human discard decision, then submit
+ * the same prompt under a new id. The ambiguous run id is never replayed in
+ * place, and the work the first attempt may already have done is NOT undone —
+ * which is why this asks before it is reached.
  */
 export async function retryAmbiguousTurn(
   api: TurnApi,
