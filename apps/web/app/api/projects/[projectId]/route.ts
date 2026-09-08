@@ -22,3 +22,18 @@ export async function PATCH(request: Request, context: Context) {
     return engineErrorResponse(error);
   }
 }
+
+/**
+ * Unregister. A DELETE ON THE REGISTRATION, not on the project — the engine
+ * removes the registry entry and touches nothing on disk. Thin proxy: the
+ * engine owns the refusal when a session on this project is mid-turn, and
+ * `engineErrorResponse` carries its 409 through unchanged.
+ */
+export async function DELETE(_request: Request, context: Context) {
+  try {
+    const { projectId } = await context.params;
+    return Response.json(await (await engineClient()).unregisterProject(projectId));
+  } catch (error) {
+    return engineErrorResponse(error);
+  }
+}
