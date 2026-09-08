@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { DataScienceSection } from "./data-science-section";
 import { LatexSection } from "./latex-section";
 import { McpSection } from "./mcp-section";
+import { RemoveProjectSection } from "./remove-project-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
 
@@ -48,7 +49,11 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
 
   const load = useCallback(async () => {
     try {
-      const answer = await api.projects();
+      // INCLUDES REMOVED ONES, and only here. A project put away is absent
+      // from every other surface; this page is the one that has to name it, so
+      // it can say it is removed and offer to put it back rather than showing
+      // the "no project with that id" notice for a record that still exists.
+      const answer = await api.projects({ includeRemoved: true });
       const found = answer.projects.find((entry) => entry.id === projectId);
       setProject(found);
       setMissing(!found);
@@ -126,6 +131,19 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
           />
           <Row label="Id" hint="What sessions and MCP servers store." control={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem]">{projectId}</code>} />
         </SettingsGroup>
+      )}
+
+      {/* BENEATH THE IDENTITY IT PUTS AWAY, and rendered even while the project
+          is still loading — the button is disabled until it arrives, so the
+          action is discoverable on the pane it belongs to rather than
+          appearing a beat later. */}
+      {active === "project" && !missing && (
+        // KEYED BY THE PROJECT IT IS ABOUT. This page is per-route today, so
+        // the id rarely changes under a mounted pane — but "rarely" is how a
+        // remove ends up reported against the wrong record, and a key costs
+        // nothing. The section guards the same case internally; this makes the
+        // common path a clean remount rather than a recovery.
+        <RemoveProjectSection key={project?.id ?? projectId} project={project} onChange={setProject} />
       )}
     </SettingsShell>
   );

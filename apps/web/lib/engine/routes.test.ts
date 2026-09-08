@@ -31,7 +31,7 @@ describe("engine route adapters", () => {
   test("reports a typed unavailable engine instead of consulting a legacy store", async () => {
     delete process.env.TELAR_HOME;
     process.env.TELAR_COCKPIT = "1";
-    const response = await projectsGet();
+    const response = await projectsGet(new Request("http://localhost/api/projects"));
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error: { code: "engine_unavailable", message: "Set an absolute TELAR_HOME for the engine before opening the cockpit." },
