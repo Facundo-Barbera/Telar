@@ -3,6 +3,10 @@ import Script from "next/script";
 import { Fira_Code, Geist, Geist_Mono, IBM_Plex_Mono, IBM_Plex_Sans, Inter, JetBrains_Mono } from "next/font/google";
 // Streamdown FIRST, so the cockpit's own tokens win where the two overlap.
 import "streamdown/styles.css";
+// KaTeX's own stylesheet, for the math plugin wired into components/ui/message.tsx.
+// Imported here rather than from the component so the bundler resolves its font
+// files, and ahead of globals.css so the app's overflow/colour rules win.
+import "katex/dist/katex.min.css";
 import "./globals.css";
 import { ClipboardShim } from "@/components/clipboard-shim";
 import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/theme-provider";

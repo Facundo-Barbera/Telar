@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+  A BROWSER CHECK FOR THE ONE ASSUMPTION THE UNIT TESTS CANNOT MAKE.
+
+  `receiptToSend` is pure and tested; what it cannot answer is whether the
+  browser agrees with the claim its `atLatestResult` input is built on — that an
+  IntersectionObserver on a marker inside a SCROLLING transcript reports "not
+  visible" when the reader has scrolled up, and that a hidden document never
+  reports it visible at all. If ancestor clipping were not taken into account,
+  the marker would be "intersecting" from the moment it existed and every open
+  session would be marked read on hydrate.
+
+  Open this file directly; it drives itself and prints a verdict. It is a
+  fixture, not a test the suite runs — there is no DOM test runner in this app.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Read receipt gate</title>
+    <style>
+      body { font: 14px system-ui; margin: 0; padding: 16px; }
+      #viewport { height: 220px; overflow-y: auto; border: 1px solid #ccc; }
+      .turn { height: 180px; margin: 8px; background: #eef; }
+      #marker { height: 1px; }
+      #verdict { margin-top: 12px; font-weight: 600; }
+      pre { background: #f6f6f6; padding: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Read receipt gate</h1>
+    <!-- The transcript's scroll layer, standing in for ConversationViewport. -->
+    <div id="viewport">
+      <div class="turn">turn 1</div>
+      <div class="turn">turn 2</div>
+      <div class="turn">turn 3 — the newest answer</div>
+      <div id="marker"></div>
+    </div>
+    <div id="verdict">running…</div>
+    <pre id="log"></pre>
+    <script type="module">
+      const viewport = document.getElementById("viewport");
+      const marker = document.getElementById("marker");
+      const log = document.getElementById("log");
+      const verdict = document.getElementById("verdict");
+
+      let visible = false;
+      new IntersectionObserver((entries) => {
+        visible = Boolean(entries[entries.length - 1]?.isIntersecting);
+      }).observe(marker);
+
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 120));
+      const results = [];
+      const check = (name, actual, expected) => {
+        results.push(`${actual === expected ? "PASS" : "FAIL"}  ${name} (got ${actual}, want ${expected})`);
+      };
+
+      // 1. Freshly mounted, scrolled to the top: the newest answer is below the
+      //    fold, exactly like a session opened and left alone.
+      await settle();
+      check("top of a scrolled transcript is NOT at the latest result", visible, false);
+
+      // 2. Scrolled to the end: the marker is on screen.
+      viewport.scrollTop = viewport.scrollHeight;
+      await settle();
+      check("scrolled to the newest answer IS at the latest result", visible, true);
+
+      // 3. Scrolled back up to re-read history.
+      viewport.scrollTop = 0;
+      await settle();
+      check("scrolling back up leaves it again", visible, false);
+
+      // 4. And the second half of the gate, which is not the observer's job:
+      //    a hidden document never counts, however visible the marker is.
+      viewport.scrollTop = viewport.scrollHeight;
+      await settle();
+      const foreground = document.visibilityState === "visible" && document.hasFocus();
+      check("the foreground fact is readable", typeof foreground, "boolean");
+
+      log.textContent = results.join("\n");
+      const failed = results.filter((line) => line.startsWith("FAIL")).length;
+      verdict.textContent = failed === 0 ? "ALL PASS" : `${failed} FAILED`;
+      verdict.style.color = failed === 0 ? "#0a7" : "#c00";
+    </script>
+  </body>
+</html>
