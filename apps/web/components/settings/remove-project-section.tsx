@@ -17,6 +17,13 @@
  * THE ENGINE OWNS THE REFUSAL. A project with a session mid-turn answers 409
  * and this shows the sentence it sent; the surface never decides for itself
  * that removing is safe, and never stops somebody's work to make it so.
+ *
+ * WHICH MAC IT ACTS ON is not this component's business and never was: the
+ * module-level `createEngineApi()` every screen here uses resolves the host
+ * from the pathname AT CALL TIME (lib/hosts/client.ts), so a remote Mac's
+ * screens under `/hosts/:id/…` already send to that Mac's proxy. An earlier
+ * draft took an injected client to "make hosts work", which was a seam nobody
+ * passed and a claim the default fetcher had already made true.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -25,6 +32,7 @@ import { Loader2Icon, XIcon } from "lucide-react";
 import type { Project } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { announceProjectsChanged } from "@/lib/projects";
+import { createRequestGate } from "@/lib/request-gate";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,39 +47,34 @@ import {
 } from "@/components/ui/dialog";
 import { Row, SettingsGroup } from "./settings-shell";
 
-/** One client for this cockpit, like every other section in this directory. */
-const localApi = createEngineApi();
+/** One client for this cockpit, like every other section in this directory.
+ *  Host-aware by construction — see the note above. */
+const api = createEngineApi();
 
 export function RemoveProjectSection({
   project,
   onChange,
-  api = localApi,
 }: {
   project?: Project;
   /** Hand the changed record back so the page re-renders as removed/restored
    *  without a round trip. */
   onChange: (project: Project) => void;
-  /**
-   * The cockpit this project belongs to. Injected rather than constructed here
-   * so a page scoped to another Mac's engine removes THAT engine's project —
-   * and so a request cannot be answered by a different host than the one it
-   * was sent to.
-   */
-  api?: ReturnType<typeof createEngineApi>;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /**
-   * WHICH REQUEST IS ALLOWED TO FINISH. Every submission takes a ticket; a
-   * response whose ticket is no longer the current one is dropped on the
-   * floor. Without it, a click on a project, a navigation, and a click on
-   * another project can interleave so that the first response lands on the
-   * second project's screen — announcing a change to a registry that did not
-   * make it, and redirecting a page the person is now reading.
+   * WHICH REQUEST IS ALLOWED TO FINISH — see lib/request-gate.ts. Two things
+   * can make an answer stale: another submission, or the SUBJECT CHANGING
+   * under a component that never unmounted. The parent keys this section by
+   * project id so the common case is a remount, but a key is a convention and
+   * this is a correctness guard, so the gate is retargeted below as well.
    */
-  const ticket = useRef(0);
+  // `useState` with a lazy initialiser rather than a ref: one gate per mounted
+  // pane, created once, and readable during render without tripping the
+  // refs-during-render rule.
+  const [gate] = useState(createRequestGate);
   /** Still on screen? A response that lands after this page has been replaced
    *  must not set state or steer the router. */
   const live = useRef(true);
@@ -81,6 +84,25 @@ export function RemoveProjectSection({
       live.current = false;
     };
   }, []);
+
+  const identity = project?.id ?? "";
+  useEffect(() => {
+    // The project this pane is about changed while it stayed mounted. Whatever
+    // is in flight was about the old one: disown it at once — that is a plain
+    // call, and the part that matters for correctness — then put the dialog
+    // back to a state that belongs to the new subject rather than leaving a
+    // spinner or the previous project's error sitting over it. The visual
+    // reset is deferred a tick because setting state in an effect BODY is the
+    // cascade the lint rule forbids, the same shape as `useProjects`.
+    gate.retarget(identity);
+    const task = window.setTimeout(() => {
+      setBusy(false);
+      setOpen(false);
+      setError(null);
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, [gate, identity]);
+
   const removed = project?.removedAt !== undefined;
 
   const handleOpenChange = (next: boolean) => {
@@ -96,22 +118,25 @@ export function RemoveProjectSection({
   const run = async (action: "remove" | "restore") => {
     if (!project) return;
     const target = project.id;
-    const mine = (ticket.current += 1);
+    // The in-flight guard is the gate's, not the `busy` state's: two clicks in
+    // one frame both see the same stale `busy`.
+    const token = gate.begin(target);
+    if (token === undefined) return;
     setBusy(true);
     setError(null);
     try {
       const answer = action === "remove" ? await api.unregisterProject(target) : await api.restoreProject(target);
-      if (ticket.current !== mine || !live.current) return;
+      if (!gate.settle(token) || !live.current) return;
       onChange(answer.project);
       announceProjectsChanged();
       setBusy(false);
       setOpen(false);
-      // Leaving is only right for a removal made from this screen. The two
-      // guards above are what stop a late answer from navigating a page the
-      // person has since moved to.
+      // Leaving is only right for a removal this screen is still about. The
+      // two guards above are what stop a late answer from navigating a page
+      // the person has since moved to.
       if (action === "remove") router.push("/");
     } catch (cause) {
-      if (ticket.current !== mine || !live.current) return;
+      if (!gate.settle(token) || !live.current) return;
       setError(cause instanceof EngineApiError ? cause.message : `Could not ${action} this project.`);
       setBusy(false);
     }

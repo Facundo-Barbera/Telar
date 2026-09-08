@@ -137,7 +137,14 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
           is still loading — the button is disabled until it arrives, so the
           action is discoverable on the pane it belongs to rather than
           appearing a beat later. */}
-      {active === "project" && !missing && <RemoveProjectSection project={project} onChange={setProject} />}
+      {active === "project" && !missing && (
+        // KEYED BY THE PROJECT IT IS ABOUT. This page is per-route today, so
+        // the id rarely changes under a mounted pane — but "rarely" is how a
+        // remove ends up reported against the wrong record, and a key costs
+        // nothing. The section guards the same case internally; this makes the
+        // common path a clean remount rather than a recovery.
+        <RemoveProjectSection key={project?.id ?? projectId} project={project} onChange={setProject} />
+      )}
     </SettingsShell>
   );
 }
