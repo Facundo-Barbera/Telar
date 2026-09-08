@@ -74,7 +74,7 @@ import { FileKindIcon } from "@/components/session/file-icon";
  * invariant seen down the other axis — one line box per source line, so a
  * blank line cannot collapse and take the caret's row with it.
  */
-import { CODE_GEOMETRY, CodeLines } from "@/components/session/overlay-editor";
+import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "@/components/session/overlay-editor";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -800,6 +800,7 @@ export function FileViewSurface({
              */}
             <div
               aria-hidden
+              style={CODE_FONT_SIZE}
               className={cn(
                 "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
                 CODE_GEOMETRY,
@@ -818,7 +819,7 @@ export function FileViewSurface({
              * caret are the browser's own rather than something drawn.
              */}
             <div className="relative min-w-0 flex-1">
-              <pre aria-hidden data-shiki className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
+              <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
                 {/* ONE DIV PER LINE OF `lines`, which is the same array the
                     gutter beside it numbers — so the two columns cannot
                     disagree about how many lines there are. */}
@@ -826,6 +827,7 @@ export function FileViewSurface({
               </pre>
               <textarea
                 ref={textareaRef}
+                style={CODE_FONT_SIZE}
                 value={draft}
                 readOnly={!editable}
                 spellCheck={false}

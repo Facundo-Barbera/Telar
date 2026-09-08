@@ -14,7 +14,29 @@ import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { highlight, type HighlightedLine } from "@/lib/highlight";
 import { cn } from "@/lib/utils";
 
-export const CODE_GEOMETRY = "font-mono text-[0.6875rem] leading-[1.55] tracking-normal";
+export const CODE_GEOMETRY = "font-mono leading-[1.55] tracking-normal";
+
+/**
+ * THE FONT SIZE, AS AN INLINE STYLE — and it has to be, which is the whole
+ * point of this constant.
+ *
+ * globals.css carries `code, pre, kbd, samp { font-size: var(--app-font-mono-size) }`
+ * so the reader's "code a notch smaller" preference reaches every element that
+ * actually holds code. That rule is UNLAYERED, and unlayered CSS beats anything
+ * in `@layer utilities` — so a `text-[0.6875rem]` class on the `<pre>` loses to
+ * it while the same class on the `<textarea>` and on the gutter (neither is a
+ * `pre`) wins. The layers then disagree: measured in the panel, the coloured
+ * text was drawing at 13px/20.15px while the invisible text the caret follows
+ * was at 11px/17.05px, so the caret and the glyphs drifted apart by three
+ * pixels a line — half a line by line ten, four lines by line forty — and the
+ * gutter numbered lines it no longer sat beside.
+ *
+ * An inline style is the one place in the cascade that wins on all three, so
+ * all three take the SAME size, and the preference is still honoured because
+ * this is the same variable that rule reads. The fallback is what the code
+ * layer used to claim before the preference existed.
+ */
+export const CODE_FONT_SIZE = { fontSize: "var(--app-font-mono-size, 0.6875rem)" } as const;
 
 /**
  * THE COLOURED LAYER'S LINES — one `<div>` per SOURCE line, always.
@@ -109,10 +131,11 @@ export function OverlayEditor({
 
   return (
     <div className={cn("relative min-w-0", className)}>
-      <pre aria-hidden data-shiki className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
+      <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
         <CodeLines lines={lines} coloured={coloured} minRows={padded} />
       </pre>
       <textarea
+        style={CODE_FONT_SIZE}
         value={value}
         readOnly={readOnly || !onChange}
         spellCheck={false}
