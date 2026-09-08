@@ -3,7 +3,9 @@
 import type { ComponentProps, HTMLAttributes } from "react";
 import { memo } from "react";
 import { Streamdown } from "streamdown";
+import { math } from "@streamdown/math";
 import { cn } from "@/lib/utils";
+import { rehypeDisplayStandaloneMath } from "@/lib/markdown-math";
 
 /**
  * The reading lane, and who gets a bubble.
@@ -81,6 +83,35 @@ const STREAMDOWN_LIST_SPACING = "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decima
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
 /**
+ * MATH IS THE LIBRARY'S OWN PLUGIN, NOT A LOCAL PIPELINE.
+ *
+ * `@streamdown/math` is Streamdown's supported math integration — remark-math
+ * for the syntax, rehype-katex + KaTeX for the typesetting — and Streamdown
+ * appends it AFTER its sanitising defaults (`rehype-harden`), so the KaTeX
+ * markup is produced from text that has already been through the filter rather
+ * than smuggled past it. Its two defaults are the ones we want and neither is
+ * ours to relax:
+ *
+ *   • `singleDollarTextMath: false` — `$5` and `$10` in a sentence stay money.
+ *     Turning it on makes any two dollar signs in a paragraph an equation.
+ *   • KaTeX `trust: false` / `strict: "warn"` — `\href`, `\htmlClass` and the
+ *     rest of the HTML extension are refused and printed as their own names in
+ *     the muted colour, so TeX arriving from a model cannot mint a link or set
+ *     an attribute. Nothing here passes `trust`.
+ *
+ * A failed equation renders its own source in `--color-muted-foreground` (the
+ * plugin's `errorColor` default) instead of throwing, which is what makes a
+ * half-streamed `$$\frac{1}{` a quiet grey fragment rather than a crashed
+ * transcript.
+ *
+ * The stylesheet is `katex/dist/katex.min.css`, imported once in `app/layout.tsx`
+ * ahead of `globals.css` — the fonts have to be resolved by the bundler, and the
+ * app's own rules for overflow and colour have to come after it.
+ */
+const MATH_PLUGINS = { math } as const;
+const MATH_REHYPE = [rehypeDisplayStandaloneMath];
+
+/**
  * Markdown that tolerates being half-written.
  *
  * `parseIncompleteMarkdown` is what keeps a streaming answer from flickering
@@ -89,11 +120,16 @@ export type MessageResponseProps = ComponentProps<typeof Streamdown>;
  * "complete" markup the author meant literally.
  */
 export const MessageResponse = memo(
-  ({ className, streaming, children, ...props }: MessageResponseProps & { streaming?: boolean }) => (
+  ({ className, streaming, children, rehypePlugins, plugins, ...props }: MessageResponseProps & { streaming?: boolean }) => (
     <Streamdown
       className={cn("telar-markdown w-full text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", STREAMDOWN_LIST_SPACING, className)}
       mode={streaming ? "streaming" : "static"}
       parseIncompleteMarkdown={streaming === true}
+      plugins={plugins ? { ...MATH_PLUGINS, ...plugins } : MATH_PLUGINS}
+      // Ours first, then the caller's: the promotion reads the tree before
+      // rehype-katex consumes it, and a caller adding a plugin must not be able
+      // to drop math by shadowing the prop.
+      rehypePlugins={rehypePlugins ? [...MATH_REHYPE, ...rehypePlugins] : MATH_REHYPE}
       // Copy stays (a real button — keyboard and touch reach it); download
       // goes: a fenced snippet in an answer is rarely a file, and the file
       // viewer already owns that gesture for things that are.

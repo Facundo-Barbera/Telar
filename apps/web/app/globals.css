@@ -914,6 +914,58 @@ pre span[style*="--sdm-c"] {
   outline-offset: 1px;
 }
 
+/* ─── TYPESET EQUATIONS (KaTeX) ─────────────────────────────────────────────
+
+   The markup is KaTeX's, via Streamdown's math plugin; katex.min.css is
+   imported in layout.tsx ahead of this file. Three things it does not decide
+   for us, all of them about living inside a chat lane:
+
+   1. AN EQUATION MUST NOT WIDEN ITS CONTAINER. `.katex-display` is a block of
+      unbreakable inline boxes — a long derivation is simply wide, and every
+      surface that renders a message (transcript, cockpit, the 18rem side
+      panels, the file viewer) wraps it in `overflow-hidden`. Without a scroll
+      port here the tail of the equation is CLIPPED with no way to reach it;
+      with `min-width: 0` missing it would instead stretch the flex column and
+      push the whole transcript sideways. Both halves are needed.
+   2. Colour comes from `currentColor` in KaTeX's own rules, so light and dark
+      follow the surrounding prose with nothing to declare — except the MathML
+      mirror, which is hidden from sight but must stay reachable by a screen
+      reader, so it is not `display: none`d by anything here.
+   3. The vertical rhythm is the code block's, not KaTeX's 1em default, so an
+      equation and a fenced block sit at the same distance from prose. */
+.telar-markdown .katex-display {
+  margin-block: 0.75rem;
+  /* The scroll port. `overflow-y: hidden` because a tall fraction otherwise
+     earns a vertical bar on Windows/Linux from KaTeX's own strut heights. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* Room for the bar itself, so it never lands on the glyphs. */
+  padding-block: 0.125rem 0.375rem;
+}
+/* The flex columns in message.tsx are `min-w-0`, but the equation still has to
+   agree not to establish a wider intrinsic minimum. */
+.telar-markdown .katex-display > .katex {
+  max-width: 100%;
+}
+/* A narrow panel gets a smaller equation rather than a wider scroll: KaTeX's
+   1.21em default is set against body copy, and the panels already run at
+   0.75–0.8125rem. */
+.telar-markdown .katex {
+  font-size: 1.1em;
+}
+/* An equation that failed to parse — a half-streamed `$$\frac{1}{`, or TeX the
+   renderer refuses (`\href`, `\htmlClass`) — shows its own source in the muted
+   token rather than throwing. Keep it selectable and wrapping: it is text now,
+   not an equation, and it is the only clue the author has. */
+.telar-markdown .katex-error {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* `--app-font-mono`, not the `--font-mono` Tailwind bridge: this is a plain
+     declaration, and the setting lives on the former (see the typeface block). */
+  font-family: var(--app-font-mono);
+  font-size: 0.9em;
+}
+
 /* ─── THE APP OWNS ITS TITLEBAR (macOS desktop shell only) ───────────────────
 
    apps/desktop launches the window with `titleBarStyle: "hiddenInset"`, which
