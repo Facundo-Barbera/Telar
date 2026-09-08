@@ -125,7 +125,21 @@ export function NotebookSurface({ path, sessionId, active, onOpenImage }: { path
   };
   useEffect(() => {
     const pending = timers.current;
-    return () => pending.forEach((timer) => window.clearTimeout(timer));
+    return () => {
+      /**
+       * FLUSHED, NOT CANCELLED — the same rule the file editor's coordinator
+       * follows (`SaveCoordinator.dispose`). This used to clear the timers,
+       * which threw away every cell edit typed in the last half second
+       * whenever the notebook went away: closing its tab, switching to another
+       * file in the Editor, closing the panel. The saver behind the ref writes
+       * through the engine and does not need this component to still be here.
+       */
+      for (const [cellId, timer] of pending) {
+        window.clearTimeout(timer);
+        void saveCellRef.current(cellId);
+      }
+      pending.clear();
+    };
   }, []);
 
   const run = async (cellId?: string) => {

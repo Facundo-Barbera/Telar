@@ -11,6 +11,9 @@ import {
   browserPanelTab,
   describeBrowserStart,
   describePanelTab,
+  filePanelTabPath,
+  isFilePanelTab,
+  migratePanelTab,
   groupWarps,
   isLiveTask,
   isPanelTab,
@@ -18,7 +21,6 @@ import {
   issuePanelTab,
   journalWrites,
   latestBrowserState,
-  openFilePaths,
   openForgeNumbers,
   panelTabForPath,
   pdfPanelPath,
@@ -79,12 +81,6 @@ describe("journalWrites", () => {
 });
 
 describe("file tabs", () => {
-  test("a path with a colon in it survives the round trip", () => {
-    // The tab id is `file:<path>` and a colon is legal in a filename, so the
-    // split has to be on the FIRST separator only.
-    expect(openFilePaths(["files", "file:src/weird:name.ts", "browser:tab_1"])).toEqual(["src/weird:name.ts"]);
-  });
-
   test("a bare `file:` is not a tab", () => {
     // It names nothing, so restoring it from localStorage would produce a tab
     // that can only ever fail to load.
@@ -116,7 +112,37 @@ describe("pdf tabs", () => {
     expect(isPanelTab("pdf:docs/paper.pdf")).toBe(true);
     expect(isPanelTab("pdf:")).toBe(false);
     expect(describePanelTab("pdf:docs/paper.pdf").label).toBe("paper.pdf");
-    expect(openFilePaths(["pdf:docs/paper.pdf", "file:a.ts"])).toEqual(["docs/paper.pdf", "a.ts"]);
+  });
+});
+
+describe("files are the Editor's, not the strip's", () => {
+  test("every file-shaped id names a path, and a bare prefix names nothing", () => {
+    // These ids are still the vocabulary every "open this file" gesture speaks
+    // — a chip, the display tool, a compiled PDF — and the cockpit reads the
+    // path back out of them instead of minting a tab.
+    expect(filePanelTabPath("file:src/a.ts")).toBe("src/a.ts");
+    expect(filePanelTabPath("notebook:nb.ipynb")).toBe("nb.ipynb");
+    expect(filePanelTabPath("table:d.csv")).toBe("d.csv");
+    expect(filePanelTabPath("pdf:docs/paper.pdf")).toBe("docs/paper.pdf");
+    // First separator only: a colon is legal in a filename.
+    expect(filePanelTabPath("file:src/weird:name.ts")).toBe("src/weird:name.ts");
+    expect(filePanelTabPath("file:")).toBeUndefined();
+    expect(filePanelTabPath("files")).toBeUndefined();
+    expect(filePanelTabPath("diff")).toBeUndefined();
+    expect(isFilePanelTab("browser:p1")).toBe(false);
+  });
+
+  test("a panel saved with four open files restores as ONE Editor tab", () => {
+    // The defect this closes: four files pushed Diff and Issues off the end of
+    // the strip. They collapse to one id here, and `readPanelTabs` dedupes it —
+    // the files themselves are restored INTO the Editor by
+    // `editorFromLegacyTabs`, which reads the same stored ids first.
+    const stored = ["diff", "file:a.ts", "notebook:b.ipynb", "issues", "pdf:c.pdf", "table:d.csv"];
+    expect(stored.map(migratePanelTab)).toEqual(["diff", "editor", "editor", "issues", "editor", "editor"]);
+    // And the surfaces it already migrated keep migrating.
+    expect(migratePanelTab("plots")).toBe("data");
+    expect(migratePanelTab("diff")).toBe("diff");
+    expect(isPanelTab("editor")).toBe(true);
   });
 });
 
