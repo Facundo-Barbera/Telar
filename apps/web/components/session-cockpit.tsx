@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BotIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
@@ -25,6 +25,8 @@ import { actionableRequests, continuationDraft, recoverableFailedTurn } from "@/
 import { canvasHref, sessionHref } from "@/lib/session-list";
 import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
+import { newestResultTurn } from "@/lib/session-read-receipt";
+import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { questionFields } from "@/lib/question-drawer";
@@ -1960,6 +1962,14 @@ export function SessionCockpit({
           ...(session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
           ...(session.snoozedUntil === undefined ? {} : { snoozedUntil: session.snoozedUntil }),
           ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
+          // The unread pair and the read stamp, so this banner and the rail
+          // fold the SAME fields. Without them the cockpit would call a
+          // session with an unread answer settled while the row it came from
+          // says otherwise — and the banner is the thing claiming to explain
+          // the row.
+          ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
+          ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
+          ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
         },
         {
           working: session.activity === "working" || session.activity === "queued",
@@ -1989,6 +1999,48 @@ export function SessionCockpit({
   // `queued` state (an idle session's next turn, claimed within a heartbeat)
   // is not worth a row either.
   const shown = transcript.filter((turn) => turn.state !== "queued" && turn.state !== "steering" && turn.state !== "steered");
+  /**
+   * THE ANSWER A READ RECEIPT WOULD BE ABOUT — the newest turn that left a
+   * result, read off the RAW turns because only they carry the sequence the
+   * engine compares on (the journal fold is about rendering, and drops it).
+   */
+  const newestResult = useMemo(
+    /**
+     * GUARDED ON THE RECORD MATCHING THE ROUTE. Switching sessions without a
+     * remount leaves the previous conversation's turns in hand until its
+     * hydrate lands, and run ids are minted per session — so an unguarded
+     * candidate could name a run id that exists in BOTH, and confirm the wrong
+     * one. `session` and `turns` are replaced together by hydrate, so the id
+     * agreeing is the same fact as the turns being this session's.
+     */
+    () => (session?.id === sessionId ? newestResultTurn(turns) : undefined),
+    [session, sessionId, turns],
+  );
+  /**
+   * The engine's answer to a receipt. Merged FIELD BY FIELD rather than
+   * replacing the record: this response was built when the receipt was sent,
+   * and a tail that landed in between (a title, a new turn, a settle from
+   * another surface) must not be undone by a bookkeeping call. Guarded on the
+   * id for the same reason every other late answer here is — the reader may
+   * have moved on.
+   */
+  const onRead = useCallback((next: Session) => {
+    setSession((current) =>
+      current && current.id === next.id
+        ? { ...current, lastReadTurnSequence: next.lastReadTurnSequence, ...(next.readAt === undefined ? {} : { readAt: next.readAt }) }
+        : current,
+    );
+  }, []);
+  const readMarkerRef = useReadReceipt({
+    ...(sessionId ? { sessionId } : {}),
+    hostId,
+    ...(newestResult ? { candidate: newestResult } : {}),
+    ...(session?.lastReadTurnSequence === undefined ? {} : { readSequence: session.lastReadTurnSequence }),
+    // NEVER MID-HYDRATE. What is on screen during a load is the previous
+    // render, or nothing at all.
+    loading,
+    onRead,
+  });
   /**
    * The NEWEST reported usage, not the active turn's: a running turn has no
    * figures yet, and blanking the context readout the moment work starts is
@@ -2102,6 +2154,13 @@ export function SessionCockpit({
               </div>
             )}
             {shown.map((turn) => (
+              /* THE END OF THIS ANSWER, when it is the newest one — the
+                 position a read receipt is about. Inside the list rather than
+                 after it, so a turn that started AFTER the answer (a running
+                 reply the reader is watching from the bottom) cannot be
+                 mistaken for having seen the answer above it, and vice versa.
+                 See components/session/read-receipt.tsx. */
+              <Fragment key={turn.runId}>
               <SessionTurn
                 key={turn.runId}
                 turn={turn}
@@ -2117,6 +2176,8 @@ export function SessionCockpit({
                 onDiscard={(item) => void discardAmbiguous(item)}
                 {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />
+              {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={readMarkerRef} />}
+              </Fragment>
             ))}
           </ConversationContent>
           <ConversationScrollButton />
