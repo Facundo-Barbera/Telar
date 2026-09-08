@@ -344,6 +344,62 @@ describe("an old mount answering after the key has been EMPTIED", () => {
   });
 });
 
+describe("ownership does not expire", () => {
+  /**
+   * A CAPPED, OLDEST-FIRST OWNERSHIP MAP IS UNSOUND IN BOTH DIRECTIONS, and
+   * these two tests are why the cap is gone rather than tuned.
+   *
+   * Forgetting a key makes it unclaimed, and an unclaimed key accepts the next
+   * writer — so the resurrection this mechanism exists to prevent was merely
+   * postponed until enough other files had been opened. And an eviction cannot
+   * tell a dead owner's record from a live one, so the obvious repair (refuse
+   * writes to unclaimed keys) breaks the opposite case: a notebook with more
+   * cells than the cap would stop stashing the keystrokes of the very mount you
+   * are typing in.
+   */
+  const CLAIMS = 600;
+
+  test("a stale answer is still refused after hundreds of unrelated claims", async () => {
+    const first = deferred();
+    const old = mount(first.persist);
+    old.type("older text");
+    const flight = old.flush();
+    old.unmount();
+
+    const fresh = mount(async () => ({ status: "saved" }));
+    fresh.type("newer text");
+    await fresh.flush(); // the key is now empty, and B's
+
+    // Hundreds of other files and cells opened in between — the exact traffic
+    // an eviction policy would have used to forget this key.
+    for (let index = 0; index < CLAIMS; index += 1) {
+      claimDraft(SCOPE, `noise/file-${index}.ts`, newDraftOwner());
+      claimCellDraft(SCOPE, "noise.ipynb", `cell_${index}`, newDraftOwner());
+    }
+
+    first.settle({ status: "refused", reason: "conflict" });
+    await flight;
+    expect(readDraft(SCOPE, PATH)).toBeUndefined();
+  });
+
+  test("a LIVE owner can still write after hundreds of unrelated claims", () => {
+    // The other direction, and the one that would have been silent: the mount
+    // whose ownership was evicted is the one the reader is typing in.
+    const live = newDraftOwner();
+    claimDraft(SCOPE, PATH, live);
+    claimCellDraft(SCOPE, "live.ipynb", "cell_1", live);
+
+    for (let index = 0; index < CLAIMS; index += 1) {
+      claimDraft(SCOPE, `noise/file-${index}.ts`, newDraftOwner());
+      claimCellDraft(SCOPE, "noise.ipynb", `cell_${index}`, newDraftOwner());
+    }
+
+    expect(rememberDraft(SCOPE, PATH, { text: "typed much later", baseline: "sha" }, live)).toBe(true);
+    expect(readDraft(SCOPE, PATH)?.text).toBe("typed much later");
+    expect(rememberCellDraft(SCOPE, "live.ipynb", "cell_1", "typed much later", live)).toBe(true);
+  });
+});
+
 describe("a write still open when the file goes away", () => {
   test("a delayed SUCCESS after the unmount clears the stash", async () => {
     // The ordinary case, and it must not leave an edit behind to be resurrected

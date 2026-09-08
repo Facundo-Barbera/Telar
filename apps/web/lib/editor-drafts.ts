@@ -101,12 +101,24 @@ const cells = new Map<string, string>();
  */
 const owners = new Map<string, DraftOwner>();
 /**
- * How many keys keep an ownership record. They outlive their drafts by design,
- * so without a cap a long session accumulates one per file ever opened. Oldest
- * first, which is the least dangerous thing to forget: resurrecting a draft
- * would need a write still pending from more than this many files ago.
+ * AND NOTHING EVICTS FROM IT, which is a deliberate choice and not an
+ * oversight.
+ *
+ * A capped, oldest-first version of this map was the obvious way to keep it
+ * from growing, and it is unsound in both directions at once. Forgetting a key
+ * makes it unclaimed again, so the stale mount this whole mechanism exists to
+ * stop is allowed to write — the resurrection is merely delayed until 512 other
+ * files have been claimed. And the eviction cannot tell a dead owner's record
+ * from a LIVE one: a notebook with more than 512 cells evicts the ownership of
+ * cells its own mount is still typing into. Tightening "unclaimed" to "refuse"
+ * fixes the first hole by making the second one worse — the live editor's
+ * keystrokes stop being stashed.
+ *
+ * So every key keeps its owner for the life of the page. What that costs is one
+ * short string per file (or notebook cell) opened in one page session, and it
+ * buys an invariant with no expiry date in it: a key that has ever been claimed
+ * can only be written by whoever claimed it last.
  */
-const OWNER_CAP = 512;
 
 /** A separator no scope, path or cell id can contain, written as an ESCAPE
  *  rather than typed — a literal control character in source is what
@@ -122,14 +134,7 @@ function claim<T>(store: Map<string, T>, at: string, owner: DraftOwner): T | und
 }
 
 function take(at: string, owner: DraftOwner): void {
-  // Re-inserted rather than updated in place, so the eviction order below is
-  // "least recently claimed" rather than "first ever seen".
-  owners.delete(at);
   owners.set(at, owner);
-  if (owners.size > OWNER_CAP) {
-    const oldest = owners.keys().next();
-    if (!oldest.done) owners.delete(oldest.value);
-  }
 }
 
 /** May this owner write here? Yes if it holds the key, or if nobody does —
@@ -202,7 +207,7 @@ export function discardDraft(scope: string, path: string): void {
   // ownership instead would leave the key unclaimed, and an unclaimed key
   // accepts the next writer — including the mount whose refused write is still
   // in the air, which would put the discarded text straight back.
-  owners.set(at, newDraftOwner());
+  take(at, newDraftOwner());
 }
 
 /**
