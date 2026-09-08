@@ -64,6 +64,15 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     // project before showing the panel, so a human-opened tab lands in the
     // right cookie jar even before the first agent turn.
     bindProfile: (scopeKey, profileKey) => ipcRenderer.invoke("telar:browser:bind-profile", { scopeKey, profileKey }),
+    // NAMED, REUSABLE PROFILES: several projects may share one identity, and a
+    // person switches which one a session's next tab opens in from the panel.
+    // No delete: a profile record is the only name a live cookie jar has.
+    profiles: (scopeKey) => ipcRenderer.invoke("telar:browser:profiles", scopeKey),
+    createProfile: (input) => ipcRenderer.invoke("telar:browser:create-profile", input),
+    updateProfile: (input) => ipcRenderer.invoke("telar:browser:update-profile", input),
+    setDefaultProfile: (profileId) => ipcRenderer.invoke("telar:browser:set-default-profile", { profileId }),
+    assignProjectProfile: (input) => ipcRenderer.invoke("telar:browser:assign-project-profile", input),
+    setScopeProfile: (scopeKey, profileId) => ipcRenderer.invoke("telar:browser:set-scope-profile", { scopeKey, profileId }),
     extensionStatus: (scopeKey) => ipcRenderer.invoke("telar:browser:extension-status", scopeKey),
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
     resumeFromPrivate: () => ipcRenderer.invoke("telar:browser:private-resume"),

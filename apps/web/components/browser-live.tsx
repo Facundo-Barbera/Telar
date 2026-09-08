@@ -19,7 +19,7 @@
  * follow (ResizeObserver does not report an ancestor's flex animation).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import { ArrowLeftIcon, ArrowRightIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, XIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, KeyRoundIcon, Loader2Icon, MoonIcon, PlusIcon, RotateCwIcon, ScalingIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { BrowserStartPage } from "@/components/browser-start-page";
 import { Button } from "@/components/ui/button";
 import { describeViewport, fitViewport, parseViewportInput, resizeByDrag, resizeByKey, stageOf, VIEWPORT_PRESETS, VIEWPORT_RAIL, type ResizeDirection, type ViewportMode, type ViewportPresetKey } from "@/lib/browser-viewport";
@@ -53,6 +53,25 @@ export type DesktopBrowserTab = {
   /** The tab's own intrinsic viewport, which preset it is (if any), and
    *  whether it is fixed or follows the panel. */
   viewport?: { width: number; height: number; preset: ViewportPresetKey | null; mode?: ViewportMode };
+  /** WHICH IDENTITY this tab is signed into. A tab opened before the session's
+   *  profile was switched keeps its own — it is not silently re-pointed — and
+   *  the strip says so rather than letting it look like the current one. */
+  profileId?: string | null;
+};
+
+/**
+ * A NAMED BROWSER IDENTITY — cookies, storage and extension state that several
+ * projects may share, or that one project keeps to itself. `account` is what a
+ * person SAID the profile is for; nothing verifies a login against it.
+ */
+export type DesktopBrowserProfile = {
+  id: string;
+  label: string;
+  account?: string;
+  partition: string;
+  isDefault?: boolean;
+  /** The project keys assigned to this profile — how sharing is made visible. */
+  projects?: string[];
 };
 
 /** The credential boundary, as the shell reports it (private-interaction.js). */
@@ -74,6 +93,13 @@ export type DesktopBrowserPanelState = {
   tabs: DesktopBrowserTab[];
   privacy?: DesktopPrivacyState;
   presentation?: DesktopBrowserPresentation | null;
+  /** The identity this session's NEXT tab opens in, and every identity it
+   *  could be switched to. Null before the profile binding lands. */
+  profile?: DesktopBrowserProfile | null;
+  profiles?: DesktopBrowserProfile[];
+  /** The project key this session declared — what "use for this project"
+   *  assigns. Null for a session with no project. */
+  profileKey?: string | null;
 };
 
 /** The password-manager extension's status (extension-host.js). */
@@ -134,7 +160,19 @@ export type DesktopBrowserBridge = {
   onState(listener: (state: DesktopBrowserPanelState) => void): () => void;
   /** Bind this session's browser scope to its project profile (per-project
    *  cookies). Idempotent; the engine does the same before agent turns. */
-  bindProfile?(scopeKey: string, profileKey: string): Promise<{ scopeKey: string; profileKey: string; partition: string }>;
+  bindProfile?(scopeKey: string, profileKey: string): Promise<{ scopeKey: string; profileKey: string; partition: string; profileId?: string; label?: string }>;
+  /**
+   * NAMED PROFILES. Create and rename identities, choose the global default,
+   * assign this session's project, and switch which identity the session's NEXT
+   * tab opens in. There is no delete: a profile record is the only name a live
+   * cookie jar has, so removing one would strand or destroy an identity
+   * somebody is still signed into.
+   */
+  createProfile?(input: { label: string; account?: string; scopeKey?: string; assignProject?: boolean }): Promise<{ profiles: DesktopBrowserProfile[]; active: DesktopBrowserProfile }>;
+  updateProfile?(input: { profileId: string; label?: string; account?: string }): Promise<{ profiles: DesktopBrowserProfile[] }>;
+  setDefaultProfile?(profileId: string): Promise<{ profiles: DesktopBrowserProfile[] }>;
+  assignProjectProfile?(input: { scopeKey: string; profileId: string | null }): Promise<{ profiles: DesktopBrowserProfile[] }>;
+  setScopeProfile?(scopeKey: string, profileId: string): Promise<{ profileId: string; partition: string }>;
   extensionStatus?(scopeKey: string): Promise<DesktopExtensionStatus>;
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
   resumeFromPrivate?(): Promise<DesktopPrivacyState>;
@@ -442,6 +480,10 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
   }, [bridge, scope, sessionId]);
   const activeTab = state?.tabs.find((tab) => tab.active);
   // Advisory, per tab: the mark speaks about the tab you are LOOKING at.
+  /** The inline profile row: open/closed, and a new profile being typed. */
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [newProfileLabel, setNewProfileLabel] = useState("");
+  const [newProfileAccount, setNewProfileAccount] = useState("");
   /** The inline viewport row: open/closed, and a custom size being typed. */
   const [viewportOpen, setViewportOpen] = useState(false);
   const [customSize, setCustomSize] = useState("");
@@ -500,7 +542,7 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
     bridge,
     sessionId,
     hostRef,
-    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, viewportOpen, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
+    [activeTab?.id, activeTab?.viewport?.width, activeTab?.viewport?.height, viewportMode, viewportOpen, profileOpen, Boolean(actionError), Boolean(extensionError), activeTab?.sleeping].join("|"),
     viewportMode,
   );
 
@@ -539,6 +581,27 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
       unsubscribe?.();
     };
   }, [bridge, bindNow, scope, sessionId]);
+
+  /**
+   * One profile action, then a refresh. Every one of these changes what the
+   * NEXT tab opens in and nothing about the tabs already open, so there is no
+   * scope-guard subtlety beyond dropping a result for a session you left.
+   */
+  const profileAction = useCallback(
+    async (run: () => Promise<unknown>) => {
+      const gen = scope.capture();
+      try {
+        await run();
+        if (!scope.isCurrent(gen)) return;
+        setActionError(undefined);
+        await refresh();
+      } catch (error) {
+        if (!scope.isCurrent(gen) || error instanceof StaleScopeError) return;
+        setActionError(error instanceof Error ? error.message : "That browser profile change could not be applied.");
+      }
+    },
+    [refresh, scope],
+  );
 
   const openPasswordManager = useCallback(async () => {
     if (!bridge.openExtensionPopup) return;
@@ -660,6 +723,17 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
               // eslint-disable-next-line @next/next/no-img-element -- page-supplied favicon URL; nothing for next/image here
               <img src={tab.favicon} alt="" aria-hidden className="size-3 shrink-0 rounded-[2px]" />
             ) : null}
+            {/* A tab from ANOTHER identity, kept where it was when the session
+                switched profiles. Said plainly rather than left to look like
+                the current one. */}
+            {state?.profile && tab.profileId && tab.profileId !== state.profile.id ? (
+              <span
+                title={`Signed in as ${state.profiles?.find((profile) => profile.id === tab.profileId)?.label ?? "another profile"} — the profile this tab was opened in`}
+                className="flex shrink-0"
+              >
+                <UserRoundIcon aria-label="Another browser profile" className="size-3 text-warning" />
+              </span>
+            ) : null}
             <span
               aria-label={tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}
               title={`${tab.openedBy === "human" ? "Opened by you" : "Opened by the agent"}${tab.controller === "agent" ? " · agent acting" : tab.agentFocus ? " · the agent is working here" : ""}`}
@@ -757,6 +831,26 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
             {viewportMode === "fixed" && state?.presentation && state.presentation.scale < 1 ? <span className="text-muted-foreground/70">{Math.round(state.presentation.scale * 100)}%</span> : null}
           </button>
         ) : null}
+        {/* WHICH IDENTITY THIS SESSION BROWSES AS. Always visible when the
+            shell knows: a person with several accounts should never have to
+            guess which one a page was loaded with. */}
+        {state?.profile && bridge.setScopeProfile ? (
+          <button
+            type="button"
+            aria-label={`Browser profile: ${state.profile.label}${state.profile.account ? ` (${state.profile.account})` : ""}`}
+            aria-expanded={profileOpen}
+            aria-controls="telar-browser-profile-row"
+            title={`Browser profile ${state.profile.label}${state.profile.account ? ` · expected account ${state.profile.account}` : ""}\nNew tabs open signed in as this profile.`}
+            onClick={() => setProfileOpen((open) => !open)}
+            className={cn(
+              "flex min-w-0 shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[0.625rem] text-muted-foreground hover:bg-muted hover:text-foreground",
+              profileOpen && "bg-muted text-foreground",
+            )}
+          >
+            <UserRoundIcon className="size-3.5 shrink-0" />
+            <span className="max-w-28 truncate">{state.profile.label}</span>
+          </button>
+        ) : null}
         {/* Opening the extension does not take control of the browser. */}
         {extension && extension.phase !== "unavailable" ? (
           <button
@@ -791,6 +885,123 @@ export function DesktopBrowserSurface({ bridge, sessionId, projectId }: { bridge
           </button>
         ) : null}
       </form>
+      {/* THE PROFILE ROW — inline for the same reason the viewport row is:
+          the native view is composited above the DOM, so a portal menu would
+          be hidden behind the page.
+
+          SWITCHING CHANGES WHERE THE NEXT TAB OPENS. Tabs already open keep
+          the identity they were signed into — Chromium cannot move a live page
+          between cookie jars, and doing it silently would put the agent on the
+          wrong account — so the row says so instead of pretending. */}
+      {profileOpen && state?.profile && (
+        <div id="telar-browser-profile-row" role="group" aria-label="Browser profile" className="flex shrink-0 flex-col gap-1.5 border-b border-border px-2 py-1.5">
+          <div className="flex flex-wrap items-center gap-1">
+            {(state.profiles ?? []).map((profile) => (
+              <button
+                key={profile.id}
+                type="button"
+                aria-pressed={profile.id === state.profile?.id}
+                title={[
+                  profile.account ? `Expected account ${profile.account}` : "No expected account set",
+                  profile.projects?.length ? `Used by ${profile.projects.length} project${profile.projects.length === 1 ? "" : "s"}` : "Not assigned to a project",
+                  profile.isDefault ? "The default for new projects" : "",
+                ].filter(Boolean).join("\n")}
+                onClick={() => void profileAction(() => bridge.setScopeProfile!(sessionId, profile.id))}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-2 py-0.5 text-[0.6875rem]",
+                  profile.id === state.profile?.id ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                )}
+              >
+                <span className="max-w-40 truncate">{profile.label}</span>
+                {profile.account && <span className="max-w-40 truncate font-mono text-[0.625rem] opacity-70">{profile.account}</span>}
+                {profile.isDefault && <span className="text-[0.625rem] opacity-70">default</span>}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            {bridge.assignProjectProfile && state.profileKey && state.profileKey !== "none" && (
+              <button
+                type="button"
+                title="Every session of this project opens in this profile from now on."
+                onClick={() => void profileAction(() => bridge.assignProjectProfile!({ scopeKey: sessionId, profileId: state.profile!.id }))}
+                className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              >
+                Use for this project
+              </button>
+            )}
+            {bridge.setDefaultProfile && !state.profile.isDefault && (
+              <button
+                type="button"
+                title="New projects with no browsing history of their own join this profile. Projects already signed in somewhere are not moved."
+                onClick={() => void profileAction(() => bridge.setDefaultProfile!(state.profile!.id))}
+                className="rounded-md px-2 py-0.5 text-[0.6875rem] text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              >
+                Make default
+              </button>
+            )}
+            {bridge.updateProfile && (
+              <form
+                className="ml-auto flex items-center gap-1"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const label = new FormData(event.currentTarget).get("label");
+                  if (typeof label !== "string" || !label.trim()) return;
+                  void profileAction(() => bridge.updateProfile!({ profileId: state.profile!.id, label }));
+                }}
+              >
+                <input
+                  key={state.profile.id}
+                  name="label"
+                  aria-label="Rename this profile"
+                  defaultValue={state.profile.label}
+                  className="h-6 w-32 rounded-md border border-transparent bg-muted/60 px-2 text-[0.6875rem] outline-none focus:border-ring"
+                />
+                <Button type="submit" size="sm" variant="ghost" className="h-6 px-2 text-[0.6875rem]">
+                  Rename
+                </Button>
+              </form>
+            )}
+          </div>
+          {bridge.createProfile && (
+            <form
+              className="flex items-center gap-1"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!newProfileLabel.trim()) return;
+                const label = newProfileLabel;
+                const account = newProfileAccount.trim();
+                setNewProfileLabel("");
+                setNewProfileAccount("");
+                void profileAction(() =>
+                  bridge.createProfile!({ label, ...(account ? { account } : {}), scopeKey: sessionId }),
+                );
+              }}
+            >
+              <input
+                aria-label="New profile name"
+                placeholder="New profile"
+                value={newProfileLabel}
+                onChange={(event) => setNewProfileLabel(event.target.value)}
+                className="h-6 w-32 rounded-md border border-transparent bg-muted/60 px-2 text-[0.6875rem] outline-none focus:border-ring"
+              />
+              <input
+                aria-label="Expected account for the new profile"
+                placeholder="account (optional)"
+                value={newProfileAccount}
+                onChange={(event) => setNewProfileAccount(event.target.value)}
+                className="h-6 w-40 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-[0.625rem] outline-none focus:border-ring"
+              />
+              <Button type="submit" size="sm" variant="ghost" disabled={!newProfileLabel.trim()} className="h-6 px-2 text-[0.6875rem]">
+                Add and use
+              </Button>
+            </form>
+          )}
+          <p className="text-[0.625rem] text-muted-foreground">
+            Switching changes where the next tab opens. Tabs already open stay signed in as the profile they were opened with — an
+            expected account is what you intend, not a verified login.
+          </p>
+        </div>
+      )}
       {/* THE VIEWPORT ROW — INLINE, NOT A POPOVER. The native WebContentsView
           is composited ABOVE the renderer's DOM, so a portal menu dropped
           over the page would be hidden behind it. This row lives in the

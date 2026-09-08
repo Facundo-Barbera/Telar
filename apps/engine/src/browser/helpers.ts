@@ -23,6 +23,22 @@ export type BrowserTabInfo = {
    *  "which page am I on" must mean this one, not `active`. Absent from hosts
    *  that do not report it (the headless runtime has no human to differ from). */
   agentFocus?: boolean;
+  /**
+   * The named browser profile THIS TAB is signed into — not the session's
+   * next-tab default, which is a different thing the moment a person switches
+   * profiles with tabs open. Absent from a host with no named profiles, and
+   * absent means UNKNOWN: the credential path asks a human rather than
+   * assuming an identity.
+   */
+  profileId?: string;
+  profileLabel?: string;
+  /**
+   * The HOST's id for this tab. `index` is a position: closing a tab renumbers
+   * every tab after it, so an index captured before an await can name a
+   * different page afterwards. A caller that must act on the tab it inspected
+   * compares this. Absent from hosts that only address by position.
+   */
+  tabUid?: string;
 };
 
 /**
@@ -218,6 +234,30 @@ export function imageDataUrlOf(result: BrowserToolResult): string | null {
  * pattern picks URLs out of arbitrary prose, and then an error message
  * mentioning a link renders as a browser tab that does not exist.
  */
+/** `profile=<id>, profile-label=<percent-encoded>` out of the host's per-tab
+ *  metadata suffix. A malformed label costs the label, never the id. */
+/** The host's own id for this tab, which — unlike `index` — survives another
+ *  tab closing. Absent from hosts that address tabs only by position. */
+function tabUidFromMeta(meta: string): { tabUid?: string } {
+  const uid = /(?:^|,)\s*tab=([^,\s}]+)/i.exec(meta)?.[1];
+  return uid ? { tabUid: uid } : {};
+}
+
+function profileFromMeta(meta: string): { profileId?: string; profileLabel?: string } {
+  const id = /(?:^|,)\s*profile=([^,\s}]+)/i.exec(meta)?.[1];
+  if (!id) return {};
+  const rawLabel = /(?:^|,)\s*profile-label=([^,\s}]*)/i.exec(meta)?.[1];
+  let label: string | undefined;
+  if (rawLabel) {
+    try {
+      label = decodeURIComponent(rawLabel);
+    } catch {
+      label = undefined;
+    }
+  }
+  return { profileId: id, ...(label ? { profileLabel: label } : {}) };
+}
+
 export function parseBrowserTabs(text: string): BrowserTabInfo[] {
   const tabs: BrowserTabInfo[] = [];
   for (const line of text.split("\n")) {
@@ -240,6 +280,11 @@ export function parseBrowserTabs(text: string): BrowserTabInfo[] {
       url,
       active: Boolean(match[2] || match[7]),
       ...(/(^|,)\s*yours\s*(,|$)/i.test(meta) ? { agentFocus: true } : {}),
+      // The browser profile THIS TAB is signed into. Present only from a host
+      // with named profiles; the credential path treats absent as "unknown"
+      // and asks a human rather than assuming the session's default.
+      ...tabUidFromMeta(meta),
+      ...profileFromMeta(meta),
     });
   }
   return tabs;

@@ -874,7 +874,15 @@ describe("the shared-browser interaction model — human input wins, agent defer
     expect(manager.state("s").tabs[0].controller).toBe("human");
     // `yours` rides in the same braces: the one tab is both what the human is
     // looking at and where the agent's calls land.
-    expect(textOf(await manager.callTool("s", "browser_tabs", { action: "list" }))).toMatch(/\{controller=human, opened-by=agent, yours\}/);
+    // The braces also carry the tab's own id and the profile it is signed into
+    // (the credential path binds to the identity of the page it types into, and
+    // `tabId` is a position that renumbers), so this asserts the facts rather
+    // than the exact suffix.
+    const listed = textOf(await manager.callTool("s", "browser_tabs", { action: "list" }));
+    expect(listed).toMatch(/controller=human, opened-by=agent/);
+    expect(listed).toMatch(/\byours\}/);
+    expect(listed).toMatch(/\{tab=[^,}]+,/);
+    expect(listed).toMatch(/profile=bp_[a-f0-9]{16}/);
     clock.t += 2_000;
     expect(manager.state("s").tabs[0].controller).toBe("idle");
     expect(typeof manager.handBack).toBe("undefined");
@@ -1306,7 +1314,9 @@ describe("per-project browser profiles", () => {
   });
   test("the legacy partition is used only by its declared owner", () => {
     const { manager } = makeHarness();
-    manager.profileMapping = { legacyOwnerProjectId: "project_cccccccccccccccccccccccccccccccc" };
+    manager.profiles.document.legacyOwnerProjectId = "project_cccccccccccccccccccccccccccccccc";
+    // The legacy jar exists on disk; the ladder adopts it for its owner only.
+    manager.profiles.partitionExists = (partition) => partition === "persist:telar-integrated-browser";
     manager.declareProfile("owner", "project_cccccccccccccccccccccccccccccccc");
     manager.declareProfile("other", "project_dddddddddddddddddddddddddddddddd");
     expect(manager.partitionOf("owner")).toBe("persist:telar-integrated-browser");
@@ -1332,6 +1342,69 @@ describe("per-project browser profiles", () => {
     // A's tab never reached B's host.
     expect(hostsByPartition.get(pa).added[0]).not.toBe(hostsByPartition.get(pb).added[0]);
   });
+  test("switching a session's profile leaves its open tabs in the identity they were signed into", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await manager.createTab("s", "https://one.example");
+    const before = manager.scopeTabs("s")[0];
+    const beforePartition = before.partition;
+    const view = before.view;
+
+    const other = manager.profiles.create({ label: "Other" });
+    const binding = manager.setScopeProfile("s", other.id);
+    expect(binding.profileId).toBe(other.id);
+    // The live tab did not move: same WebContents, same partition, same jar.
+    expect(before.view).toBe(view);
+    expect(before.partition).toBe(beforePartition);
+    expect(before.profileId).not.toBe(other.id);
+
+    await manager.createTab("s", "https://two.example");
+    const [old, fresh] = manager.scopeTabs("s");
+    expect(old.partition).toBe(beforePartition);
+    expect(fresh.partition).toBe(other.partition);
+    // And the panel can tell them apart.
+    const state = manager.state("s");
+    expect(state.profile.id).toBe(other.id);
+    expect(state.tabs.map((tab) => tab.profileId)).toEqual([old.profileId, other.id]);
+  });
+
+  test("a session's own profile choice survives the engine re-declaring the same project every turn", () => {
+    const { manager } = makeHarness();
+    const project = "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    manager.declareProfile("s", project);
+    const chosen = manager.profiles.create({ label: "Chosen" });
+    manager.setScopeProfile("s", chosen.id);
+    expect(manager.declareProfile("s", project).profileId).toBe(chosen.id);
+    expect(manager.partitionOf("s")).toBe(chosen.partition);
+  });
+
+  test("a project assigned to a profile puts every one of its sessions in that identity", () => {
+    const { manager } = makeHarness();
+    const shared = manager.profiles.create({ label: "Shared" });
+    manager.profiles.assign("project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", shared.id);
+    manager.profiles.assign("project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", shared.id);
+    manager.declareProfile("a", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    manager.declareProfile("b", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    expect(manager.partitionOf("a")).toBe(shared.partition);
+    expect(manager.partitionOf("b")).toBe(shared.partition);
+    // Unassigned, a project with no jar of its own falls to the DEFAULT — and
+    // with a different default it lands somewhere else entirely.
+    const personal = manager.profiles.create({ label: "Personal" });
+    manager.profiles.setDefault(personal.id);
+    manager.profiles.assign("project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", null);
+    expect(manager.declareProfile("b2", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").partition).toBe(personal.partition);
+    // The project that IS assigned did not move with the default.
+    expect(manager.declareProfile("a2", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").partition).toBe(shared.partition);
+  });
+
+  test("a scope that would switch PROJECT with tabs open is refused, and a dangling profile id is never guessed", async () => {
+    const { manager } = makeHarness();
+    manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    await manager.createTab("s", "https://one.example");
+    expect(() => manager.declareProfile("s", "none")).toThrow(/already has tabs in profile/);
+    expect(() => manager.setScopeProfile("s", "bp_00000000000000ff")).toThrow(/No browser profile/);
+  });
+
   test("adopt refuses tabs from a different profile", async () => {
     const { manager } = makeHarness();
     manager.declareProfile("from", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
@@ -1380,7 +1453,7 @@ describe("the persisted tab inventory — the manager owns tab lifetime across r
     await manager.resizeTab(manager.scopeTabs("s1")[1], { preset: "phone" });
     await manager.selectTab("s1", 0);
     let doc = store.latest();
-    expect(doc.scopes.s1.profileKey).toBe(PROJECT);
+    expect(doc.scopes.s1.projectKey).toBe(PROJECT);
     expect(doc.scopes.s1.activeTabId).toBe("tab-1");
     expect(doc.scopes.s1.tabs.map((tab) => [tab.id, tab.url, tab.openedBy, tab.viewport])).toEqual([
       ["tab-1", "https://one.example/", "human", undefined],
@@ -1678,7 +1751,9 @@ describe("fit-to-panel viewport mode", () => {
     await manager.resizeTab(manager.activeTab("s"), { mode: "fit" });
     const doc = writes.at(-1);
     expect(doc.scopes.s.tabs[0]).toMatchObject({ viewport: { width: 640, height: 400 }, viewportMode: "fit" });
-    const restored = new DesktopBrowserManager(window, { createId: () => "x", createView: () => new FakeView(), wait: async () => {}, tabStore: { load: () => doc, save: () => {}, flushSync: () => {} } });
+    // The registry is a FILE in the app; a restart reads the same one, which is
+    // what lets a remembered tab find the profile it names.
+    const restored = new DesktopBrowserManager(window, { createId: () => "x", createView: () => new FakeView(), wait: async () => {}, profiles: manager.profiles, tabStore: { load: () => doc, save: () => {}, flushSync: () => {} } });
     restored.ensureAutoRelease = () => {};
     expect(restored.state("s").tabs[0].viewport).toEqual({ width: 640, height: 400, preset: null, mode: "fit" });
   });
