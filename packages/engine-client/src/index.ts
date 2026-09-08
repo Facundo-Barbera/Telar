@@ -1553,6 +1553,20 @@ export class EngineClient {
   }
 
   /**
+   * A HUMAN WAS SHOWN THIS TURN'S RESULT — the read receipt behind unread.
+   *
+   * NAMES THE TURN, NOT A TIME. A "read as of now" would swallow whatever
+   * finished between the render being reported on and this request landing,
+   * which is exactly the answer nobody has seen. The engine keeps the highest
+   * result sequence anybody has confirmed, so a late or duplicate receipt is a
+   * no-op rather than a regression, and a turn that is still running — or was
+   * steered or discarded — is refused.
+   */
+  markSessionRead(sessionId: string, runId: string): Promise<{ session: Session }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/read`, { runId });
+  }
+
+  /**
    * Change a live session. `runtimeMode` takes effect on the very NEXT tool
    * call, including inside a turn that is already running — it is the brake a
    * human reaches for when a detached session does something unexpected.

@@ -371,6 +371,15 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
         snoozedUntil?: number | null;
       },
     ) => request<{ session: Session }>(fetcher, "PATCH", `/api/sessions/${encodeURIComponent(sessionId)}`, patch),
+    /**
+     * A HUMAN WAS SHOWN THIS TURN'S RESULT. Names the turn rather than a time,
+     * so a receipt that lands after newer work cannot mark that work read —
+     * the engine keeps the highest sequence and ignores the rest. Sent from
+     * the cockpit only when the answer is actually on screen; see
+     * `lib/session-read-receipt.ts`.
+     */
+    markSessionRead: (sessionId: string, runId: string) =>
+      request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/read`, { runId }),
     /** Computer use, measured — slow by design (one subprocess round trip in
      *  the engine), and the probe doubles as the macOS granting flow. */
     computerUseStatus: () => request<{ computerUse: ComputerUseStatus }>(fetcher, "GET", "/api/computer-use"),

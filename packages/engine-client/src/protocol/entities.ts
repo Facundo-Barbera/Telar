@@ -563,6 +563,33 @@ export const Session = z.object({
    * zero.
    */
   lastTurnEndedAt: Timestamp.optional(),
+  /**
+   * IS THERE AN ANSWER NOBODY HAS READ — the pair, and the two halves are
+   * deliberately different kinds of thing.
+   *
+   * `lastTurnSequence` is DERIVED, off the same queue read as `activity`: the
+   * sequence of the newest turn that left a RESULT (completed, failed or
+   * stopped). Not the newest turn that ENDED — a message steered into a
+   * running turn and a discarded recovery both end, and neither is an answer
+   * to read. A session that has never produced a result has none, which is
+   * why absent means "nothing to read" rather than "unknown".
+   *
+   * `lastReadTurnSequence` is PERSISTED, and only moves forward: it is the
+   * highest result a human has actually been shown, so a receipt that arrives
+   * after newer work landed cannot mark that newer work read. Comparing the
+   * two is the whole of unread — no counter, no per-client bookkeeping, and
+   * the same answer on every device.
+   *
+   * WHY A SEQUENCE RATHER THAN A TIMESTAMP: a clock can tie, or step
+   * backwards, and says nothing about which of two turns came first.
+   * `readAt` rides along for the inactivity rule (see `session-settling.ts`),
+   * never for ordering.
+   */
+  lastTurnSequence: z.number().int().positive().optional(),
+  lastReadTurnSequence: z.number().int().positive().optional(),
+  /** When the newest read receipt landed. Never bumps `updatedAt`: reading a
+   *  session is a fact about the reader, not work the session did. */
+  readAt: Timestamp.optional(),
   lastTurnFailed: z.boolean().optional(),
 
   /**
@@ -581,10 +608,13 @@ export const Session = z.object({
    *     shelves a session the inactivity rule would have kept; "active" keeps
    *     one the inactivity rule would have shelved. Absent means "let the rule
    *     decide", which is a third answer neither boolean can express.
-   *   - AN OVERRIDE NEVER GOES STALE SILENTLY: the engine clears it when real
-   *     activity happens (a turn is queued), so a settled session that gets a
-   *     new message comes back on its own rather than staying hidden while it
-   *     works.
+   *   - A SETTLE NEVER GOES STALE SILENTLY, AND A PIN IS NEVER CLEARED BY
+   *     WORK: queueing a turn lifts a "settled" override, so a shelved session
+   *     that gets a new message comes back on its own rather than staying
+   *     hidden while it works — but an "active" pin survives every turn, wake
+   *     and peer message. The two directions are opposite decisions in one
+   *     field, and treating "new work" as reason to drop either of them threw
+   *     away pins the reader had set on purpose.
    *   - A SNOOZE IS AN OVERLAY, NOT A STATE. The session stays exactly as
    *     active as it was; it is only suppressed from the list until its wake
    *     time — and clients raise its hand early when something outranks the
@@ -594,8 +624,7 @@ export const Session = z.object({
    * WHY THE ENGINE HOLDS THEM AT ALL, rather than a browser's local storage:
    * the same sessions are read from the desktop shell, a browser tab and
    * whatever else attaches, and an inbox that disagrees with itself per client
-   * is not an inbox. `readAt` is deliberately still absent — see
-   * `apps/web/lib/session-list.ts` for what unread would need.
+   * is not an inbox. Read receipts above are also engine-owned.
    */
   settledOverride: z.enum(["settled", "active"]).optional(),
   /** When the override was set. Its age is what lets a client tell an old
