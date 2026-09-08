@@ -4008,6 +4008,51 @@ export class EngineStore {
     return structuredClone(project);
   }
 
+  /**
+   * TAKE A PROJECT OFF THE REGISTRY. Nothing on disk is touched.
+   *
+   * WHAT THIS IS: the inverse of `registerProject` and nothing more. The
+   * repository, its git metadata, every worktree cut from it, the session
+   * journal of every session that ran on it and the browser profiles those
+   * sessions used all stay exactly where they are. Telar forgets WHERE the
+   * project is; it does not forget, move or delete anything the project owns.
+   * Registering the same path again brings it back — under a NEW id, because
+   * the id is Telar's handle on the registration and not on the directory.
+   *
+   * WHY IT REFUSES WITH WORK IN FLIGHT. A session's turns are claimed by a
+   * worker that resolves its project by id on every step, so pulling the
+   * registration out from under a running turn turns a live conversation into
+   * a stream of "project does not exist" — silently, in a surface the person
+   * is not looking at. Refusing is the conservative half of that choice: the
+   * ONLY safe alternatives are stopping their work or letting it break, and
+   * neither is something a settings row should do without being asked. Idle
+   * sessions are left registered against a project id that no longer resolves,
+   * which every surface already renders as the honest "no registered project"
+   * — the same state a session whose checkout was deleted has always been in.
+   */
+  unregisterProject(projectId: string): { project: Project; sessions: number } {
+    assertId(projectId, "project id");
+    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const parsed = parseRegistry(registry);
+    const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
+    if (index < 0) throw new EngineStateError("not_found", "project does not exist");
+    const sessions = this.readSessions().filter((session) => session.projectId === projectId);
+    const busy = sessions.filter((session) =>
+      this.turns(session.id).some((turn) => turn.state === "queued" || turn.state === "claimed" || turn.state === "running"),
+    );
+    if (busy.length > 0) {
+      throw new EngineStateError(
+        "conflict",
+        `this project has ${busy.length === 1 ? "a session with work in flight" : `${busy.length} sessions with work in flight`} — let them finish or stop them first`,
+      );
+    }
+    const [project] = parsed.projects.splice(index, 1);
+    atomicWrite(this.paths.projects, parsed);
+    this.forgetProjectIcon(projectId);
+    this.projectMetadataCache.delete(projectId);
+    return { project: structuredClone(project!), sessions: sessions.length };
+  }
+
   getProject(projectId: string): Project {
     assertId(projectId, "project id");
     const registry = readJson(this.paths.projects);

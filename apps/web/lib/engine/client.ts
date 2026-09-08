@@ -164,6 +164,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
     updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }) =>
       request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
+    /** Take a project off the registry. Nothing on disk is touched — see the
+     *  engine client's `unregisterProject`. 409 while a session on it is
+     *  working. */
+    unregisterProject: (projectId: string) =>
+      request<{ project: Project; sessions: number }>(fetcher, "DELETE", `/api/projects/${encodeURIComponent(projectId)}`),
     /** Spawns each interpreter it finds — open a page, never poll. */
     dataScienceEnvironments: (projectId: string) =>
       request<DataScienceEnvironments>(fetcher, "GET", `/api/projects/${encodeURIComponent(projectId)}/data-science/environments`),

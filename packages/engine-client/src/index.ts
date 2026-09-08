@@ -325,6 +325,21 @@ export class EngineClient {
     return this.request("POST", "/v2/projects", input);
   }
 
+  /**
+   * Take a project off the registry. NOT A DELETE OF THE PROJECT: the
+   * checkout, its git metadata, its worktrees, the journals of every session
+   * that ran on it and those sessions' browser profiles are all left alone,
+   * and `registerProject` on the same root brings it back under a new id.
+   *
+   * 409 when a session on that project has work in flight — the engine will
+   * not quietly pull a registration out from under a running turn.
+   * `sessions` counts the session records now pointing at an id that no
+   * longer resolves.
+   */
+  unregisterProject(projectId: string): Promise<{ project: Project; sessions: number }> {
+    return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}`);
+  }
+
   /** Move a project's opt-in switches. `dataScience: null` / `latex: null` turn them off. */
   updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Promise<{ project: Project }> {
     return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}`, patch);

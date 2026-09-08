@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { DataScienceSection } from "./data-science-section";
 import { LatexSection } from "./latex-section";
 import { McpSection } from "./mcp-section";
+import { RemoveProjectSection } from "./remove-project-section";
 import { Row, SettingsGroup, SettingsShell, type SettingsSection } from "./settings-shell";
 import { useSectionFromUrl } from "./use-section-from-url";
 
@@ -127,6 +128,12 @@ export function ProjectSettingsPage({ projectId }: { projectId: string }) {
           <Row label="Id" hint="What sessions and MCP servers store." control={<code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem]">{projectId}</code>} />
         </SettingsGroup>
       )}
+
+      {/* BENEATH THE IDENTITY IT FORGETS, and rendered even while the project
+          is still loading — the button is disabled until it arrives, so the
+          action is discoverable on the pane it belongs to rather than
+          appearing a beat later. */}
+      {active === "project" && !missing && <RemoveProjectSection project={project} />}
     </SettingsShell>
   );
 }

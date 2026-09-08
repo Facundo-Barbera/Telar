@@ -2165,6 +2165,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return;
       }
       /**
+       * UNREGISTER. A DELETE on the registration, NOT on the project: the
+       * checkout, its worktrees, its sessions' journals and their browser
+       * profiles are all untouched, and re-POSTing the same root registers it
+       * again. `sessions` in the answer is how many session records are now
+       * pointed at an id that no longer resolves — the surface says so rather
+       * than the engine tidying them away.
+       */
+      if (request.method === "DELETE" && projectPatch) {
+        writeJson(response, 200, store.unregisterProject(decodeURIComponent(projectPatch[1])));
+        return;
+      }
+      /**
        * THE ENVIRONMENT MANAGER'S READ: every environment a project could run
        * on, each probed, plus the toolchain and the checkout's dependency
        * manifests. A LIST, so the settings page can ask rather than the engine
