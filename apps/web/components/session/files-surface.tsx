@@ -40,6 +40,7 @@ import type { GitChangeStatus, TurnState, WorkspaceListing } from "@telar/engine
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "@/lib/file-tree";
 import { directoryReference, fileReference, startReferenceDrag } from "@/lib/drag-reference";
+import type { OpenIntent } from "@/lib/editor-workspace";
 import { REVIEW_STATUS_LETTER } from "@/lib/session-review";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
@@ -74,6 +75,7 @@ function FileTreeRow({
   dirtyInside,
   onToggle,
   onOpen,
+  onKeep,
   onFocus,
   register,
 }: {
@@ -86,7 +88,11 @@ function FileTreeRow({
   /** A directory with something changed inside it, at any depth. */
   dirtyInside?: boolean;
   onToggle: () => void;
+  /** A single click. In the Editor this is a PREVIEW — see the intent argument
+   *  on `onOpenFile`. */
   onOpen: () => void;
+  /** A double click, which means "keep this one". */
+  onKeep: () => void;
   onFocus: () => void;
   register: (element: HTMLButtonElement | null) => void;
 }) {
@@ -120,6 +126,13 @@ function FileTreeRow({
           ref={register}
           onFocus={onFocus}
           onClick={directory ? onToggle : onOpen}
+          /**
+           * DOUBLE CLICK KEEPS THE FILE. The browser fires `click` first and
+           * `dblclick` after, so this always lands on a file the single click
+           * has already previewed — which is exactly the promotion the Editor's
+           * preview slot is built around, not a second open.
+           */
+          {...(directory ? {} : { onDoubleClick: onKeep })}
           title={row.node.path}
           style={{ paddingLeft: 6 + row.depth * INDENT }}
           className={cn(
@@ -169,7 +182,16 @@ export function FilesSurface({
   sessionId?: string;
   projectId?: string;
   openPaths?: readonly string[];
-  onOpenFile: (path: string) => void;
+  /**
+   * Open a file, and say how deliberately.
+   *
+   * `preview` is a single click — browsing. `pin` is a double click or the
+   * keyboard's Enter, which is a person naming the file they came for. The tree
+   * does not know what the caller does with that (the Editor borrows one
+   * reusable slot for a preview; everything else ignores the argument), it only
+   * reports which gesture happened.
+   */
+  onOpenFile: (path: string, intent: OpenIntent) => void;
   active?: TurnState;
 }) {
   const [listing, setListing] = useState<WorkspaceListing>();
@@ -299,7 +321,9 @@ export function FilesSurface({
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       if (row.node.kind === "directory") return toggle(row.node.path);
-      return onOpenFile(row.node.path);
+      // Enter is deliberate in a way a click is not: you arrowed to this row and
+      // pressed a key to open it, which is the keyboard's double click.
+      return onOpenFile(row.node.path, "pin");
     }
   };
 
@@ -391,7 +415,8 @@ export function FilesSurface({
               {...(statuses.get(row.node.path) ? { status: statuses.get(row.node.path)! } : {})}
               {...(row.node.kind === "directory" && dirty.has(row.node.path) ? { dirtyInside: true } : {})}
               onToggle={() => toggle(row.node.path)}
-              onOpen={() => onOpenFile(row.node.path)}
+              onOpen={() => onOpenFile(row.node.path, "preview")}
+              onKeep={() => onOpenFile(row.node.path, "pin")}
               onFocus={() => setFocusedPath(row.node.path)}
               register={(element) => {
                 if (element) rowsRef.current.set(row.node.path, element);

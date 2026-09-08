@@ -53,12 +53,28 @@ import {
 } from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
+import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft } from "@/lib/editor-drafts";
+import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
+import type { EditorViewState } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { rawFileUrl } from "@/lib/file-urls";
 import { highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
 import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
 import { SaveCoordinator, type SaveOutcome } from "@/lib/save-coordinator";
 import { FileKindIcon } from "@/components/session/file-icon";
+/**
+ * THE TYPE GEOMETRY OF THE TWO STACKED LAYERS, AND THE LAYER ITSELF — from the
+ * editor a notebook cell also uses, because both are one invariant and it was
+ * written down twice.
+ *
+ * IDENTICAL ON BOTH, OR THE CARET DRIFTS: every property in `CODE_GEOMETRY`
+ * decides where a glyph lands, so changing one on the textarea and not on the
+ * `<pre>` slides the invisible text out from under the coloured text, a
+ * character at a time, further with every line. `CodeLines` is the same
+ * invariant seen down the other axis — one line box per source line, so a
+ * blank line cannot collapse and take the caret's row with it.
+ */
+import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "@/components/session/overlay-editor";
 import { fileReference, startReferenceDrag } from "@/lib/drag-reference";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -67,7 +83,22 @@ import { PanelEmpty } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
-const api = createEngineApi();
+/**
+ * THE ENGINE THIS FILE BELONGS TO, PINNED — not "whichever engine the address
+ * bar names when the request finally goes out".
+ *
+ * The default client resolves the host FROM THE PATHNAME AT CALL TIME
+ * (lib/hosts/client.ts `pathnameFetcher`), which is right for a screen that is
+ * only ever about the Mac you are looking at. This editor is not that: a write
+ * is debounced, retried and FLUSHED ON UNMOUNT, so it can leave after you have
+ * navigated to a session on another host — and a session id minted on one
+ * engine is a perfectly valid-looking id on another. Pinning the fetcher at
+ * mount means every read, write and late retry for this file goes to the Mac
+ * the file was opened on, whatever the address bar says by then.
+ */
+function engineFor(hostId: string | undefined) {
+  return createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
+}
 
 /**
  * How long after the last keystroke a save goes out.
@@ -101,16 +132,6 @@ const REFUSAL: Record<string, string> = {
 };
 
 /**
- * The shared type geometry of the two stacked layers.
- *
- * IDENTICAL ON BOTH, OR THE CARET DRIFTS. Every property here affects where a
- * glyph lands: change one on the textarea and not on the `<pre>` and the invisible
- * text slides out from under the coloured text, a character at a time, further
- * with every line. It is one constant for that reason.
- */
-const CODE_GEOMETRY = "font-mono text-[0.6875rem] leading-[1.55] tracking-normal";
-
-/**
  * The markdown toolbar's buttons, in the order writing uses them. The math
  * lives in lib/markdown-edit.ts (pure, tested); each button here is only
  * "read the selection, apply, write both halves back".
@@ -130,13 +151,49 @@ export function FileViewSurface({
   path,
   sessionId,
   projectId,
+  hostId,
   /** A turn settling is the moment the file on disk may have changed. */
   active,
+  onSaveState,
+  onEdit,
+  readView,
+  onView,
 }: {
   path: string;
   sessionId?: string;
   projectId?: string;
+  /** WHICH MAC this file lives on. Pins the engine client (see `engineFor`) and
+   *  keys the unsaved-text stash, because two engines mint session ids
+   *  independently and can mint the same one. */
+  hostId?: string;
   active?: TurnState;
+  /**
+   * WHAT THE SAVER IS DOING, for a strip that outlives this component.
+   *
+   * REPORTED FROM THE COORDINATOR'S OWN CALLBACKS, not from an effect on the
+   * state below — and that is the whole reason it exists. Closing a file
+   * FLUSHES rather than cancels (`SaveCoordinator.dispose`), so the write that
+   * matters most is the one that lands AFTER this component has gone. A
+   * setState then is dropped on the floor; a call to the parent's callback is
+   * not, because the Editor around it is still mounted. So the dot in the strip
+   * goes clean when the flush lands, and stays red if it was refused.
+   */
+  onSaveState?: (state: "clean" | "saving" | "problem") => void;
+  /** The first keystroke. The Editor pins the file on it, which is what makes
+   *  replacing the preview slot safe (lib/editor-workspace.ts). */
+  onEdit?: () => void;
+  /**
+   * Where this file was left: caret, selection and scroll. Only the active file
+   * is mounted, so switching away and back is a REMOUNT — without this every
+   * return trip lands at the top of a file you were reading at line 400.
+   *
+   * A FUNCTION, NOT A VALUE, because the Editor keeps these in a Map behind a
+   * ref (nothing renders from them) and reading a ref during render is exactly
+   * the impurity React's own lint rule forbids. This is called once, from the
+   * effect that restores.
+   */
+  readView?: () => EditorViewState | undefined;
+  onView?: (view: EditorViewState) => void;
 }) {
   const [file, setFile] = useState<WorkspaceFile>();
   const [error, setError] = useState<string>();
@@ -153,6 +210,15 @@ export function FileViewSurface({
   /** What is in the box. Diverges from `file.text` the moment you type, and is
    *  what gets saved. */
   const [draft, setDraft] = useState<string>();
+  /**
+   * THE HASH EVERY WRITE FROM THIS EDITOR CARRIES.
+   *
+   * State rather than `file.sha256`, because they are not always the same
+   * thing: a file re-opened with unsaved text takes the baseline that text was
+   * EDITED AGAINST, not the one the fresh read returned — see `load`. Getting
+   * this wrong is how a refused edit would come back as a silent overwrite.
+   */
+  const [baseline, setBaseline] = useState<string>();
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState<{ refused: boolean; reason: string }>();
   const kind = fileKind(path);
@@ -166,22 +232,106 @@ export function FileViewSurface({
   const markdown = kind.lang === "markdown";
   const [source, setSource] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  /** The box the code scrolls in — the other half of "where I left this file". */
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * The two callbacks the SAVER holds, behind refs.
+   *
+   * The coordinator is built once per file identity and keeps whatever closures
+   * it was built with — including after this component unmounts, when its flush
+   * finally answers. A ref is what lets that late answer reach the CURRENT
+   * parent callback rather than the one that existed when the file was opened.
+   */
+  const saveStateRef = useRef(onSaveState);
+  useEffect(() => {
+    saveStateRef.current = onSaveState;
+  }, [onSaveState]);
+  /**
+   * The newest text and the hash it is owed against — the two things the stash
+   * needs, readable from a callback that outlives the render that made it.
+   * Refs, because a coordinator callback answering after unmount cannot read
+   * state and must not read a closure from the render that opened the file.
+   */
+  const latest = useRef<string>("");
+  const baselineRef = useRef<string | undefined>(undefined);
+  /** Which checkout on which Mac this path is in. Two sessions can hold the
+   *  same path with different bytes, and two engines can mint the same session
+   *  id — either would hand one editor another's unsaved text. */
+  const scope = draftScope(hostId, sessionId, projectId);
+  /**
+   * WHO THIS MOUNT IS, for the stash.
+   *
+   * A write outlives the mount that started it, so the editor you switched away
+   * from and the one you re-opened overlap in time. This token is what lets the
+   * store drop the old one's late answer instead of letting it clear — or
+   * overwrite with older text — what you have typed since. Claimed on adoption,
+   * in `load`.
+   */
+  const owner = useRef(newDraftOwner());
+  /** The engine this file belongs to, pinned for the life of the mount so a
+   *  flush that leaves after a navigation still goes to the right Mac. */
+  const api = useMemo(() => engineFor(hostId), [hostId]);
+  /** Restored once — and only once it has actually LANDED (see the effect):
+   *  doing it again would fight the caret you just moved. */
+  const restored = useRef(false);
+  const readViewRef = useRef(readView);
+  useEffect(() => {
+    readViewRef.current = readView;
+  }, [readView]);
 
-  const load = useCallback(async () => {
-    if (!sessionId && !projectId) return;
-    try {
-      const read = sessionId ? await api.sessionFile(sessionId, path) : await api.projectFile(projectId!, path);
-      setFile(read.file);
-      setDraft(read.file.binary ? undefined : read.file.text);
-      setProblem(undefined);
-      setPending(false);
-      setError(undefined);
-      return read.file;
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause.message : "The engine did not answer.");
-      return undefined;
-    }
-  }, [sessionId, projectId, path]);
+  /**
+   * Read the file — and prefer UNSAVED TEXT over what is on disk.
+   *
+   * `discard` is what tells the two kinds of read apart. A mount (or a settled
+   * turn) must adopt whatever this file was left holding: switching files
+   * unmounts this component, so the stash in lib/editor-drafts.ts is the only
+   * copy of an edit that could not be written, and reading over it would show
+   * you the agent's version as though you had never typed. Pressing "Re-read
+   * from disk" — or the refresh button — is the opposite request, and says so.
+   *
+   * THE STASHED BASELINE COMES WITH THE STASHED TEXT. The hash a write carries
+   * is what makes the engine refuse to overwrite what it never showed you;
+   * adopting the text but writing against the FRESH read's hash would turn a
+   * refusal into a silent win over whatever changed the file.
+   */
+  const load = useCallback(
+    async (discard = false) => {
+      if (!sessionId && !projectId) return;
+      try {
+        const read = sessionId ? await api.sessionFile(sessionId, path) : await api.projectFile(projectId!, path);
+        setFile(read.file);
+        /**
+         * CLAIMED FIRST, whichever kind of read this is, and not merely read.
+         * Taking the key is what makes the previous mount's answer harmless:
+         * from here its `forgetDraft` and its `rememberDraft` are dropped, so a
+         * write it started before you switched away cannot clear — or overwrite
+         * with its older text — what you are about to type. It also has to
+         * happen before the discard below, or "re-read from disk" would fail to
+         * delete a stash somebody else still owns and then adopt it anyway.
+         */
+        const claimed = read.file.binary ? undefined : claimDraft(scope, path, owner.current);
+        if (discard) forgetDraft(scope, path, owner.current);
+        const stashed = discard ? undefined : claimed;
+        const text = read.file.binary ? undefined : (stashed?.text ?? read.file.text);
+        const hash = read.file.binary ? undefined : (stashed?.baseline ?? read.file.sha256);
+        latest.current = text ?? "";
+        baselineRef.current = hash;
+        setDraft(text);
+        setBaseline(hash);
+        setProblem(stashed?.problem);
+        setPending(Boolean(stashed) && !stashed?.problem);
+        // The strip's dot says the same thing this header does — including that
+        // a re-opened file is STILL unsaved.
+        saveStateRef.current?.(stashed?.problem ? "problem" : stashed ? "saving" : "clean");
+        setError(undefined);
+        return read.file;
+      } catch (cause) {
+        setError(cause instanceof EngineApiError ? cause.message : "The engine did not answer.");
+        return undefined;
+      }
+    },
+    [sessionId, projectId, path, scope, api],
+  );
 
   useEffect(() => {
     // Deferred, like every other read in this panel: a synchronous
@@ -208,7 +358,6 @@ export function FileViewSurface({
    * because the hash it sends with every write comes from that read.
    */
   const saverRef = useRef<SaveCoordinator | null>(null);
-  const baseline = file && !file.binary ? file.sha256 : undefined;
   useEffect(() => {
     if (!editable || !baseline) return;
     let current = baseline;
@@ -221,6 +370,8 @@ export function FileViewSurface({
           // The next write must carry the hash of what we just wrote, or the
           // second keystroke after a save is refused as a conflict with itself.
           current = result.file.sha256;
+          baselineRef.current = current;
+          setBaseline(current);
           /**
            * AND THE HEADER HAS TO FOLLOW. `file` is what the last READ returned,
            * so without this the size stays at whatever the file was when it was
@@ -239,18 +390,59 @@ export function FileViewSurface({
     const saver = new SaveCoordinator({
       debounceMs: SAVE_DEBOUNCE_MS,
       persist,
-      onPending: setPending,
-      onSaved: () => setProblem(undefined),
-      onProblem: (outcome) => setProblem({ refused: outcome.status === "refused", reason: outcome.reason }),
+      onPending: (value) => {
+        setPending(value);
+        // Told to the strip as well as to this header — see `onSaveState`.
+        saveStateRef.current?.(value ? "saving" : "clean");
+      },
+      /**
+       * THE THREE OUTCOMES ALL MAINTAIN THE STASH, from inside the coordinator
+       * rather than from a React effect — because the write that matters most
+       * is the one that answers AFTER this component has been unmounted by a
+       * switch or a close. A setState then is dropped on the floor; these are
+       * not, and they are what decides whether the text is still owed to
+       * somebody.
+       */
+      onSaved: (text) => {
+        setProblem(undefined);
+        // It reached disk. Anything still stashed would resurrect an older edit
+        // the next time this file was opened.
+        forgetDraft(scope, path, owner.current);
+        // Except for text typed WHILE that write was open — the coordinator is
+        // already saving it, and it must stay recoverable until it lands.
+        if (latest.current !== text) rememberDraft(scope, path, { text: latest.current, baseline: current }, owner.current);
+      },
+      onProblem: (outcome) => {
+        const failure = { refused: outcome.status === "refused", reason: outcome.reason };
+        setProblem(failure);
+        // THE ONE THAT MADE THIS STORE NECESSARY. A refusal means the only copy
+        // of this text is in the box; kept with the baseline it was edited
+        // against, so a re-opened file is refused again rather than winning.
+        rememberDraft(scope, path, { text: latest.current, baseline: current, problem: failure }, owner.current);
+        saveStateRef.current?.("problem");
+      },
     });
     saverRef.current = saver;
+    /**
+     * TEXT ADOPTED FROM THE STASH IS STILL OWED TO DISK, so the new coordinator
+     * is told about it. Without this, re-opening a file with unsaved text would
+     * show it, mark it unsaved, and then never try again — a dot that means
+     * nothing is on its way. A refused edit is attempted exactly once more here
+     * and refused again if the file is still moved, which is the honest answer
+     * rather than a retry loop (the coordinator stops itself after a refusal).
+     */
+    // Ours to re-arm only if this mount still holds the key — claimed in `load`.
+    const stashed = claimDraft(scope, path, owner.current);
+    if (stashed && stashed.baseline === baseline) saver.change(stashed.text);
     return () => {
       // FLUSHES, not cancels — see `dispose`. Closing the tab a moment after
       // typing must not throw the last keystrokes away.
       saver.dispose();
       saverRef.current = null;
     };
-  }, [editable, baseline, sessionId, projectId, path]);
+    // `scope` is derived from sessionId/projectId, which are already here — it
+    // is listed so the stash key and the coordinator can never disagree.
+  }, [editable, baseline, sessionId, projectId, path, scope, api]);
 
   /**
    * LINE NUMBERS AS A SEPARATE COLUMN, so selecting the text and copying it does
@@ -293,6 +485,64 @@ export function FileViewSurface({
   const coloured = tokenised && tokenised.of === draft ? tokenised.lines : undefined;
 
   /**
+   * PUT THE READER BACK WHERE THEY WERE, once, when the text first arrives.
+   *
+   * Switching files in the Editor unmounts this component (only the active file
+   * is mounted — the alternative is N open files each holding a read, a saver
+   * and a re-read on every settled turn). So coming back is a fresh mount with
+   * an empty textarea, and without this every return trip lands at line 1 of a
+   * file you were reading at line 400.
+   *
+   * AFTER THE PAINT, not with it: the textarea has to be holding the text
+   * before a selection range means anything, and the scroller has to have its
+   * full height before a scrollTop does.
+   */
+  useEffect(() => {
+    if (draft === undefined || restored.current) return;
+    const where = readViewRef.current?.();
+    if (!where) {
+      // Nothing to put back is a finished restore, not a pending one.
+      restored.current = true;
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      const area = textareaRef.current;
+      const scroller = scrollerRef.current;
+      // LATCHED WHERE IT LANDS, not where it is scheduled. An effect that
+      // re-runs — the highlight arriving, a parent re-render — cancels this
+      // frame, and a latch set at scheduling time would make that cancellation
+      // permanent: the caret would silently never be restored.
+      restored.current = true;
+      // Clamped: the file may have been rewritten on disk since, and a range
+      // past the end of the text throws the caret to the end rather than
+      // failing loudly.
+      if (area) area.setSelectionRange(Math.min(where.selectionStart, area.value.length), Math.min(where.selectionEnd, area.value.length));
+      if (scroller) {
+        scroller.scrollTop = where.scrollTop;
+        scroller.scrollLeft = where.scrollLeft;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+    // Only the text. `readView` is an inline closure that changes every render
+    // and is read through a ref for exactly that reason — as a dependency it
+    // would re-run this effect constantly.
+  }, [draft]);
+
+  /** Where this file is, right now — handed up on every gesture that could
+   *  have moved it, and cheap enough to do exactly that (the Editor writes it
+   *  into a Map). */
+  const rememberView = useCallback(() => {
+    const area = textareaRef.current;
+    if (!area || !onView) return;
+    onView({
+      selectionStart: area.selectionStart,
+      selectionEnd: area.selectionEnd,
+      scrollTop: scrollerRef.current?.scrollTop ?? 0,
+      scrollLeft: scrollerRef.current?.scrollLeft ?? 0,
+    });
+  }, [onView]);
+
+  /**
    * One toolbar press: read the textarea's own selection, run the pure edit,
    * write text through the SAME two sinks a keystroke uses (draft + saver — a
    * third path would be a way to type that does not save), then put the
@@ -300,19 +550,36 @@ export function FileViewSurface({
    * frame because React has to paint the new value first; setting a range
    * against the old text puts the caret in the wrong place on longer inserts.
    */
+  /**
+   * THE ONE WAY TEXT CHANGES IN THIS COMPONENT — box, toolbar, anything later.
+   *
+   * Three sinks, and all three are needed: the draft is what is on screen, the
+   * coordinator is what reaches disk, and the stash is what survives this
+   * component being unmounted before the coordinator finishes. A second path
+   * that skipped the third would be a way to type that can still be lost.
+   */
+  const change = useCallback(
+    (text: string) => {
+      latest.current = text;
+      setDraft(text);
+      saverRef.current?.change(text);
+      if (baselineRef.current) rememberDraft(scope, path, { text, baseline: baselineRef.current }, owner.current);
+    },
+    [scope, path],
+  );
+
   const applyEdit = useCallback(
     (action: MarkdownEditAction) => {
       const area = textareaRef.current;
       if (!area || draft === undefined) return;
       const edit = applyMarkdownEdit(draft, area.selectionStart, area.selectionEnd, action);
-      setDraft(edit.text);
-      saverRef.current?.change(edit.text);
+      change(edit.text);
       requestAnimationFrame(() => {
         area.focus();
         area.setSelectionRange(edit.selectionStart, edit.selectionEnd);
       });
     },
-    [draft],
+    [draft, change],
   );
 
   const cut = path.lastIndexOf("/");
@@ -391,7 +658,10 @@ export function FileViewSurface({
           title="Re-read from disk"
           onClick={() => {
             setRefreshing(true);
-            void load().finally(() => setRefreshing(false));
+            // DISCARDS: pressing refresh is asking for what is on disk, and
+            // keeping the unsaved text over it would make the button do
+            // nothing visible on the one file where it matters most.
+            void load(true).finally(() => setRefreshing(false));
           }}
           className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
         >
@@ -417,11 +687,12 @@ export function FileViewSurface({
                   variant="outline"
                   className="ml-1 align-baseline"
                   onClick={() => {
-                    // Discards the draft on purpose. Merging two versions of a
-                    // file is a diff tool's job, and pretending to do it here
-                    // would be the one thing worse than losing the edit: silently
-                    // producing a third version nobody wrote.
-                    void load();
+                    // Discards the draft on purpose — the stash with it, or the
+                    // next open would bring the refused text back. Merging two
+                    // versions of a file is a diff tool's job, and pretending to
+                    // do it here would be the one thing worse than losing the
+                    // edit: silently producing a third version nobody wrote.
+                    void load(true);
                   }}
                 >
                   Re-read from disk
@@ -511,7 +782,7 @@ export function FileViewSurface({
               ))}
             </div>
           )}
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div ref={scrollerRef} onScroll={rememberView} className="min-h-0 flex-1 overflow-auto">
           <div className="flex min-w-max">
             {/**
              * THE GUTTER IS STICKY, not fixed and not outside the scroller.
@@ -529,6 +800,7 @@ export function FileViewSurface({
              */}
             <div
               aria-hidden
+              style={CODE_FONT_SIZE}
               className={cn(
                 "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
                 CODE_GEOMETRY,
@@ -547,29 +819,28 @@ export function FileViewSurface({
              * caret are the browser's own rather than something drawn.
              */}
             <div className="relative min-w-0 flex-1">
-              <pre aria-hidden data-shiki className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
-                {lines.map((line, index) => (
-                  <div key={index}>
-                    {coloured?.[index]
-                      ? coloured[index].map((token, at) => (
-                          <span key={at} style={token.style as React.CSSProperties}>
-                            {token.text}
-                          </span>
-                        ))
-                      : line || " "}
-                  </div>
-                ))}
+              <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
+                {/* ONE DIV PER LINE OF `lines`, which is the same array the
+                    gutter beside it numbers — so the two columns cannot
+                    disagree about how many lines there are. */}
+                <CodeLines lines={lines} coloured={coloured} />
               </pre>
               <textarea
                 ref={textareaRef}
+                style={CODE_FONT_SIZE}
                 value={draft}
                 readOnly={!editable}
                 spellCheck={false}
                 aria-label={`${path} — ${editable ? "editable" : "read only"}`}
                 onChange={(event) => {
-                  setDraft(event.target.value);
-                  saverRef.current?.change(event.target.value);
+                  change(event.target.value);
+                  // THE FIRST KEYSTROKE IS A DECISION. A file you have typed
+                  // into is no longer something you were glancing at, so the
+                  // Editor pins it here rather than waiting for a save to land.
+                  onEdit?.();
+                  rememberView();
                 }}
+                onSelect={rememberView}
                 onKeyDown={(event) => {
                   // ⌘S / Ctrl+S saves now. Prevented in both cases so the browser
                   // never offers to save the page instead, even read-only.

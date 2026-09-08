@@ -129,6 +129,27 @@ export function canvasPanelKey(projectId: string): string {
   return `new:${projectId}`;
 }
 
+/**
+ * The stored ids, exactly as they were written — before validation, before
+ * migration.
+ *
+ * FOR MIGRATIONS THAT NEED MORE THAN A RENAME. `readPanelTabs` maps an old id
+ * to a new one and drops what it cannot place, which is the right answer when a
+ * tab became another tab. It is not enough when a tab became CONTENT: every
+ * open file used to be its own panel tab, and those ids are the only record of
+ * which files somebody had open. The Editor reads them here and restores the
+ * files (lib/editor-workspace.ts `editorFromLegacyTabs`), then the ordinary
+ * restore collapses the ids themselves into the one Editor tab.
+ */
+export function readPanelTabIds(sessionId: string): { tabs: string[]; activeTab?: string } {
+  const stored = readStore().sessions[sessionId];
+  if (!stored) return { tabs: [] };
+  return {
+    tabs: Array.isArray(stored.tabs) ? stored.tabs : [],
+    ...(typeof stored.activeTab === "string" ? { activeTab: stored.activeTab } : {}),
+  };
+}
+
 export function readPanelTabs<Tab extends string>(sessionId: string, isKnown: (tab: string) => tab is Tab, migrate: (tab: string) => string = (tab) => tab): PanelTabState<Tab> {
   const stored = readStore().sessions[sessionId];
   if (!stored) return emptyPanelTabs<Tab>();

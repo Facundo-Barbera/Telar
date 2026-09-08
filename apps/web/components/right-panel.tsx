@@ -9,6 +9,7 @@ import {
   SigmaIcon,
   NotebookIcon,
   TableIcon,
+  FileCode2Icon,
   FileDiffIcon,
   FolderTreeIcon,
   GitPullRequestIcon,
@@ -51,6 +52,7 @@ import {
   RIGHT_PANEL_WIDTH_STORAGE_KEY,
 } from "@/lib/right-panel-layout";
 import { DiffSurface } from "@/components/session/diff-surface";
+import { EditorSurface } from "@/components/session/editor-surface";
 import { FilesSurface } from "@/components/session/files-surface";
 import { FileViewSurface } from "@/components/session/file-view-surface";
 import { NotebookSurface } from "@/components/session/notebook-surface";
@@ -59,6 +61,7 @@ import { TableSurface } from "@/components/session/table-surface";
 import { DataSurface } from "@/components/session/data-surface";
 import { LatexSurface } from "@/components/session/latex-surface";
 import { ImageLightbox } from "@/components/session/image-lightbox";
+import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
 import { ForgeDetailSurface } from "@/components/session/github-detail-surface";
 import { GitHubSurface } from "@/components/session/github-surface";
@@ -117,6 +120,19 @@ const SURFACES = [
   { id: "diff", label: "Diff", icon: FileDiffIcon, blurb: "What this session changed" },
   { id: "files", label: "Files", icon: FolderTreeIcon, blurb: "The checkout, as a tree" },
   /**
+   * THE EDITOR, and the reason it is ONE tab.
+   *
+   * Every open file used to be a top-level tab of its own — `file:src/a.ts`
+   * beside Diff and Issues — and that made browsing a repository destructive to
+   * the arrangement: four files pushed the surfaces you were working with off
+   * the end of the strip, and closing them one at a time was the only way back.
+   * Files are not surfaces. They arrive by the dozen, they are the only thing
+   * here you can have unsaved work in, and they want a strip of their own. So
+   * they have one, inside this (session/editor-surface.tsx), and the panel's
+   * strip goes back to holding the handful of surfaces it was built for.
+   */
+  { id: "editor", label: "Editor", icon: FileCode2Icon, blurb: "Files, with the tree beside them" },
+  /**
    * THE TWO NETWORK SURFACES, and the only two. Everything above folds records
    * the cockpit already holds; these go out to GitHub through the `gh` CLI, so
    * they never poll and they always say how old their answer is.
@@ -155,8 +171,42 @@ const LATEX_SURFACES: ReadonlySet<string> = new Set(["latex"]);
  *  them; they restore as the one tab rather than vanishing. */
 const LEGACY_DS_TABS: ReadonlySet<string> = new Set(["plots", "variables"]);
 
+/** The four prefixes that used to mint a top-level tab per open file. */
+const FILE_TAB_PREFIXES = ["file:", "notebook:", "table:", "pdf:"] as const;
+
+/**
+ * The path behind a file-shaped tab id, or nothing for a surface.
+ *
+ * THESE IDS ARE NOW A REQUEST, NOT A TAB. Everything that says "open this
+ * file" — a chip in the conversation, the agent's display tool, the LaTeX
+ * surface's compiled PDF, a row in the tree — still names it as
+ * `file:`/`notebook:`/`table:`/`pdf:`, because that is the vocabulary those call
+ * sites already speak. The cockpit reads the path back out of it and opens the
+ * file in the Editor instead of minting a tab (see `showPanelTab`), which is
+ * what let this change land without rewriting every gesture that opens a file.
+ * A path may contain a colon, so this splits on the first separator only.
+ */
+export function filePanelTabPath(value: string): string | undefined {
+  const prefix = FILE_TAB_PREFIXES.find((entry) => value.startsWith(entry) && value.length > entry.length);
+  return prefix === undefined ? undefined : value.slice(prefix.length);
+}
+
+/** A tab id that names a FILE rather than a surface. */
+export function isFilePanelTab(value: string): boolean {
+  return filePanelTabPath(value) !== undefined;
+}
+
+/**
+ * Whatever a previous build called this tab, in this build's vocabulary.
+ *
+ * EVERY OPEN FILE BECOMES THE EDITOR — one tab where there were four, deduped
+ * by `readPanelTabs`. The files themselves are not lost with the tabs: they are
+ * restored INTO the Editor by `editorFromLegacyTabs`, which reads the same
+ * stored ids before this collapses them (see the cockpit's restore effect).
+ */
 export function migratePanelTab(value: string): string {
-  return LEGACY_DS_TABS.has(value) ? "data" : value;
+  if (LEGACY_DS_TABS.has(value)) return "data";
+  return isFilePanelTab(value) ? "editor" : value;
 }
 
 function surfacesFor(dataScience: boolean, latex = false): typeof SURFACES[number][] {
@@ -262,12 +312,9 @@ export function filePanelPath(tab: PanelTab): string | undefined {
   return tab.startsWith(FILE_PREFIX) ? tab.slice(FILE_PREFIX.length) : undefined;
 }
 
-/** Every open file, as plain paths — what the tree marks as already open. */
-export function openFilePaths(tabs: readonly PanelTab[]): string[] {
-  return tabs
-    .map((tab) => filePanelPath(tab) ?? notebookPanelPath(tab) ?? tablePanelPath(tab) ?? pdfPanelPath(tab))
-    .filter((path): path is string => path !== undefined);
-}
+/* An open file is no longer a panel tab, so "which files are open" is a
+   question for the Editor's own state (`editorPaths`) rather than for this
+   strip — see `RightPanel`'s `openPaths`. */
 
 /**
  * ONE ISSUE OR ONE PULL REQUEST IS ALSO A TAB, and for the third time the same
@@ -322,6 +369,7 @@ const OWNS_ITS_HEIGHT: ((tab: PanelTab) => boolean)[] = [
   (tab) => issuePanelNumber(tab) !== undefined,
   (tab) => pullPanelNumber(tab) !== undefined,
   (tab) => tab === "files",
+  (tab) => tab === "editor",
   (tab) => tab === "data",
   (tab) => tab === "latex",
 ];
@@ -1009,6 +1057,9 @@ export function PanelSurface({
   active,
   dataScience,
   onOpenImage,
+  editor,
+  onEditorChange,
+  hostId,
 }: {
   tab: PanelTab;
   /** What the journal says was written, path → count. The Diff surface's half of
@@ -1035,13 +1086,33 @@ export function PanelSurface({
   /** Issues and pull requests already open as tabs, for the same reason. */
   openIssueNumbers?: readonly number[];
   openPullNumbers?: readonly number[];
-  /** The tree opens a file by opening a TAB, which the panel owns. */
-  onOpenTab: (tab: PanelTab) => void;
+  /**
+   * The tree opens a file by naming it, which the cockpit routes — a surface
+   * tab opens as a tab; a file-shaped id opens in the Editor. `intent` says how
+   * deliberate the gesture was, and is ignored for anything but a file.
+   */
+  onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
   active?: TurnState;
   /** The project opted into data science: .ipynb opens as cells, CSV as a grid. */
   dataScience?: boolean;
   onOpenImage?: (attachmentId: string) => void;
+  /** The Editor's open files. Owned by the cockpit for the same reason the
+   *  panel's own tabs are: it persists them, and it is where "open this file"
+   *  gestures from the conversation land. */
+  editor?: EditorState;
+  onEditorChange?: (next: (current: EditorState) => EditorState) => void;
+  /** WHICH MAC this session is on. The Editor pins its engine client and keys
+   *  its unsaved-text stash with it — see session/file-view-surface.tsx. */
+  hostId?: string;
 }) {
+  /**
+   * THE FILE ARMS ARE A FALLBACK NOW, not a route anybody takes. A file opens
+   * in the Editor: the cockpit reads the path out of a file-shaped id and hands
+   * it there (`showPanelTab`), and a layout persisted by an older build has its
+   * file ids collapsed into the Editor tab on restore (`migratePanelTab`). They
+   * stay because they are still correct, and a tab that somehow arrives here
+   * should draw its file rather than nothing.
+   */
   const notebookPath = notebookPanelPath(tab);
   if (notebookPath !== undefined)
     return <NotebookSurface path={notebookPath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
@@ -1050,6 +1121,28 @@ export function PanelSurface({
   const pdfPath = pdfPanelPath(tab);
   if (pdfPath !== undefined)
     return <PdfSurface path={pdfPath} {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} />;
+  if (tab === "editor")
+    return editor && onEditorChange ? (
+      /**
+       * KEYED BY THE CHECKOUT. Moving between sessions replaces the Editor
+       * rather than re-rendering it, so nothing it holds per file — the saving
+       * dots, a half-confirmed close, where each file was scrolled to — can be
+       * read as belonging to the session you just arrived in. The unsaved text
+       * itself is not in here to lose (lib/editor-drafts.ts keys it by the same
+       * scope and outlives every one of these mounts).
+       */
+      <EditorSurface
+        key={`${hostId ?? "local"}:${sessionId ?? projectId ?? "none"}`}
+        state={editor}
+        onState={onEditorChange}
+        {...(sessionId ? { sessionId } : {})}
+        {...(projectId ? { projectId } : {})}
+        {...(hostId ? { hostId } : {})}
+        {...(active ? { active } : {})}
+        dataScience={dataScience === true}
+        {...(onOpenImage ? { onOpenImage } : {})}
+      />
+    ) : null;
   if (tab === "data") return <DataSurface {...(sessionId ? { sessionId } : {})} {...(projectId ? { projectId } : {})} {...(active ? { active } : {})} {...(onOpenImage ? { onOpenImage } : {})} />;
   if (tab === "latex")
     return <LatexSurface {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))} />;
@@ -1088,7 +1181,7 @@ export function PanelSurface({
         {...(sessionId ? { sessionId } : {})}
         {...(projectId ? { projectId } : {})}
         {...(openPaths ? { openPaths } : {})}
-        onOpenFile={(path) => onOpenTab(panelTabForPath(path, dataScience === true))}
+        onOpenFile={(path, intent) => onOpenTab(panelTabForPath(path, dataScience === true), intent)}
         {...(active ? { active } : {})}
       />
     );
@@ -1423,6 +1516,9 @@ export function RightPanel({
   open = true,
   dataScience = false,
   latex = false,
+  editor,
+  onEditorChange,
+  hostId,
 }: {
   active?: TurnState;
   /** The project opted into data science — shows Plots and Variables, and
@@ -1456,9 +1552,14 @@ export function RightPanel({
   tabs: readonly PanelTab[];
   tab?: PanelTab;
   onTabChange: (tab: PanelTab) => void;
-  onOpenTab: (tab: PanelTab) => void;
+  onOpenTab: (tab: PanelTab, intent?: OpenIntent) => void;
   onCloseTab: (tab: PanelTab) => void;
   onClose: () => void;
+  /** The Editor's open files — see `PanelSurface`. */
+  editor?: EditorState;
+  onEditorChange?: (next: (current: EditorState) => EditorState) => void;
+  /** Which Mac this cockpit is about. */
+  hostId?: string;
   /**
    * OPEN/CLOSE ANIMATION. Kept mounted by the cockpit during the close so the
    * shell can animate OUT (its WIDTH, from the panel width to 0, and back).
@@ -1479,7 +1580,9 @@ export function RightPanel({
   const writes = useMemo(() => journalWrites(items), [items]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
   const livePages = useLivePages(sessionId);
-  const openPaths = useMemo(() => openFilePaths(tabs), [tabs]);
+  /** What the tree marks as already open — the EDITOR's files now, not the
+   *  panel's tabs, since that is where an open file lives. */
+  const openPaths = useMemo(() => editor?.files.map((file) => file.path) ?? [], [editor]);
   const openIssueNumbers = useMemo(() => openForgeNumbers(tabs, "issue"), [tabs]);
   const openPullNumbers = useMemo(() => openForgeNumbers(tabs, "pull"), [tabs]);
   /**
@@ -1751,6 +1854,9 @@ export function RightPanel({
               {...(active ? { active } : {})}
               dataScience={dataScience}
               onOpenImage={setLightbox}
+              {...(editor ? { editor } : {})}
+              {...(onEditorChange ? { onEditorChange } : {})}
+              {...(hostId ? { hostId } : {})}
             />
             {sessionId && <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />}
           </>
