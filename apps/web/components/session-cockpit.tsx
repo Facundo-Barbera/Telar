@@ -25,7 +25,7 @@ import { actionableRequests, continuationDraft, recoverableFailedTurn } from "@/
 import { canvasHref, sessionHref } from "@/lib/session-list";
 import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
-import { newestResultTurn } from "@/lib/session-read-receipt";
+import { newestResultTurn, type ReceiptAnswer, type ReceiptIdentity } from "@/lib/session-read-receipt";
 import { ReadReceiptMarker, useReadReceipt } from "./session/read-receipt";
 import { useInboxPolicy } from "@/lib/inbox-policy";
 import { useSessionDefaults } from "@/lib/session-defaults";
@@ -2017,21 +2017,35 @@ export function SessionCockpit({
     [session, sessionId, turns],
   );
   /**
-   * The engine's answer to a receipt. Merged FIELD BY FIELD rather than
-   * replacing the record: this response was built when the receipt was sent,
-   * and a tail that landed in between (a title, a new turn, a settle from
-   * another surface) must not be undone by a bookkeeping call. Guarded on the
-   * id for the same reason every other late answer here is — the reader may
-   * have moved on.
+   * The engine's answer to a receipt, folded back in.
+   *
+   * THREE GUARDS, EACH FOR A DIFFERENT WAY THIS ARRIVES TOO LATE:
+   *
+   *   - THE IDENTITY, BOTH HALVES. A receipt raised on a paired Mac's session
+   *     must not land on a local session that shares its id — two engines mint
+   *     ids independently, so the id alone is not one.
+   *   - TWO FIELDS, NOT THE RECORD. This response was built when the receipt
+   *     was sent; a tail that landed in between (a title, a new turn, a settle
+   *     from another surface) must not be undone by a bookkeeping call.
+   *   - MONOTONIC. A slow receipt for turn 5 can land after a fast one for
+   *     turn 6, or after the tail already reported a higher mark from another
+   *     device. Taking the greater of the two is the only fold that cannot go
+   *     backwards — and a lower answer is dropped whole, `readAt` included,
+   *     because the stamp belongs to the sequence it came with.
    */
-  const onRead = useCallback((next: Session) => {
-    setSession((current) =>
-      current && current.id === next.id
-        ? { ...current, lastReadTurnSequence: next.lastReadTurnSequence, ...(next.readAt === undefined ? {} : { readAt: next.readAt }) }
-        : current,
-    );
-  }, []);
-  const readMarkerRef = useReadReceipt({
+  const onRead = useCallback(
+    (identity: ReceiptIdentity, answer: ReceiptAnswer) => {
+      if (identity.sessionId !== sessionId || identity.hostId !== hostId) return;
+      setSession((current) => {
+        if (!current || current.id !== identity.sessionId) return current;
+        const next = answer.lastReadTurnSequence;
+        if (next === undefined || next <= (current.lastReadTurnSequence ?? 0)) return current;
+        return { ...current, lastReadTurnSequence: next, ...(answer.readAt === undefined ? {} : { readAt: answer.readAt }) };
+      });
+    },
+    [sessionId, hostId],
+  );
+  const markerRefFor = useReadReceipt({
     ...(sessionId ? { sessionId } : {}),
     hostId,
     ...(newestResult ? { candidate: newestResult } : {}),
@@ -2176,7 +2190,7 @@ export function SessionCockpit({
                 onDiscard={(item) => void discardAmbiguous(item)}
                 {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />
-              {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={readMarkerRef} />}
+              {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
             ))}
           </ConversationContent>

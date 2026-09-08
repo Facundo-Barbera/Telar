@@ -1,11 +1,14 @@
 "use client";
 
 /**
- * THE ONE PLACE THAT DECIDES A HUMAN SAW AN ANSWER.
+ * THE ONE PLACE THAT DECIDES A HUMAN SAW AN ANSWER — the browser half.
  *
- * The rule itself is `lib/session-read-receipt.ts`; this is the browser half —
- * an IntersectionObserver on a marker rendered at the end of the newest result,
- * plus the two window facts the rule needs, plus the send.
+ * The rule is `lib/session-read-receipt.ts`: `receiptToSend` for "should this
+ * render confirm anything", and `ReadReceiptCourier` for everything that can go
+ * wrong afterwards (a request outliving its session, its host, or a later
+ * receipt). What is left here is genuinely browser-shaped: an
+ * IntersectionObserver on a marker at the end of the newest answer, and the two
+ * window facts that say somebody is in front of it.
  *
  * WHY A MARKER ELEMENT RATHER THAN A SCROLL POSITION: "is the reader at the
  * bottom" is a different question from "is the newest answer on screen". A
@@ -14,22 +17,21 @@
  * answer. The element that IS the end of the answer can only be visible when
  * the answer is.
  *
- * WHY THE HOST IS CAPTURED, NOT LOOKED UP: the default engine api reads the
- * host out of the address bar AT CALL TIME, and this call is deliberately
- * delayed. A reader who opens a session on a paired Mac and then navigates
- * home would have the receipt land on the local engine — where that id is
- * either absent or, worse, another session entirely.
+ * WHY THE MARKER IS KEYED BY RUN ID: visibility must never be INHERITED across
+ * answers. A marker that was on screen for turn 5 says nothing about turn 6,
+ * and a boolean would have carried the old answer's "yes" into the new one's
+ * first render — confirming a turn nobody had seen yet. What is stored is
+ * WHICH run's marker is visible, so a new candidate is unseen until its own
+ * marker reports.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Session } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { hostFetcher } from "@/lib/hosts/client";
 import {
-  RECEIPT_MAX_ATTEMPTS,
-  RECEIPT_SETTLE_MS,
-  receiptRetryDelayMs,
-  receiptToSend,
+  ReadReceiptCourier,
+  type ReceiptAnswer,
+  type ReceiptIdentity,
   type ResultTurn,
 } from "@/lib/session-read-receipt";
 
@@ -62,9 +64,12 @@ function useForeground(): boolean {
  * Send a receipt when the newest answer has been on screen, in a foreground
  * window, for a beat.
  *
- * @param candidate The newest result turn, or `undefined` when there is none —
- *   passing one that is not the newest is what a delayed receipt would be.
- * @returns The ref to hang on the marker element that ends the newest answer.
+ * @param candidate The newest result turn, or `undefined` when there is none.
+ * @param onRead Given the identity the receipt was RAISED under, so the caller
+ *   can refuse an answer about a session it is no longer showing. The courier
+ *   already drops stale ones; passing it on keeps the caller honest too.
+ * @returns `markerRefFor(runId)` — the ref to hang on the marker that ends that
+ *   turn. Only the newest result's marker is ever rendered.
  */
 export function useReadReceipt({
   sessionId,
@@ -79,120 +84,92 @@ export function useReadReceipt({
   candidate?: ResultTurn;
   readSequence?: number;
   loading: boolean;
-  onRead: (session: Session) => void;
-}): (node: HTMLElement | null) => void {
+  onRead: (identity: ReceiptIdentity, answer: ReceiptAnswer) => void;
+}): (runId: string) => (node: HTMLElement | null) => void {
   const foreground = useForeground();
-  const [atLatestResult, setAtLatestResult] = useState(false);
-  /** The highest sequence this client has sent or is sending. A ref, because a
-   *  render caused by it would be a render that changes nothing on screen. */
-  const confirmed = useRef(0);
-  /** Attempts spent on the run currently being sent — reset per turn, so a
-   *  failed receipt does not spend the next one's budget. */
-  const attempts = useRef(0);
-  const attemptingRunId = useRef<string | undefined>(undefined);
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const cancelled = useRef(false);
-  /** Bumped by a failure, and the ONLY reason this is state: the retry has to
-   *  re-run an effect whose other inputs did not change. */
-  const [retries, setRetries] = useState(0);
-
-  // A different session is a different high-water mark. Without this, opening
-  // session B after reading A would treat B's turn 3 as already confirmed.
+  /** WHICH answer's marker is on screen — not whether one is. See the header. */
+  const [visibleRunId, setVisibleRunId] = useState<string>();
+  /** The callback the courier reaches out through, kept current without
+   *  rebuilding the courier — which would lose what is in flight. Written in
+   *  an effect, never during render. */
+  const report = useRef(onRead);
   useEffect(() => {
-    confirmed.current = 0;
-    attempts.current = 0;
-    attemptingRunId.current = undefined;
-  }, [sessionId, hostId]);
+    report.current = onRead;
+  }, [onRead]);
 
-  const markerRef = useCallback((node: HTMLElement | null) => {
-    if (!node || typeof IntersectionObserver === "undefined") {
-      setAtLatestResult(false);
-      return;
-    }
-    const observer = new IntersectionObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      setAtLatestResult(Boolean(entry?.isIntersecting));
+  /**
+   * ONE COURIER FOR THE LIFE OF THE MOUNT, built in an effect rather than a
+   * memo: it owns in-flight requests and timers, so it is a subscription, not
+   * a derived value. Declared BEFORE the effect that drives it, so it exists
+   * by the time that one first runs.
+   */
+  const courier = useRef<ReadReceiptCourier | undefined>(undefined);
+  useEffect(() => {
+    const created = new ReadReceiptCourier({
+      // CAPTURED PER REQUEST, NOT READ WHEN IT LANDS. The default engine api
+      // resolves its host from the address bar at call time, and this call is
+      // deliberately delayed — a reader who opens a paired Mac's session and
+      // then navigates home would otherwise send the receipt to the local
+      // engine, where that id is absent or, worse, another session.
+      send: (identity, runId) =>
+        createEngineApi(hostFetcher(identity.hostId))
+          .markSessionRead(identity.sessionId, runId)
+          .then((answer) => answer.session),
+      onRead: (identity, answer) => report.current(identity, answer),
+      setTimer: (run, delayMs) => setTimeout(run, delayMs),
+      clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
     });
-    observer.observe(node);
+    courier.current = created;
     return () => {
-      observer.disconnect();
-      setAtLatestResult(false);
+      created.dispose();
+      courier.current = undefined;
     };
   }, []);
 
-  useEffect(() => {
-    cancelled.current = false;
-    return () => {
-      cancelled.current = true;
-      clearTimeout(timer.current);
+  const observers = useRef(new Map<string, (node: HTMLElement | null) => void>());
+  const markerRefFor = useCallback((runId: string) => {
+    const existing = observers.current.get(runId);
+    if (existing) return existing;
+    const ref = (node: HTMLElement | null) => {
+      if (!node || typeof IntersectionObserver === "undefined") return;
+      const observer = new IntersectionObserver((entries) => {
+        const entry = entries[entries.length - 1];
+        // Only ever claims or releases ITS OWN run, so a marker unmounting
+        // cannot blank the answer that replaced it.
+        setVisibleRunId((current) => (entry?.isIntersecting ? runId : current === runId ? undefined : current));
+      });
+      observer.observe(node);
+      return () => {
+        observer.disconnect();
+        observers.current.delete(runId);
+        setVisibleRunId((current) => (current === runId ? undefined : current));
+      };
     };
+    observers.current.set(runId, ref);
+    return ref;
   }, []);
 
-  // THE READER LOOKING AGAIN IS A FRESH START. Without this, a turn whose
-  // three attempts were spent while the engine was down could never be
-  // confirmed again — the budget is meant to stop a retry loop, not to give up
-  // on the session for good.
   useEffect(() => {
-    if (foreground && atLatestResult) attempts.current = 0;
-  }, [foreground, atLatestResult]);
-
-  useEffect(() => {
-    const pending = receiptToSend({
+    courier.current?.update({
+      ...(sessionId ? { identity: { sessionId, hostId } } : {}),
       ...(candidate ? { candidate } : {}),
       ...(readSequence === undefined ? {} : { readSequence }),
-      confirmedSequence: confirmed.current,
-      gate: { foreground, atLatestResult, loading },
+      gate: {
+        foreground,
+        // The candidate's OWN marker, never a previous answer's.
+        atLatestResult: candidate !== undefined && visibleRunId === candidate.runId,
+        // NEVER MID-HYDRATE: what is on screen during a load is the previous
+        // render, or nothing at all.
+        loading,
+      },
     });
-    if (!sessionId || !pending) return;
-    if (attemptingRunId.current !== pending.runId) {
-      attemptingRunId.current = pending.runId;
-      attempts.current = 0;
-    }
-    if (attempts.current >= RECEIPT_MAX_ATTEMPTS) return;
+  }, [sessionId, hostId, candidate, readSequence, foreground, visibleRunId, loading]);
 
-    // CAPTURED, NOT READ LATER — see this file's header. Everything the send
-    // needs is fixed at the moment the answer was on screen.
-    const api = createEngineApi(hostFetcher(hostId));
-    const forSession = sessionId;
-    const runId = pending.runId;
-    const sequence = pending.sequence;
-    const delay = attempts.current === 0 ? RECEIPT_SETTLE_MS : receiptRetryDelayMs(attempts.current);
-
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      attempts.current += 1;
-      // The high-water mark moves BEFORE the request, so a re-render while it
-      // is in flight does not send a second copy of the same receipt. A
-      // failure below hands it back.
-      const previous = confirmed.current;
-      confirmed.current = Math.max(confirmed.current, sequence);
-      api.markSessionRead(forSession, runId).then(
-        (answer) => {
-          if (cancelled.current) return;
-          attempts.current = 0;
-          onRead(answer.session);
-        },
-        () => {
-          if (cancelled.current) return;
-          confirmed.current = previous;
-          // Try again on a backoff, up to `RECEIPT_MAX_ATTEMPTS`, and then stop
-          // until the reader looks at the answer again. Silently: a receipt is
-          // bookkeeping, and a banner about one would be noise about nothing
-          // the reader can act on.
-          setRetries((count) => count + 1);
-        },
-      );
-    }, delay);
-    return () => clearTimeout(timer.current);
-    // `confirmed`/`attempts` are refs on purpose; the gate, the candidate and a
-    // failed attempt are what may re-open a send.
-  }, [sessionId, hostId, candidate, readSequence, foreground, atLatestResult, loading, retries, onRead]);
-
-  return markerRef;
+  return markerRefFor;
 }
 
 /**
- * The end of the newest answer, as an element.
+ * The end of one answer, as an element.
  *
  * `aria-hidden` and zero-height: it is a position, not content. A screen
  * reader announcing "end of answer" would be reading out the implementation.
