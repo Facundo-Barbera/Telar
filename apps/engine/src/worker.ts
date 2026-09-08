@@ -191,6 +191,25 @@ export class EngineWorker {
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   private stopped = false;
+  /** Set by `stop()` before it aborts, so `execute` can tell a shutdown from a
+   *  human Stop — the two look identical on an AbortSignal and settle
+   *  differently. */
+  private shuttingDown = false;
+  /**
+   * Every `execute` still unwinding, awaited (bounded) by `stop()`.
+   *
+   * THE EXECUTIONS RATHER THAN THE SETTLES, and the difference is a race that
+   * would have made the whole thing a no-op: `stop()` aborts and then looks,
+   * but the abort only unwinds `execute` a microtask later, so a set of
+   * in-flight SETTLES is reliably empty at the moment it is read. Holding the
+   * run itself is what gives `stop()` something that is already there to wait
+   * on.
+   */
+  private readonly inFlight = new Set<Promise<void>>();
+  /** How long `stop()` will wait for those settles. Short: a quit that hangs is
+   *  worse than a turn that recovers as `ambiguous`, which is what a missed
+   *  settle degrades to. */
+  private readonly shutdownSettleMs = 2_000;
   private readonly active = new Map<string, AbortController>();
   /** The subset of `active` that came from a CLAIM — what the concurrency cap
    *  is counted over. A provider-opened turn is live work but was never
@@ -272,7 +291,41 @@ export class EngineWorker {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    /**
+     * A TURN THIS WORKER WAS RUNNING IS TOLD SO ON THE WAY OUT, and before this
+     * it simply was not.
+     *
+     * The abort below unwinds `execute`, whose catch has always opened with
+     * `if (controller.signal.aborted) return` — correct for a human Stop (the
+     * engine recorded `stopped` before the worker ever saw it) and silently
+     * wrong for a shutdown, where nobody recorded anything. Measured against a
+     * real daemon: `queue.json` still read `running` after an awaited
+     * `daemon.close()`, so the next boot found it and called it `ambiguous` —
+     * a state that demands a human decision about a turn we had just watched
+     * being interrupted. `daemon.ts` even claimed stopping the worker first
+     * prevented exactly this. It did not.
+     *
+     * `shuttingDown` is what lets `execute` tell the two aborts apart, and the
+     * settles are AWAITED here because `daemon.close()` closes the HTTP server
+     * immediately after this resolves — an unawaited `failTurn` would race the
+     * socket it needs and lose.
+     */
+    this.shuttingDown = true;
     for (const controller of this.active.values()) controller.abort(new Error("worker stopped"));
+    /**
+     * BOUNDED, because quitting must not hang on an engine that is already
+     * gone. A settle that does not land in time leaves the turn `running`,
+     * which recovers as `ambiguous` — the old behaviour, which is the correct
+     * thing to degrade to: it is the honest answer when we could not say.
+     */
+    if (this.inFlight.size > 0) {
+      await Promise.race([
+        Promise.allSettled([...this.inFlight]),
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, this.shutdownSettleMs).unref?.();
+        }),
+      ]);
+    }
     // The session-lived state dies with the WORKER, not with any turn: the
     // browser tokens are revoked and every lingering provider process — the
     // ones deliberately kept alive between turns — is closed.
@@ -290,6 +343,32 @@ export class EngineWorker {
     } else {
       selector.dispose?.();
     }
+  }
+
+  /**
+   * TELL THE ENGINE THIS TURN WAS CUT OFF BY A SHUTDOWN.
+   *
+   * Reached from BOTH ways an aborted run can end — the driver returning
+   * cleanly (the common one) and the driver throwing — which is why it is a
+   * method rather than a line at one of them.
+   *
+   * WHAT THE MESSAGE CLAIMS, and deliberately no more: the turn was
+   * interrupted. Not that it was harmless. Anything it had already run — a
+   * push, a delete, an outbound call — was in the world before the abort
+   * arrived, and no shutdown can take it back. The copy says so, because
+   * "interrupted" read as "nothing happened" would invite exactly the blind
+   * replay the ambiguous state exists to prevent.
+   */
+  private async recordInterruption(sessionId: string, runId: string, claimToken: string): Promise<void> {
+    await this.options.client
+      .failTurn(sessionId, runId, claimToken, {
+        code: "interrupted",
+        message: "Telar shut down while this turn was running. What it had already done is above; whether it had finished anything elsewhere is unknown.",
+      })
+      // An engine already gone cannot be told, and a quit must not hang on it.
+      // The turn stays `running` and the next boot calls it `ambiguous` — the
+      // honest degradation, and the behaviour this replaced.
+      .catch(() => undefined);
   }
 
   /** Exposed for deterministic tests and embedded supervisors. */
@@ -353,7 +432,11 @@ export class EngineWorker {
       while (this.activeClaims.size < cap) {
         const { claim } = await this.options.client.claimTurn(this.options.workerId);
         if (!claim) break;
-        void this.execute(claim);
+        // Held so `stop()` can wait for the run to unwind and record its
+        // interruption, rather than aborting into the dark.
+        const run = this.execute(claim);
+        this.inFlight.add(run);
+        void run.finally(() => this.inFlight.delete(run));
       }
     } catch (error) {
       if (isConnectivityLoss(error)) this.loseConnection(error);
@@ -751,8 +834,33 @@ export class EngineWorker {
           ...(result.providerSessionId ? { providerSessionId: result.providerSessionId } : {}),
           ...(result.usage ? { usage: result.usage } : {}),
         });
+      } else if (this.shuttingDown) {
+        // A DRIVER THAT RETURNS ON ABORT REACHES HERE, NOT THE CATCH — and
+        // that is most of them: aborting a well-behaved driver unwinds it
+        // cleanly, so the run resolves rather than throwing and the catch
+        // below never sees it. Missing this was why a first pass at recording
+        // the interruption changed nothing at all.
+        await this.recordInterruption(sessionId, runId, claimToken);
       }
     } catch (error) {
+      /**
+       * A SHUTDOWN SAYS SO; A STOP STAYS SILENT.
+       *
+       * Both arrive as an aborted signal, and the old single branch treated
+       * them alike — returning without settling. For a human Stop that is
+       * right: the engine wrote `stopped` before the worker heard about it,
+       * and `failTurn` would be overwriting a settled truth with an error.
+       * For a shutdown nothing was written at all, and the silence is what
+       * left the turn `running` for the next boot to call `ambiguous`.
+       *
+       * WHAT `interrupted` CLAIMS, EXACTLY: this turn was cut off. NOT that it
+       * did nothing — whatever it had already run is already in the world, and
+       * the message says so rather than inviting a blind replay.
+       */
+      if (this.shuttingDown && controller.signal.aborted) {
+        await this.recordInterruption(sessionId, runId, claimToken);
+        return;
+      }
       // Stop is terminal before a worker sees the heartbeat. Never overwrite it with an error.
       if (controller.signal.aborted || (error instanceof EngineClientError && error.code === "conflict")) return;
       if (isConnectivityLoss(error)) {
