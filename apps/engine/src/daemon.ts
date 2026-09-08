@@ -19,6 +19,7 @@ import {
   resolveMcpServers,
   TurnModelSelection,
   WakeKind as WakeKindSchema,
+  WorkerTurnFailureCode,
   type WakeKind,
   type EngineDiscovery,
   type EngineErrorCode,
@@ -2710,10 +2711,15 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             }),
           });
         } else {
-          const code = stringValue(input.code, "failure code")!;
-          if (code !== "provider_unavailable" && code !== "driver_failed" && code !== "budget_exhausted") {
+          // FROM THE CONTRACT'S LIST, not a hand-written copy of it. This was
+          // one of three places spelling the same codes out, and adding
+          // `interrupted` found them by watching two accept it while the third
+          // still refused. `WorkerTurnFailureCode` is the single definition.
+          const parsedCode = WorkerTurnFailureCode.safeParse(stringValue(input.code, "failure code"));
+          if (!parsedCode.success) {
             throw new HttpError(400, "invalid_request", "failure code is invalid");
           }
+          const code = parsedCode.data;
           writeJson(response, 200, {
             turn: store.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }),
           });
