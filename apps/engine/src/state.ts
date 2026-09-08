@@ -43,6 +43,7 @@ import {
   Turn as TurnSchema,
   TurnAttachment as TurnAttachmentSchema,
   TurnObservation as TurnObservationSchema,
+  WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserProvider,
   type BrowserSnapshot,
   type BrowserTab,
@@ -352,7 +353,9 @@ type TurnFailure = { code: TurnFailureCode; message: string };
  * `internal_error` is the engine's; a worker claiming either would let a
  * provider crash masquerade as a control-plane decision.
  */
-const TURN_FAILURE_CODES = new Set<TurnFailureCode>(["provider_unavailable", "driver_failed", "budget_exhausted"]);
+/** The codes a WORKER may report, from the contract's own list rather than a
+ *  fourth copy of it — see `WorkerTurnFailureCode`. */
+const TURN_FAILURE_CODES = new Set<TurnFailureCode>(WorkerTurnFailureCodeSchema.options);
 
 /**
  * How deep a session's backlog may get.
@@ -5705,9 +5708,27 @@ export class EngineStore {
     if (queued >= MAX_QUEUED_TURNS) {
       throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
     }
-    if (queue.turns.some((turn) => turn.state === "ambiguous")) {
-      throw new EngineStateError("conflict", "session has an ambiguous turn that must be resolved first");
-    }
+    /**
+     * AN AMBIGUOUS TURN NO LONGER REFUSES THE HUMAN'S NEXT MESSAGE, and the
+     * refusal that used to live here was the whole of the reported bug.
+     *
+     * It read "session has an ambiguous turn that must be resolved first" and
+     * it was on the wrong verb. Measured before the change: a session that lost
+     * a turn to a restart accepted NO new message, so the only way forward was
+     * the recovery card's "Retry", which resubmits the ORIGINAL prompt — and
+     * the thing a person actually wanted, "carry on from what you have", was
+     * the one thing the engine would not take. Meanwhile the same ambiguity did
+     * not stop `claimTurn` from dispatching work queued BEFORE the crash, so
+     * un-reviewed pre-crash messages resumed the provider conversation with
+     * nobody's decision behind them. Exactly backwards.
+     *
+     * The invariant the refusal was reaching for is real, and it now lives on
+     * `claimTurn` where it belongs: nothing EXECUTES in this session until a
+     * human has decided about the ambiguous turn. Accepting a message costs
+     * nothing and settles nothing; running one is the act that can duplicate a
+     * side effect.
+     */
+
     /**
      * ONE COMPACTION AT A TIME. The gesture is idempotent in meaning — "squeeze
      * the context" — so a second press while the first is queued or running
@@ -5823,6 +5844,23 @@ export class EngineStore {
     assertId(workerId, "worker id");
     const queue = this.readQueue(sessionId);
     if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
+    /**
+     * AN UNDECIDED AMBIGUOUS TURN HOLDS THIS SESSION'S DISPATCH.
+     *
+     * This is where the recovery gate belongs — `submitTurn` used to carry it,
+     * which refused the human and let the machine through. A backlog written
+     * BEFORE the crash was claimed and run against the resumed provider
+     * conversation while the ambiguity was still undecided: measured, a
+     * `steering` follow-up requeued by `recover()` was handed the lost run's
+     * `resumeCursor` and dispatched with no human anywhere near it.
+     *
+     * Held rather than dropped. The messages keep their place and their order,
+     * and they run the moment the human resolves the ambiguous turn — which is
+     * also the moment somebody has decided whether the work they assumed had
+     * happened actually did. A queued turn is not lost by waiting; a turn that
+     * runs against a conversation nobody vouched for cannot be un-run.
+     */
+    if (queue.turns.some((turn) => turn.state === "ambiguous")) return undefined;
     const turn = queue.turns.find((candidate) => candidate.state === "queued");
     if (!turn) return undefined;
     const at = this.now();
@@ -5940,6 +5978,11 @@ export class EngineStore {
       // One turn per session at a time — the engine's own invariant, checked
       // here so a busy session costs nothing further.
       if (queue.turns.some((candidate) => candidate.state === "claimed" || candidate.state === "running")) continue;
+      // Held for a human decision — `claimTurn` is authoritative about this and
+      // would refuse anyway; skipping here keeps a held session from being the
+      // candidate that wins the sort and then claims nothing, which would stall
+      // every OTHER session's queued work behind it for a poll interval.
+      if (queue.turns.some((candidate) => candidate.state === "ambiguous")) continue;
       const next = queue.turns.find((candidate) => candidate.state === "queued");
       if (next) candidates.push({ sessionId, acceptedAt: next.acceptedAt });
     }
@@ -6893,8 +6936,21 @@ export class EngineStore {
         this.closeOpenItems(session.id, turn.runId, this.now());
         // And for requests: a question parked on a turn that already ended
         // kept a persisted session `blocked` with nothing left to answer it.
-        // An ambiguous turn is skipped — its decision is still pending.
-        if (turn.state !== "ambiguous") this.closeOpenRequests(session.id, turn.runId, this.now());
+        //
+        // AN AMBIGUOUS TURN'S REQUEST IS RETIRED TOO, and it used to be the one
+        // exception. The reasoning for keeping it — "its decision is still
+        // pending" — confused two different decisions. The TURN's fate is
+        // pending and stays so; the REQUEST is a question a worker asked and
+        // then died waiting on, and no answer can ever reach it. Measured:
+        // across every subsequent boot it stayed `open`, holding the session
+        // `blocked` — sidebar "Waiting on you", composer in answer mode — over
+        // a tool call nothing was going to run. The web client already worked
+        // around this client-side (`actionableRequests`); the engine should not
+        // have needed the workaround.
+        //
+        // The row stays in the transcript, resolved, as part of the record of
+        // what the lost turn was doing when it died.
+        this.closeOpenRequests(session.id, turn.runId, this.now());
       }
       let changed = false;
       const recoveryEvents: Array<{ type: "turn.requeued" | "turn.ambiguous"; runId: string }> = [];
@@ -6928,6 +6984,12 @@ export class EngineStore {
           // eventually decide about the turn itself.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
           this.closeOpenItems(session.id, turn.runId, at);
+          // HERE, NOT ONLY IN THE SWEEP ABOVE, and the ordering is the reason:
+          // that sweep skips live turns, so THIS turn — still `running` when it
+          // ran — was passed over, and by the next boot it is `ambiguous`.
+          // Closing it only there meant a question opened by the lost run was
+          // retired on no boot at all, and the session read `blocked` forever.
+          this.closeOpenRequests(session.id, turn.runId, at);
           changed = true;
         } else if (turn.state === "steering") {
           // Delivery is unknowable across a restart; requeue is the side the
@@ -7009,6 +7071,11 @@ export class EngineStore {
           // are still running is not.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
           this.closeOpenItems(session.id, turn.runId, at);
+          // And the question the vanished worker was waiting on: no answer can
+          // reach it now, and leaving it open holds the session `blocked`. Same
+          // rule as the boot sweep's — the TURN's fate stays undecided, the
+          // dead REQUEST does not.
+          this.closeOpenRequests(session.id, turn.runId, at);
           // A promoted message aimed at this turn was never delivered by the
           // vanished worker; back to the queue rather than gone.
           for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
