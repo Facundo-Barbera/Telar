@@ -87,6 +87,38 @@ test("the authenticated API journals explicit ambiguous-turn discard before allo
   } satisfies Partial<EngineClientError>);
 });
 
+test("a read receipt crosses the API as a turn name, and refuses everything else", async () => {
+  // THE ROUTE EXISTS SO EVERY CLIENT AGREES. The desktop shell, a browser tab
+  // and a paired phone all read the same session, so which answer has been
+  // seen cannot live in one of them.
+  const daemon = await startEngine({ engineRoot: root() });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.registerWorker("worker_one");
+  await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claim = (await client.claimTurn("worker_one")).claim!;
+  await client.markTurnRunning("session_one", "run_one", claim.turn.claim!.token);
+
+  // Nothing to read while it runs.
+  await expect(client.markSessionRead("session_one", "run_one")).rejects.toMatchObject({
+    code: "invalid_request",
+    status: 400,
+  } satisfies Partial<EngineClientError>);
+
+  await client.completeTurn("session_one", "run_one", claim.turn.claim!.token, { text: "Done" });
+  const unread = await client.session("session_one");
+  expect(unread.session.lastTurnSequence).toBe(1);
+  expect(unread.session.lastReadTurnSequence).toBeUndefined();
+
+  const read = await client.markSessionRead("session_one", "run_one");
+  expect(read.session.lastReadTurnSequence).toBe(1);
+  expect((await client.session("session_one")).session.lastReadTurnSequence).toBe(1);
+  // A receipt naming nothing this session ran is refused rather than ignored.
+  await expect(client.markSessionRead("session_one", "run_absent")).rejects.toMatchObject({ status: 400 });
+});
+
 test("lease expiry is pruned without another worker control request", async () => {
   let time = 0;
   const daemon = await startEngine({ engineRoot: root(), now: () => time, workerLeaseMs: 5, workerPruneIntervalMs: 1 });
