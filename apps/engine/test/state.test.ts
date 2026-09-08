@@ -541,6 +541,193 @@ test("a settled or snoozed session comes back on its own when a human queues wor
   expect(store.readEvents("session_one").filter((event) => event.type === "session.updated")).toHaveLength(2);
 });
 
+describe("a pin survives everything that is not a decision", () => {
+  /** One turn, run to completion the way a worker would. */
+  function runTurn(store: EngineStore, sessionId: string, runId: string): void {
+    store.submitTurn(sessionId, { runId, input: "work" });
+    const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
+    store.markRunning(sessionId, runId, token);
+    store.completeTurn(sessionId, runId, token, { text: "done" });
+  }
+
+  test("a human's own message does not throw the pin away", () => {
+    // THE BUG: `settledOverride` holds two opposite decisions, and new work
+    // used to clear the field rather than the "settled" half of it — so the
+    // next turn silently unpinned a row the reader had pinned on purpose.
+    const { store } = readyStore();
+    store.updateSession("session_one", { settledOverride: "active" });
+    store.submitTurn("session_one", { runId: "run_pinned", input: "one more thing" });
+    expect(store.getSession("session_one").settledOverride).toBe("active");
+  });
+
+  test("nor does a turn the PROVIDER started, or a peer waking it", () => {
+    const { store } = readyStore();
+    store.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
+    store.updateSession("session_one", { settledOverride: "active" });
+
+    // A background task finishing wakes the CLI, which opens its own turn.
+    const provider = store.openProviderTurn("session_one", {
+      workerId: "worker_one",
+      input: "Background task completed (DONE).",
+      reason: { kind: "task_notification", taskId: "task_bg" },
+    });
+    store.completeTurn("session_one", provider.runId, provider.claim!.token, { text: "noted" });
+    expect(store.getSession("session_one").settledOverride).toBe("active");
+
+    // And a subscribed peer finishing queues a wake turn on the pinned one.
+    store.subscribe("session_one", { targetSessionId: "session_two" });
+    runTurn(store, "session_two", "run_peer");
+    expect(store.turns("session_one").some((turn) => turn.origin === "session")).toBe(true);
+    expect(store.getSession("session_one").settledOverride).toBe("active");
+  });
+
+  test("only unpinning clears it, and settling still wins over the pin", () => {
+    const { store } = readyStore();
+    store.updateSession("session_one", { settledOverride: "active" });
+    expect(store.updateSession("session_one", { settledOverride: null }).settledOverride).toBeUndefined();
+    store.updateSession("session_one", { settledOverride: "active" });
+    expect(store.updateSession("session_one", { settledOverride: "settled" }).settledOverride).toBe("settled");
+  });
+
+  test("a settled session still comes back on its own, and its snooze goes with it", () => {
+    // The half that must NOT change: unpinning-on-work is the rule that keeps
+    // settling from being a place things get lost.
+    const { store } = readyStore();
+    store.updateSession("session_one", { settledOverride: "settled", snoozedUntil: 9_000 });
+    store.submitTurn("session_one", { runId: "run_back", input: "actually" });
+    const session = store.getSession("session_one");
+    expect(session.settledOverride).toBeUndefined();
+    expect(session.snoozedUntil).toBeUndefined();
+    expect(session.snoozedAt).toBeUndefined();
+  });
+
+  test("a pinned session's snooze is still lifted by new work — the pin is not a snooze", () => {
+    const { store } = readyStore();
+    store.updateSession("session_one", { settledOverride: "active", snoozedUntil: 9_000 });
+    store.submitTurn("session_one", { runId: "run_both", input: "hi" });
+    const session = store.getSession("session_one");
+    expect(session.settledOverride).toBe("active");
+    expect(session.snoozedUntil).toBeUndefined();
+  });
+});
+
+describe("read receipts", () => {
+  function completed(store: EngineStore, sessionId: string, runId: string): void {
+    store.submitTurn(sessionId, { runId, input: "work" });
+    const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
+    store.markRunning(sessionId, runId, token);
+    store.completeTurn(sessionId, runId, token, { text: "done" });
+  }
+
+  test("a session with no result has nothing to read", () => {
+    const { store } = readyStore();
+    expect(store.getSession("session_one").lastTurnSequence).toBeUndefined();
+    expect(store.getSession("session_one").lastReadTurnSequence).toBeUndefined();
+  });
+
+  test("the newest RESULT is what is reported, and it is markable", () => {
+    const { store } = readyStore();
+    completed(store, "session_one", "run_one");
+    const before = store.getSession("session_one");
+    expect(before.lastTurnSequence).toBe(1);
+
+    const read = store.markSessionRead("session_one", "run_one");
+    expect(read.lastReadTurnSequence).toBe(1);
+    expect(read.readAt).toBe(100);
+    // AND IT SURVIVES THE PROCESS. The whole reason this is not a browser flag.
+    expect(new EngineStore(store.paths.root, () => 200).getSession("session_one")).toMatchObject({
+      lastReadTurnSequence: 1,
+      readAt: 100,
+    });
+  });
+
+  test("being read is not work: `updatedAt` does not move", () => {
+    // Otherwise opening a settled session would push it back into the list,
+    // and reading a row would restart the very clock meant to shelve it.
+    const { store } = readyStore();
+    completed(store, "session_one", "run_one");
+    const before = store.getSession("session_one").updatedAt;
+    store.markSessionRead("session_one", "run_one");
+    expect(store.getSession("session_one").updatedAt).toBe(before);
+    // The change is still announced, so other surfaces stop calling it unread.
+    expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "session.updated" });
+  });
+
+  test("a receipt for a turn that is not a result is refused", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "work" });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", "run_live", token);
+    // Still running: nothing has been answered yet.
+    expect(() => store.markSessionRead("session_one", "run_live")).toThrow(/completed, failed or stopped/);
+    // A turn of ANOTHER session, and one that does not exist at all.
+    store.createSession({ id: "session_two", projectId: "project_one" });
+    completed(store, "session_two", "run_two");
+    expect(() => store.markSessionRead("session_one", "run_two")).toThrow(/completed, failed or stopped/);
+    expect(() => store.markSessionRead("session_one", "run_nope")).toThrow(/completed, failed or stopped/);
+  });
+
+  test("a LATE receipt cannot consume the answer that arrived after it", () => {
+    // Two tabs, or a retry after a dropped response: the receipt names the
+    // turn it was about, so the newer answer stays unread.
+    const { store } = readyStore();
+    completed(store, "session_one", "run_one");
+    completed(store, "session_one", "run_two");
+    store.markSessionRead("session_one", "run_two");
+    const after = store.markSessionRead("session_one", "run_one");
+    expect(after.lastReadTurnSequence).toBe(2);
+    expect(after.lastTurnSequence).toBe(2);
+  });
+
+  test("a steered message and a discarded recovery are not results, so they never strand a session unread", () => {
+    /**
+     * THE FLAW THIS CLOSES: `lastTurnSequence` came off "the newest turn that
+     * ENDED", and a message steered into a running turn ends the moment the
+     * provider takes it. That sequence names a turn no client can mark read —
+     * the transcript does not even draw it — so the session reported an unread
+     * answer forever and could never be shelved by the clock again.
+     */
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_one", input: "work" });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", "run_one", token);
+    store.submitTurn("session_one", { runId: "run_steer", input: "also this" });
+    store.ackSteer("session_one", "run_steer", token);
+    store.completeTurn("session_one", "run_one", token, { text: "done" });
+
+    const steered = store.turns("session_one").find((turn) => turn.runId === "run_steer")!;
+    expect(steered.state).toBe("steered");
+    // The steered turn has the HIGHER sequence and the LATER end, and neither
+    // makes it the answer.
+    expect(steered.sequence).toBeGreaterThan(store.turns("session_one").find((turn) => turn.runId === "run_one")!.sequence);
+    const session = store.getSession("session_one");
+    expect(session.lastTurnSequence).toBe(1);
+    // Which means the reader can actually clear it.
+    expect(store.markSessionRead("session_one", "run_one").lastReadTurnSequence).toBe(1);
+    expect(store.getSession("session_one").lastTurnSequence).toBe(1);
+  });
+
+  test("a failed or stopped turn is a result too — a failure is something to read", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_bad", input: "work" });
+    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.markRunning("session_one", "run_bad", token);
+    store.failTurn("session_one", "run_bad", token, { code: "driver_failed", message: "the CLI died" });
+    expect(store.getSession("session_one").lastTurnSequence).toBe(1);
+    expect(store.markSessionRead("session_one", "run_bad").lastReadTurnSequence).toBe(1);
+  });
+
+  test("new work after a receipt is unread again", () => {
+    const { store } = readyStore();
+    completed(store, "session_one", "run_one");
+    store.markSessionRead("session_one", "run_one");
+    completed(store, "session_one", "run_two");
+    const session = store.getSession("session_one");
+    expect(session.lastTurnSequence).toBe(2);
+    expect(session.lastReadTurnSequence).toBe(1);
+  });
+});
+
 test("tasks are journalled AND projected, so a cold session still knows a sub-agent ran", () => {
   const { store, root: stateRoot } = readyStore();
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });

@@ -44,7 +44,7 @@ import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";
 import { ProviderIcon, PROVIDER_LABEL } from "@/components/session/provider-icon";
-import { SessionInboxMenu, patchSession } from "@/components/session/session-inbox-menu";
+import { SessionInboxMenu, patchSession, runSessionPatch } from "@/components/session/session-inbox-menu";
 import { canSettle, canSnooze, snoozePresets, wakeLabel } from "@/lib/session-settling";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -233,15 +233,18 @@ export function SessionRow({
    * do not reads as broken, not as principled.
    */
   const unsettles = settledByDecision || band === "settled";
-  const unsettle = async () => {
-    // A drift-settled session has no override to clear, and clearing nothing
-    // writes nothing — so nothing would change. Setting an override first makes
-    // the clearing patch a real change, and a real change stamps `updatedAt`,
-    // which is what actually restarts the inactivity clock.
-    if (!settledByDecision) await patchSession(session,{ settledOverride: "active" });
-    await patchSession(session,{ settledOverride: null });
-    onRefresh();
-  };
+  const unsettle = () =>
+    // TWO PATCHES, ONE REPORTED OUTCOME. If the first refusal went unreported
+    // the second would run against a session that never took the override, and
+    // the row would sit there unchanged with nothing said.
+    runSessionPatch(async () => {
+      // A drift-settled session has no override to clear, and clearing nothing
+      // writes nothing — so nothing would change. Setting an override first makes
+      // the clearing patch a real change, and a real change stamps `updatedAt`,
+      // which is what actually restarts the inactivity clock.
+      if (!settledByDecision) await patchSession(session, { settledOverride: "active" });
+      await patchSession(session, { settledOverride: null });
+    }, onRefresh);
 
   // Deleting the session you are currently VIEWING must not maroon you on it:
   // the survivor rule in deriveSessionList keeps this row visible for as long as
@@ -269,8 +272,7 @@ export function SessionRow({
     // reject the empty one anyway, and a no-op PATCH writes no event but still
     // costs a round trip and a refresh of every surface.
     if (!next || next === session.title) return;
-    await patchSession(session, { title: next.slice(0, 120) });
-    onRefresh();
+    await runSessionPatch(() => patchSession(session, { title: next.slice(0, 120) }), onRefresh);
   };
 
   if (renaming) {
@@ -639,7 +641,7 @@ export function SessionRow({
               disabled={!unsettles && !canSettle(sessionActivity)}
               className="text-muted-foreground hover:text-foreground"
               onClick={() => {
-                void (unsettles ? unsettle() : patchSession(session,{ settledOverride: "settled" }).then(onRefresh));
+                void (unsettles ? unsettle() : runSessionPatch(() => patchSession(session, { settledOverride: "settled" }), onRefresh));
               }}
             >
               {unsettles ? <UndoIcon /> : <CircleCheckIcon />}
@@ -674,7 +676,7 @@ export function SessionRow({
               aria-label="Wake session now"
               title="Wake now"
               className="text-muted-foreground hover:text-foreground"
-              onClick={() => void patchSession(session,{ snoozedUntil: null }).then(onRefresh)}
+              onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: null }), onRefresh)}
             >
               <AlarmClockIcon />
             </Button>
@@ -701,7 +703,7 @@ export function SessionRow({
                   {snoozePresets(new Date(renderedAt)).map((preset) => (
                     <DropdownMenuItem
                       key={preset.id}
-                      onClick={() => void patchSession(session,{ snoozedUntil: preset.until }).then(onRefresh)}
+                      onClick={() => void runSessionPatch(() => patchSession(session, { snoozedUntil: preset.until }), onRefresh)}
                     >
                       <span className="flex-1">{preset.label}</span>
                       <span className="font-mono text-[0.625rem] tabular-nums text-muted-foreground/60">{preset.when}</span>
