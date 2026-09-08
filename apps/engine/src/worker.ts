@@ -11,6 +11,7 @@ import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./driver";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
+import type { LoginGrantStore } from "./secrets/login-grants";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
 
@@ -163,6 +164,13 @@ export type EngineWorkerOptions = {
    * crash — so this is safe to construct unconditionally.
    */
   secrets?: SecretsProvider;
+  /**
+   * Remembered login authorizations (`secrets/login-grants.ts`) — the store a
+   * matching `browser_fill_secret` may skip Telar's approval card against.
+   * ABSENT MEANS EVERY FILL ASKS, which is the safe default and what a test
+   * gets: nothing here can be inferred, only read.
+   */
+  loginGrants?: LoginGrantStore;
   /**
    * HOW MANY TURNS THIS WORKER RUNS AT ONCE. The engine already refuses two
    * concurrent turns of the SAME session (`claimTurn` skips a session with a
@@ -576,7 +584,7 @@ export class EngineWorker {
           workspaceRoot: cwd,
           gate: (input) => refs.gate(input),
           onNavigated: (state) => refs.onNavigated(state),
-          fillSecret: (args, callBrowser) => refs.fillSecret(args, callBrowser),
+          fillSecret: (args, callBrowser, profile) => refs.fillSecret(args, callBrowser, profile),
         });
         this.browserLeases.set(sessionId, { lease, refs });
       }
@@ -1004,11 +1012,13 @@ export class EngineWorker {
      * inside `runSecretFill` and the fill call it makes; nothing of them
      * reaches this closure's return value or the journal.
      */
-    const fillSecret: NonNullable<BrowserRunBinding["fillSecret"]> = (args, callBrowser) =>
+    const fillSecret: NonNullable<BrowserRunBinding["fillSecret"]> = (args, callBrowser, profile) =>
       runSecretFill(
         {
           callBrowser,
           secrets: this.options.secrets ?? (this.secrets ??= createOnePasswordSecrets()),
+          ...(profile ? { profile } : {}),
+          ...(this.options.loginGrants ? { grants: this.options.loginGrants } : {}),
           ask: async (secret) => {
             const outcome = await askEngine({
               kind: "secret_access",
@@ -1016,7 +1026,13 @@ export class EngineWorker {
               toolUseId: `${TELAR_BROWSER_MCP_SERVER}_fill_secret_${crypto.randomUUID().slice(0, 8)}`,
             });
             const item = outcome.answers?.item;
-            return { decision: outcome.decision, ...(typeof item === "string" ? { itemId: item } : {}) };
+            return {
+              decision: outcome.decision,
+              ...(typeof item === "string" ? { itemId: item } : {}),
+              // The card's opt-in. Only ever TRUE because a person ticked a box
+              // that starts unchecked — no mode and no default can produce it.
+              ...(outcome.answers?.remember === true ? { remember: true } : {}),
+            };
           },
         },
         args,

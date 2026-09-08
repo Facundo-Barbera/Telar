@@ -21,10 +21,17 @@
  */
 const fs = require("node:fs");
 const path = require("node:path");
-const { partitionFor } = require("./browser-profiles");
 const { isProtectedUrl } = require("./private-interaction");
 
-const INVENTORY_VERSION = 1;
+/**
+ * v1 named a scope's PROJECT (`profileKey`); v2 names its PROFILE (`profileId`,
+ * a registry record) plus the project it was declared from, and remembers each
+ * tab's own profile so a session that switched identities comes back with both.
+ * A v1 document is read through the registry's ladder — the same resolution a
+ * live bind would do, so a restart after the upgrade lands every tab in the jar
+ * it was already using.
+ */
+const INVENTORY_VERSION = 2;
 const FILE_NAME = "browser-tabs.json";
 const MAX_TABS_PER_SCOPE = 12;
 const MAX_TEXT = 2_000;
@@ -63,20 +70,27 @@ function cleanViewport(value) {
  * profile map, `active` the scope → active id map. A scope with no
  * rememberable tab is omitted entirely.
  */
-function serializeInventory({ tabs, profiles, active }) {
+function serializeInventory({ tabs, profiles, projects, overrides, active }) {
   const scopes = {};
   for (const tab of tabs) {
-    const profileKey = profiles.get(tab.scopeKey);
-    if (!profileKey) continue;
+    const profileId = profiles.get(tab.scopeKey);
+    if (!profileId) continue;
     const url = rememberableUrl(tab.url);
     if (url === null) continue;
-    const scope = (scopes[tab.scopeKey] ||= { profileKey, activeTabId: null, tabs: [] });
+    const scope = (scopes[tab.scopeKey] ||= {
+      profileId,
+      ...(projects?.get(tab.scopeKey) ? { projectKey: projects.get(tab.scopeKey) } : {}),
+      ...(overrides?.get(tab.scopeKey) ? { overridden: true } : {}),
+      activeTabId: null,
+      tabs: [],
+    });
     if (scope.tabs.length >= MAX_TABS_PER_SCOPE) continue;
     scope.tabs.push({
       id: tab.id,
       url,
       title: cleanText(tab.title, "New tab"),
       openedBy: tab.openedBy === "human" ? "human" : "agent",
+      ...(tab.profileId ? { profileId: tab.profileId } : {}),
       ...(tab.viewport === undefined ? {} : { viewport: tab.viewport }),
       ...(tab.viewportMode === "fit" || tab.viewportMode === "fixed" ? { viewportMode: tab.viewportMode } : {}),
     });
@@ -93,17 +107,30 @@ function serializeInventory({ tabs, profiles, active }) {
  * malformed is dropped at the smallest granularity that keeps the rest: a bad
  * tab costs the tab, a scope whose profile the mapping refuses costs the
  * scope, an unreadable document costs nothing but the memory of it.
- * `mapping` is the legacy-owner mapping `partitionFor` validates against.
+ * `registry` is the profile registry (browser-profiles.js): it resolves a v1
+ * document's project key and validates a v2 document's profile id. A scope
+ * whose profile the registry cannot produce is DROPPED — a remembered page is
+ * never worth opening in an identity nobody chose for it.
  */
-function parseInventory(document, mapping) {
+function parseInventory(document, registry) {
   const scopes = [];
-  if (!document || typeof document !== "object" || document.version !== INVENTORY_VERSION) return scopes;
+  if (!document || typeof document !== "object") return scopes;
+  const version = document.version;
+  if (version !== INVENTORY_VERSION && version !== 1) return scopes;
   const raw = document.scopes && typeof document.scopes === "object" ? document.scopes : {};
   for (const [scopeKey, scope] of Object.entries(raw)) {
     if (!scopeKey.trim() || !scope || typeof scope !== "object") continue;
-    const profileKey = cleanText(scope.profileKey);
+    let profile = null;
+    let projectKey = cleanText(scope.projectKey) || null;
     try {
-      partitionFor(profileKey, mapping);
+      if (version === 1) {
+        // The v1 key WAS the project. Resolving it through the ladder is what
+        // keeps a pre-upgrade session on the cookies it already had.
+        projectKey = cleanText(scope.profileKey);
+        profile = registry.resolve(projectKey);
+      } else {
+        profile = registry.require(cleanText(scope.profileId));
+      }
     } catch {
       continue; // an unmappable profile is not a reason to guess a jar
     }
@@ -116,11 +143,15 @@ function parseInventory(document, mapping) {
       if (!id || url === null || seen.has(id)) continue;
       seen.add(id);
       const viewport = cleanViewport(tab.viewport);
+      // A tab's own profile is honoured only if the registry still has it;
+      // otherwise the tab comes back in its scope's profile.
+      const tabProfileId = cleanText(tab.profileId);
       tabs.push({
         id,
         url,
         title: cleanText(tab.title, "New tab"),
         openedBy: tab.openedBy === "human" ? "human" : "agent",
+        ...(tabProfileId && registry.get(tabProfileId) ? { profileId: tabProfileId } : {}),
         ...(viewport === undefined ? {} : { viewport }),
         // Absent on legacy inventories; the manager migrates those.
         ...(tab.viewportMode === "fit" || tab.viewportMode === "fixed" ? { viewportMode: tab.viewportMode } : {}),
@@ -129,7 +160,14 @@ function parseInventory(document, mapping) {
     }
     if (!tabs.length) continue;
     const activeTabId = tabs.some((tab) => tab.id === scope.activeTabId) ? scope.activeTabId : tabs.at(-1).id;
-    scopes.push({ scopeKey, profileKey, activeTabId, tabs });
+    scopes.push({
+      scopeKey,
+      profile,
+      ...(projectKey ? { projectKey } : {}),
+      overridden: scope.overridden === true,
+      activeTabId,
+      tabs,
+    });
   }
   return scopes;
 }

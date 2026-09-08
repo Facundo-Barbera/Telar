@@ -26,7 +26,7 @@ const { COMMAND_KEY_BINDINGS } = require("./command-keys");
 const { macWindowChrome } = require("./window-chrome");
 const { ExtensionHost, extensionsEnabled } = require("./extension-host");
 const { createBrowserSuggestions } = require("./browser-suggestions");
-const { readMapping: readProfileMapping, partitionFor } = require("./browser-profiles");
+const { readProfileRegistry } = require("./browser-profiles");
 const { createTabStore } = require("./browser-tab-store");
 
 const SMOKE = process.argv.includes("--smoke");
@@ -845,14 +845,19 @@ function createWindow(url) {
   // Captured, not read from the global at close time: during a translucency
   // rebuild the OLD window closes after the NEW one exists, and destroying
   // whatever the global points to then would kill the replacement's manager.
-  // PER-PROJECT BROWSER PROFILES (browser-profiles.js): the legacy owner
-  // mapping is read once from userData; a bad file is a startup error, not a
-  // silent fallback to the shared jar.
-  const profileMapping = readProfileMapping(app.getPath("userData"));
+  // NAMED BROWSER PROFILES (browser-profiles.js): the registry is read once
+  // from userData; a bad file is a startup error, not a silent fallback to the
+  // shared jar. Reused across a translucency rebuild through the manager.
+  const profiles = readProfileRegistry(app.getPath("userData"));
   const manager = new DesktopBrowserManager(win, {
     onControlChanged: reportBrowserControl,
-    onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.profileOf(scopeKey), url),
-    profileMapping,
+    // Recent sites are PER PROFILE, not per project: two projects sharing an
+    // identity share its history, which is what sharing an identity means.
+    onVisited: (scopeKey, url) => requireBrowserSuggestions().remember(manager.activeProfile(scopeKey)?.id, url),
+    profiles,
+    // A project whose pre-profile cookie jar was adopted keeps its recent
+    // sites: the entries move to the new key, nothing on disk is touched.
+    onProfileMigrated: (from, to) => requireBrowserSuggestions().adopt(from, to),
     // Each session's open pages, order and active tab survive a reload, a
     // window rebuild and a restart (browser-tab-store.js). A rebuilt window's
     // manager reads what the old one wrote in destroy(); the smoke run keeps
@@ -1044,7 +1049,7 @@ ipcMain.handle("telar:browser:suggestions", async (_event, scopeKey) => {
   const manager = requireBrowserManager();
   manager.partitionOf(scopeKey); // Validate the binding before reading a project's history.
   const ownPort = Number(new URL(manager.window.webContents.getURL()).port);
-  return requireBrowserSuggestions().list(manager.profileOf(scopeKey), [
+  return requireBrowserSuggestions().list(manager.activeProfile(scopeKey)?.id, [
     ownPort,
     Number(process.env.TELAR_DESKTOP_REMOTE_DEBUGGING_PORT),
     Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT),
@@ -1053,7 +1058,7 @@ ipcMain.handle("telar:browser:suggestions", async (_event, scopeKey) => {
 ipcMain.handle("telar:browser:remove-suggestion", (_event, input) => {
   const manager = requireBrowserManager();
   manager.partitionOf(input?.scopeKey);
-  requireBrowserSuggestions().remove(manager.profileOf(input.scopeKey), input.url);
+  requireBrowserSuggestions().remove(manager.activeProfile(input.scopeKey)?.id, input.url);
 });
 ipcMain.handle("telar:browser:state", (_event, scopeKey) => requireBrowserManager().state(scopeKey));
 // The password manager's toolbar button. Opening its popup BEGINS a private
@@ -1081,6 +1086,61 @@ ipcMain.handle("telar:browser:extension-popup", async (event, input) => {
 });
 ipcMain.handle("telar:browser:bind-profile", (_event, input) =>
   requireBrowserManager().declareProfile(input?.scopeKey, input?.profileKey),
+);
+/**
+ * NAMED PROFILES, MANAGED FROM THE BROWSER PANEL. Create and rename identities,
+ * name the account one is MEANT to be signed into (intent — nothing here
+ * verifies a login), choose the global default, assign this session's project,
+ * and switch which identity this session's next tab opens in.
+ *
+ * Nothing here deletes a profile, and that is deliberate: a profile record is
+ * the only thing that names a live cookie jar, so removing one would either
+ * strand or destroy an identity a person is still signed into.
+ */
+ipcMain.handle("telar:browser:profiles", (_event, scopeKey) => {
+  const manager = requireBrowserManager();
+  return {
+    profiles: manager.listProfiles(),
+    active: scopeKey ? manager.activeProfile(scopeKey) : null,
+    projectKey: scopeKey ? manager.profileOf(scopeKey) : null,
+  };
+});
+ipcMain.handle("telar:browser:create-profile", (_event, input) => {
+  const manager = requireBrowserManager();
+  const profile = manager.profiles.create({ label: input?.label, account: input?.account });
+  // Creating from a session's panel is nearly always "and use it here".
+  if (input?.scopeKey) manager.setScopeProfile(input.scopeKey, profile.id);
+  if (input?.scopeKey && input?.assignProject) {
+    const projectKey = manager.profileOf(input.scopeKey);
+    if (projectKey) manager.profiles.assign(projectKey, profile.id);
+  }
+  return { profiles: manager.listProfiles(), active: profile };
+});
+ipcMain.handle("telar:browser:update-profile", (_event, input) => {
+  const manager = requireBrowserManager();
+  const profile = manager.profiles.update(input?.profileId, {
+    ...(input?.label !== undefined ? { label: input.label } : {}),
+    ...(input?.account !== undefined ? { account: input.account } : {}),
+  });
+  manager.emitAllStates();
+  return { profiles: manager.listProfiles(), active: profile };
+});
+ipcMain.handle("telar:browser:set-default-profile", (_event, input) => {
+  const manager = requireBrowserManager();
+  manager.profiles.setDefault(input?.profileId);
+  manager.emitAllStates();
+  return { profiles: manager.listProfiles() };
+});
+ipcMain.handle("telar:browser:assign-project-profile", (_event, input) => {
+  const manager = requireBrowserManager();
+  const projectKey = input?.projectKey || manager.profileOf(input?.scopeKey);
+  if (!projectKey) throw new Error("This session has no project to assign a browser profile to.");
+  manager.profiles.assign(projectKey, input?.profileId ?? null);
+  manager.emitAllStates();
+  return { profiles: manager.listProfiles() };
+});
+ipcMain.handle("telar:browser:set-scope-profile", (_event, input) =>
+  requireBrowserManager().setScopeProfile(input?.scopeKey, input?.profileId),
 );
 ipcMain.handle("telar:browser:private-resume", () => requireBrowserManager().resumeFromPrivate());
 ipcMain.handle("telar:browser:action", (_event, input) =>

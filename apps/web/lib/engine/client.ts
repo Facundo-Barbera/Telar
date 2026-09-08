@@ -17,6 +17,7 @@ import type {
   GitOverview,
   ComputerUseBackend,
   ComputerUseStatus,
+  RememberedLogin,
   DataScienceBootstrap,
   DataScienceConfig,
   DataScienceCreateEnvironment,
@@ -388,6 +389,11 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** cua's native granting flow — CuaDriver.app requests the grants. No-op for Sky. */
     grantComputerUseAccess: () =>
       request<{ started: boolean; backend?: ComputerUseBackend }>(fetcher, "POST", "/api/computer-use/grant", {}),
+    /** The logins a person allowed agents to fill without being asked again —
+     *  metadata only, never a value. Revoking is the only write. */
+    browserLogins: () => request<{ logins: RememberedLogin[] }>(fetcher, "GET", "/api/browser-logins"),
+    revokeBrowserLogin: (id: string) =>
+      request<{ ok: boolean }>(fetcher, "DELETE", `/api/browser-logins/${encodeURIComponent(id)}`),
     /** End a session and free its worktree. The branch survives. */
     archiveSession: (sessionId: string) =>
       request<{ session: Session }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/archive`, {}),

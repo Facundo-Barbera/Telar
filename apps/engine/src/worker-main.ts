@@ -5,7 +5,8 @@ import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
 import { hydrateHostPath } from "./host-path";
 import { SessionsToolSocket } from "./sessions-tools/run-socket";
-import { engineRootFromEnv } from "./state";
+import { createLoginGrantStore } from "./secrets/login-grants";
+import { engineRootFromEnv, statePaths } from "./state";
 import { EngineWorker, workerConcurrencyFromEnv } from "./worker";
 import { WorkerReconnectController } from "./worker-supervisor";
 
@@ -47,6 +48,13 @@ const browserSocket = createBrowserToolSocket(browser);
 // The sessions wall for Codex turns, served from the same place and for the
 // same reason: the tools live where the worker's client is.
 const sessionsSocket = new SessionsToolSocket();
+/**
+ * Remembered login authorizations live in the ENGINE'S STATE DIRECTORY, not in
+ * either process, so the daemon (which lists and revokes them in settings) and
+ * whichever worker runs a turn read exactly one truth. Nothing is cached on
+ * either side — see `createLoginGrantStore`.
+ */
+const loginGrants = createLoginGrantStore(statePaths(root).root);
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 // The SAME factory the daemon's embedded worker uses. Both deployments must
@@ -63,6 +71,7 @@ const supervisor = new WorkerReconnectController({
       driver: drivers,
       browserSocket,
       sessionsSocket,
+      loginGrants,
       ...(concurrency === undefined ? {} : { concurrency }),
       onConnectionLost,
     });

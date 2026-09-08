@@ -1,7 +1,7 @@
 const { randomUUID } = require("node:crypto");
 const { pathToFileURL } = require("node:url");
 const { PrivateInteraction, isProtectedUrl } = require("./private-interaction");
-const { partitionFor } = require("./browser-profiles");
+const { ProfileRegistry, requireProjectKey } = require("./browser-profiles");
 const { serializeInventory, parseInventory } = require("./browser-tab-store");
 
 const CURSOR_MOVE_MS = 160;
@@ -422,14 +422,29 @@ class DesktopBrowserManager {
     this._autoReleaseRunning = false;
     this._disposed = false;
     /**
-     * BROWSER PROFILES (browser-profiles.js). Each scope DECLARES the profile
-     * it belongs to — its project, or the explicit `none` — before its first
-     * tab. A scope nobody declared gets NO tab: missing metadata fails closed
-     * instead of landing every unlabelled session in one shared jar. The
-     * partition is fixed on each tab at creation and never moves.
+     * BROWSER PROFILES (browser-profiles.js). Each scope DECLARES the project
+     * it belongs to — a project id, or the explicit `none` — before its first
+     * tab, and the registry turns that into a NAMED PROFILE (an identity a
+     * person labelled, which several projects may share). A scope nobody
+     * declared gets NO tab: missing metadata fails closed instead of landing
+     * every unlabelled session in one shared jar.
+     *
+     * THE PARTITION IS FIXED ON EACH TAB AT CREATION AND NEVER MOVES. Switching
+     * a session's profile changes where the NEXT tab opens; the tabs already
+     * open keep the identity they were signed into, and no live WebContents is
+     * ever re-pointed at another partition (Chromium could not do it, and
+     * silently doing it would put an agent on the wrong account).
      */
-    this.profileMapping = dependencies.profileMapping || { legacyOwnerProjectId: null };
-    this.scopeProfiles = new Map(); // scopeKey → profileKey
+    this.profiles = dependencies.profiles || new ProfileRegistry(null);
+    /** Told when the registry adopts a pre-profile cookie jar, so per-profile
+     *  caches (recent sites) can follow the metadata. */
+    this.onProfileMigrated = dependencies.onProfileMigrated || null;
+    this.scopeProfiles = new Map(); // scopeKey → profile id
+    this.scopeProjects = new Map(); // scopeKey → project key ("none" or a project id)
+    /** A profile the PERSON chose for this session in the panel. It survives
+     *  the engine re-declaring the same project every turn, and is dropped only
+     *  when the session's project itself changes. */
+    this.scopeProfileOverrides = new Map(); // scopeKey → profile id
     /** Extension hosts, ONE PER PARTITION: chrome.tabs of one project's
      *  1Password must not see another project's tabs, and the extension's
      *  own storage lives in the partition too. Created lazily by the shell
@@ -453,12 +468,23 @@ class DesktopBrowserManager {
 
   /** Seed remembered tabs as hibernated records. Nothing loads here. */
   restoreInventory(document) {
-    for (const scope of parseInventory(document, this.profileMapping)) {
+    for (const scope of parseInventory(document, this.profiles)) {
       if (this.scopeTabs(scope.scopeKey).length) continue;
-      const partition = partitionFor(scope.profileKey, this.profileMapping);
-      this.scopeProfiles.set(scope.scopeKey, scope.profileKey);
+      /**
+       * A REMEMBERED SCOPE WHOSE PROFILE IS GONE IS DROPPED, NOT REHOMED. The
+       * inventory names a profile id; if the registry no longer has it (a
+       * hand-edited file), `parseInventory` already refused the scope rather
+       * than opening its pages in whichever identity happened to be nearest.
+       */
+      const profile = scope.profile;
+      this.scopeProfiles.set(scope.scopeKey, profile.id);
+      if (scope.projectKey) this.scopeProjects.set(scope.scopeKey, scope.projectKey);
+      if (scope.overridden) this.scopeProfileOverrides.set(scope.scopeKey, profile.id);
       for (const remembered of scope.tabs) {
-        const tab = this.newTabRecord(scope.scopeKey, partition, remembered.openedBy);
+        // A tab remembers ITS OWN profile: a session that switched profiles has
+        // tabs of both, and each must come back in the jar it was signed into.
+        const tabProfile = remembered.profileId ? this.profiles.get(remembered.profileId) : null;
+        const tab = this.newTabRecord(scope.scopeKey, tabProfile || profile, remembered.openedBy);
         tab.id = remembered.id;
         tab.url = remembered.url;
         tab.title = remembered.title;
@@ -488,10 +514,13 @@ class DesktopBrowserManager {
         url: tab.view && !tab.view.webContents.isDestroyed() ? tab.view.webContents.getURL() || tab.url : tab.url,
         title: tab.title,
         openedBy: tab.openedBy,
+        profileId: tab.profileId,
         ...(tab.viewport ? { viewport: tab.viewport } : {}),
         viewportMode: this.viewportModeOf(tab),
       })),
       profiles: this.scopeProfiles,
+      projects: this.scopeProjects,
+      overrides: this.scopeProfileOverrides,
       active: this.activeTabIds,
     });
   }
@@ -502,32 +531,99 @@ class DesktopBrowserManager {
     this.tabStore.save(this.inventory());
   }
 
-  /** Bind a scope to its profile. Idempotent for the same key; a CHANGE
-   *  after tabs exist is refused — the person closes the session's tabs
-   *  first, which is what keeps a cookie jar from following a session. */
-  declareProfile(scopeKey, profileKey) {
+  /**
+   * Bind a scope to its PROJECT, and through the registry's ladder to a
+   * profile. Idempotent for the same project key — the engine re-declares it
+   * before every turn — and a change of PROJECT after tabs exist is refused:
+   * the person closes the session's tabs first, which is what keeps a cookie
+   * jar from following a session into another project.
+   *
+   * A change of PROFILE for the same project (an assignment made in the panel)
+   * is allowed and is not a rebind: existing tabs keep their partition, the
+   * next tab opens in the new identity.
+   */
+  declareProfile(scopeKey, projectKey) {
     const scope = this.requireScope(scopeKey);
-    const key = String(profileKey || "").trim();
-    partitionFor(key, this.profileMapping); // validates: required, project id or "none"
-    const current = this.scopeProfiles.get(scope);
+    const key = requireProjectKey(projectKey);
+    const current = this.scopeProjects.get(scope);
     if (current !== undefined && current !== key && this.scopeTabs(scope).length) {
       throw new Error(`Browser session ${scope} already has tabs in profile ${current}; close them before moving it to ${key}.`);
     }
-    this.scopeProfiles.set(scope, key);
-    return { scopeKey: scope, profileKey: key, partition: partitionFor(key, this.profileMapping) };
+    // A session's own profile choice belongs to the session it was made in. If
+    // the project underneath it changed, the choice is not carried across.
+    if (current !== undefined && current !== key) this.scopeProfileOverrides.delete(scope);
+    this.scopeProjects.set(scope, key);
+    const override = this.scopeProfileOverrides.get(scope);
+    const profile = override ? this.profiles.require(override) : this.profiles.resolve(key);
+    this.drainProfileMigrations();
+    this.scopeProfiles.set(scope, profile.id);
+    this.persist();
+    return this.describeProfileBinding(scope, profile, key);
   }
 
-  /** The declared profile, or null: nothing is assumed for an unbound scope. */
+  /**
+   * THE PANEL'S PROFILE SWITCH. Chooses which identity this session's NEXT tab
+   * opens in. Deliberately does NOT touch the tabs already open: their cookies
+   * are the other profile's, their WebContents cannot change partition, and an
+   * agent working in one of them stays exactly where it was.
+   */
+  setScopeProfile(scopeKey, profileId) {
+    const scope = this.requireScope(scopeKey);
+    const profile = this.profiles.require(profileId);
+    this.scopeProfileOverrides.set(scope, profile.id);
+    this.scopeProfiles.set(scope, profile.id);
+    this.persist();
+    this.emitState(scope);
+    return this.describeProfileBinding(scope, profile, this.scopeProjects.get(scope) ?? null);
+  }
+
+  describeProfileBinding(scope, profile, projectKey) {
+    return {
+      scopeKey: scope,
+      // The engine's own vocabulary: the key it declared. Unchanged on the wire.
+      profileKey: projectKey,
+      profileId: profile.id,
+      label: profile.label,
+      ...(profile.account ? { account: profile.account } : {}),
+      partition: profile.partition,
+    };
+  }
+
+  /** Replay the registry's metadata migrations onto whoever cares (recent
+   *  sites), once each. Nothing on disk moves; only the key does. */
+  drainProfileMigrations() {
+    if (!this.profiles.migrations.length) return;
+    const moves = this.profiles.migrations.splice(0, this.profiles.migrations.length);
+    if (!this.onProfileMigrated) return;
+    for (const move of moves) {
+      try { this.onProfileMigrated(move.from, move.to); } catch { /* a cache is never worth a failed bind */ }
+    }
+  }
+
+  /** The declared PROJECT key, or null: nothing is assumed for an unbound
+   *  scope. (The identity it resolves to is `activeProfile`.) */
   profileOf(scopeKey) {
-    return this.scopeProfiles.get(this.requireScope(scopeKey)) || null;
+    return this.scopeProjects.get(this.requireScope(scopeKey)) || null;
+  }
+
+  /** The profile record a NEW tab in this scope would open in, or null. */
+  activeProfile(scopeKey) {
+    const id = this.scopeProfiles.get(this.requireScope(scopeKey));
+    return id ? this.profiles.get(id) : null;
   }
 
   /** The partition a NEW tab in this scope would use. Throws for an unbound
    *  scope — the one place the fail-closed rule is enforced. */
   partitionOf(scopeKey) {
-    const key = this.profileOf(scopeKey);
-    if (!key) throw new Error(`Browser session ${this.requireScope(scopeKey)} is not bound to a project profile yet; nothing can open until it is.`);
-    return partitionFor(key, this.profileMapping);
+    const profile = this.activeProfile(scopeKey);
+    if (!profile) throw new Error(`Browser session ${this.requireScope(scopeKey)} is not bound to a project profile yet; nothing can open until it is.`);
+    return profile.partition;
+  }
+
+  /** Every profile a person may switch this session to, with the project
+   *  assignments that make sharing visible. */
+  listProfiles() {
+    return this.profiles.list().map((profile) => ({ ...profile, projects: this.profiles.projectsOf(profile.id) }));
   }
 
   /** The extension host for a partition, created on first use. */
@@ -573,6 +669,13 @@ class DesktopBrowserManager {
       }
     }
     this.emitPrivacy();
+  }
+
+  /** Push fresh state to every scope with tabs — what a change to the profile
+   *  REGISTRY (a rename, a new default) needs, since it is not scoped to one
+   *  session but every panel shows it. */
+  emitAllStates() {
+    for (const scope of new Set([...this.tabs.map((tab) => tab.scopeKey), ...this.scopeProfiles.keys()])) this.emitState(scope);
   }
 
   emitPrivacy() {
@@ -961,9 +1064,13 @@ class DesktopBrowserManager {
     const agentTabId = this.peekTarget(scope, {})?.id ?? null;
     return {
       scopeKey: scope,
-      // The bound project profile, or null until the engine/cockpit bind it.
+      // The bound project key, or null until the engine/cockpit bind it.
       // Advisory in the state payload; binding happens before any tab opens.
       profileKey: this.profileOf(scope),
+      /** The named identity new tabs open in, and every identity this session
+       *  could be switched to — what the panel's profile menu renders. */
+      profile: this.activeProfile(scope),
+      profiles: this.listProfiles(),
       available: true,
       running: true,
       provider: "desktop",
@@ -982,6 +1089,10 @@ class DesktopBrowserManager {
         loading: tab.loading,
         controller: this.tabActivity(tab),
         openedBy: tab.openedBy || "agent",
+        /** The identity THIS tab is signed into. Usually the session's active
+         *  profile; different for a tab opened before a profile switch, and the
+         *  strip says so rather than letting it look like the current one. */
+        profileId: tab.profileId || null,
         favicon: tab.faviconUrl || null,
         // A remembered tab with no WebContents yet (restored from the
         // inventory, or hibernated): the panel shows it as a tab; the first
@@ -1568,9 +1679,11 @@ class DesktopBrowserManager {
     if (this.scopeTabs(scope).length >= MAX_TABS_PER_SCOPE) {
       throw new Error(`Tab limit reached (${MAX_TABS_PER_SCOPE} per session). Close a tab first.`);
     }
-    // Fixed at creation from the scope's declared profile: a tab's cookies
-    // belong to the profile it was opened in.
-    const tab = this.newTabRecord(scope, this.partitionOf(scope), openedBy);
+    // Fixed at creation from the scope's ACTIVE profile: a tab's cookies
+    // belong to the profile it was opened in, whatever the session switches to
+    // afterwards. `partitionOf` is what refuses an unbound scope.
+    this.partitionOf(scope);
+    const tab = this.newTabRecord(scope, this.activeProfile(scope), openedBy);
     const wasEmpty = this.scopeTabs(scope).length === 0;
     this.tabs.push(tab);
     /**
@@ -1649,11 +1762,13 @@ class DesktopBrowserManager {
 
   /** A tab record with no WebContents — what createTab and the inventory
    *  restore both start from. */
-  newTabRecord(scope, partition, openedBy) {
+  newTabRecord(scope, profile, openedBy) {
     return {
       id: this.createId(),
       scopeKey: scope,
-      partition,
+      // The identity this tab is signed into, fixed here for its whole life.
+      partition: profile.partition,
+      profileId: profile.id,
       view: null,
       /** The tab's own intrinsic viewport; absent means DEFAULT_VIEWPORT. */
       viewport: undefined,
@@ -2455,7 +2570,28 @@ class DesktopBrowserManager {
     return okText(
       tabs
         .map((tab, index) => {
-          const meta = [`controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
+          /**
+           * THE TAB'S OWN IDENTITY, because `tabId` is a POSITION. Every tool
+           * addresses a tab by its index in this list (`tabAt`), so closing a
+           * tab renumbers the ones after it and an index captured a moment ago
+           * can name a different page. Callers that must act on the SAME tab
+           * they inspected — the credential path — compare this instead.
+           */
+          const meta = [`tab=${tab.id}`, `controller=${this.tabActivity(tab)}`, `opened-by=${tab.openedBy || "agent"}`];
+          /**
+           * WHICH IDENTITY THIS TAB IS SIGNED INTO, per tab and not per
+           * session. After a profile switch a session's tabs are of two
+           * profiles, and the credential path binds an authorization to the
+           * profile of the tab it is about to type into — so it has to be able
+           * to read that here rather than assume the session's next-tab
+           * default. The label is percent-encoded: it is a person's free text
+           * inside a comma-separated suffix.
+           */
+          if (tab.profileId) {
+            meta.push(`profile=${tab.profileId}`);
+            const profile = this.profiles.get(tab.profileId);
+            if (profile) meta.push(`profile-label=${encodeURIComponent(profile.label)}`);
+          }
           // "(current)" is the HUMAN's view; this is where YOUR next call
           // lands. They are routinely different tabs, and a model that cannot
           // tell them apart cannot work in the background on purpose.
@@ -2750,15 +2886,19 @@ class DesktopBrowserManager {
     // otherwise a draft's cookie jar would follow it into another project. A
     // target that is not bound yet INHERITS the source's profile (the common
     // case: a fresh session scope adopting a draft's tabs).
-    const fromProfile = this.profileOf(from);
-    const toProfile = this.profileOf(to);
-    if (toProfile) {
+    const fromProject = this.profileOf(from);
+    const toProject = this.profileOf(to);
+    if (toProject) {
       const targetPartition = this.partitionOf(to);
       if (sourceTabs.some((tab) => tab.partition !== targetPartition)) {
         throw new Error("Cannot adopt tabs across browser profiles (different projects).");
       }
-    } else if (fromProfile) {
-      this.scopeProfiles.set(to, fromProfile);
+    } else if (fromProject) {
+      this.scopeProjects.set(to, fromProject);
+      const profileId = this.scopeProfiles.get(from);
+      if (profileId) this.scopeProfiles.set(to, profileId);
+      const override = this.scopeProfileOverrides.get(from);
+      if (override) this.scopeProfileOverrides.set(to, override);
     }
     const sourceActiveId = this.activeTabIds.get(from) ?? null;
     // The agent's focus travels with the tabs, exactly as the human's view

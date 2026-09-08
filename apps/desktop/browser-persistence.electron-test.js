@@ -31,6 +31,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { DesktopBrowserManager } = require("./browser-manager");
 const { createTabStore } = require("./browser-tab-store");
+const { readProfileRegistry } = require("./browser-profiles");
 
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), "telar-browser-persistence-"));
 app.setPath("userData", userData);
@@ -135,7 +136,10 @@ async function main() {
   // Shown inactive so the compositor produces frames for the visible path
   // (a never-shown window's views have no frames to capture). No focus.
   window.showInactive();
-  let manager = new DesktopBrowserManager(window, { tabStore: createTabStore(userData, { writeDelayMs: 10 }) });
+  // The profile registry is a FILE, read by both the pre- and post-restart
+  // manager — the same thing the shell does. Without it a restart could not
+  // resolve the profile a remembered tab names.
+  let manager = new DesktopBrowserManager(window, { profiles: readProfileRegistry(userData), tabStore: createTabStore(userData, { writeDelayMs: 10 }) });
   try {
     manager.declareProfile("s1", PROJECT);
     manager.declareProfile("s2", "none");
@@ -343,13 +347,17 @@ async function main() {
     assert(!JSON.stringify(written).includes("chrome-extension"), "an extension page was persisted");
     assert(!JSON.stringify(written).includes("page=closed"), "a closed tab was persisted");
 
-    manager = new DesktopBrowserManager(window, { tabStore: createTabStore(userData, { writeDelayMs: 10 }) });
+    manager = new DesktopBrowserManager(window, { profiles: readProfileRegistry(userData), tabStore: createTabStore(userData, { writeDelayMs: 10 }) });
     const restored = manager.state("s1");
     note(`after restart s1: ${JSON.stringify(restored.tabs.map((t) => [t.url, t.active, t.sleeping, t.viewport.preset]))}`);
     assert(restored.tabs.length === 2, `expected 2 restored tabs, got ${restored.tabs.length}`);
     assert(restored.tabs.every((t) => t.sleeping), "restored tabs must be sleeping (no eager navigation)");
     assert(restored.tabs[0].active && restored.tabs[0].url.endsWith("?page=landed"), "active tab / order not restored");
-    assert(restored.tabs[1].viewport.preset === "tablet", "per-tab viewport not restored");
+    // The resize above was applied to `activeTab("s1")` — which is the tab the
+    // HUMAN is on (index 0), not the one the agent just opened: an agent's new
+    // tab deliberately does not take the screen. Asserting index 1 here was
+    // reading the wrong tab and had been failing since fit mode landed.
+    assert(restored.tabs[0].viewport.preset === "tablet", "per-tab viewport not restored");
     assert(manager.profileOf("s1") === PROJECT && manager.profileOf("s2") === "none", "profiles not restored");
     assert(manager.state("s2").tabs.length === 1, "the extension page came back");
     assert(manager.tabs.every((t) => !t.view), "a restore navigated something at startup");

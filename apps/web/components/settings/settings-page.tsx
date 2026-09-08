@@ -31,6 +31,7 @@ import { AppearanceSection } from "./appearance-section";
 import { InboxSection } from "./inbox-section";
 import { LinksSection } from "./links-section";
 import { McpSection } from "./mcp-section";
+import { BrowserLoginsSection } from "./browser-logins-section";
 import { PermissionsSection } from "./permissions-section";
 import { ProvidersSection } from "./providers-section";
 import { RemoteSection } from "./remote-section";
@@ -213,6 +214,7 @@ export function SettingsPage() {
         <>
           <McpSection />
           <PermissionsSection />
+          <BrowserLoginsSection />
         </>
       )}
 

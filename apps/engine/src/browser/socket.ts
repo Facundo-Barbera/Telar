@@ -43,6 +43,9 @@ export type BrowserSocketCapability = {
   state?(scopeKey: string): Promise<{ provider: BrowserProvider; tabs: BrowserTab[] }>;
   /** Bind a scope to its project's browser profile before its tools run. */
   bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
+  /** The named identity this scope's browser is in, read fresh. What a
+   *  remembered credential authorization is matched against. */
+  profileIdentity?(scopeKey: string): Promise<{ id: string; label?: string; account?: string } | null>;
 };
 
 /** What one claimed turn binds to its token. */
@@ -75,6 +78,10 @@ export type BrowserRunBinding = {
   fillSecret?(
     args: Record<string, unknown>,
     callBrowser: (name: string, args: Record<string, unknown>) => Promise<{ content: unknown[]; isError?: boolean }>,
+    /** Reads the scope's CURRENT browser identity, for the remembered-login
+     *  path. Supplied by the socket (it knows the scope); the worker owns the
+     *  policy. Absent on a host with no named profiles. */
+    profile?: () => Promise<{ id: string; label?: string; account?: string } | null>,
   ): Promise<{ content: unknown[]; isError?: boolean }>;
   /**
    * Fired with fresh state after any successful call that CHANGED the tab set
@@ -254,7 +261,12 @@ export class BrowserToolSocket {
           if (!binding.fillSecret) {
             return { content: [{ type: "text", text: "Credential fill is not available for this session." }], isError: true };
           }
-          const result = await binding.fillSecret(args, (name, callArgs) => this.capability.call(binding.scopeKey, name, callArgs));
+          const identity = this.capability.profileIdentity;
+          const result = await binding.fillSecret(
+            args,
+            (name, callArgs) => this.capability.call(binding.scopeKey, name, callArgs),
+            identity ? () => identity.call(this.capability, binding.scopeKey) : undefined,
+          );
           if (!result.isError) await this.reportState(binding.scopeKey);
           return result;
         }

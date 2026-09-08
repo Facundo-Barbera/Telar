@@ -171,13 +171,19 @@ function QuestionCard({
 }
 
 /**
- * The 1Password fill card. THREE deliberate absences: no "Always allow" (a
- * credential leaving the vault is approved one fill at a time — the engine's
- * `autoResolution` refuses this kind in every mode, and the card must not
- * offer what the engine would not honour the spirit of), no free-typed value
+ * The 1Password fill card. TWO deliberate absences remain: no free-typed value
  * (the human picks an ITEM; values never pass through this UI), and no
  * candidate outside the engine's domain-matched list (the radio group IS the
  * domain binding, rendered).
+ *
+ * THE THIRD — "Always allow" — is now a NARROW, EXPLICIT opt-in rather than a
+ * button, and the difference is the whole design. `acceptForSession` would
+ * widen a KIND for a session; this box authorizes ONE tuple forever: this
+ * browser profile, this exact origin, this vault item, these field kinds. It
+ * starts UNCHECKED every time, the words say exactly what it covers, and it is
+ * only offered when the engine knows which profile the fill lands in — an
+ * authorization that cannot name an identity is one nobody could later
+ * recognise or revoke. 1Password's own lock is untouched by it.
  */
 function SecretAccessCard({
   request,
@@ -191,7 +197,10 @@ function SecretAccessCard({
   onDecide: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) => void;
 }) {
   const [itemId, setItemId] = useState(secret.candidates[0]?.id ?? "");
+  /** Unchecked on every render of every card. Nothing pre-ticks this. */
+  const [remember, setRemember] = useState(false);
   const kinds = secret.fields.map((field) => (field.kind === "field" ? `“${field.label ?? ""}”` : field.kind)).join(" + ");
+  const profile = secret.profile;
 
   return (
     <section className={CARD} aria-label="Fill from 1Password — approval required">
@@ -200,6 +209,15 @@ function SecretAccessCard({
         <KeyRoundIcon className="size-3.5 shrink-0 text-warning" />
         Fill {kinds} on <span className="font-mono">{secret.origin}</span>
       </p>
+      {profile && (
+        // WHICH IDENTITY this lands in. A person with several accounts is
+        // deciding about one of them, and the browser profile is the only
+        // thing that says which.
+        <p className="text-xs text-muted-foreground">
+          In browser profile <span className="font-medium text-foreground">{profile.label ?? profile.id}</span>
+          {profile.account && <> · expected account <span className="font-mono">{profile.account}</span></>}
+        </p>
+      )}
 
       <div className="flex flex-col gap-1" role="radiogroup" aria-label="1Password item">
         {secret.candidates.map((candidate) => (
@@ -228,12 +246,40 @@ function SecretAccessCard({
       <p className="text-xs text-muted-foreground">
         Telar fills the values directly — they never enter the conversation, the journal, or the model.
       </p>
+
+      {profile && (
+        <label className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={remember}
+            onChange={(event) => setRemember(event.target.checked)}
+            aria-describedby={`secret-remember-scope-${request.id}`}
+          />
+          <span className="flex flex-col gap-0.5 text-xs">
+            <span className="font-medium">
+              Allow agents to use this login automatically in {profile.label ?? profile.id} on {secret.origin}
+            </span>
+            {/* The exact scope, spelled out — the card must not describe a
+                narrower permission than the one it is about to store. */}
+            <span id={`secret-remember-scope-${request.id}`} className="text-muted-foreground">
+              Only “{secret.candidates.find((candidate) => candidate.id === itemId)?.title ?? "the item you pick"}”, only {kinds}, only this
+              profile and this exact address. 1Password still asks to unlock. Revoke in Settings → Agent tools.
+            </span>
+          </span>
+        </label>
+      )}
+
       {request.notified === false && (
         <p className="text-xs text-muted-foreground">Parked with nobody watching — no notification was sent.</p>
       )}
 
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" disabled={sending || !itemId} onClick={() => onDecide(request.id, "accept", { answers: { item: itemId } })}>
+        <Button
+          size="sm"
+          disabled={sending || !itemId}
+          onClick={() => onDecide(request.id, "accept", { answers: { item: itemId, ...(remember ? { remember: true } : {}) } })}
+        >
           Fill from 1Password
         </Button>
         <Button variant="ghost" disabled={sending} onClick={() => onDecide(request.id, "decline")} className="text-destructive hover:text-destructive">
