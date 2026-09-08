@@ -388,6 +388,40 @@ export function RecoveryActions({
 }
 
 /**
+ * A MESSAGE THAT WAS WAITING WHEN THE TURN WAS LOST.
+ *
+ * It still says what it said, but it was written against a state of the world
+ * the interrupted turn took with it — "also update the docs" means something
+ * else once you no longer know whether the docs were updated. So it keeps its
+ * place in the queue and does not run until the person who wrote it has looked
+ * at it again.
+ *
+ * DELIBERATELY NOT RELEASED BY CONTINUE. Resolving the lost turn is a decision
+ * about THAT turn; each held message is its own. Continue used to release them
+ * all at once, because the hold was inferred from the ambiguity rather than
+ * recorded on the turns.
+ */
+export function HeldMessageActions({ sending, onRelease, onDrop }: { sending: boolean; onRelease: () => void; onDrop: () => void }) {
+  return (
+    <Alert className="mt-2" aria-label="Held message decision">
+      <TriangleAlertIcon />
+      <AlertTitle>Waiting for you to re-read it</AlertTitle>
+      <AlertDescription className="flex flex-col gap-2">
+        <p>You wrote this before the turn above was interrupted, so it has not been sent. It still may be — or it may no longer be what you want.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={sending} onClick={onRelease}>
+            Send it
+          </Button>
+          <Button size="sm" variant="ghost" disabled={sending} onClick={onDrop}>
+            Drop it
+          </Button>
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+/**
  * AN ORDINARY FAILURE, NOT AN AMBIGUOUS ONE. The provider process died or the
  * driver threw; the engine knows the turn ended and kept everything that
  * streamed. Nothing is resubmitted from here: the button only PREPARES a
@@ -542,6 +576,8 @@ export function SessionTurn({
   onRetry,
   onDiscard,
   onContinueAmbiguous,
+  onReleaseHeld,
+  onDropHeld,
   backlog = 0,
   onContinue,
   onOpenAgent,
@@ -580,6 +616,11 @@ export function SessionTurn({
    *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
    *  an ordinary FAILED turn and submits nothing. */
   onContinueAmbiguous: (turn: Pick<Turn, "runId" | "state">) => void;
+  /** A held message the person re-read and still means — it runs in its
+   *  original place in the queue. */
+  onReleaseHeld: (turn: Pick<Turn, "runId">) => void;
+  /** ...or no longer wants. An ordinary stop; it is still a queued turn. */
+  onDropHeld: (turn: Pick<Turn, "runId">) => void;
   /** How many messages are queued behind an undecided ambiguous turn. The
    *  engine holds them; the card says so rather than letting the session look
    *  stuck. */
@@ -746,6 +787,9 @@ export function SessionTurn({
               onRetry={() => onRetry(retryInputForJournalTurn(turn))}
               onDiscard={() => onDiscard(turn)}
             />
+          )}
+          {turn.held && turn.state === "queued" && (
+            <HeldMessageActions sending={sending} onRelease={() => onReleaseHeld(turn)} onDrop={() => onDropHeld(turn)} />
           )}
           {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
         </MessageContent>
@@ -1644,14 +1688,13 @@ export function SessionCockpit({
     setDraftRunId(undefined);
   };
   /**
-   * Messages the engine is HOLDING behind an undecided ambiguous turn. They
-   * were written before the crash, they keep their order, and nothing
-   * dispatches them until the decision is made — so the recovery card counts
-   * them rather than leaving the session looking mysteriously idle.
+   * Messages the engine is HOLDING — written before the crash, each waiting on
+   * its own re-read. Counted from the turns' own `held` flag rather than from
+   * "this session is ambiguous", because the two now differ on purpose:
+   * resolving the lost turn does NOT release them, so the count outlives the
+   * recovery card and the held messages carry their own affordance.
    */
-  const heldBacklog = transcript.some((turn) => turn.state === "ambiguous")
-    ? transcript.filter((turn) => turn.state === "queued").length
-    : 0;
+  const heldBacklog = transcript.filter((turn) => turn.held && turn.state === "queued").length;
 
   // A clock, only while something is running. An always-on interval re-renders a
   // settled transcript once a second for nothing.
@@ -1782,6 +1825,36 @@ export function SessionCockpit({
       setError(undefined);
     } catch (cause) {
       setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not continue from the recovered turn."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /** The person re-read a held message and still means it: it runs, in its
+   *  original place in the queue. */
+  const releaseHeld = async (turn: Pick<Turn, "runId">) => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await api.releaseHeldTurn(sessionId, turn.runId);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not send the held message."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /** ...or no longer wants it. An ordinary stop — a held message is still just
+   *  a queued turn, and `stopTurn` already ends one. */
+  const dropHeld = async (turn: Pick<Turn, "runId">) => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      await api.stopTurn(sessionId, turn.runId);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not drop the held message."));
     } finally {
       setSending(false);
     }
@@ -2281,6 +2354,8 @@ export function SessionCockpit({
                 onRetry={(item) => void retryAmbiguous(item)}
                 onDiscard={(item) => void discardAmbiguous(item)}
                 onContinueAmbiguous={(item) => void continueAmbiguous(item)}
+                onReleaseHeld={(item) => void releaseHeld(item)}
+                onDropHeld={(item) => void dropHeld(item)}
                 backlog={heldBacklog}
                 {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />

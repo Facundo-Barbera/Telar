@@ -84,6 +84,12 @@ const TurnStopped = event("turn.stopped", { reason: z.string().optional() });
 const TurnAmbiguous = event("turn.ambiguous", { reason: z.string().optional() });
 const TurnDiscarded = event("turn.discarded", {});
 const TurnRequeued = event("turn.requeued", { reason: z.string().optional() });
+/**
+ * A message held by recovery was re-read by a human and allowed to run. The
+ * hold is on the turn (`Turn.held`), so this is the moment it comes off — not
+ * a state change: the turn was `queued` before and after.
+ */
+const TurnReleased = event("turn.released", {});
 /** A queued turn was promoted into the running one (send now). */
 const TurnSteering = event("turn.steering", { intoRunId: Id });
 /** ...and its text reached the provider inside that run. Terminal. */
@@ -247,6 +253,7 @@ export const EngineEvent = z.discriminatedUnion("type", [
   TurnAmbiguous,
   TurnDiscarded,
   TurnRequeued,
+  TurnReleased,
   TurnSteering,
   TurnSteered,
   TurnPlanUpdated,

@@ -49,6 +49,12 @@ export type JournalTurn = {
   attachments?: TurnAttachment[];
   state: TurnState;
   /**
+   * Queued, but written before the turn this session lost — so it waits for a
+   * human to re-read it rather than running on its own. Not a state: the turn
+   * is `queued` either way, and the difference is whether a worker may take it.
+   */
+  held?: boolean;
+  /**
    * The MAIN LOOP's timeline only.
    *
    * Rows a sub-agent produced are on `tasks`, not here, and that separation is
@@ -135,6 +141,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
+        ...(turn.held ? { held: true } : {}),
         items: [],
         tasks: [],
         ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
@@ -229,6 +236,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             ...(event.turn.wakeReason ? { wakeReason: event.turn.wakeReason } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
+            ...(event.turn.held ? { held: true } : {}),
             items: [],
             tasks: [],
             resultText: "",
@@ -243,6 +251,11 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         break;
       case "turn.requeued":
         if (turn) turn.state = "queued";
+        break;
+      // The hold came off. NOT a state change — the turn was `queued` before
+      // and after — so only the flag the transcript reads is cleared.
+      case "turn.released":
+        if (turn) turn.held = false;
         break;
       // Send now: promoted into the running turn, then delivered. The
       // delivered turn is TERMINAL — its words render inside the run they

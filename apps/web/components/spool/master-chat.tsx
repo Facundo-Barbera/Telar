@@ -577,6 +577,8 @@ export function MasterChat({
                 onRetry={() => undefined}
                 onDiscard={() => undefined}
                 onContinueAmbiguous={() => undefined}
+                onReleaseHeld={() => undefined}
+                onDropHeld={() => undefined}
               />
             ))}
           </ConversationContent>

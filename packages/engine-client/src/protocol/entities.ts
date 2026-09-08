@@ -1046,6 +1046,33 @@ export const Turn = z.object({
       deliveredAt: Timestamp.optional(),
     })
     .optional(),
+
+  /**
+   * QUEUED, BUT WRITTEN FOR A CONVERSATION THAT NO LONGER EXISTS.
+   *
+   * Set by recovery on messages that were already waiting when a turn was lost.
+   * They keep their place and their order and are never dropped — but no worker
+   * may claim one until a human has looked at it, because it was composed
+   * against a state of the world that the interrupted turn took with it. "Also
+   * update the docs" means something different when you no longer know whether
+   * the docs were updated.
+   *
+   * A PROPERTY OF THE TURN, NOT OF THE SESSION, and that distinction is the
+   * whole reason this field exists. The hold was first derived from "this
+   * session has an ambiguous turn", which meant resolving the ambiguity — the
+   * very act of pressing Continue — released the entire pre-crash backlog in
+   * the same instant, unreviewed. Marking the turns themselves lets the
+   * ambiguity be settled and the backlog stay held, and lets a FRESH message
+   * typed after Continue run immediately, which is the point of continuing.
+   *
+   * Cleared by `releaseHeldTurn` (run it) or ended by `stopTurn` (drop it).
+   */
+  held: z
+    .object({
+      at: Timestamp,
+      reason: z.enum(["engine_restart", "worker_unavailable"]),
+    })
+    .optional(),
 });
 export type Turn = z.infer<typeof Turn>;
 

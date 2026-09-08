@@ -711,6 +711,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ stopped: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop-background`, {}),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {}),
+    /** Run a message recovery held, now that a person has re-read it. Dropping
+     *  one instead is `stopTurn` — it is still an ordinary queued turn. */
+    releaseHeldTurn: (sessionId: string, runId: string) =>
+      request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/release`, {}),
     /** SEND NOW: promote a queued message into the running turn. */
     promoteTurn: (sessionId: string, runId: string) =>
       request<{ turn: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {}),

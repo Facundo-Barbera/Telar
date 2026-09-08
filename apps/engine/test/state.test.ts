@@ -516,12 +516,101 @@ test("work queued BEFORE the crash is held for the decision, not replayed on boo
   expect(rebooted.turns("session_one")[1]?.state).toBe("queued");
   expect(rebooted.claimNextTurn("worker_two")).toBeUndefined();
 
-  // The human decides. Only then does the backlog run, in the order it was typed.
+  // ...and it is held on the TURN, so resolving the lost run does not release it.
+  expect(rebooted.turns("session_one")[1]?.held).toMatchObject({ reason: "engine_restart" });
   rebooted.discardAmbiguousTurn("session_one", "run_lost");
+  expect(rebooted.claimNextTurn("worker_two")).toBeUndefined();
+
+  // A FRESH message, written after the decision, runs immediately — it is not
+  // stuck behind the held one, which is the whole point of continuing.
+  rebooted.submitTurn("session_one", { runId: "run_fresh", input: "What did you find?" });
+  const fresh = rebooted.claimNextTurn("worker_two");
+  expect(fresh?.turn.runId).toBe("run_fresh");
+  expect(fresh?.resumeCursor).toBe("provider-thread-abc");
+  rebooted.markRunning("session_one", "run_fresh", fresh!.turn.claim!.token);
+  rebooted.completeTurn("session_one", "run_fresh", fresh!.turn.claim!.token, { text: "found it" });
+
+  // The held one runs only once a human says so, and keeps its own text.
+  const released = rebooted.releaseHeldTurn("session_one", "run_followup");
+  expect(released.held).toBeUndefined();
   const resumed = rebooted.claimNextTurn("worker_two");
   expect(resumed?.turn.runId).toBe("run_followup");
-  // And it continues the same provider conversation rather than cold-starting.
+  expect(resumed?.turn.input).toBe("also update the docs");
   expect(resumed?.resumeCursor).toBe("provider-thread-abc");
+});
+
+test("Continue does not release the held backlog — that decision is per message", () => {
+  /**
+   * THE CORRECTION THIS PINS. The hold was first derived from "this session has
+   * an ambiguous turn", so `discardAmbiguousTurn` — exactly what the cockpit's
+   * Continue performs — released every pre-crash message at once, unreviewed.
+   * The hold now lives on the turns, so it outlives the decision about the run.
+   */
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor the parser" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  store.submitTurn("session_one", { runId: "run_a", input: "also update the docs" });
+  store.submitTurn("session_one", { runId: "run_b", input: "and bump the version" });
+
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+  rebooted.discardAmbiguousTurn("session_one", "run_lost");
+
+  // Both still held, both still present, order intact.
+  expect(rebooted.turns("session_one").filter((turn) => turn.held).map((turn) => turn.runId)).toEqual(["run_a", "run_b"]);
+  expect(rebooted.claimNextTurn("worker_two")).toBeUndefined();
+
+  // Releasing ONE releases only that one.
+  rebooted.releaseHeldTurn("session_one", "run_a");
+  const first = rebooted.claimNextTurn("worker_two");
+  expect(first?.turn.runId).toBe("run_a");
+  expect(rebooted.turns("session_one").find((turn) => turn.runId === "run_b")?.held).toBeDefined();
+
+  // Dropping the other is an ordinary stop — it is still just a queued turn.
+  rebooted.stopTurn("session_one", "run_b");
+  expect(rebooted.turns("session_one").find((turn) => turn.runId === "run_b")?.state).toBe("stopped");
+});
+
+test("a held message never queue-jumps ahead of one written after it", () => {
+  // Held work keeps its PLACE, not its precedence: a fresh message must not
+  // wait behind a decision nobody has made yet.
+  const { store, root: stateRoot } = readyStore();
+  store.submitTurn("session_one", { runId: "run_lost", input: "Refactor" });
+  const claim = store.claimTurn("session_one", "worker_one")!;
+  store.markRunning("session_one", "run_lost", claim.claim!.token);
+  store.submitTurn("session_one", { runId: "run_old", input: "written before the crash" });
+
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+  rebooted.discardAmbiguousTurn("session_one", "run_lost");
+  rebooted.submitTurn("session_one", { runId: "run_new", input: "written after" });
+
+  // `run_old` is earlier in the queue and stays there — but the claim skips it.
+  expect(rebooted.turns("session_one").map((turn) => turn.runId)).toEqual(["run_lost", "run_old", "run_new"]);
+  expect(rebooted.claimTurn("session_one", "worker_two")?.runId).toBe("run_new");
+});
+
+test("only the session that lost a turn has its backlog held", () => {
+  // `recover()` walks every session; reading its cross-session `ambiguous`
+  // accumulator here would have held the queue of every session swept after the
+  // first unlucky one.
+  const stateRoot = root();
+  const store = new EngineStore(stateRoot, () => 100);
+  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.createSession({ id: "session_lost", projectId: "project_one" });
+  store.createSession({ id: "session_fine", projectId: "project_one" });
+  store.submitTurn("session_lost", { runId: "run_lost", input: "Refactor" });
+  const claim = store.claimTurn("session_lost", "worker_one")!;
+  store.markRunning("session_lost", "run_lost", claim.claim!.token);
+  store.submitTurn("session_lost", { runId: "run_held", input: "before the crash" });
+  store.submitTurn("session_fine", { runId: "run_untouched", input: "nothing happened here" });
+
+  const rebooted = new EngineStore(stateRoot, () => 200);
+  rebooted.recover();
+  expect(rebooted.turns("session_lost").find((turn) => turn.runId === "run_held")?.held).toBeDefined();
+  expect(rebooted.turns("session_fine")[0]?.held).toBeUndefined();
+  expect(rebooted.claimNextTurn("worker_two")?.turn.runId).toBe("run_untouched");
 });
 
 test("a fresh message after a discard continues the conversation without replaying the lost prompt", () => {

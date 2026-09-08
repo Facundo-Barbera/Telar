@@ -5861,7 +5861,14 @@ export class EngineStore {
      * runs against a conversation nobody vouched for cannot be un-run.
      */
     if (queue.turns.some((turn) => turn.state === "ambiguous")) return undefined;
-    const turn = queue.turns.find((candidate) => candidate.state === "queued");
+    /**
+     * A HELD MESSAGE IS SKIPPED, NOT WAITED ON. It was written before the turn
+     * this session lost, so it waits for a human to re-read it — but it must
+     * not stand in front of a message written AFTER, which is the whole
+     * substance of continuing a recovered conversation. Order is preserved
+     * among the turns that may actually run.
+     */
+    const turn = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
     if (!turn) return undefined;
     const at = this.now();
     turn.state = "claimed";
@@ -5983,7 +5990,10 @@ export class EngineStore {
       // candidate that wins the sort and then claims nothing, which would stall
       // every OTHER session's queued work behind it for a poll interval.
       if (queue.turns.some((candidate) => candidate.state === "ambiguous")) continue;
-      const next = queue.turns.find((candidate) => candidate.state === "queued");
+      // `!held` matches `claimTurn`'s own choice — a session whose only queued
+      // work is held has nothing to offer, and listing it as a candidate would
+      // win the sort and then claim nothing.
+      const next = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
       if (next) candidates.push({ sessionId, acceptedAt: next.acceptedAt });
     }
     candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
@@ -6334,9 +6344,45 @@ export class EngineStore {
   }
 
   /**
+   * RUN A MESSAGE THAT WAS HELD — the human has re-read it and still means it.
+   *
+   * The other two exits from a hold already exist and are not duplicated here:
+   * `stopTurn` drops it (it is `queued`, which that already handles), and
+   * simply reading it in the transcript is the review. This one only clears the
+   * flag; the ordinary claim path takes it from there, in its original place in
+   * the queue.
+   */
+  releaseHeldTurn(sessionId: string, runId: string): Turn {
+    assertId(runId, "run id");
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    if (!turn.held) {
+      // Not an error worth throwing over if it is already runnable — but a turn
+      // that has since been stopped or run is a different thing entirely, and
+      // saying "released" about it would be a lie.
+      if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be released");
+      return structuredClone(turn);
+    }
+    const at = this.now();
+    delete turn.held;
+    turn.updatedAt = at;
+    this.writeQueue(sessionId, queue);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
+    return structuredClone(turn);
+  }
+
+  /**
    * An ambiguous turn may already have reached a provider, so it is never
    * replayed or deleted.  A human must make this one-way decision before the
    * session can accept fresh work.
+   *
+   * DISCARDING IT DOES NOT RELEASE THE BACKLOG. Messages `recover()` marked
+   * `held` stay held: this decision is about THIS turn, and the pre-crash
+   * messages behind it each need their own. Before `held` existed the hold was
+   * inferred from the presence of an ambiguous turn, so this call — which is
+   * exactly what "Continue" performs — released every one of them at once.
    */
   discardAmbiguousTurn(sessionId: string, runId: string): Turn {
     assertId(runId, "run id");
@@ -7003,6 +7049,33 @@ export class EngineStore {
         }
       }
       /**
+       * EVERY MESSAGE THAT WAS ALREADY WAITING IS HELD, once this session lost
+       * a turn to the restart.
+       *
+       * Marked on the TURNS, in a second pass, rather than inferred later from
+       * "does this session have an ambiguous turn". Inferring it meant the hold
+       * evaporated the instant the ambiguity was resolved — so pressing
+       * Continue, which resolves it, released the whole pre-crash backlog in
+       * the same breath and ran messages nobody had re-read. A second pass
+       * because the first one is still deciding which turns are queued at all:
+       * a `steering` message becomes one halfway through it.
+       *
+       * Only when something became ambiguous. A session whose turn was merely
+       * `claimed` never reached a provider, so nothing about its backlog is in
+       * doubt and it dispatches as it always did.
+       */
+      // THIS session's queue, not the `ambiguous` accumulator — that one spans
+      // every session the sweep has walked, and reading it here would hold the
+      // backlog of every session processed after the first unlucky one.
+      if (queue.turns.some((turn) => turn.state === "ambiguous")) {
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" || turn.held) continue;
+          turn.held = { at, reason: "engine_restart" };
+          turn.updatedAt = at;
+          changed = true;
+        }
+      }
+      /**
        * BACKGROUND WORK DIES WITH ITS PROCESS — the same position `failTurn`
        * and a live stop already take: outliving its TURN is the definition of
        * background, outliving its PROCESS is impossible. And EVERY session's
@@ -7082,6 +7155,18 @@ export class EngineStore {
             requeued.push(reverted.runId);
             this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, reverted.runId);
           }
+          changed = true;
+        }
+      }
+      // Same hold as the boot sweep, for the same reason: a message written
+      // before this worker vanished was written against a state its lost turn
+      // took with it. Scoped to THIS session's queue, never the cross-session
+      // `ambiguous` accumulator.
+      if (queue.turns.some((turn) => turn.state === "ambiguous")) {
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" || turn.held) continue;
+          turn.held = { at, reason: "worker_unavailable" };
+          turn.updatedAt = at;
           changed = true;
         }
       }

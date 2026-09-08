@@ -1,6 +1,6 @@
 "use client";
 
-import { RecoveryActions } from "@/components/session-cockpit";
+import { HeldMessageActions, RecoveryActions } from "@/components/session-cockpit";
 import { continuationDraft } from "@/lib/failed-turn-recovery";
 
 /**
@@ -52,6 +52,13 @@ export function RecoveryCards() {
 
       <Case title="A decision in flight" note="Every verb disabled while the previous press is still being recorded.">
         <RecoveryActions sending backlog={0} onContinue={() => undefined} onRetry={() => undefined} onDiscard={() => undefined} />
+      </Case>
+
+      <Case
+        title="A message held for re-reading"
+        note="Written before the crash, so it keeps its place but does not run. Continue does NOT release these — each one is its own decision, which is the correction this card exists for."
+      >
+        <HeldMessageActions sending={false} onRelease={() => undefined} onDrop={() => undefined} />
       </Case>
 
       <Case
