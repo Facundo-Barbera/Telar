@@ -345,7 +345,7 @@ function SessionMasthead({
  * holds them rather than replaying them on boot, and saying so is the
  * difference between a session that looks stuck and one that is waiting.
  */
-function RecoveryActions({
+export function RecoveryActions({
   sending,
   backlog,
   onContinue,
