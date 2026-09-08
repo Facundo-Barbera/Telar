@@ -919,7 +919,7 @@ function parseSession(value: unknown): Session {
  */
 function storedSession(
   session: Session,
-): Omit<Session, "activity" | "activityAt" | "lastTurnEndedAt" | "lastTurnFailed"> {
+): Omit<Session, "activity" | "activityAt" | "lastTurnEndedAt" | "lastTurnFailed" | "lastTurnSequence"> {
   const {
     activity: _activity,
     activityAt: _activityAt,
@@ -928,6 +928,7 @@ function storedSession(
     // only ever be a stale second one.
     lastTurnEndedAt: _lastTurnEndedAt,
     lastTurnFailed: _lastTurnFailed,
+    lastTurnSequence: _lastTurnSequence,
     ...stored
   } = session;
   return stored;
@@ -937,9 +938,15 @@ function storedSession(
  * The most recently FINISHED turn, whatever it finished as.
  *
  * `completedAt` is the test rather than a list of states, because the states
- * that set it are exactly the states that ended: completed, failed, stopped and
- * discarded all stamp it, and nothing else does. An enumeration here would be a
- * second copy of that fact, and the copy is the one that would fall behind.
+ * that set it are exactly the states that ended: completed, failed, stopped,
+ * discarded and steered all stamp it, and nothing else does. An enumeration
+ * here would be a second copy of that fact, and the copy is the one that would
+ * fall behind.
+ *
+ * WHICH IS ALSO WHY THIS IS NOT THE FUNCTION UNREAD IS BUILT ON. "Something
+ * ended" and "there is an answer to read" are different questions: a steered
+ * turn ends when the human's own words reach the provider, and a discarded one
+ * ends because a human dismissed it. See `lastResultTurn`.
  *
  * Chosen by MAXIMUM rather than by position. Turns run one at a time per
  * session so the array is very nearly in finish order, and "very nearly" is the
@@ -975,6 +982,44 @@ function lastEndedTurn(turns: readonly Turn[]): Turn | undefined {
   for (const turn of turns) {
     if (turn.completedAt === undefined) continue;
     if (latest?.completedAt === undefined || turn.completedAt >= latest.completedAt) latest = turn;
+  }
+  return latest;
+}
+
+/**
+ * The states that leave A RESULT A HUMAN CAN READ, spelled out on purpose.
+ *
+ * This one IS an enumeration rather than a `completedAt` test, and the two
+ * functions below are why: unread is a claim about what is ON SCREEN, so the
+ * set has to be exactly the set the transcript draws as a finished turn. The
+ * cockpit filters `steering` and `steered` out of the conversation entirely
+ * (a steered message renders inside the turn it was sent into), and neither a
+ * steered nor a discarded turn carries an answer.
+ *
+ * `ambiguous` is excluded too, and deliberately: it is not finished — it is a
+ * turn asking a human to decide whether it ever ran — and the recovery card
+ * the transcript draws for it is not a result.
+ */
+function isResultTurn(turn: Turn): boolean {
+  return turn.state === "completed" || turn.state === "failed" || turn.state === "stopped";
+}
+
+/**
+ * The newest turn that left an answer — the one a read receipt may name.
+ *
+ * CHOSEN BY SEQUENCE, NOT BY `completedAt`, which is the difference that makes
+ * the receipt monotonic. Sequence is minted when a turn is accepted and never
+ * changes, so "the highest sequence read" can only move forward and a receipt
+ * that arrives late (a tab that was scrolled to an old answer, a retry after a
+ * dropped response) can never consume a turn that finished after it. Clocks
+ * can tie, go backwards over an NTP step, and say nothing about ordering; the
+ * one guarantee unread needs is exactly the one the sequence gives.
+ */
+function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
+  let latest: Turn | undefined;
+  for (const turn of turns) {
+    if (!isResultTurn(turn)) continue;
+    if (latest === undefined || turn.sequence > latest.sequence) latest = turn;
   }
   return latest;
 }
@@ -5311,6 +5356,52 @@ export class EngineStore {
     return next;
   }
 
+  /**
+   * A HUMAN SAW THIS ANSWER — recorded here rather than in a browser, for the
+   * same reason the settling overrides are: the same session is read from the
+   * desktop shell, a phone and a browser tab, and an inbox that disagrees with
+   * itself per client is not an inbox.
+   *
+   * THE RECEIPT NAMES A TURN, NEVER A CLOCK. A client that sent "read as of
+   * now" would consume whatever finished between the render it was reporting
+   * on and the request landing — precisely the answer nobody has seen. Naming
+   * the turn makes that unrepresentable: the receipt can only ever be about
+   * the turn that was on screen.
+   *
+   * MONOTONIC BY SEQUENCE, so a late receipt is a no-op rather than a
+   * regression. Two tabs, a retry after a dropped response and a slow request
+   * that lands after the next turn finished all reduce to "the highest
+   * sequence anybody has confirmed", which only moves forward.
+   *
+   * THE SET OF ELIGIBLE TURNS IS `isResultTurn`'S — the same set
+   * `lastTurnSequence` is derived from, so every sequence a client is told is
+   * unread is a sequence it can also mark read. A receipt for a turn that is
+   * still running, was steered, discarded or belongs to another session is
+   * refused rather than quietly accepted.
+   */
+  markSessionRead(sessionId: string, runId: string): Session {
+    assertId(runId, "run id");
+    const session = this.getSession(sessionId);
+    const turn = this.readQueue(sessionId).turns.find((entry) => entry.runId === runId);
+    if (!turn || !isResultTurn(turn)) {
+      throw new EngineStateError("invalid_request", "read receipt must name a completed, failed or stopped turn in this session");
+    }
+    if (turn.sequence <= (session.lastReadTurnSequence ?? 0)) return session;
+    session.lastReadTurnSequence = turn.sequence;
+    session.readAt = this.now();
+    /**
+     * `updatedAt` IS DELIBERATELY NOT TOUCHED. It dates the session's work,
+     * and the inactivity clock is measured from it — so stamping it here would
+     * mean opening a settled session pushed it back into the list, and reading
+     * a row would restart the very clock that is supposed to shelve it. Being
+     * read is a fact about the reader, not about the session; `readAt` is
+     * where the inactivity rule picks it up instead.
+     */
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.appendEvent(sessionId, { type: "session.updated", session });
+    return structuredClone(session);
+  }
+
   getSession(sessionId: string): Session {
     const stored = readJson(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
@@ -5340,9 +5431,20 @@ export class EngineStore {
      * fourth would be a field clients could not trust.
      */
     const ended = lastEndedTurn(turns);
+    /**
+     * READ OFF A DIFFERENT QUESTION THAN `lastTurnEndedAt`, and the split is
+     * the fix rather than an accident. `lastTurnEndedAt` dates the last thing
+     * that ENDED, which is what the early-wake rule wants. `lastTurnSequence`
+     * names the last thing that left an ANSWER, which is what unread wants —
+     * and a session whose newest ended turn was a steered message or a
+     * discarded recovery would otherwise report a sequence no client can ever
+     * mark read, so it would sit unread forever and never settle.
+     */
+    const result = lastResultTurn(turns);
     const base: Session = {
       ...session,
       ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
+      ...(result === undefined ? {} : { lastTurnSequence: result.sequence }),
       ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
     };
     // Only a request whose turn can still take the answer blocks the session;
@@ -7072,12 +7174,22 @@ export class EngineStore {
    * A WAKE COUNTS AS THE SESSION'S OWN WORK. An orchestrator asked to be told
    * when its peers finish; the telling is work it queued, one step removed,
    * and a snooze that silenced it would silence the whole point.
+   *
+   * ONLY THE SHELF IS LIFTED — THE PIN SURVIVES, and getting that wrong is
+   * what made pinning look broken. `settledOverride` is one field holding two
+   * opposite decisions ("settled" hides, "active" keeps), so clearing it
+   * unconditionally read as "new work un-shelves a session" and acted as "the
+   * next turn quietly throws away the pin you set". A pin is a standing
+   * instruction about the LIST; nothing the session goes on to do contradicts
+   * it, and only unpinning or settling should take it away.
    */
   private wakeSessionForNewWork(sessionId: string): void {
     const session = this.getSession(sessionId);
-    if (session.settledOverride === undefined && session.snoozedUntil === undefined) return;
-    delete session.settledOverride;
-    delete session.settledAt;
+    if (session.settledOverride !== "settled" && session.snoozedUntil === undefined) return;
+    if (session.settledOverride === "settled") {
+      delete session.settledOverride;
+      delete session.settledAt;
+    }
     delete session.snoozedUntil;
     delete session.snoozedAt;
     atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
