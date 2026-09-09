@@ -140,6 +140,9 @@ jobs:
       # env vars. Betas stay notarized: they ARE downloaded by hand.
       - name: Build, sign, and publish to R2
         env:
+          # Restrict codesign to this job's keychain when the login keychain
+          # also contains the same Developer ID certificate.
+          CSC_KEYCHAIN: ${{ runner.temp }}/signing-${{ github.run_id }}-${{ github.run_attempt }}.keychain-db
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
