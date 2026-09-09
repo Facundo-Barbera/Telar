@@ -722,6 +722,10 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       ),
     stopTurn: (sessionId: string, runId?: string) =>
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
+    /** THE STOP BUTTON: end the live turn and settle what was waiting behind
+     *  it, leaving the session idle. No latch — the next message just runs. */
+    stopSession: (sessionId: string) =>
+      request<{ stopped: Turn[]; live?: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session" }),
     /** Stop the session's lingering background tasks — the "N tasks still
      *  working" chip. Separate from `stopTurn`, which spares them. */
     /** PAUSE the session: stop the live turn and hold everything queued — and

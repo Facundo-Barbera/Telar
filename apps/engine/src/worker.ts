@@ -984,9 +984,10 @@ export class EngineWorker {
           const snapshot = await this.options.client.session(id);
           return { session: snapshot.session, turns: snapshot.turns };
         },
-        // A PAUSE, stamped as an agent's. `stopTurn` would let this worker
-        // claim the peer's next message a heartbeat later.
-        stop: (id) => this.options.client.pauseSession(id, "session"),
+        // STOP IS STOP, whoever presses it: the peer's live turn ends and what
+        // was queued behind it is settled, leaving it idle. `stopTurn` would
+        // let this worker claim the peer's next message a heartbeat later.
+        stop: (id) => this.options.client.stopSession(id),
         settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
         diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,

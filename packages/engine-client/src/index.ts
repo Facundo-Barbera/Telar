@@ -1984,6 +1984,17 @@ export class EngineClient {
   }
 
   /**
+   * THE STOP BUTTON. Ends the live turn and settles everything that was
+   * waiting behind it, leaving the session idle — no latch, nothing to resume.
+   * A held message (a recovery hold, or a pause's) is not this verb's to
+   * settle, and `session.paused` is neither set nor cleared. Distinct from
+   * `stopTurn`, which ends one run and lets the next start.
+   */
+  stopSession(sessionId: string): Promise<{ stopped: Turn[]; live?: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session" });
+  }
+
+  /**
    * Stop the session's lingering background tasks — the "N tasks still
    * working" chip. A DIFFERENT verb from `stopTurn`: background work outlives
    * its turn, so there may be no turn to stop, and the turn Stop deliberately

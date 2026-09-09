@@ -492,12 +492,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const updateProvider =
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
+  /**
+   * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
+   * ending the work it held are the same event, so they are the same function
+   * and `workers.delete` is not called anywhere else. A path that forgot the
+   * second half would leave a claim held by a worker that no longer exists:
+   * the session's dispatch blocked behind it for ever, and the stale claim
+   * token still able to start a provider through `markTurnRunning` — a turn
+   * beginning after the thing that owned it was stopped.
+   *
+   * Both halves are fenced by ending the turn: `markRunning` takes only a
+   * `claimed` turn, so once this has run the old token is refused.
+   *
+   * Scoped per worker. A retiring registration says nothing about any other
+   * worker's claims, and sweeping theirs would stop work nobody touched.
+   */
+  const retireWorker = (workerId: string): void => {
+    workers.delete(workerId);
+    store.retireWorkerRegistration(workerId);
+  };
   const pruneWorkers = (): void => {
+    // The BACKSTOP for a worker that died without saying so — a directly
+    // constructed one, or a crash. The lease bounds how long its claim can sit
+    // there; nothing waits on it for ever.
     const expired = [...workers.values()].filter((worker) => worker !== embeddedRegistration && now() - worker.heartbeatAt > workerLeaseMs);
-    for (const worker of expired) {
-      workers.delete(worker.workerId);
-      store.recoverInactiveWorker(worker.workerId);
-    }
+    for (const worker of expired) retireWorker(worker.workerId);
   };
   const activeWorker = (workerId: string): RegisteredWorker => {
     pruneWorkers();
@@ -612,7 +631,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
       read: async (sessionId, after) => store.readEvents(sessionId, after),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
-      stop: async (sessionId) => store.pauseSession(sessionId, "session"),
+      // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
+      // same work a person's Stop ends, and leaves the session idle rather
+      // than latched — see `stopSession`.
+      stop: async (sessionId) => store.stopSession(sessionId),
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -3233,7 +3255,19 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
-          writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));
+          /**
+           * TWO VERBS, NAMED. `scope: "session"` is the Stop button — end what
+           * is running and settle what was waiting; absent is the historical
+           * one-turn stop. VALIDATED RATHER THAN DEFAULTED: an unrecognised
+           * scope is refused, because the one thing worse than rejecting a
+           * typo is silently stopping something other than what was asked for.
+           */
+          const scope = input.scope === undefined ? undefined : stringValue(input.scope, "scope");
+          if (scope !== undefined && scope !== "session") throw new HttpError(400, "invalid_request", 'scope must be "session" when given');
+          const runId = stringValue(input.runId, "run id", true);
+          // Contradictory: one names a turn, the other says every turn.
+          if (scope === "session" && runId) throw new HttpError(400, "invalid_request", 'a session-scope stop names no run id');
+          writeJson(response, 200, scope === "session" ? store.stopSession(session.sessionId) : store.stopTurn(session.sessionId, runId));
           return;
         }
         // A turn the PROVIDER started (a wake-up between turns). Worker-only,

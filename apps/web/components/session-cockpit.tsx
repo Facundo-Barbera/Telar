@@ -1858,24 +1858,30 @@ export function SessionCockpit({
   );
 
   /**
-   * THE STOP BUTTON PAUSES THE SESSION. It used to end one turn, after which
-   * the worker claimed the next queued message within a heartbeat — the
-   * measured "I pressed stop and it started again". A pause stops the run AND
-   * holds everything queued (and everything that arrives) until Resume, which
-   * is what pressing Stop on a conversation means to the person pressing it.
-   * Pressing it with nothing running still pauses — that is how you hold a
-   * backlog before it starts.
+   * THE STOP BUTTON STOPS. What is running ends, what was queued behind it is
+   * settled rather than started, and the session is idle — the next message
+   * runs, with nothing to resume.
+   *
+   * IT USED TO PAUSE, and that was wrong twice over. Stopping one turn let the
+   * worker claim the next queued message within a heartbeat — the measured "I
+   * pressed stop and it started again" — and a pause was reached for because
+   * it suppressed that. But the leftovers were the problem, not the session's
+   * willingness to work: the latch made a person who pressed Stop press Resume
+   * before they could say anything, which is not what Stop means.
+   *
+   * `stopSession` settles the leftovers instead, so no latch is needed. The
+   * pause is still its own thing, with its own affordance — a session already
+   * paused keeps its banner and its Resume.
    */
   const stop = async () => {
     if (!sessionId) return;
     setSending(true);
     try {
-      const paused = await api.pauseSession(sessionId);
-      setSession(paused.session);
+      await api.stopSession(sessionId);
       await hydrate();
       setError(undefined);
     } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not pause the session."));
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the session."));
     } finally {
       setSending(false);
     }
