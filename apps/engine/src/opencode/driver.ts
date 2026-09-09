@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantMessage, Message, SessionStatus, Part, PermissionRequest, QuestionRequest, Config } from "@opencode-ai/sdk/v2";
-import { TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER, type ItemDetail, type TurnObservation } from "@telar/engine-client";
+import { TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER, type ItemDetail, type TurnObservation, type UserInputField } from "@telar/engine-client";
 import { normalizeOutcome, type DriverRun, type TurnDriver } from "../provider-contract";
 import { startOpenCodeRuntime, type OpenCodeRuntime } from "./runtime";
 
@@ -111,12 +111,23 @@ export function createOpenCodeDriver(options: Options = {}): TurnDriver {
       };
       const question = async (request: QuestionRequest) => {
         const outcome = normalizeOutcome(await input.onRequest?.({ kind: "user_input", toolUseId: request.id,
-          detail: { kind: "user_input", prompt: request.questions.map((q) => q.question).join("\n"),
-            fields: request.questions.map((q, index) => ({ key: String(index), label: q.question, kind: "text" as const, required: true })) } }) ?? "decline");
+          detail: { kind: "user_input", prompt: request.questions.map((q) => [q.question, ...q.options.map((option) => `${option.label}: ${option.description}`)].join("\n")).join("\n\n"),
+            fields: request.questions.flatMap((q, index): UserInputField[] => {
+              if (q.multiple) return [
+                ...q.options.map((option, choice) => ({ key: `${index}:${choice}`, label: `${q.header}: ${option.label}`, kind: "boolean" as const })),
+                ...(q.custom === false ? [] : [{ key: String(index), label: `${q.header}: another answer`, kind: "text" as const }]),
+              ];
+              return [{ key: String(index), label: q.question, kind: q.custom === false && q.options.length ? "choice" : "text",
+                ...(q.options.length ? { choices: q.options.map((option) => option.label) } : {}), required: true }];
+            }) } }) ?? "decline");
         if (input.signal.aborted) return;
         if (outcome.decision !== "accept" && outcome.decision !== "acceptForSession") { await client.question.reject({ requestID: request.id }, requestOptions()); return; }
-        const answers = request.questions.map((_q, index) => {
+        const answers = request.questions.map((q, index) => {
           const value = outcome.answers?.[String(index)];
+          if (q.multiple) return [
+            ...q.options.filter((_option, choice) => outcome.answers?.[`${index}:${choice}`] === true).map((option) => option.label),
+            ...(q.custom !== false && typeof value === "string" && value.trim() ? [value.trim()] : []),
+          ];
           return Array.isArray(value) ? value.map(String) : value === undefined ? [] : [String(value)];
         });
         await client.question.reply({ requestID: request.id, answers }, requestOptions());

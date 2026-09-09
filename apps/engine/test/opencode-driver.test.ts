@@ -4,7 +4,7 @@ import { TurnObservation, type TurnObservation as Observation } from "@telar/eng
 import { createOpenCodeDriver } from "../src/opencode/driver";
 import type { DriverRun } from "../src/provider-contract";
 
-function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean } = {}) {
+function fixture(options: { lostAck?: boolean; permission?: boolean; question?: boolean; admission?: Promise<void>; missingAdmission?: boolean; providerError?: boolean; multiple?: boolean } = {}) {
   const calls: Array<{ method: string; path: string; body: Record<string, unknown> }> = [];
   let messageID = "";
   let snapshots = 0;
@@ -30,7 +30,7 @@ function fixture(options: { lostAck?: boolean; permission?: boolean; question?: 
     }
     if (pathname === "/session/status") return json({ ses_test: { type: permissionDone && questionDone && snapshots > 1 ? "idle" : "busy" } });
     if (pathname === "/permission") return json(permissionDone ? [] : [{ id: "perm_test", sessionID: "ses_test", permission: "bash", patterns: ["echo hello"], metadata: {}, always: [], tool: { messageID: "msg_answer", callID: "call_one" } }]);
-    if (pathname === "/question") return json(questionDone ? [] : [{ id: "que_test", sessionID: "ses_test", questions: [{ question: "Which branch?", header: "Branch", options: [] }] }]);
+    if (pathname === "/question") return json(questionDone ? [] : [{ id: "que_test", sessionID: "ses_test", questions: [{ question: "Which branch?", header: "Branch", options: options.multiple ? [{ label: "main", description: "Main branch" }, { label: "dev", description: "Development" }] : [], ...(options.multiple ? { multiple: true, custom: false } : {}) }] }]);
     if (pathname === "/permission/perm_test/reply") { permissionDone = true; return json(true); }
     if (pathname === "/question/que_test/reply" || pathname === "/question/que_test/reject") { questionDone = true; return json(true); }
     if (pathname.endsWith("/abort")) return json(true);
@@ -113,4 +113,19 @@ test("a provider failure is terminal rather than retried as a snapshot transport
   await expect(f.driver.run(f.input)).rejects.toThrow("APIError");
   expect(f.calls.filter((call) => call.path === "/session/ses_test/message")).toHaveLength(1);
   expect(f.closed()).toBe(true);
+});
+
+
+test("multiple-choice questions keep their choices and submit independent selections", async () => {
+  const f = fixture({ question: true, multiple: true });
+  f.input.onRequest = async (request) => {
+    expect(request.detail).toMatchObject({ kind: "user_input", fields: [
+      { key: "0:0", label: "Branch: main", kind: "boolean" },
+      { key: "0:1", label: "Branch: dev", kind: "boolean" },
+    ] });
+    return { decision: "accept", answers: { "0:0": true, "0:1": true } };
+  };
+  await f.driver.run(f.input);
+  expect(f.calls.find((call) => call.path === "/question/que_test/reply")?.body.answers).toEqual([["main", "dev"]]);
+  f.driver.dispose?.();
 });
