@@ -182,6 +182,9 @@ export const ItemDetail = z.discriminatedUnion("type", [
      *  them the way it shows a queued turn's. Absent on every row written
      *  before the steer channel carried attachments. */
     attachments: z.array(TurnAttachment).optional(),
+    /** Present when an AGENT sent this mid-turn message (`sessions_send`).
+     *  The row is drawn as a peer's, never as the person's bubble. */
+    sender: z.object({ sessionId: z.string().min(1).optional() }).optional(),
   }),
   z.object({ type: z.literal("assistant_message"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),

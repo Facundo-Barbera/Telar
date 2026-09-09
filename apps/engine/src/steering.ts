@@ -69,7 +69,13 @@ export class TurnBoundary {
 /** One steered message: the words, and the files the human attached to them.
  *  The engine wrote the files and owns the paths, exactly as for a queued
  *  turn's attachments. */
-export type SteerMessage = { text: string; attachments?: TurnAttachment[] };
+export type SteerMessage = {
+  text: string;
+  attachments?: TurnAttachment[];
+  /** Present when an AGENT sent it — the driver frames the words as a peer's
+   *  and the transcript row says so. Absent means the person typed it. */
+  sender?: { sessionId?: string };
+};
 
 export class SteerMailbox {
   private queue: SteerMessage[] = [];

@@ -58,6 +58,7 @@ import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox } from "./steering";
+import { frameAgentMessage } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
@@ -537,9 +538,24 @@ function claudeContextEnvForModel(model: string | undefined): Record<string, str
   return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
 }
 
-function selectedContextMaxFromModel(model: string | undefined): number | undefined {
-  if (model && !isClaudeLongContextFamily(model)) return undefined;
-  return 1_000_000;
+/**
+ * What the meter may ASSUME before the provider has said anything — and only
+ * for a row that explicitly asks for the long window. Measured on the dogfood
+ * app: a session configured as bare `opus` was assumed 1M here because the
+ * whole family was, while the provider auto-compacted at ~166k–172k. That is
+ * consistent with a standard window and inconsistent with 1M; whatever the
+ * real window was, `Math.max` against the assumption could never correct the
+ * meter downward. A bare id assumes nothing; the provider's own
+ * `contextWindow` is what the meter shows from the first result on.
+ */
+/** The window a Claude id SPELLS — `[1m]` or not. Absent means the provider's
+ *  default, which is its own and not this driver's to guess. */
+function claudeWindowOf(model: string | undefined): "long" | "default" {
+  return model && /\[1m\]$/i.test(model) ? "long" : "default";
+}
+
+export function selectedContextMaxFromModel(model: string | undefined): number | undefined {
+  return model && /\[1m\]$/i.test(model) && isClaudeLongContextFamily(model) ? 1_000_000 : undefined;
 }
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -1822,14 +1838,14 @@ export function createClaudeDriver(
        * Its approval gate rides the socket's binding, which is why `canUseTool`
        * above waves its calls through.
        */
-      const onSteered = (text: string, attachments: TurnAttachment[]) => {
+      const onSteered = (text: string, attachments: TurnAttachment[], sender?: { sessionId?: string }) => {
         const id = itemId();
         emit({
           kind: "item.started",
           item: {
             id,
-            detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}) },
-            title: "Sent now",
+            detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}), ...(sender ? { sender } : {}) },
+            title: sender ? "Sent by an agent" : "Sent now",
           },
         });
         emit({ kind: "item.completed", itemId: id, status: "completed" });
@@ -2154,7 +2170,13 @@ export function createClaudeDriver(
       if (claimed && claimed.model !== model) {
         // The one knob a live query can turn. A query that cannot (a fake
         // SDK, an older CLI) is replaced instead of patched.
-        const setModel = claimed.query.setModel?.bind(claimed.query);
+        //
+        // A WINDOW CHANGE IS NOT A MODEL SWITCH. `opus` → `opus[1m]` asks for
+        // a different context size, and whether a live process honours the
+        // suffix through `setModel` is not something this driver can verify
+        // — so it is a cold start, where the id is baked into the query and
+        // the provider's first result reports the window it actually got.
+        const setModel = claudeWindowOf(claimed.model) === claudeWindowOf(model) ? claimed.query.setModel?.bind(claimed.query) : undefined;
         let switched = false;
         if (setModel) {
           try {
@@ -2215,14 +2237,15 @@ export function createClaudeDriver(
             if (turnDone) return;
             const queued = steer.drain();
             if (queued.length > 0) {
-              // Joined rather than pushed one at a time: they arrived while a
-              // single turn was running, so they are one interruption with
-              // several sentences — and one set of attachments, built into
-              // the message exactly as a queued turn's are (images as pixels,
-              // everything else as a path).
-              const text = queued.map((message) => message.text).join("\n\n");
+              // ONE ROW PER MESSAGE, ONE PUSH FOR THE BATCH. The transcript
+              // keeps every message's own sender and attachments — a batch
+              // of a person's words and an agent's used to draw as one agent
+              // bubble holding both, with the attachments' ownership lost.
+              // The provider still gets them as one interruption, in order,
+              // each agent message individually framed and a person's bare.
+              for (const message of queued) onSteered(message.text, message.attachments ?? [], message.sender);
+              const text = queued.map((message) => (message.sender ? frameAgentMessage(message.text, message.sender) : message.text)).join("\n\n");
               const attachments = queued.flatMap((message) => message.attachments ?? []);
-              onSteered(text, attachments);
               runtime.feed.push({
                 type: "user",
                 message: { role: "user", content: claudeInitialContent(text, attachments) },
@@ -2461,11 +2484,12 @@ export function createClaudeDriver(
               await flush();
               continue;
             }
+            // THE PROVIDER'S WORD WINS OVER THE ASSUMPTION, in both directions.
+            // The old `Math.max` let a selected 1M row override a reported
+            // 200k window, which is exactly the meter that lied on the
+            // dogfood app. A result with no table keeps the last known value.
             const reportedContextMax = contextMaxFrom(item.modelUsage);
-            contextMax =
-              reportedContextMax === undefined
-                ? contextMax
-                : Math.max(contextMax ?? 0, reportedContextMax);
+            contextMax = reportedContextMax ?? contextMax;
             usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {
@@ -2801,7 +2825,7 @@ export function createClaudeDriver(
         idleRuntime.idlePump = { stop: () => { stopped = true; } };
         void (async () => {
           // A wake-up in flight, once the engine has opened a turn for it.
-          let wake: { binding: ProviderTurnBinding; text: string; gate: SdkCanUseTool | undefined; blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined;
+          let wake: { binding: ProviderTurnBinding; text: string; usage: UsageSnapshot | undefined; gate: SdkCanUseTool | undefined; blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined;
           const idleSink = (observations: TurnObservation[]) => hooks.onTasks(observations);
           sink = idleSink;
           /** The engine refused a wake-up: a human turn has the session and
@@ -2817,7 +2841,7 @@ export function createClaudeDriver(
             await flush();
             sink = idleSink;
             idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: undefined };
-            await current.binding.close("failure" in result ? result : { text: result.text }).catch(() => undefined);
+            await current.binding.close("failure" in result ? result : { text: result.text, ...(current.usage ? { usage: current.usage } : {}) }).catch(() => undefined);
           };
           try {
             for (;;) {
@@ -2876,7 +2900,7 @@ export function createClaudeDriver(
                   continue;
                 }
                 idleRuntime.tasks.lastWokenTaskId = undefined;
-                wake = { binding, text: "", gate: binding.onRequest ? gateFor(binding.onRequest) : undefined, blocks: new Map(), tools: new Map() };
+                wake = { binding, text: "", usage: undefined, gate: binding.onRequest ? gateFor(binding.onRequest) : undefined, blocks: new Map(), tools: new Map() };
                 sink = (observations) => binding.onObservations(observations);
                 idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
                 // The CLI's injected notification message is the turn's input
@@ -2884,9 +2908,29 @@ export function createClaudeDriver(
                 if (item.type === "user" && !parentToolUseId && text !== undefined) continue;
               }
 
+              /**
+               * THE METER MOVES ON A WAKE-UP TOO. A turn the CLI starts on its
+               * own spends context like any other, and until this the idle
+               * pump read neither the envelope's usage nor the result's
+               * `modelUsage` — so a session that worked for an hour on
+               * monitor ticks reported the ring where the last human turn
+               * left it. Same two reads as the turn pump, same rule: the
+               * provider's reported window replaces the assumption.
+               */
+              if (item.type === "assistant" && !parentToolUseId) {
+                const snapshot = usageFrom(item.message?.usage, undefined);
+                if (snapshot) {
+                  contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
+                  wake.usage = decorateUsage(snapshot);
+                  emit({ kind: "usage", usage: wake.usage! });
+                }
+              }
               if (item.type === "result" && !parentToolUseId) {
                 const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
                 if (wake.tools.size > 0 && (stopReason === "tool_use" || stopReason === null)) continue;
+                contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
+                wake.usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? wake.usage);
+                if (wake.usage) emit({ kind: "usage", usage: wake.usage });
                 const failed = item.subtype !== "success";
                 await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });
                 continue;

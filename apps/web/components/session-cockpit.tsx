@@ -17,6 +17,7 @@ import {
   type SnapshotPage,
   type Task,
   type Turn,
+  type TurnAttachment,
   type TurnState,
 } from "@telar/engine-client";
 import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
@@ -533,6 +534,47 @@ function sessionWakeLabel(reason: NonNullable<JournalTurn["wakeReason"]>): { ver
   }
 }
 
+/**
+ * A MESSAGE ANOTHER AGENT SENT — `sessions_send`, landing here as a turn or
+ * steered into a running one. Drawn in the assistant's lane, left-aligned,
+ * with a bot glyph and the sender's id: NOT the person's bubble. The old
+ * rendering showed an orchestrator's instructions as if the human had typed
+ * them, which is exactly the misreading the engine's `sender` stamp exists to
+ * prevent — a peer's report carries no human authorization, and the transcript
+ * must not look as though it did.
+ */
+export function agentSenderLabel(sender: NonNullable<JournalTurn["sender"]>): string {
+  return sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session";
+}
+
+export function AgentMessageBubble({ text, sender, attachments, onOpenTab }: {
+  text: string;
+  sender: NonNullable<JournalTurn["sender"]>;
+  attachments?: readonly TurnAttachment[];
+  onOpenTab?: (tab: PanelTab) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2" aria-label="Message from another agent">
+      <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+        <BotIcon className="size-3.5 shrink-0" />
+        <span className="font-mono">{agentSenderLabel(sender)}</span>
+        <span>· not the user, no approval implied</span>
+      </div>
+      <PromptText text={text} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
+      {attachments?.length ? (
+        <ul className="mt-1 flex flex-wrap gap-1.5">
+          {attachments.map((attachment) => (
+            <li key={attachment.id} title={attachment.path} className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground">
+              <PaperclipIcon className="size-3 shrink-0" />
+              <span className="max-w-48 truncate">{attachment.name}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
   const task = turn.wokenBy ? roster.find((candidate) => candidate.id === turn.wokenBy) : undefined;
@@ -676,7 +718,22 @@ export function SessionTurn({
         {turn.items.every((item) => item.detail.type !== "context_compaction") && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <Minimize2Icon className="size-3.5 shrink-0" />
-            <span>{isActiveTurn(turn.state) ? "Compacting context…" : turn.state === "failed" ? "Compaction failed" : "Context compaction requested"}</span>
+            <span>
+              {turn.held && turn.state === "queued"
+                ? turn.heldReason === "session_paused"
+                  ? "Compaction held — the session is paused"
+                  : "Compaction held for your re-read"
+                : isActiveTurn(turn.state)
+                  ? "Compacting context…"
+                  : turn.state === "failed"
+                    ? "Compaction failed"
+                    : "Context compaction requested"}
+            </span>
+            {turn.held && turn.state === "queued" && (
+              <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDropHeld(turn)}>
+                Drop it
+              </Button>
+            )}
           </p>
         )}
         {turn.state === "failed" && turn.failure && <p className="text-xs text-destructive">{turn.failure}</p>}
@@ -725,7 +782,9 @@ export function SessionTurn({
               model. No human typed anything, so no bubble: the wake-up is a
               row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
               turn's work follows it exactly as after any other row. */}
-          {(turn.origin === "provider" || turn.origin === "session") && (
+          {turn.origin === "session" && turn.sender ? (
+            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          ) : (turn.origin === "provider" || turn.origin === "session") && (
             <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
           )}
           {requests.map((request) => (
@@ -799,7 +858,17 @@ export function SessionTurn({
               onDiscard={() => onDiscard(turn)}
             />
           )}
-          {turn.held && turn.state === "queued" && (
+          {turn.held && turn.state === "queued" && turn.heldReason === "session_paused" && (
+            <Marker>held — the session is paused; Resume runs it in order, or drop it</Marker>
+          )}
+          {turn.held && turn.state === "queued" && turn.heldReason === "session_paused" && (
+            <div>
+              <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDropHeld(turn)}>
+                Drop it
+              </Button>
+            </div>
+          )}
+          {turn.held && turn.state === "queued" && turn.heldReason !== "session_paused" && (
             <HeldMessageActions sending={sending} onRelease={() => onReleaseHeld(turn)} onDrop={() => onDropHeld(turn)} />
           )}
           {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
@@ -1735,8 +1804,11 @@ export function SessionCockpit({
    * reckoning, and treating one of those as live would put the working indicator
    * and the live step window on a turn that has not started.
    */
+  // A HELD turn is not about to run — a pause or a restart is holding it —
+  // so it is not "busy" either: the composer must not promise to steer into
+  // it, and the send button must not read as a Stop.
   const active =
-    transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state));
+    transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state) && !turn.held);
   const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
   /** The provider is squeezing its context right now — an open
    *  context_compaction row on the live turn. Gates the compact button so the
@@ -1766,7 +1838,11 @@ export function SessionCockpit({
    * resolving the lost turn does NOT release them, so the count outlives the
    * recovery card and the held messages carry their own affordance.
    */
-  const heldBacklog = transcript.filter((turn) => turn.held && turn.state === "queued").length;
+  const heldBacklog = transcript.filter((turn) => turn.held && turn.state === "queued" && turn.heldReason !== "session_paused").length;
+  /** Messages the PAUSE is holding — the composer's banner counts them, and
+   *  Resume lets them go together. Distinct from a restart's holds above,
+   *  which each wait on their own re-read. */
+  const pausedBacklog = transcript.filter((turn) => turn.held && turn.state === "queued" && turn.heldReason === "session_paused").length;
 
   // A clock, only while something is running. An always-on interval re-renders a
   // settled transcript once a second for nothing.
@@ -1793,15 +1869,40 @@ export function SessionCockpit({
     [openRequests, observe],
   );
 
+  /**
+   * THE STOP BUTTON PAUSES THE SESSION. It used to end one turn, after which
+   * the worker claimed the next queued message within a heartbeat — the
+   * measured "I pressed stop and it started again". A pause stops the run AND
+   * holds everything queued (and everything that arrives) until Resume, which
+   * is what pressing Stop on a conversation means to the person pressing it.
+   * Pressing it with nothing running still pauses — that is how you hold a
+   * backlog before it starts.
+   */
   const stop = async () => {
-    if (!active || !sessionId) return;
+    if (!sessionId) return;
     setSending(true);
     try {
-      await api.stopTurn(sessionId, active.runId);
+      const paused = await api.pauseSession(sessionId);
+      setSession(paused.session);
       await hydrate();
       setError(undefined);
     } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the turn."));
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not pause the session."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /** A human lifts the pause; the held backlog runs in order. */
+  const resume = async () => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      const resumed = await api.resumeSession(sessionId);
+      setSession(resumed.session);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not resume the session."));
     } finally {
       setSending(false);
     }
@@ -2237,7 +2338,10 @@ export function SessionCockpit({
   // user_message row inside it; a second copy here would double it. The brief
   // `queued` state (an idle session's next turn, claimed within a heartbeat)
   // is not worth a row either.
-  const shown = transcript.filter((turn) => turn.state !== "queued" && turn.state !== "steering" && turn.state !== "steered");
+  // A HELD message is the exception: it is queued, but nothing is about to
+  // take it, and the person has to see what a pause (or a restart) is holding
+  // in order to decide about it.
+  const shown = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
   /**
    * THE ANSWER A READ RECEIPT WOULD BE ABOUT — the newest turn that left a
    * result, read off the RAW turns because only they carry the sequence the
@@ -2484,6 +2588,9 @@ export function SessionCockpit({
           backgroundTasks={backgroundTasks}
           settled={settled}
           onUnsettle={() => void unsettle()}
+          paused={Boolean(session?.paused)}
+          pausedBacklog={pausedBacklog}
+          onResume={() => void resume()}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
           {...(composerQuestion

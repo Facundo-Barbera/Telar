@@ -1272,7 +1272,9 @@ test("a turn with no model of its own falls back to the session's", () => {
   const session = store.getSession("session_one");
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
   store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
-  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5");
+  // NORMALISED AT THE CLAIM: Telar publishes only the long-window row for
+  // this family, so a bare id runs as the row the picker would have offered.
+  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5[1m]");
 });
 
 test("only enabled MCP servers ride the claim, and disabling one keeps its configuration", () => {
@@ -1753,7 +1755,7 @@ test("a model selection can be cleared, which `undefined` could never express", 
   // And an absent key still means "leave it alone", which is the other half of
   // the distinction.
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
-  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5");
+  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5[1m]");
 });
 
 test("fast mode reaches the claim without a model", () => {
@@ -2993,4 +2995,334 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   expect(() => awayBoot.releaseHeldTurn("session_one", "run_held")).toThrow(/removed from Telar/);
   // ...and it is still held afterwards, rather than half-released by a throw.
   expect(awayBoot.turns("session_one")[0]?.held).toBeDefined();
+});
+
+describe("an agent's message is attributed, never the person's", () => {
+  const pair = () => {
+    const { store } = readyStore();
+    store.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
+    return store;
+  };
+
+  test("sessions_send from inside a turn stamps the proven sender; a stale claim is refused", () => {
+    const store = pair();
+    store.submitTurn("session_one", { runId: "run_host", input: "orchestrate" });
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    const token = claimed.claim!.token;
+    // Not yet running: the proof is not live, and a message cannot be
+    // attributed to a turn that has not started.
+    expect(() => store.submitAgentTurn("session_two", { runId: "run_early", input: "go" }, { sessionId: "session_one", runId: "run_host", claimToken: token })).toThrow(/not running/);
+    store.markRunning("session_one", "run_host", token);
+
+    const { turn } = store.submitAgentTurn("session_two", { runId: "run_sent", input: "please do X" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
+    expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_one" }, state: "queued", input: "please do X" });
+    expect(turn.wakeReason).toBeUndefined();
+    expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session", sender: { sessionId: "session_one" } } });
+
+    // A forged proof — wrong token — is refused rather than attributed.
+    expect(() => store.submitAgentTurn("session_two", { runId: "run_forged", input: "as you" }, { sessionId: "session_one", runId: "run_host", claimToken: "x".repeat(32) })).toThrow(EngineStateError);
+    // And a proof naming a session that does not exist.
+    expect(() => store.submitAgentTurn("session_two", { runId: "run_ghost", input: "boo" }, { sessionId: "session_nope", runId: "run_host", claimToken: token })).toThrow(EngineStateError);
+  });
+
+  test("without proof it is still an agent's — unattributed, never a human bubble", () => {
+    const store = pair();
+    const { turn } = store.submitAgentTurn("session_two", { runId: "run_socket", input: "from a chat client" });
+    expect(turn.origin).toBe("session");
+    expect(turn.sender).toEqual({});
+    expect(turn.wakeReason).toBeUndefined();
+  });
+
+  test("the provenance rule: session origin needs exactly one of wakeReason or sender; a plain turn takes neither", () => {
+    const store = pair();
+    expect(() => store.submitTurn("session_two", { runId: "r1", input: "x", origin: "session" })).toThrow(/exactly one/);
+    expect(() => store.submitTurn("session_two", { runId: "r2", input: "x", sender: { sessionId: "session_one" } })).toThrow(/exactly one/);
+    expect(() =>
+      store.submitTurn("session_two", { runId: "r3", input: "x", origin: "session", sender: {}, wakeReason: { kind: "turn_completed", sessionId: "session_one" } }),
+    ).toThrow(/exactly one/);
+    expect(store.submitTurn("session_two", { runId: "r4", input: "x" }).turn.origin).toBeUndefined();
+  });
+
+  test("an agent's message steered into a running turn carries its sender on the heartbeat; its turn's ending still wakes subscribers", () => {
+    const store = pair();
+    store.submitTurn("session_two", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_two", "worker_one")!;
+    store.markRunning("session_two", "run_live", live.claim!.token);
+
+    const steered = store.submitAgentTurn("session_two", { runId: "run_steer", input: "also this" });
+    expect(steered.turn.state).toBe("steering");
+    const [delivery] = store.steerForWorker("worker_one");
+    expect(delivery).toMatchObject({ steerRunId: "run_steer", text: "also this", sender: {} });
+    // A person's steer carries no sender at all.
+    store.submitTurn("session_two", { runId: "run_human", input: "and me" });
+    expect(store.steerForWorker("worker_one").find((each) => each.steerRunId === "run_human")?.sender).toBeUndefined();
+
+    // A direct agent message is real work: when ITS turn ends, a subscriber
+    // hears about it. Only a wake's own ending is silent.
+    store.completeTurn("session_two", "run_live", live.claim!.token, { text: "done" });
+    // The two undelivered steers went back to queued; drop them so the next
+    // claim is the direct message below.
+    store.stopTurn("session_two", "run_steer");
+    store.stopTurn("session_two", "run_human");
+    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"] });
+    const direct = store.submitAgentTurn("session_two", { runId: "run_direct", input: "next job" });
+    expect(direct.turn.state).toBe("queued");
+    const claimedDirect = store.claimTurn("session_two", "worker_one")!;
+    store.markRunning("session_two", "run_direct", claimedDirect.claim!.token);
+    store.completeTurn("session_two", "run_direct", claimedDirect.claim!.token, { text: "finished the job" });
+    const wake = store.turns("session_one").find((turn) => turn.wakeReason);
+    expect(wake?.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_direct" });
+  });
+});
+
+describe("a Claude model is stored and claimed in the spelling Telar offers", () => {
+  test("a bare family id or alias becomes its [1m] row at every door; a custom, dated or short-window id is left alone", () => {
+    const { store } = readyStore();
+    const session = store.getSession("session_one");
+    const instanceId = session.providerInstanceId;
+    // The session patch.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "opus", effort: "medium" } }).model).toEqual({ instanceId, model: "opus[1m]", effort: "medium" });
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5" } }).model?.model).toBe("claude-opus-5[1m]");
+    // Already long: untouched, no double suffix.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-fable-5-1[1m]" } }).model?.model).toBe("claude-fable-5-1[1m]");
+    // Nothing is invented: a custom id, a dated build and Haiku stay as typed.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-mystery-9" } }).model?.model).toBe("claude-mystery-9");
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5-20260101" } }).model?.model).toBe("claude-opus-5-20260101");
+    expect(store.updateSession("session_one", { model: { instanceId, model: "haiku" } }).model?.model).toBe("haiku");
+    // The per-turn choice.
+    const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Hi", model: { model: "sonnet" } });
+    expect(turn.model?.model).toBe("sonnet[1m]");
+    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("sonnet[1m]");
+  });
+
+  test("a record saved before the window was a control is corrected at the claim, without a patch", () => {
+    const { store, root: stateRoot } = readyStore();
+    const file = path.join(stateRoot, "sessions", "session_one", "session.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.model = { instanceId: store.getSession("session_one").providerInstanceId, model: "opus", effort: "medium" };
+    fs.writeFileSync(file, JSON.stringify(saved), "utf8");
+    const booted = new EngineStore(stateRoot, () => 200);
+    // The record still says what was saved…
+    expect(booted.getSession("session_one").model?.model).toBe("opus");
+    booted.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+    // …and the claim — what actually runs — says the row Telar offers.
+    expect(booted.claimNextTurn("worker_one")?.model).toMatchObject({ model: "opus[1m]", effort: "medium" });
+  });
+
+  test("a Codex id is never touched", () => {
+    const { store } = readyStore();
+    store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+    const instanceId = store.getSession("session_codex").providerInstanceId;
+    expect(store.updateSession("session_codex", { model: { instanceId, model: "gpt-5.6-sol" } }).model?.model).toBe("gpt-5.6-sol");
+  });
+});
+
+describe("a paused session dispatches nothing until a human resumes it", () => {
+  const pair = () => {
+    const { store, root: stateRoot } = readyStore();
+    store.createSession({ id: "session_two", projectId: "project_one", title: "the supervisor" });
+    return { store, stateRoot };
+  };
+
+  test("pause stops the live turn, holds the requeued steer and the backlog, and refuses the next claim", () => {
+    const { store } = pair();
+    store.submitTurn("session_one", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_live", live.claim!.token);
+    // A steer in flight, and a queued follow-up behind it.
+    expect(store.submitTurn("session_one", { runId: "run_steer", input: "also" }).turn.state).toBe("steering");
+    store.submitTurn("session_one", { runId: "run_next", input: "then", kind: "compact" });
+
+    const paused = store.pauseSession("session_one");
+    expect(paused).toMatchObject({ already: false, held: 2, stopped: { runId: "run_live", state: "stopped" } });
+    expect(paused.session.paused).toMatchObject({ by: "human" });
+    const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+    // THE OLD BUG: the undelivered steer went back to `queued` and the worker
+    // claimed it a heartbeat after the stop. Now it is held with the rest.
+    expect(turns.get("run_steer")).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
+    expect(turns.get("run_next")).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
+    expect(store.claimTurn("session_one", "worker_one")).toBeUndefined();
+    expect(store.claimNextTurn("worker_one")).toBeUndefined();
+    // The worker still hears the cancellation for the stopped run.
+    expect(store.cancellationsForWorker("worker_one").map((each) => each.runId)).toEqual(["run_live"]);
+    // A message the person types while paused is held too — never dispatched
+    // ahead of the backlog, never steered.
+    expect(store.submitTurn("session_one", { runId: "run_typed", input: "one more" }).turn).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
+    expect(store.claimNextTurn("worker_one")).toBeUndefined();
+    // The provider cannot open a turn on its own either.
+    expect(() => store.openProviderTurn("session_one", { workerId: "worker_one", input: "a shell finished", reason: { kind: "unknown" } })).toThrow(/paused/);
+    // Idempotent.
+    expect(store.pauseSession("session_one")).toMatchObject({ already: true, held: 0 });
+    // Nothing was deleted: four turns, one stopped, three held.
+    expect(store.turns("session_one").map((turn) => turn.state)).toEqual(["stopped", "queued", "queued", "queued"]);
+    expect(store.readEvents("session_one").filter((event) => event.type === "session.paused")).toHaveLength(1);
+  });
+
+  test("a wake arriving on a paused subscriber is held; a pause on the target still wakes its subscriber", () => {
+    const { store } = pair();
+    store.subscribe("session_two", { targetSessionId: "session_one" });
+    // The supervisor pauses itself first.
+    store.pauseSession("session_two");
+    store.submitTurn("session_one", { runId: "run_w", input: "work" });
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_w", claimed.claim!.token);
+    // The worker pauses session_one (a human stop from the cockpit).
+    store.pauseSession("session_one");
+    const wake = store.turns("session_two").find((turn) => turn.wakeReason);
+    expect(wake).toMatchObject({ wakeReason: { kind: "turn_stopped", runId: "run_w" }, state: "queued", held: { reason: "session_paused" } });
+    // Neither session offers anything to a worker.
+    expect(store.claimNextTurn("worker_one")).toBeUndefined();
+  });
+
+  test("resume releases exactly the pause's holds, in order, and leaves a restart's hold alone", () => {
+    const { store, stateRoot } = pair();
+    // A message held by a restart, seeded on disk, beside two the pause holds.
+    store.submitTurn("session_one", { runId: "run_restart", input: "before the crash" });
+    const file = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const queue = JSON.parse(fs.readFileSync(file, "utf8"));
+    queue.turns[0].held = { at: 50, reason: "engine_restart" };
+    fs.writeFileSync(file, JSON.stringify(queue), "utf8");
+    const booted = new EngineStore(stateRoot, () => 200);
+    booted.submitTurn("session_one", { runId: "run_a", input: "a" });
+    booted.pauseSession("session_one");
+    booted.submitTurn("session_one", { runId: "run_b", input: "b" });
+    expect(booted.claimNextTurn("worker_one")).toBeUndefined();
+    // Releasing one held message by hand does not un-pause: it says so.
+    expect(() => booted.releaseHeldTurn("session_one", "run_a")).toThrow(/paused/);
+
+    const resumed = booted.resumeSession("session_one");
+    expect(resumed).toMatchObject({ released: 2, already: false });
+    expect(resumed.session.paused).toBeUndefined();
+    const turns = new Map(booted.turns("session_one").map((turn) => [turn.runId, turn]));
+    expect(turns.get("run_restart")?.held).toMatchObject({ reason: "engine_restart" });
+    expect(turns.get("run_a")?.held).toBeUndefined();
+    expect(turns.get("run_b")?.held).toBeUndefined();
+    // The backlog runs in the order it was written; the restart-held one is skipped, not jumped.
+    expect(booted.claimNextTurn("worker_one")?.turn.runId).toBe("run_a");
+    expect(booted.resumeSession("session_one")).toMatchObject({ already: true, released: 0 });
+    expect(booted.readEvents("session_one").filter((event) => event.type === "session.resumed")).toHaveLength(1);
+  });
+
+  test("a pause survives a restart: a claimed turn requeued at boot lands held, and the record still says paused", () => {
+    const { store, stateRoot } = pair();
+    store.submitTurn("session_one", { runId: "run_a", input: "a" });
+    store.claimTurn("session_one", "worker_one");
+    store.pauseSession("session_one");
+    // The pause stopped the claimed turn; now simulate a claim that landed
+    // in the same instant by writing one back as `claimed` on disk.
+    store.submitTurn("session_one", { runId: "run_b", input: "b" });
+    const file = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const queue = JSON.parse(fs.readFileSync(file, "utf8"));
+    const b = queue.turns.find((turn: { runId: string }) => turn.runId === "run_b");
+    delete b.held;
+    b.state = "claimed";
+    b.claim = { workerId: "worker_one", token: "t".repeat(32), at: 100 };
+    fs.writeFileSync(file, JSON.stringify(queue), "utf8");
+
+    const booted = new EngineStore(stateRoot, () => 300);
+    booted.recover();
+    expect(booted.getSession("session_one").paused).toBeDefined();
+    expect(booted.turns("session_one").find((turn) => turn.runId === "run_b")).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
+    expect(booted.claimNextTurn("worker_one")).toBeUndefined();
+    // And a vanished worker's requeue lands held the same way.
+    const again = new EngineStore(stateRoot, () => 400);
+    const file2 = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const q2 = JSON.parse(fs.readFileSync(file2, "utf8"));
+    const b2 = q2.turns.find((turn: { runId: string }) => turn.runId === "run_b");
+    delete b2.held;
+    b2.state = "claimed";
+    b2.claim = { workerId: "worker_gone", token: "g".repeat(32), at: 350 };
+    fs.writeFileSync(file2, JSON.stringify(q2), "utf8");
+    again.recoverInactiveWorker("worker_gone");
+    expect(again.turns("session_one").find((turn) => turn.runId === "run_b")).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
+  });
+
+  test("activity: a paused session with a held backlog is not 'queued'; a plain stop still lets the next message run", () => {
+    const { store } = pair();
+    store.submitTurn("session_one", { runId: "run_a", input: "a" });
+    store.submitTurn("session_one", { runId: "run_b", input: "b" });
+    store.pauseSession("session_one");
+    expect(store.getSession("session_one").activity).toBe("idle");
+    store.resumeSession("session_one");
+    expect(store.getSession("session_one").activity).toBe("queued");
+    // The single-run stop keeps its meaning: run_a stops, run_b is next.
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_a", claimed.claim!.token);
+    store.stopTurn("session_one", "run_a");
+    expect(store.getSession("session_one").paused).toBeUndefined();
+    expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_b");
+  });
+});
+
+describe("pause is latch-first, so a fault between its two writes fails closed", () => {
+  test("the latch lands before the sweep; with the sweep lost, nothing dispatches, a wake-up opens no turn, recovery re-holds, and a retry completes the stop", () => {
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_live", live.claim!.token);
+    store.submitTurn("session_one", { runId: "run_next", input: "next", kind: "compact" });
+
+    // The queue write fails; the metadata write before it succeeded.
+    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const realRename = fs.renameSync;
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === queueFile) throw new Error("disk full");
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      expect(() => store.pauseSession("session_one")).toThrow("disk full");
+    } finally {
+      spy.mockRestore();
+    }
+    // The half that landed is the latch: paused, queue untouched.
+    const session = store.getSession("session_one");
+    expect(session.paused).toMatchObject({ by: "human" });
+    const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+    expect(turns.get("run_live")?.state).toBe("running");
+    expect(turns.get("run_next")?.held).toBeUndefined();
+    // FAIL-CLOSED from here: no claim, no provider turn, and a submit is held.
+    expect(store.claimNextTurn("worker_two")).toBeUndefined();
+    expect(() => store.openProviderTurn("session_one", { workerId: "worker_one", input: "wake", reason: { kind: "unknown" } })).toThrow(/paused/);
+    expect(store.submitTurn("session_one", { runId: "run_typed", input: "typed" }).turn.held).toMatchObject({ reason: "session_paused" });
+    // A restart does not reopen the gap: the unheld backlog is re-held and
+    // the running turn is the ordinary ambiguous case.
+    const booted = new EngineStore(stateRoot, () => 300);
+    booted.recover();
+    // Held — by the restart's own rule here, since the lost turn went
+    // ambiguous first; the pause's hold is what catches a backlog the
+    // restart would not otherwise touch. Either way: nothing dispatches.
+    expect(booted.turns("session_one").find((turn) => turn.runId === "run_next")?.held).toBeDefined();
+    expect(booted.getSession("session_one").paused).toBeDefined();
+    expect(booted.claimNextTurn("worker_two")).toBeUndefined();
+  });
+
+  test("without a restart, the person's retry completes the half the fault dropped", () => {
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_live", live.claim!.token);
+    store.submitTurn("session_one", { runId: "run_next", input: "next", kind: "compact" });
+    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const realRename = fs.renameSync;
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === queueFile) throw new Error("disk full");
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      expect(() => store.pauseSession("session_one")).toThrow("disk full");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(store.getSession("session_one").paused).toBeDefined();
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_live")?.state).toBe("running");
+    // The retry: `already` (the latch was there), and the sweep it re-runs
+    // stops the live turn and holds the backlog.
+    const retry = store.pauseSession("session_one");
+    expect(retry).toMatchObject({ already: true, stopped: { runId: "run_live", state: "stopped" }, held: 1 });
+    expect(store.cancellationsForWorker("worker_one").map((each) => each.runId)).toEqual(["run_live"]);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_next")?.held).toMatchObject({ reason: "session_paused" });
+    // A third pause has nothing left to do.
+    expect(store.pauseSession("session_one")).toMatchObject({ already: true, held: 0 });
+    expect(store.pauseSession("session_one").stopped).toBeUndefined();
+  });
 });

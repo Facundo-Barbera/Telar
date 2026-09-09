@@ -8,6 +8,12 @@
       "sonnet-5": { "longWindow": true },
       "haiku-4-5": { "longWindow": false }
     },
+    "aliases": {
+      "opus": "opus-5",
+      "sonnet": "sonnet-5",
+      "fable": "fable-5",
+      "haiku": "haiku-4-5"
+    },
     "models": {
       "claude-fable-5-1": "fable-5",
       "claude-fable-5": "fable-5",

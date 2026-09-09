@@ -125,6 +125,7 @@ import {
   type WakeKind,
   type WorkerClaim,
   type ProviderTurnOpenInput,
+  type AgentTurnInput,
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
@@ -1634,6 +1635,15 @@ export class EngineClient {
   }
 
   /**
+   * Queue one message AS AN AGENT — the worker's half of `sessions_send`.
+   * `proof` is the sending turn's own claim; the engine stamps the sender
+   * from it and never from anything a model typed. See `AgentTurnInput`.
+   */
+  submitAgentTurn(sessionId: string, input: AgentTurnInput): Promise<TurnSubmissionResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/agent`, input);
+  }
+
+  /**
    * ONE DOOR TO THE SESSION'S KERNEL. `method` is the verb — `execute`,
    * `notebook/run`, `snapshot`… — and it is always a POST, because even a read
    * of the namespace may start the kernel. The daemon's `storeDsCapability`
@@ -1916,6 +1926,22 @@ export class EngineClient {
    */
   stopBackgroundTasks(sessionId: string): Promise<{ stopped: number }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
+  }
+
+  /**
+   * PAUSE THE SESSION: stop the live turn and hold everything queued — and
+   * everything that arrives — until a human resumes. `stopTurn` ends one run
+   * and the worker takes the next; this is the one that stays stopped. See
+   * `Session.paused`. `by: "session"` is how the worker's `sessions_stop`
+   * says an agent asked.
+   */
+  pauseSession(sessionId: string, by: "human" | "session" = "human"): Promise<{ session: Session; stopped?: Turn; held: number; already: boolean }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/pause`, { by });
+  }
+
+  /** A human resumes: the pause comes off and its held backlog runs in order. */
+  resumeSession(sessionId: string): Promise<{ session: Session; released: number; already: boolean }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/resume`, {});
   }
 
   /** End a session and free its worktree. The branch survives — it is the

@@ -234,3 +234,44 @@ describe("what a live turn says it is doing", () => {
     ).toBe("Compacting context");
   });
 });
+
+describe("a message another agent sent is labelled as an agent's, never the person's", () => {
+  test("the label names the sending session, or says the sender was outside any session", async () => {
+    const { agentSenderLabel } = await import("./session-cockpit");
+    expect(agentSenderLabel({ sessionId: "session_abcdef123456" })).toBe("agent · session …123456");
+    expect(agentSenderLabel({})).toBe("agent · outside any session");
+  });
+  test("the journal keeps the sender so the transcript can draw it", async () => {
+    const { projectJournal } = await import("@/lib/engine/journal");
+    const [turn] = projectJournal(
+      [{ runId: "run_a", sessionId: "s1", sequence: 1, input: "do it", state: "queued", origin: "session", sender: { sessionId: "session_boss" }, acceptedAt: 1, updatedAt: 1 }],
+      [],
+      [],
+    );
+    expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_boss" }, prompt: "do it" });
+  });
+});
+
+describe("a held message is not a running one", () => {
+  test("the journal carries why a turn is held, and a paused hold is told apart from a restart's", async () => {
+    const { projectJournal } = await import("@/lib/engine/journal");
+    const [paused, restart] = projectJournal(
+      [
+        { runId: "run_p", sessionId: "s1", sequence: 1, input: "later", state: "queued", held: { at: 1, reason: "session_paused" }, acceptedAt: 1, updatedAt: 1 },
+        { runId: "run_r", sessionId: "s1", sequence: 2, input: "before the crash", state: "queued", held: { at: 1, reason: "engine_restart" }, acceptedAt: 2, updatedAt: 2 },
+      ],
+      [],
+      [],
+    );
+    expect(paused).toMatchObject({ held: true, heldReason: "session_paused" });
+    expect(restart).toMatchObject({ held: true, heldReason: "engine_restart" });
+    // A release clears both the flag and the reason.
+    const [released] = projectJournal(
+      [{ runId: "run_p", sessionId: "s1", sequence: 1, input: "later", state: "queued", held: { at: 1, reason: "session_paused" }, acceptedAt: 1, updatedAt: 1 }],
+      [],
+      [{ id: 9, at: 5, sessionId: "s1", runId: "run_p", type: "turn.released" }],
+    );
+    expect(released!.held).toBe(false);
+    expect(released!.heldReason).toBeUndefined();
+  });
+});

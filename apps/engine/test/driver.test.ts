@@ -419,16 +419,22 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   // Occupancy is the NEWEST message's input+cacheRead+cacheCreate+output.
   expect(usages[0]?.kind === "usage" && usages[0].usage.contextUsed).toBe(115);
   expect(usages[1]?.kind === "usage" && usages[1].usage.contextUsed).toBe(219);
-  // Claude's default is now Telar's long-context row. A provider-reported 200k
-  // window cannot lower the meter below the selected/default 1M floor.
+  // THE PROVIDER'S OWN WINDOW, not an assumption: the main loop's 200k is what
+  // the meter says, and the sidechain's smaller table entry does not win.
   const last = usages[2];
-  expect(last?.kind === "usage" && last.usage.contextMax).toBe(1_000_000);
+  expect(last?.kind === "usage" && last.usage.contextMax).toBe(200_000);
   expect(last?.kind === "usage" && last.usage.contextUsed).toBe(219);
   // Tokens still come from the result's own usage, never from modelUsage.
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
 });
 
-test("a selected or default Claude 1M row is the context-meter floor", async () => {
+test("the meter assumes 1M only for an explicit [1m] row, and the provider's report corrects it either way", async () => {
+  /**
+   * MEASURED ON THE DOGFOOD APP: a session configured as bare `opus` was
+   * assumed 1M for the whole family while the provider auto-compacted at
+   * ~170k — its window was 200k, and `Math.max` against the assumption could
+   * never bring the meter down. The provider's own `contextWindow` wins now.
+   */
   const driver = createClaudeDriver(async () => ({
     async *query() {
       yield {
@@ -445,15 +451,33 @@ test("a selected or default Claude 1M row is the context-meter floor", async () 
   }));
   const selected = run(driver, { model: "claude-fable-5-1[1m]" });
   await selected.result;
-  const selectedUsage = selected.sink.observations.filter((o) => o.kind === "usage").at(-1);
-  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextMax).toBe(1_000_000);
+  const selectedUsages = selected.sink.observations.filter((o) => o.kind === "usage");
+  // Before the provider speaks, an explicit [1m] row is assumed 1M so the
+  // ring has a denominator on the first envelope…
+  expect(selectedUsages[0]?.kind === "usage" && selectedUsages[0].usage.contextMax).toBe(1_000_000);
+  // …and the provider's own report corrects it DOWN when it disagrees.
+  const selectedUsage = selectedUsages.at(-1);
+  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextMax).toBe(200_000);
   expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextUsed).toBe(400_002);
 
-  const fallback = run(driver);
-  await fallback.result;
-  const fallbackUsage = fallback.sink.observations.filter((o) => o.kind === "usage").at(-1);
-  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextMax).toBe(1_000_000);
-  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextUsed).toBe(400_002);
+  // A bare id or no model assumes nothing until the provider reports.
+  for (const extra of [{}, { model: "opus" }, { model: "claude-opus-5" }]) {
+    const bare = run(driver, extra);
+    await bare.result;
+    const usages = bare.sink.observations.filter((o) => o.kind === "usage");
+    expect(usages[0]?.kind === "usage" && usages[0].usage.contextMax).toBeUndefined();
+    expect(usages.at(-1)?.kind === "usage" && usages.at(-1)!.usage.contextMax).toBe(200_000);
+  }
+});
+
+test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row only", async () => {
+  const { selectedContextMaxFromModel } = await import("../src/driver");
+  expect(selectedContextMaxFromModel("opus[1m]")).toBe(1_000_000);
+  expect(selectedContextMaxFromModel("claude-fable-5-1[1m]")).toBe(1_000_000);
+  expect(selectedContextMaxFromModel("opus")).toBeUndefined();
+  expect(selectedContextMaxFromModel("claude-opus-5")).toBeUndefined();
+  expect(selectedContextMaxFromModel(undefined)).toBeUndefined();
+  expect(selectedContextMaxFromModel("claude-mystery-9[1m]")).toBeUndefined();
 });
 
 test("compaction is a timeline row, not a dropped message", async () => {
@@ -1734,6 +1758,40 @@ describe("the session runtime", () => {
     expect(modelsSet).toEqual(["sonnet[1m]"]);
   });
 
+  test("a WINDOW change cold-starts the process rather than trusting setModel with the suffix", async () => {
+    /**
+     * Whether a live CLI honours `[1m]` through `setModel` is unverified, and
+     * the dogfood sessions whose saved model was changed from bare opus to
+     * opus[1m] kept auto-compacting at ~170k. A window change is baked into
+     * a fresh query, whose first result reports the window it actually got.
+     */
+    let queryCalls = 0;
+    const modelsSet: unknown[] = [];
+    const baked: unknown[] = [];
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { model?: string } }) {
+        baked.push(options.model);
+        const generator = (async function* () {
+          queryCalls += 1;
+          for await (const message of prompt) {
+            void message;
+            yield { type: "result", subtype: "success" };
+          }
+        })();
+        return Object.assign(generator, { setModel: async (model?: string) => { modelsSet.push(model); } });
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_window", model: "opus" }).result;
+    await run(driver, { sessionId: "session_window", model: "opus[1m]" }).result;
+    expect(queryCalls).toBe(2);
+    expect(modelsSet).toEqual([]);
+    expect(baked).toEqual(["opus", "opus[1m]"]);
+    // Same window, different family: the live knob is still the cheap path.
+    await run(driver, { sessionId: "session_window", model: "sonnet[1m]" }).result;
+    expect(queryCalls).toBe(2);
+    expect(modelsSet).toEqual(["sonnet[1m]"]);
+  });
+
   test("dispose closes every live runtime — the worker's stop is the session's end", async () => {
     let ended = false;
     const driver = createClaudeDriver(async () => ({
@@ -2177,6 +2235,44 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(foreign).toBeDefined();
   });
 
+  test("a provider-started turn emits usage per envelope and takes the provider's window from its result", async () => {
+    /**
+     * The turn pump learned this in #200; the idle pump did not, so an hour
+     * of monitor-driven turns left the ring where the last human turn put
+     * it. Same two reads, same rule: the reported window wins.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", summary: "DONE" };
+        yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "noted" }], usage: { input_tokens: 150_000, output_tokens: 10, cache_read_input_tokens: 20_000 } } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" }, usage: { input_tokens: 150_000, output_tokens: 10 }, modelUsage: { "claude-opus-5": { contextWindow: 200_000, inputTokens: 150_000 } } };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    await run(driver, { sessionId: "session_idle_usage", session: door.hooks, model: "opus[1m]" }).result;
+    releaseWake!();
+    await settle(() => door.turns[0]?.closed !== undefined);
+    const wake = door.turns[0]!;
+    const usages = wake.observations.filter((o) => o.kind === "usage");
+    expect(usages.length).toBeGreaterThanOrEqual(2);
+    // The envelope: occupancy, under the selected row's 1M assumption.
+    expect(usages[0]?.kind === "usage" && usages[0].usage).toMatchObject({ contextUsed: 170_010, contextMax: 1_000_000 });
+    // The result: the provider's window replaces the assumption, downward.
+    expect(usages.at(-1)?.kind === "usage" && usages.at(-1)!.usage).toMatchObject({ contextUsed: 170_010, contextMax: 200_000, tokens: { input: 150_000, output: 10 } });
+    // And the turn's close carries it, so the engine stores it on the turn.
+    expect((wake.closed as { usage?: UsageSnapshot }).usage).toMatchObject({ contextMax: 200_000 });
+  });
+
   test("without a session door the stream is read only while a turn pumps — the old behaviour, exactly", async () => {
     let pulled = 0;
     const driver = createClaudeDriver(async () => ({
@@ -2272,3 +2368,73 @@ for (const providerSessionId of [undefined, 'resumed-browser-session']) {
     expect(prompts[1]).toBeUndefined();
   });
 }
+
+test("an agent's steered message reaches Claude framed as a peer's, and its row says an agent sent it", async () => {
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      for await (const message of prompt) {
+        heard.push(message.message.content);
+        if (heard.length < 2) continue;
+        yield { type: "result", subtype: "success" };
+        return;
+      }
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  steer.push({ text: "status?", sender: { sessionId: "session_boss" } });
+  const { sink, result } = run(driver, { steer });
+  await result;
+  expect(heard[0]).toBe("prompt");
+  expect(String(heard[1])).toStartWith("[agent message from session session_boss]");
+  expect(String(heard[1])).toEndWith("status?");
+  const row = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item).toMatchObject({ title: "Sent by an agent", detail: { type: "user_message", text: "status?", sender: { sessionId: "session_boss" } } });
+});
+
+test("a batch of steers keeps one transcript row PER MESSAGE with its own sender and files; the provider gets them in order, each framed as its author", async () => {
+  /**
+   * Root review of #202: the batch used to be joined into ONE row carrying
+   * the first sender and every attachment — a person's words and an agent's
+   * drew as one agent bubble, two agents as one, and a screenshot lost the
+   * message it came with.
+   */
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      for await (const message of prompt) {
+        heard.push(message.message.content);
+        if (heard.length < 2) continue;
+        yield { type: "result", subtype: "success" };
+        return;
+      }
+    },
+  }) as never);
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-steer-mix-")), "shot.png");
+  fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const shot = { id: "att_shot", name: "shot.png", mediaType: "image/png", bytes: 4, path: file, createdAt: 1 };
+  const steer = new SteerMailbox();
+  // Three messages waiting at once: a person WITH a file, then two agents.
+  steer.push({ text: "look at this", attachments: [shot] });
+  steer.push({ text: "status?", sender: { sessionId: "session_boss" } });
+  steer.push({ text: "and the diff", sender: { sessionId: "session_peer" } });
+  const { sink, result } = run(driver, { steer });
+  await result;
+
+  const rows = sink.observations.filter((o) => o.kind === "item.started" && o.item.detail.type === "user_message").map((o) => (o.kind === "item.started" ? o.item : undefined)!);
+  expect(rows.map((row) => ({ text: (row.detail as { text: string }).text, sender: (row.detail as { sender?: unknown }).sender, files: ((row.detail as { attachments?: unknown[] }).attachments ?? []).length, title: row.title }))).toEqual([
+    { text: "look at this", sender: undefined, files: 1, title: "Sent now" },
+    { text: "status?", sender: { sessionId: "session_boss" }, files: 0, title: "Sent by an agent" },
+    { text: "and the diff", sender: { sessionId: "session_peer" }, files: 0, title: "Sent by an agent" },
+  ]);
+  // One push to the provider, in order: the person bare, each agent framed as itself.
+  expect(heard).toHaveLength(2);
+  const blocks = heard[1] as Array<{ type: string; text?: string }>;
+  const text = blocks.find((block) => block.type === "text")!.text!;
+  expect(blocks[0]!.type).toBe("image");
+  expect(text.indexOf("look at this")).toBeLessThan(text.indexOf("[agent message from session session_boss]"));
+  expect(text.indexOf("[agent message from session session_boss]")).toBeLessThan(text.indexOf("status?"));
+  expect(text.indexOf("status?")).toBeLessThan(text.indexOf("[agent message from session session_peer]"));
+  expect(text.indexOf("[agent message from session session_peer]")).toBeLessThan(text.indexOf("and the diff"));
+  expect(text.startsWith("look at this")).toBe(true);
+});
