@@ -40,7 +40,6 @@ import {
   Loader2Icon,
   HourglassIcon,
   Minimize2Icon,
-  PaperclipIcon,
   PencilIcon,
   SearchIcon,
   TerminalIcon,
