@@ -2392,6 +2392,45 @@ test("an agent's steered message reaches Claude framed as a peer's, and its row 
   expect(row?.kind === "item.started" && row.item).toMatchObject({ title: "Sent by an agent", detail: { type: "user_message", text: "status?", sender: { sessionId: "session_boss" } } });
 });
 
+test("a WAKE steered into a running turn reaches Claude as the engine's notice, and its row is a wake — not the person's bubble (#194)", async () => {
+  /**
+   * The regression: a wake arriving while the recipient was IDLE ran as its
+   * own `origin: "session"` turn and drew as a wake row, while the SAME wake
+   * arriving while it was RUNNING was steered as bare text — so the provider
+   * read the engine's announcement as the person's instruction and the
+   * transcript drew the person's bubble. Only whether a turn happened to be
+   * in flight decided which.
+   */
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      for await (const message of prompt) {
+        heard.push(message.message.content);
+        if (heard.length < 2) continue;
+        yield { type: "result", subtype: "success" };
+        return;
+      }
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  const wakeReason = { kind: "turn_completed" as const, sessionId: "session_child", runId: "run_child" };
+  steer.push({ text: '[wake: completed] Session session_child "the worker" — turn run_child completed.', wakeReason });
+  const { sink, result } = run(driver, { steer });
+  await result;
+
+  // The provider is told what it is reading, structurally — a mid-turn
+  // injection on the human's own channel needs the frame the queued path gets
+  // for free by being a whole turn.
+  expect(String(heard[1])).toStartWith("[engine wake · turn_completed · session session_child]");
+  expect(String(heard[1])).toContain("not an instruction");
+  expect(String(heard[1])).toEndWith("turn run_child completed.");
+
+  const row = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item).toMatchObject({ title: "Woken by a session", detail: { type: "user_message", wakeReason } });
+  // And it is nobody's message: neither the person's bubble nor a peer's report.
+  expect(row?.kind === "item.started" && (row.item.detail as { sender?: unknown }).sender).toBeUndefined();
+});
+
 test("a batch of steers keeps one transcript row PER MESSAGE with its own sender and files; the provider gets them in order, each framed as its author", async () => {
   /**
    * Root review of #202: the batch used to be joined into ONE row carrying

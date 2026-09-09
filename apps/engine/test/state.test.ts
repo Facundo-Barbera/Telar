@@ -2601,6 +2601,58 @@ describe("subscriptions", () => {
   }
   const wakes = (store: EngineStore, sessionId: string) => store.turns(sessionId).filter((turn) => turn.origin === "session");
 
+  test("a wake landing on a RUNNING subscriber keeps its identity all the way to the worker, and through requeue and pause (#194)", () => {
+    /**
+     * THE REGRESSION. `submitTurn` steers whatever it accepts when a turn is
+     * running, and a wake is accepted the same way — but `steerForWorker`
+     * forwarded only `sender`, so the engine's own announcement about a peer
+     * reached the driver as anonymous text and was rendered, and read by the
+     * model, as the person typing. Idle delivery drew a wake row; running
+     * delivery drew a human bubble. Same happening, same session, different
+     * attribution — decided only by whether a turn was in flight.
+     */
+    const { store } = pair();
+    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"] });
+    // session_one is BUSY when the wake arrives — the whole point.
+    store.submitTurn("session_one", { runId: "run_busy", input: "thinking" });
+    const busy = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_busy", busy.claim!.token);
+
+    runTurn(store, "session_two", "run_w");
+
+    const [wake] = wakes(store, "session_one");
+    expect(wake).toMatchObject({ origin: "session", state: "steering", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
+
+    // The delivery the worker actually receives is where it used to be lost.
+    const delivery = store.steerForWorker("worker_one").find((each) => each.steerRunId === wake!.runId);
+    expect(delivery).toBeDefined();
+    expect(delivery!.wakeReason).toEqual({ kind: "turn_completed", sessionId: "session_two", runId: "run_w" });
+    // A wake is nobody's message: it is not an agent's either.
+    expect(delivery!.sender).toBeUndefined();
+    // A person's steer beside it stays exactly as bare as it was.
+    store.submitTurn("session_one", { runId: "run_typed", input: "and me" });
+    const typed = store.steerForWorker("worker_one").find((each) => each.steerRunId === "run_typed")!;
+    expect(typed.wakeReason).toBeUndefined();
+    expect(typed.sender).toBeUndefined();
+
+    // UNDELIVERED → REQUEUED, identity intact: the running turn settles before
+    // the worker took either message, so both come back as ordinary queued
+    // turns — and the wake must not come back as a human one.
+    store.completeTurn("session_one", "run_busy", busy.claim!.token, { text: "done" });
+    const requeued = store.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
+    expect(requeued).toMatchObject({ state: "queued", origin: "session", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_w" } });
+
+    // AND ACROSS A PAUSE. A held wake is still a wake when the human resumes.
+    store.pauseSession("session_one");
+    const held = store.turns("session_one").find((turn) => turn.runId === wake!.runId)!;
+    expect(held.origin).toBe("session");
+    expect(held.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two" });
+    // Read cold, from a second store instance over the same files.
+    const cold = new EngineStore(store.paths.root, () => 100).turns("session_one").find((turn) => turn.runId === wake!.runId)!;
+    expect(cold.origin).toBe("session");
+    expect(cold.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_two", runId: "run_w" });
+  });
+
   test("a completed turn on the target queues a [wake] turn on the subscriber, clipped and pointing at the rest", () => {
     const { store } = pair();
     const subscription = store.subscribe("session_one", { targetSessionId: "session_two" });

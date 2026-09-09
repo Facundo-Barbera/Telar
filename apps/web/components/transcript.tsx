@@ -447,6 +447,60 @@ function CompactionRow({ item }: { item: JournalItem }) {
 }
 
 /**
+ * A wake from ANOTHER SESSION — the engine wrote it because a peer this one
+ * subscribed to did something. The verb names the happening; the label names
+ * the peer by its id's tail, since the wake text itself carries the title on
+ * expand.
+ *
+ * HERE RATHER THAN IN THE COCKPIT because both surfaces name a wake and only
+ * one import direction exists (cockpit → transcript): a wake that lands while
+ * the session is idle is a turn header there, and the same wake landing
+ * mid-turn is a row here. Two spellings of "Session finished a turn" would be
+ * the bug this file already fixed, reintroduced in words.
+ */
+export function sessionWakeLabel(reason: NonNullable<JournalTurn["wakeReason"]>): { verb: string; Icon: typeof BotIcon } {
+  switch (reason.kind) {
+    case "turn_completed":
+      return { verb: "Session finished a turn", Icon: BotIcon };
+    case "turn_failed":
+      return { verb: "Session failed a turn", Icon: BotIcon };
+    case "turn_stopped":
+      return { verb: "Session was stopped", Icon: BotIcon };
+    case "request_opened":
+      return { verb: "Session asked a question", Icon: BotIcon };
+  }
+}
+
+/**
+ * A WAKE THAT LANDED MID-TURN. Collapsed to its verb and the peer's id, the
+ * text behind a disclosure — the same shape the cockpit gives a wake that
+ * arrived while the session was idle, because it is the same happening. It is
+ * emphatically NOT the person's bubble: the human typed none of it.
+ */
+function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullable<JournalTurn["wakeReason"]> }) {
+  const [open, setOpen] = useState(false);
+  const { verb, Icon } = sessionWakeLabel(reason);
+  const body = itemText(item).trim();
+  return (
+    <div className="py-0.5" aria-label="Wake from another session">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs"
+        disabled={!body}
+        aria-expanded={body ? open : undefined}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0">{verb}</span>
+        <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{`session …${reason.sessionId.slice(-6)}`}</span>
+        {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
+      </button>
+      {open && body && <p className="whitespace-pre-wrap px-1.5 pb-1 text-xs text-muted-foreground">{body}</p>}
+    </div>
+  );
+}
+
+/**
  * A message the human SENT NOW — injected into the running turn rather than
  * queued behind it. Rendered as a user bubble where it landed, because that is
  * where the agent heard it; without this row the agent's change of direction
@@ -455,6 +509,14 @@ function CompactionRow({ item }: { item: JournalItem }) {
 function SteeredMessageRow({ item }: { item: JournalItem }) {
   const attachments = item.detail.type === "user_message" ? (item.detail.attachments ?? []) : [];
   const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
+  const wakeReason = item.detail.type === "user_message" ? item.detail.wakeReason : undefined;
+  // A WAKE IS NOBODY'S BUBBLE. The engine wrote it because a subscribed
+  // session did something; the person did not type it and no agent sent it.
+  // The same happening queues as its own turn when the recipient is idle and
+  // the cockpit draws THAT as a wake row — this is the mid-turn twin of it,
+  // so the two read as one kind of thing however the wake happened to land.
+  // Keyed on the structured stamp, never on the `[wake: …]` text.
+  if (wakeReason) return <SteeredWakeRow item={item} reason={wakeReason} />;
   // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE: left-aligned, dashed, and
   // labelled with who sent them — the same shape the cockpit gives an
   // agent-sent turn, so the two read as one kind of thing.

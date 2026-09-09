@@ -7424,6 +7424,13 @@ export class EngineStore {
             // And so does WHO SAID THEM: an agent's message steered into a
             // running turn used to reach the provider as the person's own.
             ...(turn.origin === "session" && turn.sender ? { sender: turn.sender } : {}),
+            // A WAKE KEEPS ITS IDENTITY THROUGH THE PROMOTION. `submitTurn`
+            // steers whatever it accepts when a turn is running, and a wake is
+            // accepted the same way — so the engine's own announcement about a
+            // peer used to arrive here stripped of `wakeReason` and reach both
+            // the provider and the transcript as a person's typed message. The
+            // stamp is the turn's; it rides the delivery.
+            ...(turn.origin === "session" && turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
           },
         ];
       });

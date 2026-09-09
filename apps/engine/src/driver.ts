@@ -57,8 +57,8 @@ import { compileWarpScript } from "./warp/sandbox";
 import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
-import type { SteerMailbox } from "./steering";
-import { frameAgentMessage } from "./attribution";
+import type { SteerMailbox, SteerMessage } from "./steering";
+import { framedSteerText, steerRowTitle } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
@@ -1838,14 +1838,23 @@ export function createClaudeDriver(
        * Its approval gate rides the socket's binding, which is why `canUseTool`
        * above waves its calls through.
        */
-      const onSteered = (text: string, attachments: TurnAttachment[], sender?: { sessionId?: string }) => {
+      const onSteered = (message: SteerMessage) => {
         const id = itemId();
+        const attachments = message.attachments ?? [];
         emit({
           kind: "item.started",
           item: {
             id,
-            detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}), ...(sender ? { sender } : {}) },
-            title: sender ? "Sent by an agent" : "Sent now",
+            detail: {
+              type: "user_message",
+              text: message.text,
+              ...(attachments.length > 0 ? { attachments } : {}),
+              ...(message.sender ? { sender: message.sender } : {}),
+              // WHO SAID IT SURVIVES THE ROW. A wake steered into a running
+              // turn used to land here bare and draw as the person's bubble.
+              ...(message.wakeReason ? { wakeReason: message.wakeReason } : {}),
+            },
+            title: steerRowTitle(message),
           },
         });
         emit({ kind: "item.completed", itemId: id, status: "completed" });
@@ -2243,8 +2252,8 @@ export function createClaudeDriver(
               // bubble holding both, with the attachments' ownership lost.
               // The provider still gets them as one interruption, in order,
               // each agent message individually framed and a person's bare.
-              for (const message of queued) onSteered(message.text, message.attachments ?? [], message.sender);
-              const text = queued.map((message) => (message.sender ? frameAgentMessage(message.text, message.sender) : message.text)).join("\n\n");
+              for (const message of queued) onSteered(message);
+              const text = queued.map((message) => framedSteerText(message)).join("\n\n");
               const attachments = queued.flatMap((message) => message.attachments ?? []);
               runtime.feed.push({
                 type: "user",

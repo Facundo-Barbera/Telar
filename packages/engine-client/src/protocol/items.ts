@@ -20,6 +20,7 @@
  */
 import { z } from "zod";
 import { Id, ProviderRefs, Timestamp, TurnAttachment } from "./common";
+import { WakeReason } from "./entities";
 
 /**
  * The subset of item types that represent a tool doing something. These are the
@@ -185,6 +186,20 @@ export const ItemDetail = z.discriminatedUnion("type", [
     /** Present when an AGENT sent this mid-turn message (`sessions_send`).
      *  The row is drawn as a peer's, never as the person's bubble. */
     sender: z.object({ sessionId: z.string().min(1).optional() }).optional(),
+    /**
+     * Present when the ENGINE ITSELF wrote this mid-turn message: a wake, from
+     * a session this one subscribed to. Nobody typed it and no agent sent it,
+     * so it is neither the person's bubble nor a peer's report — it is the
+     * same happening a queued wake turn announces, and the transcript draws it
+     * as the same wake row.
+     *
+     * STRUCTURAL, NOT TEXTUAL. The wake text begins `[wake: …]`, but that is
+     * for the model to read, not for a renderer to classify on: a person is
+     * free to type those characters, and a wake whose wording changes must not
+     * silently become a human bubble. Exactly one of `sender`/`wakeReason` is
+     * ever present.
+     */
+    wakeReason: WakeReason.optional(),
   }),
   z.object({ type: z.literal("assistant_message"), text: z.string() }),
   z.object({ type: z.literal("reasoning"), text: z.string() }),
