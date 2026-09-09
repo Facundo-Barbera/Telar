@@ -6710,7 +6710,7 @@ export class EngineStore {
    * `steering`, and `completeTurn`/`failTurn` refuse one that is no longer
    * `running`, so a late success cannot resurrect a stopped turn.
    */
-  stopSession(sessionId: string): { stopped: Turn[]; live?: Turn } {
+  stopSession(sessionId: string, by: "user" | "agent" = "user"): { stopped: Turn[]; live?: Turn } {
     this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
     const at = this.now();
@@ -6722,6 +6722,10 @@ export class EngineStore {
     if (!live && cancelled.length === 0) return { stopped: [] };
     for (const turn of [...(live ? [live] : []), ...cancelled]) {
       turn.state = "stopped";
+      // WHO STOPPED IT, recorded on the turn. A person's Stop and an agent's
+      // `sessions_stop` do the same thing, and the record says which happened
+      // rather than making them indistinguishable.
+      turn.stopReason = by;
       turn.completedAt = at;
       turn.updatedAt = at;
       // A steer that never arrived is cancelled where it stands rather than

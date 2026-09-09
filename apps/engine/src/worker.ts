@@ -987,7 +987,7 @@ export class EngineWorker {
         // STOP IS STOP, whoever presses it: the peer's live turn ends and what
         // was queued behind it is settled, leaving it idle. `stopTurn` would
         // let this worker claim the peer's next message a heartbeat later.
-        stop: (id) => this.options.client.stopSession(id),
+        stop: (id) => this.options.client.stopSession(id, "agent"),
         settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
         diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,

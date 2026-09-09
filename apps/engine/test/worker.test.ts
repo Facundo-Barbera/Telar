@@ -826,31 +826,25 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   expect(recovered?.held).toBeUndefined();
 });
 
-test("a paused session makes NO provider call: pending steers and incoming wakes are held, and resume runs the backlog in order", async () => {
+test("a STOP makes no further provider call: the live turn ends, the backlog is settled, and the next message runs", async () => {
   /**
-   * THE MEASURED FAILURE: a root stop was followed within a second by a new
-   * run on both paused workers (their requeued steers were claimed) and a
-   * wake on their supervisor. Pausing is a fact about the session that the
-   * claim loop, the steer sweep and the wake path all respect, so the fake
-   * provider below is called exactly once before the pause and exactly as
-   * many times as the backlog after the resume — never in between, however
-   * many heartbeats the worker takes.
+   * THE MEASURED FAILURE this began as: a stop was followed within a second by
+   * a new run, because the requeued steer was claimed on the next heartbeat.
+   * A pause fixed the symptom by holding everything until a human resumed —
+   * which the person then rejected outright. Ending the backlog fixes the
+   * cause: there is nothing left to claim, so no heartbeat can start anything,
+   * and no Resume stands between the person and their next sentence.
    */
-  // Prompts the fake provider was called with, on the PAUSED session only —
-  // the supervisor is not paused, so its wake for the stop legitimately runs
-  // on this same worker (asserted below as a real turn).
   const runs: string[] = [];
   let release: (() => void) | undefined;
   const driver: TurnDriver = {
     async run({ prompt, signal, sessionId: ranOn }) {
       if (ranOn === "session_one") runs.push(prompt);
       if (prompt === "Long task") {
-        // A long turn that only ends when it is aborted.
         await new Promise<void>((resolve) => {
           release = resolve;
-          signal.addEventListener("abort", () => resolve(), { once: true });
+          signal?.addEventListener("abort", () => resolve(), { once: true });
         });
-        return { text: "cut short" };
       }
       return { text: `done:${prompt}` };
     },
@@ -862,44 +856,42 @@ test("a paused session makes NO provider call: pending steers and incoming wakes
   await client.submitTurn(sessionId, { runId: "run_live", input: "Long task" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
-  // A steer in flight, plus two queued behind — the backlog the old stop released.
   expect((await client.submitTurn(sessionId, { runId: "run_steer", input: "steer me" })).turn.state).toBe("steering");
-  // A compaction always queues; a second message steers too — both end up
-  // requeued behind the stop, which is what the old stop then dispatched.
   await client.submitTurn(sessionId, { runId: "run_q1", input: "q1", kind: "compact" });
   expect((await client.submitTurn(sessionId, { runId: "run_q2", input: "q2" })).turn.state).toBe("steering");
 
-  const paused = await client.pauseSession(sessionId);
-  expect(paused).toMatchObject({ held: 3, already: false, stopped: { runId: "run_live" } });
-  // Several heartbeats: the cancel lands, the driver unwinds, and NOTHING new is claimed.
+  const stopped = await client.stopSession(sessionId);
+  expect(stopped.live?.runId).toBe("run_live");
+  expect(stopped.stopped.map((turn) => turn.runId).sort()).toEqual(["run_live", "run_q1", "run_q2", "run_steer"]);
+
+  // Several heartbeats: the cancel lands, the driver unwinds, and NOTHING new
+  // is claimed — because nothing claimable is left.
   for (let i = 0; i < 5; i += 1) {
     await worker.tick();
     await Bun.sleep(15);
   }
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
   expect(runs).toEqual(["Long task"]);
-  // A message the person sends while paused is held, not run — and the
-  // supervisor's wake for the stop landed as a real turn on the supervisor.
-  await client.submitTurn(sessionId, { runId: "run_typed", input: "typed while paused" });
-  for (let i = 0; i < 3; i += 1) await worker.tick();
-  expect(runs).toEqual(["Long task"]);
+  // Everything that was waiting is terminal, with its words intact.
+  const settled = (await client.session(sessionId)).turns;
+  expect(settled.filter((turn) => turn.state === "stopped").map((turn) => turn.runId).sort()).toEqual(["run_live", "run_q1", "run_q2", "run_steer"]);
+  expect(settled.find((turn) => turn.runId === "run_q2")?.input).toBe("q2");
+  expect(settled.every((turn) => turn.held === undefined)).toBe(true);
+  // The supervisor heard about the live turn ending, once.
   const supTurns = (await client.session(supervisor.id)).turns;
-  expect(supTurns.find((turn) => turn.wakeReason?.kind === "turn_stopped")).toBeDefined();
-  const held = (await client.session(sessionId)).turns.filter((turn) => turn.held?.reason === "session_paused").map((turn) => turn.runId);
-  expect(held).toEqual(["run_steer", "run_q1", "run_q2", "run_typed"]);
+  expect(supTurns.filter((turn) => turn.wakeReason?.kind === "turn_stopped")).toHaveLength(1);
 
-  // A human resumes: the backlog runs in the order it was written.
-  const resumed = await client.resumeSession(sessionId);
-  expect(resumed).toMatchObject({ released: 4, already: false });
-  for (let i = 0; i < 12 && runs.length < 5; i += 1) {
+  // AND THE NEXT MESSAGE JUST RUNS — no resume, no gesture.
+  await client.submitTurn(sessionId, { runId: "run_typed", input: "typed after the stop" });
+  for (let i = 0; i < 12 && runs.length < 2; i += 1) {
     await worker.tick();
     await Bun.sleep(20);
   }
   await eventually(async () => {
     const turns = (await client.session(sessionId)).turns;
-    expect(turns.filter((turn) => turn.state === "completed").map((turn) => turn.runId)).toEqual(["run_steer", "run_q1", "run_q2", "run_typed"]);
+    expect(turns.find((turn) => turn.runId === "run_typed")?.state).toBe("completed");
   });
-  expect(runs).toEqual(["Long task", "steer me", "q1", "q2", "typed while paused"]);
+  expect(runs).toEqual(["Long task", "typed after the stop"]);
   void release;
 });
 

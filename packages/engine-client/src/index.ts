@@ -1990,8 +1990,8 @@ export class EngineClient {
    * settle, and `session.paused` is neither set nor cleared. Distinct from
    * `stopTurn`, which ends one run and lets the next start.
    */
-  stopSession(sessionId: string): Promise<{ stopped: Turn[]; live?: Turn }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session" });
+  stopSession(sessionId: string, by: "user" | "agent" = "user"): Promise<{ stopped: Turn[]; live?: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", by });
   }
 
   /**

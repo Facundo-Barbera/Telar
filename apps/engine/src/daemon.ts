@@ -656,7 +656,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
       // same work a person's Stop ends, and leaves the session idle rather
       // than latched — see `stopSession`.
-      stop: async (sessionId) => store.stopSession(sessionId),
+      stop: async (sessionId) => store.stopSession(sessionId, "agent"),
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -3289,7 +3289,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const runId = stringValue(input.runId, "run id", true);
           // Contradictory: one names a turn, the other says every turn.
           if (scope === "session" && runId) throw new HttpError(400, "invalid_request", 'a session-scope stop names no run id');
-          writeJson(response, 200, scope === "session" ? store.stopSession(session.sessionId) : store.stopTurn(session.sessionId, runId));
+          // WHO PRESSED IT, validated like the scope. Only the record differs
+          // — a person's stop and an agent's do the same thing.
+          const by = input.by === undefined ? "user" : stringValue(input.by, "by");
+          if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
+          writeJson(response, 200, scope === "session" ? store.stopSession(session.sessionId, by) : store.stopTurn(session.sessionId, runId));
           return;
         }
         // A turn the PROVIDER started (a wake-up between turns). Worker-only,
