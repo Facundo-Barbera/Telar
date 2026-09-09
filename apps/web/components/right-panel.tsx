@@ -1653,6 +1653,11 @@ export function RightPanel({
     <aside
       ref={panelRef}
       aria-label="Right panel"
+      // The mark the row's other card reads through `:has()` to drop its
+      // outline while this one fills the window. An attribute rather than
+      // lifted state: it is presentational, and hoisting it would re-render the
+      // cockpit on a toggle that only moves one edge.
+      {...(fullscreen ? { "data-panel-fullscreen": "" } : {})}
       // ALWAYS SET, fullscreen included: leaving fullscreen transitions
       // from 100% back to this value, and a variable that appears on the
       // same frame the class changes has nothing to animate from.
