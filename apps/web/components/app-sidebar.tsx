@@ -140,13 +140,12 @@ const APP_SIDEBAR_RESIZABLE = {
  */
 function TelarSidebarHeader() {
   return (
-    // The island sits 8px in from the window edge, so the traffic-light inset
-    // is measured from the island: `inset` from the card's edge, never less
-    // than the 8px the header had before.
-    // The island starts 8px below the window edge, but the traffic lights are
-    // centred at --titlebar-height/2 from the WINDOW top (window-chrome.js).
-    // So on `md` the band is 16px shorter, which puts its centre on theirs.
-    <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center rounded-t-lg border-b border-sidebar-border/60 py-0 pr-2 pl-[max(0.5rem,var(--titlebar-inset))] md:h-[calc(var(--titlebar-height)-1rem)]">
+    // The inset is measured from the island's edge, never less than the 8px
+    // this header had before. Vertically: the lights are centred at
+    // --titlebar-height/2 from the WINDOW top (window-chrome.js), and
+    // --titlebar-band-height is what puts this band's centre back on theirs
+    // once the island has pushed it down.
+    <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center rounded-t-lg border-b border-sidebar-border/60 py-0 pr-2 pl-[max(8px,var(--titlebar-inset))] md:h-[var(--titlebar-band-height)]">
       <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
         {/* NO PLACE SWITCHER. Sessions are the product; Spool and Looms keep
@@ -1328,7 +1327,10 @@ export function AppSidebar() {
   return (
     // `floating`: the rail is an island (see app-shell.tsx). The primitive pads
     // the fixed container 8px and rounds/rings the inner card.
-    <Sidebar variant="floating" collapsible="offcanvas" resizable={APP_SIDEBAR_RESIZABLE}>
+    // The primitive's `floating` padding is `p-2` — rem, and this gutter is
+    // where the lights float, so it holds in px. Desktop only by construction:
+    // the mobile Sheet branch drops `className` and hardcodes `p-0`.
+    <Sidebar variant="floating" collapsible="offcanvas" resizable={APP_SIDEBAR_RESIZABLE} className="p-[var(--app-island-inset)]">
       <SidebarBody />
       <AppSidebarRail />
     </Sidebar>

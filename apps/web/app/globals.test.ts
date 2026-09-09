@@ -32,23 +32,39 @@ const css = fs.readFileSync(path.join(here, "globals.css"), "utf8");
  *  what the browser SEES reads this rather than `css`. */
 const code = css.replaceAll(/\/\*[\s\S]*?\*\//g, "");
 
-/** The declarations inside a top-level block whose selector is `selector`. */
+/** The declarations inside the FIRST top-level block whose selector is `selector`. */
 function block(selector: string): string {
-  const start = css.indexOf(`${selector} {`);
-  if (start === -1) return "";
-  let depth = 0;
-  for (let index = css.indexOf("{", start); index < css.length; index += 1) {
-    if (css[index] === "{") depth += 1;
-    if (css[index] === "}") {
-      depth -= 1;
-      if (depth === 0) return css.slice(start, index);
-    }
-  }
-  return "";
+  return blocks(selector)[0] ?? "";
 }
 
-const rootTokens = new Set([...block(":root").matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map((match) => match[1]));
-const darkTokens = new Set([...block(".dark").matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map((match) => match[1]));
+/**
+ * EVERY top-level block for `selector`, because `:root` is opened more than
+ * once: the palette near the top, and the titlebar contract down by the drag
+ * rules, which is deliberately grouped with the prose that explains it. A
+ * token-definition check that reads only the first block calls the second
+ * block's tokens undefined — which is how `--titlebar-height` came to look
+ * bare the moment the stylesheet started reading it itself.
+ */
+function blocks(selector: string): string[] {
+  const found: string[] = [];
+  for (let start = css.indexOf(`${selector} {`); start !== -1; start = css.indexOf(`${selector} {`, start + 1)) {
+    let depth = 0;
+    for (let index = css.indexOf("{", start); index < css.length; index += 1) {
+      if (css[index] === "{") depth += 1;
+      if (css[index] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          found.push(css.slice(start, index));
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+
+const rootTokens = new Set([...blocks(":root").join("\n").matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map((match) => match[1]));
+const darkTokens = new Set([...blocks(".dark").join("\n").matchAll(/^\s*(--[a-z0-9-]+)\s*:/gm)].map((match) => match[1]));
 const theme = block("@theme inline");
 
 describe("the design token palette", () => {

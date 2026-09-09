@@ -53,7 +53,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           // Rounded like the rail, but NO BORDER: a hairline on this edge reads
           // as a divider between the two islands. The shadow alone lifts the
           // card, the same treatment the primitive's own `inset` variant uses.
-          "md:m-2 md:h-[calc(100dvh-1rem)] md:rounded-xl md:shadow-sm",
+          // `--app-island-inset`, NOT `m-2`: the spacing scale is rem, and this
+          // gutter is measured against the traffic lights (globals.css).
+          "md:m-[var(--app-island-inset)] md:h-[calc(100dvh-var(--app-island-span))] md:rounded-xl md:shadow-sm",
           // A SCREEN MADE OF SEVERAL SURFACES draws its own cards: the cockpit
           // marks its <main data-surfaces> and this inset becomes the ground
           // between them instead of one card around them. Every other route
@@ -62,7 +64,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           // The inset itself must not clip either, or the cards' rings lose
           // their outer edge against the gutter.
           "md:has-[[data-surfaces]]:overflow-visible",
-          settings ? "md:ml-2" : "md:ml-0 md:peer-data-[state=collapsed]:ml-2",
+          settings
+            ? "md:ml-[var(--app-island-inset)]"
+            : "md:ml-0 md:peer-data-[state=collapsed]:ml-[var(--app-island-inset)]",
         )}
       >
         {children}

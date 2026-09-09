@@ -1695,7 +1695,18 @@ export function RightPanel({
     >
       {!fullscreen && <RightPanelResizeHandle panelRef={panelRef} />}
 
-      <div className={cn("flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0", fullscreen && "pl-[max(0.5rem,calc(var(--titlebar-inset)+0.5rem))]")}>
+      {/* FULLSCREEN MAKES THIS BAR THE TITLEBAR: it replaces the masthead as the
+          window's top-left, so it takes the shared band height as well as the
+          inset. `h-10` is 2.5rem — right for the split panel, but it only
+          matched the band by coincidence at a 16px interface size, and at 14px
+          it was 35px tall with its centre 2.5px above the lights'. Split and
+          mobile keep `h-10`: neither is the window's edge. */}
+      <div
+        className={cn(
+          "flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0",
+          fullscreen && "pl-[max(8px,calc(var(--titlebar-inset)+var(--app-island-inset)))] md:h-[var(--titlebar-band-height)]",
+        )}
+      >
         <div role="tablist" aria-label="Right panel tabs" className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {tabs.map((id) => {
             const on = id === tab;

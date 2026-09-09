@@ -982,11 +982,23 @@ pre span[style*="--sdm-c"] {
    of thing here.
 
    --titlebar-inset IS THE ROOM THE LIGHTS NEED, and it is the one number the
-   two processes have to agree on: x (13) + three 12px lights + two 8px gaps +
+   two processes have to agree on: x (22) + three 12px lights + two 8px gaps +
    a margin. apps/desktop/window-chrome.js derives its side of it from the same
-   56px header height. */
+   56px header height.
+
+   PX, NEVER REM, FOR EVERY NUMBER IN THIS BLOCK. The lights are placed in
+   window coordinates by the OS, and the interface font-size preference sets
+   `font-size` on <html> (lib/appearance.ts) — so a `rem` here is 13px..18px of
+   root, and drags the reserved width and the band's centreline off the lights
+   with it (#203). Everything else keeps scaling with the reader's type. */
 :root {
   --titlebar-inset: 0px;
+  /** The gutter the islands sit in (app-shell.tsx), and why the band below is
+   *  shorter than the titlebar: it starts this far down and the lights do not
+   *  move, so it has to lose the gutter at the top AND the bottom to keep its
+   *  centre on theirs. */
+  --app-island-inset: 8px;
+  --app-island-span: calc(2 * var(--app-island-inset));
   /**
    * ONE HEIGHT FOR THE WHOLE TOP BAND, and it is a contract with the shell.
    *
@@ -1002,10 +1014,13 @@ pre span[style*="--sdm-c"] {
    * side by side is worth fixing in a browser tab too — the rail's header and
    * the masthead are one row across the window, and they should read as one.
    */
-  --titlebar-height: 3.5rem;
+  --titlebar-height: 56px;
+  /** The band every island header draws on `md` and up. Named once here
+   *  because five headers each spelled the same `calc(... - 1rem)`. */
+  --titlebar-band-height: calc(var(--titlebar-height) - var(--app-island-span));
 }
 [data-telar-shell="macos"] {
-  --titlebar-inset: 4.75rem;
+  --titlebar-inset: 76px;
 }
 
 /* DRAG REGIONS ARE OPT-IN AND SHELL-ONLY. `-webkit-app-region` is inert in a
