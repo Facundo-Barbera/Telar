@@ -74,8 +74,15 @@ test("with nothing running a message is queued, and promoteTurn refuses what is 
   store.markRunning("session_one", "run_next", claimed.claim!.token);
   // A running turn is not a promotable one.
   expect(() => store.promoteTurn("session_one", "run_next")).toThrow(EngineStateError);
-  // The one that fell back to queued can be sent now that the turn runs.
-  expect(store.promoteTurn("session_one", "run_early").state).toBe("steering");
+  /**
+   * AND THE MESSAGE WRITTEN INTO THE CLAIM WINDOW NO LONGER WAITS TO BE SENT
+   * BY HAND. It was typed against a session the composer showed as live, and
+   * starting the turn steers it (#209) — this line used to promote it, which
+   * is the same delivery a beat later and only if somebody pressed the button.
+   * It is refused now for exactly the reason the running turn is: not queued.
+   */
+  expect(turnState(store, "run_early")).toBe("steering");
+  expect(() => store.promoteTurn("session_one", "run_early")).toThrow(EngineStateError);
 });
 
 test("the running turn settling FIRST puts an undelivered message back in the queue", () => {

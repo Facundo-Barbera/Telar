@@ -32,7 +32,7 @@ import {
   TurnAttachment,
   UsageSnapshot,
 } from "./common";
-import { Turn } from "./entities";
+import { Turn, WakeReason } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
 import { TaskSeed } from "./tasks";
@@ -342,6 +342,19 @@ export const WorkerStatus = z.object({
         /** Present when an AGENT sent this (`sessions_send`), so the driver
          *  can deliver it as a peer's report rather than as the person. */
         sender: z.object({ sessionId: Id.optional() }).optional(),
+        /**
+         * Present when this is a WAKE the engine queued and then promoted into
+         * the running turn — a session this one subscribed to did something.
+         *
+         * IT TRAVELS BECAUSE IDENTITY DIES AT THIS SEAM OTHERWISE. A wake that
+         * arrives while the recipient is IDLE runs as its own `origin:
+         * "session"` turn and the cockpit draws it as a wake row; the same wake
+         * arriving while the recipient is RUNNING was steered as bare text, so
+         * the provider read the engine's announcement as the person's
+         * instruction and the transcript drew it as the person's bubble. The
+         * only difference was whether a turn happened to be in flight.
+         */
+        wakeReason: WakeReason.optional(),
       }),
     )
     .default([]),

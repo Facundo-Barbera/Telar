@@ -9,7 +9,7 @@
  * and the driver must not import from `warp/`.
  */
 
-import type { TurnAttachment } from "@telar/engine-client";
+import type { TurnAttachment, WakeReason } from "@telar/engine-client";
 
 /**
  * A turn boundary the prompt generator can wait on.
@@ -75,6 +75,10 @@ export type SteerMessage = {
   /** Present when an AGENT sent it — the driver frames the words as a peer's
    *  and the transcript row says so. Absent means the person typed it. */
   sender?: { sessionId?: string };
+  /** Present when the ENGINE wrote it — a wake about a subscribed session.
+   *  Framed as the engine's own notice and drawn as a wake row, not a bubble.
+   *  Never set together with `sender`. */
+  wakeReason?: WakeReason;
 };
 
 export class SteerMailbox {

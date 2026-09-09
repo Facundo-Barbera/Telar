@@ -541,6 +541,95 @@ test("a message submitted mid-turn lands in the driver's mailbox and goes steere
   });
 });
 
+test("a WAKE steered into a running turn reaches the driver's mailbox still stamped as a wake (#194)", async () => {
+  /**
+   * THE WHOLE SEAM, over the real wire: a subscribed peer finishes while the
+   * host is RUNNING, so the engine steers the wake instead of queueing it —
+   * `submit → fireSubscriptions → steerForWorker → heartbeat → mailbox`. The
+   * stamp used to die at `steerForWorker`, and everything downstream (the
+   * provider's prompt, the transcript row) then had nothing to tell it the
+   * words were the engine's rather than the person's.
+   *
+   * Asserted on what the DRIVER holds, not on a hand-built row: the mailbox is
+   * the last point before the two drivers diverge.
+   */
+  const heardWake: Array<unknown> = [];
+  const driver: TurnDriver = {
+    async run({ prompt, steer }) {
+      if (prompt !== "Long task") return { text: "child done" };
+      await steer!.wake();
+      for (const message of steer!.drain()) heardWake.push({ text: message.text.slice(0, 16), wakeReason: message.wakeReason, sender: message.sender });
+      return { text: "host done" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  const child = await client.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
+  await client.subscribe(sessionId, { targetSessionId: child.session.id, events: ["turn_completed"] });
+
+  await client.submitTurn(sessionId, { runId: "run_host", input: "Long task" });
+  await worker.tick();
+  await eventually(async () => {
+    expect((await client.session(sessionId)).turns.find((turn) => turn.runId === "run_host")?.state).toBe("running");
+  });
+
+  // The child finishes WHILE the host runs — so its wake is steered, not queued.
+  await client.submitTurn(child.session.id, { runId: "run_child", input: "child work" });
+  await worker.tick();
+  await eventually(async () => {
+    const wake = (await client.session(sessionId)).turns.find((turn) => turn.origin === "session");
+    expect(wake?.state).toBe("steering");
+  });
+
+  // The next heartbeat carries the delivery into the mailbox.
+  await worker.tick();
+  await eventually(() => {
+    expect(heardWake).toHaveLength(1);
+  });
+  expect(heardWake[0]).toMatchObject({
+    text: "[wake: completed",
+    wakeReason: { kind: "turn_completed", sessionId: child.session.id, runId: "run_child" },
+  });
+  // A wake is nobody's message — not the person's, and not an agent's either.
+  expect((heardWake[0] as { sender?: unknown }).sender).toBeUndefined();
+});
+
+test("a wake landing on an IDLE subscriber reaches the provider framed exactly as a steered one (#194)", async () => {
+  // The other half of the pair above. Same happening, other landing site: no
+  // turn is in flight, so the wake runs as its own turn and its framing comes
+  // from `framedTurnInput` instead of the steer path. If these two ever
+  // disagree, the model's evidence for "nobody typed this" depends on timing.
+  const prompts: string[] = [];
+  const driver: TurnDriver = {
+    async run({ prompt }) {
+      prompts.push(prompt);
+      return { text: "ok" };
+    },
+  };
+  const { client, sessionId, worker } = await setup(driver);
+  const child = await client.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
+  await client.subscribe(sessionId, { targetSessionId: child.session.id, events: ["turn_completed"] });
+
+  // The host is IDLE throughout — nothing to steer into.
+  await client.submitTurn(child.session.id, { runId: "run_child", input: "child work" });
+  await worker.tick();
+  await eventually(async () => {
+    const wake = (await client.session(sessionId)).turns.find((turn) => turn.origin === "session");
+    expect(wake).toBeDefined();
+  });
+  await worker.tick();
+
+  await eventually(() => {
+    expect(prompts.some((prompt) => prompt.startsWith("[engine wake · turn_completed · session "))).toBe(true);
+  });
+  const framed = prompts.find((prompt) => prompt.startsWith("[engine wake · "))!;
+  expect(framed).toContain(child.session.id);
+  expect(framed).toContain("Nobody typed it and no agent sent it");
+  // The engine's own wake text is still all there, after the frame.
+  expect(framed).toContain("[wake: completed]");
+  // The child's own prompt was handed over bare — a person's words are not framed.
+  expect(prompts).toContain("child work");
+});
+
 test("a heartbeat WITHOUT a steer key still parses — the forward-compat default", async () => {
   // An older engine sends no steer array; the schema's .default([]) is what
   // keeps a newer worker from failing every heartbeat against it. Pinned at
