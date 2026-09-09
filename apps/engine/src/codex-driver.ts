@@ -776,7 +776,6 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                 // by its path so the agent can still open it — the same
                 // fallback the Claude seam uses for non-image files — rather
                 // than dropped, which is what the old text-only channel did.
-                const shown = queued.map((message) => message.text).join("\n\n");
                 const text = queued
                   .map((message) => {
                     const files = message.attachments ?? [];
@@ -787,18 +786,21 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                     return `${words}\n\nAttached files:\n${files.map((file) => `- ${file.name} (${file.mediaType}) at ${file.path}`).join("\n")}`;
                   })
                   .join("\n\n");
-                const attachments = queued.flatMap((message) => message.attachments ?? []);
-                const sender = queued.find((message) => message.sender)?.sender;
-                const rowId = itemIdFor(`steer-${crypto.randomUUID().slice(0, 8)}`);
-                emit({
-                  kind: "item.started",
-                  item: {
-                    id: rowId,
-                    detail: { type: "user_message", text: shown, ...(attachments.length > 0 ? { attachments } : {}), ...(sender ? { sender } : {}) },
-                    title: sender ? "Sent by an agent" : "Sent now",
-                  },
-                });
-                emit({ kind: "item.completed", itemId: rowId, status: "completed" });
+                // One row per message — each keeps its own sender and files;
+                // the provider gets the batch in order (same rule as Claude's).
+                for (const message of queued) {
+                  const rowId = itemIdFor(`steer-${crypto.randomUUID().slice(0, 8)}`);
+                  const files = message.attachments ?? [];
+                  emit({
+                    kind: "item.started",
+                    item: {
+                      id: rowId,
+                      detail: { type: "user_message", text: message.text, ...(files.length > 0 ? { attachments: files } : {}), ...(message.sender ? { sender: message.sender } : {}) },
+                      title: message.sender ? "Sent by an agent" : "Sent now",
+                    },
+                  });
+                  emit({ kind: "item.completed", itemId: rowId, status: "completed" });
+                }
                 try {
                   await client.request("turn/steer", {
                     threadId: rootThreadId,

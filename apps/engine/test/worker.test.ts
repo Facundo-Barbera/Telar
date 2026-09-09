@@ -793,3 +793,60 @@ test("a paused session makes NO provider call: pending steers and incoming wakes
   expect(runs).toEqual(["Long task", "steer me", "q1", "q2", "typed while paused"]);
   void release;
 });
+
+test("a claim already granted when the pause lands never reaches the driver: the worker sees the stop before it starts", async () => {
+  /**
+   * THE RACE THE STORE TESTS CANNOT SEE. The daemon hands out a claim; the
+   * pause lands while that response is still in flight to the worker; the
+   * worker then receives a claim for a session that is now paused. The
+   * pause STOPPED the claimed turn under the lock, so the worker's
+   * `markTurnRunning` finds it `stopped` (a conflict), and the driver is
+   * never constructed — zero provider calls, on the worker, not merely a
+   * refused store claim. Driven deterministically: `claimTurn` is wrapped so
+   * the pause happens inside the round trip.
+   */
+  const spawned: string[] = [];
+  const driver: TurnDriver = {
+    async run({ prompt }) {
+      spawned.push(prompt);
+      return { text: "must not run" };
+    },
+  };
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  workers.push(worker);
+  const realClaim = client.claimTurn.bind(client);
+  let pausedInFlight: Awaited<ReturnType<typeof client.pauseSession>> | undefined;
+  client.claimTurn = async (workerId: string) => {
+    const claimed = await realClaim(workerId);
+    // The daemon has granted the claim; the human's pause lands before the
+    // worker has seen the response.
+    if (claimed.claim && !pausedInFlight) pausedInFlight = await client.pauseSession("session_one");
+    return claimed;
+  };
+  await worker.start();
+  await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  await client.submitTurn("session_one", { runId: "run_two", input: "Then this" });
+  await worker.tick();
+  // The pause found the claimed turn and stopped it; the rest is held.
+  expect(pausedInFlight).toMatchObject({ stopped: { runId: "run_one", state: "stopped" }, held: 1 });
+  for (let i = 0; i < 4; i += 1) {
+    await worker.tick();
+    await Bun.sleep(15);
+  }
+  expect(spawned).toEqual([]);
+  const turns = (await client.session("session_one")).turns;
+  expect(turns.map((turn) => [turn.runId, turn.state, turn.held?.reason])).toEqual([
+    ["run_one", "stopped", undefined],
+    ["run_two", "queued", "session_paused"],
+  ]);
+  // Resume: only then does the driver run, and only the held one.
+  await client.resumeSession("session_one");
+  await worker.tick();
+  await eventually(async () => expect((await client.session("session_one")).turns[1]?.state).toBe("completed"));
+  expect(spawned).toEqual(["Then this"]);
+});

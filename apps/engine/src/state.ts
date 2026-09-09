@@ -6105,8 +6105,36 @@ export class EngineStore {
   pauseSession(sessionId: string, by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
     const session = this.getSession(sessionId);
     if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
-    if (session.paused) return { session: structuredClone(session), held: 0, already: true };
     const at = this.now();
+    /**
+     * NOT ONE WRITE, AND HONEST ABOUT IT. The pause touches two documents —
+     * `session.json` (the latch) and `queue.json` (the stop and the holds) —
+     * and `atomicWrite` makes each one atomic, not the pair. What "atomic"
+     * means here is: under the daemon's single state lock, no OTHER
+     * transition (a claim, a submit, a wake) interleaves with these two
+     * writes. A fault BETWEEN them is handled by ordering:
+     *
+     *   LATCH FIRST. `paused` is written before anything on the queue, so
+     *   the failure that leaves the two disagreeing leaves the session paused
+     *   with an un-swept queue — and that state is fail-closed: `claimTurn`
+     *   reads the latch, so nothing queued dispatches; `openProviderTurn`
+     *   reads it, so a wake-up between turns opens no turn; `recover()` and
+     *   `recoverInactiveWorker()` re-hold every queued turn on a paused
+     *   session at the next boot. The live turn is the one thing the latch
+     *   does not stop by itself — the worker only hears a stop through the
+     *   queue — and that is why a REPEATED pause is not a no-op: it re-runs
+     *   the sweep, so the retry a person makes on the failed request (or the
+     *   next `sessions_stop`) completes the half the fault dropped.
+     *
+     *   The other order would fail open: holds written, latch missing, and a
+     *   message arriving after the fault runs through a "paused" session.
+     */
+    const already = session.paused !== undefined;
+    if (!already) {
+      session.paused = { at, by };
+      session.updatedAt = at;
+      atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    }
     const queue = this.readQueue(sessionId);
     const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
     let stopped: Turn | undefined;
@@ -6125,10 +6153,9 @@ export class EngineStore {
       turn.updatedAt = at;
       held += 1;
     }
+    // Nothing to sweep on a repeat: the earlier pause (or its retry) did it all.
+    if (already && !stopped && held === 0) return { session: this.withActivity(structuredClone(session)), held: 0, already: true };
     this.writeQueue(sessionId, queue);
-    session.paused = { at, by };
-    session.updatedAt = at;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     if (stopped) {
       this.closeOrphanedTasks(sessionId, stopped.runId, at, "the turn was stopped before this agent reported back");
       this.closeOpenItems(sessionId, stopped.runId, at);
@@ -6137,18 +6164,26 @@ export class EngineStore {
       for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
     }
     this.appendEvent(sessionId, { type: "session.paused", by, held });
-    this.appendEvent(sessionId, { type: "session.updated", session });
+    if (!already) this.appendEvent(sessionId, { type: "session.updated", session });
     if (stopped) this.fireSubscriptions(sessionId, "turn_stopped", stopped, {});
-    return { session: this.withActivity(structuredClone(session)), ...(stopped ? { stopped: structuredClone(stopped) } : {}), held, already: false };
+    return { session: this.withActivity(structuredClone(session)), ...(stopped ? { stopped: structuredClone(stopped) } : {}), held, already };
   }
 
   /**
    * A HUMAN RESUMES. The pause comes off and every message it held is
    * released, in its original order — the worker's next heartbeat claims the
    * oldest. Messages held for OTHER reasons (a restart's) stay held; they
-   * are each still waiting on a re-read. Only a human calls this: the tool
-   * wall has no resume, by design — an agent that could un-pause a peer
-   * would be a pause nobody could rely on.
+   * are each still waiting on a re-read.
+   *
+   * WHAT "HUMAN ONLY" ACTUALLY MEANS HERE, stated exactly: the sessions tool
+   * wall has no resume, and the worker's client (`WorkerClient`) cannot call
+   * this, so no session — Claude in-process, Codex over the socket, a chat
+   * client on the outward sessions socket — can lift a pause through Telar's
+   * agent surfaces. It is NOT a security boundary: `/resume` answers to the
+   * engine's ordinary bearer, and an agent with a shell and the engine's
+   * `engine.json` could POST it, exactly as it could POST anything else on
+   * this API. Telar has no separate trusted-UI credential to gate it on, and
+   * inventing one is not this fix.
    */
   resumeSession(sessionId: string): { session: Session; released: number; already: boolean } {
     const session = this.getSession(sessionId);

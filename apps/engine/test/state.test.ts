@@ -3253,3 +3253,76 @@ describe("a paused session dispatches nothing until a human resumes it", () => {
     expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_b");
   });
 });
+
+describe("pause is latch-first, so a fault between its two writes fails closed", () => {
+  test("the latch lands before the sweep; with the sweep lost, nothing dispatches, a wake-up opens no turn, recovery re-holds, and a retry completes the stop", () => {
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_live", live.claim!.token);
+    store.submitTurn("session_one", { runId: "run_next", input: "next", kind: "compact" });
+
+    // The queue write fails; the metadata write before it succeeded.
+    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const realRename = fs.renameSync;
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === queueFile) throw new Error("disk full");
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      expect(() => store.pauseSession("session_one")).toThrow("disk full");
+    } finally {
+      spy.mockRestore();
+    }
+    // The half that landed is the latch: paused, queue untouched.
+    const session = store.getSession("session_one");
+    expect(session.paused).toMatchObject({ by: "human" });
+    const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
+    expect(turns.get("run_live")?.state).toBe("running");
+    expect(turns.get("run_next")?.held).toBeUndefined();
+    // FAIL-CLOSED from here: no claim, no provider turn, and a submit is held.
+    expect(store.claimNextTurn("worker_two")).toBeUndefined();
+    expect(() => store.openProviderTurn("session_one", { workerId: "worker_one", input: "wake", reason: { kind: "unknown" } })).toThrow(/paused/);
+    expect(store.submitTurn("session_one", { runId: "run_typed", input: "typed" }).turn.held).toMatchObject({ reason: "session_paused" });
+    // A restart does not reopen the gap: the unheld backlog is re-held and
+    // the running turn is the ordinary ambiguous case.
+    const booted = new EngineStore(stateRoot, () => 300);
+    booted.recover();
+    // Held — by the restart's own rule here, since the lost turn went
+    // ambiguous first; the pause's hold is what catches a backlog the
+    // restart would not otherwise touch. Either way: nothing dispatches.
+    expect(booted.turns("session_one").find((turn) => turn.runId === "run_next")?.held).toBeDefined();
+    expect(booted.getSession("session_one").paused).toBeDefined();
+    expect(booted.claimNextTurn("worker_two")).toBeUndefined();
+  });
+
+  test("without a restart, the person's retry completes the half the fault dropped", () => {
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_live", live.claim!.token);
+    store.submitTurn("session_one", { runId: "run_next", input: "next", kind: "compact" });
+    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const realRename = fs.renameSync;
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      if (String(to) === queueFile) throw new Error("disk full");
+      return realRename(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      expect(() => store.pauseSession("session_one")).toThrow("disk full");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(store.getSession("session_one").paused).toBeDefined();
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_live")?.state).toBe("running");
+    // The retry: `already` (the latch was there), and the sweep it re-runs
+    // stops the live turn and holds the backlog.
+    const retry = store.pauseSession("session_one");
+    expect(retry).toMatchObject({ already: true, stopped: { runId: "run_live", state: "stopped" }, held: 1 });
+    expect(store.cancellationsForWorker("worker_one").map((each) => each.runId)).toEqual(["run_live"]);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_next")?.held).toMatchObject({ reason: "session_paused" });
+    // A third pause has nothing left to do.
+    expect(store.pauseSession("session_one")).toMatchObject({ already: true, held: 0 });
+    expect(store.pauseSession("session_one").stopped).toBeUndefined();
+  });
+});
