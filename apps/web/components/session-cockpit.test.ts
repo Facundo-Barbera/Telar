@@ -277,7 +277,10 @@ describe("a wake is a wake wherever it lands — never the person's bubble (#194
     // sender branch and before the person's bubble.
     const wake = row.indexOf("if (wakeReason) return <SteeredWakeRow");
     expect(wake).toBeGreaterThan(-1);
-    expect(wake).toBeLessThan(row.indexOf("if (sender) {"));
+    expect(wake).toBeLessThan(row.indexOf("if (sender) return <AgentMessageBubble"));
+    // And the person's own words fall through to the SAME component the
+    // cockpit draws an ordinary message with — no bespoke bubble here.
+    expect(row).toContain("return <ConversationMessage");
     // And nothing in the row reads the wake's own text to decide anything.
     // Comments stripped first: the prose here NAMES `[wake: …]` precisely to
     // say it is not what the branch reads, and matching that would assert the
@@ -295,6 +298,87 @@ describe("a wake is a wake wherever it lands — never the person's bubble (#194
       [],
     );
     expect(turn!.items[0]).toMatchObject({ detail: { type: "user_message", wakeReason } });
+  });
+});
+
+describe("a message sent mid-run is a boundary, not an event inside the work", () => {
+  /**
+   * THE TWO REPORTS THIS PINS, which were the same defect seen from different
+   * angles: "each sent message should feel like a turn, not be absorbed inside
+   * the previous message's work", and a screenshot of a reply drawn ON TOP OF
+   * an earlier message.
+   *
+   * A LIVE turn already cut its timeline at `user_message` (`segmentActivity`
+   * seams on it), but a SETTLED one folded every item into one ActivityGroup —
+   * so the message vanished into "N steps" the instant the turn ended, and the
+   * fold lives inside the assistant's lane, so even opened it nested the
+   * person's words inside the assistant's bubble. Live and reload therefore
+   * disagreed about whether a message was there at all.
+   */
+  const item = (id: string, type: string) => ({ id, detail: { type } }) as never;
+
+  test("splits a turn into responses at each message, work grouped after the message that caused it", async () => {
+    const { splitAtMessageBoundaries } = await import("./transcript");
+    const responses = splitAtMessageBoundaries([
+      item("w1", "command_execution"),
+      item("a1", "assistant_message"),
+      item("m1", "user_message"),
+      item("w2", "command_execution"),
+      item("w3", "file_change"),
+      item("m2", "user_message"),
+      item("w4", "command_execution"),
+    ]);
+    expect(responses.map((r) => ({ boundary: r.boundary?.id, items: r.items.map((i) => i.id).join("") }))).toEqual([
+      { boundary: undefined, items: "w1a1" },
+      { boundary: "m1", items: "w2w3" },
+      { boundary: "m2", items: "w4" },
+    ]);
+  });
+
+  test("a turn nobody steered is ONE response and renders as it always did", async () => {
+    const { splitAtMessageBoundaries } = await import("./transcript");
+    const responses = splitAtMessageBoundaries([item("w1", "command_execution"), item("a1", "assistant_message")]);
+    expect(responses).toHaveLength(1);
+    expect(responses[0]!.boundary).toBeUndefined();
+  });
+
+  test("a turn whose FIRST item is the message has no empty opening response", async () => {
+    // A steer that lands before the provider has emitted anything would
+    // otherwise draw an empty assistant bubble above the message.
+    const { splitAtMessageBoundaries } = await import("./transcript");
+    const responses = splitAtMessageBoundaries([item("m1", "user_message"), item("w1", "command_execution")]);
+    expect(responses.map((r) => r.boundary?.id)).toEqual(["m1"]);
+    expect(responses[0]!.items.map((i) => i.id)).toEqual(["w1"]);
+  });
+
+  test("LIVE AND SETTLED CUT IN THE SAME PLACE — a reload cannot move a message", async () => {
+    /**
+     * The ordering guarantee, stated as the one thing that must be true: the
+     * sequence of boundaries and the work under each is a pure function of the
+     * item list, so it cannot depend on whether the turn is still running. The
+     * live path renders `answering.items` and the settled path renders the same
+     * split, which is what makes the two agree.
+     */
+    const { splitAtMessageBoundaries, segmentActivity } = await import("./transcript");
+    const items = [item("w1", "command_execution"), item("m1", "user_message"), item("w2", "command_execution"), item("a1", "assistant_message")];
+    const responses = splitAtMessageBoundaries(items);
+    // Settled: boundaries in order, each with its own work.
+    expect(responses.map((r) => r.boundary?.id)).toEqual([undefined, "m1"]);
+    // Live: the answering response's items still seam the same way, and carry
+    // no message row of their own — the boundary was drawn above them.
+    const answering = responses.at(-1)!;
+    expect(answering.items.some((i) => i.detail.type === "user_message")).toBe(false);
+    expect(segmentActivity(answering.items).map((s) => (s.kind === "row" ? s.item.id : s.items.map((i) => i.id).join("")))).toEqual(["w2", "a1"]);
+  });
+
+  test("no message is rendered twice: a boundary is never also in a response's items", async () => {
+    const { splitAtMessageBoundaries } = await import("./transcript");
+    const items = [item("m1", "user_message"), item("w1", "command_execution"), item("m2", "user_message")];
+    const responses = splitAtMessageBoundaries(items);
+    const drawnAsItems = responses.flatMap((r) => r.items.map((i) => i.id));
+    const drawnAsBoundaries = responses.map((r) => r.boundary?.id).filter(Boolean);
+    expect(drawnAsItems.filter((id) => drawnAsBoundaries.includes(id))).toEqual([]);
+    expect([...drawnAsBoundaries, ...drawnAsItems].sort()).toEqual(["m1", "m2", "w1"]);
   });
 });
 

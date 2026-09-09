@@ -42,7 +42,7 @@ import { Composer } from "./composer";
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -646,9 +646,21 @@ export function SessionTurn({
    */
   /** What the line under the turn says it is doing — see `turnActivity`. */
   const doing = turnActivity(turn);
-  const lastProse = turn.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
-  const activity = lastProse === -1 ? turn.items : turn.items.slice(0, lastProse);
-  const closing = lastProse === -1 ? [] : turn.items.slice(lastProse);
+  /**
+   * THE TURN'S RESPONSES. A message sent into a running turn is a boundary in
+   * the conversation, so the work after it belongs to it and is drawn under
+   * it — outside the assistant's lane, where the person's own words belong.
+   * `responses.length === 1` is every turn nobody steered, and it renders
+   * exactly as it did before. See `splitAtMessageBoundaries`.
+   */
+  const responses = splitAtMessageBoundaries(turn.items);
+  const answering = responses.at(-1)!;
+  const earlier = responses.slice(0, -1);
+  // The closing-prose split applies to the LAST response only: that is the one
+  // whose final assistant message is the answer to the turn.
+  const lastProse = answering.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
+  const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
+  const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
   /** The quiet fold's own toggle. Per turn, never persisted — looking at how
    *  one answer was made is a glance, not a mode. */
@@ -703,6 +715,24 @@ export function SessionTurn({
         <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
       )}
 
+      {/* EVERY RESPONSE BEFORE THE LAST ONE: the work the agent did, then the
+          message that interrupted it drawn as a boundary at the TOP LEVEL —
+          not inside the assistant's lane, where it would read as the reply
+          being written on top of the person's own words. */}
+      {earlier.map((response) => (
+        <Fragment key={response.boundary?.id ?? "opening"}>
+          {response.items.length > 0 && (
+            <Message from="assistant">
+              <MessageContent from="assistant">
+                <ActivityGroup items={response.items} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+              </MessageContent>
+            </Message>
+          )}
+          {response.boundary && <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />}
+        </Fragment>
+      ))}
+      {answering.boundary && <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />}
+
       <Message from="assistant">
         <MessageContent from="assistant">
           {/* A TURN THE PROVIDER STARTED — a background task's ending woke the
@@ -722,7 +752,10 @@ export function SessionTurn({
               The prose/closing split below is for a turn that has FINISHED:
               only then is "the last message" known to be the answer. */}
           {live ? (
-            <LiveActivity items={turn.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
+            // The ANSWERING response's items only — the boundaries and the work
+            // before them were drawn above, so live and settled cut the turn in
+            // the same place and a reload cannot move a message.
+            <LiveActivity items={answering.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
           ) : (
             <>
               {!folded && (

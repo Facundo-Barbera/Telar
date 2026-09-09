@@ -720,6 +720,47 @@ export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "r
 // one row that says why nothing happened for four minutes.
 const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction", "provider_wait"]);
 
+/**
+ * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES.
+ *
+ * A message sent into a running turn is a boundary in the conversation, not an
+ * event inside the work: what the agent does next is a response TO it. So a
+ * turn that took two messages renders as two responses, and the second one's
+ * work sits under the message that caused it.
+ *
+ * WHAT THIS FIXES, and it was visible two different ways. A LIVE turn already
+ * promoted the message to a row (`segmentActivity` seams on `user_message`),
+ * but a SETTLED one folded every item into a single `ActivityGroup` — so the
+ * message vanished into "N steps" the moment the turn ended, and reappeared
+ * only if you opened the fold. Reload and live therefore disagreed about
+ * whether a message existed. Worse, the fold lives inside the assistant's
+ * lane, so even unfolded the person's own words were nested inside the
+ * assistant's bubble: the reply was drawn on top of the message it answered.
+ *
+ * THE FIRST RESPONSE HAS NO BOUNDARY — its cause is the turn's own prompt,
+ * which the cockpit draws above. Every later one is introduced by the message
+ * that started it.
+ *
+ * Adapted from T3 Code's timeline (pinned 1d1bf504,
+ * `MessagesTimeline.logic.ts:503-531`): there a user message carries
+ * `turnId: null` and the visual response boundary is simply the latest user
+ * message, so a steer starts a new response for free. Telar keeps messages as
+ * items inside a turn rather than as free rows, so the same rule has to be
+ * applied here — but it is the same rule.
+ */
+export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
+
+export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnResponse[] {
+  const responses: TurnResponse[] = [{ items: [] }];
+  for (const item of items) {
+    if (item.detail.type === "user_message") responses.push({ boundary: item, items: [] });
+    else responses.at(-1)!.items.push(item);
+  }
+  // A turn whose only message is its own prompt is one response, and renders
+  // exactly as it always did.
+  return responses.length > 1 && responses[0]!.items.length === 0 ? responses.slice(1) : responses;
+}
+
 export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[] {
   const segments: ActivitySegment[] = [];
   for (const item of items) {
