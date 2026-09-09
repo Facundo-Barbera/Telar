@@ -63,6 +63,7 @@ struct Session: Codable, Identifiable, Equatable {
     var driver: String
     /// The instance that routes this session's turns — what a model change
     /// must name when `model` is still nil (a fresh session).
+    var resumeCursor: String? = nil
     var providerInstanceId: String?
     var model: ModelSelection?
     var workspace: SessionWorkspace
@@ -83,7 +84,7 @@ struct Session: Codable, Identifiable, Equatable {
     var snoozedAt: Timestamp?
 
     private enum CodingKeys: String, CodingKey {
-        case id, projectId, title, state, createdAt, updatedAt, driver, model, providerInstanceId
+        case id, projectId, title, state, createdAt, updatedAt, driver, model, providerInstanceId, resumeCursor
         case workspace, runtimeMode, detached, usage, activity, activityAt
         case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt
         case snoozedUntil, snoozedAt
@@ -91,6 +92,7 @@ struct Session: Codable, Identifiable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        resumeCursor = try c.decodeIfPresent(String.self, forKey: .resumeCursor)
         id = try c.decode(EngineID.self, forKey: .id)
         projectId = try c.decodeIfPresent(EngineID.self, forKey: .projectId)
         title = try c.decode(String.self, forKey: .title)

@@ -58,7 +58,9 @@ test("the API rejects an unregistered worker and then durably schedules a claima
   expect((await client.stopTurn(session.session.id, "run_one")).turn?.state).toBe("stopped");
 });
 
-test("the authenticated API journals explicit ambiguous-turn discard before allowing a fresh run", async () => {
+test("the authenticated API settles an interrupted run and takes a fresh one with no gesture in between", async () => {
+  // This route used to require an explicit discard before the session would
+  // take new work. There is nothing to discard now — a restart is a stop.
   const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
@@ -66,21 +68,16 @@ test("the authenticated API journals explicit ambiguous-turn discard before allo
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
   await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
-  const claim = (await client.claimTurn("worker_one")).claim!;
+  const claim = (await client.claimTurn("worker_one", 1)).claim!;
   await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
-  expect(daemon.store.recover()).toEqual({ requeued: [], ambiguous: ["uncertain_run"] });
+  expect(daemon.store.recover()).toEqual({ stopped: ["uncertain_run"] });
 
-  await expect(client.discardAmbiguousTurn("session_one", "uncertain_run")).resolves.toMatchObject({
-    turn: { runId: "uncertain_run", state: "discarded" },
-  });
   await expect(client.submitTurn("session_one", { runId: "fresh_run", input: "Hello" })).resolves.toMatchObject({
     replayed: false,
     turn: { runId: "fresh_run", state: "queued" },
   });
-  expect((await client.events("session_one")).events.at(-2)).toMatchObject({
-    type: "turn.discarded",
-    runId: "uncertain_run",
-  });
+  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  // And the vestigial verb refuses rather than pretending to settle something.
   await expect(client.discardAmbiguousTurn("session_one", "uncertain_run")).rejects.toMatchObject({
     code: "conflict",
     status: 409,
@@ -98,7 +95,7 @@ test("a read receipt crosses the API as a turn name, and refuses everything else
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
   await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claim = (await client.claimTurn("worker_one")).claim!;
+  const claim = (await client.claimTurn("worker_one", 1)).claim!;
   await client.markTurnRunning("session_one", "run_one", claim.turn.claim!.token);
 
   // Nothing to read while it runs.
@@ -128,10 +125,12 @@ test("lease expiry is pruned without another worker control request", async () =
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
   await client.submitTurn("session_one", { runId: "claim_me", input: "Hello" });
-  expect((await client.claimTurn("worker_one")).claim?.turn.state).toBe("claimed");
+  expect((await client.claimTurn("worker_one", 1)).claim?.turn.state).toBe("claimed");
   time = 10;
-  for (let attempts = 0; attempts < 20 && daemon.store.turns("session_one")[0]?.state !== "queued"; attempts += 1) await Bun.sleep(2);
-  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "queued" });
+  // The retiring registration ENDS the claim it was holding. It used to go
+  // back to `queued` and be replayed by the next worker.
+  for (let attempts = 0; attempts < 20 && daemon.store.turns("session_one")[0]?.state !== "stopped"; attempts += 1) await Bun.sleep(2);
+  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
   await expect(client.health()).resolves.toMatchObject({ worker: { registered: false } });
 });
 
@@ -159,7 +158,7 @@ test("attachments upload as raw bytes, ride the turn, and the browser answers ev
     model: { model: "claude-haiku-4-5", effort: "low" },
     attachments: [uploaded.attachment.id],
   });
-  const claim = await client.claimTurn("worker_one");
+  const claim = await client.claimTurn("worker_one", 1);
   expect(claim.claim?.turn.attachments).toEqual([uploaded.attachment]);
   // The instance came from the SESSION: the submission has no field for one.
   expect(claim.claim?.model).toEqual({
@@ -214,10 +213,10 @@ test("the provider registry answers with its probe, and never with a secret", as
   const client = new EngineClient(daemon.discovery);
 
   const seeded = await client.listProviderInstances();
-  expect(seeded.providerInstances.map((instance) => instance.id)).toEqual(["claude", "codex"]);
+  expect(seeded.providerInstances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode"]);
   // One call for both, so the page cannot paint a green dot beside an instance
   // a second call is about to report missing.
-  expect(seeded.probes.map((probe) => probe.status)).toEqual(["ready", "error"]);
+  expect(seeded.probes.map((probe) => probe.status)).toEqual(["ready", "error", "disabled"]);
 
   await client.saveProviderInstance({
     id: "claude_work",

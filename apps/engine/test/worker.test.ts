@@ -42,16 +42,53 @@ async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000)
   throw last;
 }
 
+/**
+ * A BARRIER AT THE CLAIM PUMP'S BOUNDARIES, not a sleep.
+ *
+ * Claiming runs off the tick's await chain so a hung claim cannot hold
+ * cancellations, approvals and steers behind it — which means `await tick()` no
+ * longer implies the claim has been attempted. These tests are about what
+ * happens AT the claim/provider boundary, so they wait for that boundary
+ * explicitly. Nothing about what they assert changes.
+ */
+function claimBarrier() {
+  const seen: string[] = [];
+  let passes = 0;
+  const wakers: Array<() => void> = [];
+  return {
+    seen,
+    onClaimPhase: (phase: string) => {
+      seen.push(phase);
+      if (phase !== "idle") return;
+      passes += 1;
+      for (const wake of wakers.splice(0)) wake();
+    },
+    /**
+     * Resolves after the NEXT pump pass completes. Counted rather than
+     * latched: `start()` already runs a pass with an empty queue, so a latch
+     * would be set before the pass this test cares about had begun.
+     */
+    async settled(): Promise<void> {
+      const from = passes;
+      const deadline = Date.now() + 4_000;
+      while (passes === from && Date.now() < deadline) {
+        await Promise.race([new Promise<void>((resolve) => wakers.push(resolve)), Bun.sleep(25)]);
+      }
+    },
+  };
+}
+
 async function setup(
   driver: TurnDriver,
-  extras: { browserSocket?: BrowserToolSocket } = {},
+  extras: { browserSocket?: BrowserToolSocket; workerLeaseMs?: number } = {},
 ): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  // Manual ticks need a lease covering the test; expiry is tested separately.
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: extras.workerLeaseMs ?? 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   const session = await client.createSession({ id: "session_one", projectId: project.project.id });
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, ...extras, pollMs: 60_000 });
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, ...(extras.browserSocket ? { browserSocket: extras.browserSocket } : {}), pollMs: 60_000 });
   workers.push(worker);
   await worker.start();
   return { client, sessionId: session.session.id, worker };
@@ -115,6 +152,8 @@ test("a whitespace-only provider delta is a valid stream observation, not an inv
 
 test("stop reaches the active fake driver and remains the durable terminal state", async () => {
   let sawAbort = false;
+  let ready!: () => void;
+  const providerReady = new Promise<void>(resolve => { ready = resolve; });
   const driver: TurnDriver = {
     async run({ onObservations, signal }) {
       await onObservations([
@@ -129,6 +168,7 @@ test("stop reaches the active fake driver and remains the durable terminal state
           },
           { once: true },
         );
+        ready();
       });
       return { text: "unreachable" };
     },
@@ -137,6 +177,7 @@ test("stop reaches the active fake driver and remains the durable terminal state
   await client.submitTurn(sessionId, { runId: "run_one", input: "Stop me" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
+  await providerReady;
   await client.stopTurn(sessionId, "run_one");
   await worker.tick();
   await eventually(() => expect(sawAbort).toBe(true));
@@ -166,7 +207,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
       return { text: label };
     },
   });
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -193,7 +234,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
 });
 
 test("a session whose provider this worker cannot serve fails the turn instead of hanging", async () => {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -226,7 +267,7 @@ test("engine connectivity loss aborts active provider execution — once it outl
    * aborted every active turn, replaced the worker, and killed every session's
    * background work — against a daemon whose PID never changed.
    *
-   * The engine's own lease is now the budget (`setup` runs a 1s one, so the
+   * The engine's own lease is now the budget (this test requests a 1s one, so the
    * worker learns a ~1s tolerance from `heartbeatIntervalMs`), and a REAL loss
    * — this daemon is genuinely closed — is still detected and still aborts,
    * just at the boundary the engine itself defines rather than instantly.
@@ -241,7 +282,7 @@ test("engine connectivity loss aborts active provider execution — once it outl
       return { text: "unreachable" };
     },
   };
-  const { client, sessionId, worker } = await setup(driver);
+  const { client, sessionId, worker } = await setup(driver, { workerLeaseMs: 1_000 });
   await client.submitTurn(sessionId, { runId: "run_one", input: "Hello" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
@@ -299,7 +340,7 @@ test("turns from DIFFERENT sessions run concurrently up to the cap; one session 
       return { text: `done ${prompt}` };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -649,7 +690,7 @@ test("a project folder that no longer exists fails the turn with the folder name
   // Through the worker: the driver is never invoked; the turn fails with the sentence.
   let invoked = 0;
   const driver: TurnDriver = { run: async () => { invoked += 1; return { text: "" }; } };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const stale = fs.mkdtempSync(path.join(os.tmpdir(), "telar-stale-"));
@@ -743,7 +784,7 @@ test("a turn the PROVIDER opened does not hold an execution slot shut", async ()
     },
   };
 
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -792,16 +833,17 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
       return { text: "should never run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   await client.createSession({ id: "session_one", projectId: "project_one" });
 
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  const barrier = claimBarrier();
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000, onClaimPhase: barrier.onClaimPhase });
   const realClaim = client.claimTurn.bind(client);
-  client.claimTurn = async (workerId: string) => {
-    const claimed = await realClaim(workerId);
+  client.claimTurn = async (workerId: string, claimSeq: number, signal?: AbortSignal) => {
+    const claimed = await realClaim(workerId, claimSeq, signal);
     // The quit lands here — after the engine has handed out the claim, before
     // this worker has done anything with it.
     if (claimed.claim) await worker.stop();
@@ -810,6 +852,11 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   await worker.start();
   await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   await worker.tick();
+  await barrier.settled();
+  // The pump saw the grant and then STOPPED: it never reached the boundary
+  // where a driver is constructed. That is the guarantee, stated directly.
+  expect(barrier.seen).toContain("granted");
+  expect(barrier.seen).not.toContain("starting");
 
   // No provider was spawned, and the turn is left exactly where the engine put
   // it: `claimed`. That is the safe state — `markTurnRunning` is ordered before
@@ -819,38 +866,42 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   const turns = (await client.session("session_one")).turns;
   expect(turns[0]?.state).toBe("claimed");
 
-  // And recovery does exactly that: back to `queued`, unheld, ready to run.
+  // Boot terminalizes the abandoned claim without replaying its message.
   daemon.store.recover();
   const recovered = (await client.session("session_one")).turns[0];
-  expect(recovered?.state).toBe("queued");
+  expect(recovered?.state).toBe("stopped");
   expect(recovered?.held).toBeUndefined();
 });
 
-test("a paused session makes NO provider call: pending steers and incoming wakes are held, and resume runs the backlog in order", async () => {
+test("a STOP makes no further provider call: the live turn ends, the backlog is settled, and the next message runs", async () => {
   /**
-   * THE MEASURED FAILURE: a root stop was followed within a second by a new
-   * run on both paused workers (their requeued steers were claimed) and a
-   * wake on their supervisor. Pausing is a fact about the session that the
-   * claim loop, the steer sweep and the wake path all respect, so the fake
-   * provider below is called exactly once before the pause and exactly as
-   * many times as the backlog after the resume — never in between, however
-   * many heartbeats the worker takes.
+   * THE MEASURED FAILURE this began as: a stop was followed within a second by
+   * a new run, because the requeued steer was claimed on the next heartbeat.
+   * A pause fixed the symptom by holding everything until a human resumed —
+   * which the person then rejected outright. Ending the backlog fixes the
+   * cause: there is nothing left to claim, so no heartbeat can start anything,
+   * and no Resume stands between the person and their next sentence.
    */
-  // Prompts the fake provider was called with, on the PAUSED session only —
-  // the supervisor is not paused, so its wake for the stop legitimately runs
-  // on this same worker (asserted below as a real turn).
   const runs: string[] = [];
+  const killedTasks: string[] = [];
+  let killAttempts = 0;
   let release: (() => void) | undefined;
   const driver: TurnDriver = {
-    async run({ prompt, signal, sessionId: ranOn }) {
+    async stopTask(sessionId, providerTaskId) {
+      if (++killAttempts === 1) throw new Error("temporary provider control failure");
+      killedTasks.push(`${sessionId}:${providerTaskId}`);
+      return true;
+    },
+    async run({ prompt, signal, sessionId: ranOn, onObservations }) {
       if (ranOn === "session_one") runs.push(prompt);
       if (prompt === "Long task") {
-        // A long turn that only ends when it is aborted.
+        await onObservations([{ kind: "task.started", task: {
+          id: "task_bg", kind: "background", state: "running", title: "Watch", providerTaskId: "provider_bg",
+        } }]);
         await new Promise<void>((resolve) => {
           release = resolve;
-          signal.addEventListener("abort", () => resolve(), { once: true });
+          signal?.addEventListener("abort", () => resolve(), { once: true });
         });
-        return { text: "cut short" };
       }
       return { text: `done:${prompt}` };
     },
@@ -862,48 +913,50 @@ test("a paused session makes NO provider call: pending steers and incoming wakes
   await client.submitTurn(sessionId, { runId: "run_live", input: "Long task" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
-  // A steer in flight, plus two queued behind — the backlog the old stop released.
   expect((await client.submitTurn(sessionId, { runId: "run_steer", input: "steer me" })).turn.state).toBe("steering");
-  // A compaction always queues; a second message steers too — both end up
-  // requeued behind the stop, which is what the old stop then dispatched.
   await client.submitTurn(sessionId, { runId: "run_q1", input: "q1", kind: "compact" });
   expect((await client.submitTurn(sessionId, { runId: "run_q2", input: "q2" })).turn.state).toBe("steering");
 
-  const paused = await client.pauseSession(sessionId);
-  expect(paused).toMatchObject({ held: 3, already: false, stopped: { runId: "run_live" } });
-  // Several heartbeats: the cancel lands, the driver unwinds, and NOTHING new is claimed.
+  await eventually(() => expect(release).toBeDefined());
+  const stopped = await client.stopSession(sessionId);
+  expect(stopped.live?.runId).toBe("run_live");
+  expect(stopped.stopped.map((turn) => turn.runId).sort()).toEqual(["run_live", "run_q1", "run_q2", "run_steer"]);
+
+  // Several heartbeats: the cancel lands, the driver unwinds, and NOTHING new
+  // is claimed — because nothing claimable is left.
   for (let i = 0; i < 5; i += 1) {
     await worker.tick();
     await Bun.sleep(15);
   }
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
   expect(runs).toEqual(["Long task"]);
-  // A message the person sends while paused is held, not run — and the
-  // supervisor's wake for the stop landed as a real turn on the supervisor.
-  await client.submitTurn(sessionId, { runId: "run_typed", input: "typed while paused" });
-  for (let i = 0; i < 3; i += 1) await worker.tick();
-  expect(runs).toEqual(["Long task"]);
+  expect(killAttempts).toBe(2);
+  expect(killedTasks).toEqual([`${sessionId}:provider_bg`]);
+  expect((await client.session(sessionId)).tasks.find((task) => task.id === "task_bg")?.state).toBe("stopped");
+  // Everything that was waiting is terminal, with its words intact.
+  const settled = (await client.session(sessionId)).turns;
+  expect(settled.filter((turn) => turn.state === "stopped").map((turn) => turn.runId).sort()).toEqual(["run_live", "run_q1", "run_q2", "run_steer"]);
+  expect(settled.find((turn) => turn.runId === "run_q2")?.input).toBe("q2");
+  expect(settled.every((turn) => turn.held === undefined)).toBe(true);
+  // The supervisor heard about the live turn ending, once.
   const supTurns = (await client.session(supervisor.id)).turns;
-  expect(supTurns.find((turn) => turn.wakeReason?.kind === "turn_stopped")).toBeDefined();
-  const held = (await client.session(sessionId)).turns.filter((turn) => turn.held?.reason === "session_paused").map((turn) => turn.runId);
-  expect(held).toEqual(["run_steer", "run_q1", "run_q2", "run_typed"]);
+  expect(supTurns.filter((turn) => turn.wakeReason?.kind === "turn_stopped")).toHaveLength(1);
 
-  // A human resumes: the backlog runs in the order it was written.
-  const resumed = await client.resumeSession(sessionId);
-  expect(resumed).toMatchObject({ released: 4, already: false });
-  for (let i = 0; i < 12 && runs.length < 5; i += 1) {
+  // AND THE NEXT MESSAGE JUST RUNS — no resume, no gesture.
+  await client.submitTurn(sessionId, { runId: "run_typed", input: "typed after the stop" });
+  for (let i = 0; i < 12 && runs.length < 2; i += 1) {
     await worker.tick();
     await Bun.sleep(20);
   }
   await eventually(async () => {
     const turns = (await client.session(sessionId)).turns;
-    expect(turns.filter((turn) => turn.state === "completed").map((turn) => turn.runId)).toEqual(["run_steer", "run_q1", "run_q2", "run_typed"]);
+    expect(turns.find((turn) => turn.runId === "run_typed")?.state).toBe("completed");
   });
-  expect(runs).toEqual(["Long task", "steer me", "q1", "q2", "typed while paused"]);
+  expect(runs).toEqual(["Long task", "typed after the stop"]);
   void release;
 });
 
-test("a claim already granted when the pause lands never reaches the driver: the worker sees the stop before it starts", async () => {
+test("a claim already granted when Stop lands never reaches the driver; a new message continues", async () => {
   /**
    * THE RACE THE STORE TESTS CANNOT SEE. The daemon hands out a claim; the
    * pause lands while that response is still in flight to the worker; the
@@ -921,17 +974,18 @@ test("a claim already granted when the pause lands never reaches the driver: the
       return { text: "must not run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   await client.createSession({ id: "session_one", projectId: "project_one" });
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  const barrier = claimBarrier();
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000, onClaimPhase: barrier.onClaimPhase });
   workers.push(worker);
   const realClaim = client.claimTurn.bind(client);
   let pausedInFlight: Awaited<ReturnType<typeof client.pauseSession>> | undefined;
-  client.claimTurn = async (workerId: string) => {
-    const claimed = await realClaim(workerId);
+  client.claimTurn = async (workerId: string, claimSeq: number, signal?: AbortSignal) => {
+    const claimed = await realClaim(workerId, claimSeq, signal);
     // The daemon has granted the claim; the human's pause lands before the
     // worker has seen the response.
     if (claimed.claim && !pausedInFlight) pausedInFlight = await client.pauseSession("session_one");
@@ -941,8 +995,9 @@ test("a claim already granted when the pause lands never reaches the driver: the
   await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   await client.submitTurn("session_one", { runId: "run_two", input: "Then this" });
   await worker.tick();
-  // The pause found the claimed turn and stopped it; the rest is held.
-  expect(pausedInFlight).toMatchObject({ stopped: { runId: "run_one", state: "stopped" }, held: 1 });
+  await barrier.settled();
+  // The compatibility pause endpoint stops both the claim and the backlog.
+  expect(pausedInFlight).toMatchObject({ stopped: { runId: "run_one", state: "stopped" }, held: 0 });
   for (let i = 0; i < 4; i += 1) {
     await worker.tick();
     await Bun.sleep(15);
@@ -951,11 +1006,12 @@ test("a claim already granted when the pause lands never reaches the driver: the
   const turns = (await client.session("session_one")).turns;
   expect(turns.map((turn) => [turn.runId, turn.state, turn.held?.reason])).toEqual([
     ["run_one", "stopped", undefined],
-    ["run_two", "queued", "session_paused"],
+    ["run_two", "stopped", undefined],
   ]);
-  // Resume: only then does the driver run, and only the held one.
-  await client.resumeSession("session_one");
+  // No Resume and no replay: only a fresh user message runs.
+  expect((await client.session("session_one")).session.paused).toBeUndefined();
+  await client.submitTurn("session_one", { runId: "run_three", input: "Continue" });
   await worker.tick();
-  await eventually(async () => expect((await client.session("session_one")).turns[1]?.state).toBe("completed"));
-  expect(spawned).toEqual(["Then this"]);
+  await eventually(async () => expect((await client.session("session_one")).turns[2]?.state).toBe("completed"));
+  expect(spawned).toEqual(["Continue"]);
 });

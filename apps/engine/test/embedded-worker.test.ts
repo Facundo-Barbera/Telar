@@ -5,7 +5,7 @@
  * on its own": start it, submit a turn, and the turn executes — with no second
  * process and no client attached.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -80,9 +80,7 @@ test("without an embedded worker a lone daemon still refuses turns, and says why
   expect(daemon.worker).toBeUndefined();
 });
 
-test("an embedded worker registers through discovery, like every other client", async () => {
-  // Not through a private in-process shortcut: one code path for
-  // claim/heartbeat/observe rather than two that can diverge.
+test("an embedded worker registration is visible through discovery", async () => {
   const daemon = await startEngine({
     engineRoot: root(),
     workerLeaseMs: 2_000,
@@ -266,7 +264,7 @@ test("quitting mid-turn records the interruption, and the next boot offers an or
   const recovered = await client2.session("session_one");
 
   // Honest about what happened, and terminal — NOT ambiguous.
-  expect(recovered.turns[0]).toMatchObject({ runId: "run_one", state: "failed", failure: { code: "interrupted" } });
+  expect(recovered.turns[0]).toMatchObject({ runId: "run_one", state: "stopped" });
   // Everything it streamed is kept; the open tool row is closed as failed.
   expect(recovered.items.map((item) => [item.id, item.status])).toEqual([
     ["msg_1", "completed"],
@@ -279,4 +277,84 @@ test("quitting mid-turn records the interruption, and the next boot offers an or
   // replay of the original prompt.
   const next = await client2.submitTurn("session_one", { runId: "run_two", input: "Just tell me what you found." });
   expect(next.turn.state).toBe("queued");
+});
+
+test("a real event-loop stall preserves the embedded generation and streamed snapshot", async () => {
+  let finish!: () => void;
+  let aborted = false;
+  let runs = 0;
+  const daemon = await startEngine({
+    engineRoot: root(),
+    workerLeaseMs: 150,
+    embeddedWorker: { pollMs: 10, createDriver: () => ({
+      run: async ({ onObservations, signal }) => {
+        runs += 1;
+        signal.addEventListener("abort", () => { aborted = true; finish?.(); }, { once: true });
+        await onObservations?.([
+          { kind: "item.started", item: { id: "partial", detail: { type: "assistant_message", text: "" } } },
+          { kind: "content.delta", itemId: "partial", stream: "assistant_text", text: "Preserve this prefix" },
+        ]);
+        await new Promise<void>((resolve) => { finish = resolve; });
+        return { text: "Preserve this prefix" };
+      },
+    }) },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  await eventually(async () => expect((await client.session("session_one")).items.find(i => i.id === "partial")?.streamed).toBe("Preserve this prefix"));
+  const generation = daemon.worker!.workerId;
+  // Suspend BOTH timer loops, not just the daemon's injected clock.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  expect(daemon.worker!.workerId).toBe(generation);
+  expect(aborted).toBe(false);
+  expect(runs).toBe(1);
+  daemon.store.forgetOpenPrefixesForTest();
+  const remounted = await client.session("session_one");
+  expect(remounted.turns[0]?.state).toBe("running");
+  expect(remounted.items.find(i => i.id === "partial")?.streamed).toBe("Preserve this prefix");
+  finish();
+  await eventually(async () => expect((await client.session("session_one")).turns[0]?.state).toBe("completed"));
+});
+
+
+test("embedded execution does not depend on the HTTP lifecycle transport", async () => {
+  const methods = ["registerWorker", "workerHeartbeat", "claimTurn", "markTurnRunning", "reportObservations", "completeTurn"] as const;
+  const spies = methods.map((method) => spyOn(EngineClient.prototype, method).mockImplementation(() => {
+    throw new Error("HTTP lifecycle transport must not run for embedded execution");
+  }));
+  try {
+    const daemon = await startEngine({ engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+      pollMs: 10,
+      createDriver: () => ({ run: async ({ onObservations }) => {
+        await onObservations([{ kind: "item.started", item: { id: "i_direct", detail: { type: "assistant_message", text: "" } } }]);
+        return { text: "direct" };
+      } }),
+    } });
+    daemons.push(daemon);
+    daemon.store.registerProject({ id: "project_direct", name: "Direct", root: "/tmp" });
+    daemon.store.createSession({ id: "session_direct", projectId: "project_direct" });
+    daemon.store.submitTurn("session_direct", { runId: "run_direct", input: "go" });
+    await eventually(() => expect(daemon.store.turns("session_direct")[0]).toMatchObject({ state: "completed", resultText: "direct" }));
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
+});
+
+test("shutdown disposes the selected OpenCode adapter and its session-lived runtime", async () => {
+  let disposed = 0;
+  const daemon = await startEngine({ engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+    pollMs: 10, createDriver: () => (kind) => kind === "opencode" ? { run: async () => ({ text: "fixture" }), dispose: () => { disposed++; } } : undefined,
+  } });
+  daemon.store.registerProject({ id: "project_dispose", name: "Dispose", root: "/tmp" });
+  daemon.store.saveProviderInstance({ id: "opencode", driver: "opencode", enabled: true });
+  daemon.store.createSession({ id: "session_dispose", projectId: "project_dispose", driver: "opencode" });
+  daemon.store.submitTurn("session_dispose", { runId: "run_dispose", input: "go" });
+  try { await eventually(() => expect(daemon.store.turns("session_dispose")[0]?.state).toBe("completed")); }
+  finally { await daemon.close(); }
+  expect(disposed).toBe(1);
 });

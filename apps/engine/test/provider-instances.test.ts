@@ -26,12 +26,12 @@ afterEach(() => {
 
 const store = (): EngineStore => new EngineStore(root(), () => 100);
 
-test("a fresh install already has the two built-in slots", () => {
+test("a fresh install already has built-in slots with OpenCode disabled", () => {
   const instances = store().listProviderInstances();
   // Their ids ARE the driver kinds, which is what makes an instance id usable
   // as a URL path segment and as a settings anchor.
-  expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex"]);
-  expect(instances.every((instance) => instance.enabled)).toBe(true);
+  expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex", "opencode"]);
+  expect(instances.filter((instance) => instance.enabled).map((instance) => instance.id)).toEqual(["claude", "codex"]);
   // No config dir on the base login, and for Claude that is load-bearing:
   // setting CLAUDE_CONFIG_DIR even to ~/.claude reaches a different, empty
   // Keychain entry.

@@ -39,8 +39,8 @@ export type UsageFold = {
   sessions: number;
 };
 
-export const DRIVERS: ProviderDriverKind[] = ["claude", "codex"];
-export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex" };
+export const DRIVERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
+export const DRIVER_LABEL: Record<ProviderDriverKind, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
 const zeroTokens = (): TokenUsage => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
 const zeroTotals = (): UsageTotals => ({ tokens: zeroTokens(), processed: 0, costUsd: 0, priced: true, turns: 0 });

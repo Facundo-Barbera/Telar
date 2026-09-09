@@ -69,6 +69,28 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(result.turn.runId == "run_abc")
     }
 
+    @Test func withdrawingOneMessageDoesNotStopTheSession() async throws {
+        StubURLProtocol.handler = { request in
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            #expect(body?["runId"] as? String == "run_one")
+            #expect(body?["scope"] == nil)
+            return (200, Data(#"{"stopped":true}"#.utf8))
+        }
+        try await stubAPI().stopTurn("s", runId: "run_one")
+    }
+
+    @Test func stopTargetsTheSessionIncludingPendingWork() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path() == "/api/sessions/s/stop")
+            #expect(request.httpMethod == "POST")
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            #expect(body?["scope"] as? String == "session")
+            #expect(body?["runId"] == nil)
+            return (200, Data(#"{"stopped":[]}"#.utf8))
+        }
+        try await stubAPI().stopSession("s")
+    }
+
     @Test func engineErrorBodyBecomesTypedError() async {
         StubURLProtocol.handler = { _ in
             (503, Data(#"{"error":{"code":"engine_unavailable","message":"down"}}"#.utf8))

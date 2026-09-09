@@ -312,6 +312,7 @@ export async function runStructuredForPolicy(
   let instance: ReturnType<StructuredPolicyStore["resolveProviderInstance"]>;
   try {
     policy = store.getTextGenPolicy();
+    if (policy.driver === "opencode") return undefined;
     instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
   } catch {
     return undefined;
@@ -365,7 +366,7 @@ export async function maybeRetitleSession(
   generate: typeof generateSessionTitle = generateSessionTitle,
 ): Promise<void> {
   const policy = store.getTextGenPolicy();
-  if (!policy.titles) return;
+  if (!policy.titles || policy.driver === "opencode") return;
   let session: ReturnType<RetitleStore["getSession"]>;
   try {
     session = store.getSession(sessionId);

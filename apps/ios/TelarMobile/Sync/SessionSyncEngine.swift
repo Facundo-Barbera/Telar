@@ -141,6 +141,7 @@ enum SyncConnectionState: Equatable {
             // hydrate's — a queue event on a long session must not refetch
             // the whole history the window existed to avoid.
             let tail = try await tailSession(api, sessionId, after: cursor, window: SnapshotWindow(turns: initialTurns))
+            try Task.checkCancellation()
             if let fresh = tail.snapshot {
                 // A UNION, NOT A REPLACEMENT. The snapshot only carries the
                 // newest window, so a reader who paged older turns in would
@@ -162,9 +163,10 @@ enum SyncConnectionState: Equatable {
             }
             if !tail.events.isEmpty || tail.snapshot != nil {
                 events = appendJournalEvents(events, tail.events)
+                if let reflected = tail.snapshot?.cursor { events.removeAll { $0.id <= reflected } }
                 refold()
             }
-            cursor = tail.cursor
+            cursor = max(tail.cursor, tail.snapshot?.cursor ?? 0)
             connection = .live
             recordedAt = nil
             backoff = .seconds(1)

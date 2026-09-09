@@ -86,7 +86,7 @@ describe("engine route adapters", () => {
     expect(body.projects.map((p: { id: string }) => p.id).sort()).toEqual(["project_one", "project_two"]);
   });
 
-  test("proxies an explicit discard decision to the authenticated engine without submitting a replay", async () => {
+  test("keeps the legacy discard endpoint harmless after boot stops interrupted work", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-web-route-"));
     roots.push(home);
     process.env.TELAR_HOME = home;
@@ -101,15 +101,16 @@ describe("engine route adapters", () => {
     await client.createSession({ id: "session_one", projectId: "project_one" });
     await client.registerWorker("worker_one");
     await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
-    const claim = (await client.claimTurn("worker_one")).claim!;
+    const claim = (await client.claimTurn("worker_one", 1)).claim!;
     await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
     daemon.store.recover();
 
     const response = await discardPost(new Request("http://telar.local/api/sessions/session_one/turns/uncertain_run/discard", { method: "POST" }), {
       params: Promise.resolve({ sessionId: "session_one", runId: "uncertain_run" }),
     });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ turn: { runId: "uncertain_run", state: "discarded" } });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("conflict");
+    expect((await client.session("session_one")).turns[0]?.state).toBe("stopped");
     await expect(client.submitTurn("session_one", { runId: "fresh_run", input: "Hello" })).resolves.toMatchObject({
       replayed: false,
       turn: { runId: "fresh_run", state: "queued" },

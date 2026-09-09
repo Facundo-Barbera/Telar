@@ -188,3 +188,19 @@ func makeEvent(_ json: String) -> EngineEvent {
         #expect(streamed)
     }
 }
+
+@Suite struct StreamingPrefixTests {
+    @Test func remountedPrefixSkipsOverlapAndKeepsTheNextDelta() throws {
+        let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: fixture("engine-revision"))
+        let item = snapshot.items[0]
+        let through = item.streamedThrough!
+        let overlap = makeEvent("""
+        {"id":\(through),"at":1000,"sessionId":"session_fixture","runId":"run_fixture","type":"content.delta","itemId":"item_fixture","stream":"assistant_text","text":"lo"}
+        """)
+        let next = makeEvent("""
+        {"id":\(snapshot.cursor! + 1),"at":1001,"sessionId":"session_fixture","runId":"run_fixture","type":"content.delta","itemId":"item_fixture","stream":"assistant_text","text":" world"}
+        """)
+        let result = projectJournal(turns: snapshot.turns, items: snapshot.items, events: [overlap, next])
+        #expect(result[0].items[0].text == "Hello world")
+    }
+}

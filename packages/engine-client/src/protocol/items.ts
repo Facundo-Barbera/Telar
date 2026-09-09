@@ -297,6 +297,36 @@ export const Item = z.object({
   detail: ItemDetail,
   startedAt: Timestamp,
   completedAt: Timestamp.optional(),
+  /**
+   * Text streamed into this item SO FAR, present only while it is open.
+   *
+   * `detail` is not filled in until an item closes — folding every token into
+   * the projection would rewrite the whole document per token — so a client
+   * opening on a snapshot mid-reply had no way to learn the prefix it had
+   * missed. The snapshot's `cursor` is stamped past those deltas, so tailing
+   * from it skips them, and the reader saw only what arrived after they looked
+   * away (#214).
+   *
+   * ALWAYS PAIRED WITH `streamedThrough`, which says where the prefix ENDS.
+   * A prefix whose end a client has to infer — from the snapshot's cursor, from
+   * a same-tick read, from anything — is a prefix that silently loses or
+   * duplicates text the moment that inference is off by one event. Carrying the
+   * watermark makes the field self-describing: a client appends exactly the
+   * deltas above it, and can hold a snapshot and a tail from different reads
+   * without having to prove they were taken together.
+   */
+  streamed: z.string().optional(),
+  /**
+   * The journal event id `streamed` runs through. Deltas at or below this are
+   * already IN the prefix; deltas above it append to it.
+   *
+   * REBUILDABLE FROM THE JOURNAL, never only from memory. The engine keeps a
+   * per-item accumulator as a CACHE — a restart empties it, and a reader coming
+   * back to a stopped-but-unclosed item would otherwise find their partial
+   * reply gone. The deltas are durable, so the answer is to re-read them, which
+   * is rebuilding a display and not replaying any work.
+   */
+  streamedThrough: z.number().int().nonnegative().optional(),
   /** Set when this item was produced inside a sub-agent rather than by the
    *  main loop, so a client can file it under that agent instead of the
    *  parent timeline. */

@@ -69,8 +69,14 @@ export type EnvironmentId = z.infer<typeof EnvironmentId>;
 
 /** WHAT runs a session: the agent CLI/SDK behind it. Mirrors core's
  *  `ProviderId` vocabulary so the two never disagree about the word "claude". */
-export const ProviderDriverKind = z.enum(["claude", "codex"]);
+export const ProviderDriverKind = z.enum(["claude", "codex", "opencode"]);
 export type ProviderDriverKind = z.infer<typeof ProviderDriverKind>;
+
+export const PROVIDER_CAPABILITIES: Record<ProviderDriverKind, { liveSteering: boolean; compaction: boolean; backgroundTaskStop: boolean }> = {
+  claude: { liveSteering: true, compaction: true, backgroundTaskStop: true },
+  codex: { liveSteering: true, compaction: true, backgroundTaskStop: false },
+  opencode: { liveSteering: false, compaction: false, backgroundTaskStop: false },
+};
 
 /**
  * WHICH configured provider runs it — an account, its credentials, and its

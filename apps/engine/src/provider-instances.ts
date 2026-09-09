@@ -45,6 +45,7 @@ const VERSION_CACHE_MS = 60_000;
 /** The file whose PRESENCE means this provider has been logged in inside a
  *  config folder. Never opened. */
 const LOGIN_ARTIFACT: Record<ProviderDriverKind, string> = {
+  opencode: "auth.json",
   claude: ".credentials.json",
   codex: "auth.json",
 };
@@ -53,6 +54,7 @@ const LOGIN_ARTIFACT: Record<ProviderDriverKind, string> = {
  *  directory. Claude: creds in the macOS Keychain, keyed per directory. Codex:
  *  creds in `auth.json` inside it — file-based, and therefore portable. */
 const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
+  opencode: "OPENCODE_CONFIG_DIR",
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME",
 };
@@ -87,6 +89,7 @@ export function expandHome(target: string): string {
  * stops.
  */
 const OWNED_ENV: Record<ProviderDriverKind, readonly string[]> = {
+  opencode: ["OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT"],
   claude: [
     "CLAUDE_CONFIG_DIR",
     "ANTHROPIC_BASE_URL",
@@ -187,6 +190,7 @@ async function probeVersion(driver: ProviderDriverKind, binaryPath?: string, for
  * entry). So the honest answer is `unknown`, not a green tick.
  */
 export function signInOf(instance: Pick<ProviderInstance, "driver" | "configDir">): { signIn: ProviderSignIn; message?: string } {
+  if (instance.driver === "opencode") return { signIn: "unknown", message: "OpenCode authentication uses the CLI login. A config directory does not isolate credentials." };
   if (!instance.configDir) {
     return { signIn: "unknown", message: "Base login — sign-in state cannot be verified from disk." };
   }

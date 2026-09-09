@@ -347,7 +347,7 @@ export async function computerUseStatus(probe: ComputerUseProbe = {}, timeoutMs 
 export function withComputerUse(
   servers: readonly McpServer[],
   allServers: readonly McpServer[],
-  driver: "claude" | "codex",
+  driver: "claude" | "codex" | "opencode",
   resolved: ResolvedComputerUse | undefined,
 ): McpServer[] {
   if (!resolved) return [...servers];

@@ -2,6 +2,7 @@
 // It intentionally has no provider imports: Phase 1 proves ownership and crash
 // semantics before a driver is allowed to execute an agent turn.
 import crypto from "node:crypto";
+import { createExecutionPort, withDirectExecution } from "./execution-port";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -9,6 +10,7 @@ import path from "node:path";
 import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
+  EngineClientError,
   DataScienceBootstrap,
   DataScienceCreateEnvironment,
   LatexBootstrap,
@@ -31,6 +33,7 @@ import {
   type ProviderDriverKind,
   type RuntimeMode,
   type TurnSubmissionResult,
+  type WorkerClaim,
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
@@ -71,16 +74,46 @@ import type { GhRunner } from "./github";
 import type { AsyncGitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
-type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
+/**
+ * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
+ *
+ * A claim whose response is lost must be repeatable without allocating a second
+ * turn, and a random request id cannot do that safely: A is delayed, its retry
+ * resolves, B replaces the record, and the original A finally arrives with an
+ * id nobody remembers — so it allocates again. An ordered sequence has no such
+ * window. Equal to the watermark returns the cached outcome (including a cached
+ * "nothing to claim"); older is refused without allocating; only the next
+ * number allocates, and only once the current op is definitive.
+ */
+type RegisteredWorker = {
+  workerId: string;
+  registeredAt: number;
+  heartbeatAt: number;
+  claimSeq: number;
+  claimResult: WorkerClaim | undefined;
+  /** Serialises check+claim+cache for this worker ACROSS AWAITS: the claim
+   *  branch authorizes MCP servers over the network before replying, and two
+   *  concurrent requests interleaving there would both allocate. */
+  claimBusy: Promise<void> | undefined;
+};
 
 export type EngineDaemonOptions = {
+  executionStorage?: "json" | "sqlite";
   engineRoot?: string;
   port?: number;
   now?: () => number;
-  /** Worker liveness is deliberately short, but a lost running process remains ambiguous rather than replayed. */
+  /** Worker liveness is deliberately short; a lost running turn is stopped
+   *  rather than replayed or left claimed. See `retireWorker`. */
   workerLeaseMs?: number;
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
+  /**
+   * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
+   * ending that worker's claims happens on the default path inside
+   * `retireWorker` whether or not this is passed, because a deployment that
+   * passed nothing would otherwise keep a stale claim for ever.
+   */
+  onWorkerRetired?: (workerId: string) => void;
   /**
    * Told when an approval parks with nobody watching. ABSENT MEANS NOBODY IS
    * TOLD, and the request records that honestly rather than claiming otherwise.
@@ -452,7 +485,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   if (migrateLegacyEngineRoot(root)) {
     process.stdout.write(`Telar engine: moved the existing store from vnext/ to ${path.basename(root)}/\n`);
   }
-  const store = new EngineStore(root, options.now, {
+  const lock = acquireDaemonLock(statePaths(root));
+  let store: EngineStore;
+  try {
+  store = new EngineStore(root, options.now, {
+    executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
@@ -467,7 +504,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       return resolved;
     },
   });
-  const lock = acquireDaemonLock(statePaths(root));
+  } catch (error) { lock.release(); throw error; }
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
@@ -492,12 +529,45 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const updateProvider =
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) }));
+  /**
+   * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
+   * ending the work it held are the same event, so they are the same function
+   * and `workers.delete` is not called anywhere else. A path that forgot the
+   * second half would leave a claim held by a worker that no longer exists:
+   * the session's dispatch blocked behind it for ever, and the stale claim
+   * token still able to start a provider through `markTurnRunning` — a turn
+   * beginning after the thing that owned it was stopped.
+   *
+   * Both halves are fenced by ending the turn: `markRunning` takes only a
+   * `claimed` turn, so once this has run the old token is refused.
+   *
+   * Scoped per worker. A retiring registration says nothing about any other
+   * worker's claims, and sweeping theirs would stop work nobody touched.
+   */
+  const retireWorker = (workerId: string): void => {
+    // Idempotent: a registration already gone is a no-op, and the store finds
+    // no live claims to settle, so a second call journals nothing. That is what
+    // makes it safe to call from every path that might be the one that noticed.
+    workers.delete(workerId);
+    store.retireWorkerRegistration(workerId);
+    /**
+     * THE OBSERVER RUNS LAST, AND IS NOT THE CLEANUP. `onWorkerRetired` lets a
+     * caller (a test, the desktop shell) hear about a retirement; it is
+     * optional and unbound by default, so nothing that matters may depend on
+     * it. Terminalization happened above, on the default `startEngine` path,
+     * with no wiring required — a retirement whose cleanup lived in an
+     * optional callback would leave a stale claim blocking the session, and
+     * its token still able to start a provider, on every deployment that did
+     * not pass one.
+     */
+    options.onWorkerRetired?.(workerId);
+  };
   const pruneWorkers = (): void => {
+    // The BACKSTOP for a worker that died without saying so — a directly
+    // constructed one, or a crash. The lease bounds how long its claim can sit
+    // there; nothing waits on it for ever.
     const expired = [...workers.values()].filter((worker) => worker !== embeddedRegistration && now() - worker.heartbeatAt > workerLeaseMs);
-    for (const worker of expired) {
-      workers.delete(worker.workerId);
-      store.recoverInactiveWorker(worker.workerId);
-    }
+    for (const worker of expired) retireWorker(worker.workerId);
   };
   const activeWorker = (workerId: string): RegisteredWorker => {
     pruneWorkers();
@@ -612,7 +682,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
       read: async (sessionId, after) => store.readEvents(sessionId, after),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
-      stop: async (sessionId) => store.pauseSession(sessionId, "session"),
+      // STOP IS STOP, whoever presses it. An agent stopping a peer ends the
+      // same work a person's Stop ends, and leaves the session idle rather
+      // than latched — see `stopSession`.
+      stop: async (sessionId) => store.stopSession(sessionId, "agent"),
       settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
       diff: async (sessionId) => await store.sessionDiffAsync(sessionId),
       subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -624,6 +697,66 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     sessionsToolsCache = collectSessionsWallTools(capability);
     return sessionsToolsCache;
   };
+
+  const execution = createExecutionPort(store, {
+    registerWorker: async (workerId) => {
+        stringValue(workerId, "worker id");
+        if (!/^[A-Za-z0-9_-]+$/.test(workerId)) throw new HttpError(400, "invalid_request", "worker id is unsafe");
+        pruneWorkers();
+        if (workers.has(workerId)) throw new HttpError(409, "conflict", "worker id is already registered");
+        const at = now();
+        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at, claimSeq: 0, claimResult: undefined, claimBusy: undefined });
+        return { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) };
+
+    },
+    workerHeartbeat: async (workerId, _signal, acknowledgedTaskStops) => {
+      const worker = activeWorker(workerId);
+      worker.heartbeatAt = now();
+      return { workerId, heartbeatAt: worker.heartbeatAt,
+        cancel: store.cancellationsForWorker(workerId), resolved: store.resolutionsForWorker(workerId),
+        steer: store.steerForWorker(workerId), stopTask: store.taskStopsForWorker(workerId, acknowledgedTaskStops) };
+    },
+    claimTurn: async (workerId, seq) => {
+      const worker = activeWorker(workerId);
+      worker.heartbeatAt = now();
+
+          if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+            throw new HttpError(400, "invalid_request", "claim sequence must be a positive integer");
+          }
+          // One at a time per worker, so the authorize await below cannot let a
+          // duplicate interleave between the watermark check and the cache.
+          const previous = worker.claimBusy ?? Promise.resolve();
+          let release!: () => void;
+          worker.claimBusy = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            // This request may have waited behind an authorization call while
+            // its registration retired. Never allocate for that old generation.
+            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
+            // An already-answered sequence replays its outcome — never a second
+            // allocation, and `undefined` is a cached answer like any other.
+            if (seq === worker.claimSeq) {
+              return { claim: worker.claimResult };
+            }
+            // A straggler from a superseded op. Refused WITHOUT allocating:
+            // answering it would hand out a turn nobody is waiting for.
+            if (seq < worker.claimSeq) throw new HttpError(409, "conflict", "claim sequence superseded");
+            if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
+            // The claim itself is synchronous and under the state lock;
+            // attaching managed OAuth bearers is a network call.
+            const claimed = store.claimNextTurn(workerId);
+            const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
+            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
+            worker.claimSeq = seq;
+            worker.claimResult = authorized;
+            return { claim: authorized };
+          } finally {
+            release();
+          }
+    },
+  }, activeWorker);
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -2676,38 +2809,21 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       if (request.method === "POST" && url.pathname === "/v2/workers/register") {
         const input = await body(request);
-        const workerId = stringValue(input.workerId, "worker id")!;
-        if (!/^[A-Za-z0-9_-]+$/.test(workerId)) throw new HttpError(400, "invalid_request", "worker id is unsafe");
-        pruneWorkers();
-        if (workers.has(workerId)) throw new HttpError(409, "conflict", "worker id is already registered");
-        const at = now();
-        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at });
-        writeJson(response, 200, { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) });
+        writeJson(response, 200, await execution.registerWorker(stringValue(input.workerId, "worker id")!));
         return;
       }
-
       const workerMatch = /^\/v2\/workers\/([A-Za-z0-9_-]+)\/(heartbeat|claim)$/.exec(url.pathname);
       if (workerMatch && request.method === "POST") {
         const workerId = decodeURIComponent(workerMatch[1]);
-        const worker = activeWorker(workerId);
-        worker.heartbeatAt = now();
         if (workerMatch[2] === "heartbeat") {
-          const status: WorkerStatus = {
-            workerId,
-            heartbeatAt: worker.heartbeatAt,
-            cancel: store.cancellationsForWorker(workerId),
-            resolved: store.resolutionsForWorker(workerId),
-            steer: store.steerForWorker(workerId),
-            stopTask: store.drainStopTasks(),
-          };
-          writeJson(response, 200, status);
+          const input = await body(request);
+          const ack = input.acknowledgedTaskStops;
+          if (ack !== undefined && (!Array.isArray(ack) || ack.some((id) => typeof id !== "string")))
+            throw new HttpError(400, "invalid_request", "task stop acknowledgments must be strings");
+          writeJson(response, 200, await execution.workerHeartbeat(workerId, undefined, ack as string[] | undefined));
         } else {
-          // The claim itself is synchronous and under the state lock; attaching
-          // managed OAuth bearers is a network call, so it happens out here
-          // rather than stalling every other session's claim behind one slow
-          // authorization server.
-          const claimed = store.claimNextTurn(workerId);
-          writeJson(response, 200, { claim: claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined });
+          const input = await body(request);
+          writeJson(response, 200, await execution.claimTurn(workerId, input.claimSeq as number));
         }
         return;
       }
@@ -2735,18 +2851,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         const claimToken = stringValue(input.claimToken, "claim token")!;
         if (turn.action === "running") {
-          writeJson(response, 200, { turn: store.markRunning(turn.sessionId, turn.runId, claimToken) });
+          writeJson(response, 200, await execution.markTurnRunning(turn.sessionId, turn.runId, claimToken));
         } else if (turn.action === "steer-ack") {
           // The runId in the path is the PROMOTED turn; the claim token proves
           // the worker holds the running turn it was steered into.
-          writeJson(response, 200, { turn: store.ackSteer(turn.sessionId, turn.runId, claimToken) });
+          writeJson(response, 200, await execution.ackSteer(turn.sessionId, turn.runId, claimToken));
         } else if (turn.action === "request") {
           const parsed = RequestOpenInput.safeParse(input);
           if (!parsed.success) throw new HttpError(400, "invalid_request", "request payload is invalid");
           writeJson(
             response,
             200,
-            store.openRequest(turn.sessionId, turn.runId, parsed.data.claimToken, {
+            await execution.openRequest(turn.sessionId, turn.runId, parsed.data.claimToken, {
               requestId: parsed.data.requestId,
               kind: parsed.data.kind,
               detail: parsed.data.detail,
@@ -2761,15 +2877,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // The store re-validates against the contract schema. This only
           // rejects a shape that is not even an array, so the error names the
           // request rather than the first malformed element inside it.
-          writeJson(response, 200, store.ingestObservations(turn.sessionId, turn.runId, claimToken, input.observations));
+          writeJson(response, 200, await execution.reportObservations(turn.sessionId, turn.runId, claimToken, input.observations));
         } else if (turn.action === "complete") {
-          writeJson(response, 200, {
-            turn: store.completeTurn(turn.sessionId, turn.runId, claimToken, {
+          writeJson(response, 200, await execution.completeTurn(turn.sessionId, turn.runId, claimToken, {
               text: stringValue(input.text, "text")!,
               providerSessionId: stringValue(input.providerSessionId, "provider session id", true),
               usage: input.usage as never,
-            }),
-          });
+            }));
         } else {
           // FROM THE CONTRACT'S LIST, not a hand-written copy of it. This was
           // one of three places spelling the same codes out, and adding
@@ -2780,9 +2894,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             throw new HttpError(400, "invalid_request", "failure code is invalid");
           }
           const code = parsedCode.data;
-          writeJson(response, 200, {
-            turn: store.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }),
-          });
+          writeJson(response, 200, await execution.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }));
         }
         return;
       }
@@ -2851,10 +2963,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
                   tasks: store.tasks(session.sessionId),
                 }
               : store.snapshotWindow(session.sessionId, { limit, ...(before === undefined ? {} : { before }) });
+          /**
+           * AN OPEN ITEM CARRIES WHAT IT HAS STREAMED (#214).
+           *
+           * `detail` is only filled in when an item closes, so without this a
+           * client opening mid-reply — a remount, a surface switch, a live
+           * reload — saw an empty row and then only the text that arrived after
+           * it looked. Bounded by the SAME cursor written above, so the prefix
+           * and the tail meet exactly: never a gap, and any overlap is rejected
+           * by the watermark that travels with it.
+           */
+          const items = window.items.map((item) => {
+            if (item.status !== "inProgress") return item;
+            const prefix = store.openItemPrefix(session.sessionId, item.id, cursor);
+            return prefix ? { ...item, ...prefix } : item;
+          });
           writeJson(response, 200, {
             cursor,
             session: store.getSession(session.sessionId),
             ...window,
+            items,
             requests: store.requests(session.sessionId),
           });
           return;
@@ -3233,7 +3361,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         }
         if (request.method === "POST" && session.tail === "/stop") {
           const input = await body(request);
-          writeJson(response, 200, store.stopTurn(session.sessionId, stringValue(input.runId, "run id", true)));
+          /**
+           * TWO VERBS, NAMED. `scope: "session"` is the Stop button — end what
+           * is running and settle what was waiting; absent is the historical
+           * one-turn stop. VALIDATED RATHER THAN DEFAULTED: an unrecognised
+           * scope is refused, because the one thing worse than rejecting a
+           * typo is silently stopping something other than what was asked for.
+           */
+          const scope = input.scope === undefined ? undefined : stringValue(input.scope, "scope");
+          if (scope !== undefined && scope !== "session") throw new HttpError(400, "invalid_request", 'scope must be "session" when given');
+          const runId = stringValue(input.runId, "run id", true);
+          // Contradictory: one names a turn, the other says every turn.
+          if (scope === "session" && runId) throw new HttpError(400, "invalid_request", 'a session-scope stop names no run id');
+          // WHO PRESSED IT, validated like the scope. Only the record differs
+          // — a person's stop and an agent's do the same thing.
+          const by = input.by === undefined ? "user" : stringValue(input.by, "by");
+          if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
+          const commandId = stringValue(input.commandId, "command id", true);
+          writeJson(response, 200, scope === "session"
+            ? store.executeCommand(JSON.stringify({ operation: "stopSession", sessionId: session.sessionId, by }), () => store.stopSession(session.sessionId, by), commandId)
+            : store.stopTurn(session.sessionId, runId));
           return;
         }
         // A turn the PROVIDER started (a wake-up between turns). Worker-only,
@@ -3242,7 +3389,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const parsed = ProviderTurnOpenInput.safeParse(await body(request));
           if (!parsed.success) throw new HttpError(400, "invalid_request", "provider turn payload is invalid");
           activeWorker(parsed.data.workerId);
-          writeJson(response, 200, { turn: store.openProviderTurn(session.sessionId, parsed.data) });
+          writeJson(response, 200, await execution.openProviderTurn(session.sessionId, parsed.data));
           return;
         }
         // Task reports between turns — no claim, worker-authenticated.
@@ -3250,7 +3397,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const parsed = SessionTaskReport.safeParse(await body(request));
           if (!parsed.success) throw new HttpError(400, "invalid_request", "task report payload is invalid");
           activeWorker(parsed.data.workerId);
-          writeJson(response, 200, store.reportSessionTasks(session.sessionId, parsed.data.workerId, parsed.data.observations));
+          writeJson(response, 200, await execution.reportSessionTasks(session.sessionId, parsed.data.workerId, parsed.data.observations));
           return;
         }
         // The "N tasks still working" chip's Stop. Names no turn — a background
@@ -3318,10 +3465,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     store.recover();
     writeDiscovery(store, discovery);
 
-    // The embedded worker starts AFTER discovery is published, because it
-    // connects through the same discovery document every other client uses
-    // rather than through a private in-process shortcut. That keeps one code
-    // path for claim/heartbeat/observe instead of two that can diverge.
+    // Lifecycle operations use the same execution port as HTTP handlers,
+    // directly in process. Tool capability calls retain the authenticated API.
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
@@ -3382,6 +3527,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");
+      const { createWorkerDiagnostics } = await import("./worker-diagnostics");
       // Built once up front so a driver that cannot be constructed fails the
       // boot, not a retry loop; every later attempt builds its own.
       let initialDriver: DriverSelector | undefined = await createDriver();
@@ -3395,14 +3541,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const sessionsSocket = sessionsRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
-          const client = new EngineClient(discovery);
-          const register = client.registerWorker.bind(client);
-          client.registerWorker = async (id) => {
-            const result = await register(id);
+          return withDirectExecution(new EngineClient(discovery), { ...execution, registerWorker: async (id) => {
+            const result = await execution.registerWorker(id);
             embeddedRegistration = workers.get(id);
             return result;
-          };
-          return client;
+          } }, (error) => {
+            const normalized = errorFor(error);
+            return new EngineClientError(normalized.code, normalized.message, normalized.status);
+          });
         },
         createWorker: async (client, onConnectionLost) => {
           generation += 1;
@@ -3422,6 +3568,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             loginGrants: createLoginGrantStore(store.paths.root),
             ...(sessionsSocket ? { sessionsSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
+            // TRUSTED, and in-process: this is the registration `pruneWorkers`
+            // excludes, so the worker must not expire itself on a clock the
+            // engine does not hold it to. Not derivable from any response.
+            leaseExempt: true,
+            // Persisted, because the packaged app's stderr is /dev/null — see
+            // ./worker-diagnostics.ts.
+            onDiagnostic: createWorkerDiagnostics(store.paths.root, workerId),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
             onConnectionLost,
           });
@@ -3431,6 +3584,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // A stopped/replaced generation must not leave an immortal entry,
             // nor clear the ownership of a later generation.
             if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
+            /**
+             * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
+             * exempt from. That is the FENCE: a late request carrying the dead
+             * worker id is refused rather than served, and its cached claim
+             * outcome dies with it.
+             *
+             * WHAT BECOMES OF ITS CLAIMED WORK IS NOT DECIDED HERE. An earlier
+             * draft requeued those turns, which is automatic replay of an
+             * intent the person's stop, quit or update already ended. The
+             * unified terminal-stop lifecycle owns that decision; this hook is
+             * the named seam it wires into, and it is scoped to THIS
+             * generation's id so no unrelated session can be touched through it.
+             */
+            retireWorker(ownedWorkerId);
             // Forwarded, so a replaced generation's turns are told they were
             // replaced rather than that Telar shut down — see #208.
             await stop(reason);
@@ -3493,12 +3660,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await closeServer(server);
         clearInterval(workerPruner);
         removeOwnDiscovery(store, daemonId);
+        store.closeExecutionStore();
         lock.release();
       },
     };
   } catch (error) {
     clearInterval(workerPruner);
     server.close();
+    store.closeExecutionStore();
     lock.release();
     throw error;
   }

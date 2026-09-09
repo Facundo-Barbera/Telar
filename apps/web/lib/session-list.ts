@@ -80,7 +80,7 @@ export type SidebarSession = {
   createdAt: number;
   updatedAt: number;
   archived: boolean;
-  driver: "claude" | "codex";
+  driver: "claude" | "codex" | "opencode";
   model?: string;
   effort?: string;
   /** Everything this session has spent, in tokens. Money is not a unit this

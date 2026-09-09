@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 /**
  * WHICH MODELS A PROVIDER ACTUALLY HAS — asked, not assumed. BOTH providers.
  *
@@ -284,13 +286,22 @@ export async function readCodexModels(
   }
 }
 
+export async function readOpenCodeModels(): Promise<{ models: ProviderModel[]; message?: string }> {
+  try {
+    const executable = requireCli("opencode");
+    const { stdout } = await promisify(execFile)(executable, ["models"], { timeout: MODEL_LIST_TIMEOUT_MS, maxBuffer: 2_000_000 });
+    const ids = [...new Set(stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[A-Za-z0-9_.-]+\/\S+$/.test(line)))];
+    return { models: ids.map((id) => ({ id, label: id, efforts: [], isDefault: false, hidden: false, fastMode: false, hiddenByUser: false, source: "provider" as const })) };
+  } catch (error) { return { models: [], message: error instanceof Error ? error.message : "OpenCode did not answer models" }; }
+}
+
 export async function readModelCatalogue(
   driver: ProviderDriverKind,
   now: () => number,
   readCodex: typeof readCodexModels = readCodexModels,
   readClaude: typeof readClaudeModels = readClaudeModels,
 ): Promise<ModelCatalogue> {
-  const answer = driver === "claude" ? await readClaude() : await readCodex();
+  const answer = driver === "claude" ? await readClaude() : driver === "opencode" ? await readOpenCodeModels() : await readCodex();
   /**
    * A PROVIDER THAT COULD NOT BE ASKED FALLS BACK TO NOTHING — for both, now.
    *

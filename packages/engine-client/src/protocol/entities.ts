@@ -639,31 +639,9 @@ export const Session = z.object({
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
 
-  /**
-   * A HUMAN PAUSED THIS SESSION — nothing dispatches until a human resumes it.
-   *
-   * WHAT A TURN STOP COULD NOT SAY. Stopping ends ONE turn; the worker then
-   * claims the next queued message within a heartbeat, a steer that could not
-   * be delivered is requeued and claimed, and the stop itself wakes every
-   * subscriber, which queues wakes on the sessions that were meant to be
-   * quiet. Measured on the dogfood app: a root stop was followed within a
-   * second by new runs on both workers and a wake on their supervisor. A
-   * pause is a fact about the SESSION: `claimTurn` refuses it, the requeued
-   * steer and every message that arrives — a person's, an agent's, a wake —
-   * is accepted and HELD (`Turn.held.reason: "session_paused"`), the
-   * provider is not told anything, and the record survives a restart.
-   *
-   * NOTHING IS DELETED, NOTHING IS AUTO-RELEASED. Resuming lifts the pause
-   * and lets the worker take the backlog in order; each held message can also
-   * be released or dropped on its own. A new message from the person while
-   * paused is held like the rest, never dispatched ahead of what is waiting —
-   * that is what makes "paused" mean paused. Background tasks are untouched by
-   * a pause; stopping them stays their own verb.
-   *
-   * Set only by `pauseSession` / `resumeSession`, which the sessions tool wall
-   * does NOT expose as a resume: an agent may pause a peer (it is the honest
-   * version of `sessions_stop`), and only a human may resume one.
-   */
+  /** Legacy pause metadata, accepted when reading older state. Startup and
+   * session Stop settle its held backlog and remove the latch without replay.
+   * New clients use session Stop; no command creates a pause latch. */
   paused: z
     .object({
       at: Timestamp,
@@ -1111,6 +1089,23 @@ export const Turn = z.object({
    *  the summary a list view renders without replaying events. */
   resultText: z.string().optional(),
   failure: z.object({ code: TurnFailureCode, message: z.string() }).optional(),
+  /**
+   * WHY A `stopped` TURN STOPPED — and how much is known about what it had
+   * already done.
+   *
+   * `user` and `agent` are somebody pressing Stop: the work ended where it
+   * stood. `engine_restart` and `worker_unavailable` are the process going
+   * away underneath it, which is the same ending told honestly — what the turn
+   * had already done is in its items, and whether it finished anything
+   * OUTSIDE this engine (a file written, a command that reached a server) is
+   * unknown and must never be reported as either rolled back or completed.
+   *
+   * This is what replaced `ambiguous`. That state asked the person to decide
+   * something the engine could not tell them enough to decide, and held the
+   * session's dispatch until they did; the honest half of it — "we do not know
+   * whether it finished" — is a sentence on a terminal row, not a gate.
+   */
+  stopReason: z.enum(["user", "agent", "engine_restart", "worker_unavailable"]).optional(),
 
   /** Provider continuity produced BY this turn, and the input to the next. */
   providerSessionId: z.string().min(1).optional(),

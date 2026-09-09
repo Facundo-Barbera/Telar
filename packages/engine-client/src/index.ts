@@ -1983,6 +1983,13 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
   }
 
+  /** End all session-owned active, queued, held and background work.
+   * Delivered messages remain in history; the next message needs no Resume.
+   * `stopTurn` is the separate operation that interrupts only one run. */
+  stopSession(sessionId: string, by: "user" | "agent" = "user", commandId?: string): Promise<{ stopped: Turn[]; live?: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", by, commandId });
+  }
+
   /**
    * Stop the session's lingering background tasks — the "N tasks still
    * working" chip. A DIFFERENT verb from `stopTurn`: background work outlives
@@ -1993,13 +2000,7 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
   }
 
-  /**
-   * PAUSE THE SESSION: stop the live turn and hold everything queued — and
-   * everything that arrives — until a human resumes. `stopTurn` ends one run
-   * and the worker takes the next; this is the one that stays stopped. See
-   * `Session.paused`. `by: "session"` is how the worker's `sessions_stop`
-   * says an agent asked.
-   */
+  /** Deprecated compatibility alias for session Stop; never creates a latch. */
   pauseSession(sessionId: string, by: "human" | "session" = "human"): Promise<{ session: Session; stopped?: Turn; held: number; already: boolean }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/pause`, { by });
   }
@@ -2068,12 +2069,18 @@ export class EngineClient {
   /** Idempotent control: reports state and drains already-decided deliveries,
    *  so re-polling on the next tick cannot duplicate work. `signal` lets the
    *  caller bound it — a heartbeat that never resolves must not pin its loop. */
-  workerHeartbeat(workerId: string, signal?: AbortSignal): Promise<WorkerStatus> {
-    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {}, signal, "workerHeartbeat");
+  workerHeartbeat(workerId: string, signal?: AbortSignal, acknowledgedTaskStops?: string[]): Promise<WorkerStatus> {
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, { acknowledgedTaskStops }, signal, "workerHeartbeat");
   }
 
-  claimTurn(workerId: string): Promise<{ claim?: WorkerClaim }> {
-    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, {});
+  /**
+   * `claimSeq` is the worker's per-registration high-watermark. Repeating a
+   * sequence replays its outcome instead of allocating a second turn, which is
+   * what makes a lost claim response safe to retry — see the daemon's route.
+   * `signal` bounds it, so a hung claim cannot pin the caller's loop.
+   */
+  claimTurn(workerId: string, claimSeq: number, signal?: AbortSignal): Promise<{ claim?: WorkerClaim }> {
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, { claimSeq }, signal, "claimTurn");
   }
 
   /**

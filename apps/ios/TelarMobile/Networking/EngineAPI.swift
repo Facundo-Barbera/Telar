@@ -15,7 +15,8 @@ protocol EngineAPI: Sendable {
     func sessionData(_ id: EngineID) async throws -> Data
     func liveSessionsData() async throws -> Data
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
-    func stop(_ id: EngineID, runId: String?) async throws
+    func stopSession(_ id: EngineID) async throws
+    func stopTurn(_ id: EngineID, runId: String) async throws
     func resolveRequest(
         _ id: EngineID, requestId: EngineID,
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
@@ -265,9 +266,13 @@ struct HTTPEngineAPI: EngineAPI {
         return try await post("api/sessions/\(escape(id))/turns", body: body)
     }
 
-    func stop(_ id: EngineID, runId: String?) async throws {
-        var body: [String: AnyEncodable] = [:]
-        if let runId { body["runId"] = AnyEncodable(runId) }
+    func stopTurn(_ id: EngineID, runId: String) async throws {
+        let body = ["runId": AnyEncodable(runId)]
+        let _: IgnoredBody = try await post("api/sessions/\(escape(id))/stop", body: body)
+    }
+
+    func stopSession(_ id: EngineID) async throws {
+        let body = ["scope": AnyEncodable("session"), "commandId": AnyEncodable(UUID().uuidString)]
         let _: IgnoredBody = try await post("api/sessions/\(escape(id))/stop", body: body)
     }
 

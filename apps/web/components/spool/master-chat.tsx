@@ -41,7 +41,17 @@ import { Maximize2Icon, RotateCwIcon, TriangleAlertIcon, XIcon } from "lucide-re
 import type { EngineRequest, RequestDecision, Session, SpoolMcpInfo, Turn } from "@telar/engine-client";
 import { createEngineApi, newRunId } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, projectJournal, taskRoster, type JournalTurn } from "@/lib/engine/journal";
-import { hydrateSession, tailSession } from "@/lib/engine/session-sync";
+import { sessionConnection } from "@/lib/engine/session-connection";
+import { hostFromPathname, hostFetcher } from "@/lib/hosts/client";
+function connectionFor(sessionId: string) {
+  const host = hostFromPathname(window.location.pathname);
+  return sessionConnection(host, createEngineApi(hostFetcher(host)), sessionId);
+}
+const hydrateSession = (_api: unknown, id: string) => connectionFor(id).read();
+async function tailSession(_api: unknown, id: string, after: number) {
+  const snapshot = await connectionFor(id).read();
+  return { snapshot, cursor: snapshot.cursor, events: snapshot.events.filter((event) => event.id > after) };
+}
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -405,7 +415,7 @@ export function MasterChat({
 
   const stop = useCallback(() => {
     if (!session || !live) return;
-    void api.stopTurn(session.id, live.runId).catch(() => undefined);
+    void api.stopSession(session.id).catch(() => undefined);
   }, [live, session]);
 
   /** See `cutoff` above. Nothing is ended and nothing is discarded — the same
@@ -575,10 +585,6 @@ export function MasterChat({
                 quiet
                 onDecide={decide}
                 onRetry={() => undefined}
-                onDiscard={() => undefined}
-                onContinueAmbiguous={() => undefined}
-                onReleaseHeld={() => undefined}
-                onDropHeld={() => undefined}
               />
             ))}
           </ConversationContent>

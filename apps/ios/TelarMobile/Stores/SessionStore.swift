@@ -68,7 +68,7 @@ import Observation
     /// Withdraw a queued message — `stop` with its runId, the same call the
     /// web composer makes.
     func withdraw(_ runId: String) async {
-        await perform { try await self.api.stop(self.sessionId, runId: runId) }
+        await perform { try await self.api.stopTurn(self.sessionId, runId: runId) }
     }
 
     /// SEND NOW — the running turn hears it without stopping.
@@ -171,8 +171,7 @@ import Observation
     }
 
     func stopActiveTurn() async {
-        let runId = sync.turns.last { $0.state.isActive }?.runId
-        await perform { try await self.api.stop(self.sessionId, runId: runId) }
+        await perform { try await self.api.stopSession(self.sessionId) }
     }
 
     func resolve(_ request: EngineRequest, decision: RequestDecision,
