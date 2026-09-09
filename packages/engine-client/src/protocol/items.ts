@@ -158,6 +158,49 @@ export const PlanDetail = z.object({
 });
 export type PlanDetail = z.infer<typeof PlanDetail>;
 
+/**
+ * THE PROVIDER MADE THE TURN WAIT, AND SAID WHY.
+ *
+ * The Claude SDK emits `api_retry` when a request failed retryably and will be
+ * retried after a delay, and `rate_limit_event` when the account's limit state
+ * changes. Telar handled neither, so a turn that spent four minutes inside the
+ * provider's own backoff was indistinguishable from a turn that spent four
+ * minutes thinking — which is precisely the ambiguity the #201 audit could not
+ * resolve from the journal.
+ *
+ * SCALARS AND ENUMS ONLY, deliberately. The retry message carries the failing
+ * request's error object and the limit event carries account state; none of
+ * that belongs in a durable journal, and a row that says "waiting 30s for a
+ * five-hour limit that resets at T" already answers the question a person
+ * staring at a silent session is asking. No prompt, no header, no error text.
+ *
+ * A row is opened when the wait starts and closed when the stream speaks
+ * again, so the pause has a visible beginning and end rather than a marker
+ * floating in silence.
+ */
+export const ProviderWaitDetail = z.object({
+  kind: z.enum(["api_retry", "rate_limit"]),
+  /** `api_retry`: which attempt is about to be made, and out of how many. */
+  attempt: z.number().int().positive().optional(),
+  maxAttempts: z.number().int().nonnegative().optional(),
+  /** How long the provider said it would wait before trying again. */
+  delayMs: z.number().int().nonnegative().optional(),
+  /** HTTP status of the failed request. Absent for a connection error that
+   *  never got a response, which the SDK reports as a null status. */
+  status: z.number().int().optional(),
+  /** `rate_limit`: the account's state. `allowed` is not surfaced — a routine
+   *  "still fine" event is not a wait and would be noise on the timeline. */
+  limitStatus: z.enum(["allowed", "allowed_warning", "rejected"]).optional(),
+  /** Which limit, in the provider's own vocabulary (`five_hour`, `seven_day`…).
+   *  An open string: the set grows, and an unknown one is still worth showing. */
+  limitType: z.string().min(1).max(64).optional(),
+  /** Unix seconds at which the limit resets, when the provider says. */
+  resetsAt: z.number().int().nonnegative().optional(),
+  /** Fraction of the window consumed, when the provider says. */
+  utilization: z.number().nonnegative().optional(),
+});
+export type ProviderWaitDetail = z.infer<typeof ProviderWaitDetail>;
+
 export const ErrorDetail = z.object({
   message: z.string(),
   /** Provider-supplied classification when there is one. */
@@ -207,6 +250,7 @@ export const ItemDetail = z.discriminatedUnion("type", [
     preTokens: z.number().int().nonnegative().optional(),
     postTokens: z.number().int().nonnegative().optional(),
   }),
+  z.object({ type: z.literal("provider_wait"), wait: ProviderWaitDetail }),
   z.object({ type: z.literal("error"), error: ErrorDetail }),
   z.object({ type: z.literal("unknown"), label: z.string().optional(), payload: z.unknown().optional() }),
 ]);

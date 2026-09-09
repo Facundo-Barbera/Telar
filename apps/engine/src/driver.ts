@@ -24,6 +24,7 @@ import type {
   RequestDetail,
   RequestKind,
   PlanDetail,
+  ProviderWaitDetail,
   TaskKind,
   TaskSeed,
   TaskState,
@@ -1117,6 +1118,83 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
 }
 
 /**
+ * A WAIT THE PROVIDER IMPOSED, from the frame that announced it.
+ *
+ * Two frames, one row type. `system/api_retry` says a request failed retryably
+ * and the SDK will sleep before trying again; `rate_limit_event` says the
+ * account's limit state changed. Telar handled neither, so provider backoff was
+ * indistinguishable from thinking — the ambiguity the #201 audit could not
+ * resolve from the journal.
+ *
+ * `blocking` separates the two things a row means. A retry, and a REJECTED
+ * limit, are the turn standing still: those open an in-progress row that the
+ * next frame closes, so the pause has a visible beginning and end. A warning is
+ * information, not a wait, and lands as one finished row. A plain `allowed`
+ * event is neither and is dropped — a routine "still fine" heartbeat on the
+ * timeline is noise.
+ *
+ * Only whitelisted scalars and enums cross: the retry frame carries the failing
+ * request's error object and the limit frame carries account state, and neither
+ * belongs in a durable journal.
+ */
+export function providerWaitFrom(item: {
+  type?: string;
+  subtype?: string;
+  attempt?: number;
+  max_retries?: number;
+  retry_delay_ms?: number;
+  error_status?: number | null;
+  rate_limit_info?: unknown;
+}): { detail: ProviderWaitDetail; blocking: boolean } | undefined {
+  const int = (candidate: unknown): number | undefined =>
+    typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? Math.trunc(candidate) : undefined;
+
+  if (item.type === "system" && item.subtype === "api_retry") {
+    return {
+      blocking: true,
+      detail: {
+        kind: "api_retry",
+        ...(int(item.attempt) && int(item.attempt)! > 0 ? { attempt: int(item.attempt)! } : {}),
+        ...(int(item.max_retries) === undefined ? {} : { maxAttempts: int(item.max_retries)! }),
+        ...(int(item.retry_delay_ms) === undefined ? {} : { delayMs: int(item.retry_delay_ms)! }),
+        // A connection error has no HTTP response, and the SDK reports that as
+        // a null status. Absent says "no response" rather than inventing a 0.
+        ...(int(item.error_status) === undefined ? {} : { status: int(item.error_status)! }),
+      },
+    };
+  }
+
+  if (item.type !== "rate_limit_event") return undefined;
+  const info = asRecord(item.rate_limit_info);
+  const status = info.status;
+  if (status !== "rejected" && status !== "allowed_warning") return undefined;
+  return {
+    blocking: status === "rejected",
+    detail: {
+      kind: "rate_limit",
+      limitStatus: status,
+      ...(str(info.rateLimitType) ? { limitType: str(info.rateLimitType)!.slice(0, 64) } : {}),
+      ...(int(info.resetsAt) === undefined ? {} : { resetsAt: int(info.resetsAt)! }),
+      ...(typeof info.utilization === "number" && info.utilization >= 0 ? { utilization: info.utilization } : {}),
+    },
+  };
+}
+
+/** The collapsed label, derived once by the engine like every other row's. */
+export function titleForProviderWait(detail: ProviderWaitDetail): string {
+  if (detail.kind === "rate_limit") {
+    const limit = detail.limitType ? ` (${detail.limitType.replaceAll("_", " ")})` : "";
+    return detail.limitStatus === "rejected" ? `Rate limit reached${limit}` : `Approaching the rate limit${limit}`;
+  }
+  const attempt = detail.attempt === undefined ? "" : detail.maxAttempts ? ` (attempt ${detail.attempt} of ${detail.maxAttempts})` : ` (attempt ${detail.attempt})`;
+  const delay = detail.delayMs === undefined ? "" : ` in ${detail.delayMs < 1000 ? `${detail.delayMs}ms` : `${Math.round(detail.delayMs / 100) / 10}s`}`;
+  // The status is the one honest word about WHY; absent means no response came
+  // back at all, which is a connection failure rather than a rejection.
+  const because = detail.status === undefined ? "after a connection error" : `after HTTP ${detail.status}`;
+  return `Retrying${delay} ${because}${attempt}`;
+}
+
+/**
  * THIS TURN'S SPEND, out of the QUERY's running total.
  *
  * `total_cost_usd` is not a turn cost, and reading it as one is the #201
@@ -1307,6 +1385,14 @@ export function createClaudeDriver(
               ...(contextUsed === undefined ? {} : { contextUsed }),
               ...(contextMax === undefined ? {} : { contextMax }),
             };
+      /** The open "Retrying…" / "Rate limit reached" row, while the provider
+       *  has the turn standing still. Closed by the next frame of any kind. */
+      let waitItemId: string | undefined;
+      const closeProviderWait = (): void => {
+        if (!waitItemId) return;
+        emit({ kind: "item.completed", itemId: waitItemId, status: "completed" });
+        waitItemId = undefined;
+      };
       /** The open "Compacting context" row, when the provider announced one. */
       let compactionItemId: string | undefined;
       /** `compact_result: "success"` seen; the row waits for its boundary. */
@@ -1511,6 +1597,21 @@ export function createClaudeDriver(
         /** `background_tasks_changed` only: every live background task
          *  after the change, with REPLACE semantics. */
         tasks?: unknown;
+        /** `api_retry` only: the request failed retryably and the SDK is
+         *  about to sleep `retry_delay_ms` before attempt `attempt`. */
+        attempt?: number;
+        max_retries?: number;
+        retry_delay_ms?: number;
+        /** `null` for a connection error that never got a response. */
+        error_status?: number | null;
+        /** `rate_limit_event` only: the account's limit state. */
+        rate_limit_info?: unknown;
+        /** Result messages: whitelisted lifecycle scalars, for the gated
+         *  diagnostic line. Never journalled. */
+        duration_ms?: number;
+        duration_api_ms?: number;
+        ttft_ms?: number;
+        num_turns?: number;
         patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
         event?: {
           type?: string;
@@ -2485,6 +2586,29 @@ export function createClaudeDriver(
            *  the answer to a question nobody asked. */
           const ours = !parentToolUseId && foreignTurn === undefined;
 
+          // ── the provider made the turn wait, and said why ─────────────
+          /**
+           * WHAT THE SILENCE WAS. Before this, an SDK backoff and a rejected
+           * rate limit produced no observation at all: the #201 sample has
+           * nineteen quiet gaps totalling 36 minutes and nothing in the
+           * journal can say which of them were provider waits. A blocking
+           * wait opens an in-progress row; the next frame closes it, so the
+           * pause is bounded rather than a marker floating in silence.
+           */
+          const waited = providerWaitFrom(item);
+          if (waited) {
+            closeProviderWait();
+            const id = itemId();
+            const detail: ItemDetail = { type: "provider_wait", wait: waited.detail };
+            emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(waited.detail) } });
+            if (waited.blocking) waitItemId = id;
+            else emit({ kind: "item.completed", itemId: id, status: "completed", detail });
+            await flush();
+            continue;
+          }
+          // The stream spoke again, so whatever we were waiting for is over.
+          closeProviderWait();
+
           // ── compaction, announced then bounded ────────────────────────
           if (item.type === "system" && item.subtype === "status") {
             /**
@@ -2582,6 +2706,30 @@ export function createClaudeDriver(
             // dogfood app. A result with no table keeps the last known value.
             const reportedContextMax = contextMaxFrom(item.modelUsage);
             contextMax = reportedContextMax ?? contextMax;
+            /**
+             * THE LIFECYCLE SCALARS, TO THE GATED LOG AND NOWHERE ELSE.
+             *
+             * The #201 audit could not tell hidden thinking from provider
+             * queueing from network wait, because the result's own timings were
+             * read and discarded. These are whitelisted numbers — no prompt, no
+             * header, no error text, no identifier — and they go to the same
+             * opt-in diagnostic channel as the runtime line rather than into
+             * the durable journal, which is not a performance ledger.
+             */
+            if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
+              const scalar = (candidate: unknown): number | undefined => (typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined);
+              console.error(
+                `[claude-timing] session=${sessionId} ` +
+                  JSON.stringify({
+                    durationMs: scalar(item.duration_ms),
+                    apiMs: scalar(item.duration_api_ms),
+                    ttftMs: scalar(item.ttft_ms),
+                    turns: scalar(item.num_turns),
+                    stopReason: str(item.stop_reason ?? undefined) ?? null,
+                    subtype: item.subtype ?? null,
+                  }),
+              );
+            }
             // THIS TURN'S SPEND, not the query's running total — see `turnCostFrom`.
             usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, runtime)) ?? usage);
             if (usage) emit({ kind: "usage", usage });
@@ -2871,6 +3019,9 @@ export function createClaudeDriver(
         for (const [, open] of openBlocks) emit(closeBlock(open));
         // The plan is turn-scoped and has no tool_result to close it.
         if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
+        // A wait the stream ended inside is over — the turn is not waiting for
+        // anything any more, whatever the reason it stopped.
+        closeProviderWait();
         // A compaction the stream ended inside is over: finished if the CLI
         // said so and only the boundary never came, failed otherwise.
         if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: compactionSucceeded ? "completed" : "failed" });

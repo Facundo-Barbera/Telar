@@ -607,6 +607,117 @@ test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row only", async 
   expect(selectedContextMaxFromModel("claude-mystery-9[1m]")).toBeUndefined();
 });
 
+describe("a provider wait is a row, not silence", () => {
+  /**
+   * MEASURED IN THE #201 SAMPLE: nineteen quiet journal gaps totalling 36
+   * minutes, and nothing recorded that could say which of them were the SDK
+   * sleeping between retries and which were the model thinking. Telar had no
+   * handler for `api_retry` or `rate_limit_event` at all.
+   */
+  test("a retry opens a row that the next frame closes, with the delay and the status", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 2, max_retries: 3, retry_delay_ms: 30_000, error_status: 529, error: { message: "overloaded" } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "back" }] } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await expect(result).resolves.toMatchObject({ text: "back" });
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started).toBeDefined();
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "api_retry", attempt: 2, maxAttempts: 3, delayMs: 30_000, status: 529 },
+    });
+    expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 30s after HTTP 529 (attempt 2 of 3)");
+    // Bounded: the row closes the moment the stream speaks again, so the pause
+    // has an end rather than being a marker floating in silence.
+    const waitId = started?.kind === "item.started" ? started.item.id : "";
+    expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
+  });
+
+  test("a connection error says so rather than inventing an HTTP status", async () => {
+    // `error_status` is null when the request never got a response.
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 500, error_status: null };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "api_retry", attempt: 1, maxAttempts: 3, delayMs: 500 },
+    });
+    expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 500ms after a connection error (attempt 1 of 3)");
+  });
+
+  test("a rejected limit is a wait; a warning is one finished row; an allowed event is nothing", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        // Routine "still fine" heartbeat — noise on a timeline, so dropped.
+        yield { type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.2 } };
+        yield { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.9, resetsAt: 1_800_000_000 } };
+        yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day_opus", resetsAt: 1_800_003_600 } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const waits = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "provider_wait" ? [o.item] : []));
+    expect(waits).toHaveLength(2);
+    expect(waits[0]?.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "rate_limit", limitStatus: "allowed_warning", limitType: "five_hour", resetsAt: 1_800_000_000, utilization: 0.9 },
+    });
+    expect(waits[0]?.title).toBe("Approaching the rate limit (five hour)");
+    expect(waits[1]?.title).toBe("Rate limit reached (seven day opus)");
+    // A warning closes immediately; a rejection stays open until the stream
+    // speaks again — the turn really is standing still.
+    const completedIds = sink.observations.flatMap((o) => (o.kind === "item.completed" ? [o.itemId] : []));
+    expect(completedIds).toContain(waits[0]!.id);
+    expect(completedIds).toContain(waits[1]!.id);
+  });
+
+  test("no prompt, header or provider error text reaches the journal", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 3,
+          retry_delay_ms: 100,
+          error_status: 401,
+          error: { message: "invalid x-api-key sk-ant-secret", request_id: "req_secret" },
+        };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    expect(JSON.stringify(sink.observations)).not.toContain("sk-ant-secret");
+    expect(JSON.stringify(sink.observations)).not.toContain("req_secret");
+  });
+
+  test("a wait the stream ends inside is still closed, so nothing spins forever", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 3, max_retries: 3, retry_delay_ms: 1000, error_status: 500 };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    const waitId = started?.kind === "item.started" ? started.item.id : "";
+    expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId)).toBeTrue();
+  });
+});
+
 test("compaction is a timeline row, not a dropped message", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
@@ -2151,8 +2262,71 @@ describe("the session runtime", () => {
     expect(logged).not.toContain("sk-secret-two");
     expect(logged).not.toContain("browser-bearer-token");
     // It still answers the question it exists for: which field broke reuse.
-    expect(lines.at(-1)).toContain("reuse=false");
-    expect(lines.at(-1)).toContain("changed=browser,env");
+    const reuse = lines.filter((line) => line.startsWith("[claude-runtime]"));
+    expect(reuse.at(-1)).toContain("reuse=false");
+    expect(reuse.at(-1)).toContain("changed=browser,env");
+  });
+
+  test("the gated timing line carries whitelisted scalars and nothing else", async () => {
+    /**
+     * The #201 audit could not tell hidden thinking from provider queueing from
+     * network wait, because the result's own timings were read and discarded.
+     * These go to the opt-in diagnostic channel, never to the durable journal —
+     * which is a transcript, not a performance ledger.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield {
+          type: "result",
+          subtype: "success",
+          duration_ms: 255_715,
+          duration_api_ms: 254_010,
+          ttft_ms: 8_973,
+          num_turns: 4,
+          stop_reason: "end_turn",
+          result: "the model's whole answer, which must not be logged",
+          usage: { input_tokens: 32, output_tokens: 6 },
+        };
+      },
+    }));
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    process.env.TELAR_CLAUDE_RUNTIME_DEBUG = "1";
+    try {
+      await run(driver, { sessionId: "session_timed" }).result;
+    } finally {
+      console.error = realError;
+      delete process.env.TELAR_CLAUDE_RUNTIME_DEBUG;
+    }
+    const timing = lines.find((line) => line.startsWith("[claude-timing]"));
+    expect(timing).toBeDefined();
+    expect(JSON.parse(timing!.slice(timing!.indexOf("{")))).toEqual({
+      durationMs: 255_715,
+      apiMs: 254_010,
+      ttftMs: 8_973,
+      turns: 4,
+      stopReason: "end_turn",
+      subtype: "success",
+    });
+    expect(timing).not.toContain("must not be logged");
+  });
+
+  test("the diagnostics are OFF unless asked for", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "result", subtype: "success", duration_ms: 12 };
+      },
+    }));
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    try {
+      await run(driver, { sessionId: "session_quiet" }).result;
+    } finally {
+      console.error = realError;
+    }
+    expect(lines).toEqual([]);
   });
 
   test("stopTask reaches into the session's live runtime and stops one background task by provider id", async () => {
