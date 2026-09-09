@@ -15,6 +15,7 @@ const FILES = new Set(["session.json", "queue.json", "items.json", "requests.jso
 export class ExecutionStore {
   private readonly db: Database;
   private depth = 0;
+  private closed = false;
   constructor(readonly root: string) {
     const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
     const file = path.join(root, "execution.sqlite");
@@ -102,7 +103,7 @@ export class ExecutionStore {
       fs.writeFileSync(path.join(destination, "sessions", id, "events.ndjson"), events.map((event) => JSON.stringify(event) + "\n").join(""), { mode: 0o600 });
     }
   }
-  close(): void { this.db.close(); }
+  close(): void { if (!this.closed) { this.db.close(); this.closed = true; } }
   private fenceLegacy(sessionId: string): void {
     const file = path.join(this.root, "sessions", sessionId, "session.json");
     // Avoid a disk write per metadata update; this is an immutable downgrade fence.
