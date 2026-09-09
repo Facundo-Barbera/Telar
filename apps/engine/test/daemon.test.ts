@@ -58,7 +58,9 @@ test("the API rejects an unregistered worker and then durably schedules a claima
   expect((await client.stopTurn(session.session.id, "run_one")).turn?.state).toBe("stopped");
 });
 
-test("the authenticated API journals explicit ambiguous-turn discard before allowing a fresh run", async () => {
+test("the authenticated API settles an interrupted run and takes a fresh one with no gesture in between", async () => {
+  // This route used to require an explicit discard before the session would
+  // take new work. There is nothing to discard now — a restart is a stop.
   const daemon = await startEngine({ engineRoot: root() });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
@@ -68,19 +70,14 @@ test("the authenticated API journals explicit ambiguous-turn discard before allo
   await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
   const claim = (await client.claimTurn("worker_one")).claim!;
   await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
-  expect(daemon.store.recover()).toEqual({ requeued: [], ambiguous: ["uncertain_run"] });
+  expect(daemon.store.recover()).toEqual({ stopped: ["uncertain_run"] });
 
-  await expect(client.discardAmbiguousTurn("session_one", "uncertain_run")).resolves.toMatchObject({
-    turn: { runId: "uncertain_run", state: "discarded" },
-  });
   await expect(client.submitTurn("session_one", { runId: "fresh_run", input: "Hello" })).resolves.toMatchObject({
     replayed: false,
     turn: { runId: "fresh_run", state: "queued" },
   });
-  expect((await client.events("session_one")).events.at(-2)).toMatchObject({
-    type: "turn.discarded",
-    runId: "uncertain_run",
-  });
+  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+  // And the vestigial verb refuses rather than pretending to settle something.
   await expect(client.discardAmbiguousTurn("session_one", "uncertain_run")).rejects.toMatchObject({
     code: "conflict",
     status: 409,
@@ -130,8 +127,10 @@ test("lease expiry is pruned without another worker control request", async () =
   await client.submitTurn("session_one", { runId: "claim_me", input: "Hello" });
   expect((await client.claimTurn("worker_one")).claim?.turn.state).toBe("claimed");
   time = 10;
-  for (let attempts = 0; attempts < 20 && daemon.store.turns("session_one")[0]?.state !== "queued"; attempts += 1) await Bun.sleep(2);
-  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "queued" });
+  // The retiring registration ENDS the claim it was holding. It used to go
+  // back to `queued` and be replayed by the next worker.
+  for (let attempts = 0; attempts < 20 && daemon.store.turns("session_one")[0]?.state !== "stopped"; attempts += 1) await Bun.sleep(2);
+  expect(daemon.store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
   await expect(client.health()).resolves.toMatchObject({ worker: { registered: false } });
 });
 

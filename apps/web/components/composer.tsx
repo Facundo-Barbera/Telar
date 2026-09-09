@@ -30,7 +30,6 @@ import {
   LayersIcon,
   MonitorIcon,
   PaperclipIcon,
-  PauseIcon,
   PlusIcon,
   SquareIcon,
   TriangleAlertIcon,
@@ -316,9 +315,6 @@ export function Composer({
   backgroundTasks,
   settled,
   onUnsettle,
-  paused,
-  pausedBacklog = 0,
-  onResume,
   onDraftChange,
   onSubmit,
   onStop,
@@ -387,12 +383,6 @@ export function Composer({
   settled?: boolean;
   /** Return it to the list. Absent hides the button, never the banner. */
   onUnsettle?: () => void;
-  /** A human paused this session: nothing runs, and what you send is held.
-   *  The banner says so and offers Resume. See `Session.paused`. */
-  paused?: boolean;
-  /** How many messages the pause is holding. */
-  pausedBacklog?: number;
-  onResume?: () => void;
   /** Submit a `/compact` turn. The cockpit passes it on Claude sessions only —
    *  the slash command is that provider's. */
   onCompact?: () => void;
@@ -957,9 +947,11 @@ export function Composer({
     event.dataTransfer.types.includes("Files") ||
     event.dataTransfer.types.includes("text/uri-list");
 
-  // "Pause", because that is what it does now: the run stops AND the session
-  // stays stopped until Resume — see the cockpit's `stop`.
-  const submitLabel = escArmed ? "Press Escape again to pause" : busy ? "Pause" : "Send";
+  // "Stop", because that is what it does: the run ends and what was queued
+  // behind it is settled, leaving the session idle. It briefly said "Pause" —
+  // it paused, and a person who pressed it had to press Resume before they
+  // could say anything. See the cockpit's `stop`.
+  const submitLabel = escArmed ? "Press Escape again to stop" : busy ? "Stop" : "Send";
   const questionSubmitLabel = isLastQuestion(qFields, qd)
     ? qFields.length === 1
       ? "Submit answer"
@@ -1044,22 +1036,6 @@ export function Composer({
           title="This conversation is settled"
           detail="Sending a message returns it to the list in the sidebar."
           {...(onUnsettle ? { action: onUnsettle, actionLabel: "Un-settle" } : {})}
-        />
-      )}
-      {/* PAUSED, AND SAID SO WHERE YOU TYPE: a message sent now is held, not
-          run, and the banner is what keeps that from reading as a session that
-          silently ignores you. Resume is deliberate — a button, never a side
-          effect of sending. */}
-      {!fresh && session && paused && (
-        <ComposerBanner
-          icon={<PauseIcon className="size-4 shrink-0 text-muted-foreground" />}
-          title="This session is paused"
-          detail={
-            pausedBacklog > 0
-              ? `${pausedBacklog} message${pausedBacklog === 1 ? "" : "s"} held. Anything you send waits with them until you resume.`
-              : "Nothing runs, and anything you send is held until you resume."
-          }
-          {...(onResume ? { action: onResume, actionLabel: "Resume" } : {})}
         />
       )}
       {contextNotice && session && onCompact && (

@@ -79,7 +79,8 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
     status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
-    stop: async (sessionId) => store.pauseSession(sessionId, "session"),
+    // The same wiring the daemon uses: an agent's stop IS a stop.
+    stop: async (sessionId) => store.stopSession(sessionId, "agent"),
     settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
     diff: async (sessionId) => store.sessionDiff(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -333,7 +334,10 @@ describe("driving a session", () => {
     expect(missing.isError).toBe(true);
   });
 
-  test("stop PAUSES the session: the running turn ends, the backlog is held, and only a person can resume", async () => {
+  test("stop STOPS the session: the running turn ends, what was queued is settled, and it is idle after", async () => {
+    // `sessions_stop` used to mean PAUSE — an agent stopping a peer latched it
+    // until a person pressed Resume, while the Stop button did something else.
+    // One verb now, whoever presses it.
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
@@ -343,21 +347,27 @@ describe("driving a session", () => {
     await call(tools, "sessions_send", { sessionId: id, input: "and then this" });
 
     const stopped = await call(tools, "sessions_stop", { sessionId: id });
-    expect(stopped.json!).toMatchObject({ paused: true, stopped: true, runId: claimed.runId, state: "stopped", held: 1 });
-    expect(String(stopped.json!.note)).toContain("stopping ends a turn, it never undoes one");
-    expect(String(stopped.json!.note)).toContain("Only a person can resume it");
-    expect(store.getSession(id).paused).toMatchObject({ by: "session" });
+    expect(stopped.json!).toMatchObject({ stopped: 2, runId: claimed.runId, state: "stopped" });
+    expect(String(stopped.json!.note)).toContain("stopping ends work, it never undoes it");
+    expect(String(stopped.json!.note)).toContain("IDLE now, not paused");
+    // No latch anywhere.
+    expect(store.getSession(id).paused).toBeUndefined();
     const [first, second] = store.turns(id);
     expect(first!.state).toBe("stopped");
-    expect(second).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
-    // Nothing dispatches, and the wall has no way to lift it.
+    // The waiting message is settled, not held — and its words survive.
+    expect(second).toMatchObject({ state: "stopped", stopReason: "agent", input: "and then this" });
+    expect(second!.held).toBeUndefined();
+    // Nothing left to dispatch, and no resume verb because nothing is paused.
     expect(store.claimNextTurn("worker_two")).toBeUndefined();
     expect([...tools.keys()]).not.toContain("sessions_resume");
 
+    // THE NEXT MESSAGE JUST RUNS.
+    await call(tools, "sessions_send", { sessionId: id, input: "carry on" });
+    expect(store.claimNextTurn("worker_two")?.turn.input).toBe("carry on");
+
+    // Stopping an idle session says so rather than erroring.
     const again = await call(tools, "sessions_stop", { sessionId: id });
     expect(again.isError).toBe(false);
-    expect(again.json!.stopped).toBe(false);
-    expect(String(again.json!.note)).toContain("Already paused");
   });
 
   test("diff reads the session's own checkout and says it accepts nothing", async () => {

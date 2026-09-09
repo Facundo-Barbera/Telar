@@ -1111,6 +1111,23 @@ export const Turn = z.object({
    *  the summary a list view renders without replaying events. */
   resultText: z.string().optional(),
   failure: z.object({ code: TurnFailureCode, message: z.string() }).optional(),
+  /**
+   * WHY A `stopped` TURN STOPPED — and how much is known about what it had
+   * already done.
+   *
+   * `user` and `agent` are somebody pressing Stop: the work ended where it
+   * stood. `engine_restart` and `worker_unavailable` are the process going
+   * away underneath it, which is the same ending told honestly — what the turn
+   * had already done is in its items, and whether it finished anything
+   * OUTSIDE this engine (a file written, a command that reached a server) is
+   * unknown and must never be reported as either rolled back or completed.
+   *
+   * This is what replaced `ambiguous`. That state asked the person to decide
+   * something the engine could not tell them enough to decide, and held the
+   * session's dispatch until they did; the honest half of it — "we do not know
+   * whether it finished" — is a sentence on a terminal row, not a gate.
+   */
+  stopReason: z.enum(["user", "agent", "engine_restart", "worker_unavailable"]).optional(),
 
   /** Provider continuity produced BY this turn, and the input to the next. */
   providerSessionId: z.string().min(1).optional(),

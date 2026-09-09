@@ -6078,102 +6078,45 @@ export class EngineStore {
   }
 
   /**
-   * PAUSE THE SESSION: stop what is running, and let nothing else start until
-   * a human says so. Atomic under the daemon's single state lock, which is
-   * what closes the race a stop-then-stop loop could never close — the
-   * worker's next claim, the requeued steer, a wake arriving mid-stop all land
-   * against a session that already refuses them.
+   * DEPRECATED — A COMPATIBILITY ALIAS FOR `stopSession`.
    *
-   *   1. The live turn (claimed or running) is stopped exactly as `stopTurn`
-   *      does it — the worker hears the cancellation on its heartbeat, the
-   *      provider gets `interrupt()`, background work is spared.
-   *   2. Its undelivered steers come back to `queued`, and EVERY queued turn
-   *      — those steers, the backlog, a wake in flight — is held
-   *      (`session_paused`). Nothing is deleted.
-   *   3. `Session.paused` is written. `claimTurn`, `claimNextTurn`,
-   *      `openProviderTurn` and `steerIfRunning` all refuse while it is set;
-   *      `submitTurn` holds what arrives. `fireSubscriptions` still runs for
-   *      the stopped turn — the subscriber's wake is its own session's, and
-   *      that session decides whether it is paused too.
+   * There is no persistent pause any more. It meant "stop, and stay stopped
+   * until a human presses Resume", and the person it was built for said the
+   * plainest possible thing about it: hitting stop should stop a session, not
+   * put it in a pause for them to resume. Stop is stop, from every origin —
+   * the button, this route, `sessions_stop`, a crash, an update.
    *
-   * A claim that lands in the same instant as the pause (the worker's
-   * `claimTurn` request was already in the daemon's queue) is settled by the
-   * lock: either it ran first and this stops what it claimed, or it runs after
-   * and finds `paused`. The one thing a paused session still executes is
-   * NOTHING. Idempotent; a second pause reports `already: true`.
+   * KEPT AS A NAME so an older client (a phone that has not updated, a script)
+   * calling `/pause` gets the behaviour the app now has rather than a 404 or,
+   * far worse, a latch nothing in the product knows how to lift. It returns
+   * the old shape: `held` is always 0, because nothing is held any more, and
+   * `already` is always false, because there is no latch to be already in.
+   *
+   * `by` is ignored. It distinguished a human's pause from an agent's, and the
+   * two are now the same verb with the same result — which is the whole point
+   * of the change.
    */
-  pauseSession(sessionId: string, by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
+  pauseSession(sessionId: string, _by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
     const session = this.getSession(sessionId);
     if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
-    const at = this.now();
-    /**
-     * NOT ONE WRITE, AND HONEST ABOUT IT. The pause touches two documents —
-     * `session.json` (the latch) and `queue.json` (the stop and the holds) —
-     * and `atomicWrite` makes each one atomic, not the pair. What "atomic"
-     * means here is: under the daemon's single state lock, no OTHER
-     * transition (a claim, a submit, a wake) interleaves with these two
-     * writes. A fault BETWEEN them is handled by ordering:
-     *
-     *   LATCH FIRST. `paused` is written before anything on the queue, so
-     *   the failure that leaves the two disagreeing leaves the session paused
-     *   with an un-swept queue — and that state is fail-closed: `claimTurn`
-     *   reads the latch, so nothing queued dispatches; `openProviderTurn`
-     *   reads it, so a wake-up between turns opens no turn; `recover()` and
-     *   `recoverInactiveWorker()` re-hold every queued turn on a paused
-     *   session at the next boot. The live turn is the one thing the latch
-     *   does not stop by itself — the worker only hears a stop through the
-     *   queue — and that is why a REPEATED pause is not a no-op: it re-runs
-     *   the sweep, so the retry a person makes on the failed request (or the
-     *   next `sessions_stop`) completes the half the fault dropped.
-     *
-     *   The other order would fail open: holds written, latch missing, and a
-     *   message arriving after the fault runs through a "paused" session.
-     */
-    const already = session.paused !== undefined;
-    if (!already) {
-      session.paused = { at, by };
-      session.updatedAt = at;
-      atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
-    }
-    const queue = this.readQueue(sessionId);
-    const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
-    let stopped: Turn | undefined;
-    const requeued: Turn[] = [];
-    if (live) {
-      live.state = "stopped";
-      live.completedAt = at;
-      live.updatedAt = at;
-      requeued.push(...this.requeueUndeliveredSteers(queue, live.runId, at));
-      stopped = live;
-    }
-    let held = 0;
-    for (const turn of queue.turns) {
-      if (turn.state !== "queued" || turn.held) continue;
-      turn.held = { at, reason: "session_paused" };
-      turn.updatedAt = at;
-      held += 1;
-    }
-    // Nothing to sweep on a repeat: the earlier pause (or its retry) did it all.
-    if (already && !stopped && held === 0) return { session: this.withActivity(structuredClone(session)), held: 0, already: true };
-    this.writeQueue(sessionId, queue);
-    if (stopped) {
-      this.closeOrphanedTasks(sessionId, stopped.runId, at, "the turn was stopped before this agent reported back");
-      this.closeOpenItems(sessionId, stopped.runId, at);
-      this.closeOpenRequests(sessionId, stopped.runId, at);
-      this.appendEvent(sessionId, { type: "turn.stopped", reason: "session_paused" }, stopped.runId);
-      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
-    }
-    this.appendEvent(sessionId, { type: "session.paused", by, held });
-    if (!already) this.appendEvent(sessionId, { type: "session.updated", session });
-    if (stopped) this.fireSubscriptions(sessionId, "turn_stopped", stopped, {});
-    return { session: this.withActivity(structuredClone(session)), ...(stopped ? { stopped: structuredClone(stopped) } : {}), held, already };
+    const { live } = this.stopSession(sessionId);
+    return { session: this.withActivity(structuredClone(this.getSession(sessionId))), ...(live ? { stopped: live } : {}), held: 0, already: false };
   }
 
   /**
-   * A HUMAN RESUMES. The pause comes off and every message it held is
-   * released, in its original order — the worker's next heartbeat claims the
-   * oldest. Messages held for OTHER reasons (a restart's) stay held; they
-   * are each still waiting on a re-read.
+   * DEPRECATED, AND INERT IN PRACTICE. Nothing sets `paused` any more and boot
+   * clears any latch left on disk, so there is no pause left to lift and no
+   * held message left to release. Kept so an older client's `/resume` answers
+   * instead of erroring, and so a latch written by a build older than this one
+   * still has a way off in the window before the next restart.
+   *
+   * IT RELEASES ONLY WHAT AN OLD PAUSE HELD (`held.reason === "session_paused"`),
+   * which is the one case where running the messages IS what the person asked
+   * for: they pressed Resume. Nothing else here starts work.
+   *
+   * Historically: a human resumes; the pause comes off and every message it
+   * held is released, in its original order — the worker's next heartbeat
+   * claims the oldest.
    *
    * WHAT "HUMAN ONLY" ACTUALLY MEANS HERE, stated exactly: the sessions tool
    * wall has no resume, and the worker's client (`WorkerClient`) cannot call
@@ -6727,11 +6670,94 @@ export class EngineStore {
   }
 
   /**
+   * STOP THE SESSION'S WORK. What the Stop button means to the person pressing
+   * it: what is running ends, what was waiting behind it does not then start,
+   * and the session is plain IDLE — the next message runs, with nothing to
+   * resume and nothing left invisibly waiting.
+   *
+   * NOT `pauseSession`. Stop used to call it, because stopping one turn let
+   * the worker claim the next queued message within a heartbeat ("I pressed
+   * stop and it started again") and a latch was the nearest thing that
+   * suppressed it. That fixed the wrong half: the leftovers were the problem,
+   * not the session's willingness to work, and it left a person who pressed
+   * Stop needing to press Resume before they could say anything.
+   *
+   * SO THE LEFTOVERS ARE SETTLED, NOT HELD. Every message that was waiting is
+   * marked `stopped` — terminal, and still in the transcript with its own
+   * words. Nothing is deleted and nothing is hidden: a cancelled message reads
+   * as cancelled, which is the honest record of what pressing Stop did to it.
+   *
+   * WHAT IT DOES NOT TOUCH:
+   *   - A HELD message. A recovery hold is somebody waiting to re-read a
+   *     message written before a crash, and a pause's hold belongs to the
+   *     pause. Neither is this Stop's to settle — that is what keeps an
+   *     intentional hold distinct from a person pressing Stop.
+   *   - An `ambiguous` turn, whose fate is still a human's to decide.
+   *   - A DELIVERED steer (`steered`). Its words reached the provider and are
+   *     part of the run that just stopped; calling it cancelled would be a lie
+   *     about what the model saw.
+   *   - `session.paused`. Stop never sets it and never clears it. A session
+   *     already paused by the old button (or by an explicit pause) stays
+   *     paused and keeps its Resume — there is no silent mass unpause here.
+   *   - Background tasks. They outlive their turn by definition and have their
+   *     own explicit verb (`stopBackgroundTasks`); a session Stop is not a
+   *     licence to kill work the person never pointed at.
+   *
+   * ATOMIC. One read, one snapshot of what is affected, one write, under the
+   * daemon's single state lock — so a claim, a steer or a heartbeat landing
+   * beside it cannot see half a stop. After the write the fencing is the
+   * ordinary state machine's: `ackSteer` refuses a turn that is no longer
+   * `steering`, and `completeTurn`/`failTurn` refuse one that is no longer
+   * `running`, so a late success cannot resurrect a stopped turn.
+   */
+  stopSession(sessionId: string, by: "user" | "agent" = "user"): { stopped: Turn[]; live?: Turn } {
+    this.getSession(sessionId);
+    const queue = this.readQueue(sessionId);
+    const at = this.now();
+    const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
+    // THE SNAPSHOT, taken before anything is written: which turns this Stop is
+    // about. A held turn, an ambiguous one and an already-delivered steer are
+    // not in it, and nothing added after this line is either.
+    const cancelled = queue.turns.filter((turn) => (turn.state === "queued" && !turn.held) || turn.state === "steering");
+    if (!live && cancelled.length === 0) return { stopped: [] };
+    for (const turn of [...(live ? [live] : []), ...cancelled]) {
+      turn.state = "stopped";
+      // WHO STOPPED IT, recorded on the turn. A person's Stop and an agent's
+      // `sessions_stop` do the same thing, and the record says which happened
+      // rather than making them indistinguishable.
+      turn.stopReason = by;
+      turn.completedAt = at;
+      turn.updatedAt = at;
+      // A steer that never arrived is cancelled where it stands rather than
+      // requeued: requeueing is what made Stop start the next thing.
+      delete turn.steer;
+    }
+    this.writeQueue(sessionId, queue);
+    if (live) {
+      // The live turn's own agents, rows and questions settle exactly as a
+      // one-turn stop settles them. A cancelled queued turn never ran, so it
+      // has none of these.
+      this.closeOrphanedTasks(sessionId, live.runId, at, "the turn was stopped before this agent reported back");
+      this.closeOpenItems(sessionId, live.runId, at);
+      this.closeOpenRequests(sessionId, live.runId, at);
+    }
+    this.touchSession(sessionId, at);
+    if (live) this.appendEvent(sessionId, { type: "turn.stopped" }, live.runId);
+    for (const turn of cancelled) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+    // ONLY THE LIVE TURN WAKES ANYBODY. A subscriber wants to hear that the
+    // work it was waiting on ended; five cancelled backlog messages are one
+    // happening, not five, and waking once per message would be the strip full
+    // of near-identical rows that `wakeMessage` already exists to prevent.
+    if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
+    return { stopped: [...(live ? [live] : []), ...cancelled].map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
+  }
+
+  /**
    * STOP ONE TURN. The worker claims the next queued message within a
    * heartbeat, an undelivered steer is requeued and claimed, and subscribers
-   * are woken — this is a stop of a RUN, not of the session. For "stop and
-   * stay stopped" see `pauseSession`, which is what the session tool wall's
-   * `sessions_stop` and the cockpit's Pause call.
+   * are woken — this is a stop of a RUN, not of the session. For the Stop
+   * button's "end this session's work" see `stopSession`; for "stop and stay
+   * stopped until a human resumes" see `pauseSession`.
    */
   stopTurn(sessionId: string, requestedRunId?: string): { turn?: Turn; stopped: boolean } {
     const queue = this.readQueue(sessionId);
@@ -7528,9 +7554,22 @@ export class EngineStore {
     return lastEventId(eventsFile(this.paths, sessionId));
   }
 
-  recover(): { requeued: string[]; ambiguous: string[] } {
-    const requeued: string[] = [];
-    const ambiguous: string[] = [];
+  /**
+   * BOOT: SETTLE WHAT THE LAST PROCESS LEFT IN FLIGHT.
+   *
+   * Returns the runIds it stopped. `requeued`/`ambiguous` are gone with the
+   * states they named — nothing is requeued (that would be automatic work the
+   * user did not ask for) and nothing is ambiguous (that would be a decision
+   * the user is now spared).
+   *
+   * IT DELIVERS NOTHING. No subscription is fired for any turn settled here:
+   * a boot that woke every subscriber would open fresh agent turns for exactly
+   * the work that was just declared over, which is the automatic restart this
+   * whole change exists to remove. The journal records the truth; nobody is
+   * summoned by it.
+   */
+  recover(): { stopped: string[] } {
+    const stopped: string[] = [];
     for (const session of this.allSessions()) {
       const queue = this.readQueue(session.id);
       /**
@@ -7571,7 +7610,7 @@ export class EngineStore {
         this.closeOpenRequests(session.id, turn.runId, this.now());
       }
       let changed = false;
-      const recoveryEvents: Array<{ type: "turn.requeued" | "turn.ambiguous"; runId: string }> = [];
+      const recoveryEvents: Array<{ type: "turn.stopped"; runId: string }> = [];
       const at = this.now();
       const recoveredProviderSessionId = latestProviderSessionId(queue);
       // `queue.json` is written before `session.json` when a turn completes.
@@ -7584,83 +7623,85 @@ export class EngineStore {
         session.updatedAt = at;
         metadataChanged = true;
       }
+      /**
+       * STOP IS STOP, AND A RESTART IS A STOP. Whatever was in flight when the
+       * process went away is over: the live turn, the claim that never
+       * started, the steer that may or may not have arrived, and the backlog
+       * that was waiting behind all of it. Every one of them lands `stopped`,
+       * which is terminal, visible, and asks nobody for a decision.
+       *
+       * WHAT THIS REPLACES. A running turn used to become `ambiguous` and a
+       * backlog `held`, so the next boot met the person with a recovery card
+       * and a row of Resume buttons before they could say anything — and
+       * resolving one released a pre-crash backlog nobody had re-read. The
+       * person's answer to all of it is the same: the next message continues
+       * the conversation from the provider cursor, which `resumeCursor` above
+       * has already recovered. Nothing is replayed and nothing is resumed.
+       *
+       * THE TEXT AND THE ITEMS SURVIVE — only `state` moves. A stopped turn
+       * keeps its prompt, its attachments, its tool rows and its answer, so
+       * the transcript still says exactly what happened; `stopReason` says why
+       * it ended, and it never claims the work was undone or finished.
+       *
+       * AND NOTHING IS DELIVERED FROM HERE. No subscription fires (see the
+       * caller's note): a boot that woke every subscriber would start fresh
+       * agent turns for work the user just said should not restart.
+       */
       for (const turn of queue.turns) {
-        if (turn.state === "claimed") {
-          turn.state = "queued";
-          delete turn.claim;
-          turn.updatedAt = at;
-          requeued.push(turn.runId);
-          recoveryEvents.push({ type: "turn.requeued", runId: turn.runId });
-          changed = true;
-        } else if (turn.state === "running") {
-          turn.state = "ambiguous";
-          turn.updatedAt = at;
-          ambiguous.push(turn.runId);
-          recoveryEvents.push({ type: "turn.ambiguous", runId: turn.runId });
-          // Same reasoning as `recoverInactiveWorker`: the process that was
-          // running these agents did not survive the restart, whatever we
-          // eventually decide about the turn itself.
+        if (turn.state !== "queued" && turn.state !== "claimed" && turn.state !== "running" && turn.state !== "steering") continue;
+        const wasLive = turn.state === "running";
+        turn.state = "stopped";
+        turn.stopReason = "engine_restart";
+        turn.completedAt = at;
+        turn.updatedAt = at;
+        delete turn.steer;
+        delete turn.claim;
+        // A hold was a question waiting to be asked. There is no question now,
+        // so the flag goes with it rather than lingering on a terminal row.
+        delete turn.held;
+        stopped.push(turn.runId);
+        recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
+        if (wasLive) {
+          // The process that was running these did not survive the restart.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the engine restarted while this agent was running");
           this.closeOpenItems(session.id, turn.runId, at);
-          // HERE, NOT ONLY IN THE SWEEP ABOVE, and the ordering is the reason:
-          // that sweep skips live turns, so THIS turn — still `running` when it
-          // ran — was passed over, and by the next boot it is `ambiguous`.
-          // Closing it only there meant a question opened by the lost run was
-          // retired on no boot at all, and the session read `blocked` forever.
+          // A question the lost worker parked can never be answered; leaving
+          // it open held the session `blocked` over a tool call nothing would
+          // run.
           this.closeOpenRequests(session.id, turn.runId, at);
-          changed = true;
-        } else if (turn.state === "steering") {
-          // Delivery is unknowable across a restart; requeue is the side the
-          // channel is built to err on (duplication over loss).
-          turn.state = "queued";
-          delete turn.steer;
-          turn.updatedAt = at;
-          requeued.push(turn.runId);
-          recoveryEvents.push({ type: "turn.requeued", runId: turn.runId });
-          changed = true;
         }
+        changed = true;
       }
       /**
-       * EVERY MESSAGE THAT WAS ALREADY WAITING IS HELD, once this session lost
-       * a turn to the restart.
-       *
-       * Marked on the TURNS, in a second pass, rather than inferred later from
-       * "does this session have an ambiguous turn". Inferring it meant the hold
-       * evaporated the instant the ambiguity was resolved — so pressing
-       * Continue, which resolves it, released the whole pre-crash backlog in
-       * the same breath and ran messages nobody had re-read. A second pass
-       * because the first one is still deciding which turns are queued at all:
-       * a `steering` message becomes one halfway through it.
-       *
-       * Only when something became ambiguous. A session whose turn was merely
-       * `claimed` never reached a provider, so nothing about its backlog is in
-       * doubt and it dispatches as it always did.
+       * AN OLD `ambiguous` TURN IS SETTLED THE SAME WAY. Nothing produces the
+       * state any more, but journals on disk still hold it, and a person whose
+       * session has one would otherwise be stuck at a recovery card that no
+       * longer exists anywhere in the app. Same treatment, same honesty: the
+       * turn ended, what it had done is above, whether it finished anything
+       * elsewhere is unknown.
        */
-      // THIS session's queue, not the `ambiguous` accumulator — that one spans
-      // every session the sweep has walked, and reading it here would hold the
-      // backlog of every session processed after the first unlucky one.
-      if (queue.turns.some((turn) => turn.state === "ambiguous")) {
-        for (const turn of queue.turns) {
-          if (turn.state !== "queued" || turn.held) continue;
-          turn.held = { at, reason: "engine_restart" };
-          turn.updatedAt = at;
-          changed = true;
-        }
+      for (const turn of queue.turns) {
+        if (turn.state !== "ambiguous") continue;
+        turn.state = "stopped";
+        turn.stopReason = "engine_restart";
+        turn.completedAt ??= at;
+        turn.updatedAt = at;
+        delete turn.held;
+        stopped.push(turn.runId);
+        recoveryEvents.push({ type: "turn.stopped", runId: turn.runId });
+        changed = true;
       }
       /**
-       * A PAUSE SURVIVES THE RESTART. A turn requeued above (it was merely
-       * `claimed` in the instant the pause landed, or `steering`) is queued
-       * and unheld — on a paused session that is a message the next boot
-       * would dispatch through a pause the person never lifted. Held with the
-       * rest; `resumeSession` releases them together.
+       * AND THE PAUSE LATCH COMES OFF. It is the same trap from the session's
+       * side: a session paused by the old Stop button would open with a banner
+       * and a Resume for a backlog this sweep has just settled. Pause is not a
+       * behaviour any more (see `pauseSession`), so the flag is cleared rather
+       * than left to mean something no code implements.
        */
       if (session.paused) {
-        for (const turn of queue.turns) {
-          if (turn.state !== "queued" || turn.held) continue;
-          turn.held = { at, reason: "session_paused" };
-          turn.updatedAt = at;
-          changed = true;
-        }
+        delete session.paused;
+        session.updatedAt = at;
+        metadataChanged = true;
       }
       /**
        * BACKGROUND WORK DIES WITH ITS PROCESS — the same position `failTurn`
@@ -7689,89 +7730,72 @@ export class EngineStore {
         }
       }
     }
-    return { requeued, ambiguous };
+    return { stopped };
   }
 
-  /** A missing worker might have already called a provider: only a merely claimed turn is safe to requeue. */
-  recoverInactiveWorker(workerId: string): { requeued: string[]; ambiguous: string[] } {
+  /**
+   * A WORKER REGISTRATION RETIRES — its lease expired, or it shut down — and
+   * the work it was holding ends with it.
+   *
+   * THE NAMED HOOK for that moment, called from wherever a registration is
+   * dropped, so there is no window in which a claim is held by a worker that
+   * no longer exists: an abandoned claim that stayed `claimed` would block the
+   * session's dispatch for ever, and one that went back to `queued` would be
+   * replayed by the next worker — automatic work nobody asked for. Both are
+   * closed by ending it.
+   *
+   * SCOPED TO THIS WORKER'S OWN CLAIMS. `turn.claim.workerId` is the filter and
+   * there is no second one: a healthy worker's turns are untouched, whichever
+   * session they are in. Nothing here reaches for a process, and no task of a
+   * session this worker was not running is swept — a broad kill on one
+   * worker's death is how independently launched project services died with it.
+   *
+   * CANCELLATION IS NOT CLAIMED. The engine knows the registration is gone; it
+   * does NOT know whether the provider process, or a command it had already
+   * started, is still alive. The turn is recorded as stopped for that reason
+   * and nothing asserts the work was undone.
+   */
+  retireWorkerRegistration(workerId: string): { stopped: string[] } {
     assertId(workerId, "worker id");
-    const requeued: string[] = [];
-    const ambiguous: string[] = [];
+    const stopped: string[] = [];
     for (const session of this.allSessions()) {
       const queue = this.readQueue(session.id);
+      // Only sessions this worker actually held work in.
+      const mine = queue.turns.filter((turn) => turn.claim?.workerId === workerId && (turn.state === "claimed" || turn.state === "running"));
+      if (mine.length === 0) continue;
       const at = this.now();
-      let changed = false;
-      /**
-       * THE WORKER HELD EVERY SESSION'S PROCESS, not only the ones it had a
-       * turn running in: a runtime lingers in the worker between turns (that is
-       * how background work survives a turn), so a vanished worker took the
-       * idle sessions' shells with it too. One embedded worker per engine
-       * makes "every session" exact; with several, a session whose runtime
-       * lived elsewhere is swept a little early and re-announces on its next
-       * turn — duplication over a row that is wrong for days.
-       */
-      const swept = this.closeLiveTasks(session.id, at, "the process that owned this task is gone", { includeBackground: true, onlyBackground: true, state: "stopped" });
-      if (swept.length > 0) this.touchSession(session.id, at);
-      for (const turn of queue.turns) {
-        if (turn.claim?.workerId !== workerId) continue;
-        if (turn.state === "claimed") {
-          turn.state = "queued";
-          delete turn.claim;
-          turn.updatedAt = at;
-          requeued.push(turn.runId);
-          this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, turn.runId);
-          changed = true;
-        } else if (turn.state === "running") {
-          turn.state = "ambiguous";
-          turn.updatedAt = at;
-          ambiguous.push(turn.runId);
-          this.appendEvent(session.id, { type: "turn.ambiguous", reason: "worker_unavailable" }, turn.runId);
-          // The WORKER is what was running these, and it is gone. Whether the
-          // turn reached the provider is still undecided; whether its agents
-          // are still running is not.
+      const live = new Set(mine.map((turn) => turn.runId));
+      // A steer aimed at one of those turns was never delivered by a worker
+      // that is gone. It ends where it stands rather than going back to the
+      // queue — requeueing is what made a lost worker restart the work.
+      const orphanedSteers = queue.turns.filter((turn) => turn.state === "steering" && turn.steer && live.has(turn.steer.intoRunId));
+      // PER SESSION, NOT THE ACCUMULATOR. Journalling from the cross-session
+      // list would write this session's events again onto the next one — the
+      // same trap `recover()`'s hold sweep documented, one loop lower down.
+      const settled: string[] = [];
+      for (const turn of [...mine, ...orphanedSteers]) {
+        const wasRunning = turn.state === "running";
+        turn.state = "stopped";
+        turn.stopReason = "worker_unavailable";
+        turn.completedAt = at;
+        turn.updatedAt = at;
+        delete turn.steer;
+        delete turn.claim;
+        settled.push(turn.runId);
+        if (wasRunning) {
+          // The worker was what ran these agents, rows and questions; no
+          // answer can reach a request it died waiting on.
           this.closeOrphanedTasks(session.id, turn.runId, at, "the worker running this agent disappeared");
           this.closeOpenItems(session.id, turn.runId, at);
-          // And the question the vanished worker was waiting on: no answer can
-          // reach it now, and leaving it open holds the session `blocked`. Same
-          // rule as the boot sweep's — the TURN's fate stays undecided, the
-          // dead REQUEST does not.
           this.closeOpenRequests(session.id, turn.runId, at);
-          // A promoted message aimed at this turn was never delivered by the
-          // vanished worker; back to the queue rather than gone.
-          for (const reverted of this.requeueUndeliveredSteers(queue, turn.runId, at)) {
-            requeued.push(reverted.runId);
-            this.appendEvent(session.id, { type: "turn.requeued", reason: "worker_unavailable" }, reverted.runId);
-          }
-          changed = true;
         }
       }
-      // Same hold as the boot sweep, for the same reason: a message written
-      // before this worker vanished was written against a state its lost turn
-      // took with it. Scoped to THIS session's queue, never the cross-session
-      // `ambiguous` accumulator.
-      if (queue.turns.some((turn) => turn.state === "ambiguous")) {
-        for (const turn of queue.turns) {
-          if (turn.state !== "queued" || turn.held) continue;
-          turn.held = { at, reason: "worker_unavailable" };
-          turn.updatedAt = at;
-          changed = true;
-        }
-      }
-      // Same rule as the boot sweep: a pause outlives the worker that lost it.
-      if (session.paused) {
-        for (const turn of queue.turns) {
-          if (turn.state !== "queued" || turn.held) continue;
-          turn.held = { at, reason: "session_paused" };
-          turn.updatedAt = at;
-          changed = true;
-        }
-      }
-      if (changed) {
-        this.writeQueue(session.id, queue);
-        this.touchSession(session.id, at);
-      }
+      this.writeQueue(session.id, queue);
+      this.touchSession(session.id, at);
+      for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
+      stopped.push(...settled);
     }
-    return { requeued, ambiguous };
+    return { stopped };
   }
 
   cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BotIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PaperclipIcon, PencilIcon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon, ClockIcon, EyeIcon, FolderGit2Icon, Minimize2Icon, PencilIcon, TerminalIcon, TriangleAlertIcon, WorkflowIcon } from "lucide-react";
 import {
   isBackgroundWork,
   type EngineEvent,
@@ -20,7 +20,7 @@ import {
   type TurnAttachment,
   type TurnState,
 } from "@telar/engine-client";
-import { continueAfterAmbiguousTurn, createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
+import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
 import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
 import { actionableRequests, continuationDraft, recoverableFailedTurn } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
@@ -42,13 +42,14 @@ import { Composer } from "./composer";
 // and the import only runs one way (cockpit → transcript). A wake that landed
 // mid-turn is a transcript row; the same wake landing on an idle session is a
 // turn header here. One vocabulary, or the two spellings drift apart.
-import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
+import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, splitAtMessageBoundaries, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/session-links";
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { PromptText } from "./session/prompt-text";
+import { agentSenderLabel, AgentMessageBubble, ConversationMessage } from "./session/conversation-message";
 import {
   canvasPanelKey,
   closePanelTab,
@@ -345,98 +346,20 @@ function SessionMasthead({
 }
 
 /**
- * THE THREE VERBS OF AN UNCERTAIN RUN, and their order is the fix.
+ * NO RECOVERY CARD, AND NO HELD-MESSAGE CARD.
  *
- * This card used to offer two: "Retry as new run" (which resubmits the original
- * prompt) and "Discard recovered run". Discard was the good path — it keeps the
- * transcript and the provider cursor, and the next thing you type continues the
- * same conversation — but it is named like a bin, so people pressed Retry and
- * watched the agent redo work the transcript above them already showed.
+ * Both used to live here. A turn the app lost became `ambiguous` and asked the
+ * person to choose between Continue, Re-run and Discard; a message written
+ * before that turn was lost sat behind its own Send-it / Drop-it card, because
+ * it had been written against a state of the world the interrupted turn took
+ * with it.
  *
- * So: CONTINUE first, saying what it actually does. RE-RUN second, naming the
- * risk instead of hiding it — the lost run may have already pushed, deleted or
- * called something, and no discard takes that back. DISCARD last, for when the
- * answer is "nothing more".
- *
- * `backlog` is the count of messages queued behind this decision. The engine
- * holds them rather than replaying them on boot, and saying so is the
- * difference between a session that looks stuck and one that is waiting.
+ * They are gone because the question is gone. A restart is a stop: the turn is
+ * terminal, what was waiting behind it is terminal, and the honest half of the
+ * old card — "we cannot tell how far this got" — is a sentence on the stopped
+ * turn rather than a gate in front of the conversation. Saying something is
+ * how you carry on, and it continues the same provider thread.
  */
-export function RecoveryActions({
-  sending,
-  backlog,
-  onContinue,
-  onRetry,
-  onDiscard,
-}: {
-  sending: boolean;
-  backlog: number;
-  onContinue: () => void;
-  onRetry: () => void;
-  onDiscard: () => void;
-}) {
-  return (
-    <Alert className="mt-2" aria-label="Recovered turn decision">
-      <TriangleAlertIcon />
-      <AlertTitle>This turn was cut off — and may have already done some of it</AlertTitle>
-      <AlertDescription className="flex flex-col gap-2">
-        <p>
-          Everything above is kept. Telar cannot tell how far this run got before it was lost, so nothing re-runs unless you ask for it.
-          {backlog > 0 ? ` ${backlog} ${backlog === 1 ? "message is" : "messages are"} waiting behind this decision.` : ""}
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={sending} onClick={onContinue}>
-            Continue
-          </Button>
-          <Button size="sm" variant="outline" disabled={sending} onClick={onRetry}>
-            Re-run this prompt
-          </Button>
-          <Button size="sm" variant="ghost" disabled={sending} onClick={onDiscard}>
-            Discard
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          Continue keeps this conversation and lets you write the next message. Re-running sends the original prompt again, which may repeat work
-          or tool calls that already happened.
-        </p>
-      </AlertDescription>
-    </Alert>
-  );
-}
-
-/**
- * A MESSAGE THAT WAS WAITING WHEN THE TURN WAS LOST.
- *
- * It still says what it said, but it was written against a state of the world
- * the interrupted turn took with it — "also update the docs" means something
- * else once you no longer know whether the docs were updated. So it keeps its
- * place in the queue and does not run until the person who wrote it has looked
- * at it again.
- *
- * DELIBERATELY NOT RELEASED BY CONTINUE. Resolving the lost turn is a decision
- * about THAT turn; each held message is its own. Continue used to release them
- * all at once, because the hold was inferred from the ambiguity rather than
- * recorded on the turns.
- */
-export function HeldMessageActions({ sending, onRelease, onDrop }: { sending: boolean; onRelease: () => void; onDrop: () => void }) {
-  return (
-    <Alert className="mt-2" aria-label="Held message decision">
-      <TriangleAlertIcon />
-      <AlertTitle>Waiting for you to re-read it</AlertTitle>
-      <AlertDescription className="flex flex-col gap-2">
-        <p>You wrote this before the turn above was interrupted, so it has not been sent. It still may be — or it may no longer be what you want.</p>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" disabled={sending} onClick={onRelease}>
-            Send it
-          </Button>
-          <Button size="sm" variant="ghost" disabled={sending} onClick={onDrop}>
-            Drop it
-          </Button>
-        </div>
-      </AlertDescription>
-    </Alert>
-  );
-}
 
 /**
  * AN ORDINARY FAILURE, NOT AN AMBIGUOUS ONE. The provider process died or the
@@ -522,46 +445,10 @@ function wakeUpLabel(task: JournalTask | undefined): { verb: string; Icon: typeo
   }
 }
 
-/**
- * A MESSAGE ANOTHER AGENT SENT — `sessions_send`, landing here as a turn or
- * steered into a running one. Drawn in the assistant's lane, left-aligned,
- * with a bot glyph and the sender's id: NOT the person's bubble. The old
- * rendering showed an orchestrator's instructions as if the human had typed
- * them, which is exactly the misreading the engine's `sender` stamp exists to
- * prevent — a peer's report carries no human authorization, and the transcript
- * must not look as though it did.
- */
-export function agentSenderLabel(sender: NonNullable<JournalTurn["sender"]>): string {
-  return sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session";
-}
-
-export function AgentMessageBubble({ text, sender, attachments, onOpenTab }: {
-  text: string;
-  sender: NonNullable<JournalTurn["sender"]>;
-  attachments?: readonly TurnAttachment[];
-  onOpenTab?: (tab: PanelTab) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2" aria-label="Message from another agent">
-      <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
-        <BotIcon className="size-3.5 shrink-0" />
-        <span className="font-mono">{agentSenderLabel(sender)}</span>
-        <span>· not the user, no approval implied</span>
-      </div>
-      <PromptText text={text} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
-      {attachments?.length ? (
-        <ul className="mt-1 flex flex-wrap gap-1.5">
-          {attachments.map((attachment) => (
-            <li key={attachment.id} title={attachment.path} className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground">
-              <PaperclipIcon className="size-3 shrink-0" />
-              <span className="max-w-48 truncate">{attachment.name}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
+// A peer agent's message and the person's own now live in one place, beside
+// each other, so neither can drift from how the other is drawn. Re-exported
+// because this module was their home and callers still import them from here.
+export { agentSenderLabel, AgentMessageBubble };
 
 function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readonly JournalTask[]; onOpen?: (taskId: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -615,11 +502,6 @@ export function SessionTurn({
   quiet = false,
   onDecide,
   onRetry,
-  onDiscard,
-  onContinueAmbiguous,
-  onReleaseHeld,
-  onDropHeld,
-  backlog = 0,
   onContinue,
   onOpenAgent,
   onOpenTab,
@@ -652,20 +534,15 @@ export function SessionTurn({
   live: boolean;
   now: number;
   onRetry: (turn: Pick<Turn, "runId" | "state" | "input">) => void;
-  onDiscard: (turn: Pick<Turn, "runId">) => void;
   /** Abandon an ambiguous run's execution and keep talking — the recovery
    *  card's primary verb. Distinct from `onContinue`, which prepares a draft on
    *  an ordinary FAILED turn and submits nothing. */
-  onContinueAmbiguous: (turn: Pick<Turn, "runId" | "state">) => void;
   /** A held message the person re-read and still means — it runs in its
    *  original place in the queue. */
-  onReleaseHeld: (turn: Pick<Turn, "runId">) => void;
   /** ...or no longer wants. An ordinary stop; it is still a queued turn. */
-  onDropHeld: (turn: Pick<Turn, "runId">) => void;
   /** How many messages are queued behind an undecided ambiguous turn. The
    *  engine holds them; the card says so rather than letting the session look
    *  stuck. */
-  backlog?: number;
   /** Offered on the ONE failed turn the session can continue from (see
    *  `recoverableFailedTurn`). Absent everywhere else — the cockpit decides,
    *  the turn only renders. */
@@ -681,9 +558,21 @@ export function SessionTurn({
    */
   /** What the line under the turn says it is doing — see `turnActivity`. */
   const doing = turnActivity(turn);
-  const lastProse = turn.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
-  const activity = lastProse === -1 ? turn.items : turn.items.slice(0, lastProse);
-  const closing = lastProse === -1 ? [] : turn.items.slice(lastProse);
+  /**
+   * THE TURN'S RESPONSES. A message sent into a running turn is a boundary in
+   * the conversation, so the work after it belongs to it and is drawn under
+   * it — outside the assistant's lane, where the person's own words belong.
+   * `responses.length === 1` is every turn nobody steered, and it renders
+   * exactly as it did before. See `splitAtMessageBoundaries`.
+   */
+  const responses = splitAtMessageBoundaries(turn.items);
+  const answering = responses.at(-1)!;
+  const earlier = responses.slice(0, -1);
+  // The closing-prose split applies to the LAST response only: that is the one
+  // whose final assistant message is the answer to the turn.
+  const lastProse = answering.items.map((item) => item.detail.type).lastIndexOf("assistant_message");
+  const activity = lastProse === -1 ? answering.items : answering.items.slice(0, lastProse);
+  const closing = lastProse === -1 ? [] : answering.items.slice(lastProse);
   const streamedAnswer = closing.some((item) => itemText(item));
   /** The quiet fold's own toggle. Per turn, never persisted — looking at how
    *  one answer was made is a glance, not a mode. */
@@ -707,21 +596,12 @@ export function SessionTurn({
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <Minimize2Icon className="size-3.5 shrink-0" />
             <span>
-              {turn.held && turn.state === "queued"
-                ? turn.heldReason === "session_paused"
-                  ? "Compaction held — the session is paused"
-                  : "Compaction held for your re-read"
-                : isActiveTurn(turn.state)
+              {isActiveTurn(turn.state)
                   ? "Compacting context…"
                   : turn.state === "failed"
                     ? "Compaction failed"
                     : "Context compaction requested"}
             </span>
-            {turn.held && turn.state === "queued" && (
-              <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDropHeld(turn)}>
-                Drop it
-              </Button>
-            )}
           </p>
         )}
         {turn.state === "failed" && turn.failure && <p className="text-xs text-destructive">{turn.failure}</p>}
@@ -731,37 +611,32 @@ export function SessionTurn({
 
   return (
     <div className="flex flex-col gap-8">
+      {/* THE ORDINARY MESSAGE, from the one component that defines what that
+          looks like — the same one a message steered into a running turn now
+          uses, so the two cannot drift apart. See `conversation-message.tsx`. */}
       {turn.origin !== "provider" && turn.origin !== "session" && (
-      <Message from="user">
-        <MessageContent from="user">
-          {/* THE SAME CHIPS THE COMPOSER DREW. This was `{turn.prompt}` in a
-              bare paragraph, so every reference a gesture had put in the box
-              came back as raw text the moment it was sent — a dropped issue
-              reappearing as `#409 "…" (https://github.com/…)`, URL and all.
-              Nothing is stored to fix it: the draft has always been plain text
-              with the chips derived from it, and this reads it the same way. */}
-          <PromptText text={turn.prompt} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
-          {/* WHAT WAS SENT, not what the model made of it. A transcript that
-              shows the words and not the screenshot has lost half the message —
-              and re-reading it later is exactly when that half matters. Named
-              rather than rendered: the bytes live beside the session on the
-              engine's disk, and no route serves them back to a browser. */}
-          {turn.attachments?.length ? (
-            <ul className="mt-2 flex flex-wrap gap-1.5">
-              {turn.attachments.map((attachment) => (
-                <li
-                  key={attachment.id}
-                  title={attachment.path}
-                  className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-[0.6875rem] text-muted-foreground"
-                >
-                  <PaperclipIcon className="size-3 shrink-0" />
-                  <span className="max-w-48 truncate">{attachment.name}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </MessageContent>
-      </Message>
+        <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+      )}
+
+      {/* A BOUNDARY INTRODUCES THE WORK UNDER IT — message first, then what the
+          agent did about it. Drawn at the top level, not inside the assistant's
+          lane, so a reply is never painted over the message it answers. */}
+      {earlier.map((response) => (
+        <Fragment key={response.boundary?.id ?? "opening"}>
+          {response.boundary && (
+            <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          )}
+          {response.items.length > 0 && (
+            <Message from="assistant">
+              <MessageContent from="assistant">
+                <ActivityGroup items={response.items} tasks={turn.tasks} live={false} {...(onOpenAgent ? { onOpenAgent } : {})} />
+              </MessageContent>
+            </Message>
+          )}
+        </Fragment>
+      ))}
+      {answering.boundary && (
+        <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
       )}
 
       <Message from="assistant">
@@ -783,7 +658,10 @@ export function SessionTurn({
               The prose/closing split below is for a turn that has FINISHED:
               only then is "the last message" known to be the answer. */}
           {live ? (
-            <LiveActivity items={turn.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
+            // The ANSWERING response's items only — the boundaries and the work
+            // before them were drawn above, so live and settled cut the turn in
+            // the same place and a reload cannot move a message.
+            <LiveActivity items={answering.items} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />
           ) : (
             <>
               {!folded && (
@@ -837,28 +715,10 @@ export function SessionTurn({
               )}
             </div>
           )}
-          {turn.state === "ambiguous" && (
-            <RecoveryActions
-              sending={sending}
-              backlog={backlog}
-              onContinue={() => onContinueAmbiguous(retryInputForJournalTurn(turn))}
-              onRetry={() => onRetry(retryInputForJournalTurn(turn))}
-              onDiscard={() => onDiscard(turn)}
-            />
-          )}
-          {turn.held && turn.state === "queued" && turn.heldReason === "session_paused" && (
-            <Marker>held — the session is paused; Resume runs it in order, or drop it</Marker>
-          )}
-          {turn.held && turn.state === "queued" && turn.heldReason === "session_paused" && (
-            <div>
-              <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDropHeld(turn)}>
-                Drop it
-              </Button>
-            </div>
-          )}
-          {turn.held && turn.state === "queued" && turn.heldReason !== "session_paused" && (
-            <HeldMessageActions sending={sending} onRelease={() => onReleaseHeld(turn)} onDrop={() => onDropHeld(turn)} />
-          )}
+          {/* NO RECOVERY CHOICE AND NO HELD MESSAGE. A turn the app lost is
+              stopped, not ambiguous, and nothing waits behind it — so there is
+              no card here asking which of three things to do, and no message
+              wearing a Release button. Saying something is how you carry on. */}
           {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
         </MessageContent>
       </Message>
@@ -1819,18 +1679,6 @@ export function SessionCockpit({
     setDraft((current) => continuationDraft(current, recoverable, Boolean(session?.resumeCursor)));
     setDraftRunId(undefined);
   };
-  /**
-   * Messages the engine is HOLDING — written before the crash, each waiting on
-   * its own re-read. Counted from the turns' own `held` flag rather than from
-   * "this session is ambiguous", because the two now differ on purpose:
-   * resolving the lost turn does NOT release them, so the count outlives the
-   * recovery card and the held messages carry their own affordance.
-   */
-  const heldBacklog = transcript.filter((turn) => turn.held && turn.state === "queued" && turn.heldReason !== "session_paused").length;
-  /** Messages the PAUSE is holding — the composer's banner counts them, and
-   *  Resume lets them go together. Distinct from a restart's holds above,
-   *  which each wait on their own re-read. */
-  const pausedBacklog = transcript.filter((turn) => turn.held && turn.state === "queued" && turn.heldReason === "session_paused").length;
 
   // A clock, only while something is running. An always-on interval re-renders a
   // settled transcript once a second for nothing.
@@ -1858,39 +1706,30 @@ export function SessionCockpit({
   );
 
   /**
-   * THE STOP BUTTON PAUSES THE SESSION. It used to end one turn, after which
-   * the worker claimed the next queued message within a heartbeat — the
-   * measured "I pressed stop and it started again". A pause stops the run AND
-   * holds everything queued (and everything that arrives) until Resume, which
-   * is what pressing Stop on a conversation means to the person pressing it.
-   * Pressing it with nothing running still pauses — that is how you hold a
-   * backlog before it starts.
+   * THE STOP BUTTON STOPS. What is running ends, what was queued behind it is
+   * settled rather than started, and the session is idle — the next message
+   * runs, with nothing to resume.
+   *
+   * IT USED TO PAUSE, and that was wrong twice over. Stopping one turn let the
+   * worker claim the next queued message within a heartbeat — the measured "I
+   * pressed stop and it started again" — and a pause was reached for because
+   * it suppressed that. But the leftovers were the problem, not the session's
+   * willingness to work: the latch made a person who pressed Stop press Resume
+   * before they could say anything, which is not what Stop means.
+   *
+   * `stopSession` settles the leftovers instead, so no latch is needed. The
+   * pause is still its own thing, with its own affordance — a session already
+   * paused keeps its banner and its Resume.
    */
   const stop = async () => {
     if (!sessionId) return;
     setSending(true);
     try {
-      const paused = await api.pauseSession(sessionId);
-      setSession(paused.session);
+      await api.stopSession(sessionId);
       await hydrate();
       setError(undefined);
     } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not pause the session."));
-    } finally {
-      setSending(false);
-    }
-  };
-  /** A human lifts the pause; the held backlog runs in order. */
-  const resume = async () => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      const resumed = await api.resumeSession(sessionId);
-      setSession(resumed.session);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not resume the session."));
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the session."));
     } finally {
       setSending(false);
     }
@@ -1951,20 +1790,7 @@ export function SessionCockpit({
       setSending(false);
     }
   };
-  const discardAmbiguous = async (turn: Pick<Turn, "runId">) => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.discardAmbiguousTurn(sessionId, turn.runId);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not discard the ambiguous turn."));
-    } finally {
-      setSending(false);
-    }
-  };
-  /**
+    /**
    * CONTINUE, from an uncertain run. Releases the engine's held dispatch and
    * puts a continuation in the composer — it SENDS NOTHING. The original prompt
    * is never resubmitted: the transcript above already holds whatever the lost
@@ -1975,52 +1801,11 @@ export function SessionCockpit({
    * and saying "continue from the work above" would point at something only the
    * human can see.
    */
-  const continueAmbiguous = async (turn: Pick<Turn, "runId" | "state">) => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await continueAfterAmbiguousTurn(api, sessionId, turn);
-      setDraft((current) => continuationDraft(current, { failure: "Telar was restarted" }, Boolean(session?.resumeCursor)));
-      setDraftRunId(undefined);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not continue from the recovered turn."));
-    } finally {
-      setSending(false);
-    }
-  };
-  /** The person re-read a held message and still means it: it runs, in its
+    /** The person re-read a held message and still means it: it runs, in its
    *  original place in the queue. */
-  const releaseHeld = async (turn: Pick<Turn, "runId">) => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.releaseHeldTurn(sessionId, turn.runId);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not send the held message."));
-    } finally {
-      setSending(false);
-    }
-  };
-  /** ...or no longer wants it. An ordinary stop — a held message is still just
+    /** ...or no longer wants it. An ordinary stop — a held message is still just
    *  a queued turn, and `stopTurn` already ends one. */
-  const dropHeld = async (turn: Pick<Turn, "runId">) => {
-    if (!sessionId) return;
-    setSending(true);
-    try {
-      await api.stopTurn(sessionId, turn.runId);
-      await hydrate();
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not drop the held message."));
-    } finally {
-      setSending(false);
-    }
-  };
-  const retryAmbiguous = async (turn: Pick<Turn, "runId" | "state" | "input">) => {
+    const retryAmbiguous = async (turn: Pick<Turn, "runId" | "state" | "input">) => {
     if (!sessionId) return;
     setSending(true);
     try {
@@ -2524,11 +2309,6 @@ export function SessionCockpit({
                 onOpenTab={showPanelTab}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
-                onDiscard={(item) => void discardAmbiguous(item)}
-                onContinueAmbiguous={(item) => void continueAmbiguous(item)}
-                onReleaseHeld={(item) => void releaseHeld(item)}
-                onDropHeld={(item) => void dropHeld(item)}
-                backlog={heldBacklog}
                 {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
@@ -2582,9 +2362,6 @@ export function SessionCockpit({
           backgroundTasks={backgroundTasks}
           settled={settled}
           onUnsettle={() => void unsettle()}
-          paused={Boolean(session?.paused)}
-          pausedBacklog={pausedBacklog}
-          onResume={() => void resume()}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
           {...(composerQuestion
