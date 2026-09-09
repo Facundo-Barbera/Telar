@@ -179,9 +179,25 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
     const turn = byRun.get(item.runId);
     if (!turn) return undefined;
     const existing = seenItems.get(item.id);
+    /**
+     * THE SNAPSHOT'S `streamed` IS A PREFIX, AND DELTAS ABOVE ITS WATERMARK
+     * APPEND TO IT (#214).
+     *
+     * A remount throws the event tail away and re-opens on a snapshot whose
+     * cursor is already stamped past every delta so far — so without a seed the
+     * fold starts from "" and the reader loses everything streamed before they
+     * looked away.
+     *
+     * THE LONGEST PREFIX WINS, AND ITS WATERMARK COMES WITH IT. A reconnect
+     * brings a newer snapshot with a longer prefix; a companion snapshot on a
+     * quiet turn brings the same one again. Keeping whichever reaches further
+     * and remembering where it ends means the fold never has to know which
+     * kind it just received — the watermark below decides what still appends.
+     */
+    const seeded = pickPrefix(existing, item);
     const merged: JournalItem = {
       ...item,
-      streamedText: existing?.streamedText ?? "",
+      ...seeded,
       openedBy: existing?.openedBy ?? openedBy,
     };
     seenItems.set(item.id, merged);
@@ -310,7 +326,12 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         // inventing a placeholder would render a message with no idea what
         // kind of row it belongs to. The next snapshot repairs it.
         const item = seenItems.get(event.itemId);
-        if (item) item.streamedText += event.text;
+        if (!item) break;
+        // ALREADY IN THE PREFIX. A snapshot's `streamed` runs through
+        // `streamedThrough`, and the tail legitimately overlaps it — the two
+        // are separate reads. Appending this again would double the text.
+        if (item.streamedThrough !== undefined && event.id <= item.streamedThrough) break;
+        item.streamedText += event.text;
         break;
       }
       case "task.started":
@@ -490,13 +511,54 @@ export function isCompacting(turn?: JournalTurn): boolean {
 /**
  * The text a rendered item should show.
  *
- * Streamed deltas WIN over the stored detail while a turn is live, because the
- * engine only folds accumulated text into `items.json` when the item closes —
- * writing the whole document per token would be absurd. Once closed, the two
- * agree and either is correct.
+ * WHILE OPEN, THE STREAM IS THE TEXT: the engine only folds accumulated text
+ * into `items.json` when the item closes — writing the whole document per token
+ * would be absurd — so mid-flight the stored detail is deliberately stale.
+ * `streamedText` is the snapshot's prefix plus every delta since (see `upsert`).
+ *
+ * ONCE CLOSED, THE STORED DETAIL WINS, and that is not the same as "whichever
+ * is longer". A provider that revises its answer on close must be able to
+ * SHORTEN it, and a length comparison would pin the draft on screen forever.
+ * The close is the moment the engine's copy becomes complete, so it is also the
+ * moment it becomes authoritative.
  */
 export function itemText(item: JournalItem): string {
-  if (item.streamedText) return item.streamedText;
+  if (item.status === "inProgress" && item.streamedText) return item.streamedText;
+  if (item.streamedText && !storedText(item)) return item.streamedText;
+  return storedText(item);
+}
+
+/**
+ * Which streamed prefix this item should carry: the one already folded, or a
+ * longer one a newer snapshot brought.
+ *
+ * REACH, NOT RECENCY. A companion snapshot rides any queue-changing event, so
+ * the same prefix arrives repeatedly and an unconditional adopt would rewind a
+ * fold that has been appending deltas past it. A reconnect brings a genuinely
+ * longer one that must be adopted, or the deltas between the two watermarks are
+ * gone. "Whichever reaches further" is the one rule that gets both right, and
+ * it is safe because a prefix is append-only: the engine never un-streams text.
+ */
+function pickPrefix(existing: JournalItem | undefined, incoming: Item): Pick<JournalItem, "streamedText" | "streamedThrough"> {
+  const held = existing?.streamedText ?? "";
+  const heldThrough = existing?.streamedThrough;
+  const offered = incoming.streamed ?? "";
+  const offeredThrough = incoming.streamedThrough;
+  // No watermark on the offer — an engine too old to send one. Its prefix
+  // cannot be reconciled with a tail, so it is only usable as a first seed.
+  if (offeredThrough === undefined) {
+    return held ? { streamedText: held, ...(heldThrough === undefined ? {} : { streamedThrough: heldThrough }) } : { streamedText: offered };
+  }
+  if (heldThrough !== undefined && heldThrough >= offeredThrough) {
+    return { streamedText: held, streamedThrough: heldThrough };
+  }
+  // A held prefix with no watermark came from an old engine or an unseeded
+  // fold; the offered one is reconcilable, so it wins outright.
+  return { streamedText: offered, streamedThrough: offeredThrough };
+}
+
+/** What the engine has FOLDED for this item — empty until it closes. */
+function storedText(item: JournalItem): string {
   if (item.detail.type === "assistant_message" || item.detail.type === "reasoning") return item.detail.text;
   if (item.detail.type === "user_message") return item.detail.text;
   return "";

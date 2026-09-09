@@ -2945,10 +2945,26 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
                   tasks: store.tasks(session.sessionId),
                 }
               : store.snapshotWindow(session.sessionId, { limit, ...(before === undefined ? {} : { before }) });
+          /**
+           * AN OPEN ITEM CARRIES WHAT IT HAS STREAMED (#214).
+           *
+           * `detail` is only filled in when an item closes, so without this a
+           * client opening mid-reply — a remount, a surface switch, a live
+           * reload — saw an empty row and then only the text that arrived after
+           * it looked. Bounded by the SAME cursor written above, so the prefix
+           * and the tail meet exactly: never a gap, and any overlap is rejected
+           * by the watermark that travels with it.
+           */
+          const items = window.items.map((item) => {
+            if (item.status !== "inProgress") return item;
+            const prefix = store.openItemPrefix(session.sessionId, item.id, cursor);
+            return prefix ? { ...item, ...prefix } : item;
+          });
           writeJson(response, 200, {
             cursor,
             session: store.getSession(session.sessionId),
             ...window,
+            items,
             requests: store.requests(session.sessionId),
           });
           return;
