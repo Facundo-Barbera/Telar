@@ -7765,6 +7765,10 @@ export class EngineStore {
       // that is gone. It ends where it stands rather than going back to the
       // queue — requeueing is what made a lost worker restart the work.
       const orphanedSteers = queue.turns.filter((turn) => turn.state === "steering" && turn.steer && live.has(turn.steer.intoRunId));
+      // PER SESSION, NOT THE ACCUMULATOR. Journalling from the cross-session
+      // list would write this session's events again onto the next one — the
+      // same trap `recover()`'s hold sweep documented, one loop lower down.
+      const settled: string[] = [];
       for (const turn of [...mine, ...orphanedSteers]) {
         const wasRunning = turn.state === "running";
         turn.state = "stopped";
@@ -7773,7 +7777,7 @@ export class EngineStore {
         turn.updatedAt = at;
         delete turn.steer;
         delete turn.claim;
-        stopped.push(turn.runId);
+        settled.push(turn.runId);
         if (wasRunning) {
           // The worker was what ran these agents, rows and questions; no
           // answer can reach a request it died waiting on.
@@ -7784,7 +7788,8 @@ export class EngineStore {
       }
       this.writeQueue(session.id, queue);
       this.touchSession(session.id, at);
-      for (const runId of stopped) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
+      for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
+      stopped.push(...settled);
     }
     return { stopped };
   }

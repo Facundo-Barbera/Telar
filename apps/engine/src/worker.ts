@@ -75,7 +75,7 @@ type WorkerClient = Pick<
   | "events"
   | "session"
   // Pause only — no `resumeSession`, so an agent cannot lift a pause.
-  | "pauseSession"
+  | "stopSession"
   | "sessionDiff"
   // Subscriptions and answering a peer's request. `resolveRequest` reaches
   // the same gate a human's answer does; the WALL narrows it — no `cancel`

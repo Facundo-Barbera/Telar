@@ -104,7 +104,10 @@ export type SessionsCapability = {
    * new run on the same session. There is NO resume on this wall: a pause an
    * agent could lift is a pause a person cannot rely on.
    */
-  stop(sessionId: string): Promise<{ stopped?: Turn; held: number; already: boolean }>;
+  /** Stop the session's work: `stopped` is every turn settled (the live one
+   *  plus whatever was waiting), `live` the one that was actually running. No
+   *  hold count and no `already` — there is no latch to be already in. */
+  stop(sessionId: string): Promise<{ stopped: Turn[]; live?: Turn }>;
   /**
    * SHELVE OR UNSHELVE A SESSION IN THE LIST — `Session.settledOverride`, the
    * same switch the sidebar's Settle button flips. NOT an archive: the session

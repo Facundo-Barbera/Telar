@@ -77,10 +77,18 @@ export type EngineDaemonOptions = {
   engineRoot?: string;
   port?: number;
   now?: () => number;
-  /** Worker liveness is deliberately short, but a lost running process remains ambiguous rather than replayed. */
+  /** Worker liveness is deliberately short; a lost running turn is stopped
+   *  rather than replayed or left claimed. See `retireWorker`. */
   workerLeaseMs?: number;
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
+  /**
+   * Told when a worker registration retires. AN OBSERVER, NOT THE CLEANUP:
+   * ending that worker's claims happens on the default path inside
+   * `retireWorker` whether or not this is passed, because a deployment that
+   * passed nothing would otherwise keep a stale claim for ever.
+   */
+  onWorkerRetired?: (workerId: string) => void;
   /**
    * Told when an approval parks with nobody watching. ABSENT MEANS NOBODY IS
    * TOLD, and the request records that honestly rather than claiming otherwise.
@@ -508,8 +516,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    * worker's claims, and sweeping theirs would stop work nobody touched.
    */
   const retireWorker = (workerId: string): void => {
+    // Idempotent: a registration already gone is a no-op, and the store finds
+    // no live claims to settle, so a second call journals nothing. That is what
+    // makes it safe to call from every path that might be the one that noticed.
     workers.delete(workerId);
     store.retireWorkerRegistration(workerId);
+    /**
+     * THE OBSERVER RUNS LAST, AND IS NOT THE CLEANUP. `onWorkerRetired` lets a
+     * caller (a test, the desktop shell) hear about a retirement; it is
+     * optional and unbound by default, so nothing that matters may depend on
+     * it. Terminalization happened above, on the default `startEngine` path,
+     * with no wiring required — a retirement whose cleanup lived in an
+     * optional callback would leave a stale claim blocking the session, and
+     * its token still able to start a provider, on every deployment that did
+     * not pass one.
+     */
+    options.onWorkerRetired?.(workerId);
   };
   const pruneWorkers = (): void => {
     // The BACKSTOP for a worker that died without saying so — a directly

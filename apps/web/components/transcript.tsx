@@ -55,6 +55,9 @@ import { MessageResponse } from "@/components/ui/message";
 import { Shimmer } from "@/components/ui/shimmer";
 import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface, CopyButton, foldLines } from "@/components/ui/code-surface";
 import { Badge } from "@/components/ui/badge";
+// The ONE definition of what a message looks like — shared with the cockpit so
+// a message sent mid-run and one sent idle cannot drift apart.
+import { AgentMessageBubble, ConversationMessage } from "@/components/session/conversation-message";
 import { cn } from "@/lib/utils";
 
 /** Deliberately small and literal. The lane is meant to be uniform and boring:
@@ -533,13 +536,23 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
 }
 
 /**
- * A message the human SENT NOW — injected into the running turn rather than
- * queued behind it. Rendered as a user bubble where it landed, because that is
- * where the agent heard it; without this row the agent's change of direction
- * would have no visible cause.
+ * A MESSAGE SENT INTO A RUNNING TURN — and it is drawn as a message, not as a
+ * thing that happened during one.
+ *
+ * IT USED TO HAVE ITS OWN BUBBLE: narrower, differently padded, a smaller type
+ * scale, its attachment chips a size down from the ones on the identical
+ * message sent a second earlier while the agent was idle. Nothing about being
+ * delivered mid-run makes it a different kind of object to the person who
+ * typed it, and the difference read as one. It now renders through
+ * `ConversationMessage`, the same component the turn's own message uses.
+ *
+ * WHAT STAYS DIFFERENT IS AUTHORSHIP, and only where it already was: a peer
+ * agent's words and an engine wake are not the person's, and each is drawn the
+ * way that same origin is drawn when it arrives idle. There is no badge, no
+ * compact variant and no card earned merely by arriving mid-run.
  */
 function SteeredMessageRow({ item }: { item: JournalItem }) {
-  const attachments = item.detail.type === "user_message" ? (item.detail.attachments ?? []) : [];
+  const attachments = item.detail.type === "user_message" ? item.detail.attachments : undefined;
   const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
   const wakeReason = item.detail.type === "user_message" ? item.detail.wakeReason : undefined;
   // A WAKE IS NOBODY'S BUBBLE. The engine wrote it because a subscribed
@@ -549,45 +562,10 @@ function SteeredMessageRow({ item }: { item: JournalItem }) {
   // so the two read as one kind of thing however the wake happened to land.
   // Keyed on the structured stamp, never on the `[wake: …]` text.
   if (wakeReason) return <SteeredWakeRow item={item} reason={wakeReason} />;
-  // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE: left-aligned, dashed, and
-  // labelled with who sent them — the same shape the cockpit gives an
-  // agent-sent turn, so the two read as one kind of thing.
-  if (sender) {
-    return (
-      <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-sm" aria-label="Message from another agent">
-        <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
-          <BotIcon className="size-3.5 shrink-0" />
-          <span className="font-mono">{sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session"}</span>
-          <span>· not the user, no approval implied</span>
-        </div>
-        <p className="whitespace-pre-wrap">{itemText(item)}</p>
-      </div>
-    );
-  }
-  return (
-    <div className="flex justify-end py-1">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">
-        <p className="whitespace-pre-wrap">{itemText(item)}</p>
-        {/* WHAT WAS SENT, not what the model made of it — the same rule the
-            queued turn's bubble follows. Named rather than rendered: the bytes
-            live beside the session on the engine's disk. */}
-        {attachments.length > 0 && (
-          <ul className="mt-1.5 flex flex-wrap gap-1.5">
-            {attachments.map((attachment) => (
-              <li
-                key={attachment.id}
-                title={attachment.path}
-                className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-0.5 text-[0.6875rem] text-muted-foreground"
-              >
-                <PaperclipIcon className="size-3 shrink-0" />
-                <span className="max-w-48 truncate">{attachment.name}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
+  // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE — the same dashed, labelled
+  // shape the cockpit gives an agent-sent turn, so the two read alike.
+  if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(attachments ? { attachments } : {})} />;
+  return <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} />;
 }
 
 /**
