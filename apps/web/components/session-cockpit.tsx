@@ -2428,7 +2428,7 @@ export function SessionCockpit({
        separate cards on the shell's ground (`data-surfaces` is what tells
        app-shell.tsx to stop framing them as one). Same radius and gap as the
        rail, so the window reads as three islands and no edge needs a rule. */
-    <main data-surfaces className="flex min-h-0 flex-1 overflow-hidden md:overflow-visible md:gap-2">
+    <main data-surfaces className="group/surfaces flex min-h-0 flex-1 overflow-hidden md:overflow-visible md:gap-2">
       {/* THE RAIL'S OWN SURFACE RECIPE — `bg-sidebar` (the wash, under
           translucency) plus a hairline ring — so the three islands match.
           NOT `app-ground`: a card must paint, or it disappears into the wash
@@ -2437,8 +2437,14 @@ export function SessionCockpit({
           THE ROW DOES NOT CLIP ON `md`: a ring is a box-shadow drawn OUTSIDE
           the box, and `overflow-hidden` on this parent shaved the cards'
           outer edge — which is why this outline read thinner than the
-          rail's. Each card clips its own content instead. */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border">
+          rail's. Each card clips its own content instead.
+          A CARD WITH NO WIDTH IS NOT A CARD. "Fill the window" leaves this one
+          at zero width without unmounting it (see RightPanel), and CSS scales a
+          rounded box's horizontal radii to 0 that narrow — so the ring stopped
+          being an outline and became a straight hairline down the full height
+          of the row, right at the panel's edge. Unpaint it there; the geometry
+          stays, so the panel's `-ml-2` still lands on the row's edge. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
         <SessionMasthead
           projectId={projectId}
           hostId={hostId}
