@@ -17,9 +17,10 @@
  * may not import `session-cockpit.tsx`; the import runs the other way.
  */
 
-import { BotIcon, PaperclipIcon } from "lucide-react";
+import { useState } from "react";
+import { BotIcon, ChevronRightIcon, PaperclipIcon } from "lucide-react";
 import type { TurnAttachment } from "@telar/engine-client";
-import { Message, MessageContent } from "@/components/ui/message";
+import { Message, MessageContent, MessageResponse } from "@/components/ui/message";
 import { PromptText } from "./prompt-text";
 
 type MessageSender = { sessionId?: string };
@@ -87,19 +88,9 @@ export function ConversationMessage({
   );
 }
 
-/**
- * A MESSAGE ANOTHER AGENT SENT — `sessions_send`, landing as a turn of its own
- * or steered into a running one, and drawn identically either way. In the
- * assistant's lane, left-aligned, with a bot glyph and the sender's id: NOT the
- * person's bubble. The rendering this replaced showed an orchestrator's
- * instructions as if the human had typed them, which is the misreading the
- * engine's `sender` stamp exists to prevent — a peer's report carries no human
- * authorization and the transcript must not look as though it did.
- *
- * HERE, BESIDE `ConversationMessage`, for the reason that component exists at
- * all: the cockpit and the transcript both draw one of these, and the import
- * only runs one way between them.
- */
+/** Direct session messages are internal activity, like session wakes. Keep
+ * the sender visible and the payload behind a disclosure, independent of
+ * whether it starts a turn or arrives as steering. */
 export function agentSenderLabel(sender: MessageSender): string {
   return sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session";
 }
@@ -108,22 +99,32 @@ export function AgentMessageBubble({
   text,
   sender,
   attachments,
-  onOpenTab,
 }: {
   text: string;
   sender: MessageSender;
   attachments?: readonly TurnAttachment[];
   onOpenTab?: OpenTab;
 }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2" aria-label="Message from another agent">
-      <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
-        <BotIcon className="size-3.5 shrink-0" />
-        <span className="font-mono">{agentSenderLabel(sender)}</span>
-        <span>· not the user, no approval implied</span>
-      </div>
-      <PromptText text={text} {...(onOpenTab ? { onOpen: onOpenTab } : {})} />
-      <MessageAttachments {...(attachments ? { attachments } : {})} />
+    <div className="mx-auto w-full min-w-0 max-w-[50rem] py-0.5 text-sm" aria-label="Message from another agent">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0">Agent message</span>
+        <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{agentSenderLabel(sender)}</span>
+        <ChevronRightIcon className={`size-3 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`} />
+      </button>
+      {open && (
+        <div className="max-h-96 min-w-0 overflow-auto break-words px-1.5 py-2">
+          <MessageResponse streaming={false}>{text}</MessageResponse>
+          <MessageAttachments {...(attachments ? { attachments } : {})} />
+        </div>
+      )}
     </div>
   );
 }

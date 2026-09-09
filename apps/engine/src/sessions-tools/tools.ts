@@ -166,7 +166,7 @@ envMode is the choice that matters. "worktree" gives it a git checkout of its ow
 
 There is no cap on how many sessions you may create, so the discipline is yours: sessions do not clean themselves up — one you started stays live until a human archives it — and every worktree session is a whole checkout on the user's disk. Create what the work needs and nothing more. To be told when it finishes, sessions_subscribe to it. ${NOT_A_BYPASS}`;
 
-const SEND = `Give a session one message, exactly as a person typing to it would. It is queued and runs when a worker picks it up — this returns as soon as it is accepted, NOT when the turn is finished, so read the answer with sessions_read or watch for it with sessions_status rather than assuming it happened. A session can hold a short backlog, so a second message while one is running is queued behind it rather than interrupting.
+const SEND = `Send an explicitly attributed agent message to another session. It is not a human instruction or approval. It is queued and runs when a worker picks it up — this returns as soon as it is accepted, NOT when the turn is finished, so read the answer with sessions_read or watch for it with sessions_status rather than assuming it happened. A message to a running session may be delivered immediately as steering. Send a complete task or an actionable blocker, not incremental progress chatter. If the coordinator is already subscribed to your result, let the completion wake carry it; do not send a duplicate checkpoint or acknowledge acknowledgements.
 
 Say everything the session needs in the message itself. It cannot see this conversation, does not know who you are, and has no memory of anything you have not told it. To be told when it finishes instead of polling, sessions_subscribe to it first. ${NOT_A_BYPASS}`;
 
@@ -175,7 +175,7 @@ const NO_SELF =
 
 const SUBSCRIBE = `Ask to be WOKEN when a session does something: finishes a turn, fails, is stopped, or parks a request (a question, an approval) that somebody has to answer. A wake is a real turn in YOUR session — a message beginning "[wake: completed]", "[wake: failed]", "[wake: stopped]" or "[wake: waiting]" that names the session, what happened, and enough of the outcome to act on — so you can end your turn now and be woken later rather than polling. If you are mid-turn when it arrives, it is delivered INTO that turn as a message, the way a person typing at you would be; if you are idle, it starts your next turn. One waiting wake per child turn: if that turn parks a request and then finishes before you have read the first wake, the waiting wake is rewritten with the newer state rather than a second one arriving. If sixteen turns are already waiting on you, a wake is dropped and your journal says so.
 
-events narrows what wakes you (default: all four). once removes the subscription after its first wake. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
+events narrows what wakes you (default: all four). Subscriptions are one-shot by default: the first matching wake removes them. Subscribe only when awaiting a concrete result or blocker. Explicit once: false opts into ongoing monitoring; unsubscribe when the task is done. Subscribing twice to the same session merges into one subscription. This is one-directional and yours to remove — it records no parent, no child, and nothing on either session.`;
 
 const UNSUBSCRIBE = `Stop being woken by a session. Takes the subscription id sessions_subscribe returned (sessions_subscriptions lists them). Any wakes from that session still waiting in your queue are withdrawn too, so unsubscribing is how you stop a pile-up, not only future noise. Removing one that is not yours, or is already gone, answers removed: false — which is not an error.`;
 
@@ -591,7 +591,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           .array(z.enum(["turn_completed", "turn_failed", "turn_stopped", "request_opened"]))
           .optional()
           .describe("Which happenings wake you. Omit for all four."),
-        once: z.boolean().optional().describe("Remove the subscription after its first wake."),
+        once: z.boolean().optional().describe("Defaults to true: remove after the first wake. Set false only for intentional ongoing monitoring."),
       },
       async (args) => {
         if (!capability.self) return err(NO_SELF);
@@ -601,7 +601,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           const subscription = await capability.subscribe(capability.self.sessionId, {
             targetSessionId,
             ...(events && events.length > 0 ? { events } : {}),
-            ...(args.once === true ? { once: true } : {}),
+            once: args.once !== false,
           });
           return json({
             ...subscription,

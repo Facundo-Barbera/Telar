@@ -518,6 +518,43 @@ describe("subscribing and answering", () => {
     }
   });
 
+  test("an awaited result defaults to one wake; ongoing monitoring is explicit", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "coordinator" });
+    const target = store.createSession({ projectId, title: "worker" });
+    const tools = wall(store, { sessionId: host.id });
+    await call(tools, "sessions_subscribe", { sessionId: target.id });
+    for (const runId of ["run_first", "run_second"]) {
+      store.submitTurn(target.id, { runId, input: "work" });
+      const token = store.claimTurn(target.id, "worker_one")!.claim!.token;
+      store.markRunning(target.id, runId, token);
+      store.completeTurn(target.id, runId, token, { text: "done" });
+    }
+    expect(store.subscriptionsFor(host.id)).toHaveLength(0);
+    expect(store.turns(host.id)).toHaveLength(1);
+    const ongoing = await call(tools, "sessions_subscribe", { sessionId: target.id, once: false });
+    expect(ongoing.json!.once).not.toBe(true);
+  });
+
+  test("a peer cannot restart a human-stopped session or add to its history", async () => {
+    const { store, projectId } = engine();
+    const host = store.createSession({ projectId, title: "coordinator" });
+    const peer = store.createSession({ projectId, title: "peer" });
+    store.subscribe(host.id, { targetSessionId: peer.id });
+    store.stopSession(host.id, "user");
+    const tools = wall(store, { sessionId: peer.id });
+    expect((await call(tools, "sessions_send", { sessionId: host.id, input: "another update" })).isError).toBe(true);
+    store.submitTurn(peer.id, { runId: "run_peer", input: "work" });
+    const token = store.claimTurn(peer.id, "worker_one")!.claim!.token;
+    store.markRunning(peer.id, "run_peer", token);
+    store.completeTurn(peer.id, "run_peer", token, { text: "done" });
+    expect(store.turns(host.id)).toHaveLength(0);
+    store.submitTurn(host.id, { runId: "run_human", input: "continue" });
+    expect(store.getSession(host.id).agentMessagesBlocked).toBeUndefined();
+    expect((await call(tools, "sessions_send", { sessionId: host.id, input: "fresh report" })).isError).not.toBe(true);
+    expect(store.turns(host.id)).toHaveLength(2);
+  });
+
   test("subscribe, list, unsubscribe — a round trip that records nothing on either session", async () => {
     const { store, projectId } = engine();
     const host = store.createSession({ projectId, title: "the orchestrator" });
