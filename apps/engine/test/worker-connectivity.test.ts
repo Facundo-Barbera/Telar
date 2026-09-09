@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { EngineClientError, sanitizeTransportCause } from "@telar/engine-client";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { EngineClient, EngineClientError, sanitizeTransportCause } from "@telar/engine-client";
+import { startEngine } from "../src/daemon";
 import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
@@ -409,74 +413,6 @@ test("the transport cause is retained, and carries no URL or credential", () => 
   expect(JSON.stringify({ message: error.message, ...error })).not.toContain("sk-secret");
 });
 
-test("a settle that did not reach the engine is RE-SETTLED, not silently dropped", async () => {
-  /**
-   * The defect this pins: `execute`'s catch swallowed the connectivity error
-   * and returned, dropping the turn from `active` with nothing recorded. A
-   * healthy next heartbeat then cleared the budget, the worker never restarted,
-   * and the engine's journal kept the turn `running` for as long as the app
-   * stayed up. "The next boot calls it ambiguous" is not recovery for a process
-   * that never exits.
-   *
-   * Re-settling is safe and is the ONLY thing retried: it is idempotent by
-   * claim token, so no provider is re-run and nothing mutating is duplicated.
-   */
-  const clock = fakeClock();
-  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
-  const diagnostics: Record<string, unknown>[] = [];
-  let lost = 0;
-  let settles = 0;
-  fake.client.failTurn = async (_s: string, _r: string, _t: string, failure: { code: string; message: string }) => {
-    settles += 1;
-    // The first attempt is the one the outage ate.
-    if (settles === 1) throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "failTurn", transport: "TypeError:ECONNRESET" });
-    fake.failed.push(failure);
-  };
-  const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock, diagnostics });
-  await worker.start();
-
-  const reconcile = (worker as unknown as { reconcile: (s: string, r: string, t: string, c: unknown) => Promise<void> }).reconcile.bind(worker);
-  await reconcile("session_one", "run_one", "claim_one", unreachable());
-
-  // The turn IS settled, on the retry, without the worker being torn down.
-  expect(fake.failed).toHaveLength(1);
-  expect(fake.failed[0]?.code).toBe("interrupted");
-  expect(lost).toBe(0);
-  expect(diagnostics.some((line) => line.event === "turn_reconciled")).toBeTrue();
-  await worker.stop();
-});
-
-test("a turn already settled elsewhere is left alone; a persistent outage becomes a real loss", async () => {
-  const clock = fakeClock();
-  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
-  // `conflict` means somebody already settled it — the outcome this wanted.
-  fake.client.failTurn = async () => {
-    throw new EngineClientError("conflict", "already settled", 409, { operation: "failTurn" });
-  };
-  let lost = 0;
-  const settled = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock });
-  await settled.start();
-  await (settled as unknown as { reconcile: (s: string, r: string, t: string, c: unknown) => Promise<void> }).reconcile("s", "r", "t", unreachable());
-  expect(lost).toBe(0);
-  await settled.stop();
-
-  // An engine that never comes back is a real loss, reported once, with the
-  // unsettled turn recorded rather than silently abandoned.
-  const clock2 = fakeClock();
-  const down = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
-  down.client.failTurn = async () => {
-    throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "failTurn" });
-  };
-  const diagnostics: Record<string, unknown>[] = [];
-  let lostAgain = 0;
-  const worker = workerFor(down, () => void (lostAgain += 1), { count: 0 }, { clock: clock2, diagnostics });
-  await worker.start();
-  await (worker as unknown as { reconcile: (s: string, r: string, t: string, c: unknown) => Promise<void> }).reconcile("s", "r", "t", unreachable());
-  expect(lostAgain).toBe(1);
-  expect(diagnostics.some((line) => line.event === "turn_unreconciled")).toBeTrue();
-  await worker.stop();
-});
-
 test("every connectivity outcome reaches the diagnostic sink, sanitized and bounded", async () => {
   /**
    * The fields are useless if nothing consumes them: before this the sanitized
@@ -561,4 +497,166 @@ test("a loss reported while the previous worker is still stopping starts ONE rec
   // Exactly one replacement was built, not three.
   expect(built).toBe(2);
   await controller.stop();
+});
+
+test("stop during registration installs no timers and claims nothing", async () => {
+  // No timers, no claims, no work after stop() — whenever it lands.
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  let released: (() => void) | undefined;
+  const registering = new Promise<void>((resolve) => {
+    released = resolve;
+  });
+  fake.client.registerWorker = async () => {
+    await registering;
+    return { worker: { workerId: "worker_fake" }, heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS };
+  };
+  const worker = workerFor(fake, () => undefined, { count: 0 });
+  const starting = worker.start();
+  await worker.stop();
+  released!();
+  await starting;
+  expect(fake.heartbeats).toBe(0);
+  expect((worker as unknown as { timer?: unknown }).timer).toBeUndefined();
+  expect((worker as unknown as { watchdog?: unknown }).watchdog).toBeUndefined();
+});
+
+test("stop during the initial heartbeat leaves no poll timer behind", async () => {
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  const worker = workerFor(fake, () => undefined, { count: 0 });
+  const original = fake.client.workerHeartbeat as () => Promise<unknown>;
+  fake.client.workerHeartbeat = async () => {
+    // The stop lands inside the very first heartbeat.
+    void worker.stop();
+    return original();
+  };
+  await worker.start();
+  expect((worker as unknown as { timer?: unknown }).timer).toBeUndefined();
+  expect((worker as unknown as { watchdog?: unknown }).watchdog).toBeUndefined();
+});
+
+test("a reply that lands after the deadline but before the watchdog fires is refused", async () => {
+  /**
+   * The watchdog runs every lease/3, so an expired reply can arrive before it
+   * next fires. Checking only the flags let that reply reset `lastAckAt` and
+   * resurrect a budget already spent — so the absolute deadline is checked
+   * before the acknowledgement is accepted.
+   */
+  const clock = fakeClock();
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  let lost = 0;
+  const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock });
+  await worker.start();
+  // The heartbeat succeeds, but the whole lease elapses while it is in flight.
+  const original = fake.client.workerHeartbeat as () => Promise<unknown>;
+  fake.client.workerHeartbeat = async () => {
+    clock.advance(LEASE_MS + 1);
+    return original();
+  };
+  await worker.tick();
+  expect(lost).toBe(1);
+  await worker.stop();
+});
+
+test("a lost settlement response is retried as ITSELF, against the real engine store", async () => {
+  /**
+   * The mislabelling this pins: a completed turn whose `completeTurn` response
+   * was lost used to be re-reported as `interrupted`, which is a different
+   * outcome, not a retry of this one. Runs against an actual daemon and store
+   * in a temp home — the wrapper drops the RESPONSE, so the first write really
+   * does commit and the retry really does meet the engine's own conflict.
+   */
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-"));
+  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 5_000 });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    const session = await client.createSession({ id: "session_one", projectId: project.project.id });
+
+    // The response to the FIRST completeTurn is thrown away after the engine
+    // has already applied it — exactly a lost acknowledgement.
+    let swallowed = 0;
+    const real = client.completeTurn.bind(client);
+    (client as unknown as { completeTurn: typeof client.completeTurn }).completeTurn = async (...args) => {
+      const answer = await real(...args);
+      if (swallowed === 0) {
+        swallowed += 1;
+        throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "completeTurn", transport: "TypeError:ECONNRESET" });
+      }
+      return answer;
+    };
+
+    const diagnostics: Record<string, unknown>[] = [];
+    const worker = new EngineWorker({
+      client,
+      workerId: "worker_settle",
+      driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
+      pollMs: 60_000,
+      pause: async () => {},
+      onDiagnostic: (fields) => void diagnostics.push(fields),
+    });
+    await worker.start();
+    await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
+    await worker.tick();
+
+    // The turn is COMPLETED with its own text and usage — not interrupted.
+    const turn = (await client.session(session.session.id)).turns[0];
+    expect(turn?.state).toBe("completed");
+    expect(turn?.failure).toBeUndefined();
+    expect(swallowed).toBe(1);
+    // The retry met the engine's real conflict and treated it as settled.
+    expect(diagnostics.some((line) => line.event === "turn_unsettled")).toBeFalse();
+    await worker.stop();
+  } finally {
+    await daemon.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("a settlement refused by revocation fails closed at once, and never spins", async () => {
+  // Revocation is the engine's verdict on this worker: there is nothing to
+  // retry, and the old loop kept going without even reporting the loss.
+  const clock = fakeClock();
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  let attempts = 0;
+  let lost = 0;
+  fake.client.failTurn = async () => {
+    attempts += 1;
+    throw new EngineClientError("worker_unavailable", "unknown worker", 503, { operation: "failTurn" });
+  };
+  const diagnostics: Record<string, unknown>[] = [];
+  const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock, diagnostics });
+  await worker.start();
+  const settle = (worker as unknown as { settle: (op: string, send: () => Promise<unknown>) => Promise<string> }).settle.bind(worker);
+  const outcome = await settle("failTurn", () => (fake.client.failTurn as () => Promise<unknown>)());
+  expect(attempts).toBe(1);
+  expect(outcome).toBe("uncertain");
+  expect(lost).toBe(1);
+  expect(diagnostics.some((line) => line.event === "turn_unsettled" && line.code === "worker_unavailable")).toBeTrue();
+  await worker.stop();
+});
+
+test("a settlement endpoint that keeps failing is bounded per turn and spares healthy sessions", async () => {
+  /**
+   * An endpoint failing while heartbeats succeed is not evidence the engine is
+   * gone. Exhaustion records the turn as uncertain; it must not take the
+   * connection — and with it every other session's work — down with it.
+   */
+  const clock = fakeClock();
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  let attempts = 0;
+  let lost = 0;
+  fake.client.failTurn = async () => {
+    attempts += 1;
+    throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "failTurn", transport: "TypeError:ECONNRESET" });
+  };
+  const diagnostics: Record<string, unknown>[] = [];
+  const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock, diagnostics });
+  await worker.start();
+  const settle = (worker as unknown as { settle: (op: string, send: () => Promise<unknown>) => Promise<string> }).settle.bind(worker);
+  expect(await settle("failTurn", () => (fake.client.failTurn as () => Promise<unknown>)())).toBe("uncertain");
+  // Bounded, and the connection survives: heartbeats are still answering.
+  expect(attempts).toBe(5);
+  expect(lost).toBe(0);
+  expect(diagnostics.some((line) => line.event === "turn_unsettled")).toBeTrue();
+  await worker.stop();
 });

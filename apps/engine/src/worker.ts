@@ -206,10 +206,10 @@ export type EngineWorkerOptions = {
 /** A lease this worker will not exceed however large the engine's answer —
  *  a finite derived budget rather than whatever arrives on the wire. */
 const MAX_LEASE_MS = 120_000;
-/** Re-settle attempts for a turn whose settle did not land. Small: the point is
- *  to survive a blip, not to sit on a dead engine. */
-const RECONCILE_ATTEMPTS = 5;
-const RECONCILE_BACKOFF_MS = 250;
+/** Re-send attempts for a terminal settlement whose response was lost. Small:
+ *  the point is to survive a blip, not to sit on a dead endpoint. */
+const SETTLE_ATTEMPTS = 5;
+const SETTLE_BACKOFF_MS = 250;
 
 /** A worker is an executor only: every observable lifecycle event travels back through the engine API. */
 export class EngineWorker {
@@ -334,26 +334,27 @@ export class EngineWorker {
 
   async start(): Promise<void> {
     const startedAt = this.now();
+    this.lastAckAt = startedAt;
     const registration = await this.options.client.registerWorker(this.options.workerId);
-    // The engine's own expiry rule, taken from the engine — see `leaseMs`.
-    // Clamped so a hostile or absurd value cannot produce an unbounded budget.
+    // Nothing is installed once stop() has run: no timers, no claims.
+    if (this.stopped) return;
+    // Clamped: a finite budget, whatever the engine answers.
     const interval = registration?.heartbeatIntervalMs;
     if (typeof interval === "number" && Number.isFinite(interval) && interval > 0) {
       this.leaseMs = Math.min(interval * 3, MAX_LEASE_MS);
     }
     this.lastAckAt = startedAt;
-    await this.tick();
-    /**
-     * TWO TIMERS, because they answer different questions. `tick` does work and
-     * early-returns while one is in flight; the deadline check must run EVEN
-     * THEN — a heartbeat that never resolves would otherwise hold `ticking`
-     * true forever and the budget would never be evaluated at all.
-     */
-    this.timer = setInterval(() => void this.tick(), this.pollMs);
-    // Checked about as often as we would heartbeat — independent of `pollMs`,
-    // which a test may set to a minute to drive ticks by hand.
+    // BEFORE the first tick, not after: a first heartbeat that hangs would
+    // otherwise have no watchdog at all until it timed out.
     this.watchdog = setInterval(() => this.checkLease(), Math.max(10, Math.floor((this.leaseMs ?? this.pollMs) / 3)));
     this.watchdog.unref?.();
+    await this.tick();
+    if (this.stopped) {
+      if (this.watchdog) clearInterval(this.watchdog);
+      this.watchdog = undefined;
+      return;
+    }
+    this.timer = setInterval(() => void this.tick(), this.pollMs);
   }
 
   /** The clock, injectable so a test can drive the lease without sleeping. */
@@ -361,16 +362,21 @@ export class EngineWorker {
     return (this.options.now ?? Date.now)();
   }
 
-  /**
-   * Has this worker been out of contact longer than the engine allows?
-   *
-   * Runs on its own timer, independent of `tick`, so a hung request cannot
-   * suppress it. Never fires without a lease: an engine that states no expiry
-   * rule gives us no budget to spend, and the first-failure path handles that.
-   */
+  /** What is left of the lease, or `undefined` when the engine states none. */
+  private remainingLeaseMs(): number | undefined {
+    return this.leaseMs === undefined ? undefined : this.leaseMs - (this.now() - this.lastAckAt);
+  }
+
+  private expired(): boolean {
+    const remaining = this.remainingLeaseMs();
+    return remaining !== undefined && remaining <= 0;
+  }
+
+  /** Out of contact longer than the engine allows? On its own timer, so a hung
+   *  request cannot suppress it. */
   private checkLease(): void {
     if (this.stopped || this.connectionLost || this.leaseMs === undefined) return;
-    if (this.now() - this.lastAckAt >= this.leaseMs) {
+    if (this.expired()) {
       this.loseConnection(new EngineClientError("engine_unavailable", "engine lease expired", undefined, { operation: "workerHeartbeat", transport: "lease_expired" }));
     }
   }
@@ -481,38 +487,38 @@ export class EngineWorker {
   }
 
   /**
-   * A TURN WHOSE SETTLE DID NOT REACH THE ENGINE, RE-SETTLED.
+   * A TERMINAL SETTLEMENT WHOSE RESPONSE MAY HAVE BEEN LOST, RETRIED AS ITSELF.
    *
-   * The only thing retried, and safe because settling is idempotent by claim
-   * token — `conflict` means someone already settled it, which is success here.
-   * No provider re-runs. Bounded by the lease and abandoned past it, since the
-   * engine may have reassigned the turn. Other sessions are untouched: this
-   * awaits inside one `execute`.
+   * The SAME call is repeated, so a turn that completed stays completed with
+   * its own text and usage — re-reporting it as `interrupted` would be
+   * inventing a different outcome, not retrying this one. Idempotent by claim
+   * token: `conflict` means the engine already has it, before or after the lost
+   * acknowledgement, and is success here. No provider re-runs.
+   *
+   * Bounded PER TURN. An endpoint that keeps failing while heartbeats succeed
+   * is not evidence the engine is gone, so exhaustion records the turn as
+   * uncertain and returns — it must not kill healthy sessions. Only the
+   * watchdog decides the connection is lost. Revocation is the exception: that
+   * is the engine's verdict on this worker, and it fails closed at once.
    */
-  private async reconcile(sessionId: string, runId: string, claimToken: string, cause: unknown): Promise<void> {
-    const failure = {
-      code: "interrupted" as const,
-      message: "Telar's worker lost contact with the engine while settling this turn. What it had already done is above; whether it had finished anything elsewhere is unknown.",
-    };
-    for (let attempt = 0; attempt < RECONCILE_ATTEMPTS; attempt += 1) {
-      if (this.stopped || this.connectionLost) break;
-      if (this.leaseMs !== undefined && this.now() - this.lastAckAt >= this.leaseMs) break;
-      await this.pause(Math.min(this.pollMs, RECONCILE_BACKOFF_MS));
-      if (this.stopped || this.connectionLost) break;
+  private async settle(operation: "completeTurn" | "failTurn", send: () => Promise<unknown>): Promise<"settled" | "uncertain"> {
+    for (let attempt = 0; ; attempt += 1) {
       try {
-        await this.options.client.failTurn(sessionId, runId, claimToken, failure);
-        this.diagnose({ event: "turn_reconciled", operation: "failTurn" });
-        return;
+        await send();
+        if (attempt > 0) this.diagnose({ event: "turn_resettled", operation });
+        return "settled";
       } catch (error) {
-        // Already settled by someone else — the outcome this wanted.
-        if (error instanceof EngineClientError && error.code === "conflict") return;
+        if (error instanceof EngineClientError && error.code === "conflict") return "settled";
         if (!isConnectivityLoss(error)) throw error;
+        const revoked = error instanceof EngineClientError && (error.code === "engine_unauthorized" || error.code === "worker_unavailable");
+        this.noteConnectivityFailure(error);
+        if (revoked || this.stopped || this.connectionLost || this.expired() || attempt + 1 >= SETTLE_ATTEMPTS) {
+          this.diagnose({ event: "turn_unsettled", operation, ...EngineWorker.describe(error) });
+          return "uncertain";
+        }
+        await this.pause(SETTLE_BACKOFF_MS);
       }
     }
-    // Still unreachable within the lease: this is a real loss, and the
-    // supervisor's replacement is the recovery. Recorded, not silent.
-    this.diagnose({ event: "turn_unreconciled", ...EngineWorker.describe(cause) });
-    this.loseConnection(cause);
   }
 
   /** Injectable so a fake-clock test never sleeps. */
@@ -526,19 +532,20 @@ export class EngineWorker {
     this.ticking = true;
     try {
       const issuedAt = this.now();
-      /**
-       * BOUNDED, so a request that never resolves cannot pin this tick — and
-       * with it the whole poll loop — open forever. The bound is the lease: a
-       * reply that arrives later than that is worthless anyway, because the
-       * engine may already have reassigned this worker's work.
-       */
-      const status = await this.options.client.workerHeartbeat(this.options.workerId, this.leaseMs === undefined ? undefined : AbortSignal.timeout(this.leaseMs));
-      // A reply that lands after `stop()` must change nothing: the worker is
-      // already being torn down and its successor owns the registration.
+      // Bounded by what is LEFT of the lease, not a fresh one per request: a
+      // reply due after the deadline is worthless, and a per-request timeout
+      // would let successive requests outlive the budget entirely.
+      const remaining = this.remainingLeaseMs();
+      const status = await this.options.client.workerHeartbeat(this.options.workerId, remaining === undefined ? undefined : AbortSignal.timeout(Math.max(1, remaining)));
       if (this.stopped || this.connectionLost) return;
-      // The engine answered, so the budget restarts from when we ASKED. An
-      // intermittent connection therefore cannot accumulate isolated failures
-      // into a loss that never happened, and a slow reply cannot buy time.
+      // THE DEADLINE, NOT THE FLAGS. The watchdog runs every lease/3, so an
+      // expired reply can land before it next fires; accepting it would reset
+      // `lastAckAt` and resurrect a budget that is already spent.
+      if (this.expired()) {
+        this.loseConnection(new EngineClientError("engine_unavailable", "engine lease expired", undefined, { operation: "workerHeartbeat", transport: "lease_expired" }));
+        return;
+      }
+      // Anchored at the moment we ASKED, so latency counts against us.
       this.lastAckAt = issuedAt;
       if (this.outageReported) {
         this.diagnose({ event: "engine_reachable", operation: "workerHeartbeat" });
@@ -1097,11 +1104,15 @@ export class EngineWorker {
       // it rejects as a conflict — the guarantee the old in-driver queue gave.
       await lease?.drain();
       if (!controller.signal.aborted) {
-        await this.options.client.completeTurn(sessionId, runId, claimToken, {
-          text: result.text,
-          ...(result.providerSessionId ? { providerSessionId: result.providerSessionId } : {}),
-          ...(result.usage ? { usage: result.usage } : {}),
-        });
+        // Retried as ITSELF on a lost response — the turn completed, and that
+        // is what the engine must end up holding.
+        await this.settle("completeTurn", () =>
+          this.options.client.completeTurn(sessionId, runId, claimToken, {
+            text: result.text,
+            ...(result.providerSessionId ? { providerSessionId: result.providerSessionId } : {}),
+            ...(result.usage ? { usage: result.usage } : {}),
+          }),
+        );
       } else if (this.shuttingDown) {
         // A DRIVER THAT RETURNS ON ABORT REACHES HERE, NOT THE CATCH — and
         // that is most of them: aborting a well-behaved driver unwinds it
@@ -1132,24 +1143,25 @@ export class EngineWorker {
       // Stop is terminal before a worker sees the heartbeat. Never overwrite it with an error.
       if (controller.signal.aborted || (error instanceof EngineClientError && error.code === "conflict")) return;
       if (isConnectivityLoss(error)) {
-        this.noteConnectivityFailure(error);
-        // NOT SWALLOWED. Returning here would drop the turn from `active` in
-        // the `finally` below with nothing recorded, and if the next heartbeat
-        // then succeeded the worker would never restart — leaving the engine's
-        // journal `running` forever while the app stayed up. "The next boot
-        // calls it ambiguous" is not recovery for a process that never exits.
-        await this.reconcile(sessionId, runId, claimToken, error);
+        // A PRE-SETTLEMENT fault: `markTurnRunning` or an observation report
+        // never reached the engine, so the turn never produced an outcome and
+        // `interrupted` is the honest one. A terminal settlement that lost its
+        // response is handled by `settle`, which retries it as itself and never
+        // arrives here. Not swallowed: returning silently left the journal
+        // `running` for as long as the app stayed up.
+        await this.settle("failTurn", () =>
+          this.options.client.failTurn(sessionId, runId, claimToken, {
+            code: "interrupted",
+            message: "Telar's worker lost contact with the engine before this turn produced a result. What it had already done is above; whether it had finished anything elsewhere is unknown.",
+          }),
+        );
         return;
       }
       const failure =
         error instanceof ProviderUnavailableError || error instanceof UnsupportedDriverError
           ? { code: "provider_unavailable" as const, message: error.message }
           : { code: "driver_failed" as const, message: error instanceof Error ? error.message : "Telar driver failed" };
-      try {
-        await this.options.client.failTurn(sessionId, runId, claimToken, failure);
-      } catch (settleError) {
-        if (!(settleError instanceof EngineClientError && settleError.code === "conflict")) throw settleError;
-      }
+      await this.settle("failTurn", () => this.options.client.failTurn(sessionId, runId, claimToken, failure));
     } finally {
       // The lease is deliberately NOT released here — it is the session's
       // now (see the cache above), revoked in `stop()` alongside the
