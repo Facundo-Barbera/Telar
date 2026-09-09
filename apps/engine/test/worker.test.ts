@@ -80,14 +80,15 @@ function claimBarrier() {
 
 async function setup(
   driver: TurnDriver,
-  extras: { browserSocket?: BrowserToolSocket } = {},
+  extras: { browserSocket?: BrowserToolSocket; workerLeaseMs?: number } = {},
 ): Promise<{ client: EngineClient; sessionId: string; worker: EngineWorker }> {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  // Manual ticks need a lease covering the test; expiry is tested separately.
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: extras.workerLeaseMs ?? 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   const session = await client.createSession({ id: "session_one", projectId: project.project.id });
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, ...extras, pollMs: 60_000 });
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, ...(extras.browserSocket ? { browserSocket: extras.browserSocket } : {}), pollMs: 60_000 });
   workers.push(worker);
   await worker.start();
   return { client, sessionId: session.session.id, worker };
@@ -151,6 +152,8 @@ test("a whitespace-only provider delta is a valid stream observation, not an inv
 
 test("stop reaches the active fake driver and remains the durable terminal state", async () => {
   let sawAbort = false;
+  let ready!: () => void;
+  const providerReady = new Promise<void>(resolve => { ready = resolve; });
   const driver: TurnDriver = {
     async run({ onObservations, signal }) {
       await onObservations([
@@ -165,6 +168,7 @@ test("stop reaches the active fake driver and remains the durable terminal state
           },
           { once: true },
         );
+        ready();
       });
       return { text: "unreachable" };
     },
@@ -173,6 +177,7 @@ test("stop reaches the active fake driver and remains the durable terminal state
   await client.submitTurn(sessionId, { runId: "run_one", input: "Stop me" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
+  await providerReady;
   await client.stopTurn(sessionId, "run_one");
   await worker.tick();
   await eventually(() => expect(sawAbort).toBe(true));
@@ -202,7 +207,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
       return { text: label };
     },
   });
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -229,7 +234,7 @@ test("the worker routes each turn to the driver its SESSION named", async () => 
 });
 
 test("a session whose provider this worker cannot serve fails the turn instead of hanging", async () => {
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -262,7 +267,7 @@ test("engine connectivity loss aborts active provider execution — once it outl
    * aborted every active turn, replaced the worker, and killed every session's
    * background work — against a daemon whose PID never changed.
    *
-   * The engine's own lease is now the budget (`setup` runs a 1s one, so the
+   * The engine's own lease is now the budget (this test requests a 1s one, so the
    * worker learns a ~1s tolerance from `heartbeatIntervalMs`), and a REAL loss
    * — this daemon is genuinely closed — is still detected and still aborts,
    * just at the boundary the engine itself defines rather than instantly.
@@ -277,7 +282,7 @@ test("engine connectivity loss aborts active provider execution — once it outl
       return { text: "unreachable" };
     },
   };
-  const { client, sessionId, worker } = await setup(driver);
+  const { client, sessionId, worker } = await setup(driver, { workerLeaseMs: 1_000 });
   await client.submitTurn(sessionId, { runId: "run_one", input: "Hello" });
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
@@ -335,7 +340,7 @@ test("turns from DIFFERENT sessions run concurrently up to the cap; one session 
       return { text: `done ${prompt}` };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -685,7 +690,7 @@ test("a project folder that no longer exists fails the turn with the folder name
   // Through the worker: the driver is never invoked; the turn fails with the sentence.
   let invoked = 0;
   const driver: TurnDriver = { run: async () => { invoked += 1; return { text: "" }; } };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const stale = fs.mkdtempSync(path.join(os.tmpdir(), "telar-stale-"));
@@ -779,7 +784,7 @@ test("a turn the PROVIDER opened does not hold an execution slot shut", async ()
     },
   };
 
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -828,7 +833,7 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
       return { text: "should never run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -955,7 +960,7 @@ test("a claim already granted when Stop lands never reaches the driver; a new me
       return { text: "must not run" };
     },
   };
-  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 1_000 });
+  const daemon = await startEngine({ engineRoot: root(), workerLeaseMs: 60_000 });
   daemons.push(daemon);
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
