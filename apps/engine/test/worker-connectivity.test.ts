@@ -469,7 +469,8 @@ test("every connectivity outcome reaches the diagnostic sink, sanitized and boun
   // ONE line per outage, not one per tick — a flapping engine must not be able
   // to fill a log.
   expect(diagnostics.filter((line) => line.event === "engine_unreachable")).toHaveLength(1);
-  expect(diagnostics[0]).toEqual({ event: "engine_unreachable", code: "engine_unavailable", operation: "workerHeartbeat", transport: "TypeError:ECONNRESET" });
+  expect(diagnostics[0]).toEqual({ event: "worker_registered", operation: "registerWorker" });
+  expect(diagnostics.find(line => line.event === "engine_unreachable")).toEqual({ event: "engine_unreachable", code: "engine_unavailable", operation: "workerHeartbeat", transport: "TypeError:ECONNRESET" });
 
   // Recovery is recorded too, so an outage has a visible end.
   await worker.tick();
