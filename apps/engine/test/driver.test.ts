@@ -389,6 +389,84 @@ test("usage and cost are reported from the result message", async () => {
   expect(sink.observations.some((o) => o.kind === "usage")).toBeTrue();
 });
 
+describe("cost is the turn's, out of the query's running total", () => {
+  /** Three turns down one live query, with the running totals the SDK reports. */
+  const driverReporting = (totals: (number | undefined)[]) => {
+    let turn = 0;
+    return createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        for await (const message of prompt) {
+          void message;
+          const total = totals[turn++];
+          yield {
+            type: "result",
+            subtype: "success",
+            ...(total === undefined ? {} : { total_cost_usd: total }),
+            usage: { input_tokens: 10, output_tokens: 2 },
+          };
+        }
+      },
+    }) as never);
+  };
+  const costsOf = async (driver: ReturnType<typeof createClaudeDriver>, turns: number) => {
+    const out: (number | undefined)[] = [];
+    for (let index = 0; index < turns; index += 1) {
+      out.push((await run(driver, { sessionId: "session_costed" }).result).usage?.costUsd);
+    }
+    return out;
+  };
+
+  test("cumulative totals become per-turn deltas, so the sum is the query's spend", async () => {
+    /**
+     * MEASURED IN THE #201 FIXTURES: one live query reporting $0.10 then $0.30
+     * stored two turn costs summing to $0.40, against a query that had spent
+     * $0.30. The SDK is explicit that `total_cost_usd` is "cumulative across
+     * turns in streaming-input sessions" — and Telar holds one query per
+     * session across every turn of it.
+     */
+    const costs = await costsOf(driverReporting([0.1, 0.3, 0.35]), 3);
+    expect(costs).toEqual([0.1, 0.2, 0.05]);
+    expect(costs.reduce((sum, cost) => sum! + cost!, 0)).toBeCloseTo(0.35, 10);
+  });
+
+  test("a crash-zeroed result preserves the running total instead of erasing it", async () => {
+    // "Crash/startup-error results may carry zeroed values" — so zero is no
+    // information, never "this query has spent nothing since".
+    const costs = await costsOf(driverReporting([0.1, 0, 0.3]), 3);
+    expect(costs).toEqual([0.1, undefined, 0.2]);
+  });
+
+  test("a total that drops below the baseline is a new epoch, and all of it is this turn's", async () => {
+    // A mid-session /clear resets the running total; a resumed session starts
+    // fresh. Subtracting the old baseline would report a negative price.
+    expect(await costsOf(driverReporting([0.3, 0.05, 0.09]), 3)).toEqual([0.3, 0.05, 0.04]);
+  });
+
+  test("a provider that reports no cost at all reports none — not $0.00", async () => {
+    // Claude omits cost on subscription plans.
+    expect(await costsOf(driverReporting([undefined, undefined]), 2)).toEqual([undefined, undefined]);
+  });
+
+  test("a cold start resets the baseline, because a new process is a new query", async () => {
+    let queries = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        const mine = (queries += 1);
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success", total_cost_usd: mine === 1 ? 0.4 : 0.05, usage: { input_tokens: 1, output_tokens: 1 } };
+        }
+      },
+    }) as never);
+    const first = await run(driver, { sessionId: "session_cold", cwd: "/tmp" }).result;
+    // A different cwd is a different fingerprint: the process is replaced, and
+    // the new query's total starts from its own zero rather than from $0.40.
+    const second = await run(driver, { sessionId: "session_cold", cwd: "/tmp/elsewhere" }).result;
+    expect(queries).toBe(2);
+    expect([first.usage?.costUsd, second.usage?.costUsd]).toEqual([0.4, 0.05]);
+  });
+});
+
 test("the meter moves DURING a turn: each assistant envelope emits usage, with context occupancy", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
@@ -426,6 +504,55 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   expect(last?.kind === "usage" && last.usage.contextUsed).toBe(219);
   // Tokens still come from the result's own usage, never from modelUsage.
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
+});
+
+test("message_delta carries the response's REAL output count; the envelope's was a placeholder", async () => {
+  /**
+   * MEASURED IN THE #201 SAMPLE: a 41-minute journal whose usage observations
+   * reported outputs of 6, 3 and 2 tokens, because the streamed assistant
+   * envelope's `output_tokens` is a placeholder — the SDK says as much
+   * ("message.usage is not final"). `message_delta` is the one frame that
+   * states the real figure, and the pump discarded it entirely.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 3 } },
+      };
+      yield { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 812 } } };
+      yield { type: "result", subtype: "success", usage: { input_tokens: 10, output_tokens: 812 } };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const usages = sink.observations.flatMap((o) => (o.kind === "usage" ? [o.usage] : []));
+  // Envelope, correction, result.
+  expect(usages).toHaveLength(3);
+  expect(usages[0]?.tokens.output).toBe(2);
+  expect(usages[1]?.tokens.output).toBe(812);
+  // Occupancy follows: input + cache reads + cache writes + the REAL output.
+  expect(usages[1]?.contextUsed).toBe(925);
+  // Everything else on the envelope is preserved rather than replaced.
+  expect(usages[1]?.tokens).toMatchObject({ input: 10, cacheRead: 100, cacheCreate: 3 });
+});
+
+test("a message_delta before any envelope, or from a sub-agent, moves nothing", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      // No envelope yet: nothing to correct, and inventing a record would
+      // report an occupancy with no input or cache counts at all.
+      yield { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 99 } } };
+      // A sub-agent's output is reported on its own task, never the parent's.
+      yield { type: "assistant", message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 10, output_tokens: 2 } } };
+      yield { type: "stream_event", parent_tool_use_id: "use_child", event: { type: "message_delta", usage: { output_tokens: 500 } } };
+      yield { type: "result", subtype: "success", usage: { input_tokens: 10, output_tokens: 2 } };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const usages = sink.observations.flatMap((o) => (o.kind === "usage" ? [o.usage] : []));
+  expect(usages.map((usage) => usage.tokens.output)).toEqual([2, 2]);
 });
 
 test("the meter assumes 1M only for an explicit [1m] row, and the provider's report corrects it either way", async () => {
@@ -478,6 +605,181 @@ test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row only", async 
   expect(selectedContextMaxFromModel("claude-opus-5")).toBeUndefined();
   expect(selectedContextMaxFromModel(undefined)).toBeUndefined();
   expect(selectedContextMaxFromModel("claude-mystery-9[1m]")).toBeUndefined();
+});
+
+describe("a provider wait is a row, not silence", () => {
+  /**
+   * MEASURED IN THE #201 SAMPLE: nineteen quiet journal gaps totalling 36
+   * minutes, and nothing recorded that could say which of them were the SDK
+   * sleeping between retries and which were the model thinking. Telar had no
+   * handler for `api_retry` or `rate_limit_event` at all.
+   */
+  test("a retry opens a row that the next frame closes, with the delay and the status", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 2, max_retries: 3, retry_delay_ms: 30_000, error_status: 529, error: { message: "overloaded" } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "back" }] } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await expect(result).resolves.toMatchObject({ text: "back" });
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started).toBeDefined();
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "api_retry", attempt: 2, maxAttempts: 3, delayMs: 30_000, status: 529 },
+    });
+    expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 30s after HTTP 529 (attempt 2 of 3)");
+    // Bounded: the row closes the moment the stream speaks again, so the pause
+    // has an end rather than being a marker floating in silence.
+    const waitId = started?.kind === "item.started" ? started.item.id : "";
+    expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId && o.status === "completed")).toBeTrue();
+  });
+
+  test("a connection error says so rather than inventing an HTTP status", async () => {
+    // `error_status` is null when the request never got a response.
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 500, error_status: null };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "api_retry", attempt: 1, maxAttempts: 3, delayMs: 500 },
+    });
+    expect(started?.kind === "item.started" && started.item.title).toBe("Retrying in 500ms after a connection error (attempt 1 of 3)");
+  });
+
+  test("a rejected limit is a wait; a warning is one finished row; an allowed event is nothing", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        // Routine "still fine" heartbeat — noise on a timeline, so dropped.
+        yield { type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.2 } };
+        yield { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.9, resetsAt: 1_800_000_000 } };
+        yield { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day_opus", resetsAt: 1_800_003_600 } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const waits = sink.observations.flatMap((o) => (o.kind === "item.started" && o.item.detail.type === "provider_wait" ? [o.item] : []));
+    expect(waits).toHaveLength(2);
+    expect(waits[0]?.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "rate_limit", limitStatus: "allowed_warning", limitType: "five_hour", resetsAt: 1_800_000_000, utilization: 0.9 },
+    });
+    expect(waits[0]?.title).toBe("Approaching the rate limit (five hour)");
+    expect(waits[1]?.title).toBe("Rate limit reached (seven day opus)");
+    // A warning closes immediately; a rejection stays open until the stream
+    // speaks again — the turn really is standing still.
+    const completedIds = sink.observations.flatMap((o) => (o.kind === "item.completed" ? [o.itemId] : []));
+    expect(completedIds).toContain(waits[0]!.id);
+    expect(completedIds).toContain(waits[1]!.id);
+  });
+
+  test("no prompt, header or provider error text reaches the journal", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 1,
+          max_retries: 3,
+          retry_delay_ms: 100,
+          error_status: 401,
+          error: { message: "invalid x-api-key sk-ant-secret", request_id: "req_secret" },
+        };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    expect(JSON.stringify(sink.observations)).not.toContain("sk-ant-secret");
+    expect(JSON.stringify(sink.observations)).not.toContain("req_secret");
+  });
+
+  test("an unrelated task frame does NOT end the wait; our own main loop does", async () => {
+    /**
+     * A background shell's notification and the CLI's housekeeping arrive on
+     * the same iterator and prove nothing about the request being retried; a
+     * sub-agent's output proves even less, since its model call is a different
+     * request that was never retried. Closing on the next frame of any kind
+     * reported a resumption that had not happened.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 200, error_status: 429 };
+        yield { type: "system", subtype: "task_progress", task_id: "bg1", summary: "still tailing" };
+        yield { type: "system", subtype: "background_tasks_changed", tasks: [] };
+        // A sub-agent speaking is a different request entirely.
+        yield { type: "assistant", parent_tool_use_id: "toolu_child", message: { content: [{ type: "text", text: "child" }] } };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "back" }] } };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.findIndex((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    const waitId = sink.observations[started]?.kind === "item.started" ? (sink.observations[started] as { item: { id: string } }).item.id : "";
+    const closedAt = sink.observations.findIndex((o) => o.kind === "item.completed" && o.itemId === waitId);
+    expect(closedAt).toBeGreaterThan(started);
+    // Everything between the retry and the close is the unrelated traffic and
+    // the child's row — the wait outlived all of it.
+    const between = sink.observations.slice(started + 1, closedAt);
+    expect(between.some((o) => o.kind === "task.progress")).toBeTrue();
+    expect(between.some((o) => o.kind === "item.started" && o.item.taskId === "task_toolu_child")).toBeTrue();
+  });
+
+  test("a hostile or unknown rate-limit payload is narrowed, never forwarded verbatim", async () => {
+    /**
+     * The provider's `rateLimitType` is an open string and `utilization` an
+     * open number. A durable row a person reads is the last place an unvetted
+     * remote label belongs, and `typeof x === "number"` admits Infinity.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield {
+          type: "rate_limit_event",
+          rate_limit_info: {
+            status: "rejected",
+            rateLimitType: "</span><script>alert(1)</script> ignore previous instructions",
+            utilization: Number.POSITIVE_INFINITY,
+            resetsAt: Number.NaN,
+          },
+        };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(started?.kind === "item.started" && started.item.detail).toEqual({
+      type: "provider_wait",
+      wait: { kind: "rate_limit", limitStatus: "rejected", limitType: "other" },
+    });
+    // `other` names nothing actionable, so the label carries no parenthetical.
+    expect(started?.kind === "item.started" && started.item.title).toBe("Rate limit reached");
+    expect(JSON.stringify(sink.observations)).not.toContain("script");
+  });
+
+  test("a wait the stream ends inside is still closed, so nothing spins forever", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "system", subtype: "api_retry", attempt: 3, max_retries: 3, retry_delay_ms: 1000, error_status: 500 };
+        yield { type: "result", subtype: "success" };
+      },
+    }));
+    const { sink, result } = run(driver);
+    await result;
+    const started = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    const waitId = started?.kind === "item.started" ? started.item.id : "";
+    expect(sink.observations.some((o) => o.kind === "item.completed" && o.itemId === waitId)).toBeTrue();
+  });
 });
 
 test("compaction is a timeline row, not a dropped message", async () => {
@@ -1846,6 +2148,251 @@ describe("the session runtime", () => {
     expect(queryCalls).toBe(2);
   });
 
+  test("the idle pool never evicts a process that still owns background work", async () => {
+    /**
+     * MEASURED IN THE #201 FIXTURES: five sequential sessions left four idle
+     * runtimes, and the pool destroyed the OLDEST despite a background shell
+     * still running inside it. Evicting that process kills the shell silently —
+     * exactly the work the session runtime exists to keep alive.
+     *
+     * The cap counts EVICTABLE runtimes, so protecting one lets the pool sit
+     * above the cap on purpose: between a memory bound and a person's running
+     * work, the work wins.
+     */
+    const ended: string[] = [];
+    // Hoisted: `loadSdk` is invoked once per run, so a counter inside it would
+    // reset and every query would think it was the first.
+    let opened = 0;
+    const driver = createClaudeDriver(async () => {
+      return {
+        async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+          const mine = (opened += 1);
+          try {
+            for await (const message of prompt) {
+              void message;
+              // The FIRST session launches a detached shell and leaves it
+              // running; the rest are ordinary turns.
+              if (mine === 1) {
+                yield { type: "system", subtype: "task_started", task_id: "sdk_bg", tool_use_id: "use_bg", task_type: "bash", is_backgrounded: true, description: "tail -f build.log" };
+              }
+              yield { type: "result", subtype: "success" };
+            }
+          } finally {
+            ended.push(`query_${mine}`);
+          }
+        },
+      } as never;
+    });
+    for (const id of ["a", "b", "c", "d", "e"]) await run(driver, { sessionId: `session_pool_${id}` }).result;
+    // The feed's generator only falls out once destroy ends it; give it a beat.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Five processes, one protected: the oldest EVICTABLE one goes instead.
+    expect(ended).not.toContain("query_1");
+    expect(ended).toEqual(["query_2"]);
+  });
+
+  test("the cap is enforced on release, not only on adoption", async () => {
+    /**
+     * A newcomer arrives BUSY, so adoption never counted it — the cap was only
+     * ever tested at the moment before the newest process became idle, and
+     * sessions finishing their turns left the pool over the cap with nothing
+     * that would ever notice.
+     */
+    const ended: string[] = [];
+    let opened = 0;
+    const driver = createClaudeDriver(async () => {
+      return {
+        async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+          const mine = (opened += 1);
+          try {
+            for await (const message of prompt) {
+              void message;
+              yield { type: "result", subtype: "success" };
+            }
+          } finally {
+            ended.push(`query_${mine}`);
+          }
+        },
+      } as never;
+    });
+    // Four sessions, none protected: the fourth's RELEASE is what takes the
+    // pool to four evictable runtimes and must prune back to three.
+    for (const id of ["a", "b", "c", "d"]) await run(driver, { sessionId: `session_cap_${id}` }).result;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(ended).toEqual(["query_1"]);
+  });
+
+  test("an env patch reordered but unchanged reuses the process; a reordered server list does too", async () => {
+    /**
+     * MEASURED IN THE #201 FIXTURES: two fake turns differing ONLY in
+     * environment key order created two queries, because the fingerprint was
+     * `JSON.stringify` and that writes keys in insertion order. The same
+     * order-sensitivity applied to the server array. Every such cold start
+     * kills the session's background shells, monitors and detached agents.
+     */
+    let queryCalls = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        queryCalls += 1;
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const server = (id: string) => ({ id, label: id, enabled: true, createdAt: 1, updatedAt: 1, spec: { transport: "stdio", command: id, args: ["mcp"] } });
+    await run(driver, {
+      sessionId: "session_ordered",
+      env: { CLAUDE_CONFIG_DIR: "/tmp/cfg", ANTHROPIC_BASE_URL: "http://127.0.0.1:8317" },
+      mcpServers: [server("alpha"), server("beta")],
+    }).result;
+    await run(driver, {
+      sessionId: "session_ordered",
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8317", CLAUDE_CONFIG_DIR: "/tmp/cfg" },
+      mcpServers: [server("beta"), server("alpha")],
+    }).result;
+    expect(queryCalls).toBe(1);
+  });
+
+  test("deleting an inherited variable is its own identity, and the child really loses the key", async () => {
+    /**
+     * `DriverRun.env` is a PATCH, and a key mapped to `undefined` means DELETE
+     * — that is how a configured login stops inheriting an ambient credential.
+     * `env: {}` and `env: { KEY: undefined }` are opposite instructions that
+     * `JSON.stringify` rendered identically, so they shared one process. And
+     * spreading the patch left the key PRESENT with an undefined value, which
+     * is not the same object as one where the key is gone.
+     */
+    let queryCalls = 0;
+    const seen: Record<string, string | undefined>[] = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { env?: Record<string, string | undefined> } }) {
+        queryCalls += 1;
+        seen.push(options.env ?? {});
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    process.env.TELAR_TEST_AMBIENT_CREDENTIAL = "ambient-secret";
+    try {
+      await run(driver, { sessionId: "session_deleting", env: { CLAUDE_CONFIG_DIR: "/tmp/cfg" } }).result;
+      await run(driver, { sessionId: "session_deleting", env: { CLAUDE_CONFIG_DIR: "/tmp/cfg", TELAR_TEST_AMBIENT_CREDENTIAL: undefined } }).result;
+      // Two different instructions, therefore two processes.
+      expect(queryCalls).toBe(2);
+      expect(seen[0]?.TELAR_TEST_AMBIENT_CREDENTIAL).toBe("ambient-secret");
+      // GONE, not present-and-undefined: nothing downstream has to guess.
+      expect(Object.hasOwn(seen[1]!, "TELAR_TEST_AMBIENT_CREDENTIAL")).toBeFalse();
+      // The rest of the worker's environment still reaches the child.
+      expect(seen[1]?.CLAUDE_CONFIG_DIR).toBe("/tmp/cfg");
+    } finally {
+      delete process.env.TELAR_TEST_AMBIENT_CREDENTIAL;
+    }
+  });
+
+  test("the runtime debug line names the changed field and prints no secret", async () => {
+    /**
+     * Its predecessor printed the whole fingerprint string, which carries the
+     * login's env patch and the browser socket's bearer token — so the one
+     * diagnostic worth turning on during a live latency investigation was the
+     * one that could not safely be turned on.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    process.env.TELAR_CLAUDE_RUNTIME_DEBUG = "1";
+    try {
+      await run(driver, { sessionId: "session_debug", env: { ANTHROPIC_API_KEY: "sk-secret-one" } }).result;
+      await run(driver, {
+        sessionId: "session_debug",
+        env: { ANTHROPIC_API_KEY: "sk-secret-two" },
+        browserSocket: { url: "http://127.0.0.1:1/mcp", token: "browser-bearer-token" },
+      }).result;
+    } finally {
+      console.error = realError;
+      delete process.env.TELAR_CLAUDE_RUNTIME_DEBUG;
+    }
+    const logged = lines.join("\n");
+    expect(logged).not.toContain("sk-secret-one");
+    expect(logged).not.toContain("sk-secret-two");
+    expect(logged).not.toContain("browser-bearer-token");
+    // It still answers the question it exists for: which field broke reuse.
+    const reuse = lines.filter((line) => line.startsWith("[claude-runtime]"));
+    expect(reuse.at(-1)).toContain("reuse=false");
+    expect(reuse.at(-1)).toContain("changed=browser,env");
+  });
+
+  test("the gated timing line carries whitelisted scalars and nothing else", async () => {
+    /**
+     * The #201 audit could not tell hidden thinking from provider queueing from
+     * network wait, because the result's own timings were read and discarded.
+     * These go to the opt-in diagnostic channel, never to the durable journal —
+     * which is a transcript, not a performance ledger.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield {
+          type: "result",
+          subtype: "success",
+          duration_ms: 255_715,
+          duration_api_ms: 254_010,
+          ttft_ms: 8_973,
+          num_turns: 4,
+          stop_reason: "end_turn",
+          result: "the model's whole answer, which must not be logged",
+          usage: { input_tokens: 32, output_tokens: 6 },
+        };
+      },
+    }));
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    process.env.TELAR_CLAUDE_RUNTIME_DEBUG = "1";
+    try {
+      await run(driver, { sessionId: "session_timed" }).result;
+    } finally {
+      console.error = realError;
+      delete process.env.TELAR_CLAUDE_RUNTIME_DEBUG;
+    }
+    const timing = lines.find((line) => line.startsWith("[claude-timing]"));
+    expect(timing).toBeDefined();
+    expect(JSON.parse(timing!.slice(timing!.indexOf("{")))).toEqual({
+      durationMs: 255_715,
+      apiMs: 254_010,
+      ttftMs: 8_973,
+      turns: 4,
+      stopReason: "end_turn",
+      subtype: "success",
+    });
+    expect(timing).not.toContain("must not be logged");
+  });
+
+  test("the diagnostics are OFF unless asked for", async () => {
+    const driver = createClaudeDriver(async () => ({
+      async *query() {
+        yield { type: "result", subtype: "success", duration_ms: 12 };
+      },
+    }));
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    try {
+      await run(driver, { sessionId: "session_quiet" }).result;
+    } finally {
+      console.error = realError;
+    }
+    expect(lines).toEqual([]);
+  });
+
   test("stopTask reaches into the session's live runtime and stops one background task by provider id", async () => {
     const stopped: string[] = [];
     const driver = createClaudeDriver(async () => ({
@@ -2175,6 +2722,66 @@ describe("a turn the CLI started by itself is not this turn", () => {
     expect(wake.observations.some((o) => o.kind === "item.completed" && o.itemId === "item_toolu_merge" && o.status === "completed")).toBe(true);
     // Nothing of it leaked into the first turn's sink.
     expect(first.sink.observations.some((o) => o.kind === "item.started" && o.item.detail.type === "command_execution")).toBe(false);
+  });
+
+  test("a wake-up's retry and its final output count reach ITS turn, exactly as a human turn's do", async () => {
+    /**
+     * PARITY, because the wake-up HAS a turn: the engine granted a binding with
+     * an observation sink of its own. An earlier version of this patch claimed
+     * there was nowhere to put the row and skipped both, so an autonomous turn
+     * that spent two minutes in provider backoff looked identical to one that
+     * spent two minutes thinking, and its usage reported a placeholder output.
+     *
+     * EXPLICITLY STILL LIMITED: a wait announced before the binding exists is
+     * dropped. Those frames belong to no turn, and the session-level task
+     * channel takes task reports rather than rows.
+     */
+    let releaseWake: (() => void) | undefined;
+    const woke = new Promise<void>((resolve) => { releaseWake = resolve; });
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<{ uuid?: string }> }) {
+        const input = prompt[Symbol.asyncIterator]();
+        const first = await input.next();
+        yield { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: "toolu_bg", description: "sleep 5", task_type: "local_bash", is_backgrounded: true };
+        yield* reply(first.value!.uuid!, "started");
+        await woke;
+        yield { type: "system", subtype: "task_notification", task_id: "bg1", summary: "DONE" };
+        yield { type: "user", message: { role: "user", content: "Background task completed (DONE)." } };
+        yield { type: "stream_event", event: { type: "message_start" } };
+        // The provider makes the AUTONOMOUS turn wait.
+        yield { type: "system", subtype: "api_retry", attempt: 2, max_retries: 3, retry_delay_ms: 15_000, error_status: 529 };
+        // An unrelated shell reporting mid-wait must not end it.
+        yield { type: "system", subtype: "task_progress", task_id: "bg1", summary: "still going" };
+        yield { type: "assistant", message: { content: [{ type: "text", text: "back" }], usage: { input_tokens: 7, output_tokens: 1, cache_read_input_tokens: 90, cache_creation_input_tokens: 2 } } };
+        yield { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 640 } } };
+        yield { type: "result", subtype: "success", stop_reason: "end_turn", origin: { kind: "task-notification" } };
+        await input.next();
+      },
+    }) as never);
+    const door = sessionDoor();
+    await run(driver, { sessionId: "session_wake_parity", session: door.hooks }).result;
+    releaseWake!();
+    await settle(() => door.turns[0]?.closed !== undefined);
+    const wake = door.turns[0]!;
+
+    // The wait is a row on the wake-up's own turn…
+    const waitStarted = wake.observations.findIndex((o) => o.kind === "item.started" && o.item.detail.type === "provider_wait");
+    expect(waitStarted).toBeGreaterThanOrEqual(0);
+    const row = wake.observations[waitStarted] as { item: { id: string; title?: string; detail: { type: string } } };
+    expect(row.item.title).toBe("Retrying in 15s after HTTP 529 (attempt 2 of 3)");
+    // …closed by this turn's own model output, not by the shell's progress.
+    const waitClosed = wake.observations.findIndex((o) => o.kind === "item.completed" && o.itemId === row.item.id);
+    expect(waitClosed).toBeGreaterThan(waitStarted);
+    // (the shell had already been notified, so its later report announces as a
+    // repeat completion rather than progress — either way it is task traffic,
+    // and either way it must not be read as the retried request succeeding)
+    expect(wake.observations.slice(waitStarted + 1, waitClosed).some((o) => o.kind.startsWith("task."))).toBeTrue();
+
+    // And the meter takes the response's REAL output, not the envelope's 1.
+    const usages = wake.observations.flatMap((o) => (o.kind === "usage" ? [o.usage] : []));
+    expect(usages.map((usage) => usage.tokens.output)).toEqual([1, 640, 640]);
+    expect(usages[1]?.contextUsed).toBe(739);
+    expect(usages[1]?.tokens).toMatchObject({ input: 7, cacheRead: 90, cacheCreate: 2 });
   });
 
   test("a Monitor's tick is a task_progress, and the wake-up it triggers is still named after the monitor", async () => {

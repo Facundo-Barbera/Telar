@@ -24,6 +24,7 @@ import type {
   RequestDetail,
   RequestKind,
   PlanDetail,
+  ProviderWaitDetail,
   TaskKind,
   TaskSeed,
   TaskState,
@@ -42,6 +43,15 @@ import {
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
+import {
+  canonicalEnvPatch,
+  canonicalJson,
+  canonicalServers,
+  changedFields,
+  fieldDigest,
+  fieldDigests,
+  resolveChildEnv,
+} from "./claude-identity";
 import {
   ClaudeRuntimeStore,
   MessageFeed,
@@ -1108,6 +1118,132 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
 }
 
 /**
+ * A WAIT THE PROVIDER IMPOSED, from the frame that announced it.
+ *
+ * Two frames, one row type. `system/api_retry` says a request failed retryably
+ * and the SDK will sleep before trying again; `rate_limit_event` says the
+ * account's limit state changed. Telar handled neither, so provider backoff was
+ * indistinguishable from thinking — the ambiguity the #201 audit could not
+ * resolve from the journal.
+ *
+ * `blocking` separates the two things a row means. A retry, and a REJECTED
+ * limit, are the turn standing still: those open an in-progress row that the
+ * next frame closes, so the pause has a visible beginning and end. A warning is
+ * information, not a wait, and lands as one finished row. A plain `allowed`
+ * event is neither and is dropped — a routine "still fine" heartbeat on the
+ * timeline is noise.
+ *
+ * Only whitelisted scalars and enums cross: the retry frame carries the failing
+ * request's error object and the limit frame carries account state, and neither
+ * belongs in a durable journal.
+ */
+export function providerWaitFrom(item: {
+  type?: string;
+  subtype?: string;
+  attempt?: number;
+  max_retries?: number;
+  retry_delay_ms?: number;
+  error_status?: number | null;
+  rate_limit_info?: unknown;
+}): { detail: ProviderWaitDetail; blocking: boolean } | undefined {
+  const int = (candidate: unknown): number | undefined =>
+    typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0 ? Math.trunc(candidate) : undefined;
+
+  if (item.type === "system" && item.subtype === "api_retry") {
+    return {
+      blocking: true,
+      detail: {
+        kind: "api_retry",
+        ...(int(item.attempt) && int(item.attempt)! > 0 ? { attempt: int(item.attempt)! } : {}),
+        ...(int(item.max_retries) === undefined ? {} : { maxAttempts: int(item.max_retries)! }),
+        ...(int(item.retry_delay_ms) === undefined ? {} : { delayMs: int(item.retry_delay_ms)! }),
+        // A connection error has no HTTP response, and the SDK reports that as
+        // a null status. Absent says "no response" rather than inventing a 0.
+        ...(int(item.error_status) === undefined ? {} : { status: int(item.error_status)! }),
+      },
+    };
+  }
+
+  if (item.type !== "rate_limit_event") return undefined;
+  const info = asRecord(item.rate_limit_info);
+  const status = info.status;
+  if (status !== "rejected" && status !== "allowed_warning") return undefined;
+  const reported = str(info.rateLimitType);
+  return {
+    blocking: status === "rejected",
+    detail: {
+      kind: "rate_limit",
+      limitStatus: status,
+      // A CLOSED SET WITH A FALLBACK. The provider's field is an open string
+      // and the set grows, but a durable row a person reads is the last place
+      // an unvetted remote label should land. Anything unrecognised is `other`.
+      ...(reported === undefined ? {} : { limitType: KNOWN_RATE_LIMIT_TYPES.has(reported) ? (reported as ProviderWaitDetail["limitType"]) : "other" }),
+      ...(int(info.resetsAt) === undefined ? {} : { resetsAt: int(info.resetsAt)! }),
+      // Finite: `typeof x === "number"` admits Infinity and NaN, and a meter
+      // cannot render either.
+      ...(typeof info.utilization === "number" && Number.isFinite(info.utilization) && info.utilization >= 0
+        ? { utilization: info.utilization }
+        : {}),
+    },
+  };
+}
+
+/** The provider's own vocabulary, verbatim from `SDKRateLimitInfo`. Anything
+ *  outside it is reported as `other` rather than forwarded — see above. */
+const KNOWN_RATE_LIMIT_TYPES = new Set(["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage"]);
+
+/** The collapsed label, derived once by the engine like every other row's. */
+export function titleForProviderWait(detail: ProviderWaitDetail): string {
+  if (detail.kind === "rate_limit") {
+    // `other` names nothing a person can act on, so it earns no parenthetical.
+    const limit = detail.limitType && detail.limitType !== "other" ? ` (${detail.limitType.replaceAll("_", " ")})` : "";
+    return detail.limitStatus === "rejected" ? `Rate limit reached${limit}` : `Approaching the rate limit${limit}`;
+  }
+  const attempt = detail.attempt === undefined ? "" : detail.maxAttempts ? ` (attempt ${detail.attempt} of ${detail.maxAttempts})` : ` (attempt ${detail.attempt})`;
+  const delay = detail.delayMs === undefined ? "" : ` in ${detail.delayMs < 1000 ? `${detail.delayMs}ms` : `${Math.round(detail.delayMs / 100) / 10}s`}`;
+  // The status is the one honest word about WHY; absent means no response came
+  // back at all, which is a connection failure rather than a rejection.
+  const because = detail.status === undefined ? "after a connection error" : `after HTTP ${detail.status}`;
+  return `Retrying${delay} ${because}${attempt}`;
+}
+
+/**
+ * THIS TURN'S SPEND, out of the QUERY's running total.
+ *
+ * `total_cost_usd` is not a turn cost, and reading it as one is the #201
+ * accounting defect: the SDK documents it as "cumulative estimated cost for
+ * this query() call … cumulative across turns in streaming-input sessions —
+ * each result carries the running total so far". Telar holds ONE query per
+ * session across many turns, so two results reading $0.10 and $0.30 were
+ * stored as two turn costs summing to $0.40 against a query that had spent
+ * $0.30. Tokens are unaffected: `usage` really is per-turn.
+ *
+ * `epoch.totalUsd` is the baseline, carried on the runtime because that is what
+ * the total is scoped to. Two resets are handled explicitly, and differently:
+ *
+ *   - A ZEROED result. The SDK says crash and startup-error results may carry
+ *     zeroed values, so zero is "no information", never "the query has spent
+ *     nothing since". The baseline is preserved and no cost is reported, so a
+ *     crash cannot erase what earlier turns already recorded.
+ *   - A LOWER-BUT-NONZERO total. A mid-session `/clear` resets the running
+ *     total, and a resumed session starts fresh. That is a new epoch: the whole
+ *     of the new total is this turn's, and the baseline restarts there.
+ *
+ * Returns `undefined` when the provider said nothing — including on
+ * subscription plans, where Claude omits cost entirely. That is not $0.00.
+ */
+export function turnCostFrom(cumulativeUsd: unknown, epoch: { costTotalUsd: number | undefined }): number | undefined {
+  if (typeof cumulativeUsd !== "number" || !Number.isFinite(cumulativeUsd) || cumulativeUsd < 0) return undefined;
+  const previous = epoch.costTotalUsd;
+  if (cumulativeUsd === 0) return previous === undefined ? 0 : undefined;
+  epoch.costTotalUsd = cumulativeUsd;
+  if (previous === undefined || cumulativeUsd < previous) return cumulativeUsd;
+  // Rounded because binary floating point makes 0.3 − 0.1 read as
+  // 0.19999999999999998, and a price is not improved by sixteen digits.
+  return Math.round((cumulativeUsd - previous) * 1e10) / 1e10;
+}
+
+/**
  * How full the window is, from ONE message's usage.
  *
  * Claude reports each assistant envelope's usage as the API call behind it saw
@@ -1187,7 +1323,15 @@ export function createClaudeDriver(
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
-  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>();
+  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>({
+    /**
+     * WHAT THE POOL MUST NOT DESTROY. A backgrounded shell, monitor or
+     * detached agent lives inside the process and reports through it; evicting
+     * that process to honour an idle cap kills the work silently, which is
+     * exactly what the #201 fixtures reproduced.
+     */
+    liveBackgroundWork: (seed) => isBackgroundWork(seed) && !isTerminalTaskState(seed.state),
+  });
   return {
     dispose: () => runtimes.destroyAll(),
     stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
@@ -1242,6 +1386,10 @@ export function createClaudeDriver(
        */
       let contextUsed: number | undefined;
       let contextMax: number | undefined = selectedContextMaxFromModel(model);
+      /** The newest main-loop assistant envelope's raw `usage`, kept so the
+       *  response's closing `message_delta` can correct its placeholder
+       *  output count rather than replace the whole record. */
+      let lastEnvelopeUsage: unknown;
       const decorateUsage = (snapshot: UsageSnapshot | undefined): UsageSnapshot | undefined =>
         snapshot === undefined
           ? undefined
@@ -1250,6 +1398,14 @@ export function createClaudeDriver(
               ...(contextUsed === undefined ? {} : { contextUsed }),
               ...(contextMax === undefined ? {} : { contextMax }),
             };
+      /** The open "Retrying…" / "Rate limit reached" row, while the provider
+       *  has the turn standing still. Closed by the next frame of any kind. */
+      let waitItemId: string | undefined;
+      const closeProviderWait = (): void => {
+        if (!waitItemId) return;
+        emit({ kind: "item.completed", itemId: waitItemId, status: "completed" });
+        waitItemId = undefined;
+      };
       /** The open "Compacting context" row, when the provider announced one. */
       let compactionItemId: string | undefined;
       /** `compact_result: "success"` seen; the row waits for its boundary. */
@@ -1454,12 +1610,30 @@ export function createClaudeDriver(
         /** `background_tasks_changed` only: every live background task
          *  after the change, with REPLACE semantics. */
         tasks?: unknown;
+        /** `api_retry` only: the request failed retryably and the SDK is
+         *  about to sleep `retry_delay_ms` before attempt `attempt`. */
+        attempt?: number;
+        max_retries?: number;
+        retry_delay_ms?: number;
+        /** `null` for a connection error that never got a response. */
+        error_status?: number | null;
+        /** `rate_limit_event` only: the account's limit state. */
+        rate_limit_info?: unknown;
+        /** Result messages: whitelisted lifecycle scalars, for the gated
+         *  diagnostic line. Never journalled. */
+        duration_ms?: number;
+        duration_api_ms?: number;
+        ttft_ms?: number;
+        num_turns?: number;
         patch?: { status?: string; description?: string; error?: string; is_backgrounded?: boolean };
         event?: {
           type?: string;
           index?: number;
           content_block?: { type?: string };
           delta?: { type?: string; text?: string; thinking?: string };
+          /** `message_delta` only: the response's FINAL output token count.
+           *  Every earlier report of it is a placeholder — see the pump. */
+          usage?: unknown;
         };
       };
 
@@ -1901,22 +2075,26 @@ export function createClaudeDriver(
        * one and this turn cold-starts. `model` is deliberately absent: it is
        * the one knob a live query can turn (`setModel`).
        */
-      const fingerprint = JSON.stringify({
+      const fingerprintFields: Record<string, unknown> = {
         cwd,
-        env: env ?? null,
+        /**
+         * THE PATCH, NOT THE RESOLVED ENVIRONMENT, and with a deletion spelled
+         * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
+         * opposite instructions that `JSON.stringify` rendered identically.
+         */
+        env: canonicalEnvPatch(env, contextEnv),
         effort: sdkEffort ?? null,
-        contextEnv: contextEnv ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
         /**
-         * ID AND SPEC ONLY, never the whole record. Measured on the dev app:
-         * the auto-registered Computer Use server is re-stamped
-         * (`createdAt`/`updatedAt`) on every turn, and hashing those
+         * ID AND SPEC ONLY, deduplicated and sorted — never the whole record.
+         * Measured on the dev app: the auto-registered Computer Use server is
+         * re-stamped (`createdAt`/`updatedAt`) on every turn, and hashing those
          * timestamps cold-started a new process per turn — killing the very
          * background work this runtime exists to keep alive. Only what shapes
          * the spawned process belongs here.
          */
-        servers: userMcpServers?.map((server) => ({ id: server.id, enabled: server.enabled, spec: server.spec })) ?? null,
+        servers: canonicalServers(userMcpServers),
         browser: browserSocket ?? null,
         spool: Boolean(spool),
         sessions: Boolean(sessions),
@@ -1928,7 +2106,15 @@ export function createClaudeDriver(
         display: Boolean(display),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
-      });
+      };
+      /** CANONICAL, not `JSON.stringify`: key order is not identity, and an
+       *  explicit deletion is. See ./claude-identity.ts. */
+      const fingerprint = canonicalJson(fingerprintFields);
+      const fingerprintDigests = fieldDigests(fingerprintFields);
+
+      /** The child's environment with the patch's deletions APPLIED, resolved
+       *  once so the query options and the fingerprint cannot disagree. */
+      const childEnv = resolveChildEnv(process.env, env, contextEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
@@ -2093,9 +2279,10 @@ export function createClaudeDriver(
             // "when omitted the subprocess inherits process.env", so supplying
             // one replaces it. The patch is applied over the worker's own
             // environment here, which is where the child's PATH and HOME come
-            // from — and a key patched to `undefined` genuinely disappears,
-            // which is how a configured instance stops inheriting a credential.
-            ...(env || contextEnv ? { env: { ...process.env, ...env, ...contextEnv } } : {}),
+            // from — and a key patched to `undefined` is DELETED rather than
+            // left present-but-undefined, which is how a configured instance
+            // stops inheriting a credential. See `resolveChildEnv`.
+            ...(childEnv ? { env: childEnv } : {}),
             // Part of the fingerprint: a CLI that upgraded itself between two
             // turns changes the resolved path, and the runtime is recreated.
             ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
@@ -2111,6 +2298,7 @@ export function createClaudeDriver(
         return {
           sessionId,
           fingerprint,
+          fingerprintDigests,
           feed,
           query,
           iterator,
@@ -2138,7 +2326,11 @@ export function createClaudeDriver(
               .catch(() => undefined);
           },
           model,
+          // A NEW PROCESS IS A NEW QUERY, so its running cost total starts
+          // unknown — which is not the same as zero.
+          costTotalUsd: undefined,
           busy: true,
+          wakeActive: false,
           lastUsedAt: Date.now(),
           echoesUserMessageUuid: false,
         };
@@ -2162,10 +2354,24 @@ export function createClaudeDriver(
        * turn to let go; a runtime destroyed meanwhile just cold-starts below.
        */
       if (persistent) await runtimes.idle(sessionId);
+      /**
+       * WHICH FIELD BROKE REUSE — read BEFORE the claim, because a mismatched
+       * claim destroys the runtime whose identity the answer needs.
+       *
+       * NAMES AND DIGESTS ONLY. Its predecessor printed the whole fingerprint
+       * string, which carries the login's env patch, the browser socket's
+       * bearer token and every user MCP server's headers — so the one
+       * diagnostic worth turning on during a live latency investigation was the
+       * one that could not safely be turned on.
+       */
+      const outgoing = persistent ? runtimes.peek(sessionId)?.fingerprintDigests : undefined;
       let claimed = persistent ? runtimes.claim(sessionId, fingerprint) : undefined;
-      // Field diagnosis only: which fingerprint field broke reuse. Off unless asked.
       if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
-        console.error(`[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} fp=${fingerprint}`);
+        const changed = outgoing ? changedFields(outgoing, fingerprintDigests) : [];
+        console.error(
+          `[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} identity=${fieldDigest(fingerprintFields)}` +
+            (changed.length > 0 ? ` changed=${changed.join(",")}` : ""),
+        );
       }
       if (claimed && claimed.model !== model) {
         // The one knob a live query can turn. A query that cannot (a fake
@@ -2393,6 +2599,49 @@ export function createClaudeDriver(
            *  the answer to a question nobody asked. */
           const ours = !parentToolUseId && foreignTurn === undefined;
 
+          // ── the provider made the turn wait, and said why ─────────────
+          /**
+           * WHAT THE SILENCE WAS. Before this, an SDK backoff and a rejected
+           * rate limit produced no observation at all: the #201 sample has
+           * nineteen quiet gaps totalling 36 minutes and nothing in the
+           * journal can say which of them were provider waits. A blocking
+           * wait opens an in-progress row; the next frame closes it, so the
+           * pause is bounded rather than a marker floating in silence.
+           */
+          const waited = providerWaitFrom(item);
+          if (waited) {
+            closeProviderWait();
+            const id = itemId();
+            const detail: ItemDetail = { type: "provider_wait", wait: waited.detail };
+            emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(waited.detail) } });
+            if (waited.blocking) waitItemId = id;
+            else emit({ kind: "item.completed", itemId: id, status: "completed", detail });
+            await flush();
+            continue;
+          }
+          /**
+           * ONLY OUR OWN MAIN LOOP RESUMING ENDS THE WAIT.
+           *
+           * The first version closed on the NEXT FRAME OF ANY KIND, which is
+           * wrong twice over: a background shell's `task_notification` or the
+           * CLI's own housekeeping arrives on the same iterator and proves
+           * nothing about the request we are waiting on, and a sub-agent's
+           * output proves even less — its model call is a different request
+           * that was never retried. So the row closed on unrelated traffic and
+           * reported a resumption that had not happened.
+           *
+           * Model output for THIS turn's main loop is the evidence: the request
+           * went through. Anything else leaves the row open, and the turn's own
+           * end closes it if nothing ever does.
+           */
+          if (
+            waitItemId &&
+            ours &&
+            (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")
+          ) {
+            closeProviderWait();
+          }
+
           // ── compaction, announced then bounded ────────────────────────
           if (item.type === "system" && item.subtype === "status") {
             /**
@@ -2490,7 +2739,32 @@ export function createClaudeDriver(
             // dogfood app. A result with no table keeps the last known value.
             const reportedContextMax = contextMaxFrom(item.modelUsage);
             contextMax = reportedContextMax ?? contextMax;
-            usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
+            /**
+             * THE LIFECYCLE SCALARS, TO THE GATED LOG AND NOWHERE ELSE.
+             *
+             * The #201 audit could not tell hidden thinking from provider
+             * queueing from network wait, because the result's own timings were
+             * read and discarded. These are whitelisted numbers — no prompt, no
+             * header, no error text, no identifier — and they go to the same
+             * opt-in diagnostic channel as the runtime line rather than into
+             * the durable journal, which is not a performance ledger.
+             */
+            if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
+              const scalar = (candidate: unknown): number | undefined => (typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined);
+              console.error(
+                `[claude-timing] session=${sessionId} ` +
+                  JSON.stringify({
+                    durationMs: scalar(item.duration_ms),
+                    apiMs: scalar(item.duration_api_ms),
+                    ttftMs: scalar(item.ttft_ms),
+                    turns: scalar(item.num_turns),
+                    stopReason: str(item.stop_reason ?? undefined) ?? null,
+                    subtype: item.subtype ?? null,
+                  }),
+              );
+            }
+            // THIS TURN'S SPEND, not the query's running total — see `turnCostFrom`.
+            usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, runtime)) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {
               // An interrupt surfaces as a non-success result; the human's
@@ -2602,6 +2876,35 @@ export function createClaudeDriver(
               openBlocks.delete(index);
               emit(closeBlock(open));
               await flush();
+              continue;
+            }
+
+            /**
+             * THE FINAL OUTPUT COUNT, which nothing else in the stream carries.
+             *
+             * Every earlier report of `output_tokens` for a response is a
+             * placeholder: the SDK says so of the streamed assistant envelopes
+             * ("message.usage is not final"), and the #201 sample shows it —
+             * a 41-minute journal whose observations reported outputs of 6, 3
+             * and 2 tokens. `message_delta` is the one frame that states the
+             * response's real output, so it is folded onto the envelope's own
+             * usage and the occupancy recomputed from the pair.
+             *
+             * Read only for OUR main loop: a sub-agent's output is reported on
+             * its own task, never against the parent's meter.
+             */
+            if (event.type === "message_delta" && ours && lastEnvelopeUsage) {
+              const output = asRecord(event.usage).output_tokens;
+              if (typeof output !== "number" || output < 0) continue;
+              lastEnvelopeUsage = { ...asRecord(lastEnvelopeUsage), output_tokens: output };
+              contextUsed = contextUsedFrom(lastEnvelopeUsage) ?? contextUsed;
+              const snapshot = usageFrom(lastEnvelopeUsage, undefined);
+              if (!snapshot) continue;
+              // The cost already recorded for this turn is kept: this frame
+              // says nothing about price, and dropping it would read as free.
+              usage = decorateUsage({ ...snapshot, ...(usage?.costUsd === undefined ? {} : { costUsd: usage.costUsd }) });
+              emit({ kind: "usage", usage: usage! });
+              await flush();
             }
             continue;
           }
@@ -2614,6 +2917,9 @@ export function createClaudeDriver(
             if (ours) {
               const snapshot = usageFrom(item.message?.usage, undefined);
               if (snapshot) {
+                // Kept raw so the response's closing `message_delta` can
+                // correct its placeholder output count against it.
+                lastEnvelopeUsage = item.message?.usage;
                 contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
                 usage = decorateUsage(snapshot);
                 /**
@@ -2746,6 +3052,9 @@ export function createClaudeDriver(
         for (const [, open] of openBlocks) emit(closeBlock(open));
         // The plan is turn-scoped and has no tool_result to close it.
         if (planItemId) emit({ kind: "item.completed", itemId: planItemId, status: "completed" });
+        // A wait the stream ended inside is over — the turn is not waiting for
+        // anything any more, whatever the reason it stopped.
+        closeProviderWait();
         // A compaction the stream ended inside is over: finished if the CLI
         // said so and only the boundary never came, failed otherwise.
         if (compactionItemId) emit({ kind: "item.completed", itemId: compactionItemId, status: compactionSucceeded ? "completed" : "failed" });
@@ -2825,7 +3134,21 @@ export function createClaudeDriver(
         idleRuntime.idlePump = { stop: () => { stopped = true; } };
         void (async () => {
           // A wake-up in flight, once the engine has opened a turn for it.
-          let wake: { binding: ProviderTurnBinding; text: string; usage: UsageSnapshot | undefined; gate: SdkCanUseTool | undefined; blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined;
+          let wake:
+            | {
+                binding: ProviderTurnBinding;
+                text: string;
+                usage: UsageSnapshot | undefined;
+                gate: SdkCanUseTool | undefined;
+                blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>;
+                tools: Map<string, { id: string; detail: ItemDetail }>;
+                /** The open provider-wait row, exactly as a human turn keeps one. */
+                waitItemId: string | undefined;
+                /** The newest main-loop envelope's raw usage, so this turn's
+                 *  closing `message_delta` can correct its placeholder output. */
+                lastUsage: unknown;
+              }
+            | undefined;
           const idleSink = (observations: TurnObservation[]) => hooks.onTasks(observations);
           sink = idleSink;
           /** The engine refused a wake-up: a human turn has the session and
@@ -2836,6 +3159,10 @@ export function createClaudeDriver(
             if (!wake) return;
             const current = wake;
             wake = undefined;
+            // The wake-up is over; the process may be evicted again.
+            runtimes.setWakeActive(idleRuntime.sessionId, false);
+            // A wait this turn ended inside is over, whatever ended it.
+            if (current.waitItemId) emit({ kind: "item.completed", itemId: current.waitItemId, status: "completed" });
             for (const [, open] of current.tools) emit({ kind: "item.completed", itemId: open.id, status: "failed" });
             for (const [, open] of current.blocks) emit(closeBlock(open));
             await flush();
@@ -2900,7 +3227,20 @@ export function createClaudeDriver(
                   continue;
                 }
                 idleRuntime.tasks.lastWokenTaskId = undefined;
-                wake = { binding, text: "", usage: undefined, gate: binding.onRequest ? gateFor(binding.onRequest) : undefined, blocks: new Map(), tools: new Map() };
+                // LIVE WORK, so the pool stops treating this process as spare.
+                // The engine has opened a real turn against it; evicting it now
+                // would kill a turn nobody could see start.
+                runtimes.setWakeActive(idleRuntime.sessionId, true);
+                wake = {
+                  binding,
+                  text: "",
+                  usage: undefined,
+                  gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
+                  blocks: new Map(),
+                  tools: new Map(),
+                  waitItemId: undefined,
+                  lastUsage: undefined,
+                };
                 sink = (observations) => binding.onObservations(observations);
                 idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
                 // The CLI's injected notification message is the turn's input
@@ -2917,19 +3257,73 @@ export function createClaudeDriver(
                * left it. Same two reads as the turn pump, same rule: the
                * provider's reported window replaces the assumption.
                */
+              /**
+               * A WAKE-UP WAITS THE SAME WAY A HUMAN TURN DOES.
+               *
+               * The engine has opened a real turn with a real observation sink,
+               * so there is somewhere to put the row — an earlier version of
+               * this patch claimed otherwise and was wrong. A retry inside an
+               * autonomous turn is exactly as invisible as one inside a human's
+               * and just as worth explaining.
+               *
+               * EXPLICITLY LIMITED: a wait announced BEFORE the engine grants a
+               * binding still goes unrecorded. Those frames belong to no turn
+               * yet, and the session-level task channel takes task reports
+               * rather than rows. That gap closes with the single-consumer
+               * consolidation, not here.
+               */
+              const idleWaited = providerWaitFrom(item);
+              if (idleWaited) {
+                if (wake.waitItemId) emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
+                const id = itemId();
+                const detail: ItemDetail = { type: "provider_wait", wait: idleWaited.detail };
+                emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(idleWaited.detail) } });
+                wake.waitItemId = idleWaited.blocking ? id : undefined;
+                if (!idleWaited.blocking) emit({ kind: "item.completed", itemId: id, status: "completed", detail });
+                await flush();
+                continue;
+              }
+              // Same ownership rule as the turn pump: only this turn's own main
+              // loop speaking proves the request went through.
+              if (wake.waitItemId && !parentToolUseId && (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")) {
+                emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
+                wake.waitItemId = undefined;
+              }
+
               if (item.type === "assistant" && !parentToolUseId) {
                 const snapshot = usageFrom(item.message?.usage, undefined);
                 if (snapshot) {
+                  // Kept raw so this turn's closing `message_delta` can correct
+                  // its placeholder output count against it.
+                  wake.lastUsage = item.message?.usage;
                   contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
                   wake.usage = decorateUsage(snapshot);
                   emit({ kind: "usage", usage: wake.usage! });
                 }
               }
+              /** The response's REAL output count, for a wake-up too — see the
+               *  turn pump's copy of this. */
+              if (item.type === "stream_event" && item.event?.type === "message_delta" && !parentToolUseId && wake.lastUsage) {
+                const output = asRecord(item.event.usage).output_tokens;
+                if (typeof output === "number" && output >= 0) {
+                  wake.lastUsage = { ...asRecord(wake.lastUsage), output_tokens: output };
+                  contextUsed = contextUsedFrom(wake.lastUsage) ?? contextUsed;
+                  const snapshot = usageFrom(wake.lastUsage, undefined);
+                  if (snapshot) {
+                    wake.usage = decorateUsage({ ...snapshot, ...(wake.usage?.costUsd === undefined ? {} : { costUsd: wake.usage.costUsd }) });
+                    emit({ kind: "usage", usage: wake.usage! });
+                    await flush();
+                  }
+                }
+                continue;
+              }
               if (item.type === "result" && !parentToolUseId) {
                 const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
                 if (wake.tools.size > 0 && (stopReason === "tool_use" || stopReason === null)) continue;
                 contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
-                wake.usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? wake.usage);
+                // The same accounting a human turn gets: a wake-up spends
+                // against the same query, so it takes the same baseline.
+                wake.usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, idleRuntime)) ?? wake.usage);
                 if (wake.usage) emit({ kind: "usage", usage: wake.usage });
                 const failed = item.subtype !== "success";
                 await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });
