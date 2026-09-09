@@ -104,9 +104,13 @@ export type EngineDaemonOptions = {
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
   /**
-   * A worker GENERATION was retired — its registration is already gone, so it
-   * is fenced out. What happens to work it held is the terminal-stop
-   * lifecycle's call, not this file's; absent means nothing further happens.
+   * OBSERVER ONLY, and last. A worker generation was retired: its registration
+   * is gone and its work has already been terminalized by `retireWorker`.
+   * Optional by design — nothing about correctness may depend on it, because a
+   * deployment that passes nothing must still be correct.
+   *
+   * Declared on both this branch and telar/stop-is-not-pause with the same
+   * meaning; TAKE THAT BRANCH'S on merge.
    */
   onWorkerRetired?: (workerId: string) => void;
   /**
@@ -533,6 +537,27 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     if (!worker) throw new HttpError(503, "worker_unavailable", "worker is not registered or its lease expired");
     return worker;
   };
+  /**
+   * RETIRE ONE WORKER GENERATION.
+   *
+   * THE BODY BELOW IS A PLACEHOLDER. telar/stop-is-not-pause replaces it with
+   * the production form, which terminalizes that worker's claims between the
+   * two lines here:
+   *
+   *   workers.delete(workerId);
+   *   store.retireWorkerRegistration(workerId);   // <- the default path
+   *   options.onWorkerRetired?.(workerId);
+   *
+   * It is a function, and called by name, so that merge is a body swap with no
+   * call-site conflict. Until it lands, this branch fences the registration and
+   * does NOT decide what becomes of the work — deliberately, because requeueing
+   * it is the replay the unified stop semantics forbids.
+   */
+  const retireWorker = (workerId: string): void => {
+    workers.delete(workerId);
+    options.onWorkerRetired?.(workerId);
+  };
+
   const workerPruner = setInterval(pruneWorkers, options.workerPruneIntervalMs ?? Math.max(10, Math.floor(workerLeaseMs / 3)));
   workerPruner.unref();
 
@@ -3508,7 +3533,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
              * the named seam it wires into, and it is scoped to THIS
              * generation's id so no unrelated session can be touched through it.
              */
-            if (workers.delete(ownedWorkerId)) options.onWorkerRetired?.(ownedWorkerId);
+            retireWorker(ownedWorkerId);
             // Forwarded, so a replaced generation's turns are told they were
             // replaced rather than that Telar shut down — see #208.
             await stop(reason);

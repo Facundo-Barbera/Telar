@@ -167,12 +167,14 @@ test("a claim delivered AFTER stop never executes, and its token cannot start a 
   expect(spawned).toEqual([]);
 
   /**
-   * WHAT THIS TEST DOES NOT YET PROVE, stated rather than quietly dropped: the
-   * claim token survives the worker's stop, so `markTurnRunning` with it still
-   * succeeds today. Making a stopped generation's token fail that transition is
-   * unregister-on-stop plus terminal cleanup — the stop lifecycle's to define,
-   * not this change's to assert. Reported to its owner; the assertion belongs
-   * in their branch, where it will pass.
+   * WHAT THIS TEST DOES NOT YET PROVE ON THIS BRANCH: the claim token survives
+   * the worker's stop, so `markTurnRunning` with it still succeeds here.
+   *
+   * That is closed by telar/stop-is-not-pause, not by timing: `retireWorker`
+   * terminalizes this worker's claims, and `markTurnRunning` only accepts a
+   * `claimed` turn — so the stale token is refused after any await. The
+   * assertion belongs in that branch, where it passes; asserting today's
+   * behaviour here would bake in the thing being fixed.
    */
   const token = (await client.session("session_one")).turns[0]?.claim?.token;
   expect(token).toBeString();
