@@ -78,6 +78,16 @@ export async function hydrateSession(
   return { ...snapshot, events: tail.events, cursor: Math.max(from, journalCursor(tail.events)) };
 }
 
+/**
+ * NO REWIND HERE, DELIBERATELY. An open item's prefix can end BELOW the
+ * snapshot's cursor, which looks like a reason to tail from the lower of the
+ * two — and would be, if the gap could contain that item's deltas. It cannot:
+ * the engine builds each open item's prefix complete through the same cursor it
+ * stamps (`openItemPrefix`), so a lower watermark only means no delta arrived
+ * in between. Rewinding would replay `item.completed` and turn transitions onto
+ * a snapshot that already reflects them — a much larger claim than dropping a
+ * duplicate delta, and one event-id dedupe does not make for us.
+ */
 export async function tailSession(
   api: SessionSyncApi,
   sessionId: string,

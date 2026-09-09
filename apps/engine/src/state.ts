@@ -1082,6 +1082,21 @@ function sessionQueueFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "queue.json");
 }
 
+/**
+ * How many open items keep their streamed text in memory at once.
+ *
+ * Generous for the live case — a turn streams into one or two items at a time,
+ * across a handful of concurrently running sessions — and small enough that a
+ * long-lived daemon full of stopped turns cannot grow without limit. Evicting
+ * costs a journal read, never text.
+ */
+const OPEN_PREFIX_LIMIT = 64;
+
+/** Item ids are unique within a session, not across them. */
+function prefixKey(sessionId: string, itemId: string): string {
+  return `${sessionId}\n${itemId}`;
+}
+
 function eventsFile(paths: EngineStatePaths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), "events.ndjson");
 }
@@ -1317,6 +1332,9 @@ export class EngineStore {
    * a write fails, so the next append re-reads and repairs.
    */
   private readonly journalHead = new Map<string, number>();
+  /** Text streamed into still-open items, by `session\nitem`. A cache over the
+   *  journal's deltas — see `openItemPrefix`. */
+  private readonly openPrefixes = new Map<string, { text: string; through: number; sealed: boolean }>();
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
@@ -7528,6 +7546,87 @@ export class EngineStore {
     return lastEventId(eventsFile(this.paths, sessionId));
   }
 
+  /**
+   * The text streamed into an open item so far, and the delta id it runs
+   * through — the two halves of `Item.streamed` / `Item.streamedThrough`.
+   *
+   * COMPLETE THROUGH `through`, WHICH IS THE CONTRACT THE CLIENT RELIES ON: it
+   * appends only the deltas above that id, so anything missing below it is
+   * missing forever. A prefix that merely stopped somewhere is not enough.
+   *
+   * A MISS IS REBUILT FROM THE JOURNAL, not reported as nothing: the map is
+   * empty after a restart, and "your half-written reply vanished because the
+   * engine bounced" is the bug this field exists to prevent.
+   */
+  openItemPrefix(sessionId: string, itemId: string, through: number): { streamed: string; streamedThrough: number } | undefined {
+    const key = prefixKey(sessionId, itemId);
+    const cached = this.openPrefixes.get(key);
+    /**
+     * SEALED MEANS "STARTED FROM THE ITEM'S BEGINNING". An entry that grew from
+     * an empty map — a restart, an eviction — holds only the deltas since, and
+     * trusting its text would report a tail as if it were the whole reply. That
+     * is the same truncation this field exists to prevent, moved into the
+     * engine. Only a sealed entry is trusted; anything else is rebuilt.
+     *
+     * `through <= cutoff` then means COMPLETE through the cutoff, because every
+     * delta extends the entry synchronously as it is appended: if none arrived
+     * between, there is nothing to be missing.
+     */
+    if (cached?.sealed && cached.through <= through) return { streamed: cached.text, streamedThrough: cached.through };
+    let streamed = "";
+    let streamedThrough = 0;
+    for (const event of this.readEvents(sessionId)) {
+      if (event.id > through) break;
+      if (event.type !== "content.delta" || event.itemId !== itemId) continue;
+      streamed += event.text;
+      streamedThrough = event.id;
+    }
+    if (!streamedThrough) return undefined;
+    // NOT WRITTEN BACK. The rebuild is bounded by the cutoff while the entry
+    // may hold deltas above it, and there is no way to tell the two apart from
+    // here. Re-reading on the next snapshot of a restarted turn is the cold
+    // path; guessing would put the truncation back.
+    return { streamed, streamedThrough };
+  }
+
+  /** Extend an open item's cached prefix. Keyed by SESSION AND ITEM: item ids
+   *  are unique within a session, not across them. An entry with no `sealed`
+   *  predecessor stays unsealed — see `openItemPrefix`. */
+  private extendOpenPrefix(sessionId: string, itemId: string, text: string, through: number): void {
+    const key = prefixKey(sessionId, itemId);
+    const held = this.openPrefixes.get(key);
+    // Re-inserted rather than mutated so the Map's insertion order is a
+    // least-recently-extended order, which is what the bound below evicts by.
+    this.openPrefixes.delete(key);
+    this.openPrefixes.set(key, { text: (held?.text ?? "") + text, through, sealed: held?.sealed === true });
+    /**
+     * A BOUND, BECAUSE "ONE ENTRY PER OPEN ITEM" IS NOT ONE. Stop deliberately
+     * leaves items open forever, so every stopped turn would leave its partial
+     * reply resident for the life of the process.
+     *
+     * SAFE TO EVICT ANYTHING: an evicted entry is rebuilt from the journal on
+     * the next read (`openItemPrefix`), so this costs a cold read on an item
+     * nobody has streamed to in a long time, and never costs text.
+     */
+    while (this.openPrefixes.size > OPEN_PREFIX_LIMIT) {
+      const oldest = this.openPrefixes.keys().next();
+      if (oldest.done) break;
+      this.openPrefixes.delete(oldest.value);
+    }
+  }
+
+  /** Drop every cached prefix, as a restart would. The rebuild path is the
+   *  thing worth testing and it is unreachable while the cache is warm. */
+  forgetOpenPrefixesForTest(): void {
+    this.openPrefixes.clear();
+  }
+
+  /** An item that closed carries its text in `detail` from then on, so the
+   *  accumulator's copy is dead weight — and this is what bounds the map. */
+  private dropOpenPrefix(sessionId: string, itemId: string): void {
+    this.openPrefixes.delete(prefixKey(sessionId, itemId));
+  }
+
   recover(): { requeued: string[]; ambiguous: string[] } {
     const requeued: string[] = [];
     const ambiguous: string[] = [];
@@ -8182,11 +8281,23 @@ export class EngineStore {
       // by the `item.completed` that closes it; folding every token into
       // items.json would rewrite the whole document per token.
       if (!items.has(observation.itemId)) return;
-      this.appendEvent(
+      const written = this.appendEvent(
         sessionId,
         { type: "content.delta", itemId: observation.itemId, stream: observation.stream, text: observation.text },
         turn.runId,
       );
+      /**
+       * …BUT A READER ARRIVING MID-REPLY STILL HAS TO SEE THE PREFIX (#214).
+       *
+       * So the text accumulates in memory, watermarked with the id of the
+       * delta that last extended it, and `openItemPrefix` hands it to a
+       * snapshot. A CACHE, NOT THE RECORD: the deltas above are durable, so an
+       * empty map after a restart is rebuilt by re-reading them. That is what
+       * makes it safe to drop this at any time — including when Stop leaves an
+       * item open forever, where the prefix is the only account of what the
+       * reader was shown.
+       */
+      this.extendOpenPrefix(sessionId, observation.itemId, observation.text, written.id);
       return;
     }
     if (observation.kind === "item.completed") {
@@ -8200,6 +8311,9 @@ export class EngineStore {
       };
       items.set(item.id, item);
       this.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
+      // The text lives in `detail` from here on, so the accumulator's copy is
+      // dead weight. This is what bounds the map: one entry per OPEN item.
+      this.dropOpenPrefix(sessionId, observation.itemId);
       return;
     }
     if (observation.kind === "provider.session") {
@@ -8373,7 +8487,11 @@ export class EngineStore {
       ...(seed.providerRefs ? { providerRefs: seed.providerRefs } : {}),
     };
     items.set(item.id, item);
-    this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
+    const written = this.appendEvent(sessionId, { type: started ? "item.started" : "item.updated", item }, turn.runId);
+    // AN ITEM THAT JUST OPENED HAS NO EARLIER DELTAS, which is the only moment
+    // the accumulator can know it holds the whole prefix. Every later extend
+    // inherits that; an entry born any other way is rebuilt on read.
+    if (started) this.openPrefixes.set(prefixKey(sessionId, item.id), { text: "", through: written.id, sealed: true });
   }
 
   /**

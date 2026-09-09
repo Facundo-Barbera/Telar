@@ -81,6 +81,140 @@ describe("streaming text", () => {
     );
     expect(itemText(projected!.items[0]!)).toBe("live");
   });
+
+  /**
+   * #214: LEAVING THE SURFACE MID-REPLY AND COMING BACK MUST NOT LOSE THE
+   * PREFIX, and it did.
+   *
+   * A remount throws the event tail away and re-opens on a snapshot. The
+   * snapshot's cursor is the last event the ENGINE had written — deltas
+   * included — but the engine does not fold streamed text into an item until it
+   * closes, so a live item's stored detail is empty while its cursor is already
+   * stamped past every delta so far. Hydrating from that cursor skips them, and
+   * the reader sees only what arrived after they came back.
+   *
+   * THE SNAPSHOT'S TEXT IS A PREFIX AND DELTAS APPEND TO IT. That is the whole
+   * contract, and it is what both halves of the fix have to honour: the engine
+   * folds an open item's accumulated text at the same high-watermark as the
+   * cursor, and the client seeds `streamedText` from it so the next delta
+   * CONTINUES rather than REPLACES. Asserted against the uninterrupted fold, so
+   * the test says "the same as never having left" rather than restating a
+   * string.
+   */
+  test("a remount mid-reply keeps the prefix already streamed", () => {
+    const opened: EngineEvent = {
+      ...envelope,
+      id: 1,
+      type: "item.started",
+      item: item({ id: "i1", detail: { type: "assistant_message", text: "" } }),
+    };
+    const first: EngineEvent = { ...envelope, id: 2, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "Once upon " };
+    const second: EngineEvent = { ...envelope, id: 3, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" };
+
+    // Never left: one continuous fold over every event.
+    const [uninterrupted] = projectJournal([turn], [], [opened, first, second]);
+
+    // Left after `first` and came back. The snapshot reflects events up to id 2
+    // — so it carries the item and the text streamed into it so far — and the
+    // client tails from 2, which means `second` is the only event it ever sees.
+    const [remounted] = projectJournal(
+      [turn],
+      [item({ id: "i1", streamed: "Once upon ", streamedThrough: 2, detail: { type: "assistant_message", text: "" } })],
+      [second],
+    );
+
+    expect(itemText(remounted!.items[0]!)).toBe(itemText(uninterrupted!.items[0]!));
+    expect(itemText(remounted!.items[0]!)).toBe("Once upon a time");
+  });
+
+  test("a delta already inside the seeded prefix is not applied twice", () => {
+    // The snapshot and the tail are separate reads, so the tail legitimately
+    // re-delivers a delta the prefix already contains. The watermark is what
+    // makes that harmless — without it the two are indistinguishable.
+    const [projected] = projectJournal(
+      [turn],
+      [item({ id: "i1", streamed: "Once upon ", streamedThrough: 2, detail: { type: "assistant_message", text: "" } })],
+      [
+        { ...envelope, id: 2, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "Once upon " },
+        { ...envelope, id: 3, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
+      ],
+    );
+    expect(itemText(projected!.items[0]!)).toBe("Once upon a time");
+  });
+
+  test("a reconnect's longer prefix is adopted; a repeat of the same one is not", () => {
+    /**
+     * REACH, NOT RECENCY. A companion snapshot rides every queue-changing
+     * event, so the SAME prefix arrives again and again — adopting it
+     * unconditionally would rewind a fold that has appended past it. A
+     * reconnect brings a genuinely longer one, and refusing that would lose
+     * every delta between the two watermarks. Whichever reaches further wins,
+     * which is safe because the engine never un-streams text.
+     */
+    const [projected] = projectJournal(
+      [turn],
+      [item({ id: "i1", streamed: "Once upon a time, ", streamedThrough: 4, detail: { type: "assistant_message", text: "" } })],
+      [
+        // Stale repeat of the first snapshot's shorter prefix: must not rewind.
+        { ...envelope, id: 5, type: "item.updated", item: item({ id: "i1", streamed: "Once upon ", streamedThrough: 2, detail: { type: "assistant_message", text: "" } }) },
+        // Deltas below the adopted watermark stay inside it.
+        { ...envelope, id: 3, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
+        { ...envelope, id: 6, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "there was" },
+      ],
+    );
+    expect(itemText(projected!.items[0]!)).toBe("Once upon a time, there was");
+  });
+
+  test("an item that has streamed nothing yet takes its first seed later", () => {
+    // The first snapshot can land before a single delta — `streamed` empty,
+    // watermark real. The next snapshot's prefix must still be adopted.
+    const [projected] = projectJournal(
+      [turn],
+      [item({ id: "i1", streamed: "", streamedThrough: 1, detail: { type: "assistant_message", text: "" } })],
+      [{ ...envelope, id: 4, type: "item.updated", item: item({ id: "i1", streamed: "Hello", streamedThrough: 3, detail: { type: "assistant_message", text: "" } }) }],
+    );
+    expect(itemText(projected!.items[0]!)).toBe("Hello");
+  });
+
+  test("two items streaming at once keep their own prefixes", () => {
+    // Interleaved A/B: B opens and completes while A is still streaming, and A
+    // must not inherit B's text or lose its own to B's snapshot row.
+    const [projected] = projectJournal(
+      [turn],
+      [
+        item({ id: "a", streamed: "part one ", streamedThrough: 2, detail: { type: "assistant_message", text: "" } }),
+        item({ id: "b", status: "completed", detail: { type: "reasoning", text: "closed thought" } }),
+      ],
+      [{ ...envelope, id: 3, type: "content.delta", itemId: "a", stream: "assistant_text", text: "part two" }],
+    );
+    const byId = new Map(projected!.items.map((row) => [row.id, row]));
+    expect(itemText(byId.get("a")!)).toBe("part one part two");
+    expect(itemText(byId.get("b")!)).toBe("closed thought");
+  });
+
+  test("a stopped turn keeps the partial text of an item it never closed", () => {
+    // Unified Stop can leave an item `inProgress` forever. The prefix is the
+    // only record of what the reader saw, so it must survive the turn going
+    // terminal — and it is rebuildable from the journal, not only from RAM.
+    const [projected] = projectJournal(
+      [{ ...turn, state: "stopped" }],
+      [item({ id: "i1", streamed: "half a th", streamedThrough: 2, detail: { type: "assistant_message", text: "" } })],
+      [],
+    );
+    expect(itemText(projected!.items[0]!)).toBe("half a th");
+  });
+
+  test("a closed item's stored text replaces the seed, however long the seed was", () => {
+    // Not "whichever is longer": a provider that rewrites its answer on close
+    // must be able to SHORTEN it. Once the item is closed the stored detail is
+    // the truth, and the streamed prefix stops being consulted.
+    const [projected] = projectJournal(
+      [turn],
+      [item({ id: "i1", status: "completed", streamed: "a long partial draft", detail: { type: "assistant_message", text: "Short." } })],
+      [],
+    );
+    expect(itemText(projected!.items[0]!)).toBe("Short.");
+  });
 });
 
 describe("ordering", () => {

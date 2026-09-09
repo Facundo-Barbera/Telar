@@ -62,6 +62,69 @@ describe("session hydration", () => {
     expect(result.cursor).toBe(2);
   });
 
+  test("an open item's lower prefix watermark does NOT rewind the tail", async () => {
+    /**
+     * #214. A prefix ending below the cursor looks like a gap and is not: the
+     * engine builds it complete through the same cursor it stamps, so a lower
+     * watermark only means no delta for that item arrived in between.
+     *
+     * REWINDING WOULD COST MORE THAN IT SAVED. The events between the two are
+     * not only deltas — `item.completed` for a row that closed, turn
+     * transitions — and replaying those onto a snapshot that already reflects
+     * them is a far larger claim than dropping a duplicate delta. Dedupe by
+     * event id does not establish it.
+     */
+    const asked: number[] = [];
+    const open: Item = {
+      id: "i1",
+      runId: "run_1",
+      sessionId: "session_1",
+      status: "inProgress",
+      startedAt: 1,
+      detail: { type: "assistant_message", text: "" },
+      streamed: "Once upon ",
+      streamedThrough: 4,
+    };
+    await hydrateSession(
+      {
+        events: async (_sessionId: string, after: number) => {
+          asked.push(after);
+          return { events: [] };
+        },
+        session: async () => ({ cursor: 9, session, turns: [turn], items: [open], requests: [], tasks: [] }),
+      },
+      session.id,
+    );
+    expect(asked).toEqual([9]);
+  });
+
+  test("a closed item's leftover prefix changes nothing", async () => {
+    // Its text is authoritative in `detail` from the moment it closed, so a
+    // stale `streamed` beside it is inert rather than a second opinion.
+    const asked: number[] = [];
+    const closed: Item = {
+      id: "i1",
+      runId: "run_1",
+      sessionId: "session_1",
+      status: "completed",
+      startedAt: 1,
+      detail: { type: "assistant_message", text: "Once upon a time" },
+      streamed: "Once upon ",
+      streamedThrough: 4,
+    };
+    await hydrateSession(
+      {
+        events: async (_sessionId: string, after: number) => {
+          asked.push(after);
+          return { events: [] };
+        },
+        session: async () => ({ cursor: 9, session, turns: [turn], items: [closed], requests: [], tasks: [] }),
+      },
+      session.id,
+    );
+    expect(asked).toEqual([9]);
+  });
+
   test("a quiet session's cursor is the snapshot's, not zero", async () => {
     // Nothing after the stamp: the next tail must ask from 7, not restart.
     const result = await hydrateSession(
