@@ -152,15 +152,56 @@ export function snapshotQuery(window?: SnapshotWindow): string {
   return `?${params.toString()}`;
 }
 
+/**
+ * A TRANSPORT FAILURE, REDUCED TO SOMETHING SAFE TO KEEP.
+ *
+ * `fetch` rejects with a `TypeError` whose message and `cause` chain routinely
+ * carry the request URL — and this client's URLs are loopback addresses whose
+ * headers hold the engine's bearer token. So the error is NOT propagated: only
+ * the constructor name and an errno-shaped code survive, which is exactly the
+ * pair that distinguishes ECONNRESET from ECONNREFUSED from a timeout.
+ *
+ * Everything else is dropped. `undefined` when there is nothing errno-shaped to
+ * say, which stays honestly distinguishable from "the cause was known".
+ */
+export function sanitizeTransportCause(cause: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = cause;
+  let name: string | undefined;
+  // The interesting code is usually one or two links down the `cause` chain
+  // (TypeError → Error → SystemError), so walk it — bounded, and cycle-safe.
+  for (let depth = 0; depth < 5 && current !== null && typeof current === "object"; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const record = current as { name?: unknown; code?: unknown; cause?: unknown };
+    if (name === undefined && typeof record.name === "string" && /^[A-Za-z]{1,40}$/.test(record.name)) name = record.name;
+    // Errno-shaped only: an arbitrary string here could be anything.
+    if (typeof record.code === "string" && /^[A-Z][A-Z0-9_]{1,31}$/.test(record.code)) return name ? `${name}:${record.code}` : record.code;
+    current = record.cause;
+  }
+  return name;
+}
+
 export class EngineClientError extends Error {
   readonly code: EngineErrorCode;
   readonly status?: number;
+  /**
+   * Which client call failed, as a stable identifier (`workerHeartbeat`,
+   * `submitTurn`). Present so a supervisor can tell an idempotent control poll
+   * from a mutating submission WITHOUT re-deriving it from a URL.
+   */
+  readonly operation?: string;
+  /** The sanitized transport cause — see `sanitizeTransportCause`. Absent for
+   *  an ordinary HTTP error response, which has a status instead. */
+  readonly transport?: string;
 
-  constructor(code: EngineErrorCode, message: string, status?: number) {
+  constructor(code: EngineErrorCode, message: string, status?: number, details?: { operation?: string; transport?: string }) {
     super(message);
     this.name = "EngineClientError";
     this.code = code;
     this.status = status;
+    if (details?.operation !== undefined) this.operation = details.operation;
+    if (details?.transport !== undefined) this.transport = details.transport;
   }
 }
 
@@ -220,7 +261,18 @@ export class EngineClient {
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
-  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  /**
+   * `operation` is the CALLER'S OWN NAME for what it was doing, threaded
+   * through rather than derived from the URL.
+   *
+   * A supervisor deciding whether a failure may be tolerated has to know
+   * whether the call that failed was an idempotent control poll or a mutating
+   * submission, and reconstructing that from a path is exactly the kind of
+   * re-derivation that drifts. Absent from older call sites, which then get the
+   * previous behaviour — an unnamed failure is never treated as retryable.
+   */
+  private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, operation?: string): Promise<T> {
+    const named = operation === undefined ? {} : { operation };
     let response: Response;
     try {
       response = await this.fetchImpl(`http://${this.discovery.host}:${this.discovery.port}${pathname}`, {
@@ -236,19 +288,32 @@ export class EngineClient {
       // An abort is the caller hanging up, not the engine being away — rethrow
       // it as itself so a forwarding route can end quietly.
       if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-      throw new EngineClientError("engine_unavailable", "engine is unreachable");
+      /**
+       * THE CAUSE IS KEPT, SANITIZED. It used to be caught and dropped on the
+       * floor, which is why a Telar that lost one loopback request could not
+       * afterwards say whether the engine had died, the socket had reset, or
+       * the process had run out of descriptors — see #208. The raw error is
+       * still not propagated: its message and cause chain carry the request
+       * URL, and these URLs are authenticated.
+       */
+      throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, {
+        ...named,
+        ...(sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {}),
+      });
     }
 
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status);
+      // A reply that arrived but did not parse is a DIFFERENT failure from one
+      // that never arrived: the status is the evidence, and it is kept.
+      throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status, { ...named, transport: "malformed_response" });
     }
     if (!response.ok) {
       const error = (payload as EngineErrorBody | null)?.error;
       const code: EngineErrorCode = error?.code ?? "engine_unavailable";
-      throw new EngineClientError(code, error?.message ?? "engine request failed", response.status);
+      throw new EngineClientError(code, error?.message ?? "engine request failed", response.status, named);
     }
     return payload as T;
   }
@@ -1988,12 +2053,23 @@ export class EngineClient {
     });
   }
 
-  registerWorker(workerId: string): Promise<{ worker: { workerId: string } }> {
-    return this.request("POST", "/v2/workers/register", { workerId });
+  /**
+   * `heartbeatIntervalMs` is the daemon's OWN answer, and the engine has always
+   * sent it — this client simply dropped it from the type. It is the authority
+   * on how long a worker may be out of contact before its lease expires (the
+   * daemon prunes at three intervals), which is the timing contract a
+   * supervisor must obey rather than invent a threshold of its own.
+   * Optional because an older engine does not send it.
+   */
+  registerWorker(workerId: string): Promise<{ worker: { workerId: string }; heartbeatIntervalMs?: number }> {
+    return this.request("POST", "/v2/workers/register", { workerId }, undefined, "registerWorker");
   }
 
   workerHeartbeat(workerId: string): Promise<WorkerStatus> {
-    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {});
+    // Named as idempotent control: it reports state and drains already-decided
+    // deliveries. A failed heartbeat submits nothing, so re-polling on the next
+    // tick cannot duplicate work.
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {}, undefined, "workerHeartbeat");
   }
 
   claimTurn(workerId: string): Promise<{ claim?: WorkerClaim }> {

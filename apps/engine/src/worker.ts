@@ -207,6 +207,8 @@ export class EngineWorker {
    *  human Stop — the two look identical on an AbortSignal and settle
    *  differently. */
   private shuttingDown = false;
+  /** Why `stop()` was called — the turns it interrupts are told which. */
+  private stopReason: "shutdown" | "connection_lost" = "shutdown";
   /**
    * Every `execute` still unwinding, awaited (bounded) by `stop()`.
    *
@@ -228,6 +230,29 @@ export class EngineWorker {
    *  scheduled through the gate, so it must not hold a slot shut. */
   private readonly activeClaims = new Set<string>();
   private connectionLost = false;
+  /**
+   * THE DAEMON'S OWN LEASE, learned at registration — never invented here.
+   *
+   * `registerWorker` answers with `heartbeatIntervalMs`, and the daemon prunes
+   * a worker whose last heartbeat is older than three of those (its
+   * `workerLeaseMs`, of which the interval is a third). That is the real
+   * timing contract: below it the engine still considers this worker live, so
+   * a failed request is an outage to ride out; at or beyond it the engine may
+   * already have given this worker's work to someone else, and continuing
+   * would be acting outside the lease.
+   *
+   * `undefined` means the engine did not say — an older daemon — and then a
+   * connectivity failure is fatal on the first occurrence, exactly as it was
+   * before #208. Guessing a budget against an engine whose expiry rule we do
+   * not know would be inventing the threshold this exists to avoid.
+   */
+  private leaseMs: number | undefined;
+  /**
+   * When the current run of transport failures began, or `undefined` while the
+   * engine is answering. Reset by ANY successful heartbeat, so an intermittent
+   * connection does not accumulate its way to a false loss.
+   */
+  private unreachableSince: number | undefined;
   /** Lazily built default `op` adapter — one per worker, never per turn. */
   private secrets: SecretsProvider | undefined;
   /**
@@ -294,12 +319,26 @@ export class EngineWorker {
   }
 
   async start(): Promise<void> {
-    await this.options.client.registerWorker(this.options.workerId);
+    const registration = await this.options.client.registerWorker(this.options.workerId);
+    // The engine's own expiry rule, taken from the engine — see `leaseMs`.
+    const interval = registration?.heartbeatIntervalMs;
+    if (typeof interval === "number" && Number.isFinite(interval) && interval > 0) this.leaseMs = interval * 3;
     await this.tick();
     this.timer = setInterval(() => void this.tick(), this.pollMs);
   }
 
-  async stop(): Promise<void> {
+  /**
+   * `reason` is what the turns this worker was running will be TOLD, and the
+   * two are not the same event.
+   *
+   * `"shutdown"` is Telar quitting. `"connection_lost"` is this worker being
+   * REPLACED after the supervisor gave up on its connection — the daemon may
+   * be perfectly alive, and before #208 both settled a turn with copy that
+   * asserted a shutdown had happened. A person reading "Telar shut down" when
+   * Telar had not shut down cannot debug anything, and it is simply false.
+   */
+  async stop(reason: "shutdown" | "connection_lost" = "shutdown"): Promise<void> {
+    this.stopReason = reason;
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
@@ -375,7 +414,14 @@ export class EngineWorker {
     await this.options.client
       .failTurn(sessionId, runId, claimToken, {
         code: "interrupted",
-        message: "Telar shut down while this turn was running. What it had already done is above; whether it had finished anything elsewhere is unknown.",
+        message:
+          this.stopReason === "connection_lost"
+            ? // SAYS WHAT HAPPENED, and does not say what did not. Telar was
+              // running; its worker lost contact with the engine for longer
+              // than the engine's own lease and was replaced. The unknown part
+              // is stated as unknown rather than dressed up as a shutdown.
+              "Telar lost contact with its own engine for longer than the engine allows, so the worker running this turn was replaced. What it had already done is above; whether it had finished anything elsewhere is unknown."
+            : "Telar shut down while this turn was running. What it had already done is above; whether it had finished anything elsewhere is unknown.",
       })
       // An engine already gone cannot be told, and a quit must not hang on it.
       // The turn stays `running` and the next boot calls it `ambiguous` — the
@@ -389,6 +435,10 @@ export class EngineWorker {
     this.ticking = true;
     try {
       const status = await this.options.client.workerHeartbeat(this.options.workerId);
+      // The engine answered: whatever outage we were riding out is over, and
+      // the budget starts fresh. Without this an intermittent connection would
+      // accumulate isolated failures into a loss that never actually happened.
+      this.unreachableSince = undefined;
       for (const cancellation of status.cancel) this.active.get(cancellation.claimToken)?.abort(new Error("turn stopped"));
       // Settle anything a human answered since the last beat. This must happen
       // even while a turn is active — the turn is what is waiting. KEYED BY
@@ -477,11 +527,62 @@ export class EngineWorker {
         void run.finally(() => this.inFlight.delete(run));
       }
     } catch (error) {
-      if (isConnectivityLoss(error)) this.loseConnection(error);
+      if (isConnectivityLoss(error)) this.noteConnectivityFailure(error);
       else throw error;
     } finally {
       this.ticking = false;
     }
+  }
+
+  /**
+   * A FAILED CONTROL POLL IS NOT AUTOMATICALLY A LOST ENGINE — #208.
+   *
+   * The old code called `loseConnection` on the first failure of any of the
+   * three connectivity codes. That aborted EVERY active turn, made the
+   * supervisor stop and replace the worker, disposed the Claude driver (killing
+   * every session's background shells, monitors and detached agents), and
+   * settled each turn with copy claiming Telar had shut down — all from one
+   * loopback request that did not complete, against a daemon that in the
+   * observed incident never stopped running.
+   *
+   * Two classes, treated differently, because they are different facts:
+   *
+   *   REVOKED — `engine_unauthorized` (a restarted daemon reissued its token;
+   *   ours is now refused) or `worker_unavailable` (the engine does not know
+   *   this registration). Both are the ENGINE answering, definitively, that
+   *   this worker may no longer act. There is nothing to wait out and
+   *   continuing would be work outside the lease, so this is immediate.
+   *
+   *   UNREACHABLE — `engine_unavailable`, which is what the client returns when
+   *   a request did not complete at all. That is a transport fact, not an
+   *   engine verdict; the engine may be entirely healthy. So it is ridden out,
+   *   bounded by the engine's OWN lease (see `leaseMs`): while the engine still
+   *   considers this worker live, its turns keep running and the next tick
+   *   retries. Retrying costs nothing and can duplicate nothing, because the
+   *   only thing being retried is the idempotent heartbeat poll — a claim that
+   *   failed is simply not made, and no mutating submission is replayed here.
+   *
+   * At or beyond the lease the engine may already have handed this worker's
+   * work to someone else, so the loss becomes real and takes the old path.
+   */
+  private noteConnectivityFailure(error: unknown): void {
+    const revoked = error instanceof EngineClientError && (error.code === "engine_unauthorized" || error.code === "worker_unavailable");
+    if (revoked) {
+      this.loseConnection(error);
+      return;
+    }
+    // No lease from this engine means no budget we are entitled to spend:
+    // fail closed, on the first failure, exactly as before #208.
+    if (this.leaseMs === undefined) {
+      this.loseConnection(error);
+      return;
+    }
+    const at = Date.now();
+    if (this.unreachableSince === undefined) {
+      this.unreachableSince = at;
+      return;
+    }
+    if (at - this.unreachableSince >= this.leaseMs) this.loseConnection(error);
   }
 
   /**
@@ -916,7 +1017,12 @@ export class EngineWorker {
       // Stop is terminal before a worker sees the heartbeat. Never overwrite it with an error.
       if (controller.signal.aborted || (error instanceof EngineClientError && error.code === "conflict")) return;
       if (isConnectivityLoss(error)) {
-        this.loseConnection(error);
+        // Same two classes as the tick's — a settle that could not be delivered
+        // is this turn's problem, and must not by itself end every other
+        // session's work. The turn leaves no settle behind and the next boot
+        // calls it `ambiguous`, which is the honest degradation and the
+        // behaviour this already had.
+        this.noteConnectivityFailure(error);
         return;
       }
       const failure =

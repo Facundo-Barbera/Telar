@@ -3427,11 +3427,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           const stop = worker.stop.bind(worker);
           const ownedWorkerId = workerId;
-          worker.stop = async () => {
+          worker.stop = async (reason) => {
             // A stopped/replaced generation must not leave an immortal entry,
             // nor clear the ownership of a later generation.
             if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
-            await stop();
+            // Forwarded, so a replaced generation's turns are told they were
+            // replaced rather than that Telar shut down — see #208.
+            await stop(reason);
           };
           return worker;
         },
