@@ -101,9 +101,11 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-          # Prepend so electron-builder's cert auto-discovery finds it first.
-          IFS=$'\n' read -rd '' -a EXISTING < <(security list-keychains -d user | sed 's/[" ]//g') || true
-          security list-keychains -d user -s "$KEYCHAIN" "${EXISTING[@]}"
+          # codesign --keychain still searches the user list for identities.
+          # A login keychain with the same cert makes name-based signing
+          # ambiguous. Search only the CI keychain until the cleanup step
+          # restores the exact prior list; leave the default keychain alone.
+          security list-keychains -d user -s "$KEYCHAIN"
 
           rm -f "$CERT_PATH"
 
