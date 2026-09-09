@@ -197,6 +197,16 @@ export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; provide
   /** The model `setModel` last confirmed, so a turn can skip the round trip. */
   model: string | undefined;
   /**
+   * THE QUERY'S RUNNING COST TOTAL, as of the last result this process
+   * reported — the baseline a turn's own spend is measured against.
+   *
+   * It lives on the RUNTIME because that is the thing `total_cost_usd` is
+   * scoped to: the SDK documents it as "cumulative across turns in
+   * streaming-input sessions", so it resets exactly when the query does. A
+   * fresh process starts at `undefined`, which is not the same as zero.
+   */
+  costTotalUsd: number | undefined;
+  /**
    * This process has echoed a send's `uuid` back as `user_message_uuid` at
    * least once — so a main-loop turn that begins WITHOUT one, before ours has,
    * is the CLI's own (a background task's wake-up), not an older producer

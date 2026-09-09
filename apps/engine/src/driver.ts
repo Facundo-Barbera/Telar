@@ -1117,6 +1117,42 @@ function usageFrom(value: unknown, costUsd: unknown): UsageSnapshot | undefined 
 }
 
 /**
+ * THIS TURN'S SPEND, out of the QUERY's running total.
+ *
+ * `total_cost_usd` is not a turn cost, and reading it as one is the #201
+ * accounting defect: the SDK documents it as "cumulative estimated cost for
+ * this query() call … cumulative across turns in streaming-input sessions —
+ * each result carries the running total so far". Telar holds ONE query per
+ * session across many turns, so two results reading $0.10 and $0.30 were
+ * stored as two turn costs summing to $0.40 against a query that had spent
+ * $0.30. Tokens are unaffected: `usage` really is per-turn.
+ *
+ * `epoch.totalUsd` is the baseline, carried on the runtime because that is what
+ * the total is scoped to. Two resets are handled explicitly, and differently:
+ *
+ *   - A ZEROED result. The SDK says crash and startup-error results may carry
+ *     zeroed values, so zero is "no information", never "the query has spent
+ *     nothing since". The baseline is preserved and no cost is reported, so a
+ *     crash cannot erase what earlier turns already recorded.
+ *   - A LOWER-BUT-NONZERO total. A mid-session `/clear` resets the running
+ *     total, and a resumed session starts fresh. That is a new epoch: the whole
+ *     of the new total is this turn's, and the baseline restarts there.
+ *
+ * Returns `undefined` when the provider said nothing — including on
+ * subscription plans, where Claude omits cost entirely. That is not $0.00.
+ */
+export function turnCostFrom(cumulativeUsd: unknown, epoch: { costTotalUsd: number | undefined }): number | undefined {
+  if (typeof cumulativeUsd !== "number" || !Number.isFinite(cumulativeUsd) || cumulativeUsd < 0) return undefined;
+  const previous = epoch.costTotalUsd;
+  if (cumulativeUsd === 0) return previous === undefined ? 0 : undefined;
+  epoch.costTotalUsd = cumulativeUsd;
+  if (previous === undefined || cumulativeUsd < previous) return cumulativeUsd;
+  // Rounded because binary floating point makes 0.3 − 0.1 read as
+  // 0.19999999999999998, and a price is not improved by sixteen digits.
+  return Math.round((cumulativeUsd - previous) * 1e10) / 1e10;
+}
+
+/**
  * How full the window is, from ONE message's usage.
  *
  * Claude reports each assistant envelope's usage as the API call behind it saw
@@ -2169,6 +2205,9 @@ export function createClaudeDriver(
               .catch(() => undefined);
           },
           model,
+          // A NEW PROCESS IS A NEW QUERY, so its running cost total starts
+          // unknown — which is not the same as zero.
+          costTotalUsd: undefined,
           busy: true,
           wakeActive: false,
           lastUsedAt: Date.now(),
@@ -2536,7 +2575,8 @@ export function createClaudeDriver(
             // dogfood app. A result with no table keeps the last known value.
             const reportedContextMax = contextMaxFrom(item.modelUsage);
             contextMax = reportedContextMax ?? contextMax;
-            usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
+            // THIS TURN'S SPEND, not the query's running total — see `turnCostFrom`.
+            usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, runtime)) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {
               // An interrupt surfaces as a non-success result; the human's
@@ -2981,7 +3021,9 @@ export function createClaudeDriver(
                 const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
                 if (wake.tools.size > 0 && (stopReason === "tool_use" || stopReason === null)) continue;
                 contextMax = contextMaxFrom(item.modelUsage) ?? contextMax;
-                wake.usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? wake.usage);
+                // The same accounting a human turn gets: a wake-up spends
+                // against the same query, so it takes the same baseline.
+                wake.usage = decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, idleRuntime)) ?? wake.usage);
                 if (wake.usage) emit({ kind: "usage", usage: wake.usage });
                 const failed = item.subtype !== "success";
                 await endWake(failed ? { failure: `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}` } : { text: wake.text });

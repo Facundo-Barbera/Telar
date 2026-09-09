@@ -389,6 +389,84 @@ test("usage and cost are reported from the result message", async () => {
   expect(sink.observations.some((o) => o.kind === "usage")).toBeTrue();
 });
 
+describe("cost is the turn's, out of the query's running total", () => {
+  /** Three turns down one live query, with the running totals the SDK reports. */
+  const driverReporting = (totals: (number | undefined)[]) => {
+    let turn = 0;
+    return createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        for await (const message of prompt) {
+          void message;
+          const total = totals[turn++];
+          yield {
+            type: "result",
+            subtype: "success",
+            ...(total === undefined ? {} : { total_cost_usd: total }),
+            usage: { input_tokens: 10, output_tokens: 2 },
+          };
+        }
+      },
+    }) as never);
+  };
+  const costsOf = async (driver: ReturnType<typeof createClaudeDriver>, turns: number) => {
+    const out: (number | undefined)[] = [];
+    for (let index = 0; index < turns; index += 1) {
+      out.push((await run(driver, { sessionId: "session_costed" }).result).usage?.costUsd);
+    }
+    return out;
+  };
+
+  test("cumulative totals become per-turn deltas, so the sum is the query's spend", async () => {
+    /**
+     * MEASURED IN THE #201 FIXTURES: one live query reporting $0.10 then $0.30
+     * stored two turn costs summing to $0.40, against a query that had spent
+     * $0.30. The SDK is explicit that `total_cost_usd` is "cumulative across
+     * turns in streaming-input sessions" — and Telar holds one query per
+     * session across every turn of it.
+     */
+    const costs = await costsOf(driverReporting([0.1, 0.3, 0.35]), 3);
+    expect(costs).toEqual([0.1, 0.2, 0.05]);
+    expect(costs.reduce((sum, cost) => sum! + cost!, 0)).toBeCloseTo(0.35, 10);
+  });
+
+  test("a crash-zeroed result preserves the running total instead of erasing it", async () => {
+    // "Crash/startup-error results may carry zeroed values" — so zero is no
+    // information, never "this query has spent nothing since".
+    const costs = await costsOf(driverReporting([0.1, 0, 0.3]), 3);
+    expect(costs).toEqual([0.1, undefined, 0.2]);
+  });
+
+  test("a total that drops below the baseline is a new epoch, and all of it is this turn's", async () => {
+    // A mid-session /clear resets the running total; a resumed session starts
+    // fresh. Subtracting the old baseline would report a negative price.
+    expect(await costsOf(driverReporting([0.3, 0.05, 0.09]), 3)).toEqual([0.3, 0.05, 0.04]);
+  });
+
+  test("a provider that reports no cost at all reports none — not $0.00", async () => {
+    // Claude omits cost on subscription plans.
+    expect(await costsOf(driverReporting([undefined, undefined]), 2)).toEqual([undefined, undefined]);
+  });
+
+  test("a cold start resets the baseline, because a new process is a new query", async () => {
+    let queries = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        const mine = (queries += 1);
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success", total_cost_usd: mine === 1 ? 0.4 : 0.05, usage: { input_tokens: 1, output_tokens: 1 } };
+        }
+      },
+    }) as never);
+    const first = await run(driver, { sessionId: "session_cold", cwd: "/tmp" }).result;
+    // A different cwd is a different fingerprint: the process is replaced, and
+    // the new query's total starts from its own zero rather than from $0.40.
+    const second = await run(driver, { sessionId: "session_cold", cwd: "/tmp/elsewhere" }).result;
+    expect(queries).toBe(2);
+    expect([first.usage?.costUsd, second.usage?.costUsd]).toEqual([0.4, 0.05]);
+  });
+});
+
 test("the meter moves DURING a turn: each assistant envelope emits usage, with context occupancy", async () => {
   const driver = createClaudeDriver(async () => ({
     async *query() {
