@@ -883,11 +883,19 @@ test("a STOP makes no further provider call: the live turn ends, the backlog is 
    * and no Resume stands between the person and their next sentence.
    */
   const runs: string[] = [];
+  const killedTasks: string[] = [];
   let release: (() => void) | undefined;
   const driver: TurnDriver = {
-    async run({ prompt, signal, sessionId: ranOn }) {
+    async stopTask(sessionId, providerTaskId) {
+      killedTasks.push(`${sessionId}:${providerTaskId}`);
+      return true;
+    },
+    async run({ prompt, signal, sessionId: ranOn, onObservations }) {
       if (ranOn === "session_one") runs.push(prompt);
       if (prompt === "Long task") {
+        await onObservations([{ kind: "task.started", task: {
+          id: "task_bg", kind: "background", state: "running", title: "Watch", providerTaskId: "provider_bg",
+        } }]);
         await new Promise<void>((resolve) => {
           release = resolve;
           signal?.addEventListener("abort", () => resolve(), { once: true });
@@ -907,6 +915,7 @@ test("a STOP makes no further provider call: the live turn ends, the backlog is 
   await client.submitTurn(sessionId, { runId: "run_q1", input: "q1", kind: "compact" });
   expect((await client.submitTurn(sessionId, { runId: "run_q2", input: "q2" })).turn.state).toBe("steering");
 
+  await eventually(() => expect(release).toBeDefined());
   const stopped = await client.stopSession(sessionId);
   expect(stopped.live?.runId).toBe("run_live");
   expect(stopped.stopped.map((turn) => turn.runId).sort()).toEqual(["run_live", "run_q1", "run_q2", "run_steer"]);
@@ -919,6 +928,8 @@ test("a STOP makes no further provider call: the live turn ends, the backlog is 
   }
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
   expect(runs).toEqual(["Long task"]);
+  expect(killedTasks).toEqual([`${sessionId}:provider_bg`]);
+  expect((await client.session(sessionId)).tasks.find((task) => task.id === "task_bg")?.state).toBe("stopped");
   // Everything that was waiting is terminal, with its words intact.
   const settled = (await client.session(sessionId)).turns;
   expect(settled.filter((turn) => turn.state === "stopped").map((turn) => turn.runId).sort()).toEqual(["run_live", "run_q1", "run_q2", "run_steer"]);

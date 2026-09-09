@@ -6688,86 +6688,49 @@ export class EngineStore {
   }
 
   /**
-   * STOP THE SESSION'S WORK. What the Stop button means to the person pressing
-   * it: what is running ends, what was waiting behind it does not then start,
-   * and the session is plain IDLE — the next message runs, with nothing to
-   * resume and nothing left invisibly waiting.
-   *
-   * NOT `pauseSession`. Stop used to call it, because stopping one turn let
-   * the worker claim the next queued message within a heartbeat ("I pressed
-   * stop and it started again") and a latch was the nearest thing that
-   * suppressed it. That fixed the wrong half: the leftovers were the problem,
-   * not the session's willingness to work, and it left a person who pressed
-   * Stop needing to press Resume before they could say anything.
-   *
-   * SO THE LEFTOVERS ARE SETTLED, NOT HELD. Every message that was waiting is
-   * marked `stopped` — terminal, and still in the transcript with its own
-   * words. Nothing is deleted and nothing is hidden: a cancelled message reads
-   * as cancelled, which is the honest record of what pressing Stop did to it.
-   *
-   * WHAT IT DOES NOT TOUCH:
-   *   - A HELD message. A recovery hold is somebody waiting to re-read a
-   *     message written before a crash, and a pause's hold belongs to the
-   *     pause. Neither is this Stop's to settle — that is what keeps an
-   *     intentional hold distinct from a person pressing Stop.
-   *   - An `ambiguous` turn, whose fate is still a human's to decide.
-   *   - A DELIVERED steer (`steered`). Its words reached the provider and are
-   *     part of the run that just stopped; calling it cancelled would be a lie
-   *     about what the model saw.
-   *   - `session.paused`. Stop never sets it and never clears it. A session
-   *     already paused by the old button (or by an explicit pause) stays
-   *     paused and keeps its Resume — there is no silent mass unpause here.
-   *   - Background tasks. They outlive their turn by definition and have their
-   *     own explicit verb (`stopBackgroundTasks`); a session Stop is not a
-   *     licence to kill work the person never pointed at.
-   *
-   * ATOMIC. One read, one snapshot of what is affected, one write, under the
-   * daemon's single state lock — so a claim, a steer or a heartbeat landing
-   * beside it cannot see half a stop. After the write the fencing is the
-   * ordinary state machine's: `ackSteer` refuses a turn that is no longer
-   * `steering`, and `completeTurn`/`failTurn` refuse one that is no longer
-   * `running`, so a late success cannot resurrect a stopped turn.
+   * End session-owned work at this command boundary, including legacy held
+   * messages and background tasks. Delivered steering stays in history.
+   * Queue terminal states fence late claims, observations and completions
+   * before cancellation is delivered to the provider. No Resume is required.
+   * Detached project services are owned outside this session task store.
    */
   stopSession(sessionId: string, by: "user" | "agent" = "user"): { stopped: Turn[]; live?: Turn } {
-    this.getSession(sessionId);
+    const session = this.getSession(sessionId);
     const queue = this.readQueue(sessionId);
     const at = this.now();
     const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
-    // THE SNAPSHOT, taken before anything is written: which turns this Stop is
-    // about. A held turn, an ambiguous one and an already-delivered steer are
-    // not in it, and nothing added after this line is either.
-    const cancelled = queue.turns.filter((turn) => (turn.state === "queued" && !turn.held) || turn.state === "steering");
-    if (!live && cancelled.length === 0) return { stopped: [] };
-    for (const turn of [...(live ? [live] : []), ...cancelled]) {
+    const stopped = queue.turns.filter((turn) =>
+      turn.state === "queued" || turn.state === "claimed" || turn.state === "running" ||
+      turn.state === "steering" || turn.state === "ambiguous",
+    );
+    for (const turn of stopped) {
       turn.state = "stopped";
-      // WHO STOPPED IT, recorded on the turn. A person's Stop and an agent's
-      // `sessions_stop` do the same thing, and the record says which happened
-      // rather than making them indistinguishable.
       turn.stopReason = by;
       turn.completedAt = at;
       turn.updatedAt = at;
-      // A steer that never arrived is cancelled where it stands rather than
-      // requeued: requeueing is what made Stop start the next thing.
       delete turn.steer;
+      delete turn.held;
     }
-    this.writeQueue(sessionId, queue);
-    if (live) {
-      // The live turn's own agents, rows and questions settle exactly as a
-      // one-turn stop settles them. A cancelled queued turn never ran, so it
-      // has none of these.
-      this.closeOrphanedTasks(sessionId, live.runId, at, "the turn was stopped before this agent reported back");
-      this.closeOpenItems(sessionId, live.runId, at);
-      this.closeOpenRequests(sessionId, live.runId, at);
+    if (stopped.length > 0) this.writeQueue(sessionId, queue);
+    // Clear a legacy latch only after its backlog has been terminalized.
+    if (session.paused) {
+      delete session.paused;
+      session.updatedAt = at;
+      atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     }
-    this.touchSession(sessionId, at);
-    if (live) this.appendEvent(sessionId, { type: "turn.stopped" }, live.runId);
-    for (const turn of cancelled) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
-    // ONLY THE LIVE TURN WAKES ANYBODY. A subscriber wants to hear that the
-    // work it was waiting on ended; five cancelled backlog messages are one
-    // happening, not five, and waking once per message would be the strip full
-    // of near-identical rows that `wakeMessage` already exists to prevent.
+    for (const turn of stopped) {
+      this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
+      this.closeOpenItems(sessionId, turn.runId, at);
+      this.closeOpenRequests(sessionId, turn.runId, at);
+    }
+    // Also runs when no foreground turn exists: a background task outlives
+    // its turn, but belongs to the session the user just stopped.
+    const backgroundStopped = this.stopBackgroundTasks(sessionId);
+    if (stopped.length > 0 || backgroundStopped > 0) this.touchSession(sessionId, at);
+    for (const turn of stopped) this.appendEvent(sessionId, { type: "turn.stopped" }, turn.runId);
+    // One wake for the live turn, not one per cancelled backlog message.
     if (live) this.fireSubscriptions(sessionId, "turn_stopped", live, {});
-    return { stopped: [...(live ? [live] : []), ...cancelled].map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
+    return { stopped: stopped.map((turn) => structuredClone(turn)), ...(live ? { live: structuredClone(live) } : {}) };
   }
 
   /**

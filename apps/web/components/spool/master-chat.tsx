@@ -405,7 +405,7 @@ export function MasterChat({
 
   const stop = useCallback(() => {
     if (!session || !live) return;
-    void api.stopTurn(session.id, live.runId).catch(() => undefined);
+    void api.stopSession(session.id).catch(() => undefined);
   }, [live, session]);
 
   /** See `cutoff` above. Nothing is ended and nothing is discarded — the same

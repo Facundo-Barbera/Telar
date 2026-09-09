@@ -1,6 +1,6 @@
 # Telar engine review and migration plan
 
-Date: 2026-09-09. Status: review proposal; broader implementation is not authorized by this document.
+Date: 2026-09-09. Status: migration direction approved; implementation started in an isolated branch. See the [lifecycle contract](engine-lifecycle-contract.md) for the first slice.
 
 ## Recommendation
 
@@ -158,4 +158,4 @@ Persist bounded structured diagnostics with engine instance, worker generation, 
 
 Immediate repair validation at `e5503329`: engine **1,849 passed / 3 skipped**, web **1,512 passed**, engine client **68 passed**, desktop **188 passed / 2 skipped**; typecheck and lint passed with existing warnings. Final local production packaging and engine/worker/dependency smoke checks passed. GitHub [Verify run 34404319664](https://github.com/Facundo-Barbera/Telar/actions/runs/34404319664) also passed. These checks use fixtures and do not establish live-provider reliability or complete iOS/background Stop parity.
 
-No broad engine revision or OpenCode implementation has been performed. Next decision: approve this migration direction, then review the immediate nightly mitigation and phase 1 lifecycle contract independently.
+The review above records the pre-implementation baseline. The user subsequently approved starting the migration. The first slice aligns session Stop and documents its lifecycle contract; OpenCode and the remaining execution/storage migration are not yet implemented. The main installation remains on the nightly update path.

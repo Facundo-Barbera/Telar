@@ -1983,13 +1983,9 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
   }
 
-  /**
-   * THE STOP BUTTON. Ends the live turn and settles everything that was
-   * waiting behind it, leaving the session idle — no latch, nothing to resume.
-   * A held message (a recovery hold, or a pause's) is not this verb's to
-   * settle, and `session.paused` is neither set nor cleared. Distinct from
-   * `stopTurn`, which ends one run and lets the next start.
-   */
+  /** End all session-owned active, queued, held and background work.
+   * Delivered messages remain in history; the next message needs no Resume.
+   * `stopTurn` is the separate operation that interrupts only one run. */
   stopSession(sessionId: string, by: "user" | "agent" = "user"): Promise<{ stopped: Turn[]; live?: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", by });
   }
@@ -2004,13 +2000,7 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
   }
 
-  /**
-   * PAUSE THE SESSION: stop the live turn and hold everything queued — and
-   * everything that arrives — until a human resumes. `stopTurn` ends one run
-   * and the worker takes the next; this is the one that stays stopped. See
-   * `Session.paused`. `by: "session"` is how the worker's `sessions_stop`
-   * says an agent asked.
-   */
+  /** Deprecated compatibility alias for session Stop; never creates a latch. */
   pauseSession(sessionId: string, by: "human" | "session" = "human"): Promise<{ session: Session; stopped?: Turn; held: number; already: boolean }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/pause`, { by });
   }

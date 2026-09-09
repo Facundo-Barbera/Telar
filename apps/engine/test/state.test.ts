@@ -3392,6 +3392,57 @@ describe("stop is stop — there is no pause to resume", () => {
     expect(store.turns("session_one").find((turn) => turn.runId === "run_q")?.state).toBe("stopped");
   });
 
+  for (const foreground of [true, false]) {
+    test(`session Stop cancels background work with foreground=${foreground} and fences late reports`, () => {
+      const { store, token } = busy();
+      store.ingestObservations("session_one", "run_live", token, [
+        { kind: "task.started", task: { id: "task_bg", kind: "background", state: "running", title: "Watch", providerTaskId: "provider_bg" } },
+      ]);
+      if (!foreground) store.completeTurn("session_one", "run_live", token, { text: "watching" });
+      store.createSession({ id: "session_other", projectId: "project_one" });
+      store.submitTurn("session_other", { runId: "run_other", input: "unrelated work" });
+      const other = store.claimTurn("session_other", "worker_other")!;
+      store.markRunning("session_other", "run_other", other.claim!.token);
+      store.ingestObservations("session_other", "run_other", other.claim!.token, [
+        { kind: "task.started", task: { id: "task_other", kind: "background", state: "running", title: "Other", providerTaskId: "provider_other" } },
+      ]);
+
+      store.stopSession("session_one");
+      expect(store.tasks("session_one")[0]?.state).toBe("stopped");
+      expect(store.drainStopTasks()).toEqual([{ sessionId: "session_one", providerTaskId: "provider_bg" }]);
+      store.reportSessionTasks("session_one", "worker_one", [
+        { kind: "task.progress", task: { id: "task_bg", kind: "background", state: "running", title: "late report" } },
+      ]);
+      expect(store.tasks("session_one")[0]?.state).toBe("stopped");
+      expect(store.tasks("session_other")[0]?.state).toBe("running");
+      store.stopSession("session_one");
+      expect(store.drainStopTasks()).toEqual([]);
+      store.submitTurn("session_one", { runId: "run_after", input: "continue" });
+      expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_after");
+    });
+  }
+
+  test("session Stop terminalizes legacy held work before clearing its pause latch", () => {
+    const { store, root: directory } = readyStore();
+    store.submitTurn("session_one", { runId: "run_held", input: "keep these words" });
+    const queueFile = path.join(directory, "sessions", "session_one", "queue.json");
+    const metadataFile = path.join(directory, "sessions", "session_one", "session.json");
+    const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+    queue.turns[0].held = { at: 100, reason: "session_paused" };
+    fs.writeFileSync(queueFile, JSON.stringify(queue));
+    const metadata = JSON.parse(fs.readFileSync(metadataFile, "utf8"));
+    metadata.paused = { at: 100, by: "human" };
+    fs.writeFileSync(metadataFile, JSON.stringify(metadata));
+    const legacy = new EngineStore(directory, () => 200);
+    legacy.stopSession("session_one");
+    expect(legacy.turns("session_one")[0]).toMatchObject({ state: "stopped", input: "keep these words" });
+    expect(legacy.turns("session_one")[0]?.held).toBeUndefined();
+    expect(legacy.getSession("session_one").paused).toBeUndefined();
+    expect(legacy.claimTurn("session_one", "worker_one")).toBeUndefined();
+    legacy.submitTurn("session_one", { runId: "run_after", input: "new instruction" });
+    expect(legacy.claimTurn("session_one", "worker_one")?.runId).toBe("run_after");
+  });
+
   test("stopping an idle session with nothing waiting changes nothing", () => {
     const { store } = readyStore();
     expect(store.stopSession("session_one")).toEqual({ stopped: [] });

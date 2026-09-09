@@ -639,31 +639,9 @@ export const Session = z.object({
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
 
-  /**
-   * A HUMAN PAUSED THIS SESSION — nothing dispatches until a human resumes it.
-   *
-   * WHAT A TURN STOP COULD NOT SAY. Stopping ends ONE turn; the worker then
-   * claims the next queued message within a heartbeat, a steer that could not
-   * be delivered is requeued and claimed, and the stop itself wakes every
-   * subscriber, which queues wakes on the sessions that were meant to be
-   * quiet. Measured on the dogfood app: a root stop was followed within a
-   * second by new runs on both workers and a wake on their supervisor. A
-   * pause is a fact about the SESSION: `claimTurn` refuses it, the requeued
-   * steer and every message that arrives — a person's, an agent's, a wake —
-   * is accepted and HELD (`Turn.held.reason: "session_paused"`), the
-   * provider is not told anything, and the record survives a restart.
-   *
-   * NOTHING IS DELETED, NOTHING IS AUTO-RELEASED. Resuming lifts the pause
-   * and lets the worker take the backlog in order; each held message can also
-   * be released or dropped on its own. A new message from the person while
-   * paused is held like the rest, never dispatched ahead of what is waiting —
-   * that is what makes "paused" mean paused. Background tasks are untouched by
-   * a pause; stopping them stays their own verb.
-   *
-   * Set only by `pauseSession` / `resumeSession`, which the sessions tool wall
-   * does NOT expose as a resume: an agent may pause a peer (it is the honest
-   * version of `sessions_stop`), and only a human may resume one.
-   */
+  /** Legacy pause metadata, accepted when reading older state. Startup and
+   * session Stop settle its held backlog and remove the latch without replay.
+   * New clients use session Stop; no command creates a pause latch. */
   paused: z
     .object({
       at: Timestamp,
