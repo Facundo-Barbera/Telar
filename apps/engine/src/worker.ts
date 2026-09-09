@@ -195,6 +195,13 @@ export type EngineWorkerOptions = {
   pollMs?: number;
   /** Used by the process supervisor to rediscover a restarted daemon. */
   onConnectionLost?: () => void;
+  /**
+   * THIS WORKER IS EXEMPT FROM THE ENGINE'S LEASE — set ONLY by the daemon for
+   * the worker it hosts in-process (`daemon.ts` excludes that registration from
+   * pruning). A trusted in-process decision, never something a client can
+   * assert over HTTP or infer from a response it received.
+   */
+  leaseExempt?: boolean;
   /** Injected clock and sleep, so a lease test drives time instead of waiting. */
   now?: () => number;
   pause?: (ms: number) => Promise<void>;
@@ -210,6 +217,12 @@ const MAX_LEASE_MS = 120_000;
  *  after these it is retained and retried per healthy tick instead. */
 const SETTLE_ATTEMPTS = 5;
 const SETTLE_BACKOFF_MS = 250;
+/** How many consecutive failed HEARTBEATS make an exempt worker's connection
+ *  lost. Attempts, not seconds: see `heartbeatFailures`. */
+const EXEMPT_FAILURE_LIMIT = 5;
+/** The bound on any single request for a worker with no lease budget to spend
+ *  down. Exemption is from EXPIRY, never from bounding a hung call. */
+const EXEMPT_REQUEST_TIMEOUT_MS = 15_000;
 /** Ceiling on one settle attempt, so an unleased engine cannot hang a turn. */
 const SETTLE_TIMEOUT_MS = 10_000;
 /** Retry spacing for a retained settlement: capped exponential, so a dead
@@ -259,6 +272,16 @@ export class EngineWorker {
    * we are entitled to spend, so a failure is fatal on the first occurrence.
    */
   private leaseMs: number | undefined;
+  /**
+   * CONSECUTIVE FAILED HEARTBEATS, the exempt worker's liveness signal.
+   *
+   * Elapsed wall-clock cannot be it: the daemon never prunes this registration,
+   * so expiring on `Date.now()` is the worker inventing an authority the engine
+   * does not exercise — and a system sleep or an event-loop stall makes that
+   * clock jump past any lease with no request having failed at all. Counting
+   * ATTEMPTS is immune to both: none happen while suspended.
+   */
+  private heartbeatFailures = 0;
   /**
    * When the last acknowledged exchange with the engine STARTED — not when its
    * reply arrived, and not when a failure was noticed.
@@ -376,20 +399,31 @@ export class EngineWorker {
     return (this.options.now ?? Date.now)();
   }
 
-  /** What is left of the lease, or `undefined` when the engine states none. */
+  /** What is left of the lease. `undefined` when the engine states none, and
+   *  for an exempt worker, whose requests take a fixed bound instead. */
   private remainingLeaseMs(): number | undefined {
-    return this.leaseMs === undefined ? undefined : this.leaseMs - (this.now() - this.lastAckAt);
+    if (this.options.leaseExempt || this.leaseMs === undefined) return undefined;
+    return this.leaseMs - (this.now() - this.lastAckAt);
   }
 
+  /** An exempt worker never expires on elapsed time — see `heartbeatFailures`. */
   private expired(): boolean {
+    if (this.options.leaseExempt) return false;
     const remaining = this.remainingLeaseMs();
     return remaining !== undefined && remaining <= 0;
+  }
+
+  /** Every request is bounded, exempt or not: exemption from the lease must
+   *  never mean an unbounded hung HTTP call. */
+  private requestTimeoutMs(): number {
+    const remaining = this.remainingLeaseMs();
+    return Math.max(1, Math.min(EXEMPT_REQUEST_TIMEOUT_MS, remaining ?? EXEMPT_REQUEST_TIMEOUT_MS));
   }
 
   /** Out of contact longer than the engine allows? On its own timer, so a hung
    *  request cannot suppress it. */
   private checkLease(): void {
-    if (this.stopped || this.connectionLost || this.leaseMs === undefined) return;
+    if (this.stopped || this.connectionLost || this.options.leaseExempt || this.leaseMs === undefined) return;
     if (this.expired()) {
       this.loseConnection(new EngineClientError("engine_unavailable", "engine lease expired", undefined, { operation: "workerHeartbeat", transport: "lease_expired" }));
     }
@@ -632,13 +666,15 @@ export class EngineWorker {
   async tick(): Promise<void> {
     if (this.stopped || this.ticking) return;
     this.ticking = true;
+    // Held outside the try so the catch can tell a failure from THIS attempt
+    // from one whose attempt predates a newer acknowledgement.
+    const tickIssuedAt = this.now();
     try {
-      const issuedAt = this.now();
+      const issuedAt = tickIssuedAt;
       // Bounded by what is LEFT of the lease, not a fresh one per request: a
       // reply due after the deadline is worthless, and a per-request timeout
       // would let successive requests outlive the budget entirely.
-      const remaining = this.remainingLeaseMs();
-      const status = await this.options.client.workerHeartbeat(this.options.workerId, remaining === undefined ? undefined : AbortSignal.timeout(Math.max(1, remaining)));
+      const status = await this.options.client.workerHeartbeat(this.options.workerId, AbortSignal.timeout(this.requestTimeoutMs()));
       if (this.stopped || this.connectionLost) return;
       // THE DEADLINE, NOT THE FLAGS. The watchdog runs every lease/3, so an
       // expired reply can land before it next fires; accepting it would reset
@@ -649,6 +685,7 @@ export class EngineWorker {
       }
       // Anchored at the moment we ASKED, so latency counts against us.
       this.lastAckAt = issuedAt;
+      this.heartbeatFailures = 0;
       if (this.outageReported) {
         this.diagnose({ event: "engine_reachable", operation: "workerHeartbeat" });
         this.outageReported = false;
@@ -746,8 +783,8 @@ export class EngineWorker {
       }
     } catch (error) {
       // Our own heartbeat bound firing is an outage, not a caller hanging up.
-      if (error instanceof DOMException && error.name === "TimeoutError") this.noteConnectivityFailure(new EngineClientError("engine_unavailable", "engine did not answer in time", undefined, { operation: "workerHeartbeat", transport: "timeout" }));
-      else if (isConnectivityLoss(error)) this.noteConnectivityFailure(error);
+      if (error instanceof DOMException && error.name === "TimeoutError") this.noteConnectivityFailure(new EngineClientError("engine_unavailable", "engine did not answer in time", undefined, { operation: "workerHeartbeat", transport: "timeout" }), tickIssuedAt);
+      else if (isConnectivityLoss(error)) this.noteConnectivityFailure(error, tickIssuedAt);
       else throw error;
     } finally {
       this.ticking = false;
@@ -788,13 +825,26 @@ export class EngineWorker {
    * engine verdict, and is ridden out within the engine's own lease with the
    * worker's turns still running.
    */
-  private noteConnectivityFailure(error: unknown): void {
+  private noteConnectivityFailure(error: unknown, issuedAt?: number): void {
     if (this.stopped || this.connectionLost) return;
     const described = EngineWorker.describe(error);
     // REVOKED: the engine answering, definitively, that this worker may not
     // act. Nothing to wait out, and continuing would be work outside the lease.
     if (error instanceof EngineClientError && (error.code === "engine_unauthorized" || error.code === "worker_unavailable")) {
       this.loseConnection(error);
+      return;
+    }
+    /**
+     * AN EXEMPT WORKER COUNTS ATTEMPTS, NOT SECONDS. Only heartbeat failures
+     * count, and only ones from an attempt no older than the last success — a
+     * stale failure landing after a newer acknowledgement must not push a
+     * healthy worker toward a loss it has already disproved.
+     */
+    if (this.options.leaseExempt) {
+      if (issuedAt !== undefined && issuedAt < this.lastAckAt) return;
+      if (described.operation !== "workerHeartbeat") return;
+      this.heartbeatFailures += 1;
+      if (this.heartbeatFailures >= EXEMPT_FAILURE_LIMIT) this.loseConnection(error);
       return;
     }
     // No stated lease means no budget we are entitled to spend: fail closed on

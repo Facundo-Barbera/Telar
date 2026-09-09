@@ -3382,6 +3382,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");
+      const { createWorkerDiagnostics } = await import("./worker-diagnostics");
       // Built once up front so a driver that cannot be constructed fails the
       // boot, not a retry loop; every later attempt builds its own.
       let initialDriver: DriverSelector | undefined = await createDriver();
@@ -3422,6 +3423,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             loginGrants: createLoginGrantStore(store.paths.root),
             ...(sessionsSocket ? { sessionsSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
+            // TRUSTED, and in-process: this is the registration `pruneWorkers`
+            // excludes, so the worker must not expire itself on a clock the
+            // engine does not hold it to. Not derivable from any response.
+            leaseExempt: true,
+            // Persisted, because the packaged app's stderr is /dev/null — see
+            // ./worker-diagnostics.ts.
+            onDiagnostic: createWorkerDiagnostics(store.paths.root, workerId),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
             onConnectionLost,
           });
