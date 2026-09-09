@@ -506,6 +506,55 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
 });
 
+test("message_delta carries the response's REAL output count; the envelope's was a placeholder", async () => {
+  /**
+   * MEASURED IN THE #201 SAMPLE: a 41-minute journal whose usage observations
+   * reported outputs of 6, 3 and 2 tokens, because the streamed assistant
+   * envelope's `output_tokens` is a placeholder — the SDK says as much
+   * ("message.usage is not final"). `message_delta` is the one frame that
+   * states the real figure, and the pump discarded it entirely.
+   */
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 100, cache_creation_input_tokens: 3 } },
+      };
+      yield { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 812 } } };
+      yield { type: "result", subtype: "success", usage: { input_tokens: 10, output_tokens: 812 } };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const usages = sink.observations.flatMap((o) => (o.kind === "usage" ? [o.usage] : []));
+  // Envelope, correction, result.
+  expect(usages).toHaveLength(3);
+  expect(usages[0]?.tokens.output).toBe(2);
+  expect(usages[1]?.tokens.output).toBe(812);
+  // Occupancy follows: input + cache reads + cache writes + the REAL output.
+  expect(usages[1]?.contextUsed).toBe(925);
+  // Everything else on the envelope is preserved rather than replaced.
+  expect(usages[1]?.tokens).toMatchObject({ input: 10, cacheRead: 100, cacheCreate: 3 });
+});
+
+test("a message_delta before any envelope, or from a sub-agent, moves nothing", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      // No envelope yet: nothing to correct, and inventing a record would
+      // report an occupancy with no input or cache counts at all.
+      yield { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 99 } } };
+      // A sub-agent's output is reported on its own task, never the parent's.
+      yield { type: "assistant", message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 10, output_tokens: 2 } } };
+      yield { type: "stream_event", parent_tool_use_id: "use_child", event: { type: "message_delta", usage: { output_tokens: 500 } } };
+      yield { type: "result", subtype: "success", usage: { input_tokens: 10, output_tokens: 2 } };
+    },
+  }));
+  const { sink, result } = run(driver);
+  await result;
+  const usages = sink.observations.flatMap((o) => (o.kind === "usage" ? [o.usage] : []));
+  expect(usages.map((usage) => usage.tokens.output)).toEqual([2, 2]);
+});
+
 test("the meter assumes 1M only for an explicit [1m] row, and the provider's report corrects it either way", async () => {
   /**
    * MEASURED ON THE DOGFOOD APP: a session configured as bare `opus` was

@@ -1295,6 +1295,10 @@ export function createClaudeDriver(
        */
       let contextUsed: number | undefined;
       let contextMax: number | undefined = selectedContextMaxFromModel(model);
+      /** The newest main-loop assistant envelope's raw `usage`, kept so the
+       *  response's closing `message_delta` can correct its placeholder
+       *  output count rather than replace the whole record. */
+      let lastEnvelopeUsage: unknown;
       const decorateUsage = (snapshot: UsageSnapshot | undefined): UsageSnapshot | undefined =>
         snapshot === undefined
           ? undefined
@@ -1513,6 +1517,9 @@ export function createClaudeDriver(
           index?: number;
           content_block?: { type?: string };
           delta?: { type?: string; text?: string; thinking?: string };
+          /** `message_delta` only: the response's FINAL output token count.
+           *  Every earlier report of it is a placeholder — see the pump. */
+          usage?: unknown;
         };
       };
 
@@ -2688,6 +2695,35 @@ export function createClaudeDriver(
               openBlocks.delete(index);
               emit(closeBlock(open));
               await flush();
+              continue;
+            }
+
+            /**
+             * THE FINAL OUTPUT COUNT, which nothing else in the stream carries.
+             *
+             * Every earlier report of `output_tokens` for a response is a
+             * placeholder: the SDK says so of the streamed assistant envelopes
+             * ("message.usage is not final"), and the #201 sample shows it —
+             * a 41-minute journal whose observations reported outputs of 6, 3
+             * and 2 tokens. `message_delta` is the one frame that states the
+             * response's real output, so it is folded onto the envelope's own
+             * usage and the occupancy recomputed from the pair.
+             *
+             * Read only for OUR main loop: a sub-agent's output is reported on
+             * its own task, never against the parent's meter.
+             */
+            if (event.type === "message_delta" && ours && lastEnvelopeUsage) {
+              const output = asRecord(event.usage).output_tokens;
+              if (typeof output !== "number" || output < 0) continue;
+              lastEnvelopeUsage = { ...asRecord(lastEnvelopeUsage), output_tokens: output };
+              contextUsed = contextUsedFrom(lastEnvelopeUsage) ?? contextUsed;
+              const snapshot = usageFrom(lastEnvelopeUsage, undefined);
+              if (!snapshot) continue;
+              // The cost already recorded for this turn is kept: this frame
+              // says nothing about price, and dropping it would read as free.
+              usage = decorateUsage({ ...snapshot, ...(usage?.costUsd === undefined ? {} : { costUsd: usage.costUsd }) });
+              emit({ kind: "usage", usage: usage! });
+              await flush();
             }
             continue;
           }
@@ -2700,6 +2736,9 @@ export function createClaudeDriver(
             if (ours) {
               const snapshot = usageFrom(item.message?.usage, undefined);
               if (snapshot) {
+                // Kept raw so the response's closing `message_delta` can
+                // correct its placeholder output count against it.
+                lastEnvelopeUsage = item.message?.usage;
                 contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
                 usage = decorateUsage(snapshot);
                 /**
