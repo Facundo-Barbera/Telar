@@ -47,6 +47,9 @@ export type ModelManifest = {
     profiles: Record<string, { longWindow: boolean; defaultLong?: boolean }>;
     /** Canonical wire id (no `[1m]`, no dated build) → profile key. */
     models: Record<string, string>;
+    /** Claude Code's bare family aliases (`opus`, `sonnet`…) → profile key.
+     *  What a saved `opus` means when there is no live catalogue to ask. */
+    aliases?: Record<string, string>;
     /** Models to list even when the CLI does not. Keyed on the canonical id;
      *  a listed row with the same canonical id suppresses the declaration. */
     declare?: Array<{ id: string; label: string; description?: string; efforts: Effort[] }>;
@@ -64,6 +67,35 @@ function canonicalId(model: Pick<ProviderModel, "id" | "resolves">): string {
 
 const isLong = (model: Pick<ProviderModel, "id" | "resolves">): boolean =>
   /\[1m\]$/i.test(model.id) || /\[1m\]$/i.test(model.resolves ?? "");
+
+/**
+ * THE LONG-WINDOW SPELLING OF A SAVED CLAUDE MODEL, or the id untouched.
+ *
+ * Telar publishes only the `[1m]` rows of a long-window family (see
+ * `publishClaudeModel`), yet a session could still be SAVED as bare `opus` or
+ * `claude-opus-5` — an older record, a hand-typed id, a client written before
+ * the window became a control. Measured on the dogfood app: a bare `opus`
+ * session ran the provider's 200k window and auto-compacted at ~170k while
+ * every surface assumed 1M. The spelling is normalised at the store's three
+ * doors (session patch, per-turn choice, claim) so what runs is what the
+ * picker would have offered.
+ *
+ * NEVER INVENTS AN ID. Only a canonical id or alias the manifest maps to a
+ * `longWindow` profile gets the suffix — the same rows the catalogue
+ * synthesizes and the provider lists (`opus[1m]` → `claude-opus-5[1m]`). A
+ * dated build, a custom id, Haiku, and anything unknown are returned as they
+ * came.
+ */
+export function normalizeClaudeModel(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): string {
+  const claude = manifest.claude;
+  if (!claude || /\[1m\]$/i.test(id)) return id;
+  // A dated build pins a specific release; the window suffix is not known to
+  // be accepted on it, so it is left exactly as typed.
+  if (/-\d{8}$/.test(id)) return id;
+  const profileKey = claude.models[id] ?? claude.aliases?.[id.toLowerCase()];
+  const profile = claude.profiles[profileKey ?? ""];
+  return profile?.longWindow ? `${id}[1m]` : id;
+}
 
 function publishClaudeModel(model: ProviderModel, manifest: NonNullable<ModelManifest["claude"]>): boolean {
   const profile = manifest.profiles[manifest.models[canonicalId(model)] ?? ""];

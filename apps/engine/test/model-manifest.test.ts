@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ProviderModel } from "@telar/engine-client";
-import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "../src/model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, normalizeClaudeModel, type ModelManifest } from "../src/model-manifest";
 
 /** The bundled manifest without its declarations — for tests about the
  *  window-synthesis half alone, where an appended Fable 5.1 would be noise. */
@@ -101,4 +101,26 @@ test("a profile shipped 1M by default marks its synthesized [1m] row as the defa
   // A long-window profile NOT shipped 1M by default gets no mark.
   const sonnet = applyModelManifest([row("sonnet", { resolves: "claude-sonnet-5" })], BUNDLED_MANIFEST).find((m) => m.id === "sonnet[1m]")!;
   expect(sonnet.defaultWindow).toBeUndefined();
+});
+
+describe("normalizeClaudeModel", () => {
+  test("maps a canonical id or a bare alias to its [1m] row, and only when the profile has a long window", () => {
+    expect(normalizeClaudeModel("claude-opus-5")).toBe("claude-opus-5[1m]");
+    expect(normalizeClaudeModel("opus")).toBe("opus[1m]");
+    expect(normalizeClaudeModel("Fable")).toBe("Fable[1m]");
+    expect(normalizeClaudeModel("claude-fable-5-1")).toBe("claude-fable-5-1[1m]");
+    expect(normalizeClaudeModel("claude-haiku-4-5")).toBe("claude-haiku-4-5");
+    expect(normalizeClaudeModel("haiku")).toBe("haiku");
+  });
+  test("never invents: already-long, dated, custom and unknown ids come back as they went in", () => {
+    expect(normalizeClaudeModel("opus[1m]")).toBe("opus[1m]");
+    expect(normalizeClaudeModel("claude-opus-5[1M]")).toBe("claude-opus-5[1M]");
+    expect(normalizeClaudeModel("claude-opus-5-20260101")).toBe("claude-opus-5-20260101");
+    expect(normalizeClaudeModel("claude-mystery-9")).toBe("claude-mystery-9");
+    expect(normalizeClaudeModel("opus", { version: 1 })).toBe("opus");
+  });
+  test("the bundled aliases all point at a profile that exists", () => {
+    const claude = BUNDLED_MANIFEST.claude!;
+    for (const [alias, profile] of Object.entries(claude.aliases ?? {})) expect(claude.profiles[profile], alias).toBeDefined();
+  });
 });

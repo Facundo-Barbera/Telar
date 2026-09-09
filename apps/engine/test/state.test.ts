@@ -1272,7 +1272,9 @@ test("a turn with no model of its own falls back to the session's", () => {
   const session = store.getSession("session_one");
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
   store.submitTurn("session_one", { runId: "run_one", input: "Hi" });
-  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5");
+  // NORMALISED AT THE CLAIM: Telar publishes only the long-window row for
+  // this family, so a bare id runs as the row the picker would have offered.
+  expect(store.claimNextTurn("worker_one")?.model?.model).toBe("claude-opus-5[1m]");
 });
 
 test("only enabled MCP servers ride the claim, and disabling one keeps its configuration", () => {
@@ -1753,7 +1755,7 @@ test("a model selection can be cleared, which `undefined` could never express", 
   // And an absent key still means "leave it alone", which is the other half of
   // the distinction.
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, model: "claude-opus-5" } });
-  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5");
+  expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5[1m]");
 });
 
 test("fast mode reaches the claim without a model", () => {
@@ -3070,5 +3072,47 @@ describe("an agent's message is attributed, never the person's", () => {
     store.completeTurn("session_two", "run_direct", claimedDirect.claim!.token, { text: "finished the job" });
     const wake = store.turns("session_one").find((turn) => turn.wakeReason);
     expect(wake?.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_direct" });
+  });
+});
+
+describe("a Claude model is stored and claimed in the spelling Telar offers", () => {
+  test("a bare family id or alias becomes its [1m] row at every door; a custom, dated or short-window id is left alone", () => {
+    const { store } = readyStore();
+    const session = store.getSession("session_one");
+    const instanceId = session.providerInstanceId;
+    // The session patch.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "opus", effort: "medium" } }).model).toEqual({ instanceId, model: "opus[1m]", effort: "medium" });
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5" } }).model?.model).toBe("claude-opus-5[1m]");
+    // Already long: untouched, no double suffix.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-fable-5-1[1m]" } }).model?.model).toBe("claude-fable-5-1[1m]");
+    // Nothing is invented: a custom id, a dated build and Haiku stay as typed.
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-mystery-9" } }).model?.model).toBe("claude-mystery-9");
+    expect(store.updateSession("session_one", { model: { instanceId, model: "claude-opus-5-20260101" } }).model?.model).toBe("claude-opus-5-20260101");
+    expect(store.updateSession("session_one", { model: { instanceId, model: "haiku" } }).model?.model).toBe("haiku");
+    // The per-turn choice.
+    const { turn } = store.submitTurn("session_one", { runId: "run_one", input: "Hi", model: { model: "sonnet" } });
+    expect(turn.model?.model).toBe("sonnet[1m]");
+    expect(store.claimNextTurn("worker_one")?.model?.model).toBe("sonnet[1m]");
+  });
+
+  test("a record saved before the window was a control is corrected at the claim, without a patch", () => {
+    const { store, root: stateRoot } = readyStore();
+    const file = path.join(stateRoot, "sessions", "session_one", "session.json");
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    saved.model = { instanceId: store.getSession("session_one").providerInstanceId, model: "opus", effort: "medium" };
+    fs.writeFileSync(file, JSON.stringify(saved), "utf8");
+    const booted = new EngineStore(stateRoot, () => 200);
+    // The record still says what was saved…
+    expect(booted.getSession("session_one").model?.model).toBe("opus");
+    booted.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+    // …and the claim — what actually runs — says the row Telar offers.
+    expect(booted.claimNextTurn("worker_one")?.model).toMatchObject({ model: "opus[1m]", effort: "medium" });
+  });
+
+  test("a Codex id is never touched", () => {
+    const { store } = readyStore();
+    store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
+    const instanceId = store.getSession("session_codex").providerInstanceId;
+    expect(store.updateSession("session_codex", { model: { instanceId, model: "gpt-5.6-sol" } }).model?.model).toBe("gpt-5.6-sol");
   });
 });

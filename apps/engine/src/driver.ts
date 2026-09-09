@@ -538,9 +538,23 @@ function claudeContextEnvForModel(model: string | undefined): Record<string, str
   return { CLAUDE_CODE_DISABLE_1M_CONTEXT: "0" };
 }
 
-function selectedContextMaxFromModel(model: string | undefined): number | undefined {
-  if (model && !isClaudeLongContextFamily(model)) return undefined;
-  return 1_000_000;
+/**
+ * What the meter may ASSUME before the provider has said anything — and only
+ * for a row that explicitly asks for the long window. Measured on the dogfood
+ * app: a session configured as bare `opus` was assumed 1M here because the
+ * whole family was, while the provider auto-compacted at ~166k–172k — the
+ * window it actually ran was 200k, and `Math.max` against the assumption
+ * could never correct the meter downward. A bare id assumes nothing; the
+ * provider's own `contextWindow` fills it in on the first result.
+ */
+/** The window a Claude id SPELLS — `[1m]` or not. Absent means the provider's
+ *  default, which is its own and not this driver's to guess. */
+function claudeWindowOf(model: string | undefined): "long" | "default" {
+  return model && /\[1m\]$/i.test(model) ? "long" : "default";
+}
+
+export function selectedContextMaxFromModel(model: string | undefined): number | undefined {
+  return model && /\[1m\]$/i.test(model) && isClaudeLongContextFamily(model) ? 1_000_000 : undefined;
 }
 
 type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -2155,7 +2169,13 @@ export function createClaudeDriver(
       if (claimed && claimed.model !== model) {
         // The one knob a live query can turn. A query that cannot (a fake
         // SDK, an older CLI) is replaced instead of patched.
-        const setModel = claimed.query.setModel?.bind(claimed.query);
+        //
+        // A WINDOW CHANGE IS NOT A MODEL SWITCH. `opus` → `opus[1m]` asks for
+        // a different context size, and whether a live process honours the
+        // suffix through `setModel` is not something this driver can verify
+        // — so it is a cold start, where the id is baked into the query and
+        // the provider's first result reports the window it actually got.
+        const setModel = claudeWindowOf(claimed.model) === claudeWindowOf(model) ? claimed.query.setModel?.bind(claimed.query) : undefined;
         let switched = false;
         if (setModel) {
           try {
@@ -2463,11 +2483,12 @@ export function createClaudeDriver(
               await flush();
               continue;
             }
+            // THE PROVIDER'S WORD WINS OVER THE ASSUMPTION, in both directions.
+            // The old `Math.max` let a selected 1M row override a reported
+            // 200k window, which is exactly the meter that lied on the
+            // dogfood app. A result with no table keeps the last known value.
             const reportedContextMax = contextMaxFrom(item.modelUsage);
-            contextMax =
-              reportedContextMax === undefined
-                ? contextMax
-                : Math.max(contextMax ?? 0, reportedContextMax);
+            contextMax = reportedContextMax ?? contextMax;
             usage = decorateUsage(usageFrom(item.usage, item.total_cost_usd) ?? usage);
             if (usage) emit({ kind: "usage", usage });
             if (item.subtype !== "success") {

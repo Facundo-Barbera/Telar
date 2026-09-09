@@ -223,7 +223,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { applyModelManifest, BUNDLED_MANIFEST, type ModelManifest } from "./model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
 import { preflightPython, relativisePythonPath, resolvePythonPath, type PythonPreflight } from "./ds/python-env";
@@ -5496,7 +5496,7 @@ export class EngineStore {
         if (parsed.data.instanceId !== session.providerInstanceId) {
           throw new EngineStateError("invalid_request", "model must belong to the session's provider instance");
         }
-        next.model = parsed.data;
+        next.model = this.normalizeModelSelection(session.driver, parsed.data);
       }
     }
     /**
@@ -6016,7 +6016,7 @@ export class EngineStore {
        */
       ...(input.model
         ? {
-            model: {
+            model: this.normalizeModelSelection(session.driver, {
               instanceId: session.providerInstanceId,
               // EITHER MAY BE ABSENT. "The provider's default model, at maximum
               // effort" is an ordinary thing to ask for, and spreading rather
@@ -6025,7 +6025,7 @@ export class EngineStore {
               ...(input.model.model ? { model: input.model.model } : {}),
               ...(input.model.effort ? { effort: input.model.effort } : {}),
               ...(input.model.fastMode === undefined ? {} : { fastMode: input.model.fastMode }),
-            },
+            }),
           }
         : {}),
     };
@@ -6284,7 +6284,10 @@ export class EngineStore {
        * a worker gets to it. The session default is what a turn falls back to,
        * not what overrides it.
        */
-      const model = turn.model ?? session.model;
+      // Normalised HERE TOO, because a record saved before the window became a
+      // control is read here without ever passing through a patch — and the
+      // claim is the one place that decides what actually runs.
+      const model = this.normalizeModelSelection(session.driver, turn.model ?? session.model);
       /**
        * THIS PROJECT'S SERVERS OVER THE GLOBAL ONES, then filtered to the
        * enabled ones. Both halves happen HERE rather than in the worker so each
@@ -6370,6 +6373,17 @@ export class EngineStore {
       };
     }
     return undefined;
+  }
+
+  /**
+   * A Claude selection in the spelling Telar actually offers — see
+   * `normalizeClaudeModel`. Codex ids are never touched; there is no window
+   * to spell. Absent stays absent: the provider's default is its own.
+   */
+  private normalizeModelSelection<T extends ModelSelection | undefined>(driver: ProviderDriverKind, selection: T): T {
+    if (!selection || driver !== "claude" || !selection.model) return selection;
+    const model = normalizeClaudeModel(selection.model, this.manifest);
+    return model === selection.model ? selection : { ...selection, model };
   }
 
   markRunning(sessionId: string, runId: string, claimToken: string): Turn {

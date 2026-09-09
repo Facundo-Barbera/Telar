@@ -419,16 +419,22 @@ test("the meter moves DURING a turn: each assistant envelope emits usage, with c
   // Occupancy is the NEWEST message's input+cacheRead+cacheCreate+output.
   expect(usages[0]?.kind === "usage" && usages[0].usage.contextUsed).toBe(115);
   expect(usages[1]?.kind === "usage" && usages[1].usage.contextUsed).toBe(219);
-  // Claude's default is now Telar's long-context row. A provider-reported 200k
-  // window cannot lower the meter below the selected/default 1M floor.
+  // THE PROVIDER'S OWN WINDOW, not an assumption: the main loop's 200k is what
+  // the meter says, and the sidechain's smaller table entry does not win.
   const last = usages[2];
-  expect(last?.kind === "usage" && last.usage.contextMax).toBe(1_000_000);
+  expect(last?.kind === "usage" && last.usage.contextMax).toBe(200_000);
   expect(last?.kind === "usage" && last.usage.contextUsed).toBe(219);
   // Tokens still come from the result's own usage, never from modelUsage.
   expect(last?.kind === "usage" && last.usage.tokens.input).toBe(22);
 });
 
-test("a selected or default Claude 1M row is the context-meter floor", async () => {
+test("the meter assumes 1M only for an explicit [1m] row, and the provider's report corrects it either way", async () => {
+  /**
+   * MEASURED ON THE DOGFOOD APP: a session configured as bare `opus` was
+   * assumed 1M for the whole family while the provider auto-compacted at
+   * ~170k — its window was 200k, and `Math.max` against the assumption could
+   * never bring the meter down. The provider's own `contextWindow` wins now.
+   */
   const driver = createClaudeDriver(async () => ({
     async *query() {
       yield {
@@ -445,15 +451,33 @@ test("a selected or default Claude 1M row is the context-meter floor", async () 
   }));
   const selected = run(driver, { model: "claude-fable-5-1[1m]" });
   await selected.result;
-  const selectedUsage = selected.sink.observations.filter((o) => o.kind === "usage").at(-1);
-  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextMax).toBe(1_000_000);
+  const selectedUsages = selected.sink.observations.filter((o) => o.kind === "usage");
+  // Before the provider speaks, an explicit [1m] row is assumed 1M so the
+  // ring has a denominator on the first envelope…
+  expect(selectedUsages[0]?.kind === "usage" && selectedUsages[0].usage.contextMax).toBe(1_000_000);
+  // …and the provider's own report corrects it DOWN when it disagrees.
+  const selectedUsage = selectedUsages.at(-1);
+  expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextMax).toBe(200_000);
   expect(selectedUsage?.kind === "usage" && selectedUsage.usage.contextUsed).toBe(400_002);
 
-  const fallback = run(driver);
-  await fallback.result;
-  const fallbackUsage = fallback.sink.observations.filter((o) => o.kind === "usage").at(-1);
-  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextMax).toBe(1_000_000);
-  expect(fallbackUsage?.kind === "usage" && fallbackUsage.usage.contextUsed).toBe(400_002);
+  // A bare id or no model assumes nothing until the provider reports.
+  for (const extra of [{}, { model: "opus" }, { model: "claude-opus-5" }]) {
+    const bare = run(driver, extra);
+    await bare.result;
+    const usages = bare.sink.observations.filter((o) => o.kind === "usage");
+    expect(usages[0]?.kind === "usage" && usages[0].usage.contextMax).toBeUndefined();
+    expect(usages.at(-1)?.kind === "usage" && usages.at(-1)!.usage.contextMax).toBe(200_000);
+  }
+});
+
+test("selectedContextMaxFromModel assumes 1M for a [1m] Claude row only", async () => {
+  const { selectedContextMaxFromModel } = await import("../src/driver");
+  expect(selectedContextMaxFromModel("opus[1m]")).toBe(1_000_000);
+  expect(selectedContextMaxFromModel("claude-fable-5-1[1m]")).toBe(1_000_000);
+  expect(selectedContextMaxFromModel("opus")).toBeUndefined();
+  expect(selectedContextMaxFromModel("claude-opus-5")).toBeUndefined();
+  expect(selectedContextMaxFromModel(undefined)).toBeUndefined();
+  expect(selectedContextMaxFromModel("claude-mystery-9[1m]")).toBeUndefined();
 });
 
 test("compaction is a timeline row, not a dropped message", async () => {
@@ -1731,6 +1755,40 @@ describe("the session runtime", () => {
     await run(driver, { sessionId: "session_switching", model: "opus[1m]" }).result;
     await run(driver, { sessionId: "session_switching", model: "sonnet[1m]" }).result;
     expect(queryCalls).toBe(1);
+    expect(modelsSet).toEqual(["sonnet[1m]"]);
+  });
+
+  test("a WINDOW change cold-starts the process rather than trusting setModel with the suffix", async () => {
+    /**
+     * Whether a live CLI honours `[1m]` through `setModel` is unverified, and
+     * the dogfood sessions whose saved model was changed from bare opus to
+     * opus[1m] kept auto-compacting at ~170k. A window change is baked into
+     * a fresh query, whose first result reports the window it actually got.
+     */
+    let queryCalls = 0;
+    const modelsSet: unknown[] = [];
+    const baked: unknown[] = [];
+    const driver = createClaudeDriver(async () => ({
+      query({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { model?: string } }) {
+        baked.push(options.model);
+        const generator = (async function* () {
+          queryCalls += 1;
+          for await (const message of prompt) {
+            void message;
+            yield { type: "result", subtype: "success" };
+          }
+        })();
+        return Object.assign(generator, { setModel: async (model?: string) => { modelsSet.push(model); } });
+      },
+    }) as never);
+    await run(driver, { sessionId: "session_window", model: "opus" }).result;
+    await run(driver, { sessionId: "session_window", model: "opus[1m]" }).result;
+    expect(queryCalls).toBe(2);
+    expect(modelsSet).toEqual([]);
+    expect(baked).toEqual(["opus", "opus[1m]"]);
+    // Same window, different family: the live knob is still the cheap path.
+    await run(driver, { sessionId: "session_window", model: "sonnet[1m]" }).result;
+    expect(queryCalls).toBe(2);
     expect(modelsSet).toEqual(["sonnet[1m]"]);
   });
 
