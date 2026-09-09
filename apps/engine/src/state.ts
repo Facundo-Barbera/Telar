@@ -3,11 +3,13 @@
 // storage, so starting the daemon cannot create a `chats.json`, cutover marker,
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
+import { ExecutionStore } from "./execution-store";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   autoResolution,
+  PROVIDER_CAPABILITIES,
   DEFAULT_ATTENDED_RUNTIME_MODE,
   DEFAULT_DETACHED_RUNTIME_MODE,
   defaultInstanceIdForDriver,
@@ -787,7 +789,7 @@ function seedProviderInstance(driver: ProviderDriverKind, at: number): ProviderI
   return {
     id: defaultInstanceIdForDriver(driver),
     driver,
-    enabled: true,
+    enabled: driver !== "opencode",
     env: [],
     createdAt: at,
     updatedAt: at,
@@ -1270,6 +1272,34 @@ export type EngineNotifier = (input: {
 }) => boolean;
 
 export class EngineStore {
+  private executionStore?: ExecutionStore;
+  private commandDepth = 0;
+  private afterCommit: Array<() => void> = [];
+  private readDocument(file: string): unknown | undefined {
+    return this.executionStore?.owns(file) ? this.executionStore.read(file) : readJson(file);
+  }
+  private writeDocument(file: string, value: unknown, mode?: number): void {
+    if (this.executionStore?.owns(file)) this.executionStore.write(file, value);
+    else atomicWrite(file, value, mode);
+  }
+  closeExecutionStore(): void { this.executionStore?.close(); }
+  executeCommand<T>(command: string, action: () => T, commandId?: string): T {
+    if (!this.executionStore) return action();
+    this.commandDepth += 1;
+    let result: T;
+    try { result = this.executionStore.transaction(command, action, commandId); }
+    catch (error) {
+      this.journalHead.clear(); this.openPrefixes.clear(); this.liveQueueIndex = undefined;
+      this.pendingStopTasks.clear(); this.afterCommit = [];
+      throw error;
+    } finally { this.commandDepth -= 1; }
+    if (this.commandDepth === 0) {
+      const effects = this.afterCommit.splice(0);
+      for (const effect of effects) effect();
+    }
+    return result;
+  }
+
   readonly paths: EngineStatePaths;
   private readonly notifier?: EngineNotifier;
   /** See the constructor: daemon-injected, absent means no computer use. */
@@ -1517,7 +1547,7 @@ export class EngineStore {
     const next = { ...attachment, ...(cleaned.length ? { tags: cleaned } : {}) };
     if (!cleaned.length) delete next.tags;
     index.set(attachmentId, next);
-    atomicWrite(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
+    this.writeDocument(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
     return structuredClone(next);
   }
 
@@ -1656,7 +1686,7 @@ export class EngineStore {
    * so the engine and the page explaining it cannot disagree.
    */
   listMcpServers(scope?: { projectId: string | null }): McpServer[] {
-    const stored = readJson(this.paths.mcpServers) as { mcpServers?: unknown } | undefined;
+    const stored = this.readDocument(this.paths.mcpServers) as { mcpServers?: unknown } | undefined;
     const parsed = McpServerSchema.array().safeParse(stored?.mcpServers ?? []);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid MCP server registry");
     const all = structuredClone(parsed.data);
@@ -1687,7 +1717,7 @@ export class EngineStore {
       updatedAt: at,
     };
     const next = existing ? servers.map((entry) => (sameSlot(entry) ? server : entry)) : [...servers, server];
-    atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
+    this.writeDocument(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
     return structuredClone(server);
   }
 
@@ -1698,7 +1728,7 @@ export class EngineStore {
     // it — which is exactly what an id-only match would have done.
     const next = servers.filter((server) => !(server.id === id && server.projectId === projectId));
     if (next.length === servers.length) return false;
-    atomicWrite(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
+    this.writeDocument(this.paths.mcpServers, { version: STATE_VERSION, mcpServers: next });
     // A server that is gone has no grant to keep. Left behind, the record would
     // silently re-attach to whatever the next server of that id turned out to
     // be — a token minted for one audience, sent to another.
@@ -1721,7 +1751,7 @@ export class EngineStore {
    */
   getInboxPolicy(): InboxPolicy {
     try {
-      const stored = readJson(this.paths.inbox);
+      const stored = this.readDocument(this.paths.inbox);
       const parsed = InboxPolicySchema.safeParse(stored);
       if (parsed.success) return parsed.data;
       /**
@@ -1766,7 +1796,7 @@ export class EngineStore {
         next.autoSettleAfterHours = parsed.data;
       }
     }
-    atomicWrite(this.paths.inbox, { version: STATE_VERSION, ...next });
+    this.writeDocument(this.paths.inbox, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -1779,7 +1809,7 @@ export class EngineStore {
    */
   getSessionDefaults(): SessionDefaults {
     try {
-      const parsed = SessionDefaultsSchema.safeParse(readJson(this.paths.sessionDefaults));
+      const parsed = SessionDefaultsSchema.safeParse(this.readDocument(this.paths.sessionDefaults));
       return parsed.success ? parsed.data : { ...DEFAULT_SESSION_DEFAULTS };
     } catch {
       return { ...DEFAULT_SESSION_DEFAULTS };
@@ -1797,7 +1827,7 @@ export class EngineStore {
       }
       next.envMode = parsed.data;
     }
-    atomicWrite(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
+    this.writeDocument(this.paths.sessionDefaults, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -1810,7 +1840,7 @@ export class EngineStore {
    */
   getSidebarLayout(): SidebarLayout {
     try {
-      const parsed = SidebarLayoutSchema.safeParse(readJson(this.paths.sidebarLayout));
+      const parsed = SidebarLayoutSchema.safeParse(this.readDocument(this.paths.sidebarLayout));
       return parsed.success ? parsed.data : { ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [] };
     } catch {
       return { ...DEFAULT_SIDEBAR_LAYOUT, projectOrder: [] };
@@ -1835,7 +1865,7 @@ export class EngineStore {
       }
       next.projectOrder = [...new Set(parsed.data)];
     }
-    atomicWrite(this.paths.sidebarLayout, { version: STATE_VERSION, ...next });
+    this.writeDocument(this.paths.sidebarLayout, { version: STATE_VERSION, ...next });
     return { ...next, projectOrder: [...next.projectOrder] };
   }
 
@@ -1843,7 +1873,7 @@ export class EngineStore {
    *  preference costs the preference, never the turn it decorates. */
   getTextGenPolicy(): TextGenPolicy {
     try {
-      const parsed = TextGenPolicySchema.safeParse(readJson(this.paths.textGen));
+      const parsed = TextGenPolicySchema.safeParse(this.readDocument(this.paths.textGen));
       return parsed.success ? parsed.data : { ...DEFAULT_TEXT_GEN_POLICY };
     } catch {
       return { ...DEFAULT_TEXT_GEN_POLICY };
@@ -1884,7 +1914,7 @@ export class EngineStore {
         next.model = parsed.data;
       }
     }
-    atomicWrite(this.paths.textGen, { version: STATE_VERSION, ...next });
+    this.writeDocument(this.paths.textGen, { version: STATE_VERSION, ...next });
     return { ...next };
   }
 
@@ -1919,7 +1949,7 @@ export class EngineStore {
    */
   getAppearance(): { updatedAt: number; blob: Record<string, unknown> } | null {
     try {
-      const stored = readJson(this.paths.appearance) as { appearance?: unknown; updatedAt?: unknown } | undefined;
+      const stored = this.readDocument(this.paths.appearance) as { appearance?: unknown; updatedAt?: unknown } | undefined;
       const blob = stored?.appearance;
       if (!isPlainJsonObject(blob)) return null;
       // A file written before the stamp existed reads as epoch 0 rather than
@@ -1954,7 +1984,7 @@ export class EngineStore {
       throw new EngineStateError("invalid_request", `appearance must be under ${MAX_APPEARANCE_BYTES} bytes when serialized`);
     }
     const updatedAt = Date.now();
-    atomicWrite(this.paths.appearance, { version: STATE_VERSION, updatedAt, appearance: blob });
+    this.writeDocument(this.paths.appearance, { version: STATE_VERSION, updatedAt, appearance: blob });
     return { updatedAt, blob };
   }
 
@@ -3290,7 +3320,7 @@ export class EngineStore {
         // repairing only the ABSENT case leaves a deliberate choice standing.
         next.model ??= { instanceId: defaultInstanceIdForDriver("claude"), model: "sonnet" };
         next.updatedAt = this.now();
-        atomicWrite(sessionMetadataFile(this.paths, next.id), storedSession(next));
+        this.writeDocument(sessionMetadataFile(this.paths, next.id), storedSession(next));
         this.appendEvent(next.id, { type: "session.updated", session: next });
         return structuredClone(next);
       }
@@ -3338,7 +3368,7 @@ export class EngineStore {
       detached: false,
       activity: "idle",
     });
-    atomicWrite(sessionMetadataFile(this.paths, id), session);
+    this.writeDocument(sessionMetadataFile(this.paths, id), session);
     this.appendEvent(id, { type: "session.created", session });
     return structuredClone(session);
   }
@@ -3437,14 +3467,14 @@ export class EngineStore {
   }
 
   private readMcpOAuthRecords(): Record<string, McpOAuthRecord> {
-    const stored = readJson(this.paths.mcpOAuth) as { records?: unknown } | undefined;
+    const stored = this.readDocument(this.paths.mcpOAuth) as { records?: unknown } | undefined;
     const records = stored?.records;
     if (!records || typeof records !== "object") return {};
     return records as Record<string, McpOAuthRecord>;
   }
 
   private writeMcpOAuthRecords(records: Record<string, McpOAuthRecord>): void {
-    atomicWrite(this.paths.mcpOAuth, { version: STATE_VERSION, records });
+    this.writeDocument(this.paths.mcpOAuth, { version: STATE_VERSION, records });
   }
 
   /**
@@ -3528,7 +3558,7 @@ export class EngineStore {
   putPendingMcpOAuth(flow: PendingMcpOAuth): void {
     const flows = this.prunePendingMcpOAuth(this.readPendingMcpOAuth());
     flows[flow.ctx.state] = flow;
-    atomicWrite(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
+    this.writeDocument(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
   }
 
   /**
@@ -3544,12 +3574,12 @@ export class EngineStore {
     const flows = this.prunePendingMcpOAuth(this.readPendingMcpOAuth());
     const flow = flows[state];
     delete flows[state];
-    atomicWrite(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
+    this.writeDocument(this.paths.mcpOAuthPending, { version: STATE_VERSION, flows });
     return flow;
   }
 
   private readPendingMcpOAuth(): Record<string, PendingMcpOAuth> {
-    const stored = readJson(this.paths.mcpOAuthPending) as { flows?: unknown } | undefined;
+    const stored = this.readDocument(this.paths.mcpOAuthPending) as { flows?: unknown } | undefined;
     const flows = stored?.flows;
     if (!flows || typeof flows !== "object") return {};
     return flows as Record<string, PendingMcpOAuth>;
@@ -3675,8 +3705,8 @@ export class EngineStore {
     const instances = this.readProviderInstances();
     const existing = instances.find((instance) => instance.id === input.id);
     const driver = input.driver === undefined ? existing?.driver : input.driver;
-    if (driver !== "claude" && driver !== "codex") {
-      throw new EngineStateError("invalid_request", "provider instance driver must be claude or codex");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") {
+      throw new EngineStateError("invalid_request", "provider instance driver must be claude, codex or opencode");
     }
     /**
      * THE DRIVER IS FIXED FOR AN INSTANCE'S LIFETIME. Sessions, their resume
@@ -3731,8 +3761,8 @@ export class EngineStore {
     const next = existing
       ? instances.map((entry) => (entry.id === instance.id ? parsed.data : entry))
       : [...instances, parsed.data];
-    atomicWrite(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
-    atomicWrite(this.paths.providerSecrets, { version: STATE_VERSION, secrets: env.secrets });
+    this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
+    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets: env.secrets });
     return structuredClone(this.listProviderInstances().find((entry) => entry.id === instance.id)!);
   }
 
@@ -3747,7 +3777,7 @@ export class EngineStore {
    */
   removeProviderInstance(id: string): boolean {
     assertInstanceId(id);
-    if (id === defaultInstanceIdForDriver("claude") || id === defaultInstanceIdForDriver("codex")) {
+    if (id === defaultInstanceIdForDriver("claude") || id === defaultInstanceIdForDriver("codex") || id === defaultInstanceIdForDriver("opencode")) {
       throw new EngineStateError("conflict", "the built-in provider instance cannot be removed");
     }
     const instances = this.readProviderInstances();
@@ -3757,8 +3787,8 @@ export class EngineStore {
     for (const key of Object.keys(secrets)) {
       if (key.slice(0, key.indexOf(SECRET_KEY_SEPARATOR)) === id) delete secrets[key];
     }
-    atomicWrite(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
-    atomicWrite(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
+    this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: next });
+    this.writeDocument(this.paths.providerSecrets, { version: STATE_VERSION, secrets });
     return true;
   }
 
@@ -3800,20 +3830,24 @@ export class EngineStore {
   /** On disk, seeded on first read so a fresh install has the two built-in
    *  slots rather than an empty page that offers nothing to configure. */
   private readProviderInstances(): ProviderInstance[] {
-    const stored = readJson(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
+    const stored = this.readDocument(this.paths.providerInstances) as { providerInstances?: unknown } | undefined;
     if (stored === undefined) {
       const at = this.now();
-      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at)];
-      atomicWrite(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
+      const seeded = [seedProviderInstance("claude", at), seedProviderInstance("codex", at), seedProviderInstance("opencode", at)];
+      this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: seeded });
       return seeded;
     }
     const parsed = ProviderInstanceSchema.array().safeParse(stored.providerInstances ?? []);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid provider instance registry");
+    if (!parsed.data.some((instance) => instance.id === "opencode")) {
+      parsed.data.push(seedProviderInstance("opencode", this.now()));
+      this.writeDocument(this.paths.providerInstances, { version: STATE_VERSION, providerInstances: parsed.data });
+    }
     return parsed.data;
   }
 
   private readProviderSecrets(): Record<string, string> {
-    const stored = readJson(this.paths.providerSecrets) as { secrets?: unknown } | undefined;
+    const stored = this.readDocument(this.paths.providerSecrets) as { secrets?: unknown } | undefined;
     const secrets = stored?.secrets;
     if (secrets === undefined || secrets === null) return {};
     if (typeof secrets !== "object") throw new EngineStateError("invalid_request", "invalid provider secret store");
@@ -3868,6 +3902,7 @@ export class EngineStore {
     root: string,
     private readonly now: () => number = Date.now,
     options: {
+      executionStorage?: "json" | "sqlite";
       notifier?: EngineNotifier;
       git?: GitRunner;
       asyncGit?: AsyncGitRunner;
@@ -3897,6 +3932,21 @@ export class EngineStore {
     this.paths = statePaths(root);
     fs.mkdirSync(this.paths.root, { recursive: true, mode: 0o700 });
     fs.mkdirSync(this.paths.sessions, { recursive: true, mode: 0o700 });
+    const migrated = fs.existsSync(path.join(root, "execution-store.json")) || fs.existsSync(path.join(root, "execution.sqlite"));
+    if (migrated && options.executionStorage === "json") throw new Error("this engine home has migrated to SQLite; restore a backup to downgrade");
+    if (migrated || options.executionStorage === "sqlite") {
+      this.executionStore = new ExecutionStore(root);
+      const commands = ["createSession", "updateSession", "settleSession", "markSessionRead", "submitTurn", "submitAgentTurn",
+        "claimTurn", "claimNextTurn", "markRunning", "ingestObservations", "openRequest", "resolveRequest", "completeTurn", "failTurn",
+        "stopSession", "stopTurn", "pauseSession", "resumeSession", "stopBackgroundTasks", "taskStopsForWorker", "openProviderTurn",
+        "reportSessionTasks", "ackSteer", "promoteTurn", "releaseHeldTurn", "discardAmbiguousTurn", "recover", "retireWorkerRegistration",
+        "subscribe", "unsubscribe"] as const;
+      for (const name of commands) {
+        const operation = Reflect.get(this, name) as (...args: unknown[]) => unknown;
+        Object.defineProperty(this, name, { value: (...args: unknown[]) =>
+          this.executeCommand(name, () => Reflect.apply(operation, this, args)) });
+      }
+    }
   }
 
   /**
@@ -4020,7 +4070,7 @@ export class EngineStore {
    * that has to name a removed project in order to offer to put it back.
    */
   listProjects(options: { includeRemoved?: boolean } = {}): Project[] {
-    const registry = readJson(this.paths.projects);
+    const registry = this.readDocument(this.paths.projects);
     if (registry === undefined) return [];
     return structuredClone(parseRegistry(registry).projects)
       .filter((project) => options.includeRemoved || project.removedAt === undefined)
@@ -4082,7 +4132,7 @@ export class EngineStore {
       throw new EngineStateError("invalid_request", "project root must be an existing directory");
     }
     if (!fs.statSync(projectRoot).isDirectory()) throw new EngineStateError("invalid_request", "project root must be an existing directory");
-    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const id = input.id ?? `project_${crypto.randomUUID().replaceAll("-", "")}`;
     /**
@@ -4102,7 +4152,7 @@ export class EngineStore {
       delete tombstone.removedAt;
       tombstone.name = input.name.trim();
       tombstone.updatedAt = this.now();
-      atomicWrite(this.paths.projects, parsed);
+      this.writeDocument(this.paths.projects, parsed);
       this.forgetProjectIcon(tombstone.id);
       this.projectMetadataCache.delete(tombstone.id);
       return structuredClone(tombstone);
@@ -4122,7 +4172,7 @@ export class EngineStore {
       updatedAt: at,
     };
     parsed.projects.push(project);
-    atomicWrite(this.paths.projects, parsed);
+    this.writeDocument(this.paths.projects, parsed);
     // A fresh registration must not inherit a stale "no icon" answer cached
     // for a project that briefly shared this id.
     this.forgetProjectIcon(id);
@@ -4167,7 +4217,7 @@ export class EngineStore {
    */
   unregisterProject(projectId: string): { project: Project; sessions: number } {
     assertId(projectId, "project id");
-    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const project = parsed.projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
@@ -4182,7 +4232,7 @@ export class EngineStore {
     }
     project.removedAt = this.now();
     project.updatedAt = project.removedAt;
-    atomicWrite(this.paths.projects, parsed);
+    this.writeDocument(this.paths.projects, parsed);
     this.forgetProjectIcon(projectId);
     this.projectMetadataCache.delete(projectId);
     return { project: structuredClone(project), sessions: sessions.length };
@@ -4192,14 +4242,14 @@ export class EngineStore {
    *  Restore. Registering its checkout again does the same thing. */
   restoreProject(projectId: string): Project {
     assertId(projectId, "project id");
-    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const project = parsed.projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
     if (project.removedAt === undefined) return structuredClone(project);
     delete project.removedAt;
     project.updatedAt = this.now();
-    atomicWrite(this.paths.projects, parsed);
+    this.writeDocument(this.paths.projects, parsed);
     this.forgetProjectIcon(projectId);
     this.projectMetadataCache.delete(projectId);
     return structuredClone(project);
@@ -4238,7 +4288,7 @@ export class EngineStore {
 
   getProject(projectId: string): Project {
     assertId(projectId, "project id");
-    const registry = readJson(this.paths.projects);
+    const registry = this.readDocument(this.paths.projects);
     const project = registry === undefined ? undefined : parseRegistry(registry).projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new EngineStateError("not_found", "project does not exist");
     return structuredClone(project);
@@ -4253,7 +4303,7 @@ export class EngineStore {
    */
   updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Project {
     assertId(projectId, "project id");
-    const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
+    const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
     const index = parsed.projects.findIndex((candidate) => candidate.id === projectId);
     if (index < 0) throw new EngineStateError("not_found", "project does not exist");
@@ -4284,7 +4334,7 @@ export class EngineStore {
       }
     }
     parsed.projects[index] = next;
-    atomicWrite(this.paths.projects, parsed);
+    this.writeDocument(this.paths.projects, parsed);
     return structuredClone(next);
   }
 
@@ -4741,7 +4791,7 @@ export class EngineStore {
     driver: ProviderDriverKind,
     options: { force?: boolean; instanceId?: string } = {},
   ): Promise<ModelCatalogue> {
-    if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
     const cached = this.modelCache.get(driver);
     let raw: ModelCatalogue;
     if (cached && !options.force && this.now() - cached.readAt < MODEL_CACHE_MS) {
@@ -4792,7 +4842,7 @@ export class EngineStore {
     assertInstanceId(instanceId);
     const empty = (): ModelOverlay => ({ instanceId, ...DEFAULT_MODEL_OVERLAY, updatedAt: 0 });
     try {
-      const stored = readJson(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
+      const stored = this.readDocument(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
       const parsed = ModelOverlaySchema.array().safeParse(stored?.overlays ?? []);
       if (!parsed.success) return empty();
       return parsed.data.find((entry) => entry.instanceId === instanceId) ?? empty();
@@ -4826,7 +4876,7 @@ export class EngineStore {
 
     const stored = (() => {
       try {
-        const raw = readJson(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
+        const raw = this.readDocument(this.paths.modelOverlays) as { overlays?: unknown } | undefined;
         const parsed = ModelOverlaySchema.array().safeParse(raw?.overlays ?? []);
         return parsed.success ? parsed.data : [];
       } catch {
@@ -4836,7 +4886,7 @@ export class EngineStore {
       }
     })();
     const overlays = [...stored.filter((entry) => entry.instanceId !== instanceId), next];
-    atomicWrite(this.paths.modelOverlays, { version: STATE_VERSION, overlays });
+    this.writeDocument(this.paths.modelOverlays, { version: STATE_VERSION, overlays });
     return structuredClone(next);
   }
 
@@ -5326,7 +5376,7 @@ export class EngineStore {
     this.assertProjectAvailable(input.projectId);
     const id = input.id ?? `session_${crypto.randomUUID().replaceAll("-", "")}`;
     const metadata = sessionMetadataFile(this.paths, id);
-    const existing = readJson(metadata);
+    const existing = this.readDocument(metadata);
     if (existing !== undefined) {
       const session = parseSession(existing);
       if (session.projectId === input.projectId) return structuredClone(session);
@@ -5359,7 +5409,7 @@ export class EngineStore {
     }
     const chosen = input.providerInstanceId === undefined ? undefined : this.requireProviderInstance(input.providerInstanceId);
     const driver = chosen?.driver ?? input.driver ?? "claude";
-    if (driver !== "claude" && driver !== "codex") throw new EngineStateError("invalid_request", "unknown provider driver");
+    if (driver !== "claude" && driver !== "codex" && driver !== "opencode") throw new EngineStateError("invalid_request", "unknown provider driver");
     if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
     // The worktree is cut BEFORE the session document is written. A session
     // whose workspace does not exist is unusable and would have to be repaired
@@ -5430,8 +5480,8 @@ export class EngineStore {
       // and a session with no queue yet is genuinely idle.
       activity: "idle",
     };
-    atomicWrite(metadata, storedSession(session));
-    atomicWrite(sessionQueueFile(this.paths, id), emptyQueue(id));
+    this.writeDocument(metadata, storedSession(session));
+    this.writeDocument(sessionQueueFile(this.paths, id), emptyQueue(id));
     this.appendEvent(id, { type: "session.created", session });
     return structuredClone(session);
   }
@@ -5565,7 +5615,7 @@ export class EngineStore {
       return structuredClone(session);
     }
     next.updatedAt = this.now();
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(next));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(next));
     this.appendEvent(sessionId, { type: "session.updated", session: next });
     return structuredClone(next);
   }
@@ -5596,7 +5646,7 @@ export class EngineStore {
     const renamed = this.git(session.workspace.path, ["branch", "-m", current, next]);
     if (renamed.status !== 0) return undefined;
     const updated: Session = { ...session, workspace: { ...session.workspace, branch: next }, updatedAt: this.now() };
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(updated));
     this.appendEvent(sessionId, { type: "session.updated", session: updated });
     return next;
   }
@@ -5642,13 +5692,13 @@ export class EngineStore {
      * read is a fact about the reader, not about the session; `readAt` is
      * where the inactivity rule picks it up instead.
      */
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     this.appendEvent(sessionId, { type: "session.updated", session });
     return structuredClone(session);
   }
 
   getSession(sessionId: string): Session {
-    const stored = readJson(sessionMetadataFile(this.paths, sessionId));
+    const stored = this.readDocument(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
     return this.withActivity(structuredClone(parseSession(stored)));
   }
@@ -5750,6 +5800,8 @@ export class EngineStore {
    * for the same reason.
    */
   private readSessions(): Session[] {
+    if (this.executionStore) return this.executionStore.sessionIds().map((id) => this.getSession(id))
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
@@ -5792,7 +5844,7 @@ export class EngineStore {
    * per project and nothing in this answer renders a branch.
    */
   liveSessions(): { sessions: Session[]; projects: Array<{ id: string; name: string }> } {
-    const registry = readJson(this.paths.projects);
+    const registry = this.readDocument(this.paths.projects);
     const projects = registry === undefined ? [] : parseRegistry(registry).projects;
     return {
       sessions: this.readSessions().filter((session) => session.state === "active"),
@@ -5891,12 +5943,12 @@ export class EngineStore {
     };
     const index = this.readAttachments(sessionId);
     index.set(id, attachment);
-    atomicWrite(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
+    this.writeDocument(attachmentsFile(this.paths, sessionId), { version: STATE_VERSION, attachments: [...index.values()] });
     return structuredClone(attachment);
   }
 
   private readAttachments(sessionId: string): Map<string, TurnAttachment> {
-    const stored = readJson(attachmentsFile(this.paths, sessionId)) as { attachments?: unknown } | undefined;
+    const stored = this.readDocument(attachmentsFile(this.paths, sessionId)) as { attachments?: unknown } | undefined;
     const parsed = TurnAttachmentSchema.array().safeParse(stored?.attachments ?? []);
     // A corrupt index costs the ABILITY TO REFERENCE old attachments, not the
     // session. Throwing here would make one bad record unopenable forever.
@@ -5933,6 +5985,8 @@ export class EngineStore {
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
+    if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
+      throw new EngineStateError("conflict", "this provider does not support manual compaction");
     const queue = this.readQueue(sessionId);
     const known = queue.turns.find((turn) => turn.runId === input.runId);
     if (known) {
@@ -6066,7 +6120,7 @@ export class EngineStore {
       }
       if (session.title === "Browser draft") session.title = input.input.replace(/\s+/g, " ").slice(0, 80);
       delete session.draft;
-      atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     }
     /**
      * PAUSED MEANS PAUSED. Every message that arrives while a human has the
@@ -6088,7 +6142,7 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
     // A compaction is a gesture on the session, not words for the running
     // model; it always waits its turn.
-    if (kind !== "compact" && !session.paused) {
+    if (kind !== "compact" && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
       const steered = this.steerIfRunning(sessionId, turn.runId);
       if (steered) return { turn: steered, replayed: false };
     }
@@ -6162,7 +6216,7 @@ export class EngineStore {
     if (released.length > 0) this.writeQueue(sessionId, queue);
     delete session.paused;
     session.updatedAt = at;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     for (const turn of released) this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
     this.appendEvent(sessionId, { type: "session.resumed", released: released.length });
     this.appendEvent(sessionId, { type: "session.updated", session });
@@ -6716,7 +6770,7 @@ export class EngineStore {
     if (session.paused) {
       delete session.paused;
       session.updatedAt = at;
-      atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     }
     for (const turn of stopped) {
       this.closeOrphanedTasks(sessionId, turn.runId, at, "the turn was stopped before this agent reported back");
@@ -6802,6 +6856,8 @@ export class EngineStore {
    * Throws exactly what `promoteTurn` documents; the caller writes the queue.
    */
   private promoteInQueue(sessionId: string, queue: SessionQueue, turn: Turn, running: Turn, at: number): void {
+    if (!PROVIDER_CAPABILITIES[this.getSession(sessionId).driver].liveSteering)
+      throw new EngineStateError("conflict", "this provider queues follow-up messages until the active turn ends");
     if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
     // A HOLD IS SOMEBODY'S DECISION about this message — a pause, or a
     // restart's re-read. Releasing it by steering it would be that decision
@@ -7015,7 +7071,7 @@ export class EngineStore {
     const at = this.now();
     session.state = "archived";
     session.updatedAt = at;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     this.appendEvent(sessionId, { type: "session.archived" });
     this.dropSubscriptionsOf(sessionId);
     return structuredClone(session);
@@ -7075,6 +7131,7 @@ export class EngineStore {
     // The event is appended BEFORE the directory goes, so a subscriber watching
     // this session is told why its stream ended rather than simply losing it.
     this.appendEvent(sessionId, { type: "session.archived" });
+    this.executionStore?.deleteSession(sessionId);
     fs.rmSync(sessionDir(this.paths, sessionId), { recursive: true, force: true });
     // The queue went with the directory, so no `writeQueue` will ever retire
     // this id from the live index. Drop it here or a worker keeps asking about
@@ -7161,7 +7218,7 @@ export class EngineStore {
   }
 
   private readSubscriptions(): Subscription[] {
-    const stored = readJson(this.paths.subscriptions) as { subscriptions?: unknown } | undefined;
+    const stored = this.readDocument(this.paths.subscriptions) as { subscriptions?: unknown } | undefined;
     const parsed = SubscriptionSchema.array().safeParse(stored?.subscriptions ?? []);
     // A corrupt file costs the subscriptions, not the engine — same rule as
     // the attachments index.
@@ -7169,7 +7226,7 @@ export class EngineStore {
   }
 
   private writeSubscriptions(subscriptions: Subscription[]): void {
-    atomicWrite(this.paths.subscriptions, { version: STATE_VERSION, subscriptions });
+    this.writeDocument(this.paths.subscriptions, { version: STATE_VERSION, subscriptions });
   }
 
   /** A session that is gone can neither wake nor be woken: both directions go. */
@@ -7378,15 +7435,22 @@ export class EngineStore {
     if (!automatic) {
       // Parked. Tell someone, and record whether anyone was actually reached —
       // "stuck and nobody was told" has to be a detectable state.
-      request.notified = this.notifier
-        ? this.notifier({
-            sessionId,
-            runId: turn.runId,
-            requestId: request.id,
-            kind: input.kind,
-            title: requestTitle(input.detail),
-          })
-        : false;
+      const notify = () => this.notifier?.({ sessionId, runId: turn.runId, requestId: request.id,
+        kind: input.kind, title: requestTitle(input.detail) }) ?? false;
+      if (this.executionStore) {
+        request.notified = false;
+        this.afterCommit.push(() => {
+          // Best-effort notification is outside the execution transaction. A
+          // crash here leaves an explicitly unnotified, durable open request.
+          try {
+            const latest = this.readRequests(sessionId);
+            const pending = latest.get(request.id);
+            if (pending?.state !== "open") return;
+            pending.notified = notify();
+            this.writeRequests(sessionId, latest);
+          } catch { /* retain the unnotified request for the next reader */ }
+        });
+      } else request.notified = notify();
     }
 
     requests.set(request.id, request);
@@ -7521,7 +7585,7 @@ export class EngineStore {
   readEvents(sessionId: string, after = 0): EngineEvent[] {
     this.getSession(sessionId);
     if (!Number.isSafeInteger(after) || after < 0) throw new EngineStateError("invalid_request", "event cursor is invalid");
-    return readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
+    return this.executionStore ? this.executionStore.events(sessionId, after) : readJournal(eventsFile(this.paths, sessionId)).filter((event) => event.id > after);
   }
 
   /**
@@ -7532,7 +7596,7 @@ export class EngineStore {
    */
   eventCursor(sessionId: string): number {
     this.getSession(sessionId);
-    return lastEventId(eventsFile(this.paths, sessionId));
+    return this.executionStore ? this.executionStore.cursor(sessionId) : lastEventId(eventsFile(this.paths, sessionId));
   }
 
   /**
@@ -7798,7 +7862,7 @@ export class EngineStore {
       }
       if (changed || metadataChanged || swept.length > 0) {
         if (!metadataChanged) this.touchSession(session.id, at);
-        else atomicWrite(sessionMetadataFile(this.paths, session.id), storedSession(session));
+        else this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
       }
       if (changed) {
         for (const event of recoveryEvents) {
@@ -7871,6 +7935,9 @@ export class EngineStore {
       for (const runId of settled) this.appendEvent(session.id, { type: "turn.stopped", reason: "worker_unavailable" }, runId);
       stopped.push(...settled);
     }
+    const deliveries = this.readTaskStopDeliveries();
+    const remaining = deliveries.filter((delivery) => delivery.workerId !== workerId);
+    if (remaining.length !== deliveries.length) this.writeDocument(path.join(this.paths.root, "task-stops.json"), remaining);
     return { stopped };
   }
 
@@ -7898,6 +7965,7 @@ export class EngineStore {
    * sessions have work in them. This is one `readdir`.
    */
   private sessionIds(): string[] {
+    if (this.executionStore) return this.executionStore.sessionIds();
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.paths.sessions, { withFileTypes: true });
@@ -7945,7 +8013,7 @@ export class EngineStore {
   }
 
   private readQueue(sessionId: string): SessionQueue {
-    const stored = readJson(sessionQueueFile(this.paths, sessionId));
+    const stored = this.readDocument(sessionQueueFile(this.paths, sessionId));
     if (stored === undefined) return emptyQueue(sessionId);
     return parseQueue(stored, sessionId);
   }
@@ -7953,7 +8021,7 @@ export class EngineStore {
   /** THE ONLY WRITER, which is what lets `liveQueueIndex` be maintained in one
    *  place rather than at each of the thirteen transitions that call this. */
   private writeQueue(sessionId: string, queue: SessionQueue): void {
-    atomicWrite(sessionQueueFile(this.paths, sessionId), queue);
+    this.writeDocument(sessionQueueFile(this.paths, sessionId), queue);
     if (!this.liveQueueIndex) return;
     if (queueConcernsAWorker(queue)) this.liveQueueIndex.add(sessionId);
     else this.liveQueueIndex.delete(sessionId);
@@ -8000,7 +8068,7 @@ export class EngineStore {
     const session = this.getSession(sessionId);
     session.updatedAt = at;
     if (resumeCursor !== undefined) session.resumeCursor = resumeCursor;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
   }
 
   /**
@@ -8040,7 +8108,7 @@ export class EngineStore {
     }
     delete session.snoozedUntil;
     delete session.snoozedAt;
-    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     this.appendEvent(sessionId, { type: "session.updated", session });
   }
 
@@ -8051,7 +8119,7 @@ export class EngineStore {
     if (!recovered) return undefined;
     session.resumeCursor = recovered;
     session.updatedAt = this.now();
-    atomicWrite(sessionMetadataFile(this.paths, session.id), storedSession(session));
+    this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
     return recovered;
   }
 
@@ -8063,7 +8131,7 @@ export class EngineStore {
    * `turn.*`.
    */
   private readItems(sessionId: string): Map<string, Item> {
-    const stored = readJson(itemsFile(this.paths, sessionId));
+    const stored = this.readDocument(itemsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = ItemSchema.array().safeParse((stored as { items?: unknown }).items);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid item projection");
@@ -8071,7 +8139,7 @@ export class EngineStore {
   }
 
   private writeItems(sessionId: string, items: Map<string, Item>): void {
-    atomicWrite(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
+    this.writeDocument(itemsFile(this.paths, sessionId), { version: STATE_VERSION, items: [...items.values()] });
   }
 
   /**
@@ -8082,7 +8150,7 @@ export class EngineStore {
    * session is working.
    */
   private readTasks(sessionId: string): Map<string, Task> {
-    const stored = readJson(tasksFile(this.paths, sessionId));
+    const stored = this.readDocument(tasksFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = TaskSchema.array().safeParse((stored as { tasks?: unknown }).tasks);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid task projection");
@@ -8090,7 +8158,7 @@ export class EngineStore {
   }
 
   private writeTasks(sessionId: string, tasks: Map<string, Task>): void {
-    atomicWrite(tasksFile(this.paths, sessionId), { version: STATE_VERSION, tasks: [...tasks.values()] });
+    this.writeDocument(tasksFile(this.paths, sessionId), { version: STATE_VERSION, tasks: [...tasks.values()] });
   }
 
   /**
@@ -8229,10 +8297,36 @@ export class EngineStore {
     });
     if (closed.length === 0) return 0;
     const pending = this.pendingStopTasks.get(sessionId) ?? new Set<string>();
-    for (const task of closed) if (task.providerTaskId) pending.add(task.providerTaskId);
+    const deliveries = this.readTaskStopDeliveries();
+    const turns = this.readQueue(sessionId).turns;
+    const driver = this.getSession(sessionId).driver;
+    for (const task of closed) {
+      if (!task.providerTaskId) continue;
+      pending.add(task.providerTaskId);
+      const workerId = turns.find((turn) => turn.runId === task.runId)?.claim?.workerId;
+      if (workerId) deliveries.push({ deliveryId: `stop_${crypto.randomUUID().replaceAll("-", "")}`, sessionId,
+        providerTaskId: task.providerTaskId, workerId, driver });
+    }
+    this.writeDocument(path.join(this.paths.root, "task-stops.json"), deliveries);
     if (pending.size > 0) this.pendingStopTasks.set(sessionId, pending);
     this.touchSession(sessionId, at);
     return closed.length;
+  }
+
+  private readTaskStopDeliveries(): Array<{ deliveryId: string; sessionId: string; providerTaskId: string; workerId: string; driver: ProviderDriverKind }> {
+    const value = this.readDocument(path.join(this.paths.root, "task-stops.json")) ?? [];
+    if (!Array.isArray(value) || value.some((row) => !row || typeof row.deliveryId !== "string" || typeof row.sessionId !== "string" ||
+      typeof row.providerTaskId !== "string" || typeof row.workerId !== "string" || !["claude", "codex", "opencode"].includes(row.driver)))
+      throw new EngineStateError("invalid_request", "invalid task-stop delivery store");
+    return value;
+  }
+
+  taskStopsForWorker(workerId: string, acknowledged: string[] = []): WorkerStatus["stopTask"] {
+    const pending = this.readTaskStopDeliveries();
+    const ack = new Set(acknowledged);
+    const remaining = pending.filter((delivery) => delivery.workerId !== workerId || !ack.has(delivery.deliveryId));
+    if (remaining.length !== pending.length) this.writeDocument(path.join(this.paths.root, "task-stops.json"), remaining);
+    return remaining.filter((delivery) => delivery.workerId === workerId).map(({ workerId: _owner, ...delivery }) => delivery);
   }
 
   /**
@@ -8253,7 +8347,7 @@ export class EngineStore {
   }
 
   private readRequests(sessionId: string): Map<string, EngineRequest> {
-    const stored = readJson(requestsFile(this.paths, sessionId));
+    const stored = this.readDocument(requestsFile(this.paths, sessionId));
     if (stored === undefined) return new Map();
     const parsed = RequestSchema.array().safeParse((stored as { requests?: unknown }).requests);
     if (!parsed.success) throw new EngineStateError("invalid_request", "invalid request projection");
@@ -8261,7 +8355,7 @@ export class EngineStore {
   }
 
   private writeRequests(sessionId: string, requests: Map<string, EngineRequest>): void {
-    atomicWrite(requestsFile(this.paths, sessionId), { version: STATE_VERSION, requests: [...requests.values()] });
+    this.writeDocument(requestsFile(this.paths, sessionId), { version: STATE_VERSION, requests: [...requests.values()] });
   }
 
   /** One observation → at most one journal record, plus its projection edit. */
@@ -8513,7 +8607,7 @@ export class EngineStore {
     // process the only writer, and the head is whatever it last wrote. Parsing
     // a 9 MB journal to learn one integer on every append was the cost that
     // made long sessions sluggish.
-    const head = this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
+    const head = this.executionStore ? this.executionStore.cursor(sessionId) : this.journalHead.get(sessionId) ?? readJournal(file).at(-1)?.id ?? 0;
     const record = {
       id: head + 1,
       at: this.now(),
@@ -8521,6 +8615,10 @@ export class EngineStore {
       ...(runId ? { runId } : {}),
       ...event,
     } as EngineEvent;
+    if (this.executionStore) {
+      this.executionStore.append(record);
+      return record;
+    }
     // NDJSON is an append-only stream, not a document: do not replace it with
     // tmp+rename. The daemon lock gives this one writer and each record is one append.
     try {

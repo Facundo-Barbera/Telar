@@ -262,6 +262,7 @@ export class EngineWorker {
    * on.
    */
   private readonly inFlight = new Set<Promise<void>>();
+  private readonly usedDrivers = new Set<TurnDriver>();
   /** How long `stop()` will wait for those settles. Short: a quit that hangs is
    *  worse than a turn that recovers as `ambiguous`, which is what a missed
    *  settle degrades to. */
@@ -288,6 +289,8 @@ export class EngineWorker {
    * clock jump past any lease with no request having failed at all. Counting
    * ATTEMPTS is immune to both: none happen while suspended.
    */
+  private readonly acknowledgedTaskStops = new Set<string>();
+  private readonly stoppingTasks = new Set<string>();
   private heartbeatFailures = 0;
   /**
    * THE CLAIM HIGH-WATERMARK, and the op that has not resolved.
@@ -508,16 +511,11 @@ export class EngineWorker {
     this.browserLeases.clear();
     for (const lease of this.sessionsLeases.values()) lease.release();
     this.sessionsLeases.clear();
-    const selector = this.options.driver;
-    if (typeof selector === "function") {
-      try {
-        selector("claude")?.dispose?.();
-      } catch {
-        // A deployment with no Claude driver has nothing to dispose.
-      }
-    } else {
-      selector.dispose?.();
+    if (typeof this.options.driver !== "function") this.usedDrivers.add(this.options.driver);
+    for (const driver of this.usedDrivers) {
+      try { driver.dispose?.(); } catch { /* continue closing the remaining providers */ }
     }
+    this.usedDrivers.clear();
   }
 
   /**
@@ -758,7 +756,9 @@ export class EngineWorker {
       // Bounded by what is LEFT of the lease, not a fresh one per request: a
       // reply due after the deadline is worthless, and a per-request timeout
       // would let successive requests outlive the budget entirely.
-      const status = await this.options.client.workerHeartbeat(this.options.workerId, AbortSignal.timeout(this.requestTimeoutMs()));
+      const acknowledged = [...this.acknowledgedTaskStops];
+      const status = await this.options.client.workerHeartbeat(this.options.workerId, AbortSignal.timeout(this.requestTimeoutMs()), acknowledged);
+      for (const id of acknowledged) this.acknowledgedTaskStops.delete(id);
       if (this.stopped || this.connectionLost) return;
       // THE DEADLINE, NOT THE FLAGS. The watchdog runs every lease/3, so an
       // expired reply can land before it next fires; accepting it would reset
@@ -798,8 +798,16 @@ export class EngineWorker {
       // a driver that no longer has the runtime (false) simply means the
       // process is gone and the task with it.
       for (const kill of status.stopTask ?? []) {
-        const driver = this.driverFor("claude");
-        void driver.stopTask?.(kill.sessionId, kill.providerTaskId).catch(() => undefined);
+        const id = kill.deliveryId ?? `${kill.sessionId}:${kill.providerTaskId}`;
+        if (this.stoppingTasks.has(id) || this.acknowledgedTaskStops.has(id)) continue;
+        const driver = this.driverFor(kill.driver ?? "claude");
+        if (!driver.stopTask) continue;
+        this.stoppingTasks.add(id);
+        void driver.stopTask(kill.sessionId, kill.providerTaskId).then(() => {
+          if (kill.deliveryId) this.acknowledgedTaskStops.add(kill.deliveryId);
+        }).catch(() => {
+          this.diagnose({ event: "task_stop_retry", operation: "stopTask" });
+        }).finally(() => this.stoppingTasks.delete(id));
       }
       // Deliver send-now messages into their running turns' mailboxes. The
       // ack fires later, from the mailbox's drain hook — see `steering`.
@@ -1118,11 +1126,12 @@ export class EngineWorker {
        * lease and revoked in `stop()`.
        */
       let sessionsLease = this.sessionsLeases.get(sessionId);
-      if (!sessionsLease && driverKind === "codex" && this.options.sessionsSocket) {
+      if (!sessionsLease && driverKind !== "claude" && this.options.sessionsSocket) {
         sessionsLease = await this.options.sessionsSocket.bind(sessionsCapability);
         this.sessionsLeases.set(sessionId, sessionsLease);
       }
       const result = await driver.run({
+        runId,
         prompt,
         sessionId,
         cwd,
@@ -1556,9 +1565,9 @@ export class EngineWorker {
 
   private driverFor(kind: ProviderDriverKind): TurnDriver {
     const selector = this.options.driver;
-    if (typeof selector !== "function") return selector;
-    const driver = selector(kind);
+    const driver = typeof selector === "function" ? selector(kind) : selector;
     if (!driver) throw new UnsupportedDriverError(kind);
+    this.usedDrivers.add(driver);
     return driver;
   }
 

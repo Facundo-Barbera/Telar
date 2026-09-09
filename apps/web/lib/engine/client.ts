@@ -725,7 +725,7 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     /** THE STOP BUTTON: end the live turn and settle what was waiting behind
      *  it, leaving the session idle. No latch — the next message just runs. */
     stopSession: (sessionId: string) =>
-      request<{ stopped: Turn[]; live?: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session" }),
+      request<{ stopped: Turn[]; live?: Turn }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", commandId: crypto.randomUUID() }),
     /** Deprecated compatibility alias for session Stop; never creates a latch. */
     pauseSession: (sessionId: string) =>
       request<{ session: Session; stopped?: Turn; held: number; already: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/pause`, {}),

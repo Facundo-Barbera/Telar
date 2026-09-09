@@ -327,7 +327,7 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
     throw new Error("HTTP lifecycle transport must not run for embedded execution");
   }));
   try {
-    const daemon = await startEngine({ engineRoot: root(), embeddedWorker: {
+    const daemon = await startEngine({ engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
       pollMs: 10,
       createDriver: () => ({ run: async ({ onObservations }) => {
         await onObservations([{ kind: "item.started", item: { id: "i_direct", detail: { type: "assistant_message", text: "" } } }]);
@@ -343,4 +343,18 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
   } finally {
     for (const spy of spies) spy.mockRestore();
   }
+});
+
+test("shutdown disposes the selected OpenCode adapter and its session-lived runtime", async () => {
+  let disposed = 0;
+  const daemon = await startEngine({ engineRoot: root(), executionStorage: "sqlite", embeddedWorker: {
+    pollMs: 10, createDriver: () => (kind) => kind === "opencode" ? { run: async () => ({ text: "fixture" }), dispose: () => { disposed++; } } : undefined,
+  } });
+  daemon.store.registerProject({ id: "project_dispose", name: "Dispose", root: "/tmp" });
+  daemon.store.saveProviderInstance({ id: "opencode", driver: "opencode", enabled: true });
+  daemon.store.createSession({ id: "session_dispose", projectId: "project_dispose", driver: "opencode" });
+  daemon.store.submitTurn("session_dispose", { runId: "run_dispose", input: "go" });
+  try { await eventually(() => expect(daemon.store.turns("session_dispose")[0]?.state).toBe("completed")); }
+  finally { await daemon.close(); }
+  expect(disposed).toBe(1);
 });

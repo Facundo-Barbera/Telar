@@ -345,9 +345,8 @@ export function useComposerCommandChoices(
   }, [models, model, effort, fastMode]);
 }
 
-/** Every provider the engine can drive. Two, and the contract's union is the
- *  reason this is not a lookup — a third would want a rail entry, not a row. */
-const PROVIDERS: ProviderDriverKind[] = ["claude", "codex"];
+/** Every provider with an engine adapter. OpenCode remains disabled until enabled in Settings. */
+const PROVIDERS: ProviderDriverKind[] = ["claude", "codex", "opencode"];
 
 /** What the rail selects: one provider's models, or the ones you starred. */
 type ModelView = ProviderDriverKind | "favorites";

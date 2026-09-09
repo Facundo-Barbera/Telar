@@ -37,7 +37,7 @@ export async function POST(request: Request, context: Context) {
       title: optionalString(body.title, "Session title"),
       // Validated in the engine against the contract's own lists, so this route
       // and an in-process caller refuse the same set.
-      ...(body.driver === "claude" || body.driver === "codex" ? { driver: body.driver } : {}),
+      ...(body.driver === "claude" || body.driver === "codex" || body.driver === "opencode" ? { driver: body.driver } : {}),
       ...(body.envMode === "local" || body.envMode === "worktree" ? { envMode: body.envMode } : {}),
       // The base-ref picker's knobs — validated in the engine (store +
       // worktree.ts) so every caller refuses the same names.

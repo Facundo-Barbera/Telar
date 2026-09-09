@@ -14,7 +14,8 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    const driver = url.searchParams.get("driver") === "codex" ? "codex" : "claude";
+    const requested = url.searchParams.get("driver");
+    const driver = requested === "codex" || requested === "opencode" ? requested : "claude";
     // WHICH LOGIN, for the overlay laid over the provider's answer. The answer
     // itself is still driver-wide; absent means that driver's built-in slot.
     const instanceId = url.searchParams.get("instanceId");

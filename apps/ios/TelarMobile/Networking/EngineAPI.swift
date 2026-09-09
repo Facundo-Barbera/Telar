@@ -272,7 +272,7 @@ struct HTTPEngineAPI: EngineAPI {
     }
 
     func stopSession(_ id: EngineID) async throws {
-        let body = ["scope": AnyEncodable("session")]
+        let body = ["scope": AnyEncodable("session"), "commandId": AnyEncodable(UUID().uuidString)]
         let _: IgnoredBody = try await post("api/sessions/\(escape(id))/stop", body: body)
     }
 

@@ -91,6 +91,7 @@ export type CliUpdate = {
 // ── what installs what ─────────────────────────────────────────────────────
 
 const NPM_PACKAGE: Record<CliId, string> = {
+  opencode: "opencode-ai",
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
 };
@@ -99,6 +100,7 @@ const NPM_PACKAGE: Record<CliId, string> = {
  *  which so a machine with a same-named formula cannot be sent to the wrong
  *  one. Verified with `brew info --cask`. */
 const HOMEBREW_CASK: Record<CliId, string> = {
+  opencode: "opencode",
   claude: "claude-code",
   codex: "codex",
 };
@@ -112,6 +114,7 @@ const HOMEBREW_CASK: Record<CliId, string> = {
  * than assumed.
  */
 const NATIVE_UPDATE: Record<CliId, readonly string[]> = {
+  opencode: ["upgrade"],
   claude: ["update"],
   codex: ["update"],
 };
@@ -129,6 +132,7 @@ const normalize = (candidate: string): string => candidate.replaceAll("\\", "/")
  * hold.
  */
 const NATIVE_PATHS: Record<CliId, (candidate: string) => boolean> = {
+  opencode: (candidate) => candidate.includes("/.opencode/bin/"),
   claude: (candidate) => candidate.endsWith("/.local/bin/claude") || candidate.includes("/.local/share/claude/"),
   codex: (candidate) => candidate.endsWith("/.local/bin/codex") || candidate.includes("/.codex/packages/"),
 };
@@ -180,6 +184,7 @@ function plan(method: InstallMethod, executable: string, args: readonly string[]
  * silently replaces their build with a published one.
  */
 export function updatePlanFor(id: CliId, paths: { path?: string; realPath?: string }): UpdatePlan | undefined {
+  if (id === "opencode") return undefined; // User-installed CLI; update through its own package manager.
   const candidates = [paths.path, paths.realPath].filter((candidate): candidate is string => Boolean(candidate)).map(normalize);
   if (candidates.length === 0) return undefined;
 
@@ -362,6 +367,7 @@ export type CliUpdateDeps = {
  * different binary did the work.
  */
 export async function cliUpdateFor(resolution: CliResolution, deps: CliUpdateDeps = {}): Promise<CliUpdate> {
+  if (resolution.id === "opencode") return { status: "unknown" };
   const now = deps.now ?? Date.now;
   const fetcher = deps.latest ?? fetchLatest;
 

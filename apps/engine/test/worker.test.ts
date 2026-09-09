@@ -884,9 +884,11 @@ test("a STOP makes no further provider call: the live turn ends, the backlog is 
    */
   const runs: string[] = [];
   const killedTasks: string[] = [];
+  let killAttempts = 0;
   let release: (() => void) | undefined;
   const driver: TurnDriver = {
     async stopTask(sessionId, providerTaskId) {
+      if (++killAttempts === 1) throw new Error("temporary provider control failure");
       killedTasks.push(`${sessionId}:${providerTaskId}`);
       return true;
     },
@@ -928,6 +930,7 @@ test("a STOP makes no further provider call: the live turn ends, the backlog is 
   }
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("stopped"));
   expect(runs).toEqual(["Long task"]);
+  expect(killAttempts).toBe(2);
   expect(killedTasks).toEqual([`${sessionId}:provider_bg`]);
   expect((await client.session(sessionId)).tasks.find((task) => task.id === "task_bg")?.state).toBe("stopped");
   // Everything that was waiting is terminal, with its words intact.

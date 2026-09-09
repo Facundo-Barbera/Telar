@@ -1,8 +1,8 @@
 # Execution lifecycle contract
 
 Implementation started 2026-09-09 following approval of the engine revision plan.
-This first slice aligns session Stop. Direct execution ownership, transactional
-command receipts, and OpenCode remain later changes.
+The revision aligns session Stop, gives embedded execution a direct port, and
+adds transactional execution storage and an opt-in OpenCode adapter.
 
 ## Command ownership
 
@@ -49,10 +49,11 @@ Session Stop clears legacy pause metadata only after terminalizing the held
 backlog. Startup also migrates old pending records without submitting them.
 There is no implicit replay and no Resume required for the next new message.
 
-The next extraction must introduce explicit executor ownership and cancellation
-generation, then distinguish command/message IDs from upstream turn IDs. Keep
-provider side effects outside the serialized state transition. Do not claim
-cross-file crash atomicity until the storage milestone provides it.
+Embedded lifecycle commands now call the shared command handlers directly.
+External workers retain HTTP registration, leases, and claim fencing. SQLite
+commits execution projections, journal events, and command receipts together;
+provider calls and notifications run outside that transaction. Run IDs remain
+distinct from provider session IDs and OpenCode's deterministic message IDs.
 
 ## Tests and remaining limits
 
@@ -63,9 +64,17 @@ completion, and restart migration. A daemon/worker test verifies actual provider
 `stopTask` invocation as well as foreground abort and no backlog execution.
 Swift networking tests distinguish session Stop from withdrawal of one message.
 
-Task cancellation still uses the existing heartbeat's in-memory drain, with
-provider-specific support. It is not yet a durable acknowledged cancellation
-delivery protocol; failed kill delivery and external-worker routing belong in
-the execution-port milestone. State marking alone does not prove an external
-process stopped. Live-provider and main/Dev isolation dogfood remain release
-gates. This slice neither installs the desktop app nor changes the nightly path.
+Task-stop delivery is persisted, routed to the owning worker, and retried until
+acknowledged. Failed provider kills are not acknowledged. Retired registrations
+cannot receive another worker's deliveries. State marking still does not prove
+that an unreachable external process stopped.
+
+The Stop HTTP body may include `commandId`. Replaying the same ID returns its
+stored result without stopping a subsequently submitted message. Web and Swift
+mint a new ID per user gesture. JSON compatibility mode cannot provide durable
+receipts; migrated homes cannot silently reopen that mode.
+
+OpenCode is disabled initially and paired with SDK/CLI 1.18.30. It queues follow-ups,
+grants native permissions once, reconciles snapshots after dropped SSE, and never
+blindly repeats an uncertain prompt. Background-task stop and manual compaction
+are not advertised for that adapter. See the implementation report for validation.

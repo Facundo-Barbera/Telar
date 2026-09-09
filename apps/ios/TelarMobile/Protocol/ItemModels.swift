@@ -199,11 +199,13 @@ struct Item: Identifiable, Equatable {
     /// Set when produced inside a sub-agent — filed under that task, not the
     /// main timeline.
     var taskId: EngineID?
+    var streamed: String? = nil
+    var streamedThrough: Int? = nil
 }
 
 extension Item: Decodable {
     private enum CodingKeys: String, CodingKey {
-        case id, runId, sessionId, status, title, detail, startedAt, completedAt, taskId
+        case id, runId, sessionId, status, title, detail, startedAt, completedAt, taskId, streamed, streamedThrough
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +219,8 @@ extension Item: Decodable {
         startedAt = try c.decode(Timestamp.self, forKey: .startedAt)
         completedAt = try c.decodeIfPresent(Timestamp.self, forKey: .completedAt)
         taskId = try c.decodeIfPresent(EngineID.self, forKey: .taskId)
+        streamed = try c.decodeIfPresent(String.self, forKey: .streamed)
+        streamedThrough = try c.decodeIfPresent(Int.self, forKey: .streamedThrough)
     }
 }
 

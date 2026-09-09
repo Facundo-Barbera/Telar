@@ -169,3 +169,15 @@ func fixture(_ name: String) throws -> Data {
         #expect(request.isOpen)
     }
 }
+
+@Suite struct EngineRevisionFixtures {
+    @Test func openCodeUsesTheSameSessionAndStreamingContract() throws {
+        let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: fixture("engine-revision"))
+        #expect(snapshot.session.driver == "opencode")
+        #expect(snapshot.session.resumeCursor == "ses_fixture")
+        #expect(snapshot.turns.count == 2)
+        #expect(snapshot.turns[1].state == .queued)
+        #expect(snapshot.items.first?.streamed == "Hello")
+        #expect(snapshot.items.first?.streamedThrough != nil)
+    }
+}

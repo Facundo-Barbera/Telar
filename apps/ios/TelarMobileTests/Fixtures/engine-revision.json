@@ -1,0 +1,70 @@
+{
+  "session": {
+    "id": "session_fixture",
+    "projectId": "project_fixture",
+    "environmentId": "local",
+    "title": "New session",
+    "state": "active",
+    "createdAt": 1000,
+    "updatedAt": 1000,
+    "providerInstanceId": "opencode",
+    "driver": "opencode",
+    "workspace": {
+      "mode": "local",
+      "path": "/private/tmp"
+    },
+    "envMode": "local",
+    "runtimeMode": "auto",
+    "interactionMode": "default",
+    "detached": true,
+    "activity": "working",
+    "resumeCursor": "ses_fixture",
+    "activityAt": 1000
+  },
+  "turns": [
+    {
+      "runId": "run_fixture",
+      "sessionId": "session_fixture",
+      "sequence": 1,
+      "state": "running",
+      "input": "A fixture prompt",
+      "acceptedAt": 1000,
+      "updatedAt": 1000,
+      "startedAt": 1000,
+      "claim": {
+        "workerId": "worker_fixture",
+        "token": "c8ceac25-d01f-4d5b-8624-1b56f38ad785",
+        "at": 1000,
+        "sequence": 2
+      },
+      "providerSessionId": "ses_fixture"
+    },
+    {
+      "runId": "run_followup",
+      "sessionId": "session_fixture",
+      "sequence": 2,
+      "state": "queued",
+      "input": "Next message queues because OpenCode has no live steering",
+      "acceptedAt": 1000,
+      "updatedAt": 1000
+    }
+  ],
+  "items": [
+    {
+      "id": "item_fixture",
+      "runId": "run_fixture",
+      "sessionId": "session_fixture",
+      "status": "inProgress",
+      "detail": {
+        "type": "assistant_message",
+        "text": "Hel"
+      },
+      "startedAt": 1000,
+      "streamed": "Hello",
+      "streamedThrough": 7
+    }
+  ],
+  "tasks": [],
+  "requests": [],
+  "cursor": 8
+}

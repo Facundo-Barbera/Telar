@@ -1,6 +1,7 @@
 "use client";
 
 import type { ComponentProps, HTMLAttributes } from "react";
+import { useStreamingReveal } from "@/lib/use-streaming-reveal";
 import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { math } from "@streamdown/math";
@@ -120,7 +121,9 @@ const MATH_REHYPE = [rehypeDisplayStandaloneMath];
  * "complete" markup the author meant literally.
  */
 export const MessageResponse = memo(
-  ({ className, streaming, children, rehypePlugins, plugins, ...props }: MessageResponseProps & { streaming?: boolean }) => (
+  ({ className, streaming, children, rehypePlugins, plugins, ...props }: MessageResponseProps & { streaming?: boolean }) => {
+    const revealed = useStreamingReveal(typeof children === "string" ? children : "", streaming === true);
+    return (
     <Streamdown
       className={cn("telar-markdown w-full text-sm [&>*:first-child]:mt-0 [&>*:last-child]:mb-0", STREAMDOWN_LIST_SPACING, className)}
       mode={streaming ? "streaming" : "static"}
@@ -136,9 +139,9 @@ export const MessageResponse = memo(
       controls={{ code: { copy: true, download: false }, table: true, mermaid: true }}
       {...props}
     >
-      {children}
+      {typeof children === "string" ? revealed : children}
     </Streamdown>
-  ),
+  ); },
   (prev, next) => prev.children === next.children && prev.streaming === next.streaming,
 );
 

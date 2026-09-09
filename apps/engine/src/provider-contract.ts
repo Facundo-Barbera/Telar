@@ -30,6 +30,7 @@ export function normalizeOutcome(value: RequestDecision | DriverRequestOutcome):
 }
 
 export type DriverRun = {
+  runId?: string;
   prompt: string;
   /**
    * WHICH SESSION THIS TURN BELONGS TO — the key the Claude driver holds its

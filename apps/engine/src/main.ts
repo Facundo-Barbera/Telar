@@ -34,7 +34,8 @@ const embeddedWorker = process.env.TELAR_EMBEDDED_WORKER?.trim() !== "0";
 // Usage page after an update finds the transcripts already read (usage.ts).
 // Here and not in `startEngine`, like the PATH repair above: a process
 // decision, not one every test's daemon should be making.
-const daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000 });
+const daemon = await startEngine({ embeddedWorker, warmUsageCacheAfterMs: 5_000,
+  executionStorage: process.env.TELAR_EXECUTION_STORE === "json" ? "json" : "sqlite" });
 process.stdout.write(
   `Telar engine listening on ${daemon.discovery.host}:${daemon.discovery.port}` +
     `${daemon.worker ? ` with embedded worker ${daemon.worker.workerId}` : " (no embedded worker)"}\n`,

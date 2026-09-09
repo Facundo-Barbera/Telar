@@ -14,10 +14,11 @@ export function ProviderIcon({
   className,
   size = 14,
 }: {
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "opencode";
   className?: string;
   size?: number;
 }) {
+  if (provider === "opencode") return <span aria-hidden className={cn("inline-flex items-center justify-center rounded-sm border font-mono text-[0.5rem]", className)} style={{ width: size, height: size }}>OC</span>;
   if (provider === "codex") {
     return (
       <svg
@@ -48,7 +49,8 @@ export function ProviderIcon({
   );
 }
 
-export const PROVIDER_LABEL: Record<"claude" | "codex", string> = {
+export const PROVIDER_LABEL: Record<"claude" | "codex" | "opencode", string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };

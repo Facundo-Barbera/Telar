@@ -22,7 +22,7 @@ export async function POST(request: Request, context: Context) {
      */
     const scope = optionalString(body.scope, "Scope");
     if (scope !== undefined && scope !== "session") throw new Error('Scope must be "session" when given.');
-    if (scope === "session") return Response.json(await client.stopSession(sessionId));
+    if (scope === "session") return Response.json(await client.stopSession(sessionId, "user", optionalString(body.commandId, "Command id")));
     return Response.json(await client.stopTurn(sessionId, optionalString(body.runId, "Run id")));
   } catch (error) {
     return engineErrorResponse(error);

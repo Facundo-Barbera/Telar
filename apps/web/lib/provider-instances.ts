@@ -24,9 +24,10 @@ import type { ProviderDriverKind, ProviderInstance, ProviderProbe } from "@telar
 export const DRIVER_LABEL: Record<ProviderDriverKind, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
-export const DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex"];
+export const DRIVERS: readonly ProviderDriverKind[] = ["claude", "codex", "opencode"];
 
 /**
  * The whole status language, one colour per state.
@@ -243,11 +244,13 @@ export function isValidInstanceId(id: string): boolean {
 const CONFIG_DIR_ENV: Record<ProviderDriverKind, string> = {
   claude: "CLAUDE_CONFIG_DIR",
   codex: "CODEX_HOME",
+  opencode: "OPENCODE_CONFIG_DIR",
 };
 
 const LOGIN_COMMAND: Record<ProviderDriverKind, string> = {
   claude: "claude auth login",
   codex: "codex login",
+  opencode: "opencode auth login",
 };
 
 /**
@@ -264,5 +267,6 @@ const LOGIN_COMMAND: Record<ProviderDriverKind, string> = {
  */
 export function signInCommand(instance: Pick<ProviderInstance, "driver" | "configDir">): string {
   const command = LOGIN_COMMAND[instance.driver];
+  if (instance.driver === "opencode") return command; // configDir does not isolate native OpenCode credentials.
   return instance.configDir ? `${CONFIG_DIR_ENV[instance.driver]}="${instance.configDir}" ${command}` : command;
 }

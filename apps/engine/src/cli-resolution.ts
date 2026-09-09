@@ -1,3 +1,4 @@
+import { OPENCODE_VERSION } from "./opencode/version";
 /**
  * WHERE THE CLIs ACTUALLY ARE, AND WHETHER WE CAN TALK TO THEM.
  *
@@ -36,7 +37,7 @@ const execFileP = promisify(execFile);
 /** Which CLI a resolution is about. Also the binary name on every candidate
  *  path below — kept as a field on the spec so a CLI whose binary name differs
  *  from its id would have one place to say so. */
-export type CliId = "claude" | "codex";
+export type CliId = "claude" | "codex" | "opencode";
 
 export type CliStatus =
   /** Resolved, and (where a pairing exists) its version is the one expected. */
@@ -154,6 +155,12 @@ export function expectedClaudeCliVersion(): string | undefined {
 }
 
 const SPECS: Record<CliId, CliSpec> = {
+  opencode: { id: "opencode", label: "OpenCode", bin: "opencode", overrideEnv: "OPENCODE_BIN",
+    installHint: `Install opencode-ai@${OPENCODE_VERSION} and sign in, or set OPENCODE_BIN to its full path.`,
+    expectedVersion: () => OPENCODE_VERSION,
+    verdict: (found, expected) => found === expected ? { status: "ok" } : {
+      status: "incompatible", message: `OpenCode ${found} does not match this adapter. Install opencode-ai@${expected} or choose its binary path in Settings.`,
+    } },
   claude: {
     id: "claude",
     label: "Claude Code",

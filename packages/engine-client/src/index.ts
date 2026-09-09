@@ -1986,8 +1986,8 @@ export class EngineClient {
   /** End all session-owned active, queued, held and background work.
    * Delivered messages remain in history; the next message needs no Resume.
    * `stopTurn` is the separate operation that interrupts only one run. */
-  stopSession(sessionId: string, by: "user" | "agent" = "user"): Promise<{ stopped: Turn[]; live?: Turn }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", by });
+  stopSession(sessionId: string, by: "user" | "agent" = "user", commandId?: string): Promise<{ stopped: Turn[]; live?: Turn }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", by, commandId });
   }
 
   /**
@@ -2069,8 +2069,8 @@ export class EngineClient {
   /** Idempotent control: reports state and drains already-decided deliveries,
    *  so re-polling on the next tick cannot duplicate work. `signal` lets the
    *  caller bound it — a heartbeat that never resolves must not pin its loop. */
-  workerHeartbeat(workerId: string, signal?: AbortSignal): Promise<WorkerStatus> {
-    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {}, signal, "workerHeartbeat");
+  workerHeartbeat(workerId: string, signal?: AbortSignal, acknowledgedTaskStops?: string[]): Promise<WorkerStatus> {
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, { acknowledgedTaskStops }, signal, "workerHeartbeat");
   }
 
   /**

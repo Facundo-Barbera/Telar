@@ -687,7 +687,7 @@ struct ComposerView: View {
                                 .textCase(.uppercase)
                                 .foregroundStyle(Theme.statusSky)
                         } else {
-                            if isRunning {
+                            if isRunning && store.sync.session?.driver != "opencode" {
                                 Button {
                                     Task { await store.promote(turn.runId) }
                                 } label: {

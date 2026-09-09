@@ -481,7 +481,7 @@ export function ProviderInstanceCard({
 
             <label className="block">
               <span className="text-xs font-medium text-foreground">
-                {instance.driver === "codex" ? "CODEX_HOME folder" : "CLAUDE_CONFIG_DIR folder"}
+                {instance.driver === "opencode" ? "OpenCode config folder (shared CLI login)" : instance.driver === "codex" ? "CODEX_HOME folder" : "CLAUDE_CONFIG_DIR folder"}
               </span>
               {isDefault ? (
                 /* Stated rather than offered as a field. Pointing
@@ -489,8 +489,7 @@ export function ProviderInstanceCard({
                    Keychain entry and 401s — only an unset variable uses the base
                    login, which is why this slot has to leave it unset. */
                 <p className="mt-1.5 text-[0.6875rem] text-muted-foreground">
-                  Empty — this is the base login. Setting the variable here would reach a different, empty credential store, so Telar
-                  leaves it unset.
+                  {instance.driver === "opencode" ? "Uses the native OpenCode CLI login. A config folder does not isolate credentials." : "Empty — this is the base login. Telar leaves the config variable unset to preserve its credential store."}
                 </p>
               ) : (
                 <>
@@ -527,7 +526,7 @@ export function ProviderInstanceCard({
               <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
                 Empty uses <code className="font-mono">{instance.driver}</code> as your shell would resolve it. A bare name looks that
                 name up on PATH; a full path runs exactly that file. Beats{" "}
-                <code className="font-mono">{instance.driver === "codex" ? "CODEX_BIN" : "CLAUDE_CODE_EXECUTABLE"}</code> when both are
+                <code className="font-mono">{instance.driver === "opencode" ? "OPENCODE_BIN" : instance.driver === "codex" ? "CODEX_BIN" : "CLAUDE_CODE_EXECUTABLE"}</code> when both are
                 set.
               </span>
             </label>

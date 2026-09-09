@@ -134,9 +134,12 @@ func journalCursor(_ events: [EngineEvent]) -> Int {
 private final class ItemBox {
     var item: Item
     var streamedText = ""
+    var streamedThrough: Int?
     var openedBy: Int
     init(item: Item, openedBy: Int) {
         self.item = item
+        self.streamedText = item.streamed ?? ""
+        self.streamedThrough = item.streamedThrough
         self.openedBy = openedBy
     }
 }
@@ -200,6 +203,12 @@ func projectJournal(
         guard let turn = byRun[item.runId] else { return }
         let owner = item.taskId.flatMap { seenTasks[$0] }
         if let existing = seenItems[item.id] {
+            if let through = item.streamedThrough, through > (existing.streamedThrough ?? -1) {
+                existing.streamedText = item.streamed ?? ""
+                existing.streamedThrough = through
+            } else if existing.streamedThrough == nil && existing.streamedText.isEmpty {
+                existing.streamedText = item.streamed ?? ""
+            }
             existing.item = item
             // openedBy and streamedText survive item.updated/completed.
             // If the row was parked on the main timeline because its task had
@@ -266,7 +275,10 @@ func projectJournal(
             // A delta for an unseen item is DROPPED, not buffered: the fold is
             // missing the row that opened it, and a placeholder would render a
             // message with no idea what kind of row it belongs to.
-            seenItems[itemId]?.streamedText += text
+            if let held = seenItems[itemId], event.id > (held.streamedThrough ?? -1) {
+                held.streamedText += text
+                held.streamedThrough = event.id
+            }
         case .taskStarted(let task), .taskProgress(let task), .taskCompleted(let task):
             upsertTask(task)
         case .usageUpdated(let usage):

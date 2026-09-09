@@ -1,3 +1,4 @@
+import { createOpenCodeDriver } from "./opencode/driver";
 /**
  * The one place that says which provider driver serves which session.
  *
@@ -84,7 +85,7 @@ export function createBrowserToolSocket(browser: EngineBrowser): BrowserToolSock
 export function createDefaultDrivers(): DriverSelector {
   const claude = createClaudeDriver();
   const codex = createCodexDriver();
-  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex };
+  const byKind: Record<ProviderDriverKind, TurnDriver> = { claude, codex, opencode: createOpenCodeDriver() };
   // Returns `undefined` for a kind this build does not know, which the worker
   // turns into a typed `provider_unavailable` failure on the turn rather than
   // an unhandled throw.

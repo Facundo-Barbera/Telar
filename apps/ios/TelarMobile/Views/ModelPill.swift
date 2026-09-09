@@ -14,6 +14,8 @@ struct ProviderIconView: View {
                 .scaledToFit()
                 .frame(width: size, height: size)
                 .foregroundStyle(Theme.text)
+        } else if driver == "opencode" {
+            Text("OC").font(.system(size: size * 0.65, weight: .semibold)).frame(width: size, height: size)
         } else {
             Image("ProviderClaude")
                 .resizable()
@@ -84,6 +86,7 @@ struct ModelPillView: View {
             if driversSwitchable {
                 familySection("Claude", driver: "claude")
                 familySection("Codex", driver: "codex")
+                familySection("OpenCode", driver: "opencode")
             } else {
                 familySection(nil, driver: choice.driver)
             }

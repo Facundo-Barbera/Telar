@@ -153,12 +153,12 @@ function AddInstanceDialog({
 
           <label className="block">
             <span className="text-xs font-medium text-foreground">
-              {driver === "codex" ? "CODEX_HOME folder" : "CLAUDE_CONFIG_DIR folder"}
+              {driver === "opencode" ? "OpenCode config folder (shared CLI login)" : driver === "codex" ? "CODEX_HOME folder" : "CLAUDE_CONFIG_DIR folder"}
             </span>
             <Input
               value={configDir}
               onChange={(event) => setConfigDir(event.target.value)}
-              placeholder={driver === "codex" ? "~/.codex-work" : "~/.claude-work"}
+              placeholder={driver === "opencode" ? "~/.config/opencode-work" : driver === "codex" ? "~/.codex-work" : "~/.claude-work"}
               className="mt-1.5 h-8 font-mono text-xs"
               spellCheck={false}
               autoComplete="off"

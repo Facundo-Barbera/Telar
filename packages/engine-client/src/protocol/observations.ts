@@ -368,7 +368,7 @@ export const WorkerStatus = z.object({
    * courtesy the other channels extend to an older worker.
    */
   stopTask: z
-    .array(z.object({ sessionId: Id, providerTaskId: z.string().min(1) }))
+    .array(z.object({ sessionId: Id, providerTaskId: z.string().min(1), deliveryId: Id.optional(), driver: ProviderDriverKind.optional() }))
     .default([]),
 });
 export type WorkerStatus = z.infer<typeof WorkerStatus>;

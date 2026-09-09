@@ -98,6 +98,7 @@ type RegisteredWorker = {
 };
 
 export type EngineDaemonOptions = {
+  executionStorage?: "json" | "sqlite";
   engineRoot?: string;
   port?: number;
   now?: () => number;
@@ -484,7 +485,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   if (migrateLegacyEngineRoot(root)) {
     process.stdout.write(`Telar engine: moved the existing store from vnext/ to ${path.basename(root)}/\n`);
   }
-  const store = new EngineStore(root, options.now, {
+  const lock = acquireDaemonLock(statePaths(root));
+  let store: EngineStore;
+  try {
+  store = new EngineStore(root, options.now, {
+    executionStorage: options.executionStorage ?? (process.env.TELAR_EXECUTION_STORE === "sqlite" ? "sqlite" : undefined),
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
@@ -499,7 +504,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       return resolved;
     },
   });
-  const lock = acquireDaemonLock(statePaths(root));
+  } catch (error) { lock.release(); throw error; }
   /** The per-transcript parse cache behind /v2/usage — beside the rates
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
@@ -704,12 +709,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         return { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) };
 
     },
-    workerHeartbeat: async (workerId) => {
+    workerHeartbeat: async (workerId, _signal, acknowledgedTaskStops) => {
       const worker = activeWorker(workerId);
       worker.heartbeatAt = now();
       return { workerId, heartbeatAt: worker.heartbeatAt,
         cancel: store.cancellationsForWorker(workerId), resolved: store.resolutionsForWorker(workerId),
-        steer: store.steerForWorker(workerId), stopTask: store.drainStopTasks() };
+        steer: store.steerForWorker(workerId), stopTask: store.taskStopsForWorker(workerId, acknowledgedTaskStops) };
     },
     claimTurn: async (workerId, seq) => {
       const worker = activeWorker(workerId);
@@ -2810,8 +2815,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const workerMatch = /^\/v2\/workers\/([A-Za-z0-9_-]+)\/(heartbeat|claim)$/.exec(url.pathname);
       if (workerMatch && request.method === "POST") {
         const workerId = decodeURIComponent(workerMatch[1]);
-        if (workerMatch[2] === "heartbeat") writeJson(response, 200, await execution.workerHeartbeat(workerId));
-        else {
+        if (workerMatch[2] === "heartbeat") {
+          const input = await body(request);
+          const ack = input.acknowledgedTaskStops;
+          if (ack !== undefined && (!Array.isArray(ack) || ack.some((id) => typeof id !== "string")))
+            throw new HttpError(400, "invalid_request", "task stop acknowledgments must be strings");
+          writeJson(response, 200, await execution.workerHeartbeat(workerId, undefined, ack as string[] | undefined));
+        } else {
           const input = await body(request);
           writeJson(response, 200, await execution.claimTurn(workerId, input.claimSeq as number));
         }
@@ -3367,7 +3377,10 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // — a person's stop and an agent's do the same thing.
           const by = input.by === undefined ? "user" : stringValue(input.by, "by");
           if (by !== "user" && by !== "agent") throw new HttpError(400, "invalid_request", 'by must be "user" or "agent" when given');
-          writeJson(response, 200, scope === "session" ? store.stopSession(session.sessionId, by) : store.stopTurn(session.sessionId, runId));
+          const commandId = stringValue(input.commandId, "command id", true);
+          writeJson(response, 200, scope === "session"
+            ? store.executeCommand(JSON.stringify({ operation: "stopSession", sessionId: session.sessionId, by }), () => store.stopSession(session.sessionId, by), commandId)
+            : store.stopTurn(session.sessionId, runId));
           return;
         }
         // A turn the PROVIDER started (a wake-up between turns). Worker-only,
@@ -3647,12 +3660,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await closeServer(server);
         clearInterval(workerPruner);
         removeOwnDiscovery(store, daemonId);
+        store.closeExecutionStore();
         lock.release();
       },
     };
   } catch (error) {
     clearInterval(workerPruner);
     server.close();
+    store.closeExecutionStore();
     lock.release();
     throw error;
   }

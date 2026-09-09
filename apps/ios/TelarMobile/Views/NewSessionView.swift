@@ -520,7 +520,7 @@ struct NewSessionDraftView: View {
 
     /// Both drivers' catalogues — the fused pill lists them side by side.
     private func loadCatalogues() async {
-        for driver in ["claude", "codex"] where catalogues[driver] == nil {
+        for driver in ["claude", "codex", "opencode"] where catalogues[driver] == nil {
             catalogues[driver] = try? await api.models(driver: driver)
         }
     }

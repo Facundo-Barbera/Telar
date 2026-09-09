@@ -21,8 +21,8 @@ import {
   type TurnState,
 } from "@telar/engine-client";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/lib/engine/client";
-import { appendJournalEvents, isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
-import { actionableRequests, continuationDraft, recoverableFailedTurn } from "@/lib/failed-turn-recovery";
+import { isActiveTurn, isCompacting, itemText, projectJournal, taskRoster, type JournalTask, type JournalTurn } from "@/lib/engine/journal";
+import { actionableRequests } from "@/lib/failed-turn-recovery";
 import { canvasHref, sessionHref } from "@/lib/session-list";
 import { hostFromPathname, hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import { isSettled } from "@/lib/session-settling";
@@ -34,7 +34,8 @@ import { questionFields } from "@/lib/question-drawer";
 import { cn } from "@/lib/utils";
 import { readDraft, writeDraft } from "@/lib/composer-draft";
 import { sessionModelSelection, type ModelChoice } from "@/lib/models";
-import { INITIAL_TURNS, hydrateSession, loadOlderTurns, mergeRows, tailSession } from "@/lib/engine/session-sync";
+import { sessionConnection } from "@/lib/engine/session-connection";
+import { INITIAL_TURNS, loadOlderTurns, mergeRows } from "@/lib/engine/session-sync";
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
@@ -367,22 +368,6 @@ function SessionMasthead({
  * streamed. Nothing is resubmitted from here: the button only PREPARES a
  * continuation in the composer, and the person sends it — or edits it first.
  */
-function FailedTurnContinuation({ sending, onContinue }: { sending: boolean; onContinue: () => void }) {
-  return (
-    <Alert className="mt-2" aria-label="Failed turn continuation">
-      <TriangleAlertIcon />
-      <AlertTitle>This turn ended early</AlertTitle>
-      <AlertDescription className="flex flex-col gap-2">
-        <p>The work above is kept. Prepare a message that asks the agent to continue from it — nothing is sent until you send it.</p>
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" disabled={sending} onClick={onContinue}>
-            Prepare continuation
-          </Button>
-        </div>
-      </AlertDescription>
-    </Alert>
-  );
-}
 
 /**
  * `formatCost` USED TO LIVE HERE, printing a per-turn price beside the tokens.
@@ -502,7 +487,6 @@ export function SessionTurn({
   quiet = false,
   onDecide,
   onRetry,
-  onContinue,
   onOpenAgent,
   onOpenTab,
   roster = [],
@@ -719,7 +703,7 @@ export function SessionTurn({
               stopped, not ambiguous, and nothing waits behind it — so there is
               no card here asking which of three things to do, and no message
               wearing a Release button. Saying something is how you carry on. */}
-          {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
+          {turn.state === "failed" && <p className="mt-2 text-sm text-muted-foreground">This turn ended early. Your history is saved; send a new message to continue.</p>}
         </MessageContent>
       </Message>
     </div>
@@ -868,7 +852,7 @@ export function SessionCockpit({
   const chooseDriver = useCallback((next: ProviderDriverKind) => {
     setDraftDriver(next);
     setDraftModel({});
-  }, []);
+  }, [setDraftModel]);
   /**
    * THE RECORD, AND WHETHER IT IS THIS SCREEN'S. Held separately from the id for
    * the same reason the journal is gated above: a canvas reached by pressing
@@ -948,18 +932,19 @@ export function SessionCockpit({
   const [latex, setLatex] = useState(false);
   const cursor = useRef(0);
   const syncQueue = useRef<Promise<void>>(Promise.resolve());
-  const syncSession = useRef(sessionId);
+  const syncKey = JSON.stringify([hostId ?? LOCAL_HOST, sessionId]);
+  const syncSession = useRef(syncKey);
   const syncGeneration = useRef(0);
   const tailInFlight = useRef(false);
 
   useEffect(() => {
-    if (syncSession.current === sessionId) return;
-    syncSession.current = sessionId;
+    if (syncSession.current === syncKey) return;
+    syncSession.current = syncKey;
     syncGeneration.current += 1;
     syncQueue.current = Promise.resolve();
     tailInFlight.current = false;
     cursor.current = 0;
-  }, [sessionId]);
+  }, [syncKey]);
 
   const enqueueSync = useCallback((operation: () => Promise<void>) => {
     const next = syncQueue.current.then(operation, operation);
@@ -974,10 +959,10 @@ export function SessionCockpit({
     if (staleAt.current === undefined) return;
     staleAt.current = undefined;
     setStale(undefined);
-  }, []);
+  }, [setStale]);
   /** …and the snapshot the NEXT outage will show. Written from the freshly
    *  fetched values rather than from state, which has not committed yet. */
-  const remember = useCallback((id: string, snapshot: SessionSnapshot) => {
+  const remember = useCallback((id: string, snapshot: SessionSnapshot & { events?: EngineEvent[] }) => {
     live();
     const store = snapshotStore();
     if (!store) return;
@@ -987,10 +972,13 @@ export function SessionCockpit({
     // turns" from where the recorded window ended; the journal (`events`,
     // `cursor`) is deliberately not photographed — the fold works from turns
     // and items alone, and hydrate replaces all of it.
+    const foldedItems = snapshot.events ? projectJournal(snapshot.turns, snapshot.items, snapshot.events, snapshot.tasks)
+      .flatMap((turn) => [...turn.items, ...turn.tasks.flatMap((task) => task.items)])
+      .map((item) => ({ ...item, streamed: item.streamedText, streamedThrough: snapshot.cursor ?? item.streamedThrough })) : snapshot.items;
     void saveSnapshot(store, hostId ?? LOCAL_HOST, id, {
       session: snapshot.session,
       turns: snapshot.turns,
-      items: snapshot.items,
+      items: foldedItems,
       tasks: snapshot.tasks,
       requests: snapshot.requests,
       ...(snapshot.page ? { page: snapshot.page } : {}),
@@ -1020,7 +1008,7 @@ export function SessionCockpit({
     setError(undefined);
     staleAt.current = at;
     setStale(at);
-  }, []);
+  }, [setError, setStale]);
   const hydrate = useCallback(
     () =>
       enqueueSync(async () => {
@@ -1030,8 +1018,8 @@ export function SessionCockpit({
         // WINDOWED: the last ten user turns, not the whole history. Opening a
         // 76-turn session used to fetch 4.5 MB of settled transcript; the rest
         // stays on the engine behind "Load earlier turns".
-        const hydrated = await hydrateSession(api, sessionId, { turns: INITIAL_TURNS });
-        if (generation !== syncGeneration.current || syncSession.current !== sessionId) return;
+        const hydrated = await sessionConnection(hostId ?? LOCAL_HOST, createEngineApi(hostFetcher(hostId)), sessionId, { turns: INITIAL_TURNS }).read();
+        if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
         setSession(hydrated.session);
         setTurns(hydrated.turns);
         setItems(hydrated.items);
@@ -1042,7 +1030,7 @@ export function SessionCockpit({
         cursor.current = hydrated.cursor;
         remember(sessionId, hydrated);
       }),
-    [enqueueSync, sessionId, remember],
+    [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setPage, setRequests, setSession, setTasks, setTurns],
   );
   const tail = useCallback(
     () => {
@@ -1052,47 +1040,21 @@ export function SessionCockpit({
       return enqueueSync(async () => {
         if (!sessionId) return;
         const generation = syncGeneration.current;
-        // The companion snapshot is windowed to the SAME size as hydrate's —
-        // a queue event on a long session must not refetch the whole history
-        // the window existed to avoid.
-        const update = await tailSession(api, sessionId, cursor.current, { turns: INITIAL_TURNS });
-        if (generation !== syncGeneration.current || syncSession.current !== sessionId) return;
-        // A quiet tail is still an answer — see `live`.
-        live();
-        if (update.events.length === 0) return;
-        cursor.current = update.cursor;
-        setEvents((current) => appendJournalEvents(current, update.events));
-        // A PATCH FROM ANOTHER SURFACE — the sidebar settling this session,
-        // the phone renaming it — journals a `session.updated` carrying the
-        // whole record, and that event is not in the snapshot-earning set
-        // (it cannot storm, and it already has everything a snapshot would
-        // fetch). Read the record off the event itself; a snapshot below,
-        // fetched later, still wins.
-        const patched = [...update.events]
-          .reverse()
-          .find((event): event is Extract<EngineEvent, { type: "session.updated" }> => event.type === "session.updated");
-        if (patched) setSession(patched.session);
-        if (update.snapshot) {
-          const snapshot = update.snapshot;
-          setSession(snapshot.session);
-          // A UNION, NOT A REPLACEMENT. The snapshot only carries the newest
-          // window, so a reader who paged older turns in would lose them to
-          // the first queue event. Fresh rows win the ids they carry; loaded
-          // older rows survive above them. `page` is deliberately untouched —
-          // see its declaration.
-          setTurns((current) => mergeRows(current, snapshot.turns, (turn) => turn.runId));
-          setItems((current) => mergeRows(current, snapshot.items, (item) => item.id));
-          setTasks((current) => mergeRows(current, snapshot.tasks, (task) => task.id));
-          setRequests(snapshot.requests);
-          // No debounce: a snapshot only rides a queue-changing event, so this
-          // is a handful of writes per turn rather than one per delta.
-          remember(sessionId, snapshot);
-        }
+        const snapshot = await sessionConnection(hostId ?? LOCAL_HOST, createEngineApi(hostFetcher(hostId)), sessionId, { turns: INITIAL_TURNS }).read();
+        if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
+        cursor.current = snapshot.cursor;
+        setSession(snapshot.session);
+        setEvents(snapshot.events);
+        setTurns((current) => mergeRows(current, snapshot.turns, (turn) => turn.runId));
+        setItems((current) => mergeRows(current, snapshot.items, (item) => item.id));
+        setTasks((current) => mergeRows(current, snapshot.tasks, (task) => task.id));
+        setRequests(snapshot.requests);
+        remember(sessionId, snapshot);
       }).finally(() => {
         if (flightGeneration === syncGeneration.current) tailInFlight.current = false;
       });
     },
-    [enqueueSync, sessionId, remember, live],
+    [enqueueSync, sessionId, remember, hostId, syncKey, setEvents, setItems, setRequests, setSession, setTasks, setTurns],
   );
   /** One page of settled turns above the transcript, on an explicit click —
    *  never on scroll, so reading the top of the window stays free. */
@@ -1102,8 +1064,8 @@ export function SessionCockpit({
     setLoadingOlder(true);
     void enqueueSync(async () => {
       const generation = syncGeneration.current;
-      const older = await loadOlderTurns(api, sessionId, before);
-      if (generation !== syncGeneration.current || syncSession.current !== sessionId) return;
+      const older = await loadOlderTurns(createEngineApi(hostFetcher(hostId)), sessionId, before);
+      if (generation !== syncGeneration.current || syncSession.current !== syncKey) return;
       setTurns((current) => mergeRows(older.turns, current, (turn) => turn.runId));
       setItems((current) => mergeRows(older.items, current, (item) => item.id));
       setTasks((current) => mergeRows(older.tasks, current, (task) => task.id));
@@ -1111,7 +1073,7 @@ export function SessionCockpit({
     })
       .catch((cause) => setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not load earlier turns.")))
       .finally(() => setLoadingOlder(false));
-  }, [enqueueSync, sessionId, page, loadingOlder]);
+  }, [enqueueSync, sessionId, page, loadingOlder, syncKey, hostId, setError, setItems, setLoadingOlder, setPage, setTasks, setTurns]);
 
   /**
    * Restore this session's panel AFTER mount, never during render.
@@ -1166,7 +1128,7 @@ export function SessionCockpit({
         return updated;
       });
     },
-    [panelKey],
+    [panelKey, setPanel],
   );
   /** Folded once here rather than in both the panel and the pinned summary, so
    *  the two cannot disagree about which tabs are open. */
@@ -1245,7 +1207,7 @@ export function SessionCockpit({
         return updated;
       });
     },
-    [panelKey],
+    [panelKey, setEditor],
   );
 
   /**
@@ -1668,20 +1630,6 @@ export function SessionCockpit({
    * the affordance. A turn Telar interrupted by quitting lands here too, which
    * is the whole point of recording it as a failure rather than as ambiguity.
    */
-  const recoverable = recoverableFailedTurn(transcript);
-  /**
-   * PREPARES, NEVER SENDS. Puts a continuation in the composer after whatever
-   * is already typed; the attachments are untouched. The original prompt is
-   * not replayed — the transcript already holds the work it produced.
-   */
-  const prepareContinuation = () => {
-    if (!recoverable) return;
-    setDraft((current) => continuationDraft(current, recoverable, Boolean(session?.resumeCursor)));
-    setDraftRunId(undefined);
-  };
-
-  // A clock, only while something is running. An always-on interval re-renders a
-  // settled transcript once a second for nothing.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!running) return;
@@ -2159,7 +2107,7 @@ export function SessionCockpit({
         return { ...current, lastReadTurnSequence: next, ...(answer.readAt === undefined ? {} : { readAt: answer.readAt }) };
       });
     },
-    [sessionId, hostId],
+    [sessionId, hostId, setSession],
   );
   const markerRefFor = useReadReceipt({
     ...(sessionId ? { sessionId } : {}),
@@ -2309,7 +2257,6 @@ export function SessionCockpit({
                 onOpenTab={showPanelTab}
                 onDecide={(requestId, decision, extra) => void decideRequest(requestId, decision, extra)}
                 onRetry={(item) => void retryAmbiguous(item)}
-                {...(recoverable?.runId === turn.runId ? { onContinue: prepareContinuation } : {})}
               />
               {turn.runId === newestResult?.runId && <ReadReceiptMarker markerRef={markerRefFor(turn.runId)} />}
               </Fragment>
