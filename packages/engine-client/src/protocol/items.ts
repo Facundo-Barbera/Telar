@@ -191,13 +191,23 @@ export const ProviderWaitDetail = z.object({
   /** `rate_limit`: the account's state. `allowed` is not surfaced — a routine
    *  "still fine" event is not a wait and would be noise on the timeline. */
   limitStatus: z.enum(["allowed", "allowed_warning", "rejected"]).optional(),
-  /** Which limit, in the provider's own vocabulary (`five_hour`, `seven_day`…).
-   *  An open string: the set grows, and an unknown one is still worth showing. */
-  limitType: z.string().min(1).max(64).optional(),
+  /**
+   * WHICH LIMIT, from a CLOSED set with a generic fallback.
+   *
+   * The provider's field is an open string and the set grows, but a durable row
+   * is not the place to forward an arbitrary remote string: a journal a person
+   * reads is exactly where an attacker-shaped label would want to land. A value
+   * this contract does not know becomes `other`, which still says "some limit"
+   * without repeating anything unvetted.
+   */
+  limitType: z
+    .enum(["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage", "other"])
+    .optional(),
   /** Unix seconds at which the limit resets, when the provider says. */
   resetsAt: z.number().int().nonnegative().optional(),
-  /** Fraction of the window consumed, when the provider says. */
-  utilization: z.number().nonnegative().optional(),
+  /** Fraction of the window consumed, when the provider says. Finite, because
+   *  `z.number()` alone admits Infinity and a meter cannot render one. */
+  utilization: z.number().nonnegative().finite().optional(),
 });
 export type ProviderWaitDetail = z.infer<typeof ProviderWaitDetail>;
 

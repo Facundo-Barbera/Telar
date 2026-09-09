@@ -1168,22 +1168,35 @@ export function providerWaitFrom(item: {
   const info = asRecord(item.rate_limit_info);
   const status = info.status;
   if (status !== "rejected" && status !== "allowed_warning") return undefined;
+  const reported = str(info.rateLimitType);
   return {
     blocking: status === "rejected",
     detail: {
       kind: "rate_limit",
       limitStatus: status,
-      ...(str(info.rateLimitType) ? { limitType: str(info.rateLimitType)!.slice(0, 64) } : {}),
+      // A CLOSED SET WITH A FALLBACK. The provider's field is an open string
+      // and the set grows, but a durable row a person reads is the last place
+      // an unvetted remote label should land. Anything unrecognised is `other`.
+      ...(reported === undefined ? {} : { limitType: KNOWN_RATE_LIMIT_TYPES.has(reported) ? (reported as ProviderWaitDetail["limitType"]) : "other" }),
       ...(int(info.resetsAt) === undefined ? {} : { resetsAt: int(info.resetsAt)! }),
-      ...(typeof info.utilization === "number" && info.utilization >= 0 ? { utilization: info.utilization } : {}),
+      // Finite: `typeof x === "number"` admits Infinity and NaN, and a meter
+      // cannot render either.
+      ...(typeof info.utilization === "number" && Number.isFinite(info.utilization) && info.utilization >= 0
+        ? { utilization: info.utilization }
+        : {}),
     },
   };
 }
 
+/** The provider's own vocabulary, verbatim from `SDKRateLimitInfo`. Anything
+ *  outside it is reported as `other` rather than forwarded — see above. */
+const KNOWN_RATE_LIMIT_TYPES = new Set(["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "seven_day_overage_included", "overage"]);
+
 /** The collapsed label, derived once by the engine like every other row's. */
 export function titleForProviderWait(detail: ProviderWaitDetail): string {
   if (detail.kind === "rate_limit") {
-    const limit = detail.limitType ? ` (${detail.limitType.replaceAll("_", " ")})` : "";
+    // `other` names nothing a person can act on, so it earns no parenthetical.
+    const limit = detail.limitType && detail.limitType !== "other" ? ` (${detail.limitType.replaceAll("_", " ")})` : "";
     return detail.limitStatus === "rejected" ? `Rate limit reached${limit}` : `Approaching the rate limit${limit}`;
   }
   const attempt = detail.attempt === undefined ? "" : detail.maxAttempts ? ` (attempt ${detail.attempt} of ${detail.maxAttempts})` : ` (attempt ${detail.attempt})`;
@@ -2606,8 +2619,28 @@ export function createClaudeDriver(
             await flush();
             continue;
           }
-          // The stream spoke again, so whatever we were waiting for is over.
-          closeProviderWait();
+          /**
+           * ONLY OUR OWN MAIN LOOP RESUMING ENDS THE WAIT.
+           *
+           * The first version closed on the NEXT FRAME OF ANY KIND, which is
+           * wrong twice over: a background shell's `task_notification` or the
+           * CLI's own housekeeping arrives on the same iterator and proves
+           * nothing about the request we are waiting on, and a sub-agent's
+           * output proves even less — its model call is a different request
+           * that was never retried. So the row closed on unrelated traffic and
+           * reported a resumption that had not happened.
+           *
+           * Model output for THIS turn's main loop is the evidence: the request
+           * went through. Anything else leaves the row open, and the turn's own
+           * end closes it if nothing ever does.
+           */
+          if (
+            waitItemId &&
+            ours &&
+            (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")
+          ) {
+            closeProviderWait();
+          }
 
           // ── compaction, announced then bounded ────────────────────────
           if (item.type === "system" && item.subtype === "status") {
@@ -3101,7 +3134,21 @@ export function createClaudeDriver(
         idleRuntime.idlePump = { stop: () => { stopped = true; } };
         void (async () => {
           // A wake-up in flight, once the engine has opened a turn for it.
-          let wake: { binding: ProviderTurnBinding; text: string; usage: UsageSnapshot | undefined; gate: SdkCanUseTool | undefined; blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>; tools: Map<string, { id: string; detail: ItemDetail }> } | undefined;
+          let wake:
+            | {
+                binding: ProviderTurnBinding;
+                text: string;
+                usage: UsageSnapshot | undefined;
+                gate: SdkCanUseTool | undefined;
+                blocks: Map<string, { id: string; kind: "text" | "thinking"; text: string }>;
+                tools: Map<string, { id: string; detail: ItemDetail }>;
+                /** The open provider-wait row, exactly as a human turn keeps one. */
+                waitItemId: string | undefined;
+                /** The newest main-loop envelope's raw usage, so this turn's
+                 *  closing `message_delta` can correct its placeholder output. */
+                lastUsage: unknown;
+              }
+            | undefined;
           const idleSink = (observations: TurnObservation[]) => hooks.onTasks(observations);
           sink = idleSink;
           /** The engine refused a wake-up: a human turn has the session and
@@ -3114,6 +3161,8 @@ export function createClaudeDriver(
             wake = undefined;
             // The wake-up is over; the process may be evicted again.
             runtimes.setWakeActive(idleRuntime.sessionId, false);
+            // A wait this turn ended inside is over, whatever ended it.
+            if (current.waitItemId) emit({ kind: "item.completed", itemId: current.waitItemId, status: "completed" });
             for (const [, open] of current.tools) emit({ kind: "item.completed", itemId: open.id, status: "failed" });
             for (const [, open] of current.blocks) emit(closeBlock(open));
             await flush();
@@ -3182,7 +3231,16 @@ export function createClaudeDriver(
                 // The engine has opened a real turn against it; evicting it now
                 // would kill a turn nobody could see start.
                 runtimes.setWakeActive(idleRuntime.sessionId, true);
-                wake = { binding, text: "", usage: undefined, gate: binding.onRequest ? gateFor(binding.onRequest) : undefined, blocks: new Map(), tools: new Map() };
+                wake = {
+                  binding,
+                  text: "",
+                  usage: undefined,
+                  gate: binding.onRequest ? gateFor(binding.onRequest) : undefined,
+                  blocks: new Map(),
+                  tools: new Map(),
+                  waitItemId: undefined,
+                  lastUsage: undefined,
+                };
                 sink = (observations) => binding.onObservations(observations);
                 idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
                 // The CLI's injected notification message is the turn's input
@@ -3199,13 +3257,65 @@ export function createClaudeDriver(
                * left it. Same two reads as the turn pump, same rule: the
                * provider's reported window replaces the assumption.
                */
+              /**
+               * A WAKE-UP WAITS THE SAME WAY A HUMAN TURN DOES.
+               *
+               * The engine has opened a real turn with a real observation sink,
+               * so there is somewhere to put the row — an earlier version of
+               * this patch claimed otherwise and was wrong. A retry inside an
+               * autonomous turn is exactly as invisible as one inside a human's
+               * and just as worth explaining.
+               *
+               * EXPLICITLY LIMITED: a wait announced BEFORE the engine grants a
+               * binding still goes unrecorded. Those frames belong to no turn
+               * yet, and the session-level task channel takes task reports
+               * rather than rows. That gap closes with the single-consumer
+               * consolidation, not here.
+               */
+              const idleWaited = providerWaitFrom(item);
+              if (idleWaited) {
+                if (wake.waitItemId) emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
+                const id = itemId();
+                const detail: ItemDetail = { type: "provider_wait", wait: idleWaited.detail };
+                emit({ kind: "item.started", item: { id, detail, title: titleForProviderWait(idleWaited.detail) } });
+                wake.waitItemId = idleWaited.blocking ? id : undefined;
+                if (!idleWaited.blocking) emit({ kind: "item.completed", itemId: id, status: "completed", detail });
+                await flush();
+                continue;
+              }
+              // Same ownership rule as the turn pump: only this turn's own main
+              // loop speaking proves the request went through.
+              if (wake.waitItemId && !parentToolUseId && (item.type === "stream_event" || item.type === "assistant" || item.type === "user" || item.type === "result")) {
+                emit({ kind: "item.completed", itemId: wake.waitItemId, status: "completed" });
+                wake.waitItemId = undefined;
+              }
+
               if (item.type === "assistant" && !parentToolUseId) {
                 const snapshot = usageFrom(item.message?.usage, undefined);
                 if (snapshot) {
+                  // Kept raw so this turn's closing `message_delta` can correct
+                  // its placeholder output count against it.
+                  wake.lastUsage = item.message?.usage;
                   contextUsed = contextUsedFrom(item.message?.usage) ?? contextUsed;
                   wake.usage = decorateUsage(snapshot);
                   emit({ kind: "usage", usage: wake.usage! });
                 }
+              }
+              /** The response's REAL output count, for a wake-up too — see the
+               *  turn pump's copy of this. */
+              if (item.type === "stream_event" && item.event?.type === "message_delta" && !parentToolUseId && wake.lastUsage) {
+                const output = asRecord(item.event.usage).output_tokens;
+                if (typeof output === "number" && output >= 0) {
+                  wake.lastUsage = { ...asRecord(wake.lastUsage), output_tokens: output };
+                  contextUsed = contextUsedFrom(wake.lastUsage) ?? contextUsed;
+                  const snapshot = usageFrom(wake.lastUsage, undefined);
+                  if (snapshot) {
+                    wake.usage = decorateUsage({ ...snapshot, ...(wake.usage?.costUsd === undefined ? {} : { costUsd: wake.usage.costUsd }) });
+                    emit({ kind: "usage", usage: wake.usage! });
+                    await flush();
+                  }
+                }
+                continue;
               }
               if (item.type === "result" && !parentToolUseId) {
                 const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
