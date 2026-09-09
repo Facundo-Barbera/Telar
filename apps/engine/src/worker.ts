@@ -9,7 +9,7 @@ import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
-import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./driver";
+import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import type { LoginGrantStore } from "./secrets/login-grants";
 import { providerProcessEnv } from "./provider-instances";

@@ -2,6 +2,7 @@
 // It intentionally has no provider imports: Phase 1 proves ownership and crash
 // semantics before a driver is allowed to execute an agent turn.
 import crypto from "node:crypto";
+import { createExecutionPort, withDirectExecution } from "./execution-port";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -9,6 +10,7 @@ import path from "node:path";
 import { URL } from "node:url";
 import {
   ENGINE_PROTOCOL_VERSION,
+  EngineClientError,
   DataScienceBootstrap,
   DataScienceCreateEnvironment,
   LatexBootstrap,
@@ -690,6 +692,66 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     sessionsToolsCache = collectSessionsWallTools(capability);
     return sessionsToolsCache;
   };
+
+  const execution = createExecutionPort(store, {
+    registerWorker: async (workerId) => {
+        stringValue(workerId, "worker id");
+        if (!/^[A-Za-z0-9_-]+$/.test(workerId)) throw new HttpError(400, "invalid_request", "worker id is unsafe");
+        pruneWorkers();
+        if (workers.has(workerId)) throw new HttpError(409, "conflict", "worker id is already registered");
+        const at = now();
+        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at, claimSeq: 0, claimResult: undefined, claimBusy: undefined });
+        return { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) };
+
+    },
+    workerHeartbeat: async (workerId) => {
+      const worker = activeWorker(workerId);
+      worker.heartbeatAt = now();
+      return { workerId, heartbeatAt: worker.heartbeatAt,
+        cancel: store.cancellationsForWorker(workerId), resolved: store.resolutionsForWorker(workerId),
+        steer: store.steerForWorker(workerId), stopTask: store.drainStopTasks() };
+    },
+    claimTurn: async (workerId, seq) => {
+      const worker = activeWorker(workerId);
+      worker.heartbeatAt = now();
+
+          if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+            throw new HttpError(400, "invalid_request", "claim sequence must be a positive integer");
+          }
+          // One at a time per worker, so the authorize await below cannot let a
+          // duplicate interleave between the watermark check and the cache.
+          const previous = worker.claimBusy ?? Promise.resolve();
+          let release!: () => void;
+          worker.claimBusy = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            // This request may have waited behind an authorization call while
+            // its registration retired. Never allocate for that old generation.
+            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
+            // An already-answered sequence replays its outcome — never a second
+            // allocation, and `undefined` is a cached answer like any other.
+            if (seq === worker.claimSeq) {
+              return { claim: worker.claimResult };
+            }
+            // A straggler from a superseded op. Refused WITHOUT allocating:
+            // answering it would hand out a turn nobody is waiting for.
+            if (seq < worker.claimSeq) throw new HttpError(409, "conflict", "claim sequence superseded");
+            if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
+            // The claim itself is synchronous and under the state lock;
+            // attaching managed OAuth bearers is a network call.
+            const claimed = store.claimNextTurn(workerId);
+            const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
+            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
+            worker.claimSeq = seq;
+            worker.claimResult = authorized;
+            return { claim: authorized };
+          } finally {
+            release();
+          }
+    },
+  }, activeWorker);
 
   const server = http.createServer(async (request, response) => {
     try {
@@ -2742,70 +2804,16 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       }
       if (request.method === "POST" && url.pathname === "/v2/workers/register") {
         const input = await body(request);
-        const workerId = stringValue(input.workerId, "worker id")!;
-        if (!/^[A-Za-z0-9_-]+$/.test(workerId)) throw new HttpError(400, "invalid_request", "worker id is unsafe");
-        pruneWorkers();
-        if (workers.has(workerId)) throw new HttpError(409, "conflict", "worker id is already registered");
-        const at = now();
-        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at, claimSeq: 0, claimResult: undefined, claimBusy: undefined });
-        writeJson(response, 200, { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) });
+        writeJson(response, 200, await execution.registerWorker(stringValue(input.workerId, "worker id")!));
         return;
       }
-
       const workerMatch = /^\/v2\/workers\/([A-Za-z0-9_-]+)\/(heartbeat|claim)$/.exec(url.pathname);
       if (workerMatch && request.method === "POST") {
         const workerId = decodeURIComponent(workerMatch[1]);
-        const worker = activeWorker(workerId);
-        worker.heartbeatAt = now();
-        if (workerMatch[2] === "heartbeat") {
-          const status: WorkerStatus = {
-            workerId,
-            heartbeatAt: worker.heartbeatAt,
-            cancel: store.cancellationsForWorker(workerId),
-            resolved: store.resolutionsForWorker(workerId),
-            steer: store.steerForWorker(workerId),
-            stopTask: store.drainStopTasks(),
-          };
-          writeJson(response, 200, status);
-        } else {
+        if (workerMatch[2] === "heartbeat") writeJson(response, 200, await execution.workerHeartbeat(workerId));
+        else {
           const input = await body(request);
-          const seq = input.claimSeq;
-          if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
-            throw new HttpError(400, "invalid_request", "claim sequence must be a positive integer");
-          }
-          // One at a time per worker, so the authorize await below cannot let a
-          // duplicate interleave between the watermark check and the cache.
-          const previous = worker.claimBusy ?? Promise.resolve();
-          let release!: () => void;
-          worker.claimBusy = new Promise<void>((resolve) => {
-            release = resolve;
-          });
-          await previous;
-          try {
-            // This request may have waited behind an authorization call while
-            // its registration retired. Never allocate for that old generation.
-            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
-            // An already-answered sequence replays its outcome — never a second
-            // allocation, and `undefined` is a cached answer like any other.
-            if (seq === worker.claimSeq) {
-              writeJson(response, 200, { claim: worker.claimResult });
-              return;
-            }
-            // A straggler from a superseded op. Refused WITHOUT allocating:
-            // answering it would hand out a turn nobody is waiting for.
-            if (seq < worker.claimSeq) throw new HttpError(409, "conflict", "claim sequence superseded");
-            if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
-            // The claim itself is synchronous and under the state lock;
-            // attaching managed OAuth bearers is a network call.
-            const claimed = store.claimNextTurn(workerId);
-            const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
-            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
-            worker.claimSeq = seq;
-            worker.claimResult = authorized;
-            writeJson(response, 200, { claim: authorized });
-          } finally {
-            release();
-          }
+          writeJson(response, 200, await execution.claimTurn(workerId, input.claimSeq as number));
         }
         return;
       }
@@ -2833,18 +2841,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         const input = await body(request);
         const claimToken = stringValue(input.claimToken, "claim token")!;
         if (turn.action === "running") {
-          writeJson(response, 200, { turn: store.markRunning(turn.sessionId, turn.runId, claimToken) });
+          writeJson(response, 200, await execution.markTurnRunning(turn.sessionId, turn.runId, claimToken));
         } else if (turn.action === "steer-ack") {
           // The runId in the path is the PROMOTED turn; the claim token proves
           // the worker holds the running turn it was steered into.
-          writeJson(response, 200, { turn: store.ackSteer(turn.sessionId, turn.runId, claimToken) });
+          writeJson(response, 200, await execution.ackSteer(turn.sessionId, turn.runId, claimToken));
         } else if (turn.action === "request") {
           const parsed = RequestOpenInput.safeParse(input);
           if (!parsed.success) throw new HttpError(400, "invalid_request", "request payload is invalid");
           writeJson(
             response,
             200,
-            store.openRequest(turn.sessionId, turn.runId, parsed.data.claimToken, {
+            await execution.openRequest(turn.sessionId, turn.runId, parsed.data.claimToken, {
               requestId: parsed.data.requestId,
               kind: parsed.data.kind,
               detail: parsed.data.detail,
@@ -2859,15 +2867,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           // The store re-validates against the contract schema. This only
           // rejects a shape that is not even an array, so the error names the
           // request rather than the first malformed element inside it.
-          writeJson(response, 200, store.ingestObservations(turn.sessionId, turn.runId, claimToken, input.observations));
+          writeJson(response, 200, await execution.reportObservations(turn.sessionId, turn.runId, claimToken, input.observations));
         } else if (turn.action === "complete") {
-          writeJson(response, 200, {
-            turn: store.completeTurn(turn.sessionId, turn.runId, claimToken, {
+          writeJson(response, 200, await execution.completeTurn(turn.sessionId, turn.runId, claimToken, {
               text: stringValue(input.text, "text")!,
               providerSessionId: stringValue(input.providerSessionId, "provider session id", true),
               usage: input.usage as never,
-            }),
-          });
+            }));
         } else {
           // FROM THE CONTRACT'S LIST, not a hand-written copy of it. This was
           // one of three places spelling the same codes out, and adding
@@ -2878,9 +2884,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             throw new HttpError(400, "invalid_request", "failure code is invalid");
           }
           const code = parsedCode.data;
-          writeJson(response, 200, {
-            turn: store.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }),
-          });
+          writeJson(response, 200, await execution.failTurn(turn.sessionId, turn.runId, claimToken, { code, message: stringValue(input.message, "failure message")! }));
         }
         return;
       }
@@ -3372,7 +3376,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const parsed = ProviderTurnOpenInput.safeParse(await body(request));
           if (!parsed.success) throw new HttpError(400, "invalid_request", "provider turn payload is invalid");
           activeWorker(parsed.data.workerId);
-          writeJson(response, 200, { turn: store.openProviderTurn(session.sessionId, parsed.data) });
+          writeJson(response, 200, await execution.openProviderTurn(session.sessionId, parsed.data));
           return;
         }
         // Task reports between turns — no claim, worker-authenticated.
@@ -3380,7 +3384,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const parsed = SessionTaskReport.safeParse(await body(request));
           if (!parsed.success) throw new HttpError(400, "invalid_request", "task report payload is invalid");
           activeWorker(parsed.data.workerId);
-          writeJson(response, 200, store.reportSessionTasks(session.sessionId, parsed.data.workerId, parsed.data.observations));
+          writeJson(response, 200, await execution.reportSessionTasks(session.sessionId, parsed.data.workerId, parsed.data.observations));
           return;
         }
         // The "N tasks still working" chip's Stop. Names no turn — a background
@@ -3448,10 +3452,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     store.recover();
     writeDiscovery(store, discovery);
 
-    // The embedded worker starts AFTER discovery is published, because it
-    // connects through the same discovery document every other client uses
-    // rather than through a private in-process shortcut. That keeps one code
-    // path for claim/heartbeat/observe instead of two that can diverge.
+    // Lifecycle operations use the same execution port as HTTP handlers,
+    // directly in process. Tool capability calls retain the authenticated API.
     let embedded: { workerId: string; stop(): Promise<void> } | undefined;
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
@@ -3526,14 +3528,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const sessionsSocket = sessionsRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
-          const client = new EngineClient(discovery);
-          const register = client.registerWorker.bind(client);
-          client.registerWorker = async (id) => {
-            const result = await register(id);
+          return withDirectExecution(new EngineClient(discovery), { ...execution, registerWorker: async (id) => {
+            const result = await execution.registerWorker(id);
             embeddedRegistration = workers.get(id);
             return result;
-          };
-          return client;
+          } }, (error) => {
+            const normalized = errorFor(error);
+            return new EngineClientError(normalized.code, normalized.message, normalized.status);
+          });
         },
         createWorker: async (client, onConnectionLost) => {
           generation += 1;

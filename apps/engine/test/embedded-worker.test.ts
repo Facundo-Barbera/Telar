@@ -5,7 +5,7 @@
  * on its own": start it, submit a turn, and the turn executes — with no second
  * process and no client attached.
  */
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -80,9 +80,7 @@ test("without an embedded worker a lone daemon still refuses turns, and says why
   expect(daemon.worker).toBeUndefined();
 });
 
-test("an embedded worker registers through discovery, like every other client", async () => {
-  // Not through a private in-process shortcut: one code path for
-  // claim/heartbeat/observe rather than two that can diverge.
+test("an embedded worker registration is visible through discovery", async () => {
   const daemon = await startEngine({
     engineRoot: root(),
     workerLeaseMs: 2_000,
@@ -320,4 +318,29 @@ test("a real event-loop stall preserves the embedded generation and streamed sna
   expect(remounted.items.find(i => i.id === "partial")?.streamed).toBe("Preserve this prefix");
   finish();
   await eventually(async () => expect((await client.session("session_one")).turns[0]?.state).toBe("completed"));
+});
+
+
+test("embedded execution does not depend on the HTTP lifecycle transport", async () => {
+  const methods = ["registerWorker", "workerHeartbeat", "claimTurn", "markTurnRunning", "reportObservations", "completeTurn"] as const;
+  const spies = methods.map((method) => spyOn(EngineClient.prototype, method).mockImplementation(() => {
+    throw new Error("HTTP lifecycle transport must not run for embedded execution");
+  }));
+  try {
+    const daemon = await startEngine({ engineRoot: root(), embeddedWorker: {
+      pollMs: 10,
+      createDriver: () => ({ run: async ({ onObservations }) => {
+        await onObservations([{ kind: "item.started", item: { id: "i_direct", detail: { type: "assistant_message", text: "" } } }]);
+        return { text: "direct" };
+      } }),
+    } });
+    daemons.push(daemon);
+    daemon.store.registerProject({ id: "project_direct", name: "Direct", root: "/tmp" });
+    daemon.store.createSession({ id: "session_direct", projectId: "project_direct" });
+    daemon.store.submitTurn("session_direct", { runId: "run_direct", input: "go" });
+    await eventually(() => expect(daemon.store.turns("session_direct")[0]).toMatchObject({ state: "completed", resultText: "direct" }));
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
 });

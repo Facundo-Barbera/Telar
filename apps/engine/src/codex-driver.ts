@@ -52,7 +52,7 @@ import { claimHasComputerUse } from "./computer-use";
 import { framedSteerText, steerRowTitle } from "./attribution";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
-import { normalizeOutcome, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./driver";
+import { normalizeOutcome, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./provider-contract";
 
 /**
  * The posture a thread runs under.
