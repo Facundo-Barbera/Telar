@@ -38,7 +38,11 @@ import { INITIAL_TURNS, hydrateSession, loadOlderTurns, mergeRows, tailSession }
 import { LOCAL_HOST, saveSnapshot, snapshotKey, snapshotStore } from "@/lib/snapshot-cache";
 import { decideStale } from "@/lib/stale-state";
 import { Composer } from "./composer";
-import { ActivityGroup, LiveActivity, Marker, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
+// `sessionWakeLabel` lives in ./transcript because BOTH surfaces name a wake
+// and the import only runs one way (cockpit → transcript). A wake that landed
+// mid-turn is a transcript row; the same wake landing on an idle session is a
+// turn header here. One vocabulary, or the two spellings drift apart.
+import { ActivityGroup, LiveActivity, Marker, sessionWakeLabel, TranscriptItem, turnActivity, WorkingIndicator } from "./transcript";
 import { browserPanelTab, browserTabId, describeBrowserStart, filePanelTabPath, isPanelTab, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, migratePanelTab, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "./right-panel";
 import { desktopBrowserBridge } from "./browser-live";
 import { openLinksInSessionBrowser } from "@/lib/link-policy";
@@ -515,23 +519,6 @@ function wakeUpLabel(task: JournalTask | undefined): { verb: string; Icon: typeo
       return { verb: `${subject} was stopped`, Icon };
     default:
       return { verb: `${subject} reported`, Icon };
-  }
-}
-
-/** A wake from ANOTHER SESSION — the engine queued it because a peer this
- *  one subscribed to did something. The verb names the happening; the label
- *  names the peer by its id's tail, since the wake text itself carries the
- *  title on expand. */
-function sessionWakeLabel(reason: NonNullable<JournalTurn["wakeReason"]>): { verb: string; Icon: typeof ClockIcon } {
-  switch (reason.kind) {
-    case "turn_completed":
-      return { verb: "Session finished a turn", Icon: BotIcon };
-    case "turn_failed":
-      return { verb: "Session failed a turn", Icon: BotIcon };
-    case "turn_stopped":
-      return { verb: "Session was stopped", Icon: BotIcon };
-    case "request_opened":
-      return { verb: "Session asked a question", Icon: BotIcon };
   }
 }
 

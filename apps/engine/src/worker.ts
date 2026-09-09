@@ -692,6 +692,7 @@ export class EngineWorker {
             text: delivery.text,
             ...(delivery.attachments?.length ? { attachments: delivery.attachments } : {}),
             ...(delivery.sender ? { sender: delivery.sender } : {}),
+            ...(delivery.wakeReason ? { wakeReason: delivery.wakeReason } : {}),
           })
         )
           continue;
@@ -824,8 +825,10 @@ export class EngineWorker {
   private async execute(claim: WorkerClaim): Promise<void> {
     const { sessionId, projectRoot: cwd, resumeCursor: providerSessionId, driver: driverKind, model } = claim;
     const { runId } = claim.turn;
-    // An agent's message reaches the provider framed as a peer's, never as
-    // the person's words — see ./attribution.ts.
+    // An agent's message reaches the provider framed as a peer's and a wake as
+    // the engine's own notice, never as the person's words — and a wake that
+    // opens its own turn here is framed exactly as one steered mid-turn is.
+    // See ./attribution.ts.
     const prompt = framedTurnInput(claim.turn);
     const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();

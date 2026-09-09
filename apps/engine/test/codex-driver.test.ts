@@ -786,6 +786,26 @@ test("a steered message rides turn/steer with the expected turn id, and is journ
   expect(row?.kind === "item.started" && row.item.detail.type === "user_message" && row.item.detail.text).toBe("change course");
 });
 
+test("a steered WAKE rides turn/steer framed as the engine's notice, and its row is a wake — not the person's (#194)", async () => {
+  // The Codex half of the same seam the Claude driver test covers: both
+  // providers take a mid-turn message on the channel that is otherwise the
+  // human's, so both must be told when the words are the engine's.
+  const steer = new SteerMailbox();
+  const { result, observations } = runTurn("steer", { steer });
+  const wakeReason = { kind: "request_opened" as const, sessionId: "session_child", runId: "run_child", requestId: "req_1" };
+  steer.push({ text: "[wake: waiting] Session session_child — is WAITING on a request", wakeReason });
+  await expect(result).resolves.toMatchObject({ text: "steered" });
+
+  const input = sent("turn/steer") as { input: Array<{ type: string; text?: string }> };
+  const text = input.input.find((block) => block.type === "text")!.text!;
+  expect(text).toStartWith("[engine wake · request_opened · session session_child]");
+  expect(text).toEndWith("is WAITING on a request");
+
+  const row = started(observations).find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item).toMatchObject({ title: "Woken by a session", detail: { type: "user_message", wakeReason } });
+  expect(row?.kind === "item.started" && (row.item.detail as { sender?: unknown }).sender).toBeUndefined();
+});
+
 test("the app-server's requestUserInput becomes a user_input request, and the answers ride back by question id", async () => {
   // The SAME contract shape the Claude driver's AskUserQuestion arm opens, so
   // the cockpit's question drawer serves both providers. The wire reply maps

@@ -252,6 +252,52 @@ describe("a message another agent sent is labelled as an agent's, never the pers
   });
 });
 
+describe("a wake is a wake wherever it lands — never the person's bubble (#194)", () => {
+  test("both surfaces name a wake with ONE vocabulary", async () => {
+    // The label moved into ./transcript precisely so the mid-turn row and the
+    // idle turn header cannot drift into two spellings of the same happening.
+    const { sessionWakeLabel } = await import("./transcript");
+    expect(sessionWakeLabel({ kind: "turn_completed", sessionId: "s" }).verb).toBe("Session finished a turn");
+    expect(sessionWakeLabel({ kind: "turn_failed", sessionId: "s" }).verb).toBe("Session failed a turn");
+    expect(sessionWakeLabel({ kind: "turn_stopped", sessionId: "s" }).verb).toBe("Session was stopped");
+    expect(sessionWakeLabel({ kind: "request_opened", sessionId: "s" }).verb).toBe("Session asked a question");
+  });
+
+  test("the mid-turn row branches on the STRUCTURED stamp, not on the words", () => {
+    /**
+     * ASSERTED AS SOURCE TEXT for the reason the draft tests above are: there
+     * is no DOM harness here, and the claim is about WHICH FIELD decides. A
+     * renderer that classified on the `[wake: …]` prefix would pass a render
+     * test and still draw a person's own "[wake: …]" as a wake row — and would
+     * silently regress the moment the wake wording changed.
+     */
+    const source = fs.readFileSync(fileURLToPath(new URL("./transcript.tsx", import.meta.url)), "utf8");
+    const row = source.slice(source.indexOf("function SteeredMessageRow("), source.indexOf("function PlotRow("));
+    // The wake branch is taken from the stamp, and taken FIRST — before the
+    // sender branch and before the person's bubble.
+    const wake = row.indexOf("if (wakeReason) return <SteeredWakeRow");
+    expect(wake).toBeGreaterThan(-1);
+    expect(wake).toBeLessThan(row.indexOf("if (sender) {"));
+    // And nothing in the row reads the wake's own text to decide anything.
+    // Comments stripped first: the prose here NAMES `[wake: …]` precisely to
+    // say it is not what the branch reads, and matching that would assert the
+    // opposite of the rule.
+    const code = row.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toContain("[wake");
+  });
+
+  test("the journal keeps a steered wake's stamp on the row the transcript reads", async () => {
+    const { projectJournal } = await import("@/lib/engine/journal");
+    const wakeReason = { kind: "turn_completed" as const, sessionId: "session_child", runId: "run_child" };
+    const [turn] = projectJournal(
+      [{ runId: "run_host", sessionId: "s1", sequence: 1, input: "work", state: "running", acceptedAt: 1, updatedAt: 1 }],
+      [{ id: "i1", sessionId: "s1", runId: "run_host", status: "completed", detail: { type: "user_message", text: "[wake: completed] …", wakeReason }, startedAt: 2 }],
+      [],
+    );
+    expect(turn!.items[0]).toMatchObject({ detail: { type: "user_message", wakeReason } });
+  });
+});
+
 describe("a held message is not a running one", () => {
   test("the journal carries why a turn is held, and a paused hold is told apart from a restart's", async () => {
     const { projectJournal } = await import("@/lib/engine/journal");
