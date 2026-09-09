@@ -212,8 +212,10 @@ const SETTLE_ATTEMPTS = 5;
 const SETTLE_BACKOFF_MS = 250;
 /** Ceiling on one settle attempt, so an unleased engine cannot hang a turn. */
 const SETTLE_TIMEOUT_MS = 10_000;
-/** Retained rounds before a settlement is dropped as explicitly ambiguous. */
-const SETTLE_MAX_ROUNDS = 20;
+/** Retry spacing for a retained settlement: capped exponential, so a dead
+ *  endpoint is polled at a bounded rate rather than every tick. */
+const SETTLE_RETRY_MIN_MS = 250;
+const SETTLE_RETRY_MAX_MS = 30_000;
 
 /** A worker is an executor only: every observable lifecycle event travels back through the engine API. */
 export class EngineWorker {
@@ -335,8 +337,10 @@ export class EngineWorker {
    *  every healthy tick — see `drainSettlements`. */
   private readonly pendingSettlements = new Map<
     string,
-    { sessionId: string; runId: string; claimToken: string; operation: "completeTurn" | "failTurn"; send: (signal: AbortSignal) => Promise<unknown>; since: number; rounds: number }
+    { sessionId: string; runId: string; claimToken: string; operation: "completeTurn" | "failTurn"; send: (signal: AbortSignal) => Promise<unknown>; since: number; rounds: number; nextAttemptAt: number }
   >();
+  /** One drain at a time, and never on the tick's own await chain. */
+  private draining = false;
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -547,11 +551,23 @@ export class EngineWorker {
         if (!timedOut) this.noteConnectivityFailure(error);
       }
     }
-    // RETAINED, not merely logged: `drainSettlements` retries it on every
-    // healthy heartbeat until the engine holds an outcome for this turn.
+    /**
+     * RETAINED UNTIL THE ENGINE HOLDS AN OUTCOME. Never dropped on a retry
+     * count: forgetting an unresolved turn is the defect, and doing it after
+     * twenty rounds is the same defect as doing it after five. The next attempt
+     * is spaced by a capped exponential so a dead endpoint is polled at a
+     * bounded rate, not every tick.
+     */
     const held = this.pendingSettlements.get(entry.runId);
-    this.pendingSettlements.set(entry.runId, { ...entry, since: held?.since ?? this.now(), rounds: (held?.rounds ?? 0) + 1 });
-    this.diagnose({ event: "turn_settlement_pending", operation: entry.operation, outageMs: this.now() - (held?.since ?? this.now()) });
+    const rounds = (held?.rounds ?? 0) + 1;
+    const at = this.now();
+    this.pendingSettlements.set(entry.runId, {
+      ...entry,
+      since: held?.since ?? at,
+      rounds,
+      nextAttemptAt: at + Math.min(SETTLE_RETRY_MAX_MS, SETTLE_RETRY_MIN_MS * 2 ** Math.min(rounds, 12)),
+    });
+    if (!held) this.diagnose({ event: "turn_settlement_pending", operation: entry.operation });
     return "pending";
   }
 
@@ -563,24 +579,32 @@ export class EngineWorker {
   }
 
   /**
-   * Retry every retained settlement — one attempt each, on a healthy tick.
+   * Retry retained settlements, OFF the tick's await chain.
    *
-   * This is the recovery path a stderr line was not: without it a turn whose
-   * endpoint failed five times sat `running` in the engine's journal for as
-   * long as the app stayed up. A settlement still unheld after
-   * `SETTLE_MAX_ROUNDS` is dropped and reported as explicitly ambiguous — the
-   * one honest end when the engine will not take an outcome.
+   * Awaiting this inside `tick` was itself an outage generator: three hung
+   * endpoints at ten seconds each starve a thirty-second lease, the watchdog
+   * calls the engine lost, and every healthy session dies — the original
+   * incident, recreated by its own fix. So the tick starts a drain and moves
+   * on; heartbeats, cancellations and steers are never behind a settlement.
+   * One drain at a time, and only entries whose backoff has elapsed.
    */
-  private async drainSettlements(): Promise<void> {
-    for (const entry of [...this.pendingSettlements.values()]) {
-      if (this.stopped || this.connectionLost) return;
-      if (entry.rounds >= SETTLE_MAX_ROUNDS) {
-        this.pendingSettlements.delete(entry.runId);
-        this.diagnose({ event: "turn_settlement_abandoned", operation: entry.operation, outageMs: this.now() - entry.since });
-        continue;
+  private startDrain(): void {
+    if (this.draining || this.pendingSettlements.size === 0 || this.stopped || this.connectionLost) return;
+    this.draining = true;
+    void (async () => {
+      try {
+        for (const entry of [...this.pendingSettlements.values()]) {
+          if (this.stopped || this.connectionLost) return;
+          if (this.now() < entry.nextAttemptAt) continue;
+          await this.settle(entry, 1);
+        }
+      } catch {
+        // A settle that threw something non-connectivity is the turn's own
+        // problem; the entry stays retained for the next drain.
+      } finally {
+        this.draining = false;
       }
-      await this.settle(entry, 1);
-    }
+    })();
   }
 
   /** Injectable so a fake-clock test never sleeps. */
@@ -614,8 +638,8 @@ export class EngineWorker {
         this.outageReported = false;
       }
       // The engine is answering: push any turn whose outcome it never
-      // acknowledged, before doing anything new.
-      if (this.pendingSettlements.size > 0) await this.drainSettlements();
+      // acknowledged — started, NOT awaited. See `startDrain`.
+      this.startDrain();
       for (const cancellation of status.cancel) this.active.get(cancellation.claimToken)?.abort(new Error("turn stopped"));
       // Settle anything a human answered since the last beat. This must happen
       // even while a turn is active — the turn is what is waiting. KEYED BY

@@ -4,6 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, EngineClientError, sanitizeTransportCause } from "@telar/engine-client";
 import { startEngine } from "../src/daemon";
+
+/** Wait for the store to actually hold a terminal state — the drain runs off
+ *  the tick, so a tick returning is not the settlement landing. */
+async function settled(client: EngineClient, sessionId: string): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if ((await client.session(sessionId)).turns[0]?.state !== "running") return;
+    await Bun.sleep(5);
+  }
+}
 import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
@@ -33,6 +42,8 @@ const idle = { cancel: [], resolved: [], steer: [], stopTask: [] };
  * than a threshold invented in the worker.
  */
 const HEARTBEAT_INTERVAL_MS = 30;
+/** Past the worker's capped retry spacing, so a drain is due. */
+const SETTLE_SPACING_MS = 31_000;
 const LEASE_MS = HEARTBEAT_INTERVAL_MS * 3;
 
 type Fake = {
@@ -643,8 +654,10 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
     };
 
     const diagnostics: Record<string, unknown>[] = [];
+    const clock = fakeClock();
     const worker = new EngineWorker({
       client,
+      now: clock.now,
       workerId: "worker_late",
       driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
       pollMs: 60_000,
@@ -661,8 +674,12 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
     expect(diagnostics.some((line) => line.event === "turn_settlement_pending")).toBeTrue();
     expect((await client.session(session.session.id)).turns[0]?.state).toBe("running");
 
-    // A later healthy tick pushes it — no provider re-run, no new claim.
+    // A later healthy tick pushes it — no provider re-run, no new claim. The
+    // drain runs off the tick, so it is awaited by settling rather than by the
+    // tick returning.
+    clock.advance(SETTLE_SPACING_MS);
     await worker.tick();
+    await settled(client, session.session.id);
     const turn = (await client.session(session.session.id)).turns[0];
     expect(turn?.state).toBe("completed");
     expect(turn?.failure).toBeUndefined();
@@ -674,30 +691,6 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
     fs.rmSync(home, { recursive: true, force: true });
   }
 }, 20_000);
-
-test("a settlement the engine will never take is dropped as EXPLICITLY ambiguous, not retried forever", async () => {
-  const clock = fakeClock();
-  const fake = fakeClient({ register: { heartbeatIntervalMs: 10_000 } });
-  const diagnostics: Record<string, unknown>[] = [];
-  let lost = 0;
-  let attempts = 0;
-  fake.client.failTurn = async () => {
-    attempts += 1;
-    throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "failTurn", transport: "TypeError:ECONNRESET" });
-  };
-  const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock, diagnostics });
-  await worker.start();
-  const settle = (worker as unknown as { settle: (e: Record<string, unknown>) => Promise<string> }).settle.bind(worker);
-  await settle({ sessionId: "s", runId: "run_x", claimToken: "t", operation: "failTurn", send: () => (fake.client.failTurn as () => Promise<unknown>)() });
-  // Heartbeats keep succeeding, so the connection is never taken down…
-  for (let round = 0; round < 25; round += 1) await worker.tick();
-  expect(lost).toBe(0);
-  // …and the settlement is bounded: dropped with an explicit ambiguity event.
-  expect(diagnostics.some((line) => line.event === "turn_settlement_abandoned")).toBeTrue();
-  expect((worker as unknown as { pendingSettlements: Map<string, unknown> }).pendingSettlements.size).toBe(0);
-  expect(attempts).toBeLessThan(60);
-  await worker.stop();
-});
 
 test("a settle that hangs is bounded, and a stop inside the backoff sends nothing more", async () => {
   const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
@@ -774,3 +767,131 @@ test("a REVOKED pre-settlement fault revokes the worker even when the settle the
     fs.rmSync(home, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("a settlement is NEVER forgotten on a retry count: >20 rounds, then the endpoint recovers", async () => {
+  /**
+   * The defect this pins: dropping a retained settlement after N rounds is the
+   * same bug as dropping it after five — the engine keeps a `running` turn and
+   * the worker has forgotten the outcome it holds. Retention is bounded by the
+   * lease and by a capped backoff, never by a round count.
+   *
+   * Real daemon and store. The endpoint refuses for far more rounds than any
+   * previous cap, then recovers; the turn must resolve with its ORIGINAL
+   * result, asserted against the STORE, not against a diagnostic name.
+   */
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-forever-"));
+  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    const session = await client.createSession({ id: "session_one", projectId: project.project.id });
+    // Refuses until the test says otherwise — a count would let the turn settle
+    // inside the retention loop and prove nothing about forgetting.
+    let refusing = true;
+    let refusals = 0;
+    const real = client.completeTurn.bind(client);
+    (client as unknown as { completeTurn: typeof client.completeTurn }).completeTurn = async (...args) => {
+      if (refusing) {
+        refusals += 1;
+        throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "completeTurn", transport: "TypeError:ECONNRESET" });
+      }
+      return real(...args);
+    };
+    const clock = fakeClock();
+    const worker = new EngineWorker({
+      client,
+      now: clock.now,
+      workerId: "worker_forever",
+      driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
+      pollMs: 60_000,
+      pause: async () => {},
+      onDiagnostic: () => {},
+    });
+    await worker.start();
+    await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
+    await worker.tick();
+
+    // Far past any previous cap. Heartbeats stay healthy throughout.
+    for (let round = 0; round < 40; round += 1) {
+      clock.advance(SETTLE_SPACING_MS);
+      await worker.tick();
+      await Bun.sleep(1);
+    }
+    // Still remembered after far more rounds than any previous cap — the point.
+    expect(refusals).toBeGreaterThan(20);
+    expect((worker as unknown as { pendingSettlements: Map<string, unknown> }).pendingSettlements.size).toBe(1);
+    expect((await client.session(session.session.id)).turns[0]?.state).toBe("running");
+
+    refusing = false;
+
+    for (let round = 0; round < 5 && (await client.session(session.session.id)).turns[0]?.state !== "completed"; round += 1) {
+      clock.advance(SETTLE_SPACING_MS);
+      await worker.tick();
+      await Bun.sleep(5);
+    }
+    // THE STORE, not a diagnostic: the original outcome, with its own usage.
+    const turn = (await client.session(session.session.id)).turns[0];
+    expect(turn?.state).toBe("completed");
+    expect(turn?.failure).toBeUndefined();
+    expect((worker as unknown as { pendingSettlements: Map<string, unknown> }).pendingSettlements.size).toBe(0);
+    await worker.stop();
+  } finally {
+    await daemon.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("hung settlements never starve the heartbeat: no global loss, cancellations still delivered", async () => {
+  /**
+   * The defect this pins: awaiting the drain inside `tick` meant three hung
+   * endpoints at ten seconds each could starve a thirty-second lease, the
+   * watchdog would call the engine lost, and every healthy session would die —
+   * the original incident recreated by its own fix.
+   */
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  let lost = 0;
+  const cancels: string[] = [];
+  // Three settlements that never answer until their own signal fires.
+  fake.client.failTurn = async (..._args: unknown[]) =>
+    new Promise((_resolve, reject) => {
+      (_args[4] as AbortSignal | undefined)?.addEventListener("abort", () => reject(new DOMException("timed out", "TimeoutError")), { once: true });
+    });
+  const worker = workerFor(fake, () => void (lost += 1), { count: 0 });
+  await worker.start();
+  const pending = (worker as unknown as { pendingSettlements: Map<string, unknown> }).pendingSettlements;
+  for (const runId of ["run_a", "run_b", "run_c"]) {
+    pending.set(runId, {
+      sessionId: "s",
+      runId,
+      claimToken: "t",
+      operation: "failTurn",
+      send: (signal: AbortSignal) => (fake.client.failTurn as (...a: unknown[]) => Promise<unknown>)("s", runId, "t", {}, signal),
+      since: Date.now(),
+      rounds: 0,
+      nextAttemptAt: 0,
+    });
+  }
+
+  // A cancellation arrives while all three settlements are hung.
+  const original = fake.client.workerHeartbeat as () => Promise<unknown>;
+  let served = 0;
+  fake.client.workerHeartbeat = async () => {
+    served += 1;
+    await original();
+    return served === 2 ? { ...idle, cancel: [{ sessionId: "s", runId: "run_z", claimToken: "claim_z" }] } : idle;
+  };
+  const seen = new AbortController();
+  (worker as unknown as { active: Map<string, AbortController> }).active.set("claim_z", seen);
+  seen.signal.addEventListener("abort", () => cancels.push("run_z"), { once: true });
+
+  // Ticks return promptly rather than queueing behind the hung drains.
+  const before = Date.now();
+  await worker.tick();
+  await worker.tick();
+  const elapsed = Date.now() - before;
+  expect(elapsed).toBeLessThan(1_000);
+  // The cancellation was delivered, and no session was lost.
+  expect(cancels).toEqual(["run_z"]);
+  expect(lost).toBe(0);
+  await worker.stop();
+}, 30_000);
