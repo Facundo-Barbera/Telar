@@ -612,51 +612,165 @@ test("a lost settlement response is retried as ITSELF, against the real engine s
   }
 }, 20_000);
 
-test("a settlement refused by revocation fails closed at once, and never spins", async () => {
-  // Revocation is the engine's verdict on this worker: there is nothing to
-  // retry, and the old loop kept going without even reporting the loss.
-  const clock = fakeClock();
-  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
-  let attempts = 0;
-  let lost = 0;
-  fake.client.failTurn = async () => {
-    attempts += 1;
-    throw new EngineClientError("worker_unavailable", "unknown worker", 503, { operation: "failTurn" });
-  };
-  const diagnostics: Record<string, unknown>[] = [];
-  const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock, diagnostics });
-  await worker.start();
-  const settle = (worker as unknown as { settle: (op: string, send: () => Promise<unknown>) => Promise<string> }).settle.bind(worker);
-  const outcome = await settle("failTurn", () => (fake.client.failTurn as () => Promise<unknown>)());
-  expect(attempts).toBe(1);
-  expect(outcome).toBe("uncertain");
-  expect(lost).toBe(1);
-  expect(diagnostics.some((line) => line.event === "turn_unsettled" && line.code === "worker_unavailable")).toBeTrue();
-  await worker.stop();
-});
 
-test("a settlement endpoint that keeps failing is bounded per turn and spares healthy sessions", async () => {
+test("five failures BEFORE commit, then a recovered endpoint: the turn resolves with its ORIGINAL result", async () => {
   /**
-   * An endpoint failing while heartbeats succeed is not evidence the engine is
-   * gone. Exhaustion records the turn as uncertain; it must not take the
-   * connection — and with it every other session's work — down with it.
+   * THE DEFECT THIS PINS, and the one the previous round only logged: after the
+   * inline attempts were exhausted the settlement was dropped, the `finally`
+   * released the turn, and a healthy heartbeat meant nothing ever retried it —
+   * so the engine's journal held `running` for as long as the app stayed up.
+   *
+   * Real daemon, real store, temp home. The first five `completeTurn` attempts
+   * fail BEFORE reaching the engine (nothing is committed), heartbeats keep
+   * succeeding throughout, and the endpoint then recovers.
    */
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-settle-late-"));
+  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    const session = await client.createSession({ id: "session_one", projectId: project.project.id });
+
+    let refusals = 0;
+    const real = client.completeTurn.bind(client);
+    (client as unknown as { completeTurn: typeof client.completeTurn }).completeTurn = async (...args) => {
+      if (refusals < 5) {
+        refusals += 1;
+        // Never reaches the engine: no commit, so no conflict later.
+        throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "completeTurn", transport: "TypeError:ECONNRESET" });
+      }
+      return real(...args);
+    };
+
+    const diagnostics: Record<string, unknown>[] = [];
+    const worker = new EngineWorker({
+      client,
+      workerId: "worker_late",
+      driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
+      pollMs: 60_000,
+      pause: async () => {},
+      onDiagnostic: (fields) => void diagnostics.push(fields),
+    });
+    await worker.start();
+    await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
+    await worker.tick();
+
+    // All five inline attempts were spent and the turn is NOT settled yet —
+    // but it is retained rather than abandoned.
+    expect(refusals).toBe(5);
+    expect(diagnostics.some((line) => line.event === "turn_settlement_pending")).toBeTrue();
+    expect((await client.session(session.session.id)).turns[0]?.state).toBe("running");
+
+    // A later healthy tick pushes it — no provider re-run, no new claim.
+    await worker.tick();
+    const turn = (await client.session(session.session.id)).turns[0];
+    expect(turn?.state).toBe("completed");
+    expect(turn?.failure).toBeUndefined();
+    // The ORIGINAL outcome, not a substituted one.
+    expect(diagnostics.some((line) => line.event === "turn_settled_late")).toBeTrue();
+    await worker.stop();
+  } finally {
+    await daemon.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("a settlement the engine will never take is dropped as EXPLICITLY ambiguous, not retried forever", async () => {
   const clock = fakeClock();
-  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
-  let attempts = 0;
+  const fake = fakeClient({ register: { heartbeatIntervalMs: 10_000 } });
+  const diagnostics: Record<string, unknown>[] = [];
   let lost = 0;
+  let attempts = 0;
   fake.client.failTurn = async () => {
     attempts += 1;
     throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, { operation: "failTurn", transport: "TypeError:ECONNRESET" });
   };
-  const diagnostics: Record<string, unknown>[] = [];
   const worker = workerFor(fake, () => void (lost += 1), { count: 0 }, { clock, diagnostics });
   await worker.start();
-  const settle = (worker as unknown as { settle: (op: string, send: () => Promise<unknown>) => Promise<string> }).settle.bind(worker);
-  expect(await settle("failTurn", () => (fake.client.failTurn as () => Promise<unknown>)())).toBe("uncertain");
-  // Bounded, and the connection survives: heartbeats are still answering.
-  expect(attempts).toBe(5);
+  const settle = (worker as unknown as { settle: (e: Record<string, unknown>) => Promise<string> }).settle.bind(worker);
+  await settle({ sessionId: "s", runId: "run_x", claimToken: "t", operation: "failTurn", send: () => (fake.client.failTurn as () => Promise<unknown>)() });
+  // Heartbeats keep succeeding, so the connection is never taken down…
+  for (let round = 0; round < 25; round += 1) await worker.tick();
   expect(lost).toBe(0);
-  expect(diagnostics.some((line) => line.event === "turn_unsettled")).toBeTrue();
+  // …and the settlement is bounded: dropped with an explicit ambiguity event.
+  expect(diagnostics.some((line) => line.event === "turn_settlement_abandoned")).toBeTrue();
+  expect((worker as unknown as { pendingSettlements: Map<string, unknown> }).pendingSettlements.size).toBe(0);
+  expect(attempts).toBeLessThan(60);
   await worker.stop();
 });
+
+test("a settle that hangs is bounded, and a stop inside the backoff sends nothing more", async () => {
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  const diagnostics: Record<string, unknown>[] = [];
+  let sends = 0;
+  let aborted = 0;
+  fake.client.failTurn = async (..._args: unknown[]) => {
+    sends += 1;
+    const signal = _args[4] as AbortSignal | undefined;
+    return new Promise((_resolve, reject) => {
+      // Only the caller's own bound can end this.
+      signal?.addEventListener("abort", () => {
+        aborted += 1;
+        reject(new DOMException("timed out", "TimeoutError"));
+      }, { once: true });
+    });
+  };
+  const worker = workerFor(fake, () => undefined, { count: 0 }, { diagnostics });
+  await worker.start();
+  const settle = (worker as unknown as { settle: (e: Record<string, unknown>) => Promise<string> }).settle.bind(worker);
+  const running = settle({
+    sessionId: "s",
+    runId: "run_hang",
+    claimToken: "t",
+    operation: "failTurn",
+    send: (signal: AbortSignal) => (fake.client.failTurn as (...a: unknown[]) => Promise<unknown>)("s", "run_hang", "t", {}, signal),
+  });
+  // The stop lands while the settle is between attempts.
+  await Bun.sleep(5);
+  await worker.stop();
+  await running;
+  // Every attempt was bounded by its signal rather than hanging…
+  expect(aborted).toBeGreaterThan(0);
+  // …and the stop ended it: nowhere near the five inline attempts.
+  expect(sends).toBeLessThan(5);
+}, 30_000);
+
+test("a REVOKED pre-settlement fault revokes the worker even when the settle then succeeds", async () => {
+  /**
+   * The regression this pins: classifying only the settle's outcome let a
+   * successful `failTurn` bury an `engine_unauthorized` from `markTurnRunning`,
+   * so the worker carried on under a credential the engine had refused.
+   */
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-revoked-"));
+  const daemon = await startEngine({ engineRoot: home, workerLeaseMs: 60_000 });
+  try {
+    const client = new EngineClient(daemon.discovery);
+    const project = await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+    const session = await client.createSession({ id: "session_one", projectId: project.project.id });
+    (client as unknown as { markTurnRunning: () => Promise<unknown> }).markTurnRunning = async () => {
+      throw new EngineClientError("engine_unauthorized", "refused", 401, { operation: "markTurnRunning" });
+    };
+    const diagnostics: Record<string, unknown>[] = [];
+    let lost = 0;
+    const worker = new EngineWorker({
+      client,
+      workerId: "worker_revoked",
+      driver: { run: async () => ({ text: "" }) },
+      pollMs: 60_000,
+      pause: async () => {},
+      onConnectionLost: () => void (lost += 1),
+      onDiagnostic: (fields) => void diagnostics.push(fields),
+    });
+    await worker.start();
+    await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
+    await worker.tick();
+    // The ENGINE's verdict wins, and is recorded against the call that failed.
+    expect(lost).toBe(1);
+    const terminal = diagnostics.find((line) => line.event === "connection_lost");
+    expect(terminal).toMatchObject({ code: "engine_unauthorized", operation: "markTurnRunning" });
+    await worker.stop();
+  } finally {
+    await daemon.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}, 20_000);

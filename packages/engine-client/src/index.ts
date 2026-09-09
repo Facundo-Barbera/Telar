@@ -2159,16 +2159,23 @@ export class EngineClient {
     return this.request("DELETE", `/v2/subscriptions/${encodeURIComponent(subscriptionId)}`, input);
   }
 
+  /** `signal` bounds the settle: a terminal write that hangs must not park a
+   *  worker's turn indefinitely. Idempotent by claim token, so a bounded
+   *  attempt whose response is lost is safe to repeat. */
   completeTurn(
     sessionId: string,
     runId: string,
     claimToken: string,
     result: { text: string; providerSessionId?: string; usage?: UsageSnapshot },
+    signal?: AbortSignal,
   ): Promise<{ turn: Turn }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/complete`, {
-      claimToken,
-      ...result,
-    });
+    return this.request(
+      "POST",
+      `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/complete`,
+      { claimToken, ...result },
+      signal,
+      "completeTurn",
+    );
   }
 
   failTurn(
@@ -2176,11 +2183,15 @@ export class EngineClient {
     runId: string,
     claimToken: string,
     failure: { code: WorkerTurnFailureCode; message: string },
+    signal?: AbortSignal,
   ): Promise<{ turn: Turn }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/fail`, {
-      claimToken,
-      ...failure,
-    });
+    return this.request(
+      "POST",
+      `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/fail`,
+      { claimToken, ...failure },
+      signal,
+      "failTurn",
+    );
   }
 }
 
