@@ -42,6 +42,37 @@ async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000)
   throw last;
 }
 
+/**
+ * A BARRIER AT THE CLAIM PUMP'S BOUNDARIES, not a sleep.
+ *
+ * Claiming runs off the tick's await chain so a hung claim cannot hold
+ * cancellations, approvals and steers behind it — which means `await tick()` no
+ * longer implies the claim has been attempted. These tests are about what
+ * happens AT the claim/provider boundary, so they wait for that boundary
+ * explicitly. Nothing about what they assert changes.
+ */
+function claimBarrier() {
+  const seen: string[] = [];
+  let wake: (() => void) | undefined;
+  return {
+    seen,
+    onClaimPhase: (phase: string) => {
+      seen.push(phase);
+      if (phase === "idle") wake?.();
+    },
+    /** Resolves once the pump has finished a pass (or immediately if it has). */
+    async settled(): Promise<void> {
+      if (seen.includes("idle")) return;
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          wake = resolve;
+        }),
+        Bun.sleep(4_000),
+      ]);
+    },
+  };
+}
+
 async function setup(
   driver: TurnDriver,
   extras: { browserSocket?: BrowserToolSocket } = {},
@@ -798,10 +829,11 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   await client.createSession({ id: "session_one", projectId: "project_one" });
 
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  const barrier = claimBarrier();
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000, onClaimPhase: barrier.onClaimPhase });
   const realClaim = client.claimTurn.bind(client);
-  client.claimTurn = async (workerId: string) => {
-    const claimed = await realClaim(workerId);
+  client.claimTurn = async (workerId: string, claimSeq: number, signal?: AbortSignal) => {
+    const claimed = await realClaim(workerId, claimSeq, signal);
     // The quit lands here — after the engine has handed out the claim, before
     // this worker has done anything with it.
     if (claimed.claim) await worker.stop();
@@ -810,6 +842,11 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   await worker.start();
   await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   await worker.tick();
+  await barrier.settled();
+  // The pump saw the grant and then STOPPED: it never reached the boundary
+  // where a driver is constructed. That is the guarantee, stated directly.
+  expect(barrier.seen).toContain("granted");
+  expect(barrier.seen).not.toContain("starting");
 
   // No provider was spawned, and the turn is left exactly where the engine put
   // it: `claimed`. That is the safe state — `markTurnRunning` is ordered before
@@ -926,12 +963,13 @@ test("a claim already granted when the pause lands never reaches the driver: the
   const client = new EngineClient(daemon.discovery);
   await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   await client.createSession({ id: "session_one", projectId: "project_one" });
-  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000 });
+  const barrier = claimBarrier();
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver, pollMs: 60_000, onClaimPhase: barrier.onClaimPhase });
   workers.push(worker);
   const realClaim = client.claimTurn.bind(client);
   let pausedInFlight: Awaited<ReturnType<typeof client.pauseSession>> | undefined;
-  client.claimTurn = async (workerId: string) => {
-    const claimed = await realClaim(workerId);
+  client.claimTurn = async (workerId: string, claimSeq: number, signal?: AbortSignal) => {
+    const claimed = await realClaim(workerId, claimSeq, signal);
     // The daemon has granted the claim; the human's pause lands before the
     // worker has seen the response.
     if (claimed.claim && !pausedInFlight) pausedInFlight = await client.pauseSession("session_one");
@@ -941,6 +979,7 @@ test("a claim already granted when the pause lands never reaches the driver: the
   await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
   await client.submitTurn("session_one", { runId: "run_two", input: "Then this" });
   await worker.tick();
+  await barrier.settled();
   // The pause found the claimed turn and stopped it; the rest is held.
   expect(pausedInFlight).toMatchObject({ stopped: { runId: "run_one", state: "stopped" }, held: 1 });
   for (let i = 0; i < 4; i += 1) {

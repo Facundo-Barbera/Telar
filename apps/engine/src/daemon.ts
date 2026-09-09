@@ -31,6 +31,7 @@ import {
   type ProviderDriverKind,
   type RuntimeMode,
   type TurnSubmissionResult,
+  type WorkerClaim,
   type WorkerStatus,
 } from "@telar/engine-client";
 import { runCliUpdate, type CliUpdateRun } from "./cli-updates";
@@ -71,7 +72,28 @@ import type { GhRunner } from "./github";
 import type { AsyncGitRunner } from "./worktree";
 import type { DriverSelector } from "./worker";
 
-type RegisteredWorker = { workerId: string; registeredAt: number; heartbeatAt: number };
+/**
+ * `claimSeq` is a per-registration HIGH-WATERMARK, not a cache key.
+ *
+ * A claim whose response is lost must be repeatable without allocating a second
+ * turn, and a random request id cannot do that safely: A is delayed, its retry
+ * resolves, B replaces the record, and the original A finally arrives with an
+ * id nobody remembers — so it allocates again. An ordered sequence has no such
+ * window. Equal to the watermark returns the cached outcome (including a cached
+ * "nothing to claim"); older is refused without allocating; only the next
+ * number allocates, and only once the current op is definitive.
+ */
+type RegisteredWorker = {
+  workerId: string;
+  registeredAt: number;
+  heartbeatAt: number;
+  claimSeq: number;
+  claimResult: WorkerClaim | undefined;
+  /** Serialises check+claim+cache for this worker ACROSS AWAITS: the claim
+   *  branch authorizes MCP servers over the network before replying, and two
+   *  concurrent requests interleaving there would both allocate. */
+  claimBusy: Promise<void> | undefined;
+};
 
 export type EngineDaemonOptions = {
   engineRoot?: string;
@@ -2681,7 +2703,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         pruneWorkers();
         if (workers.has(workerId)) throw new HttpError(409, "conflict", "worker id is already registered");
         const at = now();
-        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at });
+        workers.set(workerId, { workerId, registeredAt: at, heartbeatAt: at, claimSeq: 0, claimResult: undefined, claimBusy: undefined });
         writeJson(response, 200, { worker: { workerId }, heartbeatIntervalMs: Math.max(50, Math.floor(workerLeaseMs / 3)) });
         return;
       }
@@ -2702,12 +2724,40 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           };
           writeJson(response, 200, status);
         } else {
-          // The claim itself is synchronous and under the state lock; attaching
-          // managed OAuth bearers is a network call, so it happens out here
-          // rather than stalling every other session's claim behind one slow
-          // authorization server.
-          const claimed = store.claimNextTurn(workerId);
-          writeJson(response, 200, { claim: claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined });
+          const input = await body(request);
+          const seq = input.claimSeq;
+          if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+            throw new HttpError(400, "invalid_request", "claim sequence must be a positive integer");
+          }
+          // One at a time per worker, so the authorize await below cannot let a
+          // duplicate interleave between the watermark check and the cache.
+          const previous = worker.claimBusy ?? Promise.resolve();
+          let release!: () => void;
+          worker.claimBusy = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await previous;
+          try {
+            // An already-answered sequence replays its outcome — never a second
+            // allocation, and `undefined` is a cached answer like any other.
+            if (seq === worker.claimSeq) {
+              writeJson(response, 200, { claim: worker.claimResult });
+              return;
+            }
+            // A straggler from a superseded op. Refused WITHOUT allocating:
+            // answering it would hand out a turn nobody is waiting for.
+            if (seq < worker.claimSeq) throw new HttpError(409, "conflict", "claim sequence superseded");
+            if (seq !== worker.claimSeq + 1) throw new HttpError(400, "invalid_request", "claim sequence out of order");
+            // The claim itself is synchronous and under the state lock;
+            // attaching managed OAuth bearers is a network call.
+            const claimed = store.claimNextTurn(workerId);
+            const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
+            worker.claimSeq = seq;
+            worker.claimResult = authorized;
+            writeJson(response, 200, { claim: authorized });
+          } finally {
+            release();
+          }
         }
         return;
       }
@@ -3439,6 +3489,14 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // A stopped/replaced generation must not leave an immortal entry,
             // nor clear the ownership of a later generation.
             if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
+            /**
+             * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
+             * exempt from. Two things follow: a late request carrying the dead
+             * worker id is refused rather than served (generation fencing), and
+             * any turn it held merely `claimed` is requeued instead of
+             * stranding the session — `claimed` proves no provider started.
+             */
+            if (workers.delete(ownedWorkerId)) store.recoverInactiveWorker(ownedWorkerId);
             // Forwarded, so a replaced generation's turns are told they were
             // replaced rather than that Telar shut down — see #208.
             await stop(reason);

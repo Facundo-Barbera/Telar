@@ -205,6 +205,13 @@ export type EngineWorkerOptions = {
   /** Injected clock and sleep, so a lease test drives time instead of waiting. */
   now?: () => number;
   pause?: (ms: number) => Promise<void>;
+  /**
+   * Claim-pump boundaries, for a test that needs a barrier rather than a sleep.
+   * `requested` before the call, `granted` once the engine answered, `starting`
+   * immediately before the driver is constructed — the last is the boundary a
+   * stop or pause must be observed BEFORE.
+   */
+  onClaimPhase?: (phase: "requested" | "granted" | "starting" | "idle") => void;
   /** Where sanitized connectivity diagnostics go. Defaults to stderr; see
    *  `diagnose`. Never receives a message, URL, header or token. */
   onDiagnostic?: (fields: { event: string; operation?: string; code?: string; status?: number; transport?: string; outageMs?: number }) => void;
@@ -282,6 +289,18 @@ export class EngineWorker {
    * ATTEMPTS is immune to both: none happen while suspended.
    */
   private heartbeatFailures = 0;
+  /**
+   * THE CLAIM HIGH-WATERMARK, and the op that has not resolved.
+   *
+   * `claimSeq` advances ONLY when an attempt is answered definitively. A
+   * timed-out or unreachable claim keeps `pendingClaimSeq`, so the retry sends
+   * the SAME number and the engine replays its outcome rather than allocating
+   * a second turn. Nothing is forgotten and nothing is duplicated.
+   */
+  private claimSeq = 0;
+  private pendingClaimSeq: number | undefined;
+  /** One claim pump at a time, and never on the tick's await chain. */
+  private claiming = false;
   /**
    * When the last acknowledged exchange with the engine STARTED — not when its
    * reply arrived, and not when a failure was noticed.
@@ -657,6 +676,70 @@ export class EngineWorker {
     })();
   }
 
+  /**
+   * Claim until the cap or the queue runs dry, off the tick's await chain.
+   *
+   * One claim per call is the engine's shape (`claimNextTurn` hands out the
+   * oldest claimable turn), so the loop is what turns a per-tick single claim
+   * into real cross-session concurrency.
+   *
+   * COUNTED OVER CLAIMS, NOT OVER EVERY LIVE TURN: `active` also holds provider
+   * turns a CLI opened by itself, which were never scheduled through this gate.
+   * Counting them let a session waking up on its own consume a slot, so a human
+   * starting a conversation sat at "queued" behind work nobody scheduled.
+   */
+  private startClaiming(): void {
+    if (this.claiming || this.stopped || this.connectionLost) return;
+    this.claiming = true;
+    void (async () => {
+      try {
+        const cap = Math.max(1, this.options.concurrency ?? defaultWorkerConcurrency());
+        while (this.activeClaims.size < cap && !this.stopped && !this.connectionLost) {
+          const seq = (this.pendingClaimSeq ??= this.claimSeq + 1);
+          this.options.onClaimPhase?.("requested");
+          let claim: WorkerClaim | undefined;
+          try {
+            claim = (await this.options.client.claimTurn(this.options.workerId, seq, AbortSignal.timeout(this.requestTimeoutMs()))).claim;
+          } catch (error) {
+            const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+            if (!timedOut && !isConnectivityLoss(error)) throw error;
+            /**
+             * THE SEQUENCE IS KEPT. We do not know whether the engine applied
+             * this claim, so the next attempt re-sends the same number and gets
+             * the same answer. No blind retry allocates a second turn, and no
+             * provider starts for a claim we never received.
+             */
+            this.diagnose({ event: "claim_unresolved", operation: "claimTurn", ...EngineWorker.describe(error) });
+            if (!timedOut) this.noteConnectivityFailure(error);
+            return;
+          }
+          // Answered definitively: this op is over, whatever it produced.
+          this.claimSeq = seq;
+          this.pendingClaimSeq = undefined;
+          this.options.onClaimPhase?.("granted");
+          if (!claim) return;
+          /**
+           * THE SHUTDOWN CAN LAND INSIDE THAT AWAIT, and starting anyway would
+           * put a turn into `running` on a worker already dismantling itself.
+           * Left `claimed`, deliberately: `markTurnRunning` has not been called,
+           * so `claimed` PROVES no provider was spawned, which is why the
+           * engine requeues such a turn instead of holding it for a human.
+           */
+          if (this.stopped) return;
+          this.options.onClaimPhase?.("starting");
+          const run = this.execute(claim);
+          this.inFlight.add(run);
+          void run.finally(() => this.inFlight.delete(run));
+        }
+      } catch {
+        // A non-connectivity throw is this pump's own; the next tick retries.
+      } finally {
+        this.claiming = false;
+        this.options.onClaimPhase?.("idle");
+      }
+    })();
+  }
+
   /** Injectable so a fake-clock test never sleeps. */
   private pause(ms: number): Promise<void> {
     return this.options.pause ? this.options.pause(ms) : new Promise((resolve) => setTimeout(resolve, ms));
@@ -752,35 +835,10 @@ export class EngineWorker {
        * dogfood machine: four human turns plus one wake-up, and the fifth
        * conversation would not start.
        */
-      const cap = Math.max(1, this.options.concurrency ?? defaultWorkerConcurrency());
-      while (this.activeClaims.size < cap && !this.stopped) {
-        const { claim } = await this.options.client.claimTurn(this.options.workerId);
-        if (!claim) break;
-        /**
-         * THE SHUTDOWN CAN LAND INSIDE THAT AWAIT.
-         *
-         * A claim is a round trip, and `stop()` runs on its own schedule: it
-         * can set `stopped`, abort what it knows about and snapshot `inFlight`
-         * entirely between this request and its response. Starting the run
-         * anyway would put a turn into `running` on a worker that is already
-         * dismantling itself — after the only wait that would have settled it,
-         * so it lands on the next boot as `ambiguous` for a turn that never
-         * reached a provider at all.
-         *
-         * LEFT `claimed`, DELIBERATELY. `markTurnRunning` has not been called,
-         * and `worker.ts` orders it before the driver is constructed precisely
-         * so `claimed` PROVES no provider was spawned — which is why recovery
-         * requeues such a turn instead of holding it for a human. Handing it
-         * back by doing nothing is the safest of the three options, and the
-         * only one that needs no new engine verb.
-         */
-        if (this.stopped) break;
-        // Held so `stop()` can wait for the run to unwind and record its
-        // interruption, rather than aborting into the dark.
-        const run = this.execute(claim);
-        this.inFlight.add(run);
-        void run.finally(() => this.inFlight.delete(run));
-      }
+      // STARTED, NOT AWAITED. A claim that hangs must not hold the tick — and
+      // with it cancellations, approvals and steers — behind it. Those are all
+      // already delivered above, before this line.
+      this.startClaiming();
     } catch (error) {
       // Our own heartbeat bound firing is an outage, not a caller hanging up.
       if (error instanceof DOMException && error.name === "TimeoutError") this.noteConnectivityFailure(new EngineClientError("engine_unavailable", "engine did not answer in time", undefined, { operation: "workerHeartbeat", transport: "timeout" }), tickIssuedAt);

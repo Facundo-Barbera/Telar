@@ -2072,8 +2072,14 @@ export class EngineClient {
     return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {}, signal, "workerHeartbeat");
   }
 
-  claimTurn(workerId: string): Promise<{ claim?: WorkerClaim }> {
-    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, {});
+  /**
+   * `claimSeq` is the worker's per-registration high-watermark. Repeating a
+   * sequence replays its outcome instead of allocating a second turn, which is
+   * what makes a lost claim response safe to retry — see the daemon's route.
+   * `signal` bounds it, so a hung claim cannot pin the caller's loop.
+   */
+  claimTurn(workerId: string, claimSeq: number, signal?: AbortSignal): Promise<{ claim?: WorkerClaim }> {
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, { claimSeq }, signal, "claimTurn");
   }
 
   /**
