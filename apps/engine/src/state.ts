@@ -7593,21 +7593,28 @@ export class EngineStore {
    *  are unique within a session, not across them. An entry with no `sealed`
    *  predecessor stays unsealed — see `openItemPrefix`. */
   private extendOpenPrefix(sessionId: string, itemId: string, text: string, through: number): void {
+    const held = this.openPrefixes.get(prefixKey(sessionId, itemId));
+    this.rememberOpenPrefix(sessionId, itemId, { text: (held?.text ?? "") + text, through, sealed: held?.sealed === true });
+  }
+
+  /**
+   * Write a cached prefix and hold the map to its bound.
+   *
+   * EVERY INSERTION GOES THROUGH HERE, opening an item included: a bound the
+   * write path can sidestep is not a bound, and an agent that opens many items
+   * before streaming into any of them would have walked straight past it.
+   *
+   * "ONE ENTRY PER OPEN ITEM" IS NOT A BOUND EITHER — Stop deliberately leaves
+   * items open forever, so stopped turns would keep their partial replies
+   * resident for the life of the process. Evicting the least recently written
+   * costs a journal read on the next snapshot of a long-quiet item, and never
+   * costs text: `openItemPrefix` rebuilds what it does not find.
+   */
+  private rememberOpenPrefix(sessionId: string, itemId: string, entry: { text: string; through: number; sealed: boolean }): void {
     const key = prefixKey(sessionId, itemId);
-    const held = this.openPrefixes.get(key);
-    // Re-inserted rather than mutated so the Map's insertion order is a
-    // least-recently-extended order, which is what the bound below evicts by.
+    // Re-inserted rather than mutated, so insertion order IS the eviction order.
     this.openPrefixes.delete(key);
-    this.openPrefixes.set(key, { text: (held?.text ?? "") + text, through, sealed: held?.sealed === true });
-    /**
-     * A BOUND, BECAUSE "ONE ENTRY PER OPEN ITEM" IS NOT ONE. Stop deliberately
-     * leaves items open forever, so every stopped turn would leave its partial
-     * reply resident for the life of the process.
-     *
-     * SAFE TO EVICT ANYTHING: an evicted entry is rebuilt from the journal on
-     * the next read (`openItemPrefix`), so this costs a cold read on an item
-     * nobody has streamed to in a long time, and never costs text.
-     */
+    this.openPrefixes.set(key, entry);
     while (this.openPrefixes.size > OPEN_PREFIX_LIMIT) {
       const oldest = this.openPrefixes.keys().next();
       if (oldest.done) break;
@@ -7619,6 +7626,13 @@ export class EngineStore {
    *  thing worth testing and it is unreachable while the cache is warm. */
   forgetOpenPrefixesForTest(): void {
     this.openPrefixes.clear();
+  }
+
+  /** How many prefixes are resident. Asserted against the bound, because the
+   *  TEXT stays correct whether or not eviction runs — so nothing else can
+   *  tell the difference between a bound that holds and one that does not. */
+  openPrefixCountForTest(): number {
+    return this.openPrefixes.size;
   }
 
   /** An item that closed carries its text in `detail` from then on, so the
@@ -8491,7 +8505,7 @@ export class EngineStore {
     // AN ITEM THAT JUST OPENED HAS NO EARLIER DELTAS, which is the only moment
     // the accumulator can know it holds the whole prefix. Every later extend
     // inherits that; an entry born any other way is rebuilt on read.
-    if (started) this.openPrefixes.set(prefixKey(sessionId, item.id), { text: "", through: written.id, sealed: true });
+    if (started) this.rememberOpenPrefix(sessionId, item.id, { text: "", through: written.id, sealed: true });
   }
 
   /**

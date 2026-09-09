@@ -3633,3 +3633,38 @@ describe("an open item's streamed prefix", () => {
     expect(item.detail).toMatchObject({ text: "Short." });
   });
 });
+
+test("#214 an item evicted from the prefix cache keeps streaming correctly", () => {
+  /**
+   * EVICTION MUST BE INVISIBLE IN THE TEXT. Opening enough items pushes the
+   * first one out of the bound — including items that only ever OPENED, which
+   * is the path that used to skip the trim entirely. The evicted item then
+   * takes another delta, so its cache entry is rebuilt from a tail rather than
+   * from the item's beginning: the unsealed case, and the one that must fall
+   * back to the journal instead of reporting the tail as the whole reply.
+   */
+  const { store } = readyStore();
+  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claimTurn("session_one", "worker_one")!;
+  const token = claimed.claim!.token;
+  store.markRunning("session_one", "run_one", token);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "item.started", item: { id: "i1", detail: { type: "assistant_message", text: "" } } },
+    { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "Once upon " },
+  ]);
+  // Enough opens to evict i1, and opens alone — no deltas.
+  for (let index = 0; index < 80; index += 1) {
+    store.ingestObservations("session_one", "run_one", token, [
+      { kind: "item.started", item: { id: `filler_${index}`, detail: { type: "assistant_message", text: "" } } },
+    ]);
+  }
+  // THE BOUND ITSELF, asserted separately: the text above stays correct whether
+  // or not eviction ran, so it cannot tell a held bound from a skipped one.
+  // Opening is the path that used to insert without trimming.
+  expect(store.openPrefixCountForTest()).toBeLessThanOrEqual(64);
+  store.ingestObservations("session_one", "run_one", token, [
+    { kind: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time" },
+  ]);
+  expect(store.openItemPrefix("session_one", "i1", store.eventCursor("session_one"))!.streamed).toBe("Once upon a time");
+  expect(store.openPrefixCountForTest()).toBeLessThanOrEqual(64);
+});
