@@ -106,7 +106,7 @@ printf '{\n  "shortSha": "%s",\n  "sha": "%s",\n  "ref": "working-tree",\n  "cha
 echo "==> stamped local build: $SHORT_SHA (channel=$CHANNEL dirty=$DIRTY)"
 
 cd "$DESKTOP_DIR"
-CONFIG_OVERRIDES=()
+CONFIG_OVERRIDES=(--dir --publish never)
 if [ "$DEV" -eq 1 ]; then
   echo "==> package unsigned macOS arm64 DEV app (Telar Dev, com.telar.desktop.dev)"
   # Everything that gives the dev build an identity of its own, as overrides so
@@ -117,7 +117,7 @@ if [ "$DEV" -eq 1 ]; then
   #                    inherited TELAR_HOME/TELAR_DESKTOP_URL and to keep the
   #                    updater off. The hardened runtime is off because nothing
   #                    signs this build and it never needs a notarized shape.
-  CONFIG_OVERRIDES=(
+  CONFIG_OVERRIDES+=(
     "-c.productName=Telar Dev"
     "-c.appId=com.telar.desktop.dev"
     "-c.extraMetadata.productName=Telar Dev"
@@ -137,7 +137,7 @@ fi
 # Force unsigned regardless of any Developer ID cert sitting in Keychain — this
 # script is for fast local iteration, not a release build. `--publish never`
 # for the same reason: nothing here ever talks to an update feed.
-CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder --dir --publish never "${CONFIG_OVERRIDES[@]}"
+CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder "${CONFIG_OVERRIDES[@]}"
 
 test -d "$APP" || { echo "!! expected app not found at $APP" >&2; exit 1; }
 test -x "$BIN" || { echo "!! packaged executable missing at $APP" >&2; exit 1; }
