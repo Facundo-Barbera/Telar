@@ -1846,6 +1846,80 @@ describe("the session runtime", () => {
     expect(queryCalls).toBe(2);
   });
 
+  test("the idle pool never evicts a process that still owns background work", async () => {
+    /**
+     * MEASURED IN THE #201 FIXTURES: five sequential sessions left four idle
+     * runtimes, and the pool destroyed the OLDEST despite a background shell
+     * still running inside it. Evicting that process kills the shell silently —
+     * exactly the work the session runtime exists to keep alive.
+     *
+     * The cap counts EVICTABLE runtimes, so protecting one lets the pool sit
+     * above the cap on purpose: between a memory bound and a person's running
+     * work, the work wins.
+     */
+    const ended: string[] = [];
+    // Hoisted: `loadSdk` is invoked once per run, so a counter inside it would
+    // reset and every query would think it was the first.
+    let opened = 0;
+    const driver = createClaudeDriver(async () => {
+      return {
+        async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+          const mine = (opened += 1);
+          try {
+            for await (const message of prompt) {
+              void message;
+              // The FIRST session launches a detached shell and leaves it
+              // running; the rest are ordinary turns.
+              if (mine === 1) {
+                yield { type: "system", subtype: "task_started", task_id: "sdk_bg", tool_use_id: "use_bg", task_type: "bash", is_backgrounded: true, description: "tail -f build.log" };
+              }
+              yield { type: "result", subtype: "success" };
+            }
+          } finally {
+            ended.push(`query_${mine}`);
+          }
+        },
+      } as never;
+    });
+    for (const id of ["a", "b", "c", "d", "e"]) await run(driver, { sessionId: `session_pool_${id}` }).result;
+    // The feed's generator only falls out once destroy ends it; give it a beat.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Five processes, one protected: the oldest EVICTABLE one goes instead.
+    expect(ended).not.toContain("query_1");
+    expect(ended).toEqual(["query_2"]);
+  });
+
+  test("the cap is enforced on release, not only on adoption", async () => {
+    /**
+     * A newcomer arrives BUSY, so adoption never counted it — the cap was only
+     * ever tested at the moment before the newest process became idle, and
+     * sessions finishing their turns left the pool over the cap with nothing
+     * that would ever notice.
+     */
+    const ended: string[] = [];
+    let opened = 0;
+    const driver = createClaudeDriver(async () => {
+      return {
+        async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+          const mine = (opened += 1);
+          try {
+            for await (const message of prompt) {
+              void message;
+              yield { type: "result", subtype: "success" };
+            }
+          } finally {
+            ended.push(`query_${mine}`);
+          }
+        },
+      } as never;
+    });
+    // Four sessions, none protected: the fourth's RELEASE is what takes the
+    // pool to four evictable runtimes and must prune back to three.
+    for (const id of ["a", "b", "c", "d"]) await run(driver, { sessionId: `session_cap_${id}` }).result;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(ended).toEqual(["query_1"]);
+  });
+
   test("an env patch reordered but unchanged reuses the process; a reordered server list does too", async () => {
     /**
      * MEASURED IN THE #201 FIXTURES: two fake turns differing ONLY in

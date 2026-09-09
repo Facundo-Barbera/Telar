@@ -205,14 +205,36 @@ export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; provide
   echoesUserMessageUuid: boolean;
   /** A turn is pumping right now — never evict. */
   busy: boolean;
+  /**
+   * A turn THE CLI STARTED ITSELF is in flight — the idle pump got a binding
+   * from the engine and is reading that turn's frames.
+   *
+   * DELIBERATELY NOT `busy`. `busy` is what `idle()` parks a claiming turn on,
+   * and a wake-up must not make a human's next message wait for it: the human
+   * turn's `claim` stops the idle pump and takes the stream, which is the
+   * design. This flag says only "there is live work here", which is what
+   * eviction needs to know and what `busy` alone did not say.
+   */
+  wakeActive: boolean;
   lastUsedAt: number;
 };
 
 /**
- * At most this many IDLE runtimes live at once. Each is a real `claude`
+ * At most this many EVICTABLE runtimes live at once. Each is a real `claude`
  * process (hundreds of MB); a user hopping between many sessions must not
- * accumulate one per session forever. Busy runtimes are never counted against
- * the cap and never evicted.
+ * accumulate one per session forever.
+ *
+ * "EVICTABLE" IS NARROWER THAN "IDLE", and that is the whole of the #201 fix.
+ * Measured in the fixtures: five sequential sessions left four idle runtimes
+ * and the oldest was destroyed DESPITE a background task still running inside
+ * it — the pool killed exactly the work the pool exists to keep alive. A
+ * runtime is evictable only when no turn is pumping it, no provider-started
+ * wake-up is in flight, and it owns no live background work.
+ *
+ * THE POOL CAN THEREFORE EXCEED THE CAP, on purpose. The alternative is
+ * destroying a session's running shells and monitors to honour a number, and
+ * between a memory bound and a person's work the person's work wins. What the
+ * cap still guarantees is that abandoned processes do not accumulate.
  */
 const MAX_IDLE_RUNTIMES = 3;
 
@@ -226,6 +248,47 @@ const MAX_IDLE_RUNTIMES = 3;
 export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; providerTaskId?: string } = { id: string; providerTaskId?: string }> {
   private readonly runtimes = new Map<string, ClaudeSessionRuntime<T, Seed>>();
   private readonly idleWaiters = new Map<string, Array<() => void>>();
+  /**
+   * Does this task seed represent background work that is still going?
+   *
+   * INJECTED rather than read here, because the store's `Seed` is deliberately
+   * the narrowest shape the handoff needs (`id`, `providerTaskId`) and the
+   * driver owns what a task's state and backgrounded flag mean. Absent — the
+   * default — means no seed protects anything, which is the pre-#201 behaviour
+   * and what a test that does not care about eviction gets.
+   */
+  private readonly liveBackgroundWork: (seed: Seed) => boolean;
+
+  constructor(options: { liveBackgroundWork?: (seed: Seed) => boolean } = {}) {
+    this.liveBackgroundWork = options.liveBackgroundWork ?? (() => false);
+  }
+
+  /**
+   * May this process be destroyed to make room? Only when nothing is using it:
+   * no turn pumping, no provider-started wake-up in flight, and no background
+   * task of its own still running.
+   */
+  private evictable(runtime: ClaudeSessionRuntime<T, Seed>): boolean {
+    if (runtime.busy || runtime.wakeActive) return false;
+    for (const seed of runtime.tasks.known.values()) if (this.liveBackgroundWork(seed)) return false;
+    return true;
+  }
+
+  /**
+   * Destroy the oldest evictable runtimes beyond the cap.
+   *
+   * RUN ON RELEASE AS WELL AS ADOPTION, which adoption alone did not achieve:
+   * a newcomer arrives BUSY, so it was never itself counted, and the cap was
+   * only ever tested at the moment before the newest process became idle.
+   * Several sessions finishing their turns therefore left the pool over the
+   * cap with nothing that would ever notice.
+   */
+  private prune(): void {
+    const evictable = [...this.runtimes.values()].filter((candidate) => this.evictable(candidate)).sort((a, b) => a.lastUsedAt - b.lastUsedAt);
+    for (const evicted of evictable.slice(0, Math.max(0, evictable.length - MAX_IDLE_RUNTIMES))) {
+      this.destroy(evicted.sessionId);
+    }
+  }
 
   /**
    * Resolves once no turn is pumping this session's runtime (or there is no
@@ -275,6 +338,11 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.idlePump?.stop();
     runtime.idlePump = undefined;
     runtime.busy = true;
+    // A wake-up in flight is OVER as far as the pool is concerned: the pump
+    // reading it has been told to stop and will return without closing it, so
+    // nothing else would ever clear the flag. `busy` protects the runtime from
+    // here, and the wake-up's own frames are parked for this turn.
+    runtime.wakeActive = false;
     runtime.lastUsedAt = Date.now();
     return runtime;
   }
@@ -291,17 +359,14 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     return result;
   }
 
-  /** Register a freshly created runtime, evicting the oldest idle ones beyond
-   *  the cap. The newcomer arrives busy — it is about to run a turn. */
+  /** Register a freshly created runtime, evicting the oldest evictable ones
+   *  beyond the cap. The newcomer arrives busy — it is about to run a turn. */
   adopt(runtime: ClaudeSessionRuntime<T, Seed>): void {
     this.destroy(runtime.sessionId);
     runtime.busy = true;
     runtime.lastUsedAt = Date.now();
     this.runtimes.set(runtime.sessionId, runtime);
-    const idle = [...this.runtimes.values()].filter((candidate) => !candidate.busy).sort((a, b) => a.lastUsedAt - b.lastUsedAt);
-    for (const evicted of idle.slice(0, Math.max(0, idle.length - MAX_IDLE_RUNTIMES))) {
-      this.destroy(evicted.sessionId);
-    }
+    this.prune();
   }
 
   /**
@@ -324,6 +389,21 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.busy = false;
     runtime.lastUsedAt = Date.now();
     this.wakeIdle(sessionId);
+    // The cap is enforced HERE too: this runtime has only just become
+    // evictable, and adoption already ran before that was true.
+    this.prune();
+  }
+
+  /**
+   * A provider-started turn opened or closed inside this session's process.
+   * Marks live work without touching `busy`, which a claiming turn parks on.
+   */
+  setWakeActive(sessionId: string, active: boolean): void {
+    const runtime = this.runtimes.get(sessionId);
+    if (!runtime) return;
+    runtime.wakeActive = active;
+    runtime.lastUsedAt = Date.now();
+    if (!active) this.prune();
   }
 
   destroy(sessionId: string): void {

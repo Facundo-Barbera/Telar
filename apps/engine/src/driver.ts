@@ -1196,7 +1196,15 @@ export function createClaudeDriver(
   const resolveExecutable = options.resolveExecutable ?? defaultClaudeExecutable;
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
-  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>();
+  const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>({
+    /**
+     * WHAT THE POOL MUST NOT DESTROY. A backgrounded shell, monitor or
+     * detached agent lives inside the process and reports through it; evicting
+     * that process to honour an idle cap kills the work silently, which is
+     * exactly what the #201 fixtures reproduced.
+     */
+    liveBackgroundWork: (seed) => isBackgroundWork(seed) && !isTerminalTaskState(seed.state),
+  });
   return {
     dispose: () => runtimes.destroyAll(),
     stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
@@ -2162,6 +2170,7 @@ export function createClaudeDriver(
           },
           model,
           busy: true,
+          wakeActive: false,
           lastUsedAt: Date.now(),
           echoesUserMessageUuid: false,
         };
@@ -2873,6 +2882,8 @@ export function createClaudeDriver(
             if (!wake) return;
             const current = wake;
             wake = undefined;
+            // The wake-up is over; the process may be evicted again.
+            runtimes.setWakeActive(idleRuntime.sessionId, false);
             for (const [, open] of current.tools) emit({ kind: "item.completed", itemId: open.id, status: "failed" });
             for (const [, open] of current.blocks) emit(closeBlock(open));
             await flush();
@@ -2937,6 +2948,10 @@ export function createClaudeDriver(
                   continue;
                 }
                 idleRuntime.tasks.lastWokenTaskId = undefined;
+                // LIVE WORK, so the pool stops treating this process as spare.
+                // The engine has opened a real turn against it; evicting it now
+                // would kill a turn nobody could see start.
+                runtimes.setWakeActive(idleRuntime.sessionId, true);
                 wake = { binding, text: "", usage: undefined, gate: binding.onRequest ? gateFor(binding.onRequest) : undefined, blocks: new Map(), tools: new Map() };
                 sink = (observations) => binding.onObservations(observations);
                 idleRuntime.bindings.current = { ...idleRuntime.bindings.current, canUseTool: wake.gate };
