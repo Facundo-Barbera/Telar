@@ -57,7 +57,7 @@ import { CODE_SURFACE_FRAME, CODE_SURFACE_LINES, CODE_SURFACE_TEXT, CodeSurface,
 import { Badge } from "@/components/ui/badge";
 // The ONE definition of what a message looks like — shared with the cockpit so
 // a message sent mid-run and one sent idle cannot drift apart.
-import { AgentMessageBubble, ConversationMessage } from "@/components/session/conversation-message";
+import { AgentMessageBubble, ConversationMessage, type OpenTab } from "@/components/session/conversation-message";
 import { cn } from "@/lib/utils";
 
 /** Deliberately small and literal. The lane is meant to be uniform and boring:
@@ -551,7 +551,7 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
  * way that same origin is drawn when it arrives idle. There is no badge, no
  * compact variant and no card earned merely by arriving mid-run.
  */
-function SteeredMessageRow({ item }: { item: JournalItem }) {
+function SteeredMessageRow({ item, onOpenTab }: { item: JournalItem; onOpenTab?: OpenTab }) {
   const attachments = item.detail.type === "user_message" ? item.detail.attachments : undefined;
   const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
   const wakeReason = item.detail.type === "user_message" ? item.detail.wakeReason : undefined;
@@ -564,8 +564,8 @@ function SteeredMessageRow({ item }: { item: JournalItem }) {
   if (wakeReason) return <SteeredWakeRow item={item} reason={wakeReason} />;
   // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE — the same dashed, labelled
   // shape the cockpit gives an agent-sent turn, so the two read alike.
-  if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(attachments ? { attachments } : {})} />;
-  return <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} />;
+  if (sender) return <AgentMessageBubble text={itemText(item)} sender={sender} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
+  return <ConversationMessage text={itemText(item)} {...(attachments ? { attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />;
 }
 
 /**
@@ -583,7 +583,14 @@ function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: stri
   );
 }
 
-export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem; tasks?: readonly JournalTask[]; onOpenAgent?: (taskId: string) => void }) {
+export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab }: {
+  item: JournalItem;
+  tasks?: readonly JournalTask[];
+  onOpenAgent?: (taskId: string) => void;
+  /** So a message steered into a running turn opens its references exactly
+   *  as the same message sent idle does. */
+  onOpenTab?: OpenTab;
+}) {
   if (item.detail.type === "task") {
     const taskId = item.detail.taskId;
     const task = tasks?.find((candidate) => candidate.id === taskId);
@@ -596,7 +603,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
   if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
-  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} />;
+  if (item.detail.type === "user_message") return <SteeredMessageRow item={item} {...(onOpenTab ? { onOpenTab } : {})} />;
   if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
   if (item.detail.type === "error") {
@@ -721,32 +728,19 @@ export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "r
 const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction", "provider_wait"]);
 
 /**
- * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES.
+ * A TURN, CUT INTO RESPONSES AT ITS MESSAGE BOUNDARIES. A message sent into a
+ * running turn is a boundary in the conversation, not an event inside the
+ * work: what the agent does next is a response TO it.
  *
- * A message sent into a running turn is a boundary in the conversation, not an
- * event inside the work: what the agent does next is a response TO it. So a
- * turn that took two messages renders as two responses, and the second one's
- * work sits under the message that caused it.
+ * A live turn already seamed on `user_message`; a settled one folded every
+ * item into one `ActivityGroup` inside the assistant's lane, so the message
+ * vanished into "N steps" when the turn ended and, unfolded, sat nested in the
+ * assistant's own bubble. Live and reload disagreed about whether it existed.
  *
- * WHAT THIS FIXES, and it was visible two different ways. A LIVE turn already
- * promoted the message to a row (`segmentActivity` seams on `user_message`),
- * but a SETTLED one folded every item into a single `ActivityGroup` — so the
- * message vanished into "N steps" the moment the turn ended, and reappeared
- * only if you opened the fold. Reload and live therefore disagreed about
- * whether a message existed. Worse, the fold lives inside the assistant's
- * lane, so even unfolded the person's own words were nested inside the
- * assistant's bubble: the reply was drawn on top of the message it answered.
- *
- * THE FIRST RESPONSE HAS NO BOUNDARY — its cause is the turn's own prompt,
- * which the cockpit draws above. Every later one is introduced by the message
- * that started it.
- *
- * Adapted from T3 Code's timeline (pinned 1d1bf504,
- * `MessagesTimeline.logic.ts:503-531`): there a user message carries
- * `turnId: null` and the visual response boundary is simply the latest user
- * message, so a steer starts a new response for free. Telar keeps messages as
- * items inside a turn rather than as free rows, so the same rule has to be
- * applied here — but it is the same rule.
+ * The first response has no boundary — its cause is the turn's prompt, drawn
+ * above. Same rule as T3 Code's timeline (pinned 1d1bf504,
+ * `MessagesTimeline.logic.ts:503-531`), applied explicitly because Telar keeps
+ * messages as items inside a turn rather than as free rows.
  */
 export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
 
@@ -759,6 +753,23 @@ export function splitAtMessageBoundaries(items: readonly JournalItem[]): TurnRes
   // A turn whose only message is its own prompt is one response, and renders
   // exactly as it always did.
   return responses.length > 1 && responses[0]!.items.length === 0 ? responses.slice(1) : responses;
+}
+
+/**
+ * THE ORDER THE TURN IS EMITTED IN — a boundary, then the work it introduced,
+ * for every response. `SessionTurn` renders exactly this sequence, so a test
+ * over it is a test of the assembly and not merely of the splitter's shape.
+ *
+ * The distinction matters: the splitter can group correctly while the renderer
+ * still emits the parts in the wrong order, which is precisely the bug review
+ * caught — work drawn above the message that caused it, for every steer but
+ * the last.
+ */
+export function turnRenderOrder(items: readonly JournalItem[]): Array<{ kind: "boundary"; item: JournalItem } | { kind: "work"; items: JournalItem[] }> {
+  return splitAtMessageBoundaries(items).flatMap((response) => [
+    ...(response.boundary ? [{ kind: "boundary" as const, item: response.boundary }] : []),
+    ...(response.items.length > 0 ? [{ kind: "work" as const, items: response.items }] : []),
+  ]);
 }
 
 export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[] {

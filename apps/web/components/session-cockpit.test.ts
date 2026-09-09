@@ -351,6 +351,79 @@ describe("a message sent mid-run is a boundary, not an event inside the work", (
     expect(responses[0]!.items.map((i) => i.id)).toEqual(["w1"]);
   });
 
+  test("TWO STEERS, EACH INTRODUCING ITS OWN WORK — the message comes before what it caused", async () => {
+    /**
+     * THE BUG REVIEW CAUGHT, and the reason this asserts the emitted ORDER and
+     * not the splitter's grouping: the split was right while the renderer drew
+     * each response's work before its own boundary, so `prompt → A → steer1 →
+     * B → steer2 → C` came out as A, B, steer1, steer2, C — work above the
+     * message that caused it, for every steer but the last.
+     */
+    const { turnRenderOrder } = await import("./transcript");
+    const order = turnRenderOrder([
+      item("A", "command_execution"),
+      item("s1", "user_message"),
+      item("B", "command_execution"),
+      item("s2", "user_message"),
+      item("C", "command_execution"),
+    ]);
+    expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual([
+      "A", "s1", "B", "s2", "C",
+    ]);
+    // Said as the invariant rather than the example: no work is ever emitted
+    // before the boundary that introduced it.
+    for (const [index, entry] of order.entries()) {
+      if (entry.kind !== "work") continue;
+      const previous = order[index - 1];
+      if (index > 0 && previous) expect(previous.kind === "boundary" || index === 0).toBe(true);
+    }
+  });
+
+  test("CONSECUTIVE STEERS with no work between them each keep their own place", async () => {
+    // Two messages in a row produce an empty response between them. It must
+    // collapse to nothing rather than to a stray empty assistant bubble, and
+    // must not reorder the pair.
+    const { turnRenderOrder } = await import("./transcript");
+    const order = turnRenderOrder([
+      item("s1", "user_message"),
+      item("s2", "user_message"),
+      item("A", "command_execution"),
+    ]);
+    expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual(["s1", "s2", "A"]);
+    expect(order.filter((entry) => entry.kind === "work" && entry.items.length === 0)).toEqual([]);
+  });
+
+  test("a trailing steer with no work after it is still emitted", async () => {
+    // The person got the last word and the turn ended. The message must not
+    // vanish for want of anything to introduce.
+    const { turnRenderOrder } = await import("./transcript");
+    const order = turnRenderOrder([item("A", "command_execution"), item("s1", "user_message")]);
+    expect(order.map((entry) => (entry.kind === "boundary" ? entry.item.id : entry.items.map((i) => i.id).join("")))).toEqual(["A", "s1"]);
+  });
+
+  test("and the RENDERER emits them in that order — boundary before its work", () => {
+    /**
+     * `turnRenderOrder` describes the sequence; this pins that the JSX actually
+     * follows it. Without this the helper and the component could drift, which
+     * is the exact failure mode here — the split was correct while the render
+     * put each response's work first.
+     */
+    const source = fs.readFileSync(fileURLToPath(new URL("./session-cockpit.tsx", import.meta.url)), "utf8");
+    const map = source.slice(source.indexOf("{earlier.map((response) => ("), source.indexOf("{answering.boundary &&"));
+    const boundary = map.indexOf("response.boundary && (");
+    const work = map.indexOf("response.items.length > 0 && (");
+    expect(boundary).toBeGreaterThan(-1);
+    expect(work).toBeGreaterThan(-1);
+    expect(boundary).toBeLessThan(work);
+    // And the answering response's own boundary is drawn before the assistant
+    // lane that holds its work — the NEXT such lane, not the one inside the
+    // map above, which is why this searches from the boundary rather than
+    // from the top of the file.
+    const answering = source.indexOf("{answering.boundary &&");
+    expect(answering).toBeGreaterThan(-1);
+    expect(source.indexOf('<Message from="assistant">', answering)).toBeGreaterThan(answering);
+  });
+
   test("LIVE AND SETTLED CUT IN THE SAME PLACE — a reload cannot move a message", async () => {
     /**
      * The ordering guarantee, stated as the one thing that must be true: the

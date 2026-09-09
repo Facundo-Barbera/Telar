@@ -3,25 +3,18 @@
 /**
  * ONE DEFINITION OF WHAT A MESSAGE LOOKS LIKE.
  *
- * A message sent while nothing was running and a message sent INTO a running
- * turn are the same thing to the person who typed them, and they now render
- * through the same component. They did not before: a mid-run message went
- * through a bespoke row in `transcript.tsx` with its own bubble, padding,
- * width and alignment, so the same sentence looked like a different kind of
- * object depending on whether the agent happened to be busy when it was sent.
+ * A message sent while nothing was running and one sent INTO a running turn
+ * are the same thing to the person who typed them. A mid-run message used to
+ * go through a bespoke row with its own bubble, padding, width and alignment,
+ * so the same sentence looked like a different kind of object depending on
+ * whether the agent happened to be busy.
  *
- * THE AUTHOR DISTINCTIONS THAT SURVIVE ARE THE REAL ONES. A peer agent's
- * message and an engine wake are not the person's words, and they are drawn
- * differently — but drawn the SAME differently whether they arrive mid-run or
- * idle, which is the rule the old steer row broke in both directions. What
- * does not survive is a distinction drawn only from delivery timing: there is
- * no "steered" badge, no compact variant, no separate card.
+ * Author distinctions survive — a peer agent's words and an engine wake are
+ * not the person's — but drawn the same way whether they arrive mid-run or
+ * idle. No badge, no compact variant, no card earned by timing alone.
  *
- * WHY IT LIVES HERE rather than in either caller: the cockpit draws a turn's
- * own message and the transcript draws a steered one, and the two must not be
- * able to drift. `transcript.tsx` may not import `session-cockpit.tsx` (the
- * import runs the other way), so a shared home is the only shape that lets
- * both use one definition.
+ * HERE rather than in either caller because both draw one and `transcript.tsx`
+ * may not import `session-cockpit.tsx`; the import runs the other way.
  */
 
 import { BotIcon, PaperclipIcon } from "lucide-react";
@@ -30,6 +23,10 @@ import { Message, MessageContent } from "@/components/ui/message";
 import { PromptText } from "./prompt-text";
 
 type MessageSender = { sessionId?: string };
+
+/** Opening a reference a chip stands for — the composer's own gesture,
+ *  threaded so a steered message's chips work like an idle one's. */
+export type OpenTab = NonNullable<Parameters<typeof PromptText>[0]["onOpen"]>;
 
 /**
  * WHAT WAS SENT, not what the model made of it. A transcript that shows the
@@ -78,7 +75,7 @@ export function ConversationMessage({
 }: {
   text: string;
   attachments?: readonly TurnAttachment[];
-  onOpenTab?: (tab: Parameters<NonNullable<Parameters<typeof PromptText>[0]["onOpen"]>>[0]) => void;
+  onOpenTab?: OpenTab;
 }) {
   return (
     <Message from="user">
@@ -116,7 +113,7 @@ export function AgentMessageBubble({
   text: string;
   sender: MessageSender;
   attachments?: readonly TurnAttachment[];
-  onOpenTab?: (tab: Parameters<NonNullable<Parameters<typeof PromptText>[0]["onOpen"]>>[0]) => void;
+  onOpenTab?: OpenTab;
 }) {
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2" aria-label="Message from another agent">

@@ -715,12 +715,14 @@ export function SessionTurn({
         <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
       )}
 
-      {/* EVERY RESPONSE BEFORE THE LAST ONE: the work the agent did, then the
-          message that interrupted it drawn as a boundary at the TOP LEVEL —
-          not inside the assistant's lane, where it would read as the reply
-          being written on top of the person's own words. */}
+      {/* A BOUNDARY INTRODUCES THE WORK UNDER IT — message first, then what the
+          agent did about it. Drawn at the top level, not inside the assistant's
+          lane, so a reply is never painted over the message it answers. */}
       {earlier.map((response) => (
         <Fragment key={response.boundary?.id ?? "opening"}>
+          {response.boundary && (
+            <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          )}
           {response.items.length > 0 && (
             <Message from="assistant">
               <MessageContent from="assistant">
@@ -728,10 +730,11 @@ export function SessionTurn({
               </MessageContent>
             </Message>
           )}
-          {response.boundary && <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />}
         </Fragment>
       ))}
-      {answering.boundary && <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} />}
+      {answering.boundary && (
+        <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+      )}
 
       <Message from="assistant">
         <MessageContent from="assistant">
