@@ -84,7 +84,10 @@ export class ExecutionStore {
       if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("execution transactions must be synchronous");
       const changed = Number(this.db.prepare("SELECT total_changes() AS count").get()?.count ?? 0) !== changesBefore;
       if (commandId !== undefined || changed)
-        this.db.prepare("INSERT INTO receipts(id,command,result) VALUES(?,?,?)").run(receiptId, command, JSON.stringify({ value: result }));
+        // Internal receipts are audit markers, not replayable responses. In
+        // particular, never retain a resolved worker claim's provider secrets.
+        this.db.prepare("INSERT INTO receipts(id,command,result) VALUES(?,?,?)").run(receiptId, command,
+          JSON.stringify(commandId === undefined ? {} : { value: result }));
       this.db.exec("COMMIT");
       return result;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }

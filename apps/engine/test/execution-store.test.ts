@@ -113,3 +113,15 @@ test("export retains post-migration history and reopens in a JSON-only store", a
   expect(exported.turns("session_one")[0]?.state).toBe("stopped");
   expect(exported.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
 });
+
+test("internal command receipts do not retain resolved provider credentials", async () => {
+  const { store, home } = setup();
+  store.executeCommand("claim-like", () => {
+    store.submitTurn("session_one", { runId: "run_private", input: "hello" });
+    return { providerInstance: { env: [{ name: "API_KEY", value: "private-fixture-token" }] } };
+  });
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(path.join(home, "execution.sqlite"));
+  try { expect(JSON.stringify(db.query("SELECT result FROM receipts").all())).not.toContain("private-fixture-token"); }
+  finally { db.close(); }
+});
