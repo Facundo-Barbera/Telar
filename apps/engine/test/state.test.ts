@@ -2573,6 +2573,163 @@ test("a later turn's report on a task it knows only by provider id folds onto th
   expect(tasks[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "stream ended" });
 });
 
+// ── the claimed→running window (#209) ───────────────────────────────────────
+
+describe("a message typed into a session that had already been claimed", () => {
+  /**
+   * The window: `steerIfRunning` needs a turn that is `running` with a claim,
+   * because `claimed` is the engine's proof that no provider was spawned. A
+   * message arriving between the claim and `markTurnRunning` could not steer,
+   * and nothing reconsidered it — it ran later as a turn of its own, though
+   * the person had typed it into a session the composer showed as live.
+   *
+   * THE BOUNDARY IS SUBMISSION ORDER, not time. Every test here runs on this
+   * file's FROZEN clock, which is the point: an earlier attempt compared
+   * `acceptedAt` against `claim.at` and could not separate a claim from a
+   * message submitted in the same millisecond — the exact case a person
+   * typing at a busy session produces.
+   */
+  test("the same-millisecond case: submitted after the claim, steered into that turn when it starts", () => {
+    const { store } = readyStore();
+    // Everything below happens at t=100. Order is all that distinguishes it.
+    store.submitTurn("session_one", { runId: "run_live", input: "do the thing" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    expect(claim.runId).toBe("run_live");
+    expect(claim.claim!.sequence).toBe(1);
+
+    store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
+    // Still no provider to steer into, exactly as before.
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+
+    store.markRunning("session_one", "run_live", claim.claim!.token);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")).toMatchObject({
+      state: "steering",
+      steer: { intoRunId: "run_live" },
+    });
+    // A real delivery, not a state flip: the worker is told.
+    expect(store.steerForWorker("worker_one").find((each) => each.steerRunId === "run_typed")).toMatchObject({
+      runId: "run_live",
+      text: "Hello?",
+    });
+    // And the journal says the turn began before anything was steered into it.
+    const events = store.readEvents("session_one");
+    const started = events.findIndex((event) => event.type === "turn.started" && event.runId === "run_live");
+    const steering = events.findIndex((event) => event.type === "turn.steering" && event.runId === "run_typed");
+    expect(started).toBeGreaterThan(-1);
+    expect(steering).toBeGreaterThan(started);
+  });
+
+  test("a backlog written BEFORE the claim stays a backlog", () => {
+    // Its author was not steering anything — the session was idle when they
+    // wrote it. Sweeping it in would collapse a queued conversation into one
+    // turn, which is a different bug in the opposite direction.
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_first", input: "do the thing" });
+    store.submitTurn("session_one", { runId: "run_backlog", input: "then this" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    store.markRunning("session_one", "run_first", claim.claim!.token);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_backlog")!.state).toBe("queued");
+    expect(store.steerForWorker("worker_one")).toEqual([]);
+  });
+
+  test("a pause BEFORE the start refuses the start outright, and the late message stays held", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "work" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    store.submitTurn("session_one", { runId: "run_late", input: "typed late" });
+    store.pauseSession("session_one");
+
+    // `pauseSession` stopped the claimed turn, so there is nothing to start.
+    expect(() => store.markRunning("session_one", "run_live", claim.claim!.token)).toThrow(EngineStateError);
+    const late = store.turns("session_one").find((turn) => turn.runId === "run_late")!;
+    expect(late.state).toBe("queued");
+    expect(late.held).toMatchObject({ reason: "session_paused" });
+  });
+
+  test("a pause AFTER the start takes the steered message back, held with the rest", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "work" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    store.submitTurn("session_one", { runId: "run_late", input: "typed late" });
+    store.markRunning("session_one", "run_live", claim.claim!.token);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_late")!.state).toBe("steering");
+
+    store.pauseSession("session_one");
+    const late = store.turns("session_one").find((turn) => turn.runId === "run_late")!;
+    // Undelivered, so requeued rather than lost — and then held by the pause.
+    expect(late.state).toBe("queued");
+    expect(late.held).toMatchObject({ reason: "session_paused" });
+  });
+
+  test("a CLAIMED COMPACTION takes no message: there is no conversation to interrupt", () => {
+    // The target being a compaction is the same refusal `promoteTurn` makes
+    // from the other side, and Codex rejects steering a compact turn at the
+    // protocol level.
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_squeeze", input: "/compact", kind: "compact" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    expect(claim.runId).toBe("run_squeeze");
+    store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
+    store.markRunning("session_one", "run_squeeze", claim.claim!.token);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+    expect(store.steerForWorker("worker_one")).toEqual([]);
+  });
+
+  test("a COMPACTION submitted into the window still waits its turn", () => {
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "work" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    store.submitTurn("session_one", { runId: "run_squeeze", input: "/compact", kind: "compact" });
+    store.markRunning("session_one", "run_live", claim.claim!.token);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_squeeze")!.state).toBe("queued");
+  });
+
+  test("a target REQUEUED and claimed again does not inherit the old window's messages", () => {
+    /**
+     * The watermark rides the claim, so a re-claim takes a new one. The turn
+     * that eventually runs is a fresh attempt — it never saw the first one —
+     * and a message written into the abandoned attempt is an ordinary queued
+     * message again rather than being steered into a turn that has no memory
+     * of the window it was written in.
+     */
+    const { store } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "work" });
+    const first = store.claimTurn("session_one", "worker_one")!;
+    expect(first.claim!.sequence).toBe(1);
+    store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
+
+    // The worker vanishes before it ever marked the turn running. A merely
+    // claimed turn is known to have spawned nothing, so it is requeued.
+    store.recoverInactiveWorker("worker_one");
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_live")!.state).toBe("queued");
+
+    const second = store.claimTurn("session_one", "worker_two")!;
+    expect(second.runId).toBe("run_live");
+    expect(second.claim!.sequence).toBe(2);
+    store.markRunning("session_one", "run_live", second.claim!.token);
+
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+    expect(store.steerForWorker("worker_two")).toEqual([]);
+  });
+
+  test("a claim written before the watermark existed promotes nothing", () => {
+    // Forward courtesy for a queue.json on disk from an older engine: absent
+    // means "the behaviour this claim was written under", never "promote all".
+    const { store, root: stateRoot } = readyStore();
+    store.submitTurn("session_one", { runId: "run_live", input: "work" });
+    const claim = store.claimTurn("session_one", "worker_one")!;
+    store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
+
+    const queueFile = path.join(stateRoot, "sessions", "session_one", "queue.json");
+    const queue = JSON.parse(fs.readFileSync(queueFile, "utf8"));
+    for (const turn of queue.turns) if (turn.claim) delete turn.claim.sequence;
+    fs.writeFileSync(queueFile, JSON.stringify(queue));
+
+    store.markRunning("session_one", "run_live", claim.claim!.token);
+    expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
+  });
+});
+
 // ── subscriptions — one session woken by another ────────────────────────────
 
 describe("subscriptions", () => {

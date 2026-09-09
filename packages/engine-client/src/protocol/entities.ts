@@ -955,6 +955,23 @@ export const TurnClaim = z.object({
   workerId: Id,
   token: Id,
   at: Timestamp,
+  /**
+   * THE QUEUE'S `nextSequence` AT THE INSTANT OF THE CLAIM — the boundary
+   * between "written while this session looked idle" and "written into this
+   * turn". Every turn submitted after this claim has `sequence >= this`, and
+   * `markRunning` steers exactly those into the turn as it starts, closing the
+   * window in which a claimed-but-not-yet-running turn could take no message.
+   *
+   * A SEQUENCE, NOT A TIMESTAMP. Submission order is what the question is
+   * actually about, and `nextSequence` already answers it exactly: two
+   * messages in one millisecond are ordered, and a clock that steps backwards
+   * cannot reorder them. A timestamp comparison got both wrong.
+   *
+   * Optional because claims written before this field existed do not have it;
+   * absent means promote nothing, which is the behaviour those claims were
+   * written under.
+   */
+  sequence: z.number().int().nonnegative().optional(),
 });
 export type TurnClaim = z.infer<typeof TurnClaim>;
 

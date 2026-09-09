@@ -6291,7 +6291,9 @@ export class EngineStore {
     if (!turn) return undefined;
     const at = this.now();
     turn.state = "claimed";
-    turn.claim = { workerId, token: crypto.randomUUID(), at };
+    // The watermark rides the claim: everything submitted from here on was
+    // written against a session the person had reason to think was live.
+    turn.claim = { workerId, token: crypto.randomUUID(), at, sequence: queue.nextSequence };
     turn.updatedAt = at;
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -6541,6 +6543,45 @@ export class EngineStore {
     return model === selection.model ? selection : { ...selection, model };
   }
 
+  /**
+   * INVARIANT: a message submitted after a turn was claimed is steered into
+   * THAT turn, at the first moment there is a provider to steer into.
+   *
+   * `steerIfRunning` needs a turn that is `running` with a claim, because that
+   * is what proves a provider exists — `claimed` proves the opposite, by
+   * design (`worker.ts` marks the turn running before it builds the driver, so
+   * recovery may requeue a merely-claimed turn). A message arriving in that
+   * window therefore could not steer and nothing reconsidered it; it ran later
+   * as a turn of its own, though the person had typed it into a live session.
+   *
+   * The boundary is `claim.sequence`, the queue's own submission order — not a
+   * clock, which cannot separate two messages in one millisecond and can run
+   * backwards. Turns below the watermark are the pre-claim backlog and stay
+   * queued. A re-claim takes a new watermark, so a target that was requeued
+   * and claimed again does not inherit the old window's messages.
+   *
+   * Eligibility is `promoteInQueue`'s, not a second opinion: held, compaction
+   * and compacting-target refusals are skipped here rather than reimplemented.
+   */
+  private promoteClaimWindow(sessionId: string, queue: SessionQueue, running: Turn, at: number): Turn[] {
+    const watermark = running.claim?.sequence;
+    if (watermark === undefined) return [];
+    const promoted: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.state !== "queued" || turn.sequence < watermark) continue;
+      try {
+        this.promoteInQueue(sessionId, queue, turn, running, at);
+      } catch (error) {
+        // A refusal is "this one waits", never a failure to start the turn:
+        // the message keeps its place in the queue and runs in its own right.
+        if (error instanceof EngineStateError && error.code === "conflict") continue;
+        throw error;
+      }
+      promoted.push(turn);
+    }
+    return promoted;
+  }
+
   markRunning(sessionId: string, runId: string, claimToken: string): Turn {
     const queue = this.readQueue(sessionId);
     const turn = queue.turns.find((candidate) => candidate.runId === runId);
@@ -6552,9 +6593,17 @@ export class EngineStore {
     turn.state = "running";
     turn.startedAt = at;
     turn.updatedAt = at;
+    // A pause needs no check of its own: `pauseSession` holds every queued
+    // turn AND stops the live one under this same lock, so a pause before this
+    // call has already made the guard above refuse, and one after it sweeps an
+    // ordinary running turn. Held turns are refused by `promoteInQueue`.
+    const promoted = this.promoteClaimWindow(sessionId, queue, turn, at);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.started" }, turn.runId);
+    // AFTER `turn.started`, so a client reading the journal in order never sees
+    // a message steered into a turn it has not yet been told began.
+    for (const late of promoted) this.appendEvent(sessionId, { type: "turn.steering", intoRunId: turn.runId }, late.runId);
     return structuredClone(turn);
   }
 
@@ -6738,24 +6787,49 @@ export class EngineStore {
    * and the client disables the button for the same reason, so all three tell
    * one story.
    */
-  promoteTurn(sessionId: string, runId: string): Turn {
-    assertId(runId, "run id");
-    const queue = this.readQueue(sessionId);
-    const turn = queue.turns.find((candidate) => candidate.runId === runId);
-    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+  /**
+   * THE ELIGIBILITY RULES, in one place, over an in-memory queue.
+   *
+   * `promoteTurn` and `markRunning` both promote, and a second copy of these
+   * checks is how the two would come to disagree about what may be steered.
+   * Throws exactly what `promoteTurn` documents; the caller writes the queue.
+   */
+  private promoteInQueue(sessionId: string, queue: SessionQueue, turn: Turn, running: Turn, at: number): void {
     if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
-    const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
-    if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
+    // A HOLD IS SOMEBODY'S DECISION about this message — a pause, or a
+    // restart's re-read. Releasing it by steering it would be that decision
+    // undoing itself.
+    if (turn.held) throw new EngineStateError("conflict", "a held message is not sent until it is released");
+    // A compaction is a gesture on the session, not words for the model.
+    if (turn.kind === "compact") throw new EngineStateError("conflict", "a compaction always waits its turn");
+    if (running.state !== "running" || !running.claim) throw new EngineStateError("conflict", "no turn is running to send this into");
+    // AND NOT INTO A COMPACTION EITHER. The target being a compaction turn is
+    // the same refusal from the other side: there is no conversation to
+    // interrupt, only a context being squeezed.
+    if (running.kind === "compact") throw new EngineStateError("conflict", "the provider is compacting its context and cannot take a message right now");
     const compacting = [...this.readItems(sessionId).values()].some(
       (item) => item.runId === running.runId && item.detail.type === "context_compaction" && item.status === "inProgress",
     );
     if (compacting) {
       throw new EngineStateError("conflict", "the provider is compacting its context and cannot take a message right now");
     }
-    const at = this.now();
     turn.state = "steering";
     turn.steer = { intoRunId: running.runId, requestedAt: at };
     turn.updatedAt = at;
+  }
+
+  promoteTurn(sessionId: string, runId: string): Turn {
+    assertId(runId, "run id");
+    const queue = this.readQueue(sessionId);
+    const turn = queue.turns.find((candidate) => candidate.runId === runId);
+    if (!turn) throw new EngineStateError("not_found", "turn does not exist");
+    // Checked here as well as inside, to keep the refusals in the order this
+    // route has always reported them: what you asked for, then what is live.
+    if (turn.state !== "queued") throw new EngineStateError("conflict", "only a queued turn can be sent now");
+    const running = queue.turns.find((candidate) => candidate.state === "running" && candidate.claim);
+    if (!running) throw new EngineStateError("conflict", "no turn is running to send this into");
+    const at = this.now();
+    this.promoteInQueue(sessionId, queue, turn, running, at);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
     this.appendEvent(sessionId, { type: "turn.steering", intoRunId: running.runId }, turn.runId);
