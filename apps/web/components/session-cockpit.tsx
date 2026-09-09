@@ -240,12 +240,13 @@ function SessionMasthead({
         // go see-through only because the wash rules happened to match the
         // string `bg-background/65`. The opt-in is a class now, not a class
         // name — see the translucency note in globals.css.
-        // Same 16px shorter on `md` as the rail's band (see TelarSidebarHeader):
-        // both islands start 8px down, and the lights do not move.
-        "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur md:h-[calc(var(--titlebar-height)-1rem)] md:min-h-[calc(var(--titlebar-height)-1rem)] md:py-0",
-        // The content island sits 8px in from the window edge (app-shell.tsx),
-        // so the traffic-light inset is measured from the island.
-        mainIsLeftmost ? "pl-[max(1rem,calc(var(--titlebar-inset)+0.5rem))]" : "pl-4",
+        // The same shortened band as the rail's (see TelarSidebarHeader): both
+        // islands start --app-island-inset down, and the lights do not move.
+        "app-ground app-drag flex min-h-[var(--titlebar-height)] shrink-0 items-center gap-2 bg-background/65 py-1.5 pr-4 backdrop-blur md:h-[var(--titlebar-band-height)] md:min-h-[var(--titlebar-band-height)] md:py-0",
+        // The content island sits --app-island-inset in from the window edge
+        // (app-shell.tsx), so the traffic-light inset is measured from the
+        // island.
+        mainIsLeftmost ? "pl-[max(16px,calc(var(--titlebar-inset)+var(--app-island-inset)))]" : "pl-4",
       )}
     >
       <div className="mr-1 flex min-w-0 flex-1 items-center gap-2 text-sm">
