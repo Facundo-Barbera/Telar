@@ -156,19 +156,12 @@ export function SettingsShell({
         <div
           className={cn(
             "app-drag -m-3 mb-0 flex h-[var(--titlebar-height)] shrink-0 items-center border-b border-sidebar-border/60 px-3",
-            // The island sits --app-island-inset in from the window edge
-            // (app-shell.tsx), so the traffic-light inset is measured from the
-            // island — never less than the nav's own padding.
-            //
-            // `+4px` IS THE NUMBER THIS HEADER ALREADY HAD (it read `0.25rem`),
-            // kept rather than rounded up to the island inset the other headers
-            // add: this band is pulled out of the nav's `p-3` by `-m-3`, so it
-            // starts from a different edge and lands the wordmark 4px left of
-            // the cockpit's. Both clear the lights; making them equal is a
-            // design call, not part of this fix.
+            // The inset is measured from the island, never less than the nav's
+            // own padding. `+4px` is this header's existing nudge, unchanged:
+            // `-m-3` starts it from a different edge than the cockpit's.
             "pl-[max(12px,calc(var(--titlebar-inset)+4px))]",
-            // The same band as the rail's (TelarSidebarHeader) and the session
-            // masthead, so all three read at one height.
+            // The band the rail and the masthead draw, so all three read as one
+            // row across the window.
             "md:h-[var(--titlebar-band-height)]",
           )}
         >

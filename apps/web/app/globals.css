@@ -987,11 +987,10 @@ pre span[style*="--sdm-c"] {
    56px header height.
 
    PX, NEVER REM, FOR EVERY NUMBER IN THIS BLOCK. The lights are placed in
-   window coordinates by the OS; the interface font-size preference sets
-   `font-size` on <html> (lib/appearance.ts), so a `rem` here would be
-   13px..18px of root and would drag the reserved width and the band's
-   centreline off the lights with it — which is what it did (#203). Everything
-   else in the app keeps scaling with the reader's type. */
+   window coordinates by the OS, and the interface font-size preference sets
+   `font-size` on <html> (lib/appearance.ts) — so a `rem` here is 13px..18px of
+   root, and drags the reserved width and the band's centreline off the lights
+   with it (#203). Everything else keeps scaling with the reader's type. */
 :root {
   --titlebar-inset: 0px;
   /** The gutter the islands sit in (app-shell.tsx), and why the band below is

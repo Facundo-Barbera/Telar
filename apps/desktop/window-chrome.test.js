@@ -101,6 +101,37 @@ describe("the lights sit on the app header's centreline", () => {
       for (const value of cssVarAll(name)) expect(value).toMatch(/^[\d.]+px$/);
     }
   });
+
+  test("reserving width for the lights also means sitting on their centreline", () => {
+    /**
+     * THE HALF-DONE HEADER IS THE FAILURE THIS CATCHES, and it had already
+     * happened: the right panel's tab bar takes the inset when it goes
+     * fullscreen — it replaces the masthead as the window's top-left — but kept
+     * a `h-10` of its own. 2.5rem matched the 40px band only at a 16px
+     * interface size; at 14px it was 35px, centred 2.5px above the lights.
+     *
+     * FILE-LEVEL, not element-level: parsing which class list belongs to which
+     * element out of TSX source is not worth the fragility. A file that knows
+     * about the lights horizontally and says nothing about them vertically is
+     * the smell, and it is enough to catch.
+     */
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const web = path.join(__dirname, "..", "web", "components");
+    const files = [];
+    for (const dir of [web, path.join(web, "common"), path.join(web, "settings")]) {
+      for (const name of fs.readdirSync(dir)) {
+        if (name.endsWith(".tsx")) files.push(path.join(dir, name));
+      }
+    }
+    const reserves = files.filter((file) => fs.readFileSync(file, "utf8").includes("--titlebar-inset"));
+    // If this drops to zero the walk broke and the test is asserting nothing.
+    expect(reserves.length).toBeGreaterThan(2);
+    for (const file of reserves) {
+      const source = fs.readFileSync(file, "utf8");
+      expect(source.includes("--titlebar-band-height"), `${path.basename(file)} reserves the traffic lights' width but never sets the band height`).toBe(true);
+    }
+  });
 });
 
 /** Pull a declared value out of the cockpit's stylesheet. */

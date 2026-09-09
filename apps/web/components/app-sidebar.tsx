@@ -140,9 +140,8 @@ const APP_SIDEBAR_RESIZABLE = {
  */
 function TelarSidebarHeader() {
   return (
-    // The island sits --app-island-inset in from the window edge, so the
-    // traffic-light inset is measured from the island's edge, never less than
-    // the 8px the header had before. Vertically: the lights are centred at
+    // The inset is measured from the island's edge, never less than the 8px
+    // this header had before. Vertically: the lights are centred at
     // --titlebar-height/2 from the WINDOW top (window-chrome.js), and
     // --titlebar-band-height is what puts this band's centre back on theirs
     // once the island has pushed it down.
@@ -1329,9 +1328,8 @@ export function AppSidebar() {
     // `floating`: the rail is an island (see app-shell.tsx). The primitive pads
     // the fixed container 8px and rounds/rings the inner card.
     // The primitive's `floating` padding is `p-2` — rem, and this gutter is
-    // where the traffic lights float, so it holds in px instead (globals.css).
-    // Desktop only by construction: the primitive's mobile Sheet branch drops
-    // `className` and hardcodes its own `p-0`.
+    // where the lights float, so it holds in px. Desktop only by construction:
+    // the mobile Sheet branch drops `className` and hardcodes `p-0`.
     <Sidebar variant="floating" collapsible="offcanvas" resizable={APP_SIDEBAR_RESIZABLE} className="p-[var(--app-island-inset)]">
       <SidebarBody />
       <AppSidebarRail />

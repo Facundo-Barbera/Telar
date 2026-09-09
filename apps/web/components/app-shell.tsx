@@ -53,8 +53,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           // Rounded like the rail, but NO BORDER: a hairline on this edge reads
           // as a divider between the two islands. The shadow alone lifts the
           // card, the same treatment the primitive's own `inset` variant uses.
-          // `--app-island-inset`, NOT `m-2`: Tailwind's spacing scale is rem,
-          // and this gutter is measured against the traffic lights (globals.css).
+          // `--app-island-inset`, NOT `m-2`: the spacing scale is rem, and this
+          // gutter is measured against the traffic lights (globals.css).
           "md:m-[var(--app-island-inset)] md:h-[calc(100dvh-var(--app-island-span))] md:rounded-xl md:shadow-sm",
           // A SCREEN MADE OF SEVERAL SURFACES draws its own cards: the cockpit
           // marks its <main data-surfaces> and this inset becomes the ground
