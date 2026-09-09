@@ -566,7 +566,7 @@ test("a WAKE steered into a running turn reaches the driver's mailbox still stam
     expect(heardWake).toHaveLength(1);
   });
   expect(heardWake[0]).toMatchObject({
-    text: "[wake: complete",
+    text: "[wake: completed",
     wakeReason: { kind: "turn_completed", sessionId: child.session.id, runId: "run_child" },
   });
   // A wake is nobody's message — not the person's, and not an agent's either.

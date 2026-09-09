@@ -279,12 +279,16 @@ describe("a wake is a wake wherever it lands — never the person's bubble (#194
     expect(wake).toBeGreaterThan(-1);
     expect(wake).toBeLessThan(row.indexOf("if (sender) {"));
     // And nothing in the row reads the wake's own text to decide anything.
-    expect(row).not.toContain("[wake");
+    // Comments stripped first: the prose here NAMES `[wake: …]` precisely to
+    // say it is not what the branch reads, and matching that would assert the
+    // opposite of the rule.
+    const code = row.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toContain("[wake");
   });
 
   test("the journal keeps a steered wake's stamp on the row the transcript reads", async () => {
     const { projectJournal } = await import("@/lib/engine/journal");
-    const wakeReason = { kind: "turn_completed", sessionId: "session_child", runId: "run_child" };
+    const wakeReason = { kind: "turn_completed" as const, sessionId: "session_child", runId: "run_child" };
     const [turn] = projectJournal(
       [{ runId: "run_host", sessionId: "s1", sequence: 1, input: "work", state: "running", acceptedAt: 1, updatedAt: 1 }],
       [{ id: "i1", sessionId: "s1", runId: "run_host", status: "completed", detail: { type: "user_message", text: "[wake: completed] …", wakeReason }, startedAt: 2 }],

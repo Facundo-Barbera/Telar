@@ -2595,7 +2595,9 @@ describe("a message typed into a session that had already been claimed", () => {
     store.submitTurn("session_one", { runId: "run_live", input: "do the thing" });
     const claim = store.claimTurn("session_one", "worker_one")!;
     expect(claim.runId).toBe("run_live");
-    expect(claim.claim!.sequence).toBe(1);
+    // `run_live` took sequence 1, so the next message will be 2 — and that is
+    // the watermark: at or above it means "written after this claim".
+    expect(claim.claim!.sequence).toBe(2);
 
     store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
     // Still no provider to steer into, exactly as before.
@@ -2695,7 +2697,7 @@ describe("a message typed into a session that had already been claimed", () => {
     const { store } = readyStore();
     store.submitTurn("session_one", { runId: "run_live", input: "work" });
     const first = store.claimTurn("session_one", "worker_one")!;
-    expect(first.claim!.sequence).toBe(1);
+    expect(first.claim!.sequence).toBe(2);
     store.submitTurn("session_one", { runId: "run_typed", input: "Hello?" });
 
     // The worker vanishes before it ever marked the turn running. A merely
@@ -2705,7 +2707,8 @@ describe("a message typed into a session that had already been claimed", () => {
 
     const second = store.claimTurn("session_one", "worker_two")!;
     expect(second.runId).toBe("run_live");
-    expect(second.claim!.sequence).toBe(2);
+    // A NEW watermark, above the message written into the abandoned attempt.
+    expect(second.claim!.sequence).toBe(3);
     store.markRunning("session_one", "run_live", second.claim!.token);
 
     expect(store.turns("session_one").find((turn) => turn.runId === "run_typed")!.state).toBe("queued");
