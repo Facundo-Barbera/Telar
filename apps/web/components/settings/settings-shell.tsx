@@ -156,14 +156,20 @@ export function SettingsShell({
         <div
           className={cn(
             "app-drag -m-3 mb-0 flex h-[var(--titlebar-height)] shrink-0 items-center border-b border-sidebar-border/60 px-3",
-            // The island sits 8px in from the window edge (app-shell.tsx), so
-            // the traffic-light inset is measured from the island — never less
-            // than the nav's own padding.
-            "pl-[max(0.75rem,calc(var(--titlebar-inset)+0.25rem))]",
-            // Same 16px shorter on `md` as the rail's band (TelarSidebarHeader)
-            // and the session masthead: the island starts 8px down and the
-            // lights do not move, so this puts the band's centre on theirs.
-            "md:h-[calc(var(--titlebar-height)-1rem)]",
+            // The island sits --app-island-inset in from the window edge
+            // (app-shell.tsx), so the traffic-light inset is measured from the
+            // island — never less than the nav's own padding.
+            //
+            // `+4px` IS THE NUMBER THIS HEADER ALREADY HAD (it read `0.25rem`),
+            // kept rather than rounded up to the island inset the other headers
+            // add: this band is pulled out of the nav's `p-3` by `-m-3`, so it
+            // starts from a different edge and lands the wordmark 4px left of
+            // the cockpit's. Both clear the lights; making them equal is a
+            // design call, not part of this fix.
+            "pl-[max(12px,calc(var(--titlebar-inset)+4px))]",
+            // The same band as the rail's (TelarSidebarHeader) and the session
+            // masthead, so all three read at one height.
+            "md:h-[var(--titlebar-band-height)]",
           )}
         >
           <span className="px-1.5 font-heading text-lg font-semibold tracking-tight text-foreground">Telar</span>
@@ -263,7 +269,7 @@ export function SettingsShell({
         {/* `app-ground`: this sticky bar is a ground — over a backdrop it goes
             glass with the wash instead of keeping an 80% fill (class-name
             matching died with Phase 2; grounds opt in). */}
-        <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/65 px-5 text-foreground backdrop-blur md:h-[calc(var(--titlebar-height)-1rem)]">
+        <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/65 px-5 text-foreground backdrop-blur md:h-[var(--titlebar-band-height)]">
           <ActiveIcon className="size-4 text-muted-foreground" />
           <h3 className="font-heading text-sm font-semibold tracking-tight">
             {activeSection.label}

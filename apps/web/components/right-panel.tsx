@@ -1695,7 +1695,7 @@ export function RightPanel({
     >
       {!fullscreen && <RightPanelResizeHandle panelRef={panelRef} />}
 
-      <div className={cn("flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0", fullscreen && "pl-[max(0.5rem,calc(var(--titlebar-inset)+0.5rem))]")}>
+      <div className={cn("flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0", fullscreen && "pl-[max(8px,calc(var(--titlebar-inset)+var(--app-island-inset)))]")}>
         <div role="tablist" aria-label="Right panel tabs" className="flex min-w-0 flex-1 gap-1 overflow-x-auto">
           {tabs.map((id) => {
             const on = id === tab;
