@@ -43,6 +43,9 @@ export type JournalTurn = {
   wokenBy?: string;
   /** For a session turn: what the other session did, and which one. */
   wakeReason?: Turn["wakeReason"];
+  /** For a session turn an AGENT sent directly (`sessions_send`): who. Drawn
+   *  as an agent's bubble, never as the person's — the words are a peer's. */
+  sender?: Turn["sender"];
   /** Files sent WITH this message. On the turn because that is what they
    *  describe — a transcript that showed the words and not the screenshot has
    *  lost half of what was said. */
@@ -139,6 +142,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         ...(turn.origin ? { origin: turn.origin } : {}),
         ...(turn.providerReason?.taskId ? { wokenBy: turn.providerReason.taskId } : {}),
         ...(turn.wakeReason ? { wakeReason: turn.wakeReason } : {}),
+        ...(turn.sender ? { sender: turn.sender } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
         ...(turn.held ? { held: true } : {}),
@@ -234,6 +238,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             ...(event.turn.origin ? { origin: event.turn.origin } : {}),
             ...(event.turn.providerReason?.taskId ? { wokenBy: event.turn.providerReason.taskId } : {}),
             ...(event.turn.wakeReason ? { wakeReason: event.turn.wakeReason } : {}),
+            ...(event.turn.sender ? { sender: event.turn.sender } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
             ...(event.turn.held ? { held: true } : {}),

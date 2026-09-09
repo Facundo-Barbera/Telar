@@ -2994,3 +2994,81 @@ test("releasing checks the turn's state before its hold, and refuses a removed p
   // ...and it is still held afterwards, rather than half-released by a throw.
   expect(awayBoot.turns("session_one")[0]?.held).toBeDefined();
 });
+
+describe("an agent's message is attributed, never the person's", () => {
+  const pair = () => {
+    const { store } = readyStore();
+    store.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
+    return store;
+  };
+
+  test("sessions_send from inside a turn stamps the proven sender; a stale claim is refused", () => {
+    const store = pair();
+    store.submitTurn("session_one", { runId: "run_host", input: "orchestrate" });
+    const claimed = store.claimTurn("session_one", "worker_one")!;
+    const token = claimed.claim!.token;
+    // Not yet running: the proof is not live, and a message cannot be
+    // attributed to a turn that has not started.
+    expect(() => store.submitAgentTurn("session_two", { runId: "run_early", input: "go" }, { sessionId: "session_one", runId: "run_host", claimToken: token })).toThrow(/not running/);
+    store.markRunning("session_one", "run_host", token);
+
+    const { turn } = store.submitAgentTurn("session_two", { runId: "run_sent", input: "please do X" }, { sessionId: "session_one", runId: "run_host", claimToken: token });
+    expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_one" }, state: "queued", input: "please do X" });
+    expect(turn.wakeReason).toBeUndefined();
+    expect(store.readEvents("session_two").at(-1)).toMatchObject({ type: "turn.accepted", turn: { origin: "session", sender: { sessionId: "session_one" } } });
+
+    // A forged proof — wrong token — is refused rather than attributed.
+    expect(() => store.submitAgentTurn("session_two", { runId: "run_forged", input: "as you" }, { sessionId: "session_one", runId: "run_host", claimToken: "x".repeat(32) })).toThrow(EngineStateError);
+    // And a proof naming a session that does not exist.
+    expect(() => store.submitAgentTurn("session_two", { runId: "run_ghost", input: "boo" }, { sessionId: "session_nope", runId: "run_host", claimToken: token })).toThrow(EngineStateError);
+  });
+
+  test("without proof it is still an agent's — unattributed, never a human bubble", () => {
+    const store = pair();
+    const { turn } = store.submitAgentTurn("session_two", { runId: "run_socket", input: "from a chat client" });
+    expect(turn.origin).toBe("session");
+    expect(turn.sender).toEqual({});
+    expect(turn.wakeReason).toBeUndefined();
+  });
+
+  test("the provenance rule: session origin needs exactly one of wakeReason or sender; a plain turn takes neither", () => {
+    const store = pair();
+    expect(() => store.submitTurn("session_two", { runId: "r1", input: "x", origin: "session" })).toThrow(/exactly one/);
+    expect(() => store.submitTurn("session_two", { runId: "r2", input: "x", sender: { sessionId: "session_one" } })).toThrow(/exactly one/);
+    expect(() =>
+      store.submitTurn("session_two", { runId: "r3", input: "x", origin: "session", sender: {}, wakeReason: { kind: "turn_completed", sessionId: "session_one" } }),
+    ).toThrow(/exactly one/);
+    expect(store.submitTurn("session_two", { runId: "r4", input: "x" }).turn.origin).toBeUndefined();
+  });
+
+  test("an agent's message steered into a running turn carries its sender on the heartbeat; its turn's ending still wakes subscribers", () => {
+    const store = pair();
+    store.submitTurn("session_two", { runId: "run_live", input: "working" });
+    const live = store.claimTurn("session_two", "worker_one")!;
+    store.markRunning("session_two", "run_live", live.claim!.token);
+
+    const steered = store.submitAgentTurn("session_two", { runId: "run_steer", input: "also this" });
+    expect(steered.turn.state).toBe("steering");
+    const [delivery] = store.steerForWorker("worker_one");
+    expect(delivery).toMatchObject({ steerRunId: "run_steer", text: "also this", sender: {} });
+    // A person's steer carries no sender at all.
+    store.submitTurn("session_two", { runId: "run_human", input: "and me" });
+    expect(store.steerForWorker("worker_one").find((each) => each.steerRunId === "run_human")?.sender).toBeUndefined();
+
+    // A direct agent message is real work: when ITS turn ends, a subscriber
+    // hears about it. Only a wake's own ending is silent.
+    store.completeTurn("session_two", "run_live", live.claim!.token, { text: "done" });
+    // The two undelivered steers went back to queued; drop them so the next
+    // claim is the direct message below.
+    store.stopTurn("session_two", "run_steer");
+    store.stopTurn("session_two", "run_human");
+    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_completed"] });
+    const direct = store.submitAgentTurn("session_two", { runId: "run_direct", input: "next job" });
+    expect(direct.turn.state).toBe("queued");
+    const claimedDirect = store.claimTurn("session_two", "worker_one")!;
+    store.markRunning("session_two", "run_direct", claimedDirect.claim!.token);
+    store.completeTurn("session_two", "run_direct", claimedDirect.claim!.token, { text: "finished the job" });
+    const wake = store.turns("session_one").find((turn) => turn.wakeReason);
+    expect(wake?.wakeReason).toMatchObject({ kind: "turn_completed", runId: "run_direct" });
+  });
+});

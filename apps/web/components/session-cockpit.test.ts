@@ -234,3 +234,20 @@ describe("what a live turn says it is doing", () => {
     ).toBe("Compacting context");
   });
 });
+
+describe("a message another agent sent is labelled as an agent's, never the person's", () => {
+  test("the label names the sending session, or says the sender was outside any session", async () => {
+    const { agentSenderLabel } = await import("./session-cockpit");
+    expect(agentSenderLabel({ sessionId: "session_abcdef123456" })).toBe("agent · session …123456");
+    expect(agentSenderLabel({})).toBe("agent · outside any session");
+  });
+  test("the journal keeps the sender so the transcript can draw it", async () => {
+    const { projectJournal } = await import("@/lib/engine/journal");
+    const [turn] = projectJournal(
+      [{ runId: "run_a", sessionId: "s1", sequence: 1, input: "do it", state: "queued", origin: "session", sender: { sessionId: "session_boss" }, acceptedAt: 1, updatedAt: 1 }],
+      [],
+      [],
+    );
+    expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_boss" }, prompt: "do it" });
+  });
+});

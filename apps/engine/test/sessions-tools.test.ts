@@ -76,7 +76,7 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     ...(self ? { self } : {}),
     list: async () => store.liveSessions(),
     create: async (input) => store.createSession({ ...input, origin: "session" }),
-    send: async (sessionId, input) => store.submitTurn(sessionId, input),
+    send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
     status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
     stop: async (sessionId) => store.stopTurn(sessionId),

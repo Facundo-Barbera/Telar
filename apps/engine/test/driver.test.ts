@@ -2272,3 +2272,26 @@ for (const providerSessionId of [undefined, 'resumed-browser-session']) {
     expect(prompts[1]).toBeUndefined();
   });
 }
+
+test("an agent's steered message reaches Claude framed as a peer's, and its row says an agent sent it", async () => {
+  const heard: unknown[] = [];
+  const driver = createClaudeDriver(async () => ({
+    async *query({ prompt }: { prompt: AsyncIterable<{ message: { content: unknown } }> }) {
+      for await (const message of prompt) {
+        heard.push(message.message.content);
+        if (heard.length < 2) continue;
+        yield { type: "result", subtype: "success" };
+        return;
+      }
+    },
+  }) as never);
+  const steer = new SteerMailbox();
+  steer.push({ text: "status?", sender: { sessionId: "session_boss" } });
+  const { sink, result } = run(driver, { steer });
+  await result;
+  expect(heard[0]).toBe("prompt");
+  expect(String(heard[1])).toStartWith("[agent message from session session_boss]");
+  expect(String(heard[1])).toEndWith("status?");
+  const row = sink.observations.find((o) => o.kind === "item.started" && o.item.detail.type === "user_message");
+  expect(row?.kind === "item.started" && row.item).toMatchObject({ title: "Sent by an agent", detail: { type: "user_message", text: "status?", sender: { sessionId: "session_boss" } } });
+});

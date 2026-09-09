@@ -1005,14 +1005,25 @@ export const Turn = z.object({
    * human sends while one runs is steered into it rather than queued behind
    * it.
    *
-   * `session` is a turn the ENGINE queued because a session this one had
-   * subscribed to did something — finished a turn, failed, was stopped, or
-   * parked a request. `input` is the engine's own wake text (it begins with
-   * `[wake]`), `wakeReason` names the source, and unlike a provider turn it
-   * is an ordinary QUEUED turn: it waits behind whatever is running and is
-   * never steered into it. Drawn as a wake-up row too.
+   * `session` is a turn ANOTHER SESSION caused, one of two ways:
+   *   - a WAKE the engine queued because a session this one had subscribed
+   *     to did something — `input` is the engine's own text (it begins with
+   *     `[wake]`) and `wakeReason` names the source. Drawn as a wake-up row.
+   *   - a DIRECT MESSAGE an agent sent through `sessions_send` — `input` is
+   *     the agent's own words and `sender` names it. Drawn as an agent
+   *     bubble, never as the person's: the words are a peer's report, and
+   *     nothing about them is a human decision.
+   * Exactly one of `wakeReason` / `sender` is present on such a turn.
    */
   origin: z.enum(["user", "provider", "session"]).optional(),
+  /**
+   * WHO SENT A DIRECT `origin: "session"` MESSAGE. Stamped by the engine from
+   * proof the worker supplies (the claim token of the turn doing the sending),
+   * never from a tool argument — a model cannot claim to be a session it is
+   * not. `sessionId` is absent when the sender is an agent OUTSIDE any session:
+   * the user's own chat client on the sessions MCP socket.
+   */
+  sender: z.object({ sessionId: Id.optional() }).optional(),
   providerReason: z
     .object({
       kind: z.enum(["task_notification", "unknown"]),

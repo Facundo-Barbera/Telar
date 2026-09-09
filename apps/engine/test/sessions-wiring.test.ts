@@ -361,3 +361,67 @@ test("a Codex turn is handed the wall over the socket with its own self bound; a
   expect(subscriptions).toHaveLength(1);
   expect(subscriptions[0]).toMatchObject({ subscriberSessionId: codex.id, targetSessionId: claude.id });
 });
+
+// ── 4. attribution over the wire ─────────────────────────────────────────────
+
+test("sessions_send from a turn is stamped with the sender over the wire, and the provider is told an agent spoke", async () => {
+  /**
+   * THE BUG THIS PINS, measured on the dogfood app: an orchestrator's
+   * `sessions_send` went through the worker's plain `submitTurn`, arrived with
+   * no origin, was drawn as the person's own bubble and reached the provider
+   * as the user speaking. The worker now sends through `submitAgentTurn` with
+   * its own claim as proof, and the engine stamps who spoke.
+   */
+  let made: Session | undefined;
+  const { client, hostId } = await turnWith(async (sessions) => {
+    const { projects } = await sessions.list();
+    made = await sessions.create({ projectId: projects[0]!.id, title: "the peer", envMode: "local" });
+    await sessions.send(made.id, { runId: "run_peer", input: "please review the diff" });
+  });
+  const { turns } = await client.session(made!.id);
+  expect(turns[0]).toMatchObject({ runId: "run_peer", origin: "session", sender: { sessionId: hostId }, input: "please review the diff" });
+
+  // The peer's own worker runs it: the provider hears the frame, the record
+  // keeps the bare words.
+  const prompts: string[] = [];
+  const worker = new EngineWorker({
+    client,
+    workerId: "worker_peer",
+    driver: { async run({ prompt }) { prompts.push(prompt); return { text: "reviewed" }; } },
+    pollMs: 60_000,
+  });
+  workers.push(worker);
+  await worker.start();
+  await worker.tick();
+  for (let attempt = 0; attempt < 200; attempt++) {
+    if ((await client.session(made!.id)).turns[0]?.state === "completed") break;
+    await Bun.sleep(5);
+  }
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toStartWith(`[agent message from session ${hostId}]`);
+  expect(prompts[0]).toContain("not typed by the user");
+  expect(prompts[0]).toEndWith("please review the diff");
+  expect((await client.session(made!.id)).turns[0]?.input).toBe("please review the diff");
+});
+
+test("a cockpit cannot forge a sender through /turns, and a bad proof on /turns/agent is refused", async () => {
+  const daemon = await startEngine({ engineRoot: tmp("telar-sessions-forge-"), workerLeaseMs: 1_000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  const { project } = await client.registerProject({ name: "aurora", root: repo() });
+  const { session } = await client.createSession({ projectId: project.id, title: "target" });
+  const worker = new EngineWorker({ client, workerId: "worker_one", driver: { async run() { return { text: "" }; } }, pollMs: 60_000 });
+  workers.push(worker);
+  await worker.start();
+
+  const forged = await client.submitTurn(session.id, { runId: "run_forge", input: "as an agent", ...({ origin: "session", sender: { sessionId: "session_x" } } as object) });
+  expect(forged.turn.origin).toBeUndefined();
+  expect(forged.turn.sender).toBeUndefined();
+
+  await expect(
+    client.submitAgentTurn(session.id, { runId: "run_bad", input: "x", proof: { sessionId: session.id, runId: "run_forge", claimToken: "y".repeat(32) } }),
+  ).rejects.toThrow();
+  // Without proof: an agent's, unattributed — the outward socket's case.
+  const bare = await client.submitAgentTurn(session.id, { runId: "run_bare", input: "from outside" });
+  expect(bare.turn).toMatchObject({ origin: "session", sender: {} });
+});

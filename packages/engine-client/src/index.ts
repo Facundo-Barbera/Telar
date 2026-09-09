@@ -125,6 +125,7 @@ import {
   type WakeKind,
   type WorkerClaim,
   type ProviderTurnOpenInput,
+  type AgentTurnInput,
   type WorkerStatus,
   type WorkspaceFile,
   type WorkspaceListing,
@@ -1631,6 +1632,15 @@ export class EngineClient {
     input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
   ): Promise<TurnSubmissionResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns`, input);
+  }
+
+  /**
+   * Queue one message AS AN AGENT — the worker's half of `sessions_send`.
+   * `proof` is the sending turn's own claim; the engine stamps the sender
+   * from it and never from anything a model typed. See `AgentTurnInput`.
+   */
+  submitAgentTurn(sessionId: string, input: AgentTurnInput): Promise<TurnSubmissionResult> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/agent`, input);
   }
 
   /**

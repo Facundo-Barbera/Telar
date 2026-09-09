@@ -389,7 +389,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
             sessionId,
             runId: turn.runId,
             state: turn.state,
-            note: "Queued, not answered. The turn runs when a worker picks it up — check sessions_status, or read the reply with sessions_read.",
+            note: "Queued, not answered. The turn runs when a worker picks it up — check sessions_status, or read the reply with sessions_read. It arrives marked as sent by you, an agent: the receiving session will not read it as its user speaking or as a human approval.",
           });
         } catch (error) {
           return err(`Could not send to "${sessionId}": ${failure(error)}`);

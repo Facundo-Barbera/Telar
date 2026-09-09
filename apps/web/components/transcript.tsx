@@ -454,6 +454,22 @@ function CompactionRow({ item }: { item: JournalItem }) {
  */
 function SteeredMessageRow({ item }: { item: JournalItem }) {
   const attachments = item.detail.type === "user_message" ? (item.detail.attachments ?? []) : [];
+  const sender = item.detail.type === "user_message" ? item.detail.sender : undefined;
+  // AN AGENT'S WORDS ARE NOT THE PERSON'S BUBBLE: left-aligned, dashed, and
+  // labelled with who sent them — the same shape the cockpit gives an
+  // agent-sent turn, so the two read as one kind of thing.
+  if (sender) {
+    return (
+      <div className="flex flex-col gap-1 rounded-lg border border-dashed border-border/80 bg-muted/30 px-3 py-2 text-sm" aria-label="Message from another agent">
+        <div className="flex items-center gap-1.5 text-[0.6875rem] text-muted-foreground">
+          <BotIcon className="size-3.5 shrink-0" />
+          <span className="font-mono">{sender.sessionId ? `agent · session …${sender.sessionId.slice(-6)}` : "agent · outside any session"}</span>
+          <span>· not the user, no approval implied</span>
+        </div>
+        <p className="whitespace-pre-wrap">{itemText(item)}</p>
+      </div>
+    );
+  }
   return (
     <div className="flex justify-end py-1">
       <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary/10 px-3 py-1.5 text-sm">

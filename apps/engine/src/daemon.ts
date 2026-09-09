@@ -14,6 +14,7 @@ import {
   LatexBootstrap,
   parseForgeQuery,
   RequestOpenInput,
+  AgentTurnInput,
   ProviderTurnOpenInput,
   SessionTaskReport,
   resolveMcpServers,
@@ -606,7 +607,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // nowhere to be woken. The subscription tools refuse, in words.
       list: async () => store.liveSessions(),
       create: async (input) => store.createSession({ ...input, origin: "session" }),
-      send: async (sessionId, input) => store.submitTurn(sessionId, input),
+      // An agent's words, with no session to attribute them to: the caller is
+      // the user's own chat client, outside any turn. Never the person's.
+      send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
       read: async (sessionId, after) => store.readEvents(sessionId, after),
       status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
       stop: async (sessionId) => store.stopTurn(sessionId),
@@ -3128,12 +3131,31 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           writeJson(response, 200, { subscriptions: store.subscriptionsFor(session.sessionId) });
           return;
         }
+        /**
+         * A MESSAGE FROM AN AGENT — the worker's `sessions_send`. Separate
+         * route rather than a body flag on `/turns`, because the difference is
+         * WHO IS SPEAKING and that must not be a field a cockpit can set.
+         * `proof` is the sending turn's own claim; the store checks it is live
+         * and stamps the sender from it, so a model cannot name a session it is
+         * not. Without proof the turn is still an agent's, unattributed.
+         */
+        if (request.method === "POST" && session.tail === "/turns/agent") {
+          pruneWorkers();
+          if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
+          const parsed = AgentTurnInput.safeParse(await body(request));
+          if (!parsed.success) throw new HttpError(400, "invalid_request", "agent turn payload is invalid");
+          const { proof, ...message } = parsed.data;
+          const result: TurnSubmissionResult = store.submitAgentTurn(session.sessionId, message, proof);
+          writeJson(response, result.replayed ? 200 : 202, result);
+          return;
+        }
         if (request.method === "POST" && session.tail === "/turns") {
           pruneWorkers();
           if (workers.size === 0) throw new HttpError(503, "worker_unavailable", "no worker is registered");
-          // `origin` and `wakeReason` are DELIBERATELY NOT READ from the body:
-          // a wake is the engine's own, queued by `fireSubscriptions`, and a
-          // cockpit body that could forge one could impersonate a peer.
+          // `origin`, `wakeReason` and `sender` are DELIBERATELY NOT READ from
+          // the body: a wake is the engine's own, queued by `fireSubscriptions`,
+          // an agent's message has its own route above, and a cockpit body that
+          // could forge either could impersonate a peer.
           const input = await body(request);
           const model = TurnModelSelection.safeParse(input.model);
           if (input.model !== undefined && !model.success) {

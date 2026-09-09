@@ -14,6 +14,7 @@ import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepas
 import type { LoginGrantStore } from "./secrets/login-grants";
 import { providerProcessEnv } from "./provider-instances";
 import { SteerMailbox } from "./steering";
+import { framedTurnInput } from "./attribution";
 
 type WorkerClient = Pick<
   EngineClient,
@@ -68,7 +69,9 @@ type WorkerClient = Pick<
   | "ds"
   | "latex"
   | "createSession"
-  | "submitTurn"
+  // An AGENT's message, never `submitTurn`: the worker speaks for a turn, and
+  // the route it reaches stamps who — see `EngineStore.submitAgentTurn`.
+  | "submitAgentTurn"
   | "events"
   | "session"
   | "stopTurn"
@@ -416,7 +419,14 @@ export class EngineWorker {
         const entry = this.steering.get(delivery.claimToken);
         // No mailbox (or closed): this worker cannot deliver — leave the
         // turn `steering`; the engine's settlement sweep requeues it.
-        if (!entry?.mailbox.push({ text: delivery.text, ...(delivery.attachments?.length ? { attachments: delivery.attachments } : {}) })) continue;
+        if (
+          !entry?.mailbox.push({
+            text: delivery.text,
+            ...(delivery.attachments?.length ? { attachments: delivery.attachments } : {}),
+            ...(delivery.sender ? { sender: delivery.sender } : {}),
+          })
+        )
+          continue;
         this.pushedSteers.add(delivery.steerRunId);
         entry.pendingAck.push({ sessionId: delivery.sessionId, steerRunId: delivery.steerRunId, claimToken: delivery.claimToken });
       }
@@ -484,7 +494,10 @@ export class EngineWorker {
    */
   private async execute(claim: WorkerClaim): Promise<void> {
     const { sessionId, projectRoot: cwd, resumeCursor: providerSessionId, driver: driverKind, model } = claim;
-    const { runId, input: prompt } = claim.turn;
+    const { runId } = claim.turn;
+    // An agent's message reaches the provider framed as a peer's, never as
+    // the person's words — see ./attribution.ts.
+    const prompt = framedTurnInput(claim.turn);
     const claimToken = claim.turn.claim!.token;
     const controller = new AbortController();
     this.active.set(claimToken, controller);
@@ -621,8 +634,17 @@ export class EngineWorker {
         self: { sessionId },
         list: () => this.options.client.liveSessions(),
         create: async (input) => (await this.options.client.createSession({ ...input, origin: "session" })).session,
+        /**
+         * SENT AS THIS TURN, PROVABLY. The proof is the claim the worker is
+         * running under — the one thing a model inside the turn cannot see
+         * or forge — so the engine can stamp `Turn.sender` with this session
+         * and draw the message as a peer's report rather than the person's.
+         * Measured before this: the same call went through `submitTurn` and
+         * the receiving session showed an orchestrator's instructions in the
+         * human's own bubble, with the provider told the user had spoken.
+         */
         send: async (id, input) => {
-          const accepted = await this.options.client.submitTurn(id, input);
+          const accepted = await this.options.client.submitAgentTurn(id, { ...input, proof: { sessionId, runId, claimToken } });
           return { turn: accepted.turn, replayed: accepted.replayed };
         },
         read: async (id, after) => (await this.options.client.events(id, after)).events,

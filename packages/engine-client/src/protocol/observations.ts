@@ -263,6 +263,23 @@ export const ProviderTurnOpenInput = z.object({
 export type ProviderTurnOpenInput = z.infer<typeof ProviderTurnOpenInput>;
 
 /**
+ * A message ONE AGENT SENDS ANOTHER SESSION — the `sessions_send` wire shape.
+ *
+ * `proof` is the SENDING turn's claim (session, run, token): the engine checks
+ * it is live and stamps `Turn.sender` from it. It is the worker's to supply,
+ * never a model's — the tool wall has no such argument. Absent proof (the
+ * outward sessions socket, whose caller is the user's own chat client) still
+ * yields an `origin: "session"` turn, with no session to attribute it to.
+ */
+export const AgentTurnInput = z.object({
+  runId: Id,
+  input: z.string().min(1),
+  attachments: z.array(Id).optional(),
+  proof: z.object({ sessionId: Id, runId: Id, claimToken: z.string().min(16) }).optional(),
+});
+export type AgentTurnInput = z.infer<typeof AgentTurnInput>;
+
+/**
  * Task reports that arrive BETWEEN turns — the level signal, a notification
  * for a shell that fired, a Ctrl+B — carried without a claim, because there is
  * no turn to claim. Worker-authenticated like a heartbeat; the store folds
@@ -322,6 +339,9 @@ export const WorkerStatus = z.object({
          * stored and never delivered — measured on the dogfood app.
          */
         attachments: z.array(TurnAttachment).optional(),
+        /** Present when an AGENT sent this (`sessions_send`), so the driver
+         *  can deliver it as a peer's report rather than as the person. */
+        sender: z.object({ sessionId: Id.optional() }).optional(),
       }),
     )
     .default([]),

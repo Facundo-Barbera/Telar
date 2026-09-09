@@ -5891,18 +5891,24 @@ export class EngineStore {
       model?: TurnModelSelection;
       attachments?: string[];
       /**
-       * A WAKE, not a message. Set together by `fireSubscriptions` and by
-       * nobody else: the HTTP route never reads either from a body, so a
-       * cockpit cannot forge one. One without the other is refused.
+       * NOT THE PERSON'S WORDS. `origin: "session"` comes two ways and needs
+       * exactly one companion:
+       *   - `wakeReason`: a WAKE, set by `fireSubscriptions` and nobody else.
+       *   - `sender`: a DIRECT MESSAGE from an agent (`sessions_send`), set
+       *     by `submitAgentTurn` after checking the sender's claim.
+       * The HTTP route never reads `origin` or `wakeReason` from a body, so a
+       * cockpit cannot forge a wake; `sender` it accepts only with proof.
        */
       origin?: "session";
       wakeReason?: WakeReason;
+      sender?: { sessionId?: string };
     },
   ): { turn: Turn; replayed: boolean } {
     assertId(input.runId, "run id");
     assertText(input.input);
-    if ((input.origin === "session") !== (input.wakeReason !== undefined)) {
-      throw new EngineStateError("invalid_request", "a session-origin turn carries a wake reason, and only such a turn does");
+    const companions = Number(input.wakeReason !== undefined) + Number(input.sender !== undefined);
+    if (input.origin === "session" ? companions !== 1 : companions !== 0) {
+      throw new EngineStateError("invalid_request", "a session-origin turn carries exactly one of a wake reason or a sender, and only such a turn does");
     }
     const kind = input.kind === "compact" ? "compact" : undefined;
     const session = this.getSession(sessionId);
@@ -5980,6 +5986,9 @@ export class EngineStore {
       input: input.input,
       ...(kind ? { kind } : {}),
       ...(input.origin === "session" && input.wakeReason ? { origin: "session" as const, wakeReason: input.wakeReason } : {}),
+      ...(input.origin === "session" && input.sender
+        ? { origin: "session" as const, sender: input.sender.sessionId ? { sessionId: input.sender.sessionId } : {} }
+        : {}),
       state: "queued",
       acceptedAt: at,
       updatedAt: at,
@@ -6054,6 +6063,35 @@ export class EngineStore {
       if (steered) return { turn: steered, replayed: false };
     }
     return { turn: structuredClone(turn), replayed: false };
+  }
+
+  /**
+   * A DIRECT MESSAGE FROM AN AGENT — `sessions_send`, from inside a turn or
+   * from a chat client on the sessions socket.
+   *
+   * THE SENDER IS PROVEN, NOT DECLARED. A turn's `sessions_send` arrives with
+   * the claim token of the turn doing the sending; it names the sender only if
+   * that claim is live. Without proof the message is still an agent's — it
+   * simply has no session to be attributed to (the outward socket's case) —
+   * and it is NEVER recorded as the person's. Measured before this existed:
+   * an orchestrator's `sessions_send` landed on the worker as an ordinary
+   * `submitTurn`, was stored with no origin at all, drew as the human's own
+   * bubble and reached the provider as the user speaking — a peer's report
+   * dressed as an instruction from the person, with nobody having decided
+   * anything.
+   */
+  submitAgentTurn(
+    sessionId: string,
+    input: { runId: string; input: string; attachments?: string[] },
+    proof?: { sessionId: string; runId: string; claimToken: string },
+  ): { turn: Turn; replayed: boolean } {
+    let sender: { sessionId?: string } = {};
+    if (proof) {
+      assertId(proof.sessionId, "sender session id");
+      const claimed = this.requireRunningClaim(proof.sessionId, proof.runId, proof.claimToken);
+      sender = { sessionId: claimed.sessionId };
+    }
+    return this.submitTurn(sessionId, { runId: input.runId, input: input.input, ...(input.attachments ? { attachments: input.attachments } : {}), origin: "session", sender });
   }
 
   /**
@@ -6897,7 +6935,8 @@ export class EngineStore {
    * A WAKE'S OWN ENDING WAKES NOBODY. Two sessions subscribed to each other
    * would otherwise ping-pong forever: A finishes → B is woken → B's wake
    * turn finishes → A is woken → … The turn whose ending is being announced
-   * is checked for `origin: "session"` and skipped.
+   * is checked for a `wakeReason` and skipped. A DIRECT agent message's turn
+   * does wake: the sender asked for work and, if subscribed, wants its end.
    *
    * ONE FILE READ PER TRANSITION, returning at once when nothing matches —
    * the common case on an engine with no orchestrator.
@@ -6908,7 +6947,7 @@ export class EngineStore {
     turn: Turn,
     context: { resultText?: string; failure?: Turn["failure"]; request?: EngineRequest },
   ): void {
-    if (turn.origin === "session") return;
+    if (turn.origin === "session" && turn.wakeReason) return;
     const all = this.readSubscriptions();
     const hits = all.filter((each) => each.targetSessionId === targetSessionId && each.events.includes(kind));
     if (hits.length === 0) return;
@@ -7201,6 +7240,9 @@ export class EngineStore {
             // The attachments ride with the words — a steered image used to be
             // stored here and never delivered.
             ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
+            // And so does WHO SAID THEM: an agent's message steered into a
+            // running turn used to reach the provider as the person's own.
+            ...(turn.origin === "session" && turn.sender ? { sender: turn.sender } : {}),
           },
         ];
       });

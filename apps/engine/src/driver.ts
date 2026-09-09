@@ -58,6 +58,7 @@ import { createWarpSpawn, type WarpSpawnSdk } from "./warp/spawn";
 import { displayTools, type DisplayCapability } from "./display/tools";
 import { spoolTools, type SpoolCapability } from "./spool/tools";
 import type { SteerMailbox } from "./steering";
+import { frameAgentMessage } from "./attribution";
 import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
@@ -1822,14 +1823,14 @@ export function createClaudeDriver(
        * Its approval gate rides the socket's binding, which is why `canUseTool`
        * above waves its calls through.
        */
-      const onSteered = (text: string, attachments: TurnAttachment[]) => {
+      const onSteered = (text: string, attachments: TurnAttachment[], sender?: { sessionId?: string }) => {
         const id = itemId();
         emit({
           kind: "item.started",
           item: {
             id,
-            detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}) },
-            title: "Sent now",
+            detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}), ...(sender ? { sender } : {}) },
+            title: sender ? "Sent by an agent" : "Sent now",
           },
         });
         emit({ kind: "item.completed", itemId: id, status: "completed" });
@@ -2220,9 +2221,10 @@ export function createClaudeDriver(
               // several sentences — and one set of attachments, built into
               // the message exactly as a queued turn's are (images as pixels,
               // everything else as a path).
-              const text = queued.map((message) => message.text).join("\n\n");
+              // Each agent-sent message keeps its frame; a person's is bare.
+              const text = queued.map((message) => (message.sender ? frameAgentMessage(message.text, message.sender) : message.text)).join("\n\n");
               const attachments = queued.flatMap((message) => message.attachments ?? []);
-              onSteered(text, attachments);
+              onSteered(queued.map((message) => message.text).join("\n\n"), attachments, queued.find((message) => message.sender)?.sender);
               runtime.feed.push({
                 type: "user",
                 message: { role: "user", content: claudeInitialContent(text, attachments) },

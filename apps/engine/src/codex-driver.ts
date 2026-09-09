@@ -49,6 +49,7 @@ import { BROWSER_BRIEFING } from "./browser/briefing";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import { TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
+import { frameAgentMessage } from "./attribution";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
 import { codexApprovalRequest, codexItemDetail, codexItemFailed, codexItemStatus, codexPlanDetail, codexUsage, MCP_ELICITATION } from "./codex/items";
 import { normalizeOutcome, type DriverRequest, type DriverRun, type DriverResult, type TurnDriver } from "./driver";
@@ -775,21 +776,26 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
                 // by its path so the agent can still open it — the same
                 // fallback the Claude seam uses for non-image files — rather
                 // than dropped, which is what the old text-only channel did.
+                const shown = queued.map((message) => message.text).join("\n\n");
                 const text = queued
                   .map((message) => {
                     const files = message.attachments ?? [];
-                    if (files.length === 0) return message.text;
-                    return `${message.text}\n\nAttached files:\n${files.map((file) => `- ${file.name} (${file.mediaType}) at ${file.path}`).join("\n")}`;
+                    // An agent's message reaches the provider framed as a
+                    // peer's, never as the person's — see ../attribution.ts.
+                    const words = message.sender ? frameAgentMessage(message.text, message.sender) : message.text;
+                    if (files.length === 0) return words;
+                    return `${words}\n\nAttached files:\n${files.map((file) => `- ${file.name} (${file.mediaType}) at ${file.path}`).join("\n")}`;
                   })
                   .join("\n\n");
                 const attachments = queued.flatMap((message) => message.attachments ?? []);
+                const sender = queued.find((message) => message.sender)?.sender;
                 const rowId = itemIdFor(`steer-${crypto.randomUUID().slice(0, 8)}`);
                 emit({
                   kind: "item.started",
                   item: {
                     id: rowId,
-                    detail: { type: "user_message", text, ...(attachments.length > 0 ? { attachments } : {}) },
-                    title: "Sent now",
+                    detail: { type: "user_message", text: shown, ...(attachments.length > 0 ? { attachments } : {}), ...(sender ? { sender } : {}) },
+                    title: sender ? "Sent by an agent" : "Sent now",
                   },
                 });
                 emit({ kind: "item.completed", itemId: rowId, status: "completed" });
