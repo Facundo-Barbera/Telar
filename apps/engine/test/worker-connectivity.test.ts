@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient, EngineClientError, sanitizeTransportCause } from "@telar/engine-client";
 import { startEngine } from "../src/daemon";
+import type { TurnDriver } from "../src/driver";
+import { EngineWorker } from "../src/worker";
+import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
 
 /** Wait for the store to actually hold a terminal state — the drain runs off
  *  the tick, so a tick returning is not the settlement landing. */
@@ -13,9 +16,6 @@ async function settled(client: EngineClient, sessionId: string): Promise<void> {
     await Bun.sleep(5);
   }
 }
-import type { TurnDriver } from "../src/driver";
-import { EngineWorker } from "../src/worker";
-import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
 
 /**
  * #208 — A TRANSIENT LOOPBACK FAILURE IS NOT A SHUTDOWN.
@@ -895,3 +895,95 @@ test("hung settlements never starve the heartbeat: no global loss, cancellations
   expect(lost).toBe(0);
   await worker.stop();
 }, 30_000);
+
+test("one settlement the engine keeps refusing does not block the next, and is spaced not spun", async () => {
+  // The drain's catch sat outside the loop, so the first entry throwing a
+  // non-connectivity error aborted the whole pass: later entries went
+  // unattempted, and the refusing one never advanced its backoff.
+  const clock = fakeClock();
+  // A lease that comfortably outlasts the backoff being exercised: past the
+  // lease a settle correctly refuses to send at all, which is a different
+  // invariant and has its own test.
+  const fake = fakeClient({ register: { heartbeatIntervalMs: 10_000 } });
+  const diagnostics: Record<string, unknown>[] = [];
+  let refusals = 0;
+  let settledSecond = 0;
+  const worker = workerFor(fake, () => undefined, { count: 0 }, { clock, diagnostics });
+  await worker.start();
+  const pending = (worker as unknown as { pendingSettlements: Map<string, { rounds: number; nextAttemptAt: number }> }).pendingSettlements;
+  const retain = (worker as unknown as { retain: (e: Record<string, unknown>) => void }).retain.bind(worker);
+
+  // First: refuses forever with a non-connectivity error. Second: fine.
+  retain({
+    sessionId: "s",
+    runId: "run_bad",
+    claimToken: "t",
+    operation: "failTurn",
+    send: async () => {
+      refusals += 1;
+      throw new EngineClientError("invalid_request", "no", 400, { operation: "failTurn" });
+    },
+  });
+  retain({
+    sessionId: "s",
+    runId: "run_good",
+    claimToken: "t",
+    operation: "completeTurn",
+    send: async () => {
+      settledSecond += 1;
+    },
+  });
+  // Both are due now.
+  for (const entry of pending.values()) entry.nextAttemptAt = 0;
+
+  const drain = (worker as unknown as { startDrain: () => void }).startDrain.bind(worker);
+  drain();
+  await Bun.sleep(20);
+
+  // THE SECOND ENTRY SETTLED despite the first refusing — the whole point.
+  expect(settledSecond).toBe(1);
+  expect(pending.has("run_good")).toBeFalse();
+  // The refusing one is still held (never dropped on a count) and is now SPACED
+  // rather than eligible on the next tick.
+  expect(pending.has("run_bad")).toBeTrue();
+  expect(pending.get("run_bad")!.nextAttemptAt).toBeGreaterThan(clock.now());
+  expect(refusals).toBe(1);
+
+  // A tick before its backoff elapses does not touch it.
+  drain();
+  await Bun.sleep(20);
+  expect(refusals).toBe(1);
+  // Once the spacing has passed it is attempted again — retained, not forgotten.
+  clock.advance(2_000);
+  for (const entry of pending.values()) entry.nextAttemptAt = 0;
+  drain();
+  await Bun.sleep(20);
+  expect(refusals).toBe(2);
+  expect(pending.has("run_bad")).toBeTrue();
+  expect(diagnostics.some((line) => line.event === "turn_settlement_refused" && line.code === "invalid_request")).toBeTrue();
+  await worker.stop();
+});
+
+test("a turn the engine no longer has is VACATED, not held for something that cannot exist", async () => {
+  const clock = fakeClock();
+  const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
+  const diagnostics: Record<string, unknown>[] = [];
+  const worker = workerFor(fake, () => undefined, { count: 0 }, { clock, diagnostics });
+  await worker.start();
+  const pending = (worker as unknown as { pendingSettlements: Map<string, unknown> }).pendingSettlements;
+  const settle = (worker as unknown as { settle: (e: Record<string, unknown>) => Promise<string> }).settle.bind(worker);
+  const outcome = await settle({
+    sessionId: "s",
+    runId: "run_gone",
+    claimToken: "t",
+    operation: "failTurn",
+    send: async () => {
+      throw new EngineClientError("not_found", "no such turn", 404, { operation: "failTurn" });
+    },
+  });
+  // An explicit disposition from the engine, not a failed retry.
+  expect(outcome).toBe("settled");
+  expect(pending.size).toBe(0);
+  expect(diagnostics.some((line) => line.event === "turn_settlement_vacated")).toBeTrue();
+  await worker.stop();
+});

@@ -540,8 +540,20 @@ export class EngineWorker {
           this.pendingSettlements.delete(entry.runId);
           return "settled";
         }
+        // `not_found` is an explicit disposition, not a failed retry: there is
+        // no such turn to settle, so the entry is released rather than held.
+        if (error instanceof EngineClientError && error.code === "not_found") {
+          this.pendingSettlements.delete(entry.runId);
+          this.diagnose({ event: "turn_settlement_vacated", operation: entry.operation, ...EngineWorker.describe(error) });
+          return "settled";
+        }
         const timedOut = error instanceof DOMException && error.name === "TimeoutError";
-        if (!timedOut && !isConnectivityLoss(error)) throw error;
+        // A non-connectivity refusal is still an unresolved outcome: retained
+        // and spaced like a transport failure, never rethrown or dropped.
+        if (!timedOut && !isConnectivityLoss(error)) {
+          this.diagnose({ event: "turn_settlement_refused", operation: entry.operation, ...EngineWorker.describe(error) });
+          break;
+        }
         if (error instanceof EngineClientError && (error.code === "engine_unauthorized" || error.code === "worker_unavailable")) {
           this.noteConnectivityFailure(error);
           this.diagnose({ event: "turn_settlement_refused", operation: entry.operation, ...EngineWorker.describe(error) });
@@ -551,13 +563,14 @@ export class EngineWorker {
         if (!timedOut) this.noteConnectivityFailure(error);
       }
     }
-    /**
-     * RETAINED UNTIL THE ENGINE HOLDS AN OUTCOME. Never dropped on a retry
-     * count: forgetting an unresolved turn is the defect, and doing it after
-     * twenty rounds is the same defect as doing it after five. The next attempt
-     * is spaced by a capped exponential so a dead endpoint is polled at a
-     * bounded rate, not every tick.
-     */
+    this.retain(entry);
+    return "pending";
+  }
+
+  /** Hold this settlement for a later drain. Never dropped on a retry count —
+   *  forgetting an unresolved outcome is the defect — and spaced by a capped
+   *  exponential so a refusing endpoint is polled at a bounded rate. */
+  private retain(entry: { sessionId: string; runId: string; claimToken: string; operation: "completeTurn" | "failTurn"; send: (signal: AbortSignal) => Promise<unknown> }): void {
     const held = this.pendingSettlements.get(entry.runId);
     const rounds = (held?.rounds ?? 0) + 1;
     const at = this.now();
@@ -568,7 +581,6 @@ export class EngineWorker {
       nextAttemptAt: at + Math.min(SETTLE_RETRY_MAX_MS, SETTLE_RETRY_MIN_MS * 2 ** Math.min(rounds, 12)),
     });
     if (!held) this.diagnose({ event: "turn_settlement_pending", operation: entry.operation });
-    return "pending";
   }
 
   /** A settle attempt's own bound: the remaining lease when there is one, never
@@ -596,11 +608,15 @@ export class EngineWorker {
         for (const entry of [...this.pendingSettlements.values()]) {
           if (this.stopped || this.connectionLost) return;
           if (this.now() < entry.nextAttemptAt) continue;
-          await this.settle(entry, 1);
+          // Per entry: one settlement the engine keeps refusing must not stop
+          // every later one from being attempted. `settle` retains and spaces
+          // what it classifies; this catches anything it could not.
+          try {
+            await this.settle(entry, 1);
+          } catch {
+            this.retain(entry);
+          }
         }
-      } catch {
-        // A settle that threw something non-connectivity is the turn's own
-        // problem; the entry stays retained for the next drain.
       } finally {
         this.draining = false;
       }
