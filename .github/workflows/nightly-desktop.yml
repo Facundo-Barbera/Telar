@@ -38,9 +38,16 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: nightly-publish
+  cancel-in-progress: false
+
 jobs:
   nightly:
-    runs-on: macos-14
+    # Only trusted release triggers use the personal Mac; PR CI stays hosted.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64, telar-nightly]
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,7 +84,10 @@ jobs:
           MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          umask 077
+          # Save the exact search list before changing this persistent Mac.
+          security list-keychains -d user > "$RUNNER_TEMP/keychain-search-list.txt"
+          KEYCHAIN="$RUNNER_TEMP/signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keychain-db"
           CERT_PATH="$RUNNER_TEMP/cert.p12"
 
           echo -n "$MACOS_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
@@ -179,5 +189,13 @@ jobs:
       - name: Clean up temporary keychain
         if: always()
         run: |
-          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
-          rm -f "$RUNNER_TEMP/apple_api_key.p8" 2>/dev/null || true
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/keychain-search-list.txt" ]; then
+            python3 - <<'PYTHON'
+          import os, pathlib, shlex, subprocess
+          saved = pathlib.Path(os.environ["RUNNER_TEMP"]) / "keychain-search-list.txt"
+          subprocess.run(["security", "list-keychains", "-d", "user", "-s", *shlex.split(saved.read_text())], check=True)
+          PYTHON
+          fi
+          security delete-keychain "$RUNNER_TEMP/signing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/apple_api_key.p8" "$RUNNER_TEMP/keychain-search-list.txt"
