@@ -718,7 +718,22 @@ export function SessionTurn({
         {turn.items.every((item) => item.detail.type !== "context_compaction") && (
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
             <Minimize2Icon className="size-3.5 shrink-0" />
-            <span>{isActiveTurn(turn.state) ? "Compacting context…" : turn.state === "failed" ? "Compaction failed" : "Context compaction requested"}</span>
+            <span>
+              {turn.held && turn.state === "queued"
+                ? turn.heldReason === "session_paused"
+                  ? "Compaction held — the session is paused"
+                  : "Compaction held for your re-read"
+                : isActiveTurn(turn.state)
+                  ? "Compacting context…"
+                  : turn.state === "failed"
+                    ? "Compaction failed"
+                    : "Context compaction requested"}
+            </span>
+            {turn.held && turn.state === "queued" && (
+              <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDropHeld(turn)}>
+                Drop it
+              </Button>
+            )}
           </p>
         )}
         {turn.state === "failed" && turn.failure && <p className="text-xs text-destructive">{turn.failure}</p>}
@@ -1789,8 +1804,11 @@ export function SessionCockpit({
    * reckoning, and treating one of those as live would put the working indicator
    * and the live step window on a turn that has not started.
    */
+  // A HELD turn is not about to run — a pause or a restart is holding it —
+  // so it is not "busy" either: the composer must not promise to steer into
+  // it, and the send button must not read as a Stop.
   const active =
-    transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state));
+    transcript.find((turn) => turn.state === "claimed" || turn.state === "running") ?? transcript.find((turn) => isActiveTurn(turn.state) && !turn.held);
   const running = Boolean(transcript.find((turn) => turn.state === "claimed" || turn.state === "running"));
   /** The provider is squeezing its context right now — an open
    *  context_compaction row on the live turn. Gates the compact button so the

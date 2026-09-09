@@ -251,3 +251,27 @@ describe("a message another agent sent is labelled as an agent's, never the pers
     expect(turn).toMatchObject({ origin: "session", sender: { sessionId: "session_boss" }, prompt: "do it" });
   });
 });
+
+describe("a held message is not a running one", () => {
+  test("the journal carries why a turn is held, and a paused hold is told apart from a restart's", async () => {
+    const { projectJournal } = await import("@/lib/engine/journal");
+    const [paused, restart] = projectJournal(
+      [
+        { runId: "run_p", sessionId: "s1", sequence: 1, input: "later", state: "queued", held: { at: 1, reason: "session_paused" }, acceptedAt: 1, updatedAt: 1 },
+        { runId: "run_r", sessionId: "s1", sequence: 2, input: "before the crash", state: "queued", held: { at: 1, reason: "engine_restart" }, acceptedAt: 2, updatedAt: 2 },
+      ],
+      [],
+      [],
+    );
+    expect(paused).toMatchObject({ held: true, heldReason: "session_paused" });
+    expect(restart).toMatchObject({ held: true, heldReason: "engine_restart" });
+    // A release clears both the flag and the reason.
+    const [released] = projectJournal(
+      [{ runId: "run_p", sessionId: "s1", sequence: 1, input: "later", state: "queued", held: { at: 1, reason: "session_paused" }, acceptedAt: 1, updatedAt: 1 }],
+      [],
+      [{ id: 9, at: 5, sessionId: "s1", runId: "run_p", type: "turn.released" }],
+    );
+    expect(released!.held).toBe(false);
+    expect(released!.heldReason).toBeUndefined();
+  });
+});
