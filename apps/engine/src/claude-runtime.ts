@@ -151,6 +151,12 @@ export type ClaudeSessionRuntime<T = unknown, Seed extends { id: string; provide
   /** Everything about the query that cannot change without a new process.
    *  A mismatch on lookup destroys and recreates — never patches. */
   readonly fingerprint: string;
+  /**
+   * The same identity, per field, as short digests — the only form of it safe
+   * to log. The fingerprint string itself carries the login's env patch and
+   * every server's headers; see `changedFields` in ./claude-identity.ts.
+   */
+  readonly fingerprintDigests: Record<string, string>;
   readonly feed: MessageFeed;
   readonly query: RuntimeQuery;
   /**
@@ -245,6 +251,13 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     if (!waiters) return;
     this.idleWaiters.delete(sessionId);
     for (const wake of waiters) wake();
+  }
+
+  /** The live runtime, WITHOUT claiming it or destroying it on a mismatch.
+   *  For the reuse diagnostic, which has to read the outgoing runtime's
+   *  identity to say which field broke reuse. */
+  peek(sessionId: string): ClaudeSessionRuntime<T, Seed> | undefined {
+    return this.runtimes.get(sessionId);
   }
 
   /** The live runtime for this session — IF its fingerprint still matches.

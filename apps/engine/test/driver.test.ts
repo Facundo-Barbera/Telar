@@ -1846,6 +1846,114 @@ describe("the session runtime", () => {
     expect(queryCalls).toBe(2);
   });
 
+  test("an env patch reordered but unchanged reuses the process; a reordered server list does too", async () => {
+    /**
+     * MEASURED IN THE #201 FIXTURES: two fake turns differing ONLY in
+     * environment key order created two queries, because the fingerprint was
+     * `JSON.stringify` and that writes keys in insertion order. The same
+     * order-sensitivity applied to the server array. Every such cold start
+     * kills the session's background shells, monitors and detached agents.
+     */
+    let queryCalls = 0;
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        queryCalls += 1;
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const server = (id: string) => ({ id, label: id, enabled: true, createdAt: 1, updatedAt: 1, spec: { transport: "stdio", command: id, args: ["mcp"] } });
+    await run(driver, {
+      sessionId: "session_ordered",
+      env: { CLAUDE_CONFIG_DIR: "/tmp/cfg", ANTHROPIC_BASE_URL: "http://127.0.0.1:8317" },
+      mcpServers: [server("alpha"), server("beta")],
+    }).result;
+    await run(driver, {
+      sessionId: "session_ordered",
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8317", CLAUDE_CONFIG_DIR: "/tmp/cfg" },
+      mcpServers: [server("beta"), server("alpha")],
+    }).result;
+    expect(queryCalls).toBe(1);
+  });
+
+  test("deleting an inherited variable is its own identity, and the child really loses the key", async () => {
+    /**
+     * `DriverRun.env` is a PATCH, and a key mapped to `undefined` means DELETE
+     * — that is how a configured login stops inheriting an ambient credential.
+     * `env: {}` and `env: { KEY: undefined }` are opposite instructions that
+     * `JSON.stringify` rendered identically, so they shared one process. And
+     * spreading the patch left the key PRESENT with an undefined value, which
+     * is not the same object as one where the key is gone.
+     */
+    let queryCalls = 0;
+    const seen: Record<string, string | undefined>[] = [];
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt, options }: { prompt: AsyncIterable<unknown>; options: { env?: Record<string, string | undefined> } }) {
+        queryCalls += 1;
+        seen.push(options.env ?? {});
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    process.env.TELAR_TEST_AMBIENT_CREDENTIAL = "ambient-secret";
+    try {
+      await run(driver, { sessionId: "session_deleting", env: { CLAUDE_CONFIG_DIR: "/tmp/cfg" } }).result;
+      await run(driver, { sessionId: "session_deleting", env: { CLAUDE_CONFIG_DIR: "/tmp/cfg", TELAR_TEST_AMBIENT_CREDENTIAL: undefined } }).result;
+      // Two different instructions, therefore two processes.
+      expect(queryCalls).toBe(2);
+      expect(seen[0]?.TELAR_TEST_AMBIENT_CREDENTIAL).toBe("ambient-secret");
+      // GONE, not present-and-undefined: nothing downstream has to guess.
+      expect(Object.hasOwn(seen[1]!, "TELAR_TEST_AMBIENT_CREDENTIAL")).toBeFalse();
+      // The rest of the worker's environment still reaches the child.
+      expect(seen[1]?.CLAUDE_CONFIG_DIR).toBe("/tmp/cfg");
+    } finally {
+      delete process.env.TELAR_TEST_AMBIENT_CREDENTIAL;
+    }
+  });
+
+  test("the runtime debug line names the changed field and prints no secret", async () => {
+    /**
+     * Its predecessor printed the whole fingerprint string, which carries the
+     * login's env patch and the browser socket's bearer token — so the one
+     * diagnostic worth turning on during a live latency investigation was the
+     * one that could not safely be turned on.
+     */
+    const driver = createClaudeDriver(async () => ({
+      async *query({ prompt }: { prompt: AsyncIterable<unknown> }) {
+        for await (const message of prompt) {
+          void message;
+          yield { type: "result", subtype: "success" };
+        }
+      },
+    }) as never);
+    const lines: string[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void lines.push(args.map(String).join(" "));
+    process.env.TELAR_CLAUDE_RUNTIME_DEBUG = "1";
+    try {
+      await run(driver, { sessionId: "session_debug", env: { ANTHROPIC_API_KEY: "sk-secret-one" } }).result;
+      await run(driver, {
+        sessionId: "session_debug",
+        env: { ANTHROPIC_API_KEY: "sk-secret-two" },
+        browserSocket: { url: "http://127.0.0.1:1/mcp", token: "browser-bearer-token" },
+      }).result;
+    } finally {
+      console.error = realError;
+      delete process.env.TELAR_CLAUDE_RUNTIME_DEBUG;
+    }
+    const logged = lines.join("\n");
+    expect(logged).not.toContain("sk-secret-one");
+    expect(logged).not.toContain("sk-secret-two");
+    expect(logged).not.toContain("browser-bearer-token");
+    // It still answers the question it exists for: which field broke reuse.
+    expect(lines.at(-1)).toContain("reuse=false");
+    expect(lines.at(-1)).toContain("changed=browser,env");
+  });
+
   test("stopTask reaches into the session's live runtime and stops one background task by provider id", async () => {
     const stopped: string[] = [];
     const driver = createClaudeDriver(async () => ({

@@ -43,6 +43,15 @@ import {
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
 import {
+  canonicalEnvPatch,
+  canonicalJson,
+  canonicalServers,
+  changedFields,
+  fieldDigest,
+  fieldDigests,
+  resolveChildEnv,
+} from "./claude-identity";
+import {
   ClaudeRuntimeStore,
   MessageFeed,
   type ClaudeSessionRuntime,
@@ -1901,22 +1910,26 @@ export function createClaudeDriver(
        * one and this turn cold-starts. `model` is deliberately absent: it is
        * the one knob a live query can turn (`setModel`).
        */
-      const fingerprint = JSON.stringify({
+      const fingerprintFields: Record<string, unknown> = {
         cwd,
-        env: env ?? null,
+        /**
+         * THE PATCH, NOT THE RESOLVED ENVIRONMENT, and with a deletion spelled
+         * as one — see `canonicalEnvPatch`. `{}` and `{ KEY: undefined }` are
+         * opposite instructions that `JSON.stringify` rendered identically.
+         */
+        env: canonicalEnvPatch(env, contextEnv),
         effort: sdkEffort ?? null,
-        contextEnv: contextEnv ?? null,
         fastMode: fastMode ?? null,
         executable: executable ?? null,
         /**
-         * ID AND SPEC ONLY, never the whole record. Measured on the dev app:
-         * the auto-registered Computer Use server is re-stamped
-         * (`createdAt`/`updatedAt`) on every turn, and hashing those
+         * ID AND SPEC ONLY, deduplicated and sorted — never the whole record.
+         * Measured on the dev app: the auto-registered Computer Use server is
+         * re-stamped (`createdAt`/`updatedAt`) on every turn, and hashing those
          * timestamps cold-started a new process per turn — killing the very
          * background work this runtime exists to keep alive. Only what shapes
          * the spawned process belongs here.
          */
-        servers: userMcpServers?.map((server) => ({ id: server.id, enabled: server.enabled, spec: server.spec })) ?? null,
+        servers: canonicalServers(userMcpServers),
         browser: browserSocket ?? null,
         spool: Boolean(spool),
         sessions: Boolean(sessions),
@@ -1928,7 +1941,15 @@ export function createClaudeDriver(
         display: Boolean(display),
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
-      });
+      };
+      /** CANONICAL, not `JSON.stringify`: key order is not identity, and an
+       *  explicit deletion is. See ./claude-identity.ts. */
+      const fingerprint = canonicalJson(fingerprintFields);
+      const fingerprintDigests = fieldDigests(fingerprintFields);
+
+      /** The child's environment with the patch's deletions APPLIED, resolved
+       *  once so the query options and the fingerprint cannot disagree. */
+      const childEnv = resolveChildEnv(process.env, env, contextEnv);
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
@@ -2093,9 +2114,10 @@ export function createClaudeDriver(
             // "when omitted the subprocess inherits process.env", so supplying
             // one replaces it. The patch is applied over the worker's own
             // environment here, which is where the child's PATH and HOME come
-            // from — and a key patched to `undefined` genuinely disappears,
-            // which is how a configured instance stops inheriting a credential.
-            ...(env || contextEnv ? { env: { ...process.env, ...env, ...contextEnv } } : {}),
+            // from — and a key patched to `undefined` is DELETED rather than
+            // left present-but-undefined, which is how a configured instance
+            // stops inheriting a credential. See `resolveChildEnv`.
+            ...(childEnv ? { env: childEnv } : {}),
             // Part of the fingerprint: a CLI that upgraded itself between two
             // turns changes the resolved path, and the runtime is recreated.
             ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
@@ -2111,6 +2133,7 @@ export function createClaudeDriver(
         return {
           sessionId,
           fingerprint,
+          fingerprintDigests,
           feed,
           query,
           iterator,
@@ -2162,10 +2185,24 @@ export function createClaudeDriver(
        * turn to let go; a runtime destroyed meanwhile just cold-starts below.
        */
       if (persistent) await runtimes.idle(sessionId);
+      /**
+       * WHICH FIELD BROKE REUSE — read BEFORE the claim, because a mismatched
+       * claim destroys the runtime whose identity the answer needs.
+       *
+       * NAMES AND DIGESTS ONLY. Its predecessor printed the whole fingerprint
+       * string, which carries the login's env patch, the browser socket's
+       * bearer token and every user MCP server's headers — so the one
+       * diagnostic worth turning on during a live latency investigation was the
+       * one that could not safely be turned on.
+       */
+      const outgoing = persistent ? runtimes.peek(sessionId)?.fingerprintDigests : undefined;
       let claimed = persistent ? runtimes.claim(sessionId, fingerprint) : undefined;
-      // Field diagnosis only: which fingerprint field broke reuse. Off unless asked.
       if (process.env.TELAR_CLAUDE_RUNTIME_DEBUG === "1") {
-        console.error(`[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} fp=${fingerprint}`);
+        const changed = outgoing ? changedFields(outgoing, fingerprintDigests) : [];
+        console.error(
+          `[claude-runtime] session=${sessionId} reuse=${Boolean(claimed)} identity=${fieldDigest(fingerprintFields)}` +
+            (changed.length > 0 ? ` changed=${changed.join(",")}` : ""),
+        );
       }
       if (claimed && claimed.model !== model) {
         // The one knob a live query can turn. A query that cannot (a fake
