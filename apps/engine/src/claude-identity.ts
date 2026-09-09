@@ -1,0 +1,153 @@
+/**
+ * RUNTIME IDENTITY — what makes two turns the same live CLI process.
+ *
+ * The Claude driver holds one query per session and reuses it across turns
+ * (see ./claude-runtime.ts). Reuse is decided by comparing a FINGERPRINT of
+ * everything the query bakes in at creation, and a fingerprint that is wrong in
+ * either direction is expensive: too sensitive and every turn cold-starts,
+ * killing the background work the pool exists to keep alive; too blunt and a
+ * turn runs against a process configured for a different login.
+ *
+ * `JSON.stringify` is wrong in BOTH directions at once, which is why this
+ * module exists. Measured in the #201 fixtures:
+ *
+ *   - Key order is insertion order. Two turns whose env patch or whose MCP
+ *     headers were assembled in a different order — semantically the same
+ *     configuration — hashed differently and produced TWO queries.
+ *   - `undefined` values are DROPPED. `env: {}` ("inherit the worker's
+ *     environment") and `env: { ANTHROPIC_API_KEY: undefined }` ("delete that
+ *     variable so this login stops inheriting a credential") are opposite
+ *     instructions, and they serialized to the same six bytes.
+ *
+ * Array order is deliberately PRESERVED: a command's arguments are a sequence,
+ * not a set, and sorting them would make two different commands one identity.
+ * The one place order is not meaningful — the user's MCP server list, which is
+ * folded into a record keyed by id downstream — is normalized explicitly by
+ * `canonicalServers` rather than by a blanket rule here.
+ */
+import { createHash } from "node:crypto";
+
+/**
+ * Spelled, not dropped — see the module header.
+ *
+ * Emitted UNQUOTED, which is what makes it collision-free: `null`, numbers and
+ * booleans are the only other bare tokens JSON writes, and every string value
+ * arrives wrapped in quotes. So no value can serialize to this. A NUL sentinel
+ * would do the same job and be invisible in review, which is worse.
+ */
+const UNDEFINED = "undefined";
+
+/**
+ * A stable string for any value: object keys sorted, arrays in order, and
+ * `undefined` spelled. Deterministic for a given value, and equal for two
+ * values that differ only in key order.
+ */
+export function canonicalJson(value: unknown): string {
+  if (value === undefined) return UNDEFINED;
+  if (value === null) return "null";
+  if (typeof value !== "object") return JSON.stringify(value) ?? UNDEFINED;
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
+}
+
+/**
+ * The user's MCP servers as IDENTITY: id, enabled flag and spec only.
+ *
+ * Two normalizations, both narrow. Records are deduplicated by id keeping the
+ * LAST occurrence, because that is exactly what `claudeMcpServers` does when it
+ * folds the list into a record (`out[server.id] = …`) — hashing an entry the
+ * spawned process never sees would cold-start for a difference that does not
+ * exist. Then, and only then, the survivors are sorted by id: the list's own
+ * order cannot reach the child, since a record has none.
+ *
+ * The timestamps on each record are deliberately absent. Measured on the dev
+ * app: the auto-registered Computer Use server is re-stamped every turn, and a
+ * fingerprint over the whole record cold-started a CLI per turn.
+ */
+export function canonicalServers<T extends { id: string; enabled?: boolean; spec: unknown }>(
+  servers: readonly T[] | undefined,
+): { id: string; enabled: boolean | undefined; spec: unknown }[] | null {
+  if (!servers) return null;
+  const byId = new Map<string, { id: string; enabled: boolean | undefined; spec: unknown }>();
+  for (const server of servers) byId.set(server.id, { id: server.id, enabled: server.enabled, spec: server.spec });
+  return [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * THE ENVIRONMENT THE CHILD ACTUALLY GETS, with deletions applied rather than
+ * merely requested.
+ *
+ * `DriverRun.env` is a PATCH over the worker's own environment, and a key
+ * mapped to `undefined` means "delete it" — that is how a configured login
+ * stops inheriting an ambient credential. Spreading the patch (`{...process.env,
+ * ...patch}`) leaves the key PRESENT with the value `undefined`, which is a
+ * different object from one where the key is gone: whether it reaches the child
+ * as a deletion then depends on how the SDK and the spawn below it treat an
+ * undefined value, which is not a thing this driver should be guessing about.
+ * So the deletion is performed here and the result carries no such key.
+ *
+ * Returns `undefined` when there is nothing to patch, which is the SDK's "the
+ * subprocess inherits process.env" case and must stay distinguishable from an
+ * explicitly supplied environment.
+ */
+export function resolveChildEnv(
+  base: Record<string, string | undefined>,
+  ...patches: (Record<string, string | undefined> | undefined)[]
+): Record<string, string> | undefined {
+  if (patches.every((patch) => patch === undefined)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(base)) if (value !== undefined) out[key] = value;
+  for (const patch of patches) {
+    for (const [key, value] of Object.entries(patch ?? {})) {
+      if (value === undefined) delete out[key];
+      else out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * The env patch AS IDENTITY, with a deletion spelled as a deletion.
+ *
+ * The resolved child environment is NOT what belongs in a fingerprint: it is
+ * the worker's whole environment, so an unrelated ambient variable changing
+ * between two turns would cold-start the process. What matters is the patch —
+ * and the patch has to distinguish "set to nothing yet" from "delete", which is
+ * what `canonicalJson`'s explicit `undefined` gives it.
+ */
+export function canonicalEnvPatch(...patches: (Record<string, string | undefined> | undefined)[]): Record<string, string | undefined> | null {
+  if (patches.every((patch) => patch === undefined)) return null;
+  const out: Record<string, string | undefined> = {};
+  for (const patch of patches) for (const [key, value] of Object.entries(patch ?? {})) out[key] = value;
+  return out;
+}
+
+/** A short, stable digest — enough to say "this field changed" without saying
+ *  what it changed to. Twelve hex characters, which is not a credential. */
+export function fieldDigest(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex").slice(0, 12);
+}
+
+/** Every field's digest, for the redacted reuse diagnostic below. */
+export function fieldDigests(fields: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) out[key] = fieldDigest(value);
+  return out;
+}
+
+/**
+ * WHICH FIELDS BROKE REUSE — names only, never values.
+ *
+ * The predecessor of this was a debug line that printed the whole fingerprint
+ * string. That string contains the env patch (a login's API key), the browser
+ * MCP server's bearer token and every user server's headers, so the one
+ * diagnostic a person would reach for during a live latency investigation was
+ * the one that could not safely be turned on. Names and digests answer the same
+ * question — "was it the env, the executable, or the server list?" — and carry
+ * nothing worth leaking.
+ */
+export function changedFields(before: Record<string, string>, after: Record<string, string>): string[] {
+  const names = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...names].filter((name) => before[name] !== after[name]).sort();
+}

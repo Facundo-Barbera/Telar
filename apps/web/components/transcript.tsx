@@ -38,6 +38,7 @@ import {
   GlobeIcon,
   ListTodoIcon,
   Loader2Icon,
+  HourglassIcon,
   Minimize2Icon,
   PaperclipIcon,
   PencilIcon,
@@ -447,6 +448,37 @@ function CompactionRow({ item }: { item: JournalItem }) {
 }
 
 /**
+ * THE PROVIDER MADE THE TURN WAIT — a retry after a failed request, or a rate
+ * limit. Rendered as a seam like a compaction rather than as a tool call,
+ * because that is what it is: the reason the session went quiet, and the one
+ * thing that distinguishes a provider backoff from the agent thinking. It
+ * shimmers while the wait is open and settles when the stream speaks again.
+ *
+ * A rate limit is drawn in the destructive colour only when it was REJECTED —
+ * a warning is information, and colouring it as a failure would make a session
+ * that is working fine read as broken.
+ */
+function ProviderWaitRow({ item }: { item: JournalItem }) {
+  const detail = item.detail.type === "provider_wait" ? item.detail.wait : undefined;
+  const rejected = detail?.limitStatus === "rejected";
+  const resets =
+    detail?.resetsAt === undefined ? undefined : new Date(detail.resetsAt * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return (
+    <p className={cn(ROW, rejected ? "text-destructive" : "text-muted-foreground")}>
+      <HourglassIcon className="size-3.5 shrink-0" />
+      {running(item) ? (
+        <Shimmer as="span" className="min-w-0 flex-1 truncate">
+          {itemLabel(item)}
+        </Shimmer>
+      ) : (
+        <span className="min-w-0 flex-1 truncate">{itemLabel(item)}</span>
+      )}
+      {resets && <span className="shrink-0 text-[0.625rem] opacity-70">resets {resets}</span>}
+    </p>
+  );
+}
+
+/**
  * A message the human SENT NOW — injected into the running turn rather than
  * queued behind it. Rendered as a user bubble where it landed, because that is
  * where the agent heard it; without this row the agent's change of direction
@@ -523,6 +555,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent }: { item: JournalItem
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;
+  if (item.detail.type === "provider_wait") return <ProviderWaitRow item={item} />;
   if (item.detail.type === "user_message") return <SteeredMessageRow item={item} />;
   if (item.plotAttachmentId) return <PlotRow item={item} attachmentId={item.plotAttachmentId} />;
   if (isToolItem(item)) return <ToolRow item={item} />;
@@ -641,7 +674,11 @@ export function transcriptTasks(tasks: readonly JournalTask[]): JournalTask[] {
  */
 export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "row"; item: JournalItem };
 
-const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction"]);
+// A provider wait is a seam for the same reason a compaction is: it explains
+// something the reader can otherwise only experience as the session hanging,
+// and folding it into a run tally ("18 steps · Ran command ×12") would hide the
+// one row that says why nothing happened for four minutes.
+const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "plan", "context_compaction", "provider_wait"]);
 
 export function segmentActivity(items: readonly JournalItem[]): ActivitySegment[] {
   const segments: ActivitySegment[] = [];

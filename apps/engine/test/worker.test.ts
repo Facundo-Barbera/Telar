@@ -218,7 +218,19 @@ test("a session whose provider this worker cannot serve fails the turn instead o
   );
 });
 
-test("engine connectivity loss aborts active provider execution", async () => {
+test("engine connectivity loss aborts active provider execution — once it outlasts the lease", async () => {
+  /**
+   * EXPECTATION CHANGED ON PURPOSE (#208). This used to assert that the FIRST
+   * failed request aborted the turn. That is precisely the behaviour the
+   * incident showed to be wrong: one loopback request that did not complete
+   * aborted every active turn, replaced the worker, and killed every session's
+   * background work — against a daemon whose PID never changed.
+   *
+   * The engine's own lease is now the budget (`setup` runs a 1s one, so the
+   * worker learns a ~1s tolerance from `heartbeatIntervalMs`), and a REAL loss
+   * — this daemon is genuinely closed — is still detected and still aborts,
+   * just at the boundary the engine itself defines rather than instantly.
+   */
   let sawAbort = false;
   const driver: TurnDriver = {
     async run({ signal }) {
@@ -234,6 +246,14 @@ test("engine connectivity loss aborts active provider execution", async () => {
   await worker.tick();
   await eventually(async () => expect((await client.session(sessionId)).turns[0]?.state).toBe("running"));
   await daemons.at(-1)!.close();
+  // The first failure starts the budget and changes nothing else: the turn is
+  // still running, because a request that did not complete is not by itself
+  // evidence that the engine is gone.
+  await worker.tick();
+  expect(sawAbort).toBe(false);
+  // Past the engine's own lease it IS gone as far as this worker may assume,
+  // and the abort lands.
+  await Bun.sleep(1_100);
   await worker.tick();
   await eventually(() => expect(sawAbort).toBe(true));
 });
