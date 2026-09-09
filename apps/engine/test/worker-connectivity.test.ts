@@ -168,7 +168,7 @@ test("one failed heartbeat does NOT lose the connection — the engine's lease i
   const fake = fakeClient({ register: { heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS } });
   let lost = 0;
   const disposed = { count: 0 };
-  const worker = workerFor(fake, () => void (lost += 1), disposed);
+  const worker = workerFor(fake, () => void (lost += 1), disposed, { clock: fakeClock() });
   await worker.start();
 
   fake.fail(unreachable(), 1);
