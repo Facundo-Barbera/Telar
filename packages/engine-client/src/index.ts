@@ -2065,11 +2065,11 @@ export class EngineClient {
     return this.request("POST", "/v2/workers/register", { workerId }, undefined, "registerWorker");
   }
 
-  workerHeartbeat(workerId: string): Promise<WorkerStatus> {
-    // Named as idempotent control: it reports state and drains already-decided
-    // deliveries. A failed heartbeat submits nothing, so re-polling on the next
-    // tick cannot duplicate work.
-    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {}, undefined, "workerHeartbeat");
+  /** Idempotent control: reports state and drains already-decided deliveries,
+   *  so re-polling on the next tick cannot duplicate work. `signal` lets the
+   *  caller bound it — a heartbeat that never resolves must not pin its loop. */
+  workerHeartbeat(workerId: string, signal?: AbortSignal): Promise<WorkerStatus> {
+    return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, {}, signal, "workerHeartbeat");
   }
 
   claimTurn(workerId: string): Promise<{ claim?: WorkerClaim }> {

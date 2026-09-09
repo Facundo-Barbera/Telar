@@ -29,6 +29,9 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
   private connecting: Promise<void> | undefined;
   private stopping = false;
   private reconnectRequestedWhileStarting = false;
+  /** A reconnect is between "stopping the old worker" and "connecting", where
+   *  `connecting` is not yet set — see `requestReconnect`. */
+  private reconnecting = false;
 
   constructor(private readonly options: WorkerReconnectControllerOptions<Client, Worker>) {}
 
@@ -101,7 +104,11 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
 
   private requestReconnect(): void {
     if (this.stopping) return;
-    if (this.connecting) {
+    // `reconnecting` as well as `connecting`: `reconnect` awaits the previous
+    // worker's `stop()` BEFORE `connect()` sets `connecting`, so a second
+    // report landing inside that await saw neither guard and started a rival
+    // reconnect — two connect loops for one loss.
+    if (this.connecting || this.reconnecting) {
       this.reconnectRequestedWhileStarting = true;
       return;
     }
@@ -109,11 +116,21 @@ export class WorkerReconnectController<Client, Worker extends SupervisedWorker> 
   }
 
   private async reconnect(): Promise<void> {
-    const previous = this.worker;
-    this.worker = undefined;
-    // The replacement is named as one: the daemon may be perfectly alive, and
-    // the turns this worker was running must not be told Telar shut down.
-    await previous?.stop("connection_lost");
-    await this.connect();
+    this.reconnecting = true;
+    try {
+      const previous = this.worker;
+      this.worker = undefined;
+      // Named as a replacement: the daemon may be perfectly alive, and these
+      // turns must not be told Telar shut down.
+      await previous?.stop("connection_lost");
+      // Reports that arrived while the old worker was stopping are ANSWERED by
+      // this reconnect; carrying them into the connect loop made it discard a
+      // healthy new candidate and build another for a loss already handled.
+      // Reports landing during `connect()` still set the flag and still count.
+      this.reconnectRequestedWhileStarting = false;
+      await this.connect();
+    } finally {
+      this.reconnecting = false;
+    }
   }
 }
