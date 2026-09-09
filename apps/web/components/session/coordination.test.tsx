@@ -1,0 +1,35 @@
+// @ts-expect-error bun:test has no types in this app's tsconfig
+import { expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SessionTurn } from "../session-cockpit";
+import { AgentMessageBubble } from "./conversation-message";
+import type { JournalTurn } from "@/lib/engine/journal";
+
+const machine: JournalTurn = { runId: "run_peer", origin: "session", sender: { sessionId: "session_worker" }, prompt: "Internal checkpoint", state: "completed", resultText: "Internal acknowledgement", items: [], tasks: [] };
+const render = (turn: JournalTurn) => renderToStaticMarkup(<SessionTurn turn={turn} requests={[]} sending={false} live={false} now={1} onDecide={() => {}} onRetry={() => {}} />);
+
+test("a machine-triggered exchange keeps its payload and response out of the default chat view", () => {
+  const html = render(machine);
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).toContain("Session activity");
+  expect(html).not.toContain("Internal checkpoint");
+  expect(html).not.toContain("Internal acknowledgement");
+});
+
+test("a human's message is never folded as session coordination", () => {
+  const html = render({ ...machine, origin: "user", prompt: "Please fix the editor" });
+  expect(html).toContain("Please fix the editor");
+  expect(html).not.toContain('aria-label="Session coordination"');
+});
+
+test("a mid-turn direct report is collapsed too", () => {
+  const html = renderToStaticMarkup(<AgentMessageBubble text={"## Private checkpoint\n".repeat(100)} sender={{sessionId:"session_worker"}} />);
+  expect(html).toContain('aria-expanded="false"');
+  expect(html).not.toContain("Private checkpoint");
+});
+
+test("human steering into a machine turn remains visible", () => {
+  const html = render({ ...machine, items: [{ id: "item_human", runId: "run_peer", sessionId: "session_host", status: "completed", title: "Message", detail: { type: "user_message", text: "Please change direction" }, streamedText: "", openedBy: 1, startedAt: 1 }] });
+  expect(html).toContain("Please change direction");
+  expect(html).not.toContain('aria-label="Session coordination"');
+});

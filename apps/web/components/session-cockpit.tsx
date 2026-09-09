@@ -478,7 +478,29 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
   );
 }
 
-export function SessionTurn({
+/** Machine-triggered turns remain inspectable without taking over human chat.
+ * Never fold a human steering message or a request requiring a decision. */
+export function SessionTurn(props: Parameters<typeof SessionTurnBody>[0]) {
+  const [open, setOpen] = useState(false);
+  const { turn } = props;
+  const hasHumanMessage = turn.items.some((item) => item.detail.type === "user_message" && !item.detail.sender && !item.detail.wakeReason);
+  if (turn.origin !== "session" || hasHumanMessage || props.requests.length > 0) return <SessionTurnBody {...props} />;
+  const source = turn.sender?.sessionId ?? turn.wakeReason?.sessionId;
+  return (
+    <div className="mx-auto w-full min-w-0 max-w-[50rem]" aria-label="Session coordination">
+      <button type="button" className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+        <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="shrink-0">Session activity</span>
+        {source && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{`session …${source.slice(-6)}`}</span>}
+        <span className="text-muted-foreground">{props.live ? "working" : describeTurnState(turn.state).label.toLowerCase()}</span>
+        <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
+      </button>
+      {open && <div className="pt-2"><SessionTurnBody {...props} /></div>}
+    </div>
+  );
+}
+
+function SessionTurnBody({
   turn,
   requests,
   sending,

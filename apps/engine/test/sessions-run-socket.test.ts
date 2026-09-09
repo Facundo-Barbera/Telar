@@ -131,7 +131,7 @@ test("`self` rides the binding: a subscription made over this socket names the b
   const subscribed = await callTool(lease, "sessions_subscribe", { sessionId: "session_target", events: ["turn_completed"] });
   expect(subscribed.isError).toBe(false);
   expect(calls).toEqual([
-    { verb: "subscribe", args: ["session_host", { targetSessionId: "session_target", events: ["turn_completed"] }] },
+    { verb: "subscribe", args: ["session_host", { targetSessionId: "session_target", events: ["turn_completed"], once: true }] },
   ]);
   expect(JSON.parse(subscribed.text)).toMatchObject({ subscriberSessionId: "session_host", targetSessionId: "session_target" });
 });
@@ -149,7 +149,7 @@ test("tokens isolate bindings, and a released token is a 401 — which is the wh
   const subscribedB = await callTool(leaseB, "sessions_subscribe", { sessionId: "session_a" });
   expect(callsA.map((call) => call.verb)).toEqual(["list"]);
   // B's subscribe names B, never A — the capability came with the token.
-  expect(callsB).toEqual([{ verb: "subscribe", args: ["session_b", { targetSessionId: "session_a" }] }]);
+  expect(callsB).toEqual([{ verb: "subscribe", args: ["session_b", { targetSessionId: "session_a", once: true }] }]);
   expect(JSON.parse(subscribedB.text)).toMatchObject({ subscriberSessionId: "session_b" });
 
   const ping = { jsonrpc: "2.0", id: 1, method: "ping" };

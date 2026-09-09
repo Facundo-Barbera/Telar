@@ -5993,6 +5993,9 @@ export class EngineStore {
       if (known.input !== input.input) throw new EngineStateError("conflict", "run id was already submitted with different text");
       return { turn: structuredClone(known), replayed: true };
     }
+    if (input.origin === "session" && session.agentMessagesBlocked) {
+      throw new EngineStateError("conflict", "this session was stopped by its user; agent messages cannot restart it. Wait for a new human message.");
+    }
     /**
      * NO NEW WORK ON A PUT-AWAY PROJECT — and this is the line that makes that
      * true for the turns nobody typed. A peer's subscription firing an hour
@@ -6131,6 +6134,10 @@ export class EngineStore {
      * the pause silently releasing itself. Resume, or release it by hand.
      */
     if (session.paused) turn.held = { at, reason: "session_paused" };
+    if (input.origin !== "session" && kind !== "compact" && session.agentMessagesBlocked) {
+      delete session.agentMessagesBlocked;
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    }
     queue.turns.push(turn);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -6766,6 +6773,13 @@ export class EngineStore {
       delete turn.held;
     }
     if (stopped.length > 0) this.writeQueue(sessionId, queue);
+    // A peer must not undo a human Stop by immediately sending another turn.
+    // A fresh human message clears this gate; no discarded work is replayed.
+    if (by === "user") {
+      session.agentMessagesBlocked = true;
+      session.updatedAt = at;
+      this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    }
     // Clear a legacy latch only after its backlog has been terminalized.
     if (session.paused) {
       delete session.paused;
@@ -7296,6 +7310,7 @@ export class EngineStore {
         remove(subscription);
         continue;
       }
+      if (subscriber.agentMessagesBlocked) continue;
       const wakeReason: WakeReason = {
         kind,
         sessionId: targetSessionId,

@@ -639,6 +639,10 @@ export const Session = z.object({
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
 
+  /** A human Stop rejects new agent messages/wakes until a new human message.
+   * It never holds or replays an old backlog. */
+  agentMessagesBlocked: z.boolean().optional(),
+
   /** Legacy pause metadata, accepted when reading older state. Startup and
    * session Stop settle its held backlog and remove the latch without replay.
    * New clients use session Stop; no command creates a pause latch. */

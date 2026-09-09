@@ -125,3 +125,16 @@ test("internal command receipts do not retain resolved provider credentials", as
   try { expect(JSON.stringify(db.query("SELECT result FROM receipts").all())).not.toContain("private-fixture-token"); }
   finally { db.close(); }
 });
+
+test("human Stop keeps agent traffic blocked across restart until a fresh human message", () => {
+  const { home, store } = setup();
+  store.executeCommand("stop", () => store.stopSession("session_one", "user"), "stop_guard");
+  store.closeExecutionStore();
+  const reopened = new EngineStore(home, Date.now, { executionStorage: "sqlite" }); stores.push(reopened);
+  expect(() => reopened.submitAgentTurn("session_one", { runId: "run_noise", input: "checkpoint" })).toThrow("stopped by its user");
+  expect(reopened.turns("session_one")).toHaveLength(0);
+  reopened.submitTurn("session_one", { runId: "run_human", input: "new task" });
+  reopened.executeCommand("stop", () => reopened.stopSession("session_one", "user"), "stop_guard");
+  expect(reopened.getSession("session_one").agentMessagesBlocked).toBeUndefined();
+  expect(reopened.submitAgentTurn("session_one", { runId: "run_fresh", input: "new report" }).replayed).toBe(false);
+});
