@@ -8,6 +8,32 @@ import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
 
+/**
+ * A BARRIER AT THE CLAIM PUMP'S BOUNDARY, not a sleep. Claiming runs off the
+ * tick's await chain so a hung claim cannot hold cancellations, approvals and
+ * steers behind it — which means `await tick()` no longer implies the claim has
+ * been attempted. Counted rather than latched: `start()` already runs a pass
+ * with an empty queue.
+ */
+function claimBarrier() {
+  let passes = 0;
+  const wakers: Array<() => void> = [];
+  return {
+    onClaimPhase: (phase: string) => {
+      if (phase !== "idle") return;
+      passes += 1;
+      for (const wake of wakers.splice(0)) wake();
+    },
+    async settled(): Promise<void> {
+      const from = passes;
+      const deadline = Date.now() + 4_000;
+      while (passes === from && Date.now() < deadline) {
+        await Promise.race([new Promise<void>((resolve) => wakers.push(resolve)), Bun.sleep(25)]);
+      }
+    },
+  };
+}
+
 /** Wait for the store to actually hold a terminal state — the drain runs off
  *  the tick, so a tick returning is not the settlement landing. */
 async function settled(client: EngineClient, sessionId: string): Promise<void> {
@@ -597,8 +623,10 @@ test("a lost settlement response is retried as ITSELF, against the real engine s
     };
 
     const diagnostics: Record<string, unknown>[] = [];
+    const barrier = claimBarrier();
     const worker = new EngineWorker({
       client,
+      onClaimPhase: barrier.onClaimPhase,
       workerId: "worker_settle",
       driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
       pollMs: 60_000,
@@ -608,6 +636,7 @@ test("a lost settlement response is retried as ITSELF, against the real engine s
     await worker.start();
     await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
     await worker.tick();
+    await barrier.settled();
 
     // The turn is COMPLETED with its own text and usage — not interrupted.
     const turn = (await client.session(session.session.id)).turns[0];
@@ -655,9 +684,11 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
 
     const diagnostics: Record<string, unknown>[] = [];
     const clock = fakeClock();
+    const barrier = claimBarrier();
     const worker = new EngineWorker({
       client,
       now: clock.now,
+      onClaimPhase: barrier.onClaimPhase,
       workerId: "worker_late",
       driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
       pollMs: 60_000,
@@ -667,6 +698,7 @@ test("five failures BEFORE commit, then a recovered endpoint: the turn resolves 
     await worker.start();
     await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
     await worker.tick();
+    await barrier.settled();
 
     // All five inline attempts were spent and the turn is NOT settled yet —
     // but it is retained rather than abandoned.
@@ -745,8 +777,10 @@ test("a REVOKED pre-settlement fault revokes the worker even when the settle the
     };
     const diagnostics: Record<string, unknown>[] = [];
     let lost = 0;
+    const barrier = claimBarrier();
     const worker = new EngineWorker({
       client,
+      onClaimPhase: barrier.onClaimPhase,
       workerId: "worker_revoked",
       driver: { run: async () => ({ text: "" }) },
       pollMs: 60_000,
@@ -757,6 +791,7 @@ test("a REVOKED pre-settlement fault revokes the worker even when the settle the
     await worker.start();
     await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
     await worker.tick();
+    await barrier.settled();
     // The ENGINE's verdict wins, and is recorded against the call that failed.
     expect(lost).toBe(1);
     const terminal = diagnostics.find((line) => line.event === "connection_lost");
@@ -798,9 +833,11 @@ test("a settlement is NEVER forgotten on a retry count: >20 rounds, then the end
       return real(...args);
     };
     const clock = fakeClock();
+    const barrier = claimBarrier();
     const worker = new EngineWorker({
       client,
       now: clock.now,
+      onClaimPhase: barrier.onClaimPhase,
       workerId: "worker_forever",
       driver: { run: async () => ({ text: "the answer", usage: { tokens: { input: 5, output: 7, cacheRead: 0, cacheCreate: 0 } } }) },
       pollMs: 60_000,
@@ -810,6 +847,7 @@ test("a settlement is NEVER forgotten on a retry count: >20 rounds, then the end
     await worker.start();
     await client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" });
     await worker.tick();
+    await barrier.settled();
 
     // Far past any previous cap. Heartbeats stay healthy throughout.
     for (let round = 0; round < 40; round += 1) {

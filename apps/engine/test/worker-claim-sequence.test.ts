@@ -119,9 +119,13 @@ test("a new generation does not inherit the old one's claim watermark or cache",
   expect(first.claim?.turn.runId).toBe("run_one");
 
   await client.registerWorker("worker_gen_two");
+  // A SECOND SESSION, because a session already holding a `claimed` turn is
+  // skipped for dispatch — with one session the new generation would correctly
+  // get nothing and the test would prove nothing about inheritance.
+  await client.createSession({ id: "session_two", projectId: "project_one" });
+  await client.submitTurn("session_two", { runId: "run_two", input: "Then this" });
   // Sequence 1 on the NEW registration is its own op, not a replay of the
   // old one's: it allocates from the queue rather than returning run_one.
-  await client.submitTurn("session_one", { runId: "run_two", input: "Then this" });
   const second = await client.claimTurn("worker_gen_two", 1);
   expect(second.claim?.turn.runId).toBe("run_two");
   expect(second.claim?.turn.claim?.token).not.toBe(first.claim!.turn.claim!.token);
