@@ -2782,6 +2782,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           await previous;
           try {
+            // This request may have waited behind an authorization call while
+            // its registration retired. Never allocate for that old generation.
+            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
             // An already-answered sequence replays its outcome — never a second
             // allocation, and `undefined` is a cached answer like any other.
             if (seq === worker.claimSeq) {
@@ -2796,6 +2799,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // attaching managed OAuth bearers is a network call.
             const claimed = store.claimNextTurn(workerId);
             const authorized = claimed ? await store.authorizeClaimedMcpServers(claimed) : undefined;
+            if (activeWorker(workerId) !== worker) throw new HttpError(503, "worker_unavailable", "worker registration retired");
             worker.claimSeq = seq;
             worker.claimResult = authorized;
             writeJson(response, 200, { claim: authorized });

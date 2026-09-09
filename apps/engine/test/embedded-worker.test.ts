@@ -266,7 +266,7 @@ test("quitting mid-turn records the interruption, and the next boot offers an or
   const recovered = await client2.session("session_one");
 
   // Honest about what happened, and terminal — NOT ambiguous.
-  expect(recovered.turns[0]).toMatchObject({ runId: "run_one", state: "failed", failure: { code: "interrupted" } });
+  expect(recovered.turns[0]).toMatchObject({ runId: "run_one", state: "stopped" });
   // Everything it streamed is kept; the open tool row is closed as failed.
   expect(recovered.items.map((item) => [item.id, item.status])).toEqual([
     ["msg_1", "completed"],
@@ -279,4 +279,45 @@ test("quitting mid-turn records the interruption, and the next boot offers an or
   // replay of the original prompt.
   const next = await client2.submitTurn("session_one", { runId: "run_two", input: "Just tell me what you found." });
   expect(next.turn.state).toBe("queued");
+});
+
+test("a real event-loop stall preserves the embedded generation and streamed snapshot", async () => {
+  let finish!: () => void;
+  let aborted = false;
+  let runs = 0;
+  const daemon = await startEngine({
+    engineRoot: root(),
+    workerLeaseMs: 150,
+    embeddedWorker: { pollMs: 10, createDriver: () => ({
+      run: async ({ onObservations, signal }) => {
+        runs += 1;
+        signal.addEventListener("abort", () => { aborted = true; finish?.(); }, { once: true });
+        await onObservations?.([
+          { kind: "item.started", item: { id: "partial", detail: { type: "assistant_message", text: "" } } },
+          { kind: "content.delta", itemId: "partial", stream: "assistant_text", text: "Preserve this prefix" },
+        ]);
+        await new Promise<void>((resolve) => { finish = resolve; });
+        return { text: "Preserve this prefix" };
+      },
+    }) },
+  });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  await eventually(async () => expect((await client.session("session_one")).items.find(i => i.id === "partial")?.streamed).toBe("Preserve this prefix"));
+  const generation = daemon.worker!.workerId;
+  // Suspend BOTH timer loops, not just the daemon's injected clock.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 350);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  expect(daemon.worker!.workerId).toBe(generation);
+  expect(aborted).toBe(false);
+  expect(runs).toBe(1);
+  daemon.store.forgetOpenPrefixesForTest();
+  const remounted = await client.session("session_one");
+  expect(remounted.turns[0]?.state).toBe("running");
+  expect(remounted.items.find(i => i.id === "partial")?.streamed).toBe("Preserve this prefix");
+  finish();
+  await eventually(async () => expect((await client.session("session_one")).turns[0]?.state).toBe("completed"));
 });

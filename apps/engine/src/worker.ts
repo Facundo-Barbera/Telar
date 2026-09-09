@@ -404,6 +404,7 @@ export class EngineWorker {
     // otherwise have no watchdog at all until it timed out.
     this.watchdog = setInterval(() => this.checkLease(), Math.max(10, Math.floor((this.leaseMs ?? this.pollMs) / 3)));
     this.watchdog.unref?.();
+    this.diagnose({ event: "worker_registered", operation: "registerWorker" });
     await this.tick();
     if (this.stopped) {
       if (this.watchdog) clearInterval(this.watchdog);
@@ -901,6 +902,10 @@ export class EngineWorker {
     if (this.options.leaseExempt) {
       if (issuedAt !== undefined && issuedAt < this.lastAckAt) return;
       if (described.operation !== "workerHeartbeat") return;
+      if (!this.outageReported) {
+        this.outageReported = true;
+        this.diagnose({ event: "engine_unreachable", ...described });
+      }
       this.heartbeatFailures += 1;
       if (this.heartbeatFailures >= EXEMPT_FAILURE_LIMIT) this.loseConnection(error);
       return;

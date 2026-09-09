@@ -128,8 +128,8 @@ describe("standalone cockpit source boundary", () => {
       expect(specifiers.find((specifier) => specifier.includes("web_old"))).toBeUndefined();
       expect(specifiers.find((specifier) => specifier.includes("@telar/core"))).toBeUndefined();
     }
-    expect(cockpit).toContain("Retry as new run");
-    expect(cockpit).toContain("Discard recovered run");
+    expect(cockpit).not.toContain("Retry as new run");
+    expect(cockpit).not.toContain("Discard recovered run");
     expect(cockpit).toContain("RightPanel");
     expect(shell).toContain("AppSidebar");
     expect(sidebar).toContain("Search sessions");

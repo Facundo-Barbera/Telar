@@ -861,10 +861,10 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   const turns = (await client.session("session_one")).turns;
   expect(turns[0]?.state).toBe("claimed");
 
-  // And recovery does exactly that: back to `queued`, unheld, ready to run.
+  // Boot terminalizes the abandoned claim without replaying its message.
   daemon.store.recover();
   const recovered = (await client.session("session_one")).turns[0];
-  expect(recovered?.state).toBe("queued");
+  expect(recovered?.state).toBe("stopped");
   expect(recovered?.held).toBeUndefined();
 });
 
@@ -937,7 +937,7 @@ test("a STOP makes no further provider call: the live turn ends, the backlog is 
   void release;
 });
 
-test("a claim already granted when the pause lands never reaches the driver: the worker sees the stop before it starts", async () => {
+test("a claim already granted when Stop lands never reaches the driver; a new message continues", async () => {
   /**
    * THE RACE THE STORE TESTS CANNOT SEE. The daemon hands out a claim; the
    * pause lands while that response is still in flight to the worker; the
@@ -977,8 +977,8 @@ test("a claim already granted when the pause lands never reaches the driver: the
   await client.submitTurn("session_one", { runId: "run_two", input: "Then this" });
   await worker.tick();
   await barrier.settled();
-  // The pause found the claimed turn and stopped it; the rest is held.
-  expect(pausedInFlight).toMatchObject({ stopped: { runId: "run_one", state: "stopped" }, held: 1 });
+  // The compatibility pause endpoint stops both the claim and the backlog.
+  expect(pausedInFlight).toMatchObject({ stopped: { runId: "run_one", state: "stopped" }, held: 0 });
   for (let i = 0; i < 4; i += 1) {
     await worker.tick();
     await Bun.sleep(15);
@@ -987,11 +987,12 @@ test("a claim already granted when the pause lands never reaches the driver: the
   const turns = (await client.session("session_one")).turns;
   expect(turns.map((turn) => [turn.runId, turn.state, turn.held?.reason])).toEqual([
     ["run_one", "stopped", undefined],
-    ["run_two", "queued", "session_paused"],
+    ["run_two", "stopped", undefined],
   ]);
-  // Resume: only then does the driver run, and only the held one.
-  await client.resumeSession("session_one");
+  // No Resume and no replay: only a fresh user message runs.
+  expect((await client.session("session_one")).session.paused).toBeUndefined();
+  await client.submitTurn("session_one", { runId: "run_three", input: "Continue" });
   await worker.tick();
-  await eventually(async () => expect((await client.session("session_one")).turns[1]?.state).toBe("completed"));
-  expect(spawned).toEqual(["Then this"]);
+  await eventually(async () => expect((await client.session("session_one")).turns[2]?.state).toBe("completed"));
+  expect(spawned).toEqual(["Continue"]);
 });

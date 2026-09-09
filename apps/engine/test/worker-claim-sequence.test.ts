@@ -179,3 +179,36 @@ test("a claim delivered AFTER stop never executes, and its token cannot start a 
   const token = (await client.session("session_one")).turns[0]?.claim?.token;
   expect(token).toBeString();
 });
+
+test("a claim waiting behind authorization cannot allocate after its worker retires", async () => {
+  let time = 0;
+  const daemon = await startEngine({ engineRoot: home(), now: () => time, workerLeaseMs: 1000 });
+  daemons.push(daemon);
+  const client = new EngineClient(daemon.discovery);
+  await client.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  await client.createSession({ id: "session_one", projectId: "project_one" });
+  await client.registerWorker("worker_old");
+  await client.submitTurn("session_one", { runId: "run_one", input: "first" });
+  const authorize = daemon.store.authorizeClaimedMcpServers.bind(daemon.store);
+  let entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  daemon.store.authorizeClaimedMcpServers = async claim => { entered(); await barrier; return authorize(claim); };
+  const first = client.claimTurn("worker_old", 1).catch(error => error);
+  await started;
+  const next = client.claimTurn("worker_old", 2).catch(error => error);
+  // Ensure the second request reaches the serialized claim queue.
+  await new Promise(resolve => setTimeout(resolve, 30));
+  time = 2000;
+  await client.health();
+  await client.registerWorker("worker_new");
+  await client.submitTurn("session_one", { runId: "run_new", input: "fresh message" });
+  release();
+  expect(await first).toMatchObject({ code: "worker_unavailable" });
+  expect(await next).toMatchObject({ code: "worker_unavailable" });
+  expect((await client.session("session_one")).turns.map(t => [t.runId, t.state])).toEqual([
+    ["run_one", "stopped"], ["run_new", "queued"],
+  ]);
+  expect((await client.claimTurn("worker_new", 1)).claim?.turn.runId).toBe("run_new");
+});

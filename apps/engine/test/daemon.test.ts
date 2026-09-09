@@ -68,7 +68,7 @@ test("the authenticated API settles an interrupted run and takes a fresh one wit
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
   await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
-  const claim = (await client.claimTurn("worker_one")).claim!;
+  const claim = (await client.claimTurn("worker_one", 1)).claim!;
   await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
   expect(daemon.store.recover()).toEqual({ stopped: ["uncertain_run"] });
 
@@ -95,7 +95,7 @@ test("a read receipt crosses the API as a turn name, and refuses everything else
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
   await client.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claim = (await client.claimTurn("worker_one")).claim!;
+  const claim = (await client.claimTurn("worker_one", 1)).claim!;
   await client.markTurnRunning("session_one", "run_one", claim.turn.claim!.token);
 
   // Nothing to read while it runs.
@@ -125,7 +125,7 @@ test("lease expiry is pruned without another worker control request", async () =
   await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
   await client.submitTurn("session_one", { runId: "claim_me", input: "Hello" });
-  expect((await client.claimTurn("worker_one")).claim?.turn.state).toBe("claimed");
+  expect((await client.claimTurn("worker_one", 1)).claim?.turn.state).toBe("claimed");
   time = 10;
   // The retiring registration ENDS the claim it was holding. It used to go
   // back to `queued` and be replayed by the next worker.
@@ -158,7 +158,7 @@ test("attachments upload as raw bytes, ride the turn, and the browser answers ev
     model: { model: "claude-haiku-4-5", effort: "low" },
     attachments: [uploaded.attachment.id],
   });
-  const claim = await client.claimTurn("worker_one");
+  const claim = await client.claimTurn("worker_one", 1);
   expect(claim.claim?.turn.attachments).toEqual([uploaded.attachment]);
   // The instance came from the SESSION: the submission has no field for one.
   expect(claim.claim?.model).toEqual({
