@@ -57,6 +57,9 @@ export type JournalTurn = {
    * is `queued` either way, and the difference is whether a worker may take it.
    */
   held?: boolean;
+  /** WHY it is held: a restart's re-read, or the session being paused. The
+   *  transcript offers different verbs for the two. */
+  heldReason?: NonNullable<Turn["held"]>["reason"];
   /**
    * The MAIN LOOP's timeline only.
    *
@@ -145,7 +148,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
         ...(turn.sender ? { sender: turn.sender } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         state: turn.state,
-        ...(turn.held ? { held: true } : {}),
+        ...(turn.held ? { held: true, heldReason: turn.held.reason } : {}),
         items: [],
         tasks: [],
         ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
@@ -241,7 +244,7 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
             ...(event.turn.sender ? { sender: event.turn.sender } : {}),
             ...(event.turn.attachments?.length ? { attachments: event.turn.attachments } : {}),
             state: event.turn.state,
-            ...(event.turn.held ? { held: true } : {}),
+            ...(event.turn.held ? { held: true, heldReason: event.turn.held.reason } : {}),
             items: [],
             tasks: [],
             resultText: "",
@@ -260,7 +263,10 @@ export function projectJournal(turns: Turn[], items: Item[], events: EngineEvent
       // The hold came off. NOT a state change — the turn was `queued` before
       // and after — so only the flag the transcript reads is cleared.
       case "turn.released":
-        if (turn) turn.held = false;
+        if (turn) {
+          turn.held = false;
+          delete turn.heldReason;
+        }
         break;
       // Send now: promoted into the running turn, then delivered. The
       // delivered turn is TERMINAL — its words render inside the run they

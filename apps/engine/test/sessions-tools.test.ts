@@ -79,7 +79,7 @@ function capabilityOver(store: EngineStore, self?: { sessionId: string }): Sessi
     send: async (sessionId, input) => store.submitAgentTurn(sessionId, input),
     read: async (sessionId, after) => store.readEvents(sessionId, after),
     status: async (sessionId) => ({ session: store.getSession(sessionId), turns: store.turns(sessionId) }),
-    stop: async (sessionId) => store.stopTurn(sessionId),
+    stop: async (sessionId) => store.pauseSession(sessionId, "session"),
     settle: async (sessionId, settled) => store.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" }),
     diff: async (sessionId) => store.sessionDiff(sessionId),
     subscribe: async (subscriber, input) => store.subscribe(subscriber, input),
@@ -333,20 +333,31 @@ describe("driving a session", () => {
     expect(missing.isError).toBe(true);
   });
 
-  test("stop ends the turn and says it undid nothing; stopping an idle session is not an error", async () => {
+  test("stop PAUSES the session: the running turn ends, the backlog is held, and only a person can resume", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { sessionId: id, input: "go" });
+    const claimed = store.claimTurn(id, "worker_one")!;
+    store.markRunning(id, claimed.runId, claimed.claim!.token);
+    await call(tools, "sessions_send", { sessionId: id, input: "and then this" });
 
     const stopped = await call(tools, "sessions_stop", { sessionId: id });
-    expect(stopped.json!.stopped).toBe(true);
+    expect(stopped.json!).toMatchObject({ paused: true, stopped: true, runId: claimed.runId, state: "stopped", held: 1 });
     expect(String(stopped.json!.note)).toContain("stopping ends a turn, it never undoes one");
-    expect(store.turns(id)[0]!.state).toBe("stopped");
+    expect(String(stopped.json!.note)).toContain("Only a person can resume it");
+    expect(store.getSession(id).paused).toMatchObject({ by: "session" });
+    const [first, second] = store.turns(id);
+    expect(first!.state).toBe("stopped");
+    expect(second).toMatchObject({ state: "queued", held: { reason: "session_paused" } });
+    // Nothing dispatches, and the wall has no way to lift it.
+    expect(store.claimNextTurn("worker_two")).toBeUndefined();
+    expect([...tools.keys()]).not.toContain("sessions_resume");
 
     const again = await call(tools, "sessions_stop", { sessionId: id });
     expect(again.isError).toBe(false);
     expect(again.json!.stopped).toBe(false);
+    expect(String(again.json!.note)).toContain("Already paused");
   });
 
   test("diff reads the session's own checkout and says it accepts nothing", async () => {
@@ -399,12 +410,13 @@ describe("sessions_read is bounded", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
-    // Real journal traffic through the public API: submit and stop, which is
-    // two events a lap and never fills the queue (a stopped turn is not a
-    // queued one).
+    // Real journal traffic: a send through the wall, then the engine's
+    // single-run stop — two events a lap that never fill the queue (a stopped
+    // turn is not a queued one). NOT `sessions_stop`: that pauses the
+    // session, and every send after the first would be held.
     for (let lap = 0; lap < 40; lap++) {
       await call(tools, "sessions_send", { sessionId: id, input: `message ${lap}` });
-      await call(tools, "sessions_stop", { sessionId: id });
+      store.stopTurn(id);
     }
     const whole = store.readEvents(id, 0);
     expect(whole.length).toBeGreaterThan(50);

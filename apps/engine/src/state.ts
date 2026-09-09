@@ -5686,7 +5686,10 @@ export class EngineStore {
     }
     const running = turns.find((turn) => turn.state === "running");
     if (running) return { ...base, activity: "working", activityAt: running.startedAt ?? running.updatedAt };
-    const waiting = turns.find((turn) => turn.state === "queued" || turn.state === "claimed");
+    // A HELD MESSAGE IS NOT "QUEUED": nothing is about to pick it up. A
+    // paused session with a backlog reads as idle to the activity fold; the
+    // pause itself is on the record (`paused`), and clients say so from it.
+    const waiting = turns.find((turn) => (turn.state === "queued" && !turn.held) || turn.state === "claimed");
     if (waiting) return { ...base, activity: "queued", activityAt: waiting.acceptedAt };
     /**
      * A THIRD FILE READ, AND IT CLOSES A HOLE THE CONTRACT ALREADY NAMED.
@@ -6047,6 +6050,15 @@ export class EngineStore {
       delete session.draft;
       atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
     }
+    /**
+     * PAUSED MEANS PAUSED. Every message that arrives while a human has the
+     * session paused — theirs, an agent's, a wake — is accepted and HELD, in
+     * order, behind whatever was already waiting. It is not steered into a
+     * running turn (there is none the pause allows) and it is not dispatched
+     * ahead of the backlog: a fresh message that jumped the queue would be
+     * the pause silently releasing itself. Resume, or release it by hand.
+     */
+    if (session.paused) turn.held = { at, reason: "session_paused" };
     queue.turns.push(turn);
     this.writeQueue(sessionId, queue);
     this.touchSession(sessionId, at);
@@ -6058,11 +6070,107 @@ export class EngineStore {
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
     // A compaction is a gesture on the session, not words for the running
     // model; it always waits its turn.
-    if (kind !== "compact") {
+    if (kind !== "compact" && !session.paused) {
       const steered = this.steerIfRunning(sessionId, turn.runId);
       if (steered) return { turn: steered, replayed: false };
     }
     return { turn: structuredClone(turn), replayed: false };
+  }
+
+  /**
+   * PAUSE THE SESSION: stop what is running, and let nothing else start until
+   * a human says so. Atomic under the daemon's single state lock, which is
+   * what closes the race a stop-then-stop loop could never close — the
+   * worker's next claim, the requeued steer, a wake arriving mid-stop all land
+   * against a session that already refuses them.
+   *
+   *   1. The live turn (claimed or running) is stopped exactly as `stopTurn`
+   *      does it — the worker hears the cancellation on its heartbeat, the
+   *      provider gets `interrupt()`, background work is spared.
+   *   2. Its undelivered steers come back to `queued`, and EVERY queued turn
+   *      — those steers, the backlog, a wake in flight — is held
+   *      (`session_paused`). Nothing is deleted.
+   *   3. `Session.paused` is written. `claimTurn`, `claimNextTurn`,
+   *      `openProviderTurn` and `steerIfRunning` all refuse while it is set;
+   *      `submitTurn` holds what arrives. `fireSubscriptions` still runs for
+   *      the stopped turn — the subscriber's wake is its own session's, and
+   *      that session decides whether it is paused too.
+   *
+   * A claim that lands in the same instant as the pause (the worker's
+   * `claimTurn` request was already in the daemon's queue) is settled by the
+   * lock: either it ran first and this stops what it claimed, or it runs after
+   * and finds `paused`. The one thing a paused session still executes is
+   * NOTHING. Idempotent; a second pause reports `already: true`.
+   */
+  pauseSession(sessionId: string, by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
+    const session = this.getSession(sessionId);
+    if (session.state === "archived") throw new EngineStateError("conflict", "session is archived");
+    if (session.paused) return { session: structuredClone(session), held: 0, already: true };
+    const at = this.now();
+    const queue = this.readQueue(sessionId);
+    const live = queue.turns.find((turn) => turn.state === "claimed" || turn.state === "running");
+    let stopped: Turn | undefined;
+    const requeued: Turn[] = [];
+    if (live) {
+      live.state = "stopped";
+      live.completedAt = at;
+      live.updatedAt = at;
+      requeued.push(...this.requeueUndeliveredSteers(queue, live.runId, at));
+      stopped = live;
+    }
+    let held = 0;
+    for (const turn of queue.turns) {
+      if (turn.state !== "queued" || turn.held) continue;
+      turn.held = { at, reason: "session_paused" };
+      turn.updatedAt = at;
+      held += 1;
+    }
+    this.writeQueue(sessionId, queue);
+    session.paused = { at, by };
+    session.updatedAt = at;
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    if (stopped) {
+      this.closeOrphanedTasks(sessionId, stopped.runId, at, "the turn was stopped before this agent reported back");
+      this.closeOpenItems(sessionId, stopped.runId, at);
+      this.closeOpenRequests(sessionId, stopped.runId, at);
+      this.appendEvent(sessionId, { type: "turn.stopped", reason: "session_paused" }, stopped.runId);
+      for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+    }
+    this.appendEvent(sessionId, { type: "session.paused", by, held });
+    this.appendEvent(sessionId, { type: "session.updated", session });
+    if (stopped) this.fireSubscriptions(sessionId, "turn_stopped", stopped, {});
+    return { session: this.withActivity(structuredClone(session)), ...(stopped ? { stopped: structuredClone(stopped) } : {}), held, already: false };
+  }
+
+  /**
+   * A HUMAN RESUMES. The pause comes off and every message it held is
+   * released, in its original order — the worker's next heartbeat claims the
+   * oldest. Messages held for OTHER reasons (a restart's) stay held; they
+   * are each still waiting on a re-read. Only a human calls this: the tool
+   * wall has no resume, by design — an agent that could un-pause a peer
+   * would be a pause nobody could rely on.
+   */
+  resumeSession(sessionId: string): { session: Session; released: number; already: boolean } {
+    const session = this.getSession(sessionId);
+    if (!session.paused) return { session: this.withActivity(structuredClone(session)), released: 0, already: true };
+    if (session.projectId !== undefined) this.assertProjectAvailable(session.projectId);
+    const at = this.now();
+    const queue = this.readQueue(sessionId);
+    const released: Turn[] = [];
+    for (const turn of queue.turns) {
+      if (turn.state !== "queued" || turn.held?.reason !== "session_paused") continue;
+      delete turn.held;
+      turn.updatedAt = at;
+      released.push(turn);
+    }
+    if (released.length > 0) this.writeQueue(sessionId, queue);
+    delete session.paused;
+    session.updatedAt = at;
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    for (const turn of released) this.appendEvent(sessionId, { type: "turn.released" }, turn.runId);
+    this.appendEvent(sessionId, { type: "session.resumed", released: released.length });
+    this.appendEvent(sessionId, { type: "session.updated", session });
+    return { session: this.withActivity(structuredClone(session)), released: released.length, already: false };
   }
 
   /**
@@ -6114,6 +6222,10 @@ export class EngineStore {
 
   claimTurn(sessionId: string, workerId: string): Turn | undefined {
     assertId(workerId, "worker id");
+    // A PAUSED SESSION DISPATCHES NOTHING — checked on the record, not
+    // inferred from held flags, so a message that slipped into `queued`
+    // unheld by any path still cannot run. See `pauseSession`.
+    if (this.getSession(sessionId).paused) return undefined;
     const queue = this.readQueue(sessionId);
     if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) return undefined;
     /**
@@ -6168,6 +6280,10 @@ export class EngineStore {
    */
   openProviderTurn(sessionId: string, input: { workerId: string; input: string; reason: NonNullable<Turn["providerReason"]> }): Turn {
     assertId(input.workerId, "worker id");
+    // The CLI woke itself on a background task, but the human paused the
+    // session: no turn opens. The driver parks the frames; a `conflict` is
+    // what it already reads as "not now".
+    if (this.getSession(sessionId).paused) throw new EngineStateError("conflict", "session is paused");
     const queue = this.readQueue(sessionId);
     if (queue.turns.some((turn) => turn.state === "claimed" || turn.state === "running")) {
       throw new EngineStateError("conflict", "session already has a live turn");
@@ -6266,7 +6382,11 @@ export class EngineStore {
       // work is held has nothing to offer, and listing it as a candidate would
       // win the sort and then claim nothing.
       const next = queue.turns.find((candidate) => candidate.state === "queued" && !candidate.held);
-      if (next) candidates.push({ sessionId, acceptedAt: next.acceptedAt });
+      if (!next) continue;
+      // `claimTurn` refuses a paused session; skipping it here keeps it from
+      // winning the sort and stalling every other session for a poll.
+      if (this.getSession(sessionId).paused) continue;
+      candidates.push({ sessionId, acceptedAt: next.acceptedAt });
     }
     candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
     for (const candidate of candidates) {
@@ -6522,6 +6642,13 @@ export class EngineStore {
     return structuredClone(turn);
   }
 
+  /**
+   * STOP ONE TURN. The worker claims the next queued message within a
+   * heartbeat, an undelivered steer is requeued and claimed, and subscribers
+   * are woken — this is a stop of a RUN, not of the session. For "stop and
+   * stay stopped" see `pauseSession`, which is what the session tool wall's
+   * `sessions_stop` and the cockpit's Pause call.
+   */
   stopTurn(sessionId: string, requestedRunId?: string): { turn?: Turn; stopped: boolean } {
     const queue = this.readQueue(sessionId);
     const turn = requestedRunId
@@ -6684,6 +6811,11 @@ export class EngineStore {
     // Already runnable: nothing to do, and saying so is kinder than a conflict
     // for a button pressed twice.
     if (!turn.held) return structuredClone(turn);
+    // Releasing ONE message does not un-pause the session — `claimTurn` would
+    // still refuse it. The honest answer is to say so: resume is the verb.
+    if (turn.held.reason === "session_paused" && session.paused) {
+      throw new EngineStateError("conflict", "the session is paused; resume it to run this message");
+    }
     const at = this.now();
     delete turn.held;
     turn.updatedAt = at;
@@ -7400,6 +7532,21 @@ export class EngineStore {
         }
       }
       /**
+       * A PAUSE SURVIVES THE RESTART. A turn requeued above (it was merely
+       * `claimed` in the instant the pause landed, or `steering`) is queued
+       * and unheld — on a paused session that is a message the next boot
+       * would dispatch through a pause the person never lifted. Held with the
+       * rest; `resumeSession` releases them together.
+       */
+      if (session.paused) {
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" || turn.held) continue;
+          turn.held = { at, reason: "session_paused" };
+          turn.updatedAt = at;
+          changed = true;
+        }
+      }
+      /**
        * BACKGROUND WORK DIES WITH ITS PROCESS — the same position `failTurn`
        * and a live stop already take: outliving its TURN is the definition of
        * background, outliving its PROCESS is impossible. And EVERY session's
@@ -7490,6 +7637,15 @@ export class EngineStore {
         for (const turn of queue.turns) {
           if (turn.state !== "queued" || turn.held) continue;
           turn.held = { at, reason: "worker_unavailable" };
+          turn.updatedAt = at;
+          changed = true;
+        }
+      }
+      // Same rule as the boot sweep: a pause outlives the worker that lost it.
+      if (session.paused) {
+        for (const turn of queue.turns) {
+          if (turn.state !== "queued" || turn.held) continue;
+          turn.held = { at, reason: "session_paused" };
           turn.updatedAt = at;
           changed = true;
         }

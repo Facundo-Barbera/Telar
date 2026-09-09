@@ -1928,6 +1928,22 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
   }
 
+  /**
+   * PAUSE THE SESSION: stop the live turn and hold everything queued — and
+   * everything that arrives — until a human resumes. `stopTurn` ends one run
+   * and the worker takes the next; this is the one that stays stopped. See
+   * `Session.paused`. `by: "session"` is how the worker's `sessions_stop`
+   * says an agent asked.
+   */
+  pauseSession(sessionId: string, by: "human" | "session" = "human"): Promise<{ session: Session; stopped?: Turn; held: number; already: boolean }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/pause`, { by });
+  }
+
+  /** A human resumes: the pause comes off and its held backlog runs in order. */
+  resumeSession(sessionId: string): Promise<{ session: Session; released: number; already: boolean }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/resume`, {});
+  }
+
   /** End a session and free its worktree. The branch survives — it is the
    *  session's output, and destroying it is a separate human decision. */
   archiveSession(sessionId: string): Promise<{ session: Session }> {

@@ -843,7 +843,17 @@ export function SessionTurn({
               onDiscard={() => onDiscard(turn)}
             />
           )}
-          {turn.held && turn.state === "queued" && (
+          {turn.held && turn.state === "queued" && turn.heldReason === "session_paused" && (
+            <Marker>held — the session is paused; Resume runs it in order, or drop it</Marker>
+          )}
+          {turn.held && turn.state === "queued" && turn.heldReason === "session_paused" && (
+            <div>
+              <Button size="sm" variant="ghost" disabled={sending} onClick={() => onDropHeld(turn)}>
+                Drop it
+              </Button>
+            </div>
+          )}
+          {turn.held && turn.state === "queued" && turn.heldReason !== "session_paused" && (
             <HeldMessageActions sending={sending} onRelease={() => onReleaseHeld(turn)} onDrop={() => onDropHeld(turn)} />
           )}
           {turn.state === "failed" && onContinue && <FailedTurnContinuation sending={sending} onContinue={onContinue} />}
@@ -1810,7 +1820,11 @@ export function SessionCockpit({
    * resolving the lost turn does NOT release them, so the count outlives the
    * recovery card and the held messages carry their own affordance.
    */
-  const heldBacklog = transcript.filter((turn) => turn.held && turn.state === "queued").length;
+  const heldBacklog = transcript.filter((turn) => turn.held && turn.state === "queued" && turn.heldReason !== "session_paused").length;
+  /** Messages the PAUSE is holding — the composer's banner counts them, and
+   *  Resume lets them go together. Distinct from a restart's holds above,
+   *  which each wait on their own re-read. */
+  const pausedBacklog = transcript.filter((turn) => turn.held && turn.state === "queued" && turn.heldReason === "session_paused").length;
 
   // A clock, only while something is running. An always-on interval re-renders a
   // settled transcript once a second for nothing.
@@ -1837,15 +1851,40 @@ export function SessionCockpit({
     [openRequests, observe],
   );
 
+  /**
+   * THE STOP BUTTON PAUSES THE SESSION. It used to end one turn, after which
+   * the worker claimed the next queued message within a heartbeat — the
+   * measured "I pressed stop and it started again". A pause stops the run AND
+   * holds everything queued (and everything that arrives) until Resume, which
+   * is what pressing Stop on a conversation means to the person pressing it.
+   * Pressing it with nothing running still pauses — that is how you hold a
+   * backlog before it starts.
+   */
   const stop = async () => {
-    if (!active || !sessionId) return;
+    if (!sessionId) return;
     setSending(true);
     try {
-      await api.stopTurn(sessionId, active.runId);
+      const paused = await api.pauseSession(sessionId);
+      setSession(paused.session);
       await hydrate();
       setError(undefined);
     } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not stop the turn."));
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not pause the session."));
+    } finally {
+      setSending(false);
+    }
+  };
+  /** A human lifts the pause; the held backlog runs in order. */
+  const resume = async () => {
+    if (!sessionId) return;
+    setSending(true);
+    try {
+      const resumed = await api.resumeSession(sessionId);
+      setSession(resumed.session);
+      await hydrate();
+      setError(undefined);
+    } catch (cause) {
+      setError(cause instanceof EngineApiError ? cause : new EngineApiError("internal_error", "Could not resume the session."));
     } finally {
       setSending(false);
     }
@@ -2281,7 +2320,10 @@ export function SessionCockpit({
   // user_message row inside it; a second copy here would double it. The brief
   // `queued` state (an idle session's next turn, claimed within a heartbeat)
   // is not worth a row either.
-  const shown = transcript.filter((turn) => turn.state !== "queued" && turn.state !== "steering" && turn.state !== "steered");
+  // A HELD message is the exception: it is queued, but nothing is about to
+  // take it, and the person has to see what a pause (or a restart) is holding
+  // in order to decide about it.
+  const shown = transcript.filter((turn) => (turn.state !== "queued" || turn.held) && turn.state !== "steering" && turn.state !== "steered");
   /**
    * THE ANSWER A READ RECEIPT WOULD BE ABOUT — the newest turn that left a
    * result, read off the RAW turns because only they carry the sequence the
@@ -2528,6 +2570,9 @@ export function SessionCockpit({
           backgroundTasks={backgroundTasks}
           settled={settled}
           onUnsettle={() => void unsettle()}
+          paused={Boolean(session?.paused)}
+          pausedBacklog={pausedBacklog}
+          onResume={() => void resume()}
           {...(session?.driver === "claude" ? { onCompact: () => void compact() } : {})}
           compacting={compacting}
           {...(composerQuestion

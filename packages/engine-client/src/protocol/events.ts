@@ -90,6 +90,10 @@ const TurnRequeued = event("turn.requeued", { reason: z.string().optional() });
  * a state change: the turn was `queued` before and after.
  */
 const TurnReleased = event("turn.released", {});
+/** A human paused or resumed the SESSION — see `Session.paused`. `held` is
+ *  how many queued messages the pause put on hold (or the resume let go). */
+const SessionPaused = event("session.paused", { by: z.enum(["human", "session"]), held: z.number().int().nonnegative() });
+const SessionResumed = event("session.resumed", { released: z.number().int().nonnegative() });
 /** A queued turn was promoted into the running one (send now). */
 const TurnSteering = event("turn.steering", { intoRunId: Id });
 /** ...and its text reached the provider inside that run. Terminal. */
@@ -241,6 +245,8 @@ export const EngineEvent = z.discriminatedUnion("type", [
   SessionCreated,
   SessionUpdated,
   SessionArchived,
+  SessionPaused,
+  SessionResumed,
   RuntimeStarted,
   RuntimeStateChanged,
   RuntimeExited,

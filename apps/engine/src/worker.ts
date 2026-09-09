@@ -74,7 +74,8 @@ type WorkerClient = Pick<
   | "submitAgentTurn"
   | "events"
   | "session"
-  | "stopTurn"
+  // Pause only — no `resumeSession`, so an agent cannot lift a pause.
+  | "pauseSession"
   | "sessionDiff"
   // Subscriptions and answering a peer's request. `resolveRequest` reaches
   // the same gate a human's answer does; the WALL narrows it — no `cancel`
@@ -652,7 +653,9 @@ export class EngineWorker {
           const snapshot = await this.options.client.session(id);
           return { session: snapshot.session, turns: snapshot.turns };
         },
-        stop: (id) => this.options.client.stopTurn(id),
+        // A PAUSE, stamped as an agent's. `stopTurn` would let this worker
+        // claim the peer's next message a heartbeat later.
+        stop: (id) => this.options.client.pauseSession(id, "session"),
         settle: async (id, settled) => (await this.options.client.settleSession(id, settled)).session,
         diff: async (id) => (await this.options.client.sessionDiff(id)).diff,
         subscribe: async (subscriber, input) => (await this.options.client.subscribe(subscriber, input)).subscription,

@@ -724,6 +724,13 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
       request<{ turn?: Turn; stopped: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop`, { runId }),
     /** Stop the session's lingering background tasks — the "N tasks still
      *  working" chip. Separate from `stopTurn`, which spares them. */
+    /** PAUSE the session: stop the live turn and hold everything queued — and
+     *  everything that arrives — until `resumeSession`. `stopTurn` ends one
+     *  run and the worker takes the next; this is the one that stays stopped. */
+    pauseSession: (sessionId: string) =>
+      request<{ session: Session; stopped?: Turn; held: number; already: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/pause`, {}),
+    resumeSession: (sessionId: string) =>
+      request<{ session: Session; released: number; already: boolean }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/resume`, {}),
     stopBackgroundTasks: (sessionId: string) =>
       request<{ stopped: number }>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/stop-background`, {}),
     discardAmbiguousTurn: (sessionId: string, runId: string) =>

@@ -638,6 +638,39 @@ export const Session = z.object({
 
   /** Provider continuity for the NEXT runtime. Opaque; the engine owns it. */
   resumeCursor: z.string().min(1).optional(),
+
+  /**
+   * A HUMAN PAUSED THIS SESSION — nothing dispatches until a human resumes it.
+   *
+   * WHAT A TURN STOP COULD NOT SAY. Stopping ends ONE turn; the worker then
+   * claims the next queued message within a heartbeat, a steer that could not
+   * be delivered is requeued and claimed, and the stop itself wakes every
+   * subscriber, which queues wakes on the sessions that were meant to be
+   * quiet. Measured on the dogfood app: a root stop was followed within a
+   * second by new runs on both workers and a wake on their supervisor. A
+   * pause is a fact about the SESSION: `claimTurn` refuses it, the requeued
+   * steer and every message that arrives — a person's, an agent's, a wake —
+   * is accepted and HELD (`Turn.held.reason: "session_paused"`), the
+   * provider is not told anything, and the record survives a restart.
+   *
+   * NOTHING IS DELETED, NOTHING IS AUTO-RELEASED. Resuming lifts the pause
+   * and lets the worker take the backlog in order; each held message can also
+   * be released or dropped on its own. A new message from the person while
+   * paused is held like the rest, never dispatched ahead of what is waiting —
+   * that is what makes "paused" mean paused. Background tasks are untouched by
+   * a pause; stopping them stays their own verb.
+   *
+   * Set only by `pauseSession` / `resumeSession`, which the sessions tool wall
+   * does NOT expose as a resume: an agent may pause a peer (it is the honest
+   * version of `sessions_stop`), and only a human may resume one.
+   */
+  paused: z
+    .object({
+      at: Timestamp,
+      /** Who paused it: a person, or an agent through `sessions_stop`. */
+      by: z.enum(["human", "session"]),
+    })
+    .optional(),
 });
 export type Session = z.infer<typeof Session>;
 
@@ -1094,11 +1127,16 @@ export const Turn = z.object({
    * typed after Continue run immediately, which is the point of continuing.
    *
    * Cleared by `releaseHeldTurn` (run it) or ended by `stopTurn` (drop it).
+   *
+   * `session_paused` is the third reason: the message arrived, or was still
+   * waiting, while a human had the session paused (`Session.paused`). Lifted
+   * for the whole backlog by `resumeSession`, or one message at a time by
+   * `releaseHeldTurn` — which does NOT un-pause the session.
    */
   held: z
     .object({
       at: Timestamp,
-      reason: z.enum(["engine_restart", "worker_unavailable"]),
+      reason: z.enum(["engine_restart", "worker_unavailable", "session_paused"]),
     })
     .optional(),
 });
