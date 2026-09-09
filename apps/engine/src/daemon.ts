@@ -104,6 +104,12 @@ export type EngineDaemonOptions = {
   /** Testable cadence for pruning workers that can no longer heartbeat. */
   workerPruneIntervalMs?: number;
   /**
+   * A worker GENERATION was retired — its registration is already gone, so it
+   * is fenced out. What happens to work it held is the terminal-stop
+   * lifecycle's call, not this file's; absent means nothing further happens.
+   */
+  onWorkerRetired?: (workerId: string) => void;
+  /**
    * Told when an approval parks with nobody watching. ABSENT MEANS NOBODY IS
    * TOLD, and the request records that honestly rather than claiming otherwise.
    */
@@ -3491,12 +3497,18 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             if (embeddedRegistration?.workerId === ownedWorkerId) embeddedRegistration = undefined;
             /**
              * THE OLD REGISTRATION IS RETIRED HERE, not left for a prune it is
-             * exempt from. Two things follow: a late request carrying the dead
-             * worker id is refused rather than served (generation fencing), and
-             * any turn it held merely `claimed` is requeued instead of
-             * stranding the session — `claimed` proves no provider started.
+             * exempt from. That is the FENCE: a late request carrying the dead
+             * worker id is refused rather than served, and its cached claim
+             * outcome dies with it.
+             *
+             * WHAT BECOMES OF ITS CLAIMED WORK IS NOT DECIDED HERE. An earlier
+             * draft requeued those turns, which is automatic replay of an
+             * intent the person's stop, quit or update already ended. The
+             * unified terminal-stop lifecycle owns that decision; this hook is
+             * the named seam it wires into, and it is scoped to THIS
+             * generation's id so no unrelated session can be touched through it.
              */
-            if (workers.delete(ownedWorkerId)) store.recoverInactiveWorker(ownedWorkerId);
+            if (workers.delete(ownedWorkerId)) options.onWorkerRetired?.(ownedWorkerId);
             // Forwarded, so a replaced generation's turns are told they were
             // replaced rather than that Telar shut down — see #208.
             await stop(reason);

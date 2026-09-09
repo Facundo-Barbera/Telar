@@ -53,22 +53,27 @@ async function eventually(check: () => void | Promise<void>, deadlineMs = 4_000)
  */
 function claimBarrier() {
   const seen: string[] = [];
-  let wake: (() => void) | undefined;
+  let passes = 0;
+  const wakers: Array<() => void> = [];
   return {
     seen,
     onClaimPhase: (phase: string) => {
       seen.push(phase);
-      if (phase === "idle") wake?.();
+      if (phase !== "idle") return;
+      passes += 1;
+      for (const wake of wakers.splice(0)) wake();
     },
-    /** Resolves once the pump has finished a pass (or immediately if it has). */
+    /**
+     * Resolves after the NEXT pump pass completes. Counted rather than
+     * latched: `start()` already runs a pass with an empty queue, so a latch
+     * would be set before the pass this test cares about had begun.
+     */
     async settled(): Promise<void> {
-      if (seen.includes("idle")) return;
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          wake = resolve;
-        }),
-        Bun.sleep(4_000),
-      ]);
+      const from = passes;
+      const deadline = Date.now() + 4_000;
+      while (passes === from && Date.now() < deadline) {
+        await Promise.race([new Promise<void>((resolve) => wakers.push(resolve)), Bun.sleep(25)]);
+      }
     },
   };
 }
