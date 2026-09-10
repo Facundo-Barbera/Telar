@@ -1,0 +1,136 @@
+{
+  "date": "2026-09-09T15:37:06.507282+00:00",
+  "pins": {
+    "T": [
+      "pingdotgg/t3code",
+      "6c583620ff7ad3235b135af7107c0543467eecfa"
+    ],
+    "O": [
+      "anomalyco/opencode",
+      "830d5eb5354874105cc31599635a80c1662609e8"
+    ],
+    "L": [
+      "Facundo-Barbera/Telar",
+      "4d2c31448c2fddce06ffef94bade664a6c39428d"
+    ]
+  },
+  "opencodeRelease": {
+    "tag": "v1.18.30",
+    "sha": "3104c1428ec91f809e5ab86631300de41eb6952e"
+  },
+  "t3Release": {
+    "tag": "v0.0.40",
+    "sha": "09e8de9c655ae85410bf6b00446f272a01da81c7"
+  },
+  "telarInvestigationHead": "79370cb44d458d93e818409ff76b0fbab5a92395",
+  "telar201Head": "ed076e29c64b8eb0ef0ceee9906aacf7bf94013d",
+  "releaseComparisons": [
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/permission/index.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/mcp/index.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/session/session.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/session/tools.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/sdk/js/src/v2/server.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "anomalyco/opencode",
+      "release": "3104c1428ec91f809e5ab86631300de41eb6952e",
+      "path": "packages/opencode/src/cli/cmd/run.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "pingdotgg/t3code",
+      "release": "09e8de9c655ae85410bf6b00446f272a01da81c7",
+      "path": "apps/server/src/provider/Drivers/OpenCodeDriver.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "pingdotgg/t3code",
+      "release": "09e8de9c655ae85410bf6b00446f272a01da81c7",
+      "path": "apps/server/src/provider/Layers/OpenCodeAdapter.ts",
+      "same_as_head": true
+    },
+    {
+      "repo": "pingdotgg/t3code",
+      "release": "09e8de9c655ae85410bf6b00446f272a01da81c7",
+      "path": "apps/server/src/provider/OpenCodeServerOwner.ts",
+      "same_as_head": false
+    },
+    {
+      "repo": "pingdotgg/t3code",
+      "release": "09e8de9c655ae85410bf6b00446f272a01da81c7",
+      "path": "apps/server/src/provider/opencodeRuntime.ts",
+      "same_as_head": false
+    }
+  ],
+  "dirtySourceHashes": {
+    "apps/engine/src/plugins/socket.ts": "75cb2064cab4da12a33d751c3e8bc55c4c1c03282ea0ffeb36083f483eabcdac",
+    "apps/engine/src/plugins/contract.ts": "94c9a077dd66f3e11c55b7a003a8b6efeceac0ae216dfe214855d14e5a08d4e8",
+    "apps/engine/src/plugins/policy.ts": "a57697483048812f942d133cf04e584243064b84f243ebf196a69918d69b9d3b",
+    "apps/engine/src/plugins/tool-module.ts": "ee0fd876727cfede86147f735f521aa8242f48761fd51ac8ba3992b0d90b3157",
+    "apps/engine/src/worker.ts": "a4f407b4f0612b46fcdea058801a2ee1858866dd00db04d665b212bd68de75b1",
+    "apps/engine/src/driver.ts": "f361a2f59146eeae01fc046dff17e505ddc70faba7b88079fb8c5cead738a1d1",
+    "apps/engine/src/codex-driver.ts": "31f3738d6d0972f83872ef47b90cd9e40ea8230957fd8c7878b85f7050c47a28"
+  },
+  "validation": "Static source inspection and selected released-file byte comparison only; no live provider or test execution.",
+  "sourceLinkValidation": {
+    "linksChecked": 83,
+    "method": "All pinned source paths and line ranges checked against downloaded source; selected material citations manually inspected."
+  },
+  "reportSha256": "a93e8832017c8e5141a40038b56482d25109a15236a4c6ad8963fe2d66271fa9",
+  "dirtyPluginSocketExcerpts": [
+    {
+      "path": "apps/engine/src/plugins/socket.ts",
+      "startLine": 30,
+      "endLine": 42,
+      "text": " * \u2500\u2500 NO GATE HERE, DELIBERATELY \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n * Nothing in this file decides approvals. On Claude the call answers to the\n * engine's ordinary mode ladder through `canUseTool`; on Codex the same call\n * arrives as an MCP elicitation the driver routes to the SAME engine gate. The\n * host still owns classification (`policy.ts`) \u2014 a gate here would put two\n * cards in front of one click, and a gate here that DISAGREED with the host\n * would be a plugin granting itself authority.\n *\n * \u2500\u2500 PER-SESSION TOKENS, NEVER PERSISTED \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n * Minted per bound session, handed only to that session's provider subprocess,\n * dropped on release. There is no on-disk secret for this door: unlike the\n * spool's and the sessions wall's outward sockets, nothing outside a running\n * turn has any business holding a plugin's tools."
+    },
+    {
+      "path": "apps/engine/src/plugins/socket.ts",
+      "startLine": 51,
+      "endLine": 68,
+      "text": "export type PluginSocketLease = {\n  url: string;\n  token: string;\n  /**\n   * A NON-SECRET NAME FOR THIS LEASE, and the reason it exists is a bug that\n   * shipped in the first draft of this file.\n   *\n   * All bindings share ONE url \u2014 one listener, many tokens \u2014 so a driver\n   * fingerprint keyed on the url cannot tell lease A from lease B. Rebinding\n   * when a project's enabled set changed therefore revoked the old token while\n   * the provider kept the query it was started with, and every subsequent\n   * plugin call 401'd with nothing in the fingerprint to explain why.\n   *\n   * The generation is what makes a rebind VISIBLE to that fingerprint. It is\n   * deliberately not the token: a fingerprint is compared, logged and reasoned\n   * about, and a credential has no business in one.\n   */\n  generation: string;"
+    },
+    {
+      "path": "apps/engine/src/plugins/socket.ts",
+      "startLine": 126,
+      "endLine": 144,
+      "text": "  async bind(modules: readonly PluginToolModule[], capabilities: Record<string, unknown>): Promise<PluginSocketLease | undefined> {\n    const tools = collectPluginWallTools(modules, capabilities);\n    if (tools.length === 0) return undefined;\n    if (this.closed) return undefined;\n    const url = await this.ensureListening();\n    // Re-checked AFTER the await: see `closed`. Returning undefined rather than\n    // throwing keeps a shutting-down worker's last turn on the same path as a\n    // session that enabled no plugins.\n    if (this.closed) return undefined;\n    const token = crypto.randomBytes(32).toString(\"base64url\");\n    this.bindings.set(token, tools);\n    this.generations += 1;\n    const generation = `g${this.generations}`;\n    return {\n      url,\n      token,\n      generation,\n      release: () => void this.bindings.delete(token),\n    };"
+    }
+  ]
+}
