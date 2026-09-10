@@ -445,13 +445,20 @@ struct HTTPEngineAPI: EngineAPI {
         return try await perform(request)
     }
 
-    private func perform<T: Decodable>(_ request: URLRequest) async throws -> T {
+    /// DECODED OFF THE CALLER'S EXECUTOR. Every store that calls this is
+    /// `@MainActor`, and a struct method inherits the caller's isolation, so
+    /// a session snapshot with its tool outputs was being parsed on the main
+    /// thread — on a reconnect, at the same moment as the inbox's. The bytes
+    /// go to a detached task and only the value comes back.
+    private func perform<T: Decodable & Sendable>(_ request: URLRequest) async throws -> T {
         let (data, status) = try await raw(request)
-        do {
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            throw EngineAPIError.incompatible(status: status)
-        }
+        return try await Task.detached(priority: .userInitiated) {
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                throw EngineAPIError.incompatible(status: status)
+            }
+        }.value
     }
 
     private func raw(_ request: URLRequest) async throws -> Data {

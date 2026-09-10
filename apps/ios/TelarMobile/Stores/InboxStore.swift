@@ -57,10 +57,18 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
     private let api: any EngineAPI
     private let cache: HostSnapshotCache?
     private var loop: Task<Void, Never>?
+    /// The cache read seeding the first frame — off the main thread, the
+    /// same reason as SessionSyncEngine's.
+    private var restoring: Task<Void, Never>?
     private var anythingLive = false
     /// The engine's default (3 days) until the real policy arrives; a policy
     /// fetch failure keeps the last known answer rather than rebanding.
     private var autoSettleAfterHours: Double? = 72
+    /// The policy is one answer per machine and changes by hand, so it is
+    /// re-read once a minute, not on every three-second poll — against a Mac
+    /// that is slow to answer, the second request per poll was the one that
+    /// kept the list a poll behind.
+    private var policyReadAt: ContinuousClock.Instant?
     private var lastInboxData: Data?
 
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
@@ -100,20 +108,37 @@ func groupInbox(_ sessions: [Session], now: Timestamp, autoSettleAfterHours: Dou
 
     /// The first frame, from the phone's own copy. `loaded` stays false: the
     /// rows are shown, but "nothing here" is not a claim this copy can make.
+    /// Read and decoded off the main thread; only the rows land.
     private func restore() {
-        guard let entry = cache?.readInbox(),
-              let live = try? JSONDecoder().decode(LiveSessions.self, from: entry.data)
-        else { return }
+        guard let cache else { return }
+        restoring = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let entry = cache.readInbox(),
+                  let live = try? JSONDecoder().decode(LiveSessions.self, from: entry.data)
+            else { return }
+            await self?.applyRestored(live, entry: entry)
+        }
+    }
+
+    /// The Mac may have answered first — its word wins.
+    private func applyRestored(_ live: LiveSessions, entry: SnapshotCache.Entry) {
+        guard !loaded else { return }
         lastInboxData = entry.data
         recordedAt = entry.savedAt
         apply(live)
     }
 
+    /// Tests: wait for the cache read to land.
+    func awaitPendingWork() async {
+        await restoring?.value
+    }
+
     func refresh() async {
         do {
             let live = try await api.liveSessions()
-            if let policy = try? await api.inboxPolicy() {
+            if policyReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
+               let policy = try? await api.inboxPolicy() {
                 autoSettleAfterHours = policy.autoSettleAfterHours
+                policyReadAt = .now
             }
             apply(live)
             lastError = nil

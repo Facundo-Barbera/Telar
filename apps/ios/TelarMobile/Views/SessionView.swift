@@ -39,6 +39,9 @@ struct SessionView: View {
             _previousVisit = State(initialValue: value > 0 ? value : nil)
         }
         if let hostId { _draft = State(initialValue: UserDefaults.standard.string(forKey: "telar.draft.\(hostId).\(sessionId)") ?? "") }
+        // NOT STARTED HERE. SwiftUI runs this initialiser on every parent
+        // re-render and keeps only the first store; a loop started from it
+        // would outlive the store that was thrown away. `.task` starts it.
         _store = State(initialValue: SessionStore(api: api, sessionId: sessionId, hostId: hostId, cache: cache))
     }
 

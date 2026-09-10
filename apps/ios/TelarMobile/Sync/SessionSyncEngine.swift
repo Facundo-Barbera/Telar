@@ -31,6 +31,15 @@ enum SyncConnectionState: Equatable {
 /// replaces it and is written back. When the Mac stops answering, the
 /// transcript STAYS: `.retrying` no longer means an empty screen, because the
 /// last thing recorded is still the most useful thing to look at.
+///
+/// THE MAIN THREAD ONLY ASSIGNS. Reading the cache and folding the journal
+/// are the two costs an open session pays, and both used to run on the main
+/// actor: the cache read inside the view's initialiser (inside the tap), the
+/// fold on every poll. On a slow reconnect the two stacked up behind each
+/// other and the list stopped answering touches. Both now run detached and
+/// hand back a finished value; a fold that lands after a newer one is
+/// discarded by generation, and a cache read that lands after the Mac has
+/// answered is discarded outright.
 @MainActor @Observable final class SessionSyncEngine {
     private(set) var session: Session?
     private(set) var turns: [JournalTurn] = []
@@ -54,6 +63,13 @@ enum SyncConnectionState: Equatable {
     private var events: [EngineEvent] = []
     private var cursor = 0
     private var loop: Task<Void, Never>?
+    /// The cache read seeding the first frame. Detached: it is started from
+    /// the view's initialiser, which is the tap.
+    private var restoring: Task<Void, Never>?
+    /// The fold in flight, and the number that lets a slow one be discarded
+    /// once a newer one has landed.
+    private var folding: Task<Void, Never>?
+    private var foldGeneration = 0
     /// The last snapshot bytes as the cockpit sent them, saved after a good
     /// read. Raw on purpose — see SnapshotCache.
     private var lastSnapshotData: Data?
@@ -105,14 +121,35 @@ enum SyncConnectionState: Equatable {
     /// The first frame: what this phone last recorded, decoded by the same
     /// decoder the network path uses. Absent cache, absent entry, or bytes an
     /// older build wrote that this one cannot read all mean "start empty".
+    /// Read, decoded and folded off the main thread; only the result lands.
     private func restore() {
-        guard let entry = cache?.readSession(sessionId),
-              let restored = try? JSONDecoder().decode(SessionSnapshot.self, from: entry.data)
-        else { return }
+        guard let cache else { return }
+        let id = sessionId
+        restoring = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let entry = cache.readSession(id),
+                  let restored = try? JSONDecoder().decode(SessionSnapshot.self, from: entry.data)
+            else { return }
+            let folded = fold(restored, events: [])
+            await self?.applyRestored(restored, entry: entry, folded: folded)
+        }
+    }
+
+    /// The Mac may have answered first — its word wins, and a session it no
+    /// longer has is not worth a photograph of.
+    private func applyRestored(_ restored: SessionSnapshot, entry: SnapshotCache.Entry, folded: Folded) {
+        guard snapshot == nil, connection != .gone else { return }
         snapshot = restored
         lastSnapshotData = entry.data
         recordedAt = entry.savedAt
-        refold()
+        session = restored.session
+        foldGeneration += 1
+        apply(folded, generation: foldGeneration)
+    }
+
+    /// Tests: wait for the cache read and the fold in flight to land.
+    func awaitPendingWork() async {
+        await restoring?.value
+        await folding?.value
     }
 
     private func hydrate() async {
@@ -229,30 +266,55 @@ enum SyncConnectionState: Equatable {
         cache.writeSession(sessionId, data)
     }
 
+    /// The session row is cheap and lands now; the fold is the cost and lands
+    /// when it is done. A tick that arrives while a fold is still running
+    /// starts a newer one and the older result is dropped on arrival.
     private func refold() {
         guard let snapshot else { return }
         session = snapshot.session
-        turns = projectJournal(
-            turns: snapshot.turns, items: snapshot.items,
-            events: events, tasks: snapshot.tasks
-        )
-        // Requests: the snapshot's list, corrected by any resolutions the tail
-        // has seen since — the same journal-wins rule as items.
-        var resolved = Set<EngineID>()
-        var openedInTail = [EngineRequest]()
-        for event in events {
-            switch event.payload {
-            case .requestOpened(let request): openedInTail.append(request)
-            case .requestResolved(let requestId, _): resolved.insert(requestId)
-            default: break
-            }
+        foldGeneration += 1
+        let generation = foldGeneration
+        let events = self.events
+        folding = Task.detached(priority: .userInitiated) { [weak self] in
+            let folded = fold(snapshot, events: events)
+            await self?.apply(folded, generation: generation)
         }
-        var known = Set(snapshot.requests.map(\.id))
-        var all = snapshot.requests
-        for request in openedInTail where !known.contains(request.id) {
-            known.insert(request.id)
-            all.append(request)
-        }
-        openRequests = all.filter { $0.isOpen && !resolved.contains($0.id) }
     }
+
+    private func apply(_ folded: Folded, generation: Int) {
+        guard generation == foldGeneration else { return }
+        turns = folded.turns
+        openRequests = folded.openRequests
+    }
+}
+
+/// What one fold produces — computed away from the main actor, assigned on it.
+private struct Folded {
+    var turns: [JournalTurn]
+    var openRequests: [EngineRequest]
+}
+
+private func fold(_ snapshot: SessionSnapshot, events: [EngineEvent]) -> Folded {
+    let turns = projectJournal(
+        turns: snapshot.turns, items: snapshot.items,
+        events: events, tasks: snapshot.tasks
+    )
+    // Requests: the snapshot's list, corrected by any resolutions the tail
+    // has seen since — the same journal-wins rule as items.
+    var resolved = Set<EngineID>()
+    var openedInTail = [EngineRequest]()
+    for event in events {
+        switch event.payload {
+        case .requestOpened(let request): openedInTail.append(request)
+        case .requestResolved(let requestId, _): resolved.insert(requestId)
+        default: break
+        }
+    }
+    var known = Set(snapshot.requests.map(\.id))
+    var all = snapshot.requests
+    for request in openedInTail where !known.contains(request.id) {
+        known.insert(request.id)
+        all.append(request)
+    }
+    return Folded(turns: turns, openRequests: all.filter { $0.isOpen && !resolved.contains($0.id) })
 }
