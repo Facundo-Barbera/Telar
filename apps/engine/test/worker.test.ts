@@ -12,10 +12,21 @@ const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+const knownClaudeDefault = (directory: string): string => {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+};
+
 const root = (): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-worker-"));
   roots.push(directory);
-  return directory;
+  return knownClaudeDefault(directory);
 };
 
 afterEach(async () => {

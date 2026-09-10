@@ -134,6 +134,8 @@ export type EngineDaemonOptions = {
    */
   gh?: GhRunner;
   asyncGit?: AsyncGitRunner;
+  /** Test seam: the provider model list, so a suite never spawns a real CLI. */
+  models?: ConstructorParameters<typeof EngineStore>[2] extends { models?: infer M } ? M : never;
   /**
    * Run a worker inside the daemon process.
    *
@@ -501,6 +503,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...(options.notifier ? { notifier: options.notifier } : {}),
     ...(options.gh ? { gh: options.gh } : {}),
     ...(options.asyncGit ? { asyncGit: options.asyncGit } : {}),
+    ...(options.models ? { models: options.models } : {}),
     // Telar's computer-use backend (cua-driver, or Sky), resolved per claim so
     // installing or removing a driver applies to the next turn. Injected here,
     // not defaulted in the store, so tests never read the real machine. The
@@ -3495,6 +3498,20 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           const model = TurnModelSelection.safeParse(input.model);
           if (input.model !== undefined && !model.success) {
             throw new HttpError(400, "invalid_request", "turn model selection is invalid");
+          }
+          /**
+           * THE CLAUDE DEFAULT, REFRESHED OFF THE CRITICAL PATH.
+           *
+           * Never awaited: reading a model list spawns the provider's CLI, and
+           * neither this request nor the claim behind it may wait on that — the
+           * claim runs against a worker lease and would lose the turn. The
+           * remembered default (see `rememberedClaudeDefault`) is what the
+           * synchronous claim reads; this only keeps it current, and only when a
+           * turn would actually need it, so a Codex-only machine never probes a
+           * Claude CLI it may not have installed.
+           */
+          if (store.claudeAdmissionNeedsCatalogue(session.sessionId, model.success ? model.data : undefined)) {
+            void store.prepareClaudeCatalogue();
           }
           const accepted = store.submitTurn(session.sessionId, {
             runId: stringValue(input.runId, "run id")!,

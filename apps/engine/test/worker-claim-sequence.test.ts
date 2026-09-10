@@ -8,6 +8,18 @@ import type { TurnDriver } from "../src/driver";
 import { EngineWorker } from "../src/worker";
 
 /**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
+/**
  * #208 — A LOST CLAIM RESPONSE MUST BE REPEATABLE, NEVER A SECOND ALLOCATION.
  *
  * Real daemon and store in a temp home; no installed app, no live home, no
@@ -21,7 +33,7 @@ const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 
 const home = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-claimseq-"));
+  const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-claimseq-")));
   roots.push(directory);
   return directory;
 };

@@ -5,10 +5,21 @@ import path from "node:path";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv } from "../src/state";
 
 const roots: string[] = [];
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+const knownClaudeDefault = (directory: string): string => {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+};
+
 const root = (): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-engine-"));
   roots.push(directory);
-  return directory;
+  return knownClaudeDefault(directory);
 };
 
 afterEach(() => {
@@ -1733,9 +1744,11 @@ test("an effort can be set without naming a model, and clearing the model keeps 
   const updated = store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, effort: "max" } });
   expect(updated.model).toEqual({ instanceId: session.providerInstanceId, effort: "max" });
 
-  // And it survives the turn, which is where it actually has to arrive.
+  // And it survives the turn, which is where it actually has to arrive — beside
+  // the long-window default the claim fills in, since Telar publishes no short
+  // Claude rows and a turn that named no model must not run one.
   store.submitTurn("session_one", { runId: "run_one", input: "hi" });
-  expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, effort: "max" });
+  expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, effort: "max", model: "claude-opus-5[1m]" });
 });
 
 test("a per-turn selection may be an effort alone", () => {
@@ -1772,14 +1785,16 @@ test("a model selection can be cleared, which `undefined` could never express", 
   expect(store.updateSession("session_one", { title: "Renamed" }).model?.model).toBe("claude-opus-5[1m]");
 });
 
-test("fast mode reaches the claim without a model", () => {
+test("fast mode survives a selection that names no model", () => {
   // A Claude-side switch the composer offers on the provider default, so it has
-  // to survive a selection that names no model at all.
+  // to survive a selection that names no model at all — and it now travels
+  // beside the long-window default the claim supplies, because Telar publishes
+  // no short Claude rows for a turn to fall back to.
   const { store } = readyStore();
   const session = store.getSession("session_one");
   store.updateSession("session_one", { model: { instanceId: session.providerInstanceId, fastMode: true } });
   store.submitTurn("session_one", { runId: "run_one", input: "hi" });
-  expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, fastMode: true });
+  expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, fastMode: true, model: "claude-opus-5[1m]" });
 });
 
 test("an MCP server belongs to a project or to the machine, and the project's wins", () => {

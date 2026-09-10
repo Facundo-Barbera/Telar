@@ -21,6 +21,17 @@ const tmp = (prefix: string): string => {
   return directory;
 };
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+const engineHome = (prefix: string): string => {
+  const directory = tmp(prefix);
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+};
+
 afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
@@ -129,7 +140,7 @@ test("a branch slug outside the engine-owned namespaces is refused", () => {
 
 test("a titled worktree session derives its branch from the title", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({
     id: "session_abcdef123456",
@@ -143,7 +154,7 @@ test("a titled worktree session derives its branch from the title", () => {
 
 test("a session created with envMode worktree records its branch and base", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
 
@@ -164,7 +175,7 @@ test("the standing default decides an omitted envMode, and an explicit one still
   // caller that says nothing — the MCP toolkit, an API client — builds what the
   // preference says.
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   store.setSessionDefaults({ envMode: "worktree" });
 
@@ -181,7 +192,7 @@ test("the worktree default yields on an unversioned project, but a stated worktr
   // `createSessionWorktree` refuses a directory that is not a repo — right for
   // a caller who asked for a worktree, and wrong for one who asked for nothing
   // and would otherwise be unable to open a session in that project at all.
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
   store.setSessionDefaults({ envMode: "worktree" });
 
@@ -194,7 +205,7 @@ test("the worktree default yields on an unversioned project, but a stated worktr
 test("a failed worktree cut leaves no half-created session behind", () => {
   // The worktree is cut BEFORE the session document is written, so there is
   // nothing to repair on read.
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
   expect(() => store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
   expect(() => store.getSession("session_one")).toThrow(EngineStateError);
@@ -202,7 +213,7 @@ test("a failed worktree cut leaves no half-created session behind", () => {
 
 test("archiving frees the checkout and KEEPS the branch", () => {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
@@ -224,7 +235,7 @@ test("archiving refuses while a turn is in flight", () => {
   // Pulling the checkout out from under a live provider process is how a
   // half-written file becomes a corrupt commit.
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: projectRoot });
   store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
@@ -235,7 +246,7 @@ test("archiving refuses while a turn is in flight", () => {
 });
 
 test("archiving is idempotent", () => {
-  const store = new EngineStore(tmp("telar-wt-engine-"), () => 100);
+  const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.archiveSession("session_one").state).toBe("archived");

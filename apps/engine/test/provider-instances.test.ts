@@ -13,9 +13,21 @@ import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { createProviderProber, providerProcessEnv, signInOf, statusOf } from "../src/provider-instances";
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
 const roots: string[] = [];
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-provider-"));
+  const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-provider-")));
   roots.push(directory);
   return directory;
 };

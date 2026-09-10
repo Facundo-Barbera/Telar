@@ -30,6 +30,18 @@ import { helloToolModule, type HelloCapability } from "../src/plugins/hello";
 import { pluginCall } from "../src/plugins/tool-module";
 import type { ToolFactory } from "../src/tool-kit";
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const gates: (string | undefined)[] = [];
@@ -45,7 +57,7 @@ function gateOff(): void {
 }
 
 const root = (): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "telar-plugin-wire-"));
+  const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), "telar-plugin-wire-")));
   roots.push(directory);
   return directory;
 };

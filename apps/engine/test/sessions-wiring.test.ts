@@ -29,13 +29,25 @@ import { createClaudeDriver, type SessionsCapability, type TurnDriver } from "..
 import { SessionsToolSocket } from "../src/sessions-tools/run-socket";
 import { EngineWorker } from "../src/worker";
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
 const workers: EngineWorker[] = [];
 const sockets: SessionsToolSocket[] = [];
 
 const tmp = (prefix: string): string => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const directory = knownClaudeDefault(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   roots.push(directory);
   return directory;
 };

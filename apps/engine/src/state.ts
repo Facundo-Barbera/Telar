@@ -241,7 +241,7 @@ import {
   type GhRunner,
 } from "./github";
 import { readModelCatalogue } from "./models";
-import { applyModelManifest, BUNDLED_MANIFEST, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
+import { applyModelManifest, BUNDLED_MANIFEST, longDefaultOf, normalizeClaudeModel, type ModelManifest } from "./model-manifest";
 import { applyModelOverlay } from "./model-overlay";
 import { LatexSettings as LatexSettingsSchema } from "./plugins/latex";
 import { createSessionWorktree, defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, isGitWorkTree, removeSessionWorktree, type GitRunner } from "./worktree";
@@ -519,6 +519,9 @@ export type EngineStatePaths = {
   projects: string;
   /** Plugin facts true of this Mac. See `machinePlugins()`. */
   machinePlugins: string;
+  /** The Claude default this machine last read from the provider — what a
+   *  synchronous claim uses when the in-memory catalogue is cold. */
+  claudeDefault: string;
   sessions: string;
   /** User-configured MCP servers. ENVIRONMENT-SCOPED, beside projects.json
    *  rather than inside a session: a tool is configured once. */
@@ -672,6 +675,7 @@ export function statePaths(root: string): EngineStatePaths {
     projects: path.join(resolved, "projects.json"),
     /** Plugin facts true of THIS Mac — see `MachinePlugins`. */
     machinePlugins: path.join(resolved, "machine-plugins.json"),
+    claudeDefault: path.join(resolved, "claude-default-model.json"),
     sessions: path.join(resolved, "sessions"),
     mcpServers: path.join(resolved, "mcp-servers.json"),
     providerInstances: path.join(resolved, "provider-instances.json"),
@@ -1387,6 +1391,12 @@ export class EngineStore {
   /** In memory, like the GitHub cache and for the same reason: it describes
    *  somebody else's installation, which changes without telling us. */
   private readonly modelCache = new Map<ProviderDriverKind, ModelCatalogue>();
+  /** In-flight `prepareClaudeCatalogue`, so concurrent claims share one probe. */
+  private claudeCataloguePrepare: Promise<void> | undefined;
+  /** When the probe last failed — see `prepareClaudeCatalogue`. */
+  private claudeCatalogueFailedAt: number | undefined;
+  /** The remembered default, cached in memory. `""` means "read, and absent". */
+  private claudeDefaultMemo: string | undefined;
   /**
    * Set by the daemon when it owns a browser. ATTACHED RATHER THAN CONSTRUCTED
    * so the store keeps no provider dependency — every test builds an
@@ -5048,6 +5058,9 @@ export class EngineStore {
      * Claude-only today; Codex publishes no windows to fill in.
      */
     const listed = driver === "claude" ? applyModelManifest(raw.models, this.manifest) : raw.models;
+    // Remembered from the PROVIDER's list, before the reader's overlay: hiding
+    // a row in the picker is curation, not a statement about what the CLI runs.
+    if (driver === "claude") this.rememberClaudeDefault(raw.models);
     return { ...raw, instanceId, models: applyModelOverlay(listed, overlay) };
   }
 
@@ -6697,6 +6710,114 @@ export class EngineStore {
   }
 
   /** Claims exactly one queued turn. The daemon has one state lock, so two workers cannot claim it twice. */
+  /**
+   * Would THIS turn run Claude with no model of its own, on a cold catalogue?
+   * Asked at admission so `prepareClaudeCatalogue` runs only when it is needed:
+   * a Codex session, or a turn that names a model, never makes the machine read
+   * a Claude CLI it may not have installed.
+   */
+  claudeAdmissionNeedsCatalogue(sessionId: string, turnModel?: { model?: string }): boolean {
+    if (turnModel?.model) return false;
+    const session = this.getSession(sessionId);
+    return session.driver === "claude" && !session.model?.model && this.defaultClaudeModelId() === undefined;
+  }
+
+  /**
+   * WHAT TO DO WITH A CLAUDE TURN THAT NAMED NO MODEL.
+   *
+   * Telar publishes only long-window rows, so running one of these on the CLI's
+   * own default means a window the person removed from their picker. That is
+   * not a fallback, so there are only three answers:
+   *
+   *  - `"ready"`     the default is known; claim it and run.
+   *  - `"pending"`   not known yet. NOT CLAIMABLE — skipped in the scan, so no
+   *                  lease is taken and nothing waits inside one. Other
+   *                  sessions and other providers are untouched.
+   *  - `"failed"`    the list could not be read. The turn fails with something
+   *                  actionable rather than running at the wrong window or
+   *                  waiting for ever; no provider is ever started for it.
+   */
+  private claudeSelectionState(driver: ProviderDriverKind, selection: ModelSelection | undefined): "ready" | "pending" | "failed" {
+    if (driver !== "claude" || selection?.model) return "ready";
+    if (this.defaultClaudeModelId() !== undefined) return "ready";
+    // A failure is only current for as long as the probe stays refused; after
+    // that this is pending again and `prepareClaudeCatalogue` tries afresh, so
+    // a transient outage is not a permanent verdict.
+    const failedFor = this.claudeCatalogueFailedAt === undefined ? undefined : this.now() - this.claudeCatalogueFailedAt;
+    return failedFor !== undefined && failedFor < MODEL_CACHE_MS ? "failed" : "pending";
+  }
+
+  /** Settle a never-claimed turn as failed. Mirrors `failTurn`'s shape without
+   *  a claim, because there is deliberately no worker involved. */
+  private failQueuedTurn(sessionId: string, queue: SessionQueue, turn: Turn, message: string): void {
+    const at = this.now();
+    turn.state = "failed";
+    turn.completedAt = at;
+    turn.updatedAt = at;
+    turn.failure = { code: "provider_unavailable", message };
+    const requeued = this.requeueUndeliveredSteers(queue, turn.runId, at);
+    this.writeQueue(sessionId, queue);
+    // This turn's own bookkeeping only: no worker ran, so there are no items or
+    // tasks of its own, and background work belongs to whatever else is running.
+    this.closeOpenRequests(sessionId, turn.runId, at);
+    this.touchSession(sessionId, at);
+    this.appendEvent(sessionId, { type: "turn.failed", ...turn.failure }, turn.runId);
+    for (const reverted of requeued) this.appendEvent(sessionId, { type: "turn.requeued", reason: "steer_undelivered" }, reverted.runId);
+    // A coordinator waiting on this session hears the failure like any other.
+    this.fireSubscriptions(sessionId, "turn_failed", turn, { failure: turn.failure });
+  }
+
+  /**
+   * Learn the long-window default this machine will run.
+   *
+   * ONE PROBE IN FLIGHT, and an unusable answer is remembered rather than
+   * retried on every poll. Nothing here lets a turn run on a window Telar does
+   * not publish: until this succeeds the turn is withheld, and if it cannot
+   * succeed the turn fails saying so.
+   */
+  async prepareClaudeCatalogue(timeoutMs = 2_000): Promise<void> {
+    // USABLE, not merely read: a list that parses but publishes no long row
+    // (Haiku-only, or empty) is as unusable as no list, and returning early on
+    // a populated cache would leave those turns pending with nothing left to
+    // try. One marker covers every way this can fail.
+    if (this.defaultClaudeModelId() !== undefined) return;
+    if (this.claudeCatalogueFailedAt !== undefined && this.now() - this.claudeCatalogueFailedAt < MODEL_CACHE_MS) return;
+    const unusable = (reason: string) => {
+      this.claudeCatalogueFailedAt = this.now();
+      console.error(`[engine] no long-window Claude model could be resolved, so a session that named no model cannot run: ${reason}`);
+    };
+    this.claudeCataloguePrepare ??= this.modelCatalogue("claude").then(
+      () => {
+        // Late or on time, one question decides it: did this produce a row
+        // Telar can run? A late success clears a timeout's verdict.
+        if (this.defaultClaudeModelId() !== undefined) this.claudeCatalogueFailedAt = undefined;
+        else unusable("the provider listed no long-window model");
+      },
+      (error) => unusable(error instanceof Error ? error.message : String(error)),
+    );
+    const probe = this.claudeCataloguePrepare;
+    void probe.finally(() => {
+      if (this.claudeCataloguePrepare === probe) this.claudeCataloguePrepare = undefined;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    await Promise.race([
+      probe,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    clearTimeout(timer);
+    // A probe that never answers must not leave turns pending for ever: the
+    // verdict is bounded and retried like any other, and the probe is left
+    // running so its late answer still counts.
+    if (timedOut && this.defaultClaudeModelId() === undefined) unusable(`the provider did not answer within ${timeoutMs}ms`);
+  }
+
   claimNextTurn(workerId: string): WorkerClaim | undefined {
     assertId(workerId, "worker id");
     /**
@@ -6732,7 +6853,28 @@ export class EngineStore {
       if (!next) continue;
       // `claimTurn` refuses a paused session; skipping it here keeps it from
       // winning the sort and stalling every other session for a poll.
-      if (this.getSession(sessionId).paused) continue;
+      const session = this.getSession(sessionId);
+      if (session.paused) continue;
+      /**
+       * A CLAUDE TURN WITH NO MODEL IS NOT CLAIMABLE UNTIL ITS WINDOW IS KNOWN.
+       * Decided here, before a candidate exists, so no lease is taken and
+       * nothing is awaited inside one. Every other session keeps moving.
+       */
+      const selection = this.claudeSelectionState(session.driver, next.model ?? session.model);
+      if (selection === "pending") {
+        // One probe in flight for the whole engine, never one per tick.
+        void this.prepareClaudeCatalogue();
+        continue;
+      }
+      if (selection === "failed") {
+        this.failQueuedTurn(
+          sessionId,
+          queue,
+          next,
+          "Telar could not resolve a long-context Claude model, so it cannot tell which context window this session would run. Nothing was sent to the provider. Pick a model for this session from the composer's model picker, or send again to retry.",
+        );
+        continue;
+      }
       candidates.push({ sessionId, acceptedAt: next.acceptedAt });
     }
     candidates.sort((left, right) => left.acceptedAt - right.acceptedAt || left.sessionId.localeCompare(right.sessionId));
@@ -6754,7 +6896,7 @@ export class EngineStore {
       // Normalised HERE TOO, because a record saved before the window became a
       // control is read here without ever passing through a patch — and the
       // claim is the one place that decides what actually runs.
-      const model = this.normalizeModelSelection(session.driver, turn.model ?? session.model);
+      const model = this.claimModelSelection(session.driver, turn.model ?? session.model, session.providerInstanceId ?? defaultInstanceIdForDriver(session.driver));
       /**
        * THIS PROJECT'S SERVERS OVER THE GLOBAL ONES, then filtered to the
        * enabled ones. Both halves happen HERE rather than in the worker so each
@@ -6849,14 +6991,93 @@ export class EngineStore {
   }
 
   /**
-   * A Claude selection in the spelling Telar actually offers — see
-   * `normalizeClaudeModel`. Codex ids are never touched; there is no window
-   * to spell. Absent stays absent: the provider's default is its own.
+   * The default Claude row Telar publishes, read synchronously or not at all.
+   *
+   * The CLI's own default put through the manifest the picker uses, so it is
+   * the `[1m]` spelling of the family the provider would have chosen anyway.
+   * WINDOW ONLY: never a different family, never an invented id.
+   *
+   * `claimNextTurn` is synchronous on purpose (see `refreshProviderToken`), so
+   * this reads the in-memory catalogue and nothing else. Cold yields
+   * `undefined` — `prepareClaudeCatalogue` is what makes it warm in time.
+   */
+  private defaultClaudeModelId(): string | undefined {
+    const cached = this.modelCache.get("claude");
+    if (cached) return longDefaultOf(applyModelManifest(cached.models, this.manifest));
+    // COLD MEMORY, WARM DISK. Reading the list spawns the provider's CLI, which
+    // a synchronous claim cannot do and a user's first message must not wait
+    // for. The last list this machine actually read is remembered instead, so a
+    // restart is covered from its very first turn; the background refresh on
+    // admission keeps it current.
+    return this.rememberedClaudeDefault();
+  }
+
+  /** The remembered default, or nothing. Never throws: a damaged record costs
+   *  the long window on one turn, not the ability to work. */
+  private rememberedClaudeDefault(): string | undefined {
+    if (this.claudeDefaultMemo !== undefined) return this.claudeDefaultMemo || undefined;
+    let remembered: string | undefined;
+    try {
+      const stored = this.readDocument(this.paths.claudeDefault) as { model?: unknown } | undefined;
+      if (typeof stored?.model === "string" && /\[1m\]$/i.test(stored.model)) remembered = stored.model;
+    } catch {
+      remembered = undefined;
+    }
+    this.claudeDefaultMemo = remembered ?? "";
+    return remembered;
+  }
+
+  /** Remember what the provider just said its default was, when it is a row
+   *  Telar would publish. Written only on change. */
+  private rememberClaudeDefault(models: ModelCatalogue["models"]): void {
+    const model = longDefaultOf(applyModelManifest(models, this.manifest));
+    if (!model || model === this.rememberedClaudeDefault()) return;
+    this.claudeDefaultMemo = model;
+    try {
+      this.writeDocument(this.paths.claudeDefault, { model, at: this.now() });
+    } catch {
+      // A machine that cannot write this still runs; it just re-learns the
+      // default after each restart instead of remembering it.
+    }
+  }
+
+  /**
+   * A Claude selection in the spelling Telar offers — see `normalizeClaudeModel`.
+   * Other drivers are never touched; there is no window to spell. Absent stays
+   * absent here: filling one in is the CLAIM's job, not a patch's.
    */
   private normalizeModelSelection<T extends ModelSelection | undefined>(driver: ProviderDriverKind, selection: T): T {
     if (!selection || driver !== "claude" || !selection.model) return selection;
     const model = normalizeClaudeModel(selection.model, this.manifest);
     return model === selection.model ? selection : { ...selection, model };
+  }
+
+  /**
+   * WHAT THE WORKER IS ACTUALLY HANDED, model-wise.
+   *
+   * An absent Claude model reaches the SDK as no `model` option at all, so the
+   * CLI picks its own default — measured in a Dev store as a 200k window on
+   * every absent-model session, while every `[1m]` one ran 1M. The driver's
+   * `CLAUDE_CODE_DISABLE_1M_CONTEXT=0` only PERMITS the long window; the id
+   * selects it.
+   *
+   * An effort-only or fastMode-only selection keeps what it named and gains the
+   * model, so "the default model at maximum effort" still means that.
+   */
+  private claimModelSelection(
+    driver: ProviderDriverKind,
+    selection: ModelSelection | undefined,
+    instanceId: string,
+  ): ModelSelection | undefined {
+    const normalized = this.normalizeModelSelection(driver, selection);
+    if (driver !== "claude" || normalized?.model) return normalized;
+    const model = this.defaultClaudeModelId();
+    // Nothing known: unchanged. A guess here would be the 200k bug wearing a
+    // different hat.
+    if (!model) return normalized;
+    // `instanceId` is required on a selection, so it comes from the session
+    // rather than being conjured — an absent selection has none of its own.
+    return { ...(normalized ?? {}), instanceId: normalized?.instanceId ?? instanceId, model };
   }
 
   /**

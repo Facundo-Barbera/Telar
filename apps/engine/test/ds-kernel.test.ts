@@ -19,6 +19,18 @@ import { KernelHost } from "../src/ds/kernel-host";
 import { telarVenvDir, telarVenvPython } from "../src/ds/telar-venv";
 import { parseNotebook } from "../src/ds/notebook-file";
 
+/**
+ * A Claude default this temp home already knows, so a claim is not withheld
+ * waiting for a model list nobody is going to read here. Real homes learn this
+ * from the provider; see `rememberClaudeDefault`.
+ */
+function knownClaudeDefault(directory: string): string {
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
+  return directory;
+}
+
+
 function hasUv(): boolean {
   try { execFileSync("uv", ["--version"], { stdio: "ignore" }); return true; } catch { return false; }
 }
@@ -39,7 +51,7 @@ describe.skipIf(skip)("kernel host against a real ipykernel", () => {
     project = path.join(root, "project");
     fs.mkdirSync(project);
     fs.writeFileSync(path.join(project, "data.csv"), "a,b\n1,x\n2,y\n3,z\n");
-    store = new EngineStore(path.join(root, "engine"), Date.now);
+    store = new EngineStore(knownClaudeDefault(path.join(root, "engine")), Date.now);
     store.registerProject({ id: "project_k", name: "K", root: project });
     const base = execFileSync("uv", ["python", "find", "3.12"], { encoding: "utf8" }).trim();
     const venvDir = path.join(project, ".venv");

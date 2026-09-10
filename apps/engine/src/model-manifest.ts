@@ -164,3 +164,10 @@ export function applyModelManifest(models: readonly ProviderModel[], manifest: M
         : model,
     );
 }
+
+/** The default row's id when it is a long one, else nothing — the single rule
+ *  behind both the picker's default and the claim's fallback. */
+export function longDefaultOf(models: readonly Pick<ProviderModel, "id" | "isDefault">[]): string | undefined {
+  const fallback = models.find((model) => model.isDefault);
+  return fallback && /\[1m\]$/i.test(fallback.id) ? fallback.id : undefined;
+}

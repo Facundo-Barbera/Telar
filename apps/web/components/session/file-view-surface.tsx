@@ -35,7 +35,7 @@
  * everything past the cut.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   BoldIcon,
   CodeIcon,
@@ -50,6 +50,7 @@ import {
   RotateCwIcon,
   StrikethroughIcon,
   TriangleAlertIcon,
+  WrapTextIcon,
 } from "lucide-react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
@@ -57,6 +58,15 @@ import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft } fro
 import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
 import type { EditorViewState } from "@/lib/editor-workspace";
 import { fileKind } from "@/lib/file-kinds";
+import {
+  isProseFile,
+  NOWRAP_CLASS,
+  serverWrapLinesSnapshot,
+  subscribeWrapLines,
+  WRAP_CLASS,
+  wrapLinesSnapshot,
+  writeWrapLines,
+} from "@/lib/editor-wrap";
 import { rawFileUrl } from "@/lib/file-urls";
 import { highlight, MAX_HIGHLIGHT_BYTES, type HighlightedLine } from "@/lib/highlight";
 import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
@@ -230,6 +240,15 @@ export function FileViewSurface({
    * rather than `preview` so the boolean's false state is the default state.
    */
   const markdown = kind.lang === "markdown";
+  /**
+   * Soft wrap, prose only, off by default — lib/editor-wrap.ts. Read through
+   * the store's subscription so hydration agrees and open editors flip
+   * together.
+   */
+  const prose = isProseFile(kind);
+  const wrap = useSyncExternalStore(subscribeWrapLines, wrapLinesSnapshot, serverWrapLinesSnapshot);
+  const wrapping = prose && wrap;
+  const wrapClass = wrapping ? WRAP_CLASS : NOWRAP_CLASS;
   const [source, setSource] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   /** The box the code scrolls in — the other half of "where I left this file". */
@@ -765,9 +784,12 @@ export function FileViewSurface({
               draft + saver pair a keystroke uses. `onMouseDown` prevention
               keeps the textarea's selection alive through the click — a
               focused button has no selection to format. */}
-          {markdown && source && editable && (
-            <div role="toolbar" aria-label="Markdown formatting" className="flex shrink-0 items-center gap-0.5 border-b border-border px-2 py-1">
-              {MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
+          {/* `source` is markdown's Rendered/Edit switch; a .txt has no
+              preview, so the row shows whenever the EDITOR is the thing on
+              screen. */}
+          {prose && editable && (!markdown || source) && (
+            <div role="toolbar" aria-label="Editing" className="flex shrink-0 items-center gap-0.5 border-b border-border px-2 py-1">
+              {markdown && MARKDOWN_ACTIONS.map(({ action, label, icon: Icon }) => (
                 <button
                   key={action}
                   type="button"
@@ -780,10 +802,30 @@ export function FileViewSurface({
                   <Icon className="size-3" />
                 </button>
               ))}
+              {/* The gutter hides while this is on: a line number names a
+                  SOURCE line, and under wrap those no longer sit one per row. */}
+              <div className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={wrap}
+                  aria-label="Wrap lines"
+                  title={wrap ? "Wrap lines: on (line numbers hidden while wrapped)" : "Wrap long lines to the panel width"}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => writeWrapLines(!wrap)}
+                  className={cn(
+                    "flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] transition-colors",
+                    wrap ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  <WrapTextIcon className="size-3" />
+                  Wrap
+                </button>
+              </div>
             </div>
           )}
         <div ref={scrollerRef} onScroll={rememberView} className="min-h-0 flex-1 overflow-auto">
-          <div className="flex min-w-max">
+          <div className={cn("flex", wrapping ? "min-w-0" : "min-w-max")}>
             {/**
              * THE GUTTER IS STICKY, not fixed and not outside the scroller.
              * Outside, it could not scroll vertically with the code; fixed, it
@@ -798,18 +840,20 @@ export function FileViewSurface({
              * gutter's whole job while the code is scrolled sideways is to stop
              * the line it is covering from being read through it.
              */}
-            <div
-              aria-hidden
-              style={CODE_FONT_SIZE}
-              className={cn(
-                "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
-                CODE_GEOMETRY,
-              )}
-            >
-              {lines.map((_line, index) => (
-                <div key={index}>{index + 1}</div>
-              ))}
-            </div>
+            {!wrapping && (
+              <div
+                aria-hidden
+                style={CODE_FONT_SIZE}
+                className={cn(
+                  "app-ground sticky left-0 z-10 shrink-0 select-none border-r border-border bg-background py-2 pl-3 pr-2 text-right text-muted-foreground/50 tabular-nums backdrop-blur-sm",
+                  CODE_GEOMETRY,
+                )}
+              >
+                {lines.map((_line, index) => (
+                  <div key={index}>{index + 1}</div>
+                ))}
+              </div>
+            )}
 
             {/**
              * THE TWO STACKED LAYERS. The `<pre>` paints the colours and is
@@ -819,7 +863,7 @@ export function FileViewSurface({
              * caret are the browser's own rather than something drawn.
              */}
             <div className="relative min-w-0 flex-1">
-              <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 whitespace-pre px-3 py-2", CODE_GEOMETRY)}>
+              <pre aria-hidden data-shiki style={CODE_FONT_SIZE} className={cn("m-0 px-3 py-2", wrapClass, CODE_GEOMETRY)}>
                 {/* ONE DIV PER LINE OF `lines`, which is the same array the
                     gutter beside it numbers — so the two columns cannot
                     disagree about how many lines there are. */}
@@ -853,7 +897,8 @@ export function FileViewSurface({
                   // `text-transparent` with a `caret-` colour is the whole
                   // illusion: the glyphs come from the layer below and the caret
                   // and selection come from here.
-                  "absolute inset-0 h-full w-full resize-none overflow-hidden whitespace-pre border-0 bg-transparent px-3 py-2 text-transparent caret-foreground outline-none",
+                  "absolute inset-0 h-full w-full resize-none overflow-hidden border-0 bg-transparent px-3 py-2 text-transparent caret-foreground outline-none",
+                  wrapClass,
                   CODE_GEOMETRY,
                   // Selection needs to be visible against the coloured text
                   // underneath rather than the transparent text on top.
