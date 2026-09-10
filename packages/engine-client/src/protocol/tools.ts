@@ -1,3 +1,4 @@
+import { BUNDLED_PLUGIN_TOOL_PREFIXES } from "./plugins";
 /**
  * Telar's own tools are MCP tools, and they get ONE server and ONE naming rule.
  *
@@ -60,7 +61,23 @@ export const TELAR_BROWSER_MCP_SERVER = "telar-browser";
 export const TELAR_SESSIONS_MCP_SERVER = "telar-sessions";
 
 /** Every server key Telar registers its own tools under. */
-export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER] as const;
+/**
+ * WHERE EVERY PLUGIN'S TOOLS LIVE, on every provider.
+ *
+ * A worker-hosted MCP socket rather than an in-process registration, because
+ * Codex and OpenCode both take MCP servers as CONFIG (a url) and cannot be
+ * handed an in-process server at all. A plugin registered only in-process would
+ * reach Claude and silently not exist on the other two — which is not a plugin
+ * host, it is a Claude feature with a plugin-shaped comment.
+ */
+export const TELAR_PLUGINS_MCP_SERVER = "telar-plugins";
+
+export const TELAR_MCP_SERVERS = [
+  TELAR_MCP_SERVER,
+  TELAR_BROWSER_MCP_SERVER,
+  TELAR_SESSIONS_MCP_SERVER,
+  TELAR_PLUGINS_MCP_SERVER,
+] as const;
 
 /** Whether a parsed server key is one of Telar's own. */
 export function isTelarMcpServer(server: string | undefined): boolean {
@@ -76,7 +93,19 @@ export function isTelarMcpServer(server: string | undefined): boolean {
  * can be told about and then cannot use — so an entry appears in the same change
  * that ships its toolkit, never before.
  */
-export const TELAR_CAPABILITIES = ["browser", "spool", "sessions", "notebook", "ds", "latex", "display"] as const;
+export const TELAR_CORE_CAPABILITIES = ["browser", "spool", "sessions", "display"] as const;
+
+/**
+ * Core capabilities plus every bundled plugin's tool prefix.
+ *
+ * THE PLUGIN HALF IS NO LONGER SPELLED HERE. `notebook`, `ds` and `latex` used
+ * to be three entries indistinguishable from `spool` — precisely the confusion
+ * the plugin host removes: a plugin's tool namespace comes from its manifest,
+ * and `plugins.ts` explains why the bundled set is still declared as data. The
+ * resulting array holds the same seven strings it held before, so every
+ * `startsWith` check, item mapping and approval route behaves identically.
+ */
+export const TELAR_CAPABILITIES = [...TELAR_CORE_CAPABILITIES, ...BUNDLED_PLUGIN_TOOL_PREFIXES] as const;
 export type TelarCapability = (typeof TELAR_CAPABILITIES)[number];
 
 const MCP_PREFIX = "mcp__";

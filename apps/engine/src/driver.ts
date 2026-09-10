@@ -43,6 +43,7 @@ import {
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
+import { HOST_RATIFIED_READ_TOOLS } from "./plugins/policy";
 import {
   canonicalEnvPatch,
   canonicalJson,
@@ -559,7 +560,26 @@ function warpTool(
 // nothing, spends nothing, and its whole effect is a panel opening on the
 // human's own screen — which they watch happen. Parking an approval card for
 // "may I show you this?" would be the card answering itself.
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "ds_packages", "ds_kernel", "display_open"]);
+/**
+ * THE CORE READS. Plugin reads are NOT listed here — they arrive from the host
+ * at startup through `setPluginReadTools`, because a plugin's own manifest is a
+ * claim rather than a grant and only the host may ratify it.
+ */
+const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "display_open"]);
+
+/**
+ * THE READS THE HOST HAS RATIFIED, installed once at daemon startup.
+ *
+ * A plugin's manifest CLAIMS which of its tools only read; `plugins/policy.ts`
+ * decides whether that claim is honoured. This is where the host's answer
+ * lands, so every provider classifies a plugin tool the same way and a plugin
+ * cannot widen its own authority by editing its manifest.
+ */
+let telarPluginReadTools = new Set<string>(Object.values(HOST_RATIFIED_READ_TOOLS).flat());
+
+export function setPluginReadTools(tools: Iterable<string>): void {
+  telarPluginReadTools = new Set(tools);
+}
 
 export function requestKindForTool(name: string): RequestKind {
   if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";
@@ -568,7 +588,9 @@ export function requestKindForTool(name: string): RequestKind {
   const parsed = parseToolName(name);
   // Only OUR servers' tools qualify — a user-configured server that happened to
   // name a tool `spool_list_items` must not inherit the engine's own posture.
-  if (isTelarMcpServer(parsed.server) && TELAR_READ_TOOLS.has(parsed.tool)) return "file_read";
+  if (isTelarMcpServer(parsed.server) && (TELAR_READ_TOOLS.has(parsed.tool) || telarPluginReadTools.has(parsed.tool))) {
+    return "file_read";
+  }
   return "tool_call";
 }
 

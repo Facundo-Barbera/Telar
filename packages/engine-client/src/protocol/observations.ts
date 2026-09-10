@@ -197,6 +197,18 @@ export const WorkerClaim = z.object({
    */
   latex: z.object({ kind: z.enum(["tectonic", "texlive"]) }).optional(),
   /**
+   * EVERY OTHER PLUGIN THE PROJECT TURNED ON, as ids. The two fields above are
+   * the two features that predate the host; this is the one that does not grow
+   * when a third arrives.
+   *
+   * IDS ONLY. A plugin's settings are its own business and stay in the daemon
+   * behind its capability — the worker needs to know only WHICH walls to build,
+   * and every call one of those walls makes comes back over
+   * `EngineClient.plugin()`. Absent means no plugin walls, which is also what an
+   * older worker does anyway.
+   */
+  plugins: z.array(z.string().min(1)).optional(),
+  /**
    * The configured login this session runs as, RESOLVED — sensitive environment
    * values included, unlike every other read of the registry.
    *

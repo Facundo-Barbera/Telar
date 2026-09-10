@@ -1727,6 +1727,20 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/latex/${method}`, body ?? {});
   }
 
+  /**
+   * ONE DOOR TO EVERY PLUGIN — `ds` and `latex` above, generalised, and the
+   * reason a third feature needs no third method here. `pluginId` picks the
+   * plugin, `method` its verb; the daemon resolves the capability (which
+   * project, has it opted in) and hands it to the plugin's own route.
+   *
+   * `ds` and `latex` REMAIN as their own methods rather than becoming callers
+   * of this: they are the shape a released client already speaks, and an old
+   * client pointed at a new daemon has to keep working.
+   */
+  plugin<T>(sessionId: string, pluginId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/plugins/${pluginId}/${method}`, body ?? {});
+  }
+
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */
   sessionTable(
     sessionId: string,

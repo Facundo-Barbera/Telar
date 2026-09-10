@@ -39,6 +39,13 @@ import {
   type DataScienceConfig,
   LatexConfig as LatexConfigSchema,
   type LatexConfig,
+  applyPluginPatch,
+  legacyMirrors,
+  MIRRORED_PLUGINS,
+  type MirroredPlugin,
+  pluginConfigFromLegacy,
+  readProjectPlugins,
+  type PluginPatch,
   Session as SessionSchema,
   Subscription as SubscriptionSchema,
   Task as TaskSchema,
@@ -4301,7 +4308,10 @@ export class EngineStore {
    * the block, which is how "off" is spelled so the registry does not grow a
    * `{enabled: false}` for every project that tried it once.
    */
-  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Project {
+  updateProject(
+    projectId: string,
+    patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null; plugins?: PluginPatch },
+  ): Project {
     assertId(projectId, "project id");
     const registry = (this.readDocument(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
@@ -4333,9 +4343,64 @@ export class EngineStore {
         } catch { /* not a repo, or unwritable — compiles still work */ }
       }
     }
+    /**
+     * THE MAP, AND ITS MIRRORS, IN THE SAME WRITE.
+     *
+     * Both legacy arms above still work — they are what a released cockpit
+     * sends — and each one is translated into the map here rather than being a
+     * second source of truth. The map then writes BACK the legacy blocks,
+     * including their ABSENCES: a mirror that is only ever added is the
+     * resurrection bug with extra steps.
+     *
+     * `version`'s presence is the durable migration marker. Once it is there
+     * the map is the whole truth and the legacy fields are never read again —
+     * see `PROJECT_PLUGINS_VERSION` for why a per-key fallback resurrects a
+     * feature the user just turned off.
+     */
+    const before = readProjectPlugins(next).plugins;
+    const fromLegacy: PluginPatch = {};
+    if (patch.dataScience !== undefined) {
+      fromLegacy["data-science"] = patch.dataScience === null ? null : pluginConfigFromLegacy(patch.dataScience as Record<string, unknown>);
+    }
+    if (patch.latex !== undefined) {
+      fromLegacy.latex = patch.latex === null ? null : pluginConfigFromLegacy(patch.latex as Record<string, unknown>);
+    }
+    const merged = applyPluginPatch(before, { ...fromLegacy, ...(patch.plugins ?? {}) });
+    const changed = patch.dataScience !== undefined || patch.latex !== undefined || patch.plugins !== undefined;
+    // HAS-MAP GUARD: a project nobody has configured keeps no `plugins` key at
+    // all, so an untouched registry is not rewritten with an empty map.
+    if (changed || next.plugins !== undefined) {
+      next.plugins = merged;
+      const mirrors = legacyMirrors(merged);
+      for (const [key, value] of Object.entries(mirrors)) {
+        if (value === undefined) delete (next as Record<string, unknown>)[key];
+        else (next as Record<string, unknown>)[key] = value;
+      }
+    }
     parsed.projects[index] = next;
     this.writeDocument(this.paths.projects, parsed);
     return structuredClone(next);
+  }
+
+  /**
+   * WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids.
+   *
+   * `data-science` and `latex` are excluded even when the map names them,
+   * because their own claim fields already carry them and a worker that saw
+   * them twice would build their walls twice. That exclusion is temporary in
+   * the same sense the two dedicated claim fields are, and it lives HERE, in
+   * one line, rather than in the worker where it would be a second place to
+   * forget.
+   */
+  enabledPluginIds(session: Session): string[] {
+    if (!session.projectId) return [];
+    let project: Project;
+    try { project = this.getProject(session.projectId); } catch { return []; }
+    const { plugins } = readProjectPlugins(project);
+    return Object.entries(plugins.entries)
+      .filter(([id, config]) => config.enabled && !MIRRORED_PLUGINS.includes(id as MirroredPlugin))
+      .map(([id]) => id)
+      .sort();
   }
 
   /**
@@ -6516,6 +6581,12 @@ export class EngineStore {
         ...(() => {
           const latex = this.resolveLatex(session);
           return latex ? { latex: { kind: latex.kind } } : {};
+        })(),
+        // Every other plugin the project turned on, as ids — the arm that does
+        // not grow when a third feature arrives.
+        ...(() => {
+          const ids = this.enabledPluginIds(session);
+          return ids.length > 0 ? { plugins: ids } : {};
         })(),
         /**
          * The project's NAME, for the spool toolkit's scoping — a spool item's
