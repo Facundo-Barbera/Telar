@@ -1,0 +1,156 @@
+<!doctype html>
+<html class="dark">
+<head>
+<meta charset="utf-8">
+<title>#207 fixture — fullscreen right panel stray divider</title>
+<link rel="stylesheet" href="./fixture.css">
+<style>
+  html, body { height: 100%; margin: 0; }
+  #report { position: fixed; inset: auto 8px 8px 8px; z-index: 50; font: 12px ui-monospace, monospace;
+            white-space: pre-wrap; background: #000c; color: #eee; padding: 8px; border-radius: 8px; }
+</style>
+</head>
+<body class="h-dvh app-ground bg-sidebar">
+  <div class="flex h-dvh min-w-0 flex-col md:m-2 md:h-[calc(100dvh-1rem)] md:rounded-xl md:shadow-sm md:has-[[data-surfaces]]:bg-transparent md:has-[[data-surfaces]]:shadow-none md:has-[[data-surfaces]]:rounded-none md:has-[[data-surfaces]]:overflow-visible md:ml-2">
+    <!-- Exactly the cockpit's row: same classes as components/session-cockpit.tsx. -->
+    <main id="row" data-surfaces class="group/surfaces flex min-h-0 flex-1 overflow-hidden md:overflow-visible md:gap-2">
+      <div id="card" class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0">
+        <div id="conversation" class="min-w-0 flex-1 overflow-auto p-4 text-sm"></div>
+      </div>
+      <!-- Exactly the panel's shell: same classes as components/right-panel.tsx. -->
+      <aside id="panel" aria-label="Right panel" style="--right-panel-width: 480px"
+             class="relative flex shrink-0 flex-col md:rounded-xl md:bg-sidebar md:shadow-sm md:ring-1 md:ring-sidebar-border transition-[width,opacity] duration-200 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none w-(--right-panel-width) max-w-[calc(100%-24rem)]">
+        <div class="flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0"></div>
+      </aside>
+    </main>
+  </div>
+  <pre id="report">running…</pre>
+<script>
+const row = document.getElementById("row");
+const card = document.getElementById("card");
+const panel = document.getElementById("panel");
+const conversation = document.getElementById("conversation");
+
+/**
+ * `?control=1` strips the fix back off. Without it a green run proves nothing:
+ * the fixture has to be able to show the hairline before its absence counts.
+ */
+if (new URLSearchParams(location.search).get("control")) {
+  card.classList.remove("md:group-has-[[data-panel-fullscreen]]/surfaces:ring-0", "md:group-has-[[data-panel-fullscreen]]/surfaces:shadow-none");
+}
+
+const SPLIT = "w-(--right-panel-width) max-w-[calc(100%-24rem)]".split(" ");
+const FULL = "w-full max-w-none md:-ml-2".split(" ");
+
+function setFullscreen(on) {
+  panel.classList.remove(...(on ? SPLIT : FULL));
+  panel.classList.add(...(on ? FULL : SPLIT));
+  if (on) panel.setAttribute("data-panel-fullscreen", "");
+  else panel.removeAttribute("data-panel-fullscreen");
+}
+
+function setPopulated(on) {
+  conversation.textContent = on ? Array.from({ length: 40 }, (_, i) => `line ${i} of transcript`).join("\n") : "";
+}
+
+/**
+ * The ring's spread in px, read off the composed box-shadow. Tailwind's ring is
+ * `0 0 0 <spread> <color>`; ring-0 keeps the shadow but zeroes the spread, so
+ * "is there a hairline" is exactly "is that number > 0".
+ */
+function ringSpread(el) {
+  const shadow = getComputedStyle(el).boxShadow;
+  if (!shadow || shadow === "none") return 0;
+  let widest = 0;
+  for (const part of shadow.split(/,(?![^(]*\))/)) {
+    const lengths = part.match(/-?\d*\.?\d+px/g);
+    if (lengths && lengths.length >= 4) widest = Math.max(widest, parseFloat(lengths[3]));
+  }
+  return widest;
+}
+
+/**
+ * Layers that would actually mark the gutter: a visible colour AND some
+ * geometry. Tailwind always composes five slots, most of them the transparent
+ * `0 0 #0000` placeholder, so counting commas proves nothing.
+ */
+function paintingShadowLayers(el) {
+  const shadow = getComputedStyle(el).boxShadow;
+  if (!shadow || shadow === "none") return [];
+  return shadow.split(/,(?![^(]*\))/).filter((part) => {
+    const alpha = /rgba\([^)]*?,\s*([\d.]+)\s*\)/.exec(part);
+    if (alpha && parseFloat(alpha[1]) === 0) return false;
+    const lengths = (part.match(/-?\d*\.?\d+px/g) ?? []).map(parseFloat);
+    return lengths.some((n) => n !== 0);
+  });
+}
+
+const checks = [];
+function check(name, pass, detail) { checks.push({ name, pass, detail }); }
+
+/** Wait out the 200ms width transition by watching the width stop moving. */
+async function settle() {
+  let last = -1;
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    const width = panel.getBoundingClientRect().width;
+    if (Math.abs(width - last) < 0.05 && i > 3) return;
+    last = width;
+  }
+}
+
+async function run() {
+  for (const populated of [false, true]) {
+    const label = populated ? "populated" : "empty";
+    setPopulated(populated);
+
+    setFullscreen(false);
+    await settle();
+    const splitCardRing = ringSpread(card);
+    const splitPanelRing = ringSpread(panel);
+    const splitPanelWidth = panel.getBoundingClientRect().width;
+    check(`${label} / split: conversation card keeps its outline`, splitCardRing >= 1, `ring spread ${splitCardRing}px`);
+    check(`${label} / split: panel keeps its outline`, splitPanelRing >= 1, `ring spread ${splitPanelRing}px`);
+    check(`${label} / split: panel is its stored width`, Math.abs(splitPanelWidth - 480) < 1, `${splitPanelWidth}px`);
+
+    setFullscreen(true);
+    await settle();
+    const fullCardRing = ringSpread(card);
+    const fullCardShadow = paintingShadowLayers(card);
+    const fullPanelRing = ringSpread(panel);
+    const cardBox = card.getBoundingClientRect();
+    const panelBox = panel.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    check(`${label} / full: conversation card is collapsed`, cardBox.width < 1, `width ${cardBox.width}px`);
+    check(`${label} / full: NO stray hairline — card ring is unpainted`, fullCardRing === 0, `ring spread ${fullCardRing}px`);
+    check(`${label} / full: card casts no shadow into the gutter`, fullCardShadow.length === 0, fullCardShadow.length ? fullCardShadow.join(" | ") : "no painting layers");
+    check(`${label} / full: panel keeps its own rounded outline`, fullPanelRing >= 1, `ring spread ${fullPanelRing}px`);
+    check(`${label} / full: geometry retained — panel lands on the row's edges`,
+      Math.abs(panelBox.left - rowBox.left) < 1.5 && Math.abs(panelBox.right - rowBox.right) < 1.5,
+      `panel ${panelBox.left.toFixed(1)}–${panelBox.right.toFixed(1)} vs row ${rowBox.left.toFixed(1)}–${rowBox.right.toFixed(1)}`);
+
+    setFullscreen(false);
+    await settle();
+    check(`${label} / back to split: outline returns`, ringSpread(card) >= 1, `ring spread ${ringSpread(card)}px`);
+    check(`${label} / back to split: panel returns to its stored width`, Math.abs(panel.getBoundingClientRect().width - 480) < 1, `${panel.getBoundingClientRect().width}px`);
+  }
+
+  // `?stay=full` leaves the row filled for an eyes-on look at the gutter.
+  if (new URLSearchParams(location.search).get("stay") === "full") {
+    setPopulated(true);
+    setFullscreen(true);
+    await settle();
+    document.getElementById("report").style.display = "none";
+  }
+
+  const failed = checks.filter((c) => !c.pass);
+  document.getElementById("report").textContent =
+    `RESULT: ${failed.length === 0 ? "PASS" : "FAIL"} (${checks.length - failed.length}/${checks.length})\n` +
+    checks.map((c) => `${c.pass ? "ok  " : "FAIL"} ${c.name} — ${c.detail}`).join("\n");
+  document.title = failed.length === 0 ? "FIXTURE PASS" : `FIXTURE FAIL ${failed.length}`;
+}
+
+run();
+</script>
+</body>
+</html>
