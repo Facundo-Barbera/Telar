@@ -478,13 +478,13 @@ function WakeUpRow({ turn, roster, onOpen }: { turn: JournalTurn; roster: readon
   );
 }
 
-/** Machine-triggered turns remain inspectable without taking over human chat.
- * Never fold a human steering message or a request requiring a decision. */
+/** Passive deliveries have no model response. Actual work and its completion
+ * stay visible, regardless of who initiated it. */
 export function SessionTurn(props: Parameters<typeof SessionTurnBody>[0]) {
   const [open, setOpen] = useState(false);
   const { turn } = props;
   const hasHumanMessage = turn.items.some((item) => item.detail.type === "user_message" && !item.detail.sender && !item.detail.wakeReason);
-  if (turn.origin !== "session" || hasHumanMessage || props.requests.length > 0) return <SessionTurnBody {...props} />;
+  if (turn.origin !== "session" || turn.agentDelivery !== "passive" || hasHumanMessage || props.requests.length > 0) return <SessionTurnBody {...props} />;
   const source = turn.sender?.sessionId ?? turn.wakeReason?.sessionId;
   return (
     <div className="mx-auto w-full min-w-0 max-w-[50rem]" aria-label="Session coordination">
