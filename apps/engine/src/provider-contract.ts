@@ -1,9 +1,11 @@
+import type { TelarToolSocket } from "./telar-socket";
 // Provider-neutral execution boundary. Adapters report observations; only the engine writes state.
 import type { McpServer, TaskSeed, TurnAttachment, RequestDecision, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
 import type { SpoolCapability } from "./spool/tools";
 import type { SessionsCapability } from "./sessions-tools/tools";
 import type { DsCapability } from "./ds/capability";
 import type { DisplayCapability } from "./display/tools";
+import type { RunCapability } from "./run/capability";
 import type { LatexCapability } from "./latex/capability";
 import type { SteerMailbox } from "./steering";
 
@@ -98,6 +100,11 @@ export type DriverRun = {
    */
   latex?: LatexCapability;
   /**
+   * THE PROJECT'S RUNS. A core capability, not a plugin: the daemon owns the
+   * process group so a dev server outlives the conversation that started it.
+   */
+  run?: RunCapability;
+  /**
    * The session's door to the human's SCREEN — `display_open`, the tool that
    * shows one workspace file in the cockpit's right panel. Per-run like the
    * spool: the worker assembles it around this turn's checkout, so the fence
@@ -177,6 +184,20 @@ export type DriverRun = {
    * `self`, so a subscription made through it wakes the right session.
    */
   sessionsSocket?: { url: string; token: string };
+  /**
+   * THE `telar` WALL'S HOST, for the provider whose driver holds per-turn
+   * bindings. The DRIVER binds it, because the capabilities it serves are that
+   * turn's bindings and the worker cannot reach them.
+   */
+  telarSocket?: TelarToolSocket;
+  /**
+   * THE SAME WALL, ALREADY LEASED — the shape a provider that cannot hold
+   * in-process state consumes. Codex and OpenCode take MCP servers as config
+   * and hold no per-turn capability bindings, so for them the WORKER binds the
+   * wall against its own per-session client capabilities and passes the lease
+   * down. Same key, same tool names, same approvals.
+   */
+  telarSocketLease?: { url: string; token: string; generation: string };
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /**

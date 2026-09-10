@@ -26,8 +26,8 @@ describe("collapseBrowserTabs (desktop upgrade path)", () => {
   test("leaves a state with no browser tabs untouched, and keeps a non-browser active tab", () => {
     const state: PanelTabState<PanelTab> = { tabs: ["issues", "diff"], activeTab: "diff", open: true };
     expect(collapseBrowserTabs(state, isBrowser, LIVE_BROWSER_TAB)).toBe(state);
-    const withBrowser: PanelTabState<PanelTab> = { tabs: [browserPanelTab("p1"), "files"], activeTab: "files", open: true };
-    expect(collapseBrowserTabs(withBrowser, isBrowser, LIVE_BROWSER_TAB).activeTab).toBe("files");
+    const withBrowser: PanelTabState<PanelTab> = { tabs: [browserPanelTab("p1"), "editor"], activeTab: "editor", open: true };
+    expect(collapseBrowserTabs(withBrowser, isBrowser, LIVE_BROWSER_TAB).activeTab).toBe("editor");
   });
   test("the collapsed tab describes as a single Browser surface", () => {
     expect(describePanelTab(LIVE_BROWSER_TAB).label).toBe("Browser");

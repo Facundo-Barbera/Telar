@@ -166,7 +166,15 @@ export function createEngineApi(fetcher: Fetcher = pathnameFetcher) {
     removeHost: (hostId: string) => request<{ ok: boolean }>(fetcher, "DELETE", `/api/hosts/${encodeURIComponent(hostId)}`),
     registerProject: (input: { name: string; root: string }) =>
       request<{ project: Project }>(fetcher, "POST", "/api/projects", input),
-    updateProject: (projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }) =>
+    updateProject: (
+      projectId: string,
+      patch: {
+        dataScience?: DataScienceConfig | null;
+        latex?: LatexConfig | null;
+        // The generic arm — one entry per plugin, `null` to turn it off.
+        plugins?: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>;
+      },
+    ) =>
       request<{ project: Project }>(fetcher, "PATCH", `/api/projects/${encodeURIComponent(projectId)}`, patch),
     /** Remove a project from Telar. Nothing on disk is touched and the record
      *  is kept — see the engine client's `unregisterProject`. 409 while a

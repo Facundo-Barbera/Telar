@@ -47,7 +47,7 @@
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "./browser/briefing";
 import type { ItemDetail, ItemSeed, McpServer, RequestDecision, TurnAttachment, TurnObservation, UsageSnapshot } from "@telar/engine-client";
-import { TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
+import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER } from "@telar/engine-client";
 import { claimHasComputerUse } from "./computer-use";
 import { framedSteerText, steerRowTitle } from "./attribution";
 import { CodexAppServer, resolveCodexBinary, type CodexServerRequest } from "./codex/app-server";
@@ -280,6 +280,7 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
       mcpServers: userMcpServers,
       browserSocket,
       sessionsSocket,
+      telarSocketLease,
       onObservations,
       onRequest,
       steer,
@@ -666,13 +667,29 @@ export function createCodexDriver(options: CodexDriverOptions = {}): TurnDriver 
         // is the one card, exactly the ladder a Claude session's `sessions_*`
         // call answers to.
         const telarTable =
-          browserSocket || sessionsSocket
+          browserSocket || sessionsSocket || telarSocketLease
             ? {
                 ...(browserSocket
                   ? { [TELAR_BROWSER_MCP_SERVER]: { url: browserSocket.url, http_headers: { Authorization: `Bearer ${browserSocket.token}` } } }
                   : {}),
                 ...(sessionsSocket
                   ? { [TELAR_SESSIONS_MCP_SERVER]: { url: sessionsSocket.url, http_headers: { Authorization: `Bearer ${sessionsSocket.token}` } } }
+                  : {}),
+                /**
+                 * THE `telar` WALL — the core toolkits and the migrated plugins,
+                 * under the key they already ship under. This entry is what
+                 * makes `spool_*`, `ds_*`, `notebook_*`, `latex_*`, `run_*` and
+                 * `display_*` exist on Codex at all; before it, no in-process
+                 * `telar` server reached a Codex turn and none of them did.
+                 *
+                 * WARP IS ABSENT FROM THIS WALL, deliberately. It fans work out
+                 * through the Claude driver's own `warpSpawn` binding, which is
+                 * Claude-runtime state a Codex turn does not have. Advertising
+                 * it here would offer a tool that cannot run; missing is the
+                 * honest reading of what Telar does on this provider today.
+                 */
+                ...(telarSocketLease
+                  ? { [TELAR_MCP_SERVER]: { url: telarSocketLease.url, http_headers: { Authorization: `Bearer ${telarSocketLease.token}` } } }
                   : {}),
               }
             : undefined;

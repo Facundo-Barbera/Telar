@@ -21,6 +21,8 @@ export * from "./items";
 export * from "./requests";
 export * from "./tasks";
 export * from "./tools";
+export * from "./plugins";
+export * from "./run";
 export * from "./spool";
 export * from "./canvas";
 export * from "./github";

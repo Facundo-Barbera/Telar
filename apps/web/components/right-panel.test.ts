@@ -88,9 +88,39 @@ describe("file tabs", () => {
     expect(isPanelTab("file:")).toBe(false);
     // And the renamed surfaces are what this build understands.
     expect(isPanelTab("diff")).toBe(true);
-    expect(isPanelTab("files")).toBe(true);
     expect(isPanelTab("changes")).toBe(false);
     expect(isPanelTab("git")).toBe(false);
+    // Retired in favour of Editor (#193), so it is no longer a tab this build
+    // will restore — `migratePanelTab` is what a saved one goes through.
+    expect(isPanelTab("files")).toBe(false);
+  });
+
+  test("a saved Files tab opens on Editor rather than on nothing (#193)", () => {
+    // Removing the CHOICE must not strand an arrangement that already made it.
+    // Editor mounts the same tree component, so this lands where the reader was
+    // going: the checkout, browsable, with files openable from it.
+    expect(migratePanelTab("files")).toBe("editor");
+    expect(isPanelTab(migratePanelTab("files"))).toBe(true);
+  });
+});
+
+describe("the Run surface", () => {
+  test("is a real tab: it validates, it survives a restore, and it is not file-shaped", () => {
+    // The panel restores tab ids from storage, so a surface that does not
+    // validate here is one that silently disappears on the next reload.
+    expect(isPanelTab("run")).toBe(true);
+    expect(migratePanelTab("run")).toBe("run");
+    // Not file-shaped: it must not be collapsed into the Editor.
+    expect(isFilePanelTab("run")).toBe(false);
+  });
+
+  test("describes itself without needing the network or a session", () => {
+    // A restored tab has to be drawable before anything is fetched — the run
+    // status is a poll, and a tab that could not label itself until it answered
+    // would render blank on every cold open.
+    const { label, blurb } = describePanelTab("run");
+    expect(label).toBe("Run");
+    expect(blurb.length).toBeGreaterThan(0);
   });
 });
 
@@ -154,7 +184,7 @@ describe("issue and pull-request tabs", () => {
     // different things with the same number, which is the common case.
     expect(pullPanelNumber(issuePanelTab(82))).toBeUndefined();
     expect(issuePanelNumber(pullPanelTab(12))).toBeUndefined();
-    expect(issuePanelNumber("files")).toBeUndefined();
+    expect(issuePanelNumber("editor")).toBeUndefined();
   });
 
   test("only DIGITS are a number", () => {

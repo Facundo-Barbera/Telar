@@ -14,6 +14,7 @@
  * silently missing row is worse than an ugly one, and Codex ships new item
  * types faster than this file can learn them.
  */
+import { requestKindForTool } from "../driver";
 import { canonicalToolName, parseToolName, type ItemDetail, type ItemStatus, type RequestDetail, type RequestKind, type UsageSnapshot } from "@telar/engine-client";
 import { titleForToolCall } from "../driver";
 
@@ -326,14 +327,26 @@ function mcpToolApproval(
   const message = str(params.message) ?? "";
   const quoted = /"([^"]+)"/.exec(message)?.[1];
   const tool = quoted ?? message ?? "tool";
+  /**
+   * CLASSIFIED THE SAME WAY CLAUDE'S IS, and this used to be a real defect.
+   *
+   * This arm answered `tool_call` unconditionally, so `spool_list_items` — a
+   * pure read — auto-accepted under Claude and parked a card under Codex, for
+   * the same tool. The engine's own classifier is the single authority for
+   * every wire; the host installs the plugin half of it at startup, so a
+   * plugin's reads are ratified once and answered identically wherever the call
+   * came from.
+   */
+  const name = quoted ? canonicalToolName(server, quoted) : tool;
+  const kind = requestKindForTool(name);
   return {
-    kind: "tool_call",
+    kind,
     detail: {
       kind: "tool_call",
       // Qualified the way every other row names an MCP tool, so an approval
       // card and the timeline row it is about spell the same string.
       call: {
-        name: quoted ? `mcp__${server}__${quoted}` : tool,
+        name,
         server,
         ...(meta.tool_params === undefined ? {} : { input: meta.tool_params }),
       },

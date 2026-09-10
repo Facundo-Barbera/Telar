@@ -84,6 +84,11 @@ const statusByCode: Record<EngineErrorCode, number> = {
   // 502 like `driver_failed`: this cockpit is fine, the harness behind the
   // one-shot completion did not answer.
   textgen_failed: 502,
+  // 400, not 500: a plugin refused a well-formed request and said why — a
+  // toolchain that is missing, a kernel that died. The engine is not broken and
+  // the cockpit should show the plugin's own sentence, with its id on it, rather
+  // than the "something went wrong" a 500 produces.
+  plugin_error: 400,
   internal_error: 500,
 };
 

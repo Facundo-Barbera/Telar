@@ -9,6 +9,8 @@ import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
 import type { SessionsSocketLease, SessionsToolSocket } from "./sessions-tools/run-socket";
+import { ratifiedReadTools } from "./plugins/policy";
+import { setPluginReadTools } from "./driver";
 import { ProviderUnavailableError, type DriverRequest, type DriverRequestOutcome, type SessionsCapability, type TurnDriver } from "./provider-contract";
 import { createOnePasswordSecrets, type SecretsProvider } from "./secrets/onepassword";
 import type { LoginGrantStore } from "./secrets/login-grants";
@@ -18,6 +20,7 @@ import { framedTurnInput } from "./attribution";
 
 type WorkerClient = Pick<
   EngineClient,
+  | "health"
   | "registerWorker"
   | "workerHeartbeat"
   | "claimTurn"
@@ -394,6 +397,24 @@ export class EngineWorker {
   async start(): Promise<void> {
     const startedAt = this.now();
     this.lastAckAt = startedAt;
+    /**
+     * THE HOST'S RATIFIED PLUGIN READS, CARRIED ACROSS THE PROCESS BOUNDARY.
+     *
+     * `setPluginReadTools` is a module global in `driver.ts`, and an
+     * out-of-process worker does not share the daemon's globals — so without
+     * this the worker would classify every plugin tool as needing approval
+     * (fail-closed, but wrong) or, worse under a seeded default, as a read the
+     * host had narrowed away. The health document carries each plugin's
+     * MANIFEST; `ratifiedReadTools` is the same function the daemon ratified
+     * with, so both processes reach the identical answer from identical inputs
+     * rather than trusting a copied list.
+     */
+    try {
+      const health = await this.options.client.health();
+      setPluginReadTools((health.plugins ?? []).flatMap((status) => ratifiedReadTools(status.meta)));
+    } catch {
+      // Unreachable health leaves the set EMPTY, so every plugin tool asks.
+    }
     const registration = await this.options.client.registerWorker(this.options.workerId);
     // Nothing is installed once stop() has run: no timers, no claims.
     if (this.stopped) return;

@@ -1,3 +1,4 @@
+import { ProjectPlugins } from "./plugins";
 /**
  * engine protocol v2 — the durable entities.
  *
@@ -375,6 +376,15 @@ export const Project = z.object({
   dataScience: DataScienceConfig.optional(),
   /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
   latex: LatexConfig.optional(),
+  /**
+   * THE PLUGIN MAP — the last per-feature block this record grows.
+   *
+   * `dataScience` and `latex` above are two bespoke optional blocks, each with
+   * its own patch arm; a third would have been a third arm. Everything after
+   * them is an entry here, and those two are MIRRORED into it so a rollback to
+   * an engine that predates this key keeps the user's settings.
+   */
+  plugins: ProjectPlugins.optional(),
 });
 export type Project = z.infer<typeof Project>;
 

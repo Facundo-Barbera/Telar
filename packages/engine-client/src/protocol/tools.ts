@@ -1,3 +1,4 @@
+import { BUNDLED_PLUGIN_TOOL_PREFIXES } from "./plugins";
 /**
  * Telar's own tools are MCP tools, and they get ONE server and ONE naming rule.
  *
@@ -59,8 +60,29 @@ export const TELAR_BROWSER_MCP_SERVER = "telar-browser";
  */
 export const TELAR_SESSIONS_MCP_SERVER = "telar-sessions";
 
+/**
+ * WHERE EVERY PLUGIN'S TOOLS LIVE, on every provider.
+ *
+ * A worker-hosted MCP socket rather than an in-process registration, for the
+ * same wire reason as the two keys above — except that this one is not an
+ * accommodation for a single provider. Codex AND OpenCode both take MCP servers
+ * as CONFIG (a url) and cannot be handed an in-process server at all, so a
+ * plugin registered only in-process would exist on Claude and silently not
+ * exist on the other two. That is not a plugin host; it is a Claude feature
+ * wearing a plugin-shaped comment.
+ *
+ * Same character constraint as the others: server ids must match
+ * `^[a-zA-Z0-9_-]+$`.
+ */
+export const TELAR_PLUGINS_MCP_SERVER = "telar-plugins";
+
 /** Every server key Telar registers its own tools under. */
-export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER] as const;
+export const TELAR_MCP_SERVERS = [
+  TELAR_MCP_SERVER,
+  TELAR_BROWSER_MCP_SERVER,
+  TELAR_SESSIONS_MCP_SERVER,
+  TELAR_PLUGINS_MCP_SERVER,
+] as const;
 
 /** Whether a parsed server key is one of Telar's own. */
 export function isTelarMcpServer(server: string | undefined): boolean {
@@ -76,7 +98,24 @@ export function isTelarMcpServer(server: string | undefined): boolean {
  * can be told about and then cannot use — so an entry appears in the same change
  * that ships its toolkit, never before.
  */
-export const TELAR_CAPABILITIES = ["browser", "spool", "sessions", "notebook", "ds", "latex", "display"] as const;
+export const TELAR_CORE_CAPABILITIES = ["browser", "spool", "sessions", "display", "run"] as const;
+
+/**
+ * Core capabilities plus every bundled plugin's tool prefix.
+ *
+ * THE PLUGIN HALF IS NO LONGER SPELLED HERE. `notebook`, `ds` and `latex` used
+ * to be three entries indistinguishable from `spool` — precisely the confusion
+ * the plugin host exists to remove: a plugin's tool namespace comes from its
+ * manifest, and `plugins.ts` explains why the bundled set is still declared as
+ * data rather than discovered at startup. `run` stays CORE: it is a capability
+ * of the engine, not a plugin, and it is listed here in the same change that
+ * mounts its toolkit.
+ *
+ * Nothing downstream changes: the resulting array holds the same strings the
+ * flat list held, so every `startsWith` check, item mapping and approval route
+ * behaves identically.
+ */
+export const TELAR_CAPABILITIES = [...TELAR_CORE_CAPABILITIES, ...BUNDLED_PLUGIN_TOOL_PREFIXES] as const;
 export type TelarCapability = (typeof TELAR_CAPABILITIES)[number];
 
 const MCP_PREFIX = "mcp__";
