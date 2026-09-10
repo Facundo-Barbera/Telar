@@ -118,8 +118,12 @@ struct SessionView: View {
                     }
                     // Queued messages live below the composer (t3's queue
                     // line), not in the transcript.
+                    // THE READING MEASURE. The web caps the message lane at
+                    // 50rem; at the phone's larger body size the same feel is
+                    // narrower, and on an iPad the column would otherwise
+                    // run the full width of the detail pane.
                     TranscriptView(turns: visibleTurns)
-                        .frame(maxWidth: 900)
+                        .frame(maxWidth: Theme.readingMeasure)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
                 }
@@ -308,6 +312,8 @@ struct SessionView: View {
             ComposerView(draft: $draft, store: store)
         }
         .padding(.horizontal, 16)
+        .frame(maxWidth: Theme.readingMeasure + 32)
+        .frame(maxWidth: .infinity)
         .padding(.top, 8)
         .padding(.bottom, 8)
         .background(alignment: .bottom) { ComposerScrim() }

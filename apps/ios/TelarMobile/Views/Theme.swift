@@ -38,6 +38,9 @@ enum Theme {
     static let radiusBubble: CGFloat = 18
     static let radiusComposer: CGFloat = 22
     static let radiusDrawer: CGFloat = 16
+    /// The transcript and composer lane, in points. About 70 characters of
+    /// body text per line — the web's 50rem measure at its smaller type.
+    static let readingMeasure: CGFloat = 680
     static let body = Font.system(.body)
     static let bodyMedium = Font.system(.body, weight: .medium)
     static let rowTitle = Font.system(.subheadline, weight: .medium)
