@@ -5972,6 +5972,9 @@ export class EngineStore {
        * The HTTP route never reads `origin` or `wakeReason` from a body, so a
        * cockpit cannot forge a wake; `sender` it accepts only with proof.
        */
+      agentIntent?: Turn["agentIntent"];
+      agentDelivery?: Turn["agentDelivery"];
+      agentSourceRunId?: string;
       origin?: "session";
       wakeReason?: WakeReason;
       sender?: { sessionId?: string };
@@ -6022,8 +6025,9 @@ export class EngineStore {
      * one. The cap below counts everything waiting — queued or mid-steer — so
      * a runaway client cannot grow the queue file without bound.
      */
+    const passive = input.origin === "session" && input.agentDelivery === "passive";
     const queued = queue.turns.filter((turn) => turn.state === "queued" || turn.state === "steering").length;
-    if (queued >= MAX_QUEUED_TURNS) {
+    if (!passive && queued >= MAX_QUEUED_TURNS) {
       throw new EngineStateError("conflict", "session already has the maximum number of queued turns");
     }
     /**
@@ -6067,7 +6071,11 @@ export class EngineStore {
       ...(input.origin === "session" && input.sender
         ? { origin: "session" as const, sender: input.sender.sessionId ? { sessionId: input.sender.sessionId } : {} }
         : {}),
-      state: "queued",
+      ...(input.agentIntent ? { agentIntent: input.agentIntent } : {}),
+      ...(input.agentDelivery ? { agentDelivery: input.agentDelivery } : {}),
+      ...(input.agentSourceRunId ? { agentSourceRunId: input.agentSourceRunId } : {}),
+      ...(passive ? { completedAt: at, resultText: "" } : {}),
+      state: passive ? "completed" : "queued",
       acceptedAt: at,
       updatedAt: at,
       ...(() => {
@@ -6133,7 +6141,7 @@ export class EngineStore {
      * ahead of the backlog: a fresh message that jumped the queue would be
      * the pause silently releasing itself. Resume, or release it by hand.
      */
-    if (session.paused) turn.held = { at, reason: "session_paused" };
+    if (session.paused && !passive) turn.held = { at, reason: "session_paused" };
     if (input.origin !== "session" && kind !== "compact" && session.agentMessagesBlocked) {
       delete session.agentMessagesBlocked;
       this.writeDocument(sessionMetadataFile(this.paths, sessionId), storedSession(session));
@@ -6143,10 +6151,16 @@ export class EngineStore {
     this.touchSession(sessionId, at);
     // Queueing a message is a human saying they are not done with this after
     // all, so any shelf or snooze it was under is lifted.
-    this.wakeSessionForNewWork(sessionId);
+    if (!passive) this.wakeSessionForNewWork(sessionId);
     // v1 emitted only `{ sequence }` here, which is why the client had to fetch
     // a snapshot to learn the prompt. The whole turn rides the event now.
     this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
+    if (passive) {
+      // Delivery completed, not a model turn: never claim, steer, or notify
+      // subscribers about a routine report. The payload remains inspectable.
+      this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
+      return { turn: structuredClone(turn), replayed: false };
+    }
     // A compaction is a gesture on the session, not words for the running
     // model; it always waits its turn.
     if (kind !== "compact" && !session.paused && PROVIDER_CAPABILITIES[session.driver].liveSteering) {
@@ -6247,7 +6261,7 @@ export class EngineStore {
    */
   submitAgentTurn(
     sessionId: string,
-    input: { runId: string; input: string; attachments?: string[] },
+    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"] },
     proof?: { sessionId: string; runId: string; claimToken: string },
   ): { turn: Turn; replayed: boolean } {
     let sender: { sessionId?: string } = {};
@@ -6256,7 +6270,21 @@ export class EngineStore {
       const claimed = this.requireRunningClaim(proof.sessionId, proof.runId, proof.claimToken);
       sender = { sessionId: claimed.sessionId };
     }
-    return this.submitTurn(sessionId, { runId: input.runId, input: input.input, ...(input.attachments ? { attachments: input.attachments } : {}), origin: "session", sender });
+    const intent = input.intent ?? "report";
+    const waiting = intent === "result" && sender.sessionId
+      ? this.readSubscriptions().find((sub) => sub.subscriberSessionId === sessionId && sub.targetSessionId === sender.sessionId && sub.events.includes("turn_completed"))
+      : undefined;
+    const delivery = intent === "task" || intent === "blocker" || waiting ? "wake" : "passive";
+    const result = this.submitTurn(sessionId, {
+      runId: input.runId, input: input.input,
+      ...(input.attachments ? { attachments: input.attachments } : {}),
+      origin: "session", sender, agentIntent: intent, agentDelivery: delivery,
+      ...(proof ? { agentSourceRunId: proof.runId } : {}),
+    });
+    if (!result.replayed && waiting?.once) {
+      this.writeSubscriptions(this.readSubscriptions().filter((sub) => sub.id !== waiting.id));
+    }
+    return result;
   }
 
   /**
@@ -7311,6 +7339,12 @@ export class EngineStore {
         continue;
       }
       if (subscriber.agentMessagesBlocked) continue;
+      // An explicit awaited result already delivered this run's outcome.
+      // Its later completion must not wake the same coordinator twice.
+      if (kind === "turn_completed" && this.turns(subscriberId).some((received) =>
+        received.agentIntent === "result" && received.agentDelivery === "wake" &&
+        received.sender?.sessionId === targetSessionId && received.agentSourceRunId === turn.runId
+      )) continue;
       const wakeReason: WakeReason = {
         kind,
         sessionId: targetSessionId,

@@ -492,7 +492,7 @@ export function SessionTurn(props: Parameters<typeof SessionTurnBody>[0]) {
         <BotIcon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0">Session activity</span>
         {source && <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{`session …${source.slice(-6)}`}</span>}
-        <span className="text-muted-foreground">{props.live ? "working" : describeTurnState(turn.state).label.toLowerCase()}</span>
+        <span className="text-muted-foreground">{turn.agentDelivery === "passive" ? "report received" : props.live ? "working" : describeTurnState(turn.state).label.toLowerCase()}</span>
         <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
       </button>
       {open && <div className="pt-2"><SessionTurnBody {...props} /></div>}
@@ -624,6 +624,21 @@ function SessionTurnBody({
         <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
       )}
 
+      {/* The initiating machine message precedes every response and steer. */}
+      {(turn.origin === "provider" || turn.origin === "session") && (
+        <Message from="assistant"><MessageContent from="assistant">
+          {/* A TURN THE PROVIDER STARTED — a background task's ending woke the
+              model. No human typed anything, so no bubble: the wake-up is a
+              row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
+              turn's work follows it exactly as after any other row. */}
+          {turn.origin === "session" && turn.sender ? (
+            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+          ) : (turn.origin === "provider" || turn.origin === "session") && (
+            <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
+          )}
+        </MessageContent></Message>
+      )}
+
       {/* A BOUNDARY INTRODUCES THE WORK UNDER IT — message first, then what the
           agent did about it. Drawn at the top level, not inside the assistant's
           lane, so a reply is never painted over the message it answers. */}
@@ -647,15 +662,6 @@ function SessionTurnBody({
 
       <Message from="assistant">
         <MessageContent from="assistant">
-          {/* A TURN THE PROVIDER STARTED — a background task's ending woke the
-              model. No human typed anything, so no bubble: the wake-up is a
-              row IN THE ASSISTANT'S LANE, shaped like a tool call, and the
-              turn's work follows it exactly as after any other row. */}
-          {turn.origin === "session" && turn.sender ? (
-            <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
-          ) : (turn.origin === "provider" || turn.origin === "session") && (
-            <WakeUpRow turn={turn} roster={roster} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} />
-          )}
           {requests.map((request) => (
             <ApprovalCard key={request.id} request={request} sending={sending} onDecide={onDecide} />
           ))}

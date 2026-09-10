@@ -376,7 +376,7 @@ test("sessions_send from a turn is stamped with the sender over the wire, and th
   const { client, hostId } = await turnWith(async (sessions) => {
     const { projects } = await sessions.list();
     made = await sessions.create({ projectId: projects[0]!.id, title: "the peer", envMode: "local" });
-    await sessions.send(made.id, { runId: "run_peer", input: "please review the diff" });
+    await sessions.send(made.id, { intent: "task", runId: "run_peer", input: "please review the diff" });
   });
   const { turns } = await client.session(made!.id);
   expect(turns[0]).toMatchObject({ runId: "run_peer", origin: "session", sender: { sessionId: hostId }, input: "please review the diff" });

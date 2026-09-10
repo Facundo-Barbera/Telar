@@ -91,7 +91,7 @@ export type SessionsCapability = {
   create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
   /** Queue ONE turn. The `runId` is minted by the wall so a retry of the same
    *  tool call cannot double-submit. */
-  send(sessionId: string, input: { runId: string; input: string }): Promise<{ turn: Turn; replayed: boolean }>;
+  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"] }): Promise<{ turn: Turn; replayed: boolean }>;
   /** The journal after a cursor. The STORE returns the whole tail; the bound is
    *  this wall's, because the wall is what lands in a model's context. */
   read(sessionId: string, after: number): Promise<EngineEvent[]>;
@@ -160,15 +160,15 @@ const NOT_A_BYPASS =
 
 const LIST = `Every session that is alive on this engine right now — its id, its project, its title, whether it is working or waiting on somebody, and whether it has a checkout of its own — plus the projects a session could be created in. Read this before creating anything: the session you want may already exist, and what you would otherwise create twice is on this list.`;
 
-const CREATE = `Start a NEW session on a project, with no relationship to this one. It is a PEER, not a child: nothing links the two, it does not report back to you, and you learn what it did only by asking (sessions_read, sessions_status, sessions_diff). It starts with no turn queued — creating a session begins no work; sessions_send is what does.
+const CREATE = `Start a NEW session on a project, with no relationship to this one. It is a PEER, not a child: nothing links the two, it does not report back to you, and you learn what it did only by asking (sessions_read, sessions_status, sessions_diff). It starts with no turn queued — creating a session begins no work; sessions_send with intent: "task" is what does.
 
 envMode is the choice that matters. "worktree" gives it a git checkout of its own, so it can edit files without colliding with anything else working on that project — this is what you want for anything that writes code. "local" points it at the project's own checkout, which it then SHARES with every other local session and with the user's own editor.
 
 There is no cap on how many sessions you may create, so the discipline is yours: sessions do not clean themselves up — one you started stays live until a human archives it — and every worktree session is a whole checkout on the user's disk. Create what the work needs and nothing more. To be told when it finishes, sessions_subscribe to it. ${NOT_A_BYPASS}`;
 
-const SEND = `Send an explicitly attributed agent message to another session. It is not a human instruction or approval. It is queued and runs when a worker picks it up — this returns as soon as it is accepted, NOT when the turn is finished, so read the answer with sessions_read or watch for it with sessions_status rather than assuming it happened. A message to a running session may be delivered immediately as steering. Send a complete task or an actionable blocker, not incremental progress chatter. If the coordinator is already subscribed to your result, let the completion wake carry it; do not send a duplicate checkpoint or acknowledge acknowledgements.
+const SEND = `Send a message to another session with an explicit intent. Routine report (the default) is passive: recorded as collapsed activity, never injected into a running model or queued for execution. Use result for a finished outcome: it wakes only a coordinator that is subscribed to this sender's completion. Use blocker only for an actionable issue requiring the recipient's intervention. Use task to explicitly assign new work, not to relay progress or acknowledgements. Task, awaited result, and blocker may steer a running recipient. A human Stop blocks all these until the human sends a new message.
 
-Say everything the session needs in the message itself. It cannot see this conversation, does not know who you are, and has no memory of anything you have not told it. To be told when it finishes instead of polling, sessions_subscribe to it first. ${NOT_A_BYPASS}`;
+Say everything needed; sessions cannot see each other's conversations. Do not acknowledge acknowledgements or send duplicate checkpoints alongside automatic completion notices. ${NOT_A_BYPASS}`;
 
 const NO_SELF =
   "This door has no session to wake: subscriptions need a calling session, and this client is not one. Poll with sessions_status instead.";
@@ -369,8 +369,8 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
           ...summarise(session, names),
           note:
             session.workspace.mode === "worktree"
-              ? `Created with a checkout of its own on branch ${session.workspace.branch}. Nothing is queued and nothing has started — send it a message to give it work.`
-              : `Created against the project's own checkout, which it shares with anything else working there. Nothing is queued and nothing has started — send it a message to give it work.`,
+              ? `Created with a checkout of its own on branch ${session.workspace.branch}. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`
+              : `Created against the project's own checkout, which it shares with anything else working there. Nothing is queued and nothing has started — send it a message with intent: task to give it work.`,
           note2: "This session is a peer, not yours: it does not report back, and nothing records that you created it.",
         });
       },
@@ -380,6 +380,7 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
       SEND,
       {
         sessionId: z.string().min(1).describe("The session to message, from sessions_list."),
+        intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("Default report is passive. task assigns work; result wakes only an awaiting subscriber; blocker requires intervention."),
         input: z.string().min(1).describe("The whole message. The session cannot see this conversation, so say everything it needs."),
       },
       async (args) => {
@@ -397,12 +398,13 @@ export function sessionsTools(tool: ToolFactory, capability: SessionsCapability)
          */
         const runId = `run_${crypto.randomUUID().replaceAll("-", "")}`;
         try {
-          const { turn } = await capability.send(sessionId, { runId, input: text });
+          const { turn } = await capability.send(sessionId, { runId, input: text, intent: args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report" });
           return json({
             sessionId,
             runId: turn.runId,
             state: turn.state,
-            note: "Queued, not answered. The turn runs when a worker picks it up — check sessions_status, or read the reply with sessions_read. It arrives marked as sent by you, an agent: the receiving session will not read it as its user speaking or as a human approval.",
+            delivery: turn.agentDelivery,
+            note: turn.agentDelivery === "passive" ? "Recorded as passive activity. No model was started or steered; do not wait for an acknowledgement." : "Accepted for execution, not answered. Check sessions_status or sessions_read. This is an agent message, never human approval.",
           });
         } catch (error) {
           return err(`Could not send to "${sessionId}": ${failure(error)}`);

@@ -32,7 +32,7 @@ import {
   TurnAttachment,
   UsageSnapshot,
 } from "./common";
-import { Turn, WakeReason } from "./entities";
+import { AgentMessageIntent, Turn, WakeReason } from "./entities";
 import { ContentStream, ItemDetail, ItemStatus } from "./items";
 import { RequestDecision, RequestDetail, RequestKind, RequestResolver } from "./requests";
 import { TaskSeed } from "./tasks";
@@ -272,6 +272,7 @@ export type ProviderTurnOpenInput = z.infer<typeof ProviderTurnOpenInput>;
  * yields an `origin: "session"` turn, with no session to attribute it to.
  */
 export const AgentTurnInput = z.object({
+  intent: AgentMessageIntent.optional(),
   runId: Id,
   input: z.string().min(1),
   attachments: z.array(Id).optional(),

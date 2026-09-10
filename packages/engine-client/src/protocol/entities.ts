@@ -1003,6 +1003,9 @@ export const Subscription = z.object({
 });
 export type Subscription = z.infer<typeof Subscription>;
 
+export const AgentMessageIntent = z.enum(["task", "report", "result", "blocker"]);
+export type AgentMessageIntent = z.infer<typeof AgentMessageIntent>;
+
 export const Turn = z.object({
   /**
    * CLIENT-SUPPLIED IDEMPOTENCY KEY, kept from v1. Submitting the same runId
@@ -1056,6 +1059,9 @@ export const Turn = z.object({
    * the user's own chat client on the sessions MCP socket.
    */
   sender: z.object({ sessionId: Id.optional() }).optional(),
+  agentIntent: AgentMessageIntent.optional(),
+  agentDelivery: z.enum(["passive", "wake"]).optional(),
+  agentSourceRunId: Id.optional(),
   providerReason: z
     .object({
       kind: z.enum(["task_notification", "unknown"]),
