@@ -28,6 +28,7 @@ import {
   TurnAttachment,
   UsageSnapshot,
 } from "./common";
+import { ProjectPlugins } from "./plugins";
 
 /**
  * Which Python a project's data-science tooling runs on.
@@ -371,9 +372,21 @@ export const Project = z.object({
    * to name it — its own settings page, offering to put it back — asks.
    */
   removedAt: Timestamp.optional(),
-  /** Opt-in data-science tooling. Stored, not derived. See `DataScienceConfig`. */
+  /**
+   * WHAT THIS PROJECT HAS SWITCHED ON, and the authoritative one once its
+   * `version` marker is present. See `./plugins.ts` — in particular why there
+   * is no per-key fallback from this map to the two legacy blocks below.
+   */
+  plugins: ProjectPlugins.optional(),
+  /**
+   * LEGACY MIRROR of `plugins["data-science"]`, maintained atomically beside
+   * it. Not read by this engine once the map's marker is present; it exists so
+   * an OLDER engine binary — which strips the unknown `plugins` key on parse —
+   * still finds this project's settings after a rollback. Removing the mirror
+   * is a deliberate compatibility decision (`MIRRORED_PLUGINS`), not a date.
+   */
   dataScience: DataScienceConfig.optional(),
-  /** Opt-in LaTeX tooling. Stored, not derived. See `LatexConfig`. */
+  /** LEGACY MIRROR of `plugins.latex`. Same rules as `dataScience` above. */
   latex: LatexConfig.optional(),
 });
 export type Project = z.infer<typeof Project>;

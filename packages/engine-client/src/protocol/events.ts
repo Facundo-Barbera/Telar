@@ -21,6 +21,7 @@ import { z } from "zod";
 import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
 import { Project, Runtime, RuntimeState, Session, Turn, TurnFailureCode } from "./entities";
+import { PluginStatus } from "./plugins";
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
 import { Task } from "./tasks";
 
@@ -325,6 +326,13 @@ export const EngineHealth = z.object({
     activeWorkers: z.number().int().nonnegative().optional(),
   }),
   browser: z.object({ provider: BrowserProvider }).optional(),
+  /**
+   * Every registered plugin and what startup did to it. OPTIONAL, and read by
+   * clients that have a plugin surface — an engine from before this field sends
+   * nothing and iOS's decoder ignores what it does not know, so this is additive
+   * in both directions.
+   */
+  plugins: z.array(PluginStatus).optional(),
 });
 export type EngineHealth = z.infer<typeof EngineHealth>;
 
@@ -355,6 +363,11 @@ export const EngineErrorCode = z.enum([
    *  `driver_failed`, which is about a SESSION's provider: nothing is broken
    *  here and nothing is lost, the completion simply did not arrive. */
   "textgen_failed",
+  /** A PLUGIN failed, not the engine. Carries the plugin's id in the message so
+   *  the cockpit can say which one — a plugin's mistake folded into
+   *  `internal_error` reads to a person as Telar being broken, and the whole
+   *  point of the host is that a plugin's failure is legible as its own. */
+  "plugin_error",
   "internal_error",
 ]);
 export type EngineErrorCode = z.infer<typeof EngineErrorCode>;

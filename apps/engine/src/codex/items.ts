@@ -15,7 +15,7 @@
  * types faster than this file can learn them.
  */
 import { canonicalToolName, parseToolName, type ItemDetail, type ItemStatus, type RequestDetail, type RequestKind, type UsageSnapshot } from "@telar/engine-client";
-import { titleForToolCall } from "../driver";
+import { requestKindForTool, titleForToolCall } from "../driver";
 
 export type CodexItem = Record<string, unknown>;
 
@@ -326,14 +326,31 @@ function mcpToolApproval(
   const message = str(params.message) ?? "";
   const quoted = /"([^"]+)"/.exec(message)?.[1];
   const tool = quoted ?? message ?? "tool";
+  const name = quoted ? `mcp__${server}__${quoted}` : tool;
   return {
-    kind: "tool_call",
+    /**
+     * CLASSIFIED THE SAME WAY THE CLAUDE PATH CLASSIFIES IT.
+     *
+     * This used to be the literal `"tool_call"`, which made the two providers
+     * disagree about the engine's own tools: `spool_list_items` auto-accepted
+     * under Claude and parked an approval card under Codex, for the same read,
+     * on the same screen. The elicitation carries no kind of its own — Codex
+     * only knows "an MCP server wants to run a tool" — so the kind has to come
+     * from the engine's own table, which is the one place it is decided.
+     *
+     * The DETAIL stays a tool call. That is not an oversight: the Claude path
+     * does the same thing (`requestDetailForToolCall` maps an MCP call to a
+     * `tool_call` detail whatever its kind), because a card for `ds_packages`
+     * has a tool name and arguments to show and no file path to put in a
+     * `file_read`. Kind drives the decision; detail drives what is rendered.
+     */
+    kind: requestKindForTool(name),
     detail: {
       kind: "tool_call",
       // Qualified the way every other row names an MCP tool, so an approval
       // card and the timeline row it is about spell the same string.
       call: {
-        name: quoted ? `mcp__${server}__${quoted}` : tool,
+        name,
         server,
         ...(meta.tool_params === undefined ? {} : { input: meta.tool_params }),
       },

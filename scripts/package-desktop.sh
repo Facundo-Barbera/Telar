@@ -126,6 +126,10 @@ if [ "$DEV" -eq 1 ]; then
     "-c.mac.identity=null"
     "-c.mac.notarize=false"
     "-c.directories.output=release/dev"
+    # Where "Update from Local Checkout" (dev-update.js) rebuilds from: the
+    # checkout that produced this bundle. Overridable at runtime via
+    # <Dev home>/dev-update.json.
+    "-c.extraMetadata.telarDevRepo=$REPO_ROOT"
   )
   APP="$DESKTOP_DIR/release/dev/mac-arm64/Telar Dev.app"
   BIN="$APP/Contents/MacOS/Telar Dev"
@@ -141,6 +145,12 @@ CSC_IDENTITY_AUTO_DISCOVERY=false NODE_OPTIONS= bunx electron-builder --dir --pu
 
 test -d "$APP" || { echo "!! expected app not found at $APP" >&2; exit 1; }
 test -x "$BIN" || { echo "!! packaged executable missing at $APP" >&2; exit 1; }
+# The LSUIElement helper nodeExecPath() resolves engine children to; without it
+# every child falls back to the Foreground main binary and each one puts a
+# dead Dock icon up. Named after the product, so the dev bundle differs.
+HELPER_NAME="Telar Helper"; [ "$DEV" -eq 1 ] && HELPER_NAME="Telar Dev Helper"
+HELPER="$APP/Contents/Frameworks/$HELPER_NAME.app/Contents/MacOS/$HELPER_NAME"
+test -x "$HELPER" || { echo "!! packaged app missing its helper at $HELPER — engine children would land in the Dock" >&2; exit 1; }
 if [ "$DEV" -eq 1 ]; then
   # The identity the overrides were supposed to produce, checked on the artefact
   # rather than trusted: a dev build that answers to the installed app's bundle

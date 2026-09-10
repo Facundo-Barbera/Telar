@@ -70,6 +70,8 @@ type RunOptions = {
   mcpServers?: McpServer[];
   browserSocket?: { url: string; token: string };
   sessionsSocket?: { url: string; token: string };
+  pluginsSocket?: { url: string; token: string };
+  telarSocketLease?: { url: string; token: string; generation: string };
   steer?: SteerMailbox;
 };
 
@@ -90,6 +92,8 @@ function runTurn(scenario: string, run: RunOptions = {}) {
     ...(run.mcpServers ? { mcpServers: run.mcpServers } : {}),
     ...(run.browserSocket ? { browserSocket: run.browserSocket } : {}),
     ...(run.sessionsSocket ? { sessionsSocket: run.sessionsSocket } : {}),
+    ...(run.pluginsSocket ? { pluginsSocket: run.pluginsSocket } : {}),
+    ...(run.telarSocketLease ? { telarSocketLease: run.telarSocketLease } : {}),
     ...(run.steer ? { steer: run.steer } : {}),
   });
   return { result, observations, controller };
@@ -305,6 +309,82 @@ test("the sessions socket stands alone too — a Codex session without a browser
   expect(sent("thread/start").config).toEqual({
     mcp_servers: { "telar-sessions": { url: sessions.url, http_headers: { Authorization: "Bearer tok_only" } } },
   });
+});
+
+test("the plugin socket rides the same overlay — this is how a plugin's tools reach Codex at all", async () => {
+  /**
+   * THE CASE THAT MAKES THE PLUGIN HOST PROVIDER-NEUTRAL. Codex takes MCP
+   * servers as CONFIG and cannot be handed an in-process server, so a plugin
+   * registered the way `spool_*` is would exist on Claude and silently not
+   * exist here. `plugins/socket.ts` is the transport that closes that, and the
+   * KEY is the same one the Claude driver mounts — which is what keeps a plugin
+   * tool to one qualified name, one remembered approval, one journal row.
+   */
+  const plugins = { url: "http://127.0.0.1:4444/v2/plugins/mcp", token: "tok_plugins_secret" };
+  const browser = { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_browser" };
+  await runTurn("plain", { browserSocket: browser, pluginsSocket: plugins }).result;
+
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: {
+      "telar-browser": { url: browser.url, http_headers: { Authorization: "Bearer tok_browser" } },
+      "telar-plugins": { url: plugins.url, http_headers: { Authorization: "Bearer tok_plugins_secret" } },
+    },
+  });
+  // Same spawn discipline as every other socket: one argument, token on stdin.
+  const argv = sent("@argv").argv as string[];
+  expect(argv.slice(1)).toEqual(["app-server"]);
+  expect(JSON.stringify(argv)).not.toContain("tok_plugins_secret");
+});
+
+test("the plugin socket stands alone — a Codex session with only plugins still gets them", async () => {
+  const plugins = { url: "http://127.0.0.1:4444/v2/plugins/mcp", token: "tok_only_plugins" };
+  await runTurn("plain", { pluginsSocket: plugins }).result;
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: { "telar-plugins": { url: plugins.url, http_headers: { Authorization: "Bearer tok_only_plugins" } } },
+  });
+});
+
+test("a turn whose project enabled no plugins mounts no plugin server", async () => {
+  await runTurn("plain").result;
+  const config = sent("thread/start").config as { mcp_servers?: Record<string, unknown> } | undefined;
+  expect(config?.mcp_servers?.["telar-plugins"]).toBeUndefined();
+});
+
+test("the `telar` wall rides the overlay — this is how core AND migrated tools reach Codex at all", async () => {
+  /**
+   * THE REGRESSION THAT MADE THE PLUGIN HOST PROVIDER-NEUTRAL. Before this
+   * entry no in-process `telar` server reached a Codex turn, so NONE of
+   * `spool_*`, `sessions_*`, `ds_*`, `notebook_*`, `latex_*` or `display_*`
+   * existed here. The key is the one they already ship under, so a tool has one
+   * qualified name and one remembered approval across both providers.
+   */
+  const telar = { url: "http://127.0.0.1:7777/v2/telar/mcp", token: "tok_telar_secret", generation: "g1" };
+  await runTurn("plain", { telarSocketLease: telar }).result;
+
+  expect(sent("thread/start").config).toEqual({
+    mcp_servers: { telar: { url: telar.url, http_headers: { Authorization: "Bearer tok_telar_secret" } } },
+  });
+  // Same spawn discipline as every other socket: one argument, token on stdin.
+  const argv = sent("@argv").argv as string[];
+  expect(argv.slice(1)).toEqual(["app-server"]);
+  expect(JSON.stringify(argv)).not.toContain("tok_telar_secret");
+});
+
+test("the telar wall sits beside the other Telar keys without colliding", async () => {
+  const telar = { url: "http://127.0.0.1:7777/v2/telar/mcp", token: "tok_t", generation: "g1" };
+  const browser = { url: "http://127.0.0.1:1234/v2/browser/mcp", token: "tok_b" };
+  const plugins = { url: "http://127.0.0.1:4444/v2/plugins/mcp", token: "tok_p" };
+  await runTurn("plain", { browserSocket: browser, pluginsSocket: plugins, telarSocketLease: telar }).result;
+
+  const servers = (sent("thread/start").config as { mcp_servers: Record<string, unknown> }).mcp_servers;
+  // FOUR DISTINCT KEYS, none shadowing another.
+  expect(Object.keys(servers).sort()).toEqual(["telar", "telar-browser", "telar-plugins"]);
+});
+
+test("a turn with no telar lease mounts no telar server", async () => {
+  await runTurn("plain").result;
+  const config = sent("thread/start").config as { mcp_servers?: Record<string, unknown> } | undefined;
+  expect(config?.mcp_servers?.telar).toBeUndefined();
 });
 
 test("a RESUMED turn carries the browser overlay too — a new socket URL must reach an old thread", async () => {

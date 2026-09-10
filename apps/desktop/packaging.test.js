@@ -100,6 +100,61 @@ describe("extraResources carries the node_modules its trees need", () => {
   });
 });
 
+describe("engine children run from the LSUIElement helper, whatever the product is named", () => {
+  /**
+   * THE DUPLICATE DOCK ICONS SHIPPED. nodeExecPath() hardcoded
+   * "Telar Helper.app", but a --dev package names its helper
+   * "Telar Dev Helper.app" — so the lookup missed, every child fell back to
+   * the Foreground main binary, and each engine child put another dead
+   * "Telar Dev" in the Dock. Resolution is now derived from the product name,
+   * with a scan fallback; both identities are pinned here against a fake
+   * Frameworks layout.
+   */
+  const { resolveHelperExec } = require("./helper-exec.js");
+  const os = require("node:os");
+
+  const layout = (helpers) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-frameworks-"));
+    for (const name of helpers) {
+      const bin = path.join(dir, `${name}.app`, "Contents", "MacOS");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, name), "");
+    }
+    return dir;
+  };
+  const helpers = (product) => [
+    `${product} Helper`,
+    `${product} Helper (GPU)`,
+    `${product} Helper (Renderer)`,
+    `${product} Helper (Plugin)`,
+  ];
+
+  test("a shipping layout resolves Telar Helper", () => {
+    const dir = layout(helpers("Telar"));
+    expect(resolveHelperExec(dir, "Telar")).toBe(path.join(dir, "Telar Helper.app", "Contents", "MacOS", "Telar Helper"));
+  });
+
+  test("a --dev layout resolves Telar Dev Helper", () => {
+    const dir = layout(helpers("Telar Dev"));
+    expect(resolveHelperExec(dir, "Telar Dev")).toBe(
+      path.join(dir, "Telar Dev Helper.app", "Contents", "MacOS", "Telar Dev Helper"),
+    );
+  });
+
+  test("a product name that disagrees with the bundle still finds the plain helper by scanning", () => {
+    const dir = layout(helpers("Telar Dev"));
+    expect(resolveHelperExec(dir, "Renamed Product")).toBe(
+      path.join(dir, "Telar Dev Helper.app", "Contents", "MacOS", "Telar Dev Helper"),
+    );
+  });
+
+  test("role-pinned helpers are never picked, and no helper at all means null (caller falls back)", () => {
+    const dir = layout(["Telar Dev Helper (GPU)", "Telar Dev Helper (Renderer)"]);
+    expect(resolveHelperExec(dir, "Telar Dev")).toBeNull();
+    expect(resolveHelperExec(path.join(dir, "no-such-dir"), "Telar Dev")).toBeNull();
+  });
+});
+
 describe("a --dev package is a separate app that cannot collide with the installed Telar", () => {
   const { spawnSync } = require("node:child_process");
   const script = path.join(__dirname, "..", "..", "scripts", "package-desktop.sh");
@@ -147,6 +202,14 @@ describe("a --dev package is a separate app that cannot collide with the install
     expect(typeof stamp.dirty).toBe("boolean");
   });
 
+  when("the built Telar Dev.app bundles the helper the engine child resolves to", () => {
+    const { resolveHelperExec } = require("./helper-exec.js");
+    const helper = resolveHelperExec(path.join(devApp, "Contents", "Frameworks"), "Telar Dev");
+    expect(helper).toBe(
+      path.join(devApp, "Contents", "Frameworks", "Telar Dev Helper.app", "Contents", "MacOS", "Telar Dev Helper"),
+    );
+  });
+
   when("the built app's packaged metadata carries telarDev as a boolean, which is what main.js keys on", () => {
     const scratch = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "telar-dev-meta-"));
     try {
@@ -160,6 +223,10 @@ describe("a --dev package is a separate app that cannot collide with the install
       expect(packaged.telarDev).toBe(true);
       expect(packaged.productName).toBe("Telar Dev");
       expect(packaged.updateProxyKey).toBeUndefined();
+      // Where "Update from Local Checkout" rebuilds from (DEV-005): the
+      // checkout that produced this bundle, baked in at package time.
+      expect(typeof packaged.telarDevRepo).toBe("string");
+      expect(path.isAbsolute(packaged.telarDevRepo)).toBe(true);
     } finally {
       fs.rmSync(scratch, { recursive: true, force: true });
     }

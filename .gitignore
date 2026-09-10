@@ -53,6 +53,8 @@ apps/engine/dist/
 apps/ios/**/xcuserdata/
 apps/ios/**/project.xcworkspace/
 apps/ios/DerivedData/
+# phone.sh derives per-mode paths (DerivedData-dev) the pattern above misses.
+apps/ios/DerivedData-dev/
 
 # Python bytecode from the kernel bridge under apps/engine/src/ds.
 __pycache__/

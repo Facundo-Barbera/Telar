@@ -1,0 +1,83 @@
+<!doctype html>
+<!-- The Dev self-update window (DEV-005). Deliberately plain: this is a
+     tool-window inside a dev build, not a product surface. -->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Update Telar Dev</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 13px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 16px 20px; display: flex; flex-direction: column; height: calc(100vh - 32px); }
+    h1 { font-size: 15px; margin: 0 0 12px; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0 0 12px; }
+    dt { opacity: 0.6; }
+    dd { margin: 0; font-variant-numeric: tabular-nums; }
+    code { font-family: ui-monospace, monospace; font-size: 12px; }
+    #status { padding: 8px 10px; border-radius: 6px; background: rgba(127,127,127,0.12); margin-bottom: 12px; min-height: 1.5em; }
+    #status.error { background: rgba(255,59,48,0.15); }
+    #status.installing { background: rgba(52,199,89,0.15); }
+    #log { flex: 1; overflow-y: auto; background: rgba(127,127,127,0.08); border-radius: 6px; padding: 8px 10px; font-family: ui-monospace, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+    button { font: inherit; padding: 6px 14px; border-radius: 6px; margin-bottom: 12px; align-self: flex-start; }
+    .dirty { color: #b45309; }
+  </style>
+</head>
+<body>
+  <h1>Update from local checkout</h1>
+  <dl>
+    <dt>Checkout</dt><dd><code id="repo">…</code></dd>
+    <dt>Will build</dt><dd id="source">…</dd>
+    <dt>Running now</dt><dd id="running">…</dd>
+  </dl>
+  <button id="start" disabled>Build &amp; Update…</button>
+  <div id="status">Loading…</div>
+  <div id="log"></div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+    function logLine(line) {
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function setStatus(status, detail) {
+      $("status").className = status;
+      $("status").textContent = detail || status;
+    }
+    async function refresh() {
+      const state = await window.telarDevUpdate.state();
+      $("repo").textContent = state.source.repo || "(not configured)";
+      if (state.source.ok) {
+        $("source").innerHTML = `<code>${state.source.branch}</code> @ <code>${state.source.sha}</code>` +
+          (state.source.dirty ? ' <span class="dirty">+ uncommitted edits</span>' : " (clean)");
+      } else {
+        $("source").textContent = state.source.error;
+      }
+      $("running").textContent = state.running
+        ? `${state.running.shortSha}${state.running.dirty ? "+dirty" : ""} · channel ${state.running.channel} · built ${state.running.builtAt}`
+        : "(unpackaged checkout run)";
+      if (state.building) {
+        setStatus("building", "A build is already running.");
+        $("start").disabled = true;
+      } else if (!state.swappable) {
+        setStatus("error", state.swapError);
+        $("start").disabled = true;
+      } else if (state.source.ok) {
+        setStatus("", `Ready. Log: ${state.logFile}`);
+        $("start").disabled = false;
+      } else {
+        setStatus("error", state.source.error);
+        $("start").disabled = true;
+      }
+    }
+    $("start").addEventListener("click", async () => {
+      $("start").disabled = true;
+      const result = await window.telarDevUpdate.start();
+      if (!result.ok && result.error !== "cancelled") setStatus("error", result.error);
+      if (result.error === "cancelled") await refresh();
+      if (!result.ok) $("start").disabled = false;
+    });
+    window.telarDevUpdate.onLog(logLine);
+    window.telarDevUpdate.onStatus(({ status, detail }) => setStatus(status, detail));
+    refresh();
+  </script>
+</body>
+</html>

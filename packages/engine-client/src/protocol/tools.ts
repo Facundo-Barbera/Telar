@@ -29,6 +29,8 @@
  * bucket.
  */
 
+import { BUNDLED_PLUGIN_TOOL_PREFIXES } from "./plugins";
+
 /** The server Telar's in-process tools are registered under. */
 export const TELAR_MCP_SERVER = "telar";
 
@@ -59,8 +61,23 @@ export const TELAR_BROWSER_MCP_SERVER = "telar-browser";
  */
 export const TELAR_SESSIONS_MCP_SERVER = "telar-sessions";
 
+/**
+ * WHERE EVERY PLUGIN'S TOOLS LIVE, on both providers.
+ *
+ * A worker-hosted MCP socket rather than an in-process registration, for the
+ * same reason `telar-browser` is one: Codex takes MCP servers as CONFIG (a url)
+ * and cannot be handed an in-process server at all. A plugin registered only
+ * in-process would reach Claude and silently not exist on Codex — which is not
+ * a plugin host, it is a Claude feature with a plugin-shaped comment.
+ *
+ * ONE KEY FOR BOTH PROVIDERS, so a plugin tool has ONE qualified name. Claude
+ * gets the socket as an http entry exactly as Codex does; nothing about the
+ * approval card or the journal row depends on which provider placed the call.
+ */
+export const TELAR_PLUGINS_MCP_SERVER = "telar-plugins";
+
 /** Every server key Telar registers its own tools under. */
-export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER] as const;
+export const TELAR_MCP_SERVERS = [TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, TELAR_SESSIONS_MCP_SERVER, TELAR_PLUGINS_MCP_SERVER] as const;
 
 /** Whether a parsed server key is one of Telar's own. */
 export function isTelarMcpServer(server: string | undefined): boolean {
@@ -76,7 +93,21 @@ export function isTelarMcpServer(server: string | undefined): boolean {
  * can be told about and then cannot use — so an entry appears in the same change
  * that ships its toolkit, never before.
  */
-export const TELAR_CAPABILITIES = ["browser", "spool", "sessions", "notebook", "ds", "latex", "display"] as const;
+export const TELAR_CORE_CAPABILITIES = ["browser", "spool", "sessions", "display"] as const;
+
+/**
+ * Core capabilities plus every bundled plugin's tool prefix.
+ *
+ * THE PLUGIN HALF IS NO LONGER SPELLED HERE. `notebook`, `ds` and `latex` used
+ * to be three entries in this array indistinguishable from `spool` — which is
+ * precisely the confusion the plugin host exists to remove: a plugin's tool
+ * namespace now comes from its manifest, and `plugins.ts` explains why the
+ * bundled set is still declared as data instead of discovered at startup.
+ * Nothing downstream changes: the resulting array holds the same seven strings
+ * it held before, so every `startsWith` check, item mapping and approval route
+ * behaves identically.
+ */
+export const TELAR_CAPABILITIES = [...TELAR_CORE_CAPABILITIES, ...BUNDLED_PLUGIN_TOOL_PREFIXES] as const;
 export type TelarCapability = (typeof TELAR_CAPABILITIES)[number];
 
 const MCP_PREFIX = "mcp__";

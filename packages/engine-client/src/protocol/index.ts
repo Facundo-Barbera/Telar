@@ -11,6 +11,7 @@
  *   requests  approvals and questions, plus the auto-resolution policy
  *   tasks     sub-agents, background work, Warp linkage
  *   tools     Telar's own MCP namespace: one server, capability-prefixed names
+ *   plugins   the plugin host's serializable half: manifests and project config
  *   spool     the item store: lanes, packets, and the ripening work packet
  *   github    issues and pull requests, as the `gh` CLI reports them
  *   events    the journal: one discriminated union, plus transport shapes
@@ -21,6 +22,7 @@ export * from "./items";
 export * from "./requests";
 export * from "./tasks";
 export * from "./tools";
+export * from "./plugins";
 export * from "./spool";
 export * from "./canvas";
 export * from "./github";

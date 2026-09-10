@@ -13,6 +13,8 @@ import {
   DataScienceCreateEnvironment,
   LatexBootstrap,
   parseForgeQuery,
+  pluginEnabled,
+  readProjectPlugins,
   RequestOpenInput,
   ProviderTurnOpenInput,
   SessionTaskReport,
@@ -41,6 +43,15 @@ import { createProviderProber, type VersionProbe } from "./provider-instances";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { acquireDaemonLock, EngineStateError, EngineStore, migrateLegacyEngineRoot, statePaths, engineRootFromEnv, type EngineNotifier } from "./state";
 import { KernelHost } from "./ds/kernel-host";
+import { setPluginReadTools } from "./driver";
+import { bundledPlugins } from "./plugins/bundled";
+import { PluginHost } from "./plugins/host";
+import { RunJournalFile } from "./run/journal";
+import { RunManager } from "./run/manager";
+import { matchRunRoute } from "./run/routes";
+import { RunStore } from "./run/store";
+import { storeRunCapability } from "./run/store-capability";
+import { RunError } from "./run/types";
 import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
 import {
   isAppearanceId,
@@ -471,6 +482,74 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
    *  snapshot it prices with. See usage.ts. */
   const usageScanCachePath = path.join(store.paths.root, "usage-scan-cache.json");
   const daemonId = crypto.randomUUID();
+  /**
+   * THE PLUGIN HOST, STARTED BEFORE THE SOCKET IS LISTENING.
+   *
+   * Ordering is deliberate in both directions. Startup is bounded per plugin
+   * (`PLUGIN_INIT_TIMEOUT_MS`) and runs concurrently, so a hung plugin costs one
+   * timeout rather than a daemon that never listens — which is why it is safe to
+   * do this before binding. And it is done BEFORE binding rather than after, so
+   * the first request cannot arrive at a half-registered tool wall.
+   *
+   * `bundledPlugins` is where the registered set is decided, gate included.
+   */
+  /**
+   * WHAT ONE SESSION SEES OF A PLUGIN, resolved generically. This is the shape
+   * every plugin's capability resolver has, and the reason it lives here rather
+   * than as a `store.hello()` method beside `store.latex()`: "which project is
+   * this session in, and has it opted in" is the SAME question for every plugin,
+   * answered from the plugin map. A per-plugin store method would be the third
+   * hardcoded case the host exists to remove.
+   */
+  const resolvePluginProject = (pluginId: string, sessionId: string): { projectId: string; sessionId: string } => {
+    const session = store.getSession(sessionId);
+    if (!session.projectId) throw new EngineStateError("invalid_request", `${pluginId} needs a project`);
+    const project = store.getProject(session.projectId);
+    if (!pluginEnabled(readProjectPlugins(project).plugins, pluginId)) {
+      throw new EngineStateError("invalid_request", `${pluginId} is not enabled for this session's project`);
+    }
+    return { projectId: project.id, sessionId };
+  };
+  const pluginHost = new PluginHost(
+    bundledPlugins({
+      resolveHello: (sessionId) => resolvePluginProject("hello", sessionId),
+      // The SAME capability the `/latex/` arm and the tool wall already use —
+      // migrating the door must not change what is behind it. The gate is
+      // `store.latex`'s own, which reads the plugin map.
+      latex: { resolve: (sessionId) => store.latex(sessionId), jobs: store.latexJobs },
+    }),
+    {
+      daemonId,
+      stateDir: store.paths.root,
+      log: (message, detail) => console.warn(`[telar] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
+    },
+  );
+  /**
+   * RUN CONFIGURATIONS. The daemon owns the process group, and that is the whole
+   * design: a dev server spawned by a worker is a child of one conversation, so
+   * it would die when that conversation ended and be invisible to every other
+   * session. Here it outlives whoever started it.
+   *
+   * `recover()` runs BEFORE the port is bound, for the same reason `startAll`
+   * does: the first request must not arrive at a manager that still believes in
+   * processes from a boot nobody remembers. What it recovers is deliberately
+   * honest — a run the last daemon did not see end becomes `unknown` rather than
+   * being reported as healthy or quietly forgotten.
+   */
+  const runDir = path.join(store.paths.root, "run");
+  fs.mkdirSync(runDir, { recursive: true });
+  const runStore = new RunStore(runDir);
+  const runManager = new RunManager({ journal: new RunJournalFile(runDir) });
+  runManager.recover();
+  const pluginStatuses = await pluginHost.startAll();
+  /**
+   * The host is the authority on which of its tools are reads. Installed once,
+   * here, so both drivers answer the same way — see `plugins/policy.ts` for why
+   * a plugin's own manifest is not allowed to be that authority.
+   */
+  setPluginReadTools(pluginHost.ratifiedReadTools());
+  // The store announces a session's departure; the host decides who cares.
+  store.attachPluginRelease((sessionId, reason) => void pluginHost.releaseSession(sessionId, reason));
   const token = crypto.randomBytes(32).toString("base64url");
   const startedAt = (options.now ?? Date.now)();
   const workers = new Map<string, RegisteredWorker>();
@@ -523,6 +602,9 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         ? { worker: { registered: true, workerId: first.workerId, activeWorkers: workers.size } }
         : { worker: { registered: false, activeWorkers: 0 } };
     })(),
+    // Read live rather than from the startup snapshot: a plugin disposed later
+    // in the process's life should not still report `ready` here.
+    ...(pluginStatuses.length > 0 ? { plugins: pluginHost.statuses() } : {}),
   });
 
   /**
@@ -2185,7 +2267,49 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           }
           patch.latex = input.latex as Parameters<typeof store.updateProject>[1]["latex"];
         }
-        writeJson(response, 200, { project: store.updateProject(decodeURIComponent(projectPatch[1]), patch) });
+        /**
+         * THE GENERIC ARM. `plugins: { "<id>": {...} | null }` — one entry per
+         * plugin the caller means to move, `null` for off, and every id the
+         * caller did not name is left exactly as it was.
+         *
+         * Settings are VALIDATED BY THE PLUGIN THAT OWNS THEM before the write:
+         * the blob is opaque to the protocol on purpose, so the host is the only
+         * thing that can refuse a shape, and refusing here beats storing
+         * something the plugin chokes on at its next init.
+         */
+        if ("plugins" in input) {
+          if (!input.plugins || typeof input.plugins !== "object" || Array.isArray(input.plugins)) {
+            throw new HttpError(400, "invalid_request", "plugins must be an object");
+          }
+          const entries = input.plugins as Record<string, unknown>;
+          for (const [pluginId, entry] of Object.entries(entries)) {
+            if (entry === null) continue;
+            const schema = pluginHost.module(pluginId)?.settingsSchema;
+            const settings = (entry as { settings?: unknown }).settings;
+            if (!schema || settings === undefined) continue;
+            const parsed = schema.safeParse(settings);
+            if (!parsed.success) {
+              throw new HttpError(400, "invalid_request", `${pluginId} settings are not valid: ${parsed.error.issues[0]?.message ?? "invalid"}`);
+            }
+          }
+          patch.plugins = entries as Parameters<typeof store.updateProject>[1]["plugins"];
+        }
+        const project = store.updateProject(decodeURIComponent(projectPatch[1]), patch);
+        /**
+         * DISABLE MEANS DRAIN, and the drain starts here rather than inside the
+         * store: turning a plugin off refuses new work immediately and returns,
+         * while running work finishes on the host's own timer. The settings
+         * write does not sit open waiting for a training cell to end, and
+         * nothing running is cancelled — cancelling is a separate, explicit
+         * action a person takes.
+         */
+        if (patch.plugins) {
+          const { plugins: after } = readProjectPlugins(project);
+          for (const pluginId of Object.keys(patch.plugins)) {
+            if (!pluginEnabled(after, pluginId)) void pluginHost.drainProject(pluginId, project.id);
+          }
+        }
+        writeJson(response, 200, { project });
         return;
       }
       /**
@@ -3020,38 +3144,111 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           return;
         }
         /**
-         * THE LATEX DOOR, shaped like the kernel's above: every verb is a
-         * POST under `/latex/<method>`, dispatched to the store's capability
-         * — the same object the worker's toolkit reaches through
-         * `EngineClient.latex`. Not opted in → `invalid_request`, the gate.
+         * THE LATEX DOOR, NOW AN ALIAS. LaTeX is a migrated plugin
+         * (`plugins/latex.ts`): its verbs live in that module's `routes` table
+         * and are served by the generic arm below at
+         * `/plugins/latex/<method>`. This arm stays because `/latex/<method>`
+         * is what a RELEASED client calls, and an old cockpit pointed at a new
+         * daemon has to keep working.
+         *
+         * It forwards rather than reimplementing — the switch statement that
+         * used to live here is gone, and with it the possibility of the two
+         * doors drifting apart. Deleting this arm is a deliberate compatibility
+         * decision, the same kind as retiring a legacy settings mirror.
          */
         const latexMethod = /^\/latex\/([a-z]+)$/.exec(session.tail)?.[1];
         if (request.method === "POST" && latexMethod) {
+          const module = pluginHost.ready("latex");
+          if (!module) throw new HttpError(404, "not_found", "latex is unavailable");
+          const route = module.routes?.[latexMethod];
+          if (!route) throw new HttpError(404, "not_found", `no latex method ${latexMethod}`);
           const input = await body(request);
-          const latex = store.latex(session.sessionId);
-          // Same rule as dsAnswer: a compile's refusal is an answer, not a crash.
-          const latexAnswer = async <T,>(work: () => Promise<T>): Promise<T> => {
-            try {
-              return await work();
-            } catch (error) {
-              if (error instanceof HttpError || error instanceof EngineStateError) throw error;
-              throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
-            }
-          };
-          const str = (key: string, optional = false) => stringValue(input[key], key, optional);
-          const num = (key: string): number | undefined => (typeof input[key] === "number" ? (input[key] as number) : undefined);
-          let result: unknown;
-          switch (latexMethod) {
-            case "toolchain": result = await latexAnswer(() => latex.toolchain()); break;
-            case "compile": result = await latexAnswer(() => latex.compile({ ...(str("path", true) ? { path: str("path", true)! } : {}), ...(num("timeoutMs") ? { timeoutMs: num("timeoutMs")! } : {}) })); break;
-            case "status": result = await latexAnswer(() => latex.status()); break;
-            case "log": result = await latexAnswer(() => latex.log({ ...(num("tail") !== undefined ? { tail: num("tail")! } : {}), ...(num("around") !== undefined ? { around: num("around")! } : {}), ...(str("find", true) ? { find: str("find", true)! } : {}) })); break;
-            case "packages": result = await latexAnswer(() => latex.packages()); break;
-            case "install": result = await latexAnswer(() => latex.install({ ...(Array.isArray(input.add) ? { add: input.add.map(String) } : {}), ...(Array.isArray(input.remove) ? { remove: input.remove.map(String) } : {}) })); break;
-            case "clean": result = await latexAnswer(() => latex.clean({ ...(input.pdf === true ? { pdf: true } : {}) })); break;
-            default: throw new HttpError(404, "not_found", `no latex method ${latexMethod}`);
+          try {
+            const capability = module.resolve?.(session.sessionId);
+            writeJson(response, 200, (await route(input, capability)) ?? {});
+          } catch (error) {
+            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+            // The SAME sentence shape this arm produced before the migration: a
+            // compile's refusal is an answer about the request, not a crash.
+            throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
           }
-          writeJson(response, 200, result ?? {});
+          return;
+        }
+        /**
+         * THE RUN DOOR, mounted as a TABLE rather than as another switch: the
+         * whole surface lives in `run/routes.ts`, which imports nothing from this
+         * file and writes no responses. This arm does the three things only the
+         * daemon can — resolve which session is asking and which tree it sits
+         * on, parse the body, and turn a `RunError` into the same HTTP shape
+         * every other refusal here has.
+         *
+         * Unlike `/ds/` and `/latex/` this is REST, because the cockpit's list
+         * of configurations is a resource: `GET /run/configs`,
+         * `DELETE /run/configs/:id`. The worker comes through the same routes
+         * via `EngineClient.run()`.
+         */
+        const runRoute = matchRunRoute(request.method ?? "", session.tail);
+        if (runRoute) {
+          const input = request.method === "GET" ? Object.fromEntries(url.searchParams) : await body(request);
+          const capability = storeRunCapability({
+            store: runStore,
+            manager: runManager,
+            // RESOLVED PER CALL, not captured: a session's worktree can move,
+            // and a stale path would launch a dev server in the wrong tree.
+            context: () => {
+              const record = store.getSession(session.sessionId);
+              if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
+              return {
+                sessionId: record.id,
+                projectId: record.projectId,
+                worktreePath: record.workspace.path,
+                ...(record.workspace.mode === "worktree" ? { worktreeBranch: record.workspace.branch } : {}),
+              };
+            },
+          });
+          try {
+            writeJson(response, 200, (await runRoute.route.handle({ params: runRoute.params, input, capability })) ?? {});
+          } catch (error) {
+            // A run's refusal is an ANSWER about the request — "that port is
+            // taken", "nothing is deployed" — not a crash. `RunError` carries
+            // the code the surface chose; everything else is still a 500.
+            if (error instanceof RunError) {
+              throw new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code, error.message);
+            }
+            throw error;
+          }
+          return;
+        }
+        /**
+         * THE GENERIC PLUGIN DOOR — the one arm that replaces the two above.
+         *
+         * `/plugins/<id>/<verb>` looks the plugin up in the host, resolves its
+         * capability for this session, and calls the entry in its `routes`
+         * table. Nothing here knows what any plugin does, which is the whole
+         * claim being tested: adding `hello` added no line to this file.
+         *
+         * The `/ds/` and `/latex/` arms above stay as aliases until those two
+         * are migrated; the error shape is deliberately the same, because a
+         * refusal from a plugin is an answer about the request, not a 500.
+         */
+        const pluginCall = /^\/plugins\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9-]*)$/.exec(session.tail);
+        if (request.method === "POST" && pluginCall) {
+          const [, pluginId, verb] = pluginCall as unknown as [string, string, string];
+          const module = pluginHost.ready(pluginId);
+          if (!module) throw new HttpError(404, "not_found", `no plugin ${pluginId}`);
+          const route = module.routes?.[verb];
+          if (!route) throw new HttpError(404, "not_found", `plugin ${pluginId} has no ${verb}`);
+          const input = await body(request);
+          try {
+            const capability = module.resolve?.(session.sessionId);
+            writeJson(response, 200, (await route(input, capability)) ?? {});
+          } catch (error) {
+            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
+            // A BROKEN PLUGIN IS LEGIBLE AS ITS OWN FAILURE. `plugin_error`
+            // carries the id, so a person reading the cockpit sees which plugin
+            // failed rather than "the engine did something".
+            throw new HttpError(400, "plugin_error", `${pluginId}: ${error instanceof Error ? error.message : String(error)}`);
+          }
           return;
         }
         /** The CSV / Parquet table viewer's backend: a window of rows. */
@@ -3287,6 +3484,12 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     let browser: import("./browser").BrowserRuntime | undefined;
     let browserSocket: import("./browser/socket").BrowserToolSocket | undefined;
     let sessionsRunSocket: import("./sessions-tools/run-socket").SessionsToolSocket | undefined;
+    // The plugin walls for the EMBEDDED worker, same lifecycle as the sessions
+    // socket beside it. Lazily imported for the same reason: a deployment whose
+    // projects enable no plugins never binds a port.
+    let pluginRunSocket: import("./plugins/socket").PluginToolSocket | undefined;
+    // The `telar` wall for the embedded worker's Codex turns.
+    let telarRunSocket: import("./telar-socket").TelarToolSocket | undefined;
     let kernels: KernelHost | undefined;
     if (options.embeddedWorker) {
       const config = options.embeddedWorker === true ? {} : options.embeddedWorker;
@@ -3340,6 +3543,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // outward `/v2/sessions/mcp` door below, deliberately: two doors, two
       // credentials, and only this one carries a `self` to be woken in.
       sessionsRunSocket = new (await import("./sessions-tools/run-socket")).SessionsToolSocket();
+      pluginRunSocket = new (await import("./plugins/socket")).PluginToolSocket();
+      telarRunSocket = new (await import("./telar-socket")).TelarToolSocket();
       const createDriver = config.createDriver ?? (async () => (await import("./drivers")).createDefaultDrivers());
       const concurrency = (await import("./worker")).workerConcurrencyFromEnv();
       const { WorkerReconnectController } = await import("./worker-supervisor");
@@ -3354,6 +3559,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       // liveness; remote workers still need the ordinary heartbeat lease.
       const socket = browserSocket;
       const sessionsSocket = sessionsRunSocket;
+      const pluginSocket = pluginRunSocket;
+      const telarSocket = telarRunSocket;
       const supervisor = new WorkerReconnectController<InstanceType<typeof EngineClient>, InstanceType<typeof EngineWorker>>({
         connect: async () => {
           const client = new EngineClient(discovery);
@@ -3382,6 +3589,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
             // note on `createLoginGrantStore`.
             loginGrants: createLoginGrantStore(store.paths.root),
             ...(sessionsSocket ? { sessionsSocket } : {}),
+            ...(pluginSocket ? { pluginSocket } : {}),
+            ...(telarSocket ? { telarSocket } : {}),
             ...(concurrency === undefined ? {} : { concurrency }),
             ...(config.pollMs === undefined ? {} : { pollMs: config.pollMs }),
             onConnectionLost,
@@ -3441,11 +3650,22 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         // its browser would answer tool calls with a runtime already closing.
         await browserSocket?.close();
         await sessionsRunSocket?.close();
+        await pluginRunSocket?.close();
+        await telarRunSocket?.close();
         // Kernels beside the browser: both are processes a turn borrowed and
         // the daemon owns, and both leak past a daemon that does not stop them.
         await kernels?.disposeAll("engine shutting down");
         // Compile and tlmgr jobs are subprocesses of the same kind.
         store.latexJobs.disposeAll();
+        // Every registered plugin gives back what it acquired, bounded per
+        // cleanup. Work still running keeps its breadcrumb — the next startup
+        // reports it as interrupted rather than as never having happened.
+        await pluginHost.disposeAll("shutdown");
+        // Runs are subprocesses of the same kind, and the ONLY ones nothing else
+        // would reap: a dev server is deliberately not a child of any turn, so a
+        // daemon that exits without this leaves it holding a port across a
+        // restart with nobody left who knows its pid.
+        await runManager.shutdown();
         // After the worker, before the lock: a live Chromium holding a profile
         // lock outlives the process that spawned it otherwise.
         await browser?.close("engine shutting down");

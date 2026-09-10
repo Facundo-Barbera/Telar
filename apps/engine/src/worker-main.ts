@@ -5,6 +5,8 @@ import { BrowserRuntime } from "./browser";
 import { createBrowserToolSocket, createDefaultDrivers } from "./drivers";
 import { hydrateHostPath } from "./host-path";
 import { SessionsToolSocket } from "./sessions-tools/run-socket";
+import { PluginToolSocket } from "./plugins/socket";
+import { TelarToolSocket } from "./telar-socket";
 import { createLoginGrantStore } from "./secrets/login-grants";
 import { engineRootFromEnv, statePaths } from "./state";
 import { EngineWorker, workerConcurrencyFromEnv } from "./worker";
@@ -48,6 +50,12 @@ const browserSocket = createBrowserToolSocket(browser);
 // The sessions wall for Codex turns, served from the same place and for the
 // same reason: the tools live where the worker's client is.
 const sessionsSocket = new SessionsToolSocket();
+// The plugin walls, served from the same place — and for BOTH providers, since
+// a plugin tool has no in-process registration on either. See `plugins/socket.ts`.
+const pluginSocket = new PluginToolSocket();
+// The `telar` wall for Codex turns — the core toolkits plus the migrated ones,
+// under the key they already ship under. See `telar-socket.ts`.
+const telarSocket = new TelarToolSocket();
 /**
  * Remembered login authorizations live in the ENGINE'S STATE DIRECTORY, not in
  * either process, so the daemon (which lists and revokes them in settings) and
@@ -71,6 +79,8 @@ const supervisor = new WorkerReconnectController({
       driver: drivers,
       browserSocket,
       sessionsSocket,
+      pluginSocket,
+      telarSocket,
       loginGrants,
       ...(concurrency === undefined ? {} : { concurrency }),
       onConnectionLost,

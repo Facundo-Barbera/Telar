@@ -37,6 +37,13 @@ import {
   type DataScienceConfig,
   LatexConfig as LatexConfigSchema,
   type LatexConfig,
+  applyPluginPatch,
+  legacyMirrors,
+  MIRRORED_PLUGINS,
+  type MirroredPlugin,
+  pluginConfigFromLegacy,
+  readProjectPlugins,
+  type PluginPatch,
   Session as SessionSchema,
   Subscription as SubscriptionSchema,
   Task as TaskSchema,
@@ -1333,6 +1340,22 @@ export class EngineStore {
     this.kernels = host;
   }
 
+  /**
+   * "A session went away" — announced to every registered plugin instead of to
+   * one feature by name. Attached like `kernels` above so the store still
+   * builds in a test with no host around it.
+   *
+   * WHY THIS EXISTS: the store used to call `releaseDataScience` directly, which
+   * meant the second plugin with per-session state would have added a second
+   * line here, and the third a third. It announces; it does not know who is
+   * listening.
+   */
+  private pluginRelease?: (sessionId: string, reason: string) => void;
+
+  attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
+    this.pluginRelease = release;
+  }
+
   /** Environment builds and package installs, as jobs the settings page polls. */
   readonly dsJobs = new JobRunner(() => this.now());
 
@@ -1440,6 +1463,28 @@ export class EngineStore {
       ...(config.toolchain.engine ? { engine: config.toolchain.engine } : {}),
       ...(config.mainFile ? { mainFile: config.mainFile } : {}),
     };
+  }
+
+  /**
+   * WHICH PLUGINS A SESSION'S PROJECT HAS TURNED ON, as ids.
+   *
+   * The two features that predate the host — `data-science` and `latex` — are
+   * excluded even when the map names them, because `resolveDataScience` and
+   * `resolveLatex` already carry them onto the claim and a worker that saw them
+   * twice would build their walls twice. That exclusion is temporary in the same
+   * sense the two dedicated claim fields are: it goes away when their toolkits
+   * move onto the plugin wire, and until then it lives HERE, in one line, rather
+   * than in the worker where it would be a second place to forget.
+   */
+  enabledPluginIds(session: Session): string[] {
+    if (!session.projectId) return [];
+    let project: Project;
+    try { project = this.getProject(session.projectId); } catch { return []; }
+    const { plugins } = readProjectPlugins(project);
+    return Object.entries(plugins.entries)
+      .filter(([id, config]) => config.enabled && !MIRRORED_PLUGINS.includes(id as MirroredPlugin))
+      .map(([id]) => id)
+      .sort();
   }
 
   /** The kernel host reporting a state change; journaled so the panel's pill follows it. */
@@ -4232,8 +4277,30 @@ export class EngineStore {
    * key it does not know rather than storing it. `dataScience: null` removes
    * the block, which is how "off" is spelled so the registry does not grow a
    * `{enabled: false}` for every project that tried it once.
+   *
+   * ── THE PLUGIN MAP IS THE TRUTH; THE LEGACY BLOCKS ARE A MIRROR ─────────────
+   * Every write goes through `plugins`, and the `latex` / `dataScience` blocks
+   * are rewritten from it IN THE SAME ATOMIC WRITE. Three consequences worth
+   * stating, because each is a bug that would otherwise be easy to reintroduce:
+   *
+   *   - THE LEGACY PATCH ARMS STILL WORK, unchanged, for every caller that has
+   *     not moved. They are translated into a plugin patch here rather than
+   *     writing a second source of truth.
+   *   - DISABLING DELETES BOTH SIDES. `legacyMirrors` returns `undefined` for an
+   *     absent entry and the mirror is DELETED, never left behind — a mirror
+   *     that is only ever added is how a disabled feature comes back to life.
+   *   - THE MIRROR IS VALIDATED AGAINST THE OLD SCHEMA before it is written, so
+   *     an engine that only understands the legacy block can always read what we
+   *     leave for it.
+   *
+   * Settings for a NON-MIRRORED plugin are validated by the plugin's own schema
+   * at the route that accepts them — the store has no plugin host and must not
+   * grow one. What the store guarantees is the map's shape and the mirrors.
    */
-  updateProject(projectId: string, patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null }): Project {
+  updateProject(
+    projectId: string,
+    patch: { dataScience?: DataScienceConfig | null; latex?: LatexConfig | null; plugins?: PluginPatch },
+  ): Project {
     assertId(projectId, "project id");
     const registry = (readJson(this.paths.projects) ?? emptyRegistry()) as unknown;
     const parsed = parseRegistry(registry);
@@ -4246,25 +4313,60 @@ export class EngineStore {
       throw new EngineStateError("conflict", "this project was removed from Telar; restore it to change its settings");
     }
     const next: Project = { ...current, updatedAt: this.now() };
-    if (patch.dataScience === null) {
-      delete next.dataScience;
-    } else if (patch.dataScience !== undefined) {
+
+    // Legacy arms first, translated into map patches. A caller may also send a
+    // `plugins` patch directly; it is applied after, so an explicit map write
+    // wins over a legacy alias for the same plugin in one request.
+    const pluginPatch: PluginPatch = {};
+    if (patch.dataScience === null) pluginPatch["data-science"] = null;
+    else if (patch.dataScience !== undefined) {
       const config = DataScienceConfigSchema.safeParse(patch.dataScience);
       if (!config.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
-      next.dataScience = config.data;
+      pluginPatch["data-science"] = pluginConfigFromLegacy(config.data);
     }
-    if (patch.latex === null) {
-      delete next.latex;
-    } else if (patch.latex !== undefined) {
+    if (patch.latex === null) pluginPatch.latex = null;
+    else if (patch.latex !== undefined) {
       const config = LatexConfigSchema.safeParse(patch.latex);
       if (!config.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
-      next.latex = config.data;
-      if (config.data.enabled) {
-        try {
-          ensureTelarGitignore(next.root, [{ rule: ".telar/latex/", alreadyCovered: [".telar/", ".telar", "/.telar/", ".telar/latex/"], why: "LaTeX aux files from Telar's compiles" }]);
-        } catch { /* not a repo, or unwritable — compiles still work */ }
-      }
+      pluginPatch.latex = pluginConfigFromLegacy(config.data);
     }
+    Object.assign(pluginPatch, patch.plugins ?? {});
+
+    // Reading migrates a pre-map project, so the marker lands on the first write
+    // to any project — no separate migration pass, and no window where half the
+    // registry is migrated and half is not.
+    const { plugins: currentPlugins } = readProjectPlugins(current);
+    const nextPlugins = applyPluginPatch(currentPlugins, pluginPatch);
+    // A project that has never configured a plugin does NOT get a marker written
+    // just because something else about it was saved. Stamping an empty map on
+    // every write would migrate the whole registry on the first unrelated patch,
+    // and it buys nothing: migrating an empty legacy project yields this exact
+    // map anyway. Once a marker exists it stays, even if the last entry goes.
+    const hasMap = Object.keys(nextPlugins.entries).length > 0 || current.plugins !== undefined;
+    if (hasMap) next.plugins = nextPlugins;
+
+    const mirrors = legacyMirrors(nextPlugins);
+    if (mirrors.dataScience === undefined) delete next.dataScience;
+    else {
+      const mirror = DataScienceConfigSchema.safeParse(mirrors.dataScience);
+      if (!mirror.success) throw new EngineStateError("invalid_request", "data science configuration is invalid");
+      next.dataScience = mirror.data;
+    }
+    if (mirrors.latex === undefined) delete next.latex;
+    else {
+      const mirror = LatexConfigSchema.safeParse(mirrors.latex);
+      if (!mirror.success) throw new EngineStateError("invalid_request", "LaTeX configuration is invalid");
+      next.latex = mirror.data;
+    }
+    // Only when THIS request touched LaTeX and left it on. Running it on every
+    // settings write would touch the user's `.gitignore` from a request that had
+    // nothing to do with LaTeX.
+    if ("latex" in pluginPatch && next.latex?.enabled) {
+      try {
+        ensureTelarGitignore(next.root, [{ rule: ".telar/latex/", alreadyCovered: [".telar/", ".telar", "/.telar/", ".telar/latex/"], why: "LaTeX aux files from Telar's compiles" }]);
+      } catch { /* not a repo, or unwritable — compiles still work */ }
+    }
+
     parsed.projects[index] = next;
     atomicWrite(this.paths.projects, parsed);
     return structuredClone(next);
@@ -6305,6 +6407,20 @@ export class EngineStore {
           return latex ? { latex: { kind: latex.kind } } : {};
         })(),
         /**
+         * EVERY OTHER PLUGIN THE PROJECT TURNED ON, as ids. The two arms above
+         * are the two features that predate the host; this is the arm that does
+         * not grow when a third arrives.
+         *
+         * `data-science` and `latex` are EXCLUDED even though they live in the
+         * same map, because their own claim fields already carry them and a
+         * worker that saw both would register their walls twice. They stop being
+         * special here on the day their toolkits move onto the plugin wire.
+         */
+        ...(() => {
+          const ids = this.enabledPluginIds(session);
+          return ids.length > 0 ? { plugins: ids } : {};
+        })(),
+        /**
          * The project's NAME, for the spool toolkit's scoping — a spool item's
          * `project` is a free-form LABEL, so a session's slice is found by
          * comparing names rather than ids.
@@ -6697,7 +6813,7 @@ export class EngineStore {
     // until the pool's LRU evicts them six sessions later — which is a leak
     // measured in hundreds of megabytes on a machine running detached work.
     void this.browser?.release(sessionId, "session archived");
-    this.releaseDataScience(session, "session archived");
+    this.releaseSessionResources(session, "session archived");
 
     // A WORKTREE IMPLIES A PROJECT, and checking both is how that stays true
     // rather than assumed: a project-less session (the Spool's master) is always
@@ -6748,11 +6864,24 @@ export class EngineStore {
    * removed session directory is the opposite: it would parse as corruption on
    * the next read, so it either goes or the call fails with it intact.
    */
-  /** Kill the session's kernel, and for a worktree, its own Telar venv. Best-effort. */
-  private releaseDataScience(session: Session, reason: string): void {
+  /**
+   * The session's per-session resources, given back. Best-effort throughout: a
+   * session must be deletable even when something it borrowed refuses to go.
+   *
+   * The data-science arm is still spelled out because Data Science has not been
+   * migrated onto the host yet; the `pluginRelease` announcement beside it is
+   * the path every plugin already uses, and the DS lines disappear into it when
+   * that migration lands.
+   */
+  private releaseSessionResources(session: Session, reason: string): void {
     void this.kernels?.dispose(session.id, reason);
     if (session.workspace.mode === "worktree" && session.projectId) {
       removeTelarVenv(telarVenvDir(this.paths.root, session.projectId, path.basename(session.workspace.path)));
+    }
+    try {
+      this.pluginRelease?.(session.id, reason);
+    } catch {
+      /* a plugin's failure to let go must not strand the session */
     }
   }
 
@@ -6764,7 +6893,7 @@ export class EngineStore {
     if (active) throw new EngineStateError("conflict", "session has an active turn; stop it before deleting");
 
     void this.browser?.release(sessionId, "session deleted");
-    this.releaseDataScience(session, "session deleted");
+    this.releaseSessionResources(session, "session deleted");
 
     // See `archiveSession` for why the project is checked beside the mode.
     if (session.workspace.mode === "worktree" && session.projectId) {

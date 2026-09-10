@@ -5,6 +5,15 @@ import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim } f
 import { clientDsCapability } from "./ds/client-capability";
 import { createDisplayCapability } from "./display/capability";
 import { clientLatexCapability } from "./latex/client-capability";
+import { pluginToolModules } from "./plugins/bundled";
+import { pluginCall } from "./plugins/tool-module";
+import type { PluginSocketLease, PluginToolSocket } from "./plugins/socket";
+import { collectTelarWall, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
+import { spoolTools, type SpoolCapability } from "./spool/tools";
+import { sessionsTools } from "./sessions-tools/tools";
+import { dsTools } from "./ds/ds-tools";
+import { notebookTools } from "./ds/notebook-tools";
+import { latexTools } from "./latex/latex-tools";
 import { EngineClientError, qualifyTelarTool, TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
 import type { BrowserRunBinding, BrowserSocketLease, BrowserToolSocket } from "./browser/socket";
 import { runSecretFill } from "./browser/secret-fill";
@@ -67,6 +76,9 @@ type WorkerClient = Pick<
   | "liveSessions"
   | "ds"
   | "latex"
+  // The generic plugin door. ONE verb for every plugin, which is why adding a
+  // plugin adds nothing to this list.
+  | "plugin"
   | "createSession"
   | "submitTurn"
   | "events"
@@ -157,6 +169,19 @@ export type EngineWorkerOptions = {
    * produced before this existed.
    */
   sessionsSocket?: SessionsToolSocket;
+  /**
+   * WHERE EVERY ENABLED PLUGIN'S TOOLS ARE SERVED, for BOTH providers — see
+   * `plugins/socket.ts`. Unlike the sessions wall, this is not a Codex-only
+   * lease: a plugin has no in-process registration on either provider, so an
+   * absent socket means a session with no plugin tools at all.
+   */
+  pluginSocket?: PluginToolSocket;
+  /**
+   * WHERE THE `telar` WALL IS SERVED FOR CODEX TURNS. The Claude driver binds
+   * this socket itself; the worker binds it only for a provider that cannot
+   * hold in-process state. See `telar-socket.ts`.
+   */
+  telarSocket?: TelarToolSocket;
   /**
    * The password-manager read path for `browser_fill_secret`. Defaults to the
    * real `op` CLI adapter; injected by tests so no suite ever spawns one. The
@@ -284,6 +309,15 @@ export class EngineWorker {
    * stable for the session's life. Revoked in `stop()`.
    */
   private readonly sessionsLeases = new Map<string, SessionsSocketLease>();
+  /**
+   * One plugin-wall lease per session, plus the enabled set it was minted for.
+   * The key is what makes "the project turned a plugin off" observable here —
+   * see the rebind in `execute`. `lease` is undefined when the session's project
+   * enabled nothing, which is a cached ANSWER rather than a missing entry.
+   */
+  private readonly pluginLeases = new Map<string, { key: string; lease?: PluginSocketLease }>();
+  /** One `telar` wall lease per Codex session. Released in `stop()`. */
+  private readonly telarLeases = new Map<string, TelarSocketLease>();
 
   constructor(private readonly options: EngineWorkerOptions) {
     this.pollMs = options.pollMs ?? 100;
@@ -341,6 +375,10 @@ export class EngineWorker {
     this.browserLeases.clear();
     for (const lease of this.sessionsLeases.values()) lease.release();
     this.sessionsLeases.clear();
+    for (const entry of this.pluginLeases.values()) entry.lease?.release();
+    this.pluginLeases.clear();
+    for (const lease of this.telarLeases.values()) lease.release();
+    this.telarLeases.clear();
     const selector = this.options.driver;
     if (typeof selector === "function") {
       try {
@@ -652,6 +690,97 @@ export class EngineWorker {
         sessionsLease = await this.options.sessionsSocket.bind(sessionsCapability);
         this.sessionsLeases.set(sessionId, sessionsLease);
       }
+      /**
+       * THE `telar` WALL FOR CODEX, bound HERE rather than in the driver.
+       *
+       * The Claude driver binds its own (`DriverRun.telarSocket`) because the
+       * capabilities it serves are that driver's per-turn bindings. Codex has no
+       * such bindings — it takes MCP servers as config — so the worker builds
+       * the wall from ITS OWN per-session client capabilities, the same objects
+       * it hands the driver below. Nothing Claude-specific is borrowed.
+       *
+       * `warp` is NOT in this wall: it fans out through the Claude driver's
+       * `warpSpawn`, which does not exist here. Absent and honest beats
+       * advertised and broken.
+       *
+       * Cached per session for the same token reason as every other lease.
+       */
+      const telarCapabilities: { spool?: SpoolCapability; sessions: unknown; ds?: unknown; latex?: unknown } = {
+        /**
+         * FILLED IN BELOW, not here. The spool capability is still an inline
+         * literal inside the `driver.run` options; hoisting it is a mechanical
+         * change this one deliberately does not bundle with the transport work.
+         * The getter reads this object at REQUEST time — after `driver.run` has
+         * been entered — so assigning it later is sound, and leaving it unset
+         * would mean a Codex turn silently has no `spool_*`.
+         */
+        spool: undefined,
+        sessions: sessionsCapability,
+        ds: claim.dataScience ? clientDsCapability(this.options.client, sessionId) : undefined,
+        latex: claim.latex ? clientLatexCapability(this.options.client, sessionId) : undefined,
+      };
+      let telarLease = this.telarLeases.get(sessionId);
+      if (!telarLease && driverKind === "codex" && this.options.telarSocket) {
+        telarLease = await this.options.telarSocket.bind(() =>
+          collectTelarWall([
+            { name: "spool", build: spoolTools as never, capability: () => telarCapabilities.spool },
+            { name: "sessions", build: sessionsTools as never, capability: () => telarCapabilities.sessions },
+            { name: "ds", build: dsTools as never, capability: () => telarCapabilities.ds },
+            { name: "notebook", build: notebookTools as never, capability: () => telarCapabilities.ds },
+            { name: "latex", build: latexTools as never, capability: () => telarCapabilities.latex },
+          ]),
+        );
+        if (telarLease && !this.stopped) this.telarLeases.set(sessionId, telarLease);
+        else telarLease?.release();
+      }
+      /**
+       * EVERY ENABLED PLUGIN'S CAPABILITY, BY ID. The two dedicated arms (`ds`,
+       * `latex`) are two features that each needed a client capability written
+       * by hand; this needs no third, because a plugin's tool module builds its
+       * own out of nothing but `pluginCall` — one HTTP verb,
+       * `POST /plugins/<id>/<method>`, parameterised by the plugin.
+       *
+       * The claim carries IDS, not settings: the worker is told which walls to
+       * build and nothing about what is behind them. An id this binary does not
+       * bundle is simply absent — an older worker against a newer daemon builds
+       * fewer walls rather than crashing.
+       */
+      const pluginCapabilities = Object.fromEntries(
+        pluginToolModules()
+          .filter((module) => claim.plugins?.includes(module.meta.id))
+          .map((module) => [module.meta.id, module.capability(pluginCall(this.options.client, sessionId, module.meta.id))]),
+      );
+      /**
+       * THE PLUGIN WALLS, leased on the worker-hosted socket.
+       *
+       * CACHED PER SESSION, NOT PER TURN, and the reason is the token. The
+       * lease's credential is baked into the MCP server entry the provider was
+       * started with, so a fresh token every turn would 401 the moment a query
+       * outlived its turn — which is the normal case, not the exception.
+       *
+       * REBOUND WHEN THE ENABLED SET CHANGES, because that is the one thing a
+       * stale lease would get wrong: it would keep serving a plugin the project
+       * just turned off. That same change also moves the driver's fingerprint,
+       * so the provider is cold-started and picks up the new credential rather
+       * than holding the released one.
+       */
+      const pluginKey = [...(claim.plugins ?? [])].sort().join(",");
+      let pluginLease = this.pluginLeases.get(sessionId);
+      if (pluginLease?.key !== pluginKey) {
+        pluginLease?.lease?.release();
+        const lease = this.options.pluginSocket
+          ? await this.options.pluginSocket.bind(pluginToolModules(), pluginCapabilities)
+          : undefined;
+        pluginLease = { key: pluginKey, lease };
+        // A `stop()` during the await above already cleared the map, so a lease
+        // recorded now would never be released. Give it back instead.
+        if (this.stopped) {
+          lease?.release();
+          pluginLease = { key: pluginKey };
+        } else {
+          this.pluginLeases.set(sessionId, pluginLease);
+        }
+      }
       const result = await driver.run({
         prompt,
         sessionId,
@@ -706,7 +835,9 @@ export class EngineWorker {
          * same routes the queue does and there is exactly one implementation of
          * every rule about an item.
          */
-        spool: {
+        // ALSO the object the Codex `telar` wall serves `spool_*` from — see
+        // `telarCapabilities` above. One capability, both providers.
+        spool: (telarCapabilities.spool = {
           ...(claim.project ? { project: claim.project } : {}),
           snapshot: () => this.options.client.spool(),
           item: (id) =>
@@ -751,12 +882,18 @@ export class EngineWorker {
           updateNote: async (id, patch) => (await this.options.client.updateSpoolNote(id, patch)).note,
           search: async (query, subject) =>
             (await this.options.client.spoolSearch(query, subject ? { subject } : {})).hits,
-        },
+        }),
         // The sessions toolkit, hoisted above — one assembly, two consumers.
         sessions: sessionsCapability,
         // The sessions wall over HTTP, for the provider that takes servers as
         // config. Same absent-means-absent rule as `browserSocket`.
         ...(sessionsLease ? { sessionsSocket: { url: sessionsLease.url, token: sessionsLease.token } } : {}),
+        // The plugin wall, same shape, for BOTH providers. Absent means the
+        // project enabled no plugins, and the driver mounts no server.
+        ...(telarLease ? { telarSocketLease: { url: telarLease.url, token: telarLease.token, generation: telarLease.generation } } : {}),
+        ...(pluginLease.lease
+          ? { pluginsSocket: { url: pluginLease.lease.url, token: pluginLease.lease.token, generation: pluginLease.lease.generation } }
+          : {}),
         /**
          * THE KERNEL, WHEN THE CLAIM SAYS THE PROJECT OPTED IN. Every verb is
          * an HTTP call to the daemon, which owns the kernel — the worker holds

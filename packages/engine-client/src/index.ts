@@ -1652,6 +1652,50 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/latex/${method}`, body ?? {});
   }
 
+  /**
+   * ONE DOOR TO EVERY PLUGIN — `ds` and `latex` above, generalised, and the
+   * reason a third feature needs no third method here. `pluginId` picks the
+   * plugin, `method` its verb; the daemon resolves the capability (which project,
+   * has it opted in) and hands it to the plugin's own route.
+   *
+   * `ds` and `latex` REMAIN as their own methods rather than becoming callers of
+   * this: they are the shape a released client already speaks, and an old client
+   * pointed at a new daemon has to keep working.
+   */
+  plugin<T>(sessionId: string, pluginId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/plugins/${pluginId}/${method}`, body ?? {});
+  }
+
+  /**
+   * ONE DOOR TO THE SESSION'S RUNS, shaped like `ds` and `latex` above: `method`
+   * is the verb, always a POST. The daemon owns the process group — a run
+   * started by a worker would die with its conversation — so every verb here is
+   * a call to the daemon rather than something the caller does itself.
+   *
+   * The COCKPIT does not come through here: it speaks the REST surface
+   * (`GET /run/configs`, `DELETE /run/configs/:id`) that `run/routes.ts` mounts,
+   * because a settings list is a resource and reads like one. This method is the
+   * WORKER's door, and it exists in this shape because `run/client-capability.ts`
+   * types its transport as `run(sessionId, method, body?)`.
+   *
+   * ── UNRECONCILED, AND DELIBERATELY NOT PAPERED OVER ─────────────────────────
+   * THE TWO HALVES OF #198 DISAGREE ABOUT THIS VOCABULARY. `client-capability.ts`
+   * sends `configs/create`, `configs/update` and `configs/remove`; the mounted
+   * table has no such verbs — it has `POST /run/configs`, `POST /run/configs/:id`
+   * and `DELETE /run/configs/:id`. So `configs/create` lands on the UPDATE
+   * pattern with the literal id `create` and is refused as not-found.
+   *
+   * It FAILS CLOSED, which is why the door is mounted anyway: the cockpit's REST
+   * surface works today and nothing is silently mis-executed. But the `run_*`
+   * toolkit is NOT mounted and `run` is NOT in `TELAR_CORE_CAPABILITIES` until
+   * one side is reshaped, because a capability declared without a working
+   * toolkit is a namespace the model is told about and then cannot use — the
+   * exact thing the comment on that list forbids.
+   */
+  run<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/run/${method}`, body ?? {});
+  }
+
   /** A window of rows from a CSV, TSV or Parquet file in the session's tree. */
   sessionTable(
     sessionId: string,

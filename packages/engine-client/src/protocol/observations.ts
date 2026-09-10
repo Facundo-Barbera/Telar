@@ -197,6 +197,21 @@ export const WorkerClaim = z.object({
    */
   latex: z.object({ kind: z.enum(["tectonic", "texlive"]) }).optional(),
   /**
+   * EVERY OTHER PLUGIN THE PROJECT ENABLED — ids only, resolved at claim time
+   * exactly as `dataScience` and `latex` are, and meaning the same thing:
+   * present means that plugin's tool wall registers for this turn.
+   *
+   * IDS AND NOTHING ELSE. A plugin's settings are its own business and stay in
+   * the daemon behind its capability — the worker needs to know only WHICH walls
+   * to build, and every call one of those walls makes comes back to the daemon
+   * over `EngineClient.plugin()`. That is what keeps this field from growing a
+   * member per plugin the way the two above did.
+   *
+   * Absent — from an older engine, or a project that enabled nothing — means no
+   * plugin walls, which is exactly what an older worker does with it anyway.
+   */
+  plugins: z.array(z.string().min(1)).optional(),
+  /**
    * The configured login this session runs as, RESOLVED — sensitive environment
    * values included, unlike every other read of the registry.
    *

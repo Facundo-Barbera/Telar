@@ -24,6 +24,24 @@ import fs from "node:fs";
 import readline from "node:readline";
 
 const scenario = process.env.FAKE_CODEX_TURN_SCENARIO ?? "plain";
+/** The `mcp_servers` overlay this thread was started with. */
+let mcpServersConfig = {};
+
+/**
+ * Call a configured MCP server for real. This is what makes an approval test
+ * about DISPATCH rather than about a url: a declined tool must produce NO call
+ * here, and an accepted one exactly one.
+ */
+async function callConfiguredTool(serverKey, tool, args) {
+  const entry = mcpServersConfig[serverKey];
+  if (!entry?.url) return { error: `no ${serverKey} server was configured` };
+  const response = await fetch(entry.url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(entry.http_headers ?? {}) },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: tool, arguments: args ?? {} } }),
+  });
+  return await response.json();
+}
 const rl = readline.createInterface({ input: process.stdin });
 
 const write = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
@@ -90,6 +108,9 @@ rl.on("line", (line) => {
   }
   if (msg.method === "initialized") return; // a notification: nothing is owed
   if (msg.method === "thread/start") {
+    // Remembered so a scenario can actually CALL a Telar socket it was
+    // configured with, rather than merely proving the url arrived.
+    mcpServersConfig = msg.params?.config?.mcp_servers ?? {};
     threadId = ROOT_THREAD;
     write({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: threadId } } });
     return;
@@ -374,6 +395,47 @@ async function playTurn() {
 
     // A turn long enough to be steered: it finishes only once a turn/steer
     // has arrived, which is what makes the test deterministic.
+    /**
+     * THE PLUGIN WALL'S APPROVAL, END TO END. Unlike the two above this
+     * scenario does not stop at the elicitation: on accept it actually calls
+     * the plugin socket it was configured with, and on decline it calls
+     * nothing. So the test can prove the gate DECIDES DISPATCH rather than
+     * merely that a card appeared.
+     */
+    case "mcp-elicitation-telar-plugins": {
+      const reply = ask("mcpServer/elicitation/request", {
+        threadId,
+        turnId,
+        serverName: "telar-plugins",
+        mode: "form",
+        _meta: {
+          codex_approval_kind: "mcp_tool_call",
+          persist: ["session", "always"],
+          tool_description: "The proof plugin's greeting.",
+          tool_params: { name: "telar" },
+          tool_params_display: [],
+        },
+        message: 'Allow the telar-plugins MCP server to run tool "hello_ping"?',
+        requestedSchema: { type: "object", properties: {} },
+      });
+      const action = (await reply).result?.action;
+      // THE GATE DECIDES WHETHER THE CALL HAPPENS AT ALL.
+      const called = action === "accept" ? await callConfiguredTool("telar-plugins", "hello_ping", { name: "telar" }) : undefined;
+      done({
+        type: "mcpToolCall",
+        id: "item-mcp-telar-plugins",
+        server: "telar-plugins",
+        tool: "hello_ping",
+        arguments: { name: "telar" },
+        status: action === "accept" ? "completed" : "declined",
+        ...(action === "accept"
+          ? { result: called?.result ?? { content: [{ type: "text", text: JSON.stringify(called) }] } }
+          : { error: { message: "user rejected MCP tool call" } }),
+      });
+      finish(`action=${action}`);
+      return;
+    }
+
     case "steer": {
       if (!steerArrived) {
         await new Promise((resolve) => {

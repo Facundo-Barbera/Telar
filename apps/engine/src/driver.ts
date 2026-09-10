@@ -39,9 +39,12 @@ import {
   parseToolName,
   qualifyTelarTool,
   TELAR_BROWSER_MCP_SERVER,
+  TELAR_PLUGINS_MCP_SERVER,
   TELAR_MCP_SERVER,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
+import type { ToolFactory } from "./tool-kit";
+import { collectTelarWall, type TelarSocketLease, type TelarToolSocket, type TelarWallPart } from "./telar-socket";
 import {
   ClaudeRuntimeStore,
   MessageFeed,
@@ -62,6 +65,7 @@ import { sessionsTools, type SessionsCapability } from "./sessions-tools/tools";
 import { notebookTools } from "./ds/notebook-tools";
 import { dsTools } from "./ds/ds-tools";
 import { latexTools } from "./latex/latex-tools";
+import { HOST_RATIFIED_READ_TOOLS } from "./plugins/policy";
 import type { LatexCapability } from "./latex/capability";
 import type { DsCapability } from "./ds/capability";
 
@@ -244,6 +248,39 @@ export type DriverRun = {
    * `self`, so a subscription made through it wakes the right session.
    */
   sessionsSocket?: { url: string; token: string };
+  /**
+   * EVERY ENABLED PLUGIN'S TOOL WALL, as a worker-hosted MCP socket — see
+   * `plugins/socket.ts`. Unlike `sessionsSocket` this is NOT a Codex-only
+   * lease: plugin tools have no in-process registration on either provider,
+   * because an in-process server is a thing Codex cannot be handed at all.
+   * Absent means the project enabled no plugins.
+   */
+  pluginsSocket?: { url: string; token: string; generation: string };
+  /**
+   * THE `telar` WALL'S HOST. Supplied by the worker; the DRIVER binds it,
+   * because the capabilities the wall serves are this turn's driver bindings and
+   * the worker has no access to those.
+   *
+   * Absent means the legacy in-process registration is used instead — which is
+   * what a deployment that has not built a socket gets, and what keeps this
+   * change from being all-or-nothing.
+   */
+  telarSocket?: TelarToolSocket;
+  /**
+   * THE SAME WALL, ALREADY LEASED — the shape a provider that cannot hold
+   * in-process state consumes.
+   *
+   * Codex takes MCP servers as config, and its driver holds no per-turn
+   * capability bindings the way the Claude one does. So for a Codex turn the
+   * WORKER binds the wall against ITS OWN per-session client capabilities and
+   * passes the lease down, rather than the driver binding against runtime state
+   * that only exists on the Claude path.
+   *
+   * The two are mutually exclusive per turn: `telarSocket` is the Claude path
+   * (driver binds), this is the Codex path (worker binds). Same key, same tool
+   * names, same approvals.
+   */
+  telarSocketLease?: { url: string; token: string; generation: string };
   /** Engine-owned provider continuity from the preceding completed turn. */
   providerSessionId?: string;
   /**
@@ -661,7 +698,14 @@ A Warp child may not create work that outlives the run or escapes the script: fa
  * string it can pass.
  */
 function warpTool(
-  sdk: ClaudeSdk,
+  /**
+   * THE FACTORY, NOT THE SDK. Warp used to take the whole `ClaudeSdk` and reach
+   * for `sdk.tool`, which quietly made it the one core tool that could only be
+   * registered in-process. It needs a way to declare a tool and nothing else —
+   * so it takes the same `ToolFactory` every other toolkit takes, and can be
+   * collected into a socket wall like the rest.
+   */
+  tool: ToolFactory | undefined,
   deps: {
     spawn: WarpSpawn;
     /** Every row the run produces, in order. The driver decides which event
@@ -677,7 +721,6 @@ function warpTool(
     concurrency?: number;
   },
 ): unknown | undefined {
-  const { tool } = sdk;
   if (!tool) return undefined;
   const start = createWarpRunner({
     spawn: deps.spawn,
@@ -798,7 +841,33 @@ function warpTool(
 // nothing, spends nothing, and its whole effect is a panel opening on the
 // human's own screen — which they watch happen. Parking an approval card for
 // "may I show you this?" would be the card answering itself.
-const TELAR_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "ds_packages", "ds_kernel", "display_open"]);
+const TELAR_CORE_READ_TOOLS = new Set<string>(["spool_list_items", "spool_list_lanes", "display_open"]);
+
+/**
+ * THE PLUGIN HALF OF THE READ LIST IS OWNED BY THE HOST, NOT BY THE PLUGIN.
+ *
+ * `ds_packages` and `ds_kernel` used to be spelled in the constant above. They
+ * now arrive from `plugins/policy.ts`, and the indirection is the whole point of
+ * the root review's condition: a plugin manifest declares `readTools`, but a
+ * self-declaration is a CLAIM, never a grant. What actually classifies a tool as
+ * a read is the host's own table — so a plugin cannot widen its authority by
+ * editing its own manifest, and adding a read tool stays a reviewable change to
+ * a file the host owns.
+ *
+ * The default is the whole host table rather than an empty set, because
+ * `requestKindForTool` is a pure module function reached from both providers and
+ * from tests with no daemon around it. Starting empty would silently reclassify
+ * today's data-science reads as parking tool calls whenever the host has not
+ * booted. The host then INSTALLS the exact ratified intersection at startup,
+ * which is always a subset of this table: what a plugin actually claims, inside
+ * its own tool namespace.
+ */
+let telarPluginReadTools: ReadonlySet<string> = new Set(Object.values(HOST_RATIFIED_READ_TOOLS).flat());
+
+/** Called once by the daemon after `PluginHost.startAll`. */
+export function setPluginReadTools(tools: ReadonlySet<string>): void {
+  telarPluginReadTools = new Set(tools);
+}
 
 export function requestKindForTool(name: string): RequestKind {
   if (name === "Bash" || name === "BashOutput" || name === "KillShell") return "command_execution";
@@ -807,7 +876,8 @@ export function requestKindForTool(name: string): RequestKind {
   const parsed = parseToolName(name);
   // Only OUR servers' tools qualify — a user-configured server that happened to
   // name a tool `spool_list_items` must not inherit the engine's own posture.
-  if (isTelarMcpServer(parsed.server) && TELAR_READ_TOOLS.has(parsed.tool)) return "file_read";
+  if (isTelarMcpServer(parsed.server) && (TELAR_CORE_READ_TOOLS.has(parsed.tool) || telarPluginReadTools.has(parsed.tool)))
+    return "file_read";
   return "tool_call";
 }
 
@@ -1172,6 +1242,20 @@ export function createClaudeDriver(
   /** sessionId → live query. Owned per driver instance so every test gets
    *  isolation and each worker deployment owns exactly its own processes. */
   const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>();
+
+  /**
+   * ONE `telar` WALL LEASE PER SESSION, plus the bindings ref its thunk reads.
+   *
+   * PER SESSION, NOT PER TURN, and for the same reason the plugin socket's lease
+   * is: the token is baked into the MCP server entry the provider was started
+   * with, so minting a fresh one each turn would 401 every reused query. The
+   * REF is what makes that safe — `buildRuntime` points it at the live bindings,
+   * so a stable lease still serves whatever the current turn carries.
+   */
+  const telarLeases = new Map<
+    string,
+    { lease: TelarSocketLease; ref: { current: RuntimeBindings<ClaudeTurnBindings> | undefined } }
+  >();
   return {
     dispose: () => runtimes.destroyAll(),
     stopTask: (sessionId, providerTaskId) => runtimes.stopTask(sessionId, providerTaskId),
@@ -1197,6 +1281,8 @@ export function createClaudeDriver(
       ds,
       display,
       latex,
+      pluginsSocket,
+      telarSocket,
       steer,
       tasks: seededTasks,
       session: sessionHooks,
@@ -1885,6 +1971,34 @@ export function createClaudeDriver(
        * one and this turn cold-starts. `model` is deliberately absent: it is
        * the one knob a live query can turn (`setModel`).
        */
+      /**
+       * THE `telar` WALL, WHEN THIS DEPLOYMENT HOSTS ONE.
+       *
+       * Each part names a toolkit, its own builder, and a GETTER for the
+       * capability this turn bound. The getters read through `ref`, which
+       * `buildRuntime` points at the live bindings — so one stable lease serves
+       * every turn of a session while still dispatching to the current one.
+       *
+       * `warp` is included here like any other wall: it now takes a
+       * `ToolFactory` rather than the SDK, so nothing about it is in-process any
+       * more.
+       */
+      const telarLeased = telarSocket ? telarLeases.get(sessionId) : undefined;
+      const telarRef = telarLeased?.ref ?? { current: undefined as RuntimeBindings<ClaudeTurnBindings> | undefined };
+      const telarParts: TelarWallPart[] = [
+        { name: "spool", build: spoolTools as never, capability: () => telarRef.current?.current.spool },
+        { name: "sessions", build: sessionsTools as never, capability: () => telarRef.current?.current.sessions },
+        { name: "ds", build: dsTools as never, capability: () => telarRef.current?.current.ds },
+        { name: "notebook", build: notebookTools as never, capability: () => telarRef.current?.current.ds },
+        { name: "latex", build: latexTools as never, capability: () => telarRef.current?.current.latex },
+        { name: "display", build: displayTools as never, capability: () => telarRef.current?.current.display },
+      ];
+      let telarLease = telarLeased?.lease;
+      if (telarSocket && !telarLease) {
+        telarLease = await telarSocket.bind(() => collectTelarWall(telarParts));
+        if (telarLease) telarLeases.set(sessionId, { lease: telarLease, ref: telarRef });
+      }
+
       const fingerprint = JSON.stringify({
         cwd,
         env: env ?? null,
@@ -1909,13 +2023,43 @@ export function createClaudeDriver(
         ds: Boolean(ds),
         // Same rule for the LaTeX switch.
         latex: Boolean(latex),
+        // AND THE SAME RULE, GENERICALLY: enabling or disabling any plugin
+        // changes which walls are baked into the query, so the SET of ids is
+        // part of the fingerprint. Sorted because a map's key order is not a
+        // decision anybody made, and an unsorted one would cold-start at random.
+        /**
+         * THE PLUGIN WALL'S IDENTITY IS ITS LEASE, NOT ITS URL.
+         *
+         * Every binding shares one listener, so the url is the same for lease A
+         * and lease B and a fingerprint holding it cannot see a rebind. The
+         * worker rebinds exactly when the project's enabled set changes — which
+         * REVOKES the previous token — so a fingerprint that missed it would
+         * keep a query whose baked-in Authorization header no longer works.
+         * The generation is the non-secret name of the current lease; the token
+         * deliberately stays out of the fingerprint.
+         */
+        pluginsSocket: pluginsSocket ? `${pluginsSocket.url}#${pluginsSocket.generation}` : null,
         display: Boolean(display),
+        /**
+         * THE `telar` WALL'S LEASE, and — through the booleans above — its SET.
+         *
+         * A STABLE TOKEN IS NOT CATALOG COHERENCE. Re-collecting per request
+         * keeps dispatch honest server-side, but a reused query keeps
+         * advertising the tool list it was started with, so a model would still
+         * see a tool the project just turned off. The `spool`/`sessions`/`ds`/
+         * `latex`/`display` booleans are what cold-start the provider when the
+         * set changes; the generation covers a rebind of the lease itself.
+         */
+        telarSocket: telarLease ? `${telarLease.url}#${telarLease.generation}` : null,
         gate: Boolean(canUseTool),
         instance: providerInstanceId ?? null,
       });
 
       const buildRuntime = (): ClaudeSessionRuntime<ClaudeTurnBindings, TaskSeed> => {
         const bindings: RuntimeBindings<ClaudeTurnBindings> = { current: turnBindings };
+        // The socket wall reads through this. A cold start replaces the bindings
+        // object, and the lease — deliberately outliving it — follows.
+        telarRef.current = bindings;
 
         /** The permission gate the QUERY holds: a stable wrapper over the
          *  current turn's `canUseTool`, because the worker's gate is bound to
@@ -1990,7 +2134,24 @@ export function createClaudeDriver(
          */
         if (display && sdk.tool) telarTools.push(...displayTools(sdk.tool, delegatingCapability(() => bindings.current.display)));
 
-        const warp = warpTool(sdk, {
+        /**
+         * PLUGIN TOOLS DO NOT REGISTER HERE — see `plugins/socket.ts`.
+         *
+         * They arrive as a worker-hosted MCP socket, mounted below beside the
+         * browser's, because that is the only transport BOTH providers can
+         * consume: Codex takes MCP servers as config (a url) and cannot be given
+         * an in-process server at all. Registering plugins in this list would
+         * have produced tools that exist on Claude and silently do not exist on
+         * Codex — the same plugin, the same project setting, two worlds.
+         *
+         * `ds` and `latex` remain in the list above for now: their names shipped
+         * under the `telar` server key, and moving them changes their qualified
+         * names and therefore splits every remembered approval. That is a
+         * deliberate decision their migration has to make, not a side effect of
+         * this transport.
+         */
+
+        const warp = warpTool(sdk.tool, {
           // Both delegate through the bindings — the tool is registered once
           // per session runtime, the spawn and the task sink change per turn.
           spawn: (input) => bindings.current.warpSpawn(input),
@@ -2000,8 +2161,24 @@ export function createClaudeDriver(
         });
         if (warp) telarTools.push(warp);
 
-        const telarServer =
-          telarTools.length > 0 && sdk.createSdkMcpServer
+        /**
+         * ONE `telar` REGISTRATION, FROM WHICHEVER TRANSPORT THIS DEPLOYMENT HAS.
+         *
+         * When a socket is leased, the key is the worker-hosted http entry and
+         * the in-process server is NOT built — two servers under one key is a
+         * shadowing bug, not a fallback. The socket is what lets these same
+         * tools, under these same names, reach a Codex turn; the in-process path
+         * remains only for a deployment with no socket.
+         */
+        const telarServer = telarLease
+          ? {
+              [TELAR_MCP_SERVER]: {
+                type: "http" as const,
+                url: telarLease.url,
+                headers: { Authorization: `Bearer ${telarLease.token}` },
+              },
+            }
+          : telarTools.length > 0 && sdk.createSdkMcpServer
             ? { [TELAR_MCP_SERVER]: sdk.createSdkMcpServer({ name: TELAR_MCP_SERVER, version: "2.0.0", tools: telarTools }) }
             : undefined;
 
@@ -2020,6 +2197,20 @@ export function createClaudeDriver(
             }
           : undefined;
 
+        // The plugin wall, in the same http shape and for the same reason —
+        // except that this one is not a Codex-only accommodation: it is where
+        // plugin tools live for BOTH providers, so there is exactly one
+        // qualified name per plugin tool and one remembered approval.
+        const telarPluginsServer = pluginsSocket
+          ? {
+              [TELAR_PLUGINS_MCP_SERVER]: {
+                type: "http" as const,
+                url: pluginsSocket.url,
+                headers: { Authorization: `Bearer ${pluginsSocket.token}` },
+              },
+            }
+          : undefined;
+
         /**
          * TELAR'S SERVERS AND THE USER'S, IN ONE RECORD — and Telar's are applied
          * LAST on purpose. The keys become the `mcp__<key>__<tool>` addressing
@@ -2029,8 +2220,8 @@ export function createClaudeDriver(
          * is the one the naming standard in ./protocol/tools.ts already assumes.
          */
         const mcpServers =
-          userServers || telarServer || telarBrowserServer
-            ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarServer ?? {}) }
+          userServers || telarServer || telarBrowserServer || telarPluginsServer
+            ? { ...(userServers ?? {}), ...(telarBrowserServer ?? {}), ...(telarPluginsServer ?? {}), ...(telarServer ?? {}) }
             : undefined;
 
         const feed = new MessageFeed();
