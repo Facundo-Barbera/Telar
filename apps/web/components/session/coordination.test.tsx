@@ -1,6 +1,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { ActivityGroup } from "../transcript";
 import { SessionTurn } from "../session-cockpit";
 import { AgentMessageBubble } from "./conversation-message";
 import type { JournalTurn } from "@/lib/engine/journal";
@@ -52,4 +53,13 @@ test("human steering into a machine turn remains visible", () => {
   expect(html).toContain("Please change direction");
   expect(html.indexOf('aria-label="Message from another agent"')).toBeLessThan(html.indexOf("Please change direction"));
   expect(html).not.toContain('aria-label="Session coordination"');
+});
+
+
+test("reconnect retries share one summary while keeping each event", () => {
+  const items = [2, 3, 4, 5].map(attempt => ({ id: `retry_${attempt}`, runId: "run_peer", sessionId: "session_host", status: "completed" as const, title: `Reconnecting... ${attempt}/5`, detail: { type: "unknown" as const }, streamedText: "", openedBy: attempt, startedAt: attempt }));
+  const html = renderToStaticMarkup(<ActivityGroup items={items} tasks={[]} live={false} />);
+  expect(html).toContain("Reconnect attempt ×4");
+  expect(html).not.toContain("Reconnecting... 2/5");
+  expect(items).toHaveLength(4);
 });

@@ -529,7 +529,7 @@ function SteeredWakeRow({ item, reason }: { item: JournalItem; reason: NonNullab
         <span className="min-w-0 truncate font-mono text-[0.6875rem] text-muted-foreground">{`session …${reason.sessionId.slice(-6)}`}</span>
         {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
       </button>
-      {open && body && <p className="whitespace-pre-wrap px-1.5 pb-1 text-xs text-muted-foreground">{body}</p>}
+      {open && body && <p className="max-h-96 overflow-auto whitespace-pre-wrap break-words px-1.5 pb-1 text-xs text-muted-foreground">{body}</p>}
     </div>
   );
 }
@@ -626,7 +626,8 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab }: {
 function tally(items: JournalItem[]): string {
   const counts = new Map<string, number>();
   for (const item of items) {
-    const label = item.detail.type === "reasoning" ? "Thought" : item.detail.type === "task" ? "Ran agent" : actionLabel(item);
+    const action = item.detail.type === "reasoning" ? "Thought" : item.detail.type === "task" ? "Ran agent" : actionLabel(item);
+    const label = /^Reconnecting(?:\.{3}|…)\s*\d+\/\d+$/i.test(action.trim()) ? "Reconnect attempt" : action;
     counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label)).join(" · ");

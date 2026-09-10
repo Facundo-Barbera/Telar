@@ -616,12 +616,12 @@ function SessionTurnBody({
   }
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex flex-col gap-2">
       {/* THE ORDINARY MESSAGE, from the one component that defines what that
           looks like — the same one a message steered into a running turn now
           uses, so the two cannot drift apart. See `conversation-message.tsx`. */}
       {turn.origin !== "provider" && turn.origin !== "session" && (
-        <ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+        <div className="mb-6"><ConversationMessage text={turn.prompt} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} /></div>
       )}
 
       {/* The initiating machine message precedes every response and steer. */}
@@ -645,7 +645,9 @@ function SessionTurnBody({
       {earlier.map((response) => (
         <Fragment key={response.boundary?.id ?? "opening"}>
           {response.boundary && (
-            <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+            <div className={cn("mx-auto w-full min-w-0 max-w-[50rem]", response.boundary.detail.type === "user_message" && !response.boundary.detail.sender && !response.boundary.detail.wakeReason && "my-6")}>
+              <TranscriptItem item={response.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+            </div>
           )}
           {response.items.length > 0 && (
             <Message from="assistant">
@@ -657,7 +659,9 @@ function SessionTurnBody({
         </Fragment>
       ))}
       {answering.boundary && (
-        <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+        <div className={cn("mx-auto w-full min-w-0 max-w-[50rem]", answering.boundary.detail.type === "user_message" && !answering.boundary.detail.sender && !answering.boundary.detail.wakeReason && "my-6")}>
+          <TranscriptItem item={answering.boundary} tasks={turn.tasks} {...(onOpenAgent ? { onOpenAgent } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
+        </div>
       )}
 
       <Message from="assistant">
