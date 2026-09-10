@@ -1534,6 +1534,10 @@ export class EngineClient {
    * call, including inside a turn that is already running — it is the brake a
    * human reaches for when a detached session does something unexpected.
    */
+  markSessionRead(sessionId: string, runId: string): Promise<{ session: Session }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/read`, { runId });
+  }
+
   updateSession(
     sessionId: string,
     patch: {

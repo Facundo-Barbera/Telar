@@ -54,6 +54,10 @@ export type SettleableSession = {
   settledAt?: number;
   snoozedUntil?: number;
   snoozedAt?: number;
+  lastTurnSequence?: number;
+  lastReadTurnSequence?: number;
+  lastTurnEndedAt?: number;
+  readAt?: number;
 };
 
 const MINUTE_MS = 60 * 1000;
@@ -178,6 +182,13 @@ export function wokeAt(session: SettleableSession, activity: SettlingActivity, o
  * bottom: every early return above the clock is a case where the clock has no
  * business having an opinion.
  */
+export function hasUnreadResult(session: SettleableSession, activity: SettlingActivity = {}): boolean {
+  if (session.lastTurnSequence !== undefined) return session.lastTurnSequence > (session.lastReadTurnSequence ?? 0);
+  // Older hosts do not expose sequences; do not hide their unseen results.
+  const endedAt = session.lastTurnEndedAt ?? activity.lastTurnEndedAt;
+  return endedAt !== undefined && (session.readAt === undefined || endedAt > session.readAt);
+}
+
 export function isSettled(session: SettleableSession, activity: SettlingActivity, options: SettlingOptions): boolean {
   // 1. Blockers. Even an explicit settle does not survive a parked request:
   // the reader shelved a session they believed was finished with them.
@@ -188,9 +199,14 @@ export function isSettled(session: SettleableSession, activity: SettlingActivity
   // 2. The pin.
   if (session.settledOverride === "settled") return true;
   if (session.settledOverride === "active") return false;
+  // An explicit snooze owns the whole interval, even if activity surfaces the
+  // row early. At expiry it gets a full inactivity window to be noticed.
+  if (session.snoozedUntil !== undefined && session.snoozedUntil > options.now) return false;
+  if (hasUnreadResult(session, activity)) return false;
   // 3. The clock, if the reader wants one.
   if (options.autoSettleAfterHours === null) return false;
-  return session.updatedAt < options.now - options.autoSettleAfterHours * HOUR_MS;
+  const idleSince = Math.max(session.updatedAt, session.readAt ?? 0, Number.isFinite(session.snoozedUntil) ? session.snoozedUntil! : 0);
+  return idleSince < options.now - options.autoSettleAfterHours * HOUR_MS;
 }
 
 /* ------------------------------------------------------------------ *

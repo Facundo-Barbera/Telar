@@ -546,6 +546,11 @@ export const Session = z.object({
    * zero.
    */
   lastTurnEndedAt: Timestamp.optional(),
+  /** Sequence of the latest terminal turn, derived from the queue. */
+  lastTurnSequence: z.number().int().positive().optional(),
+  /** Highest terminal turn actually viewed by the human, shared across clients. */
+  lastReadTurnSequence: z.number().int().positive().optional(),
+  readAt: Timestamp.optional(),
   lastTurnFailed: z.boolean().optional(),
 
   /**
@@ -564,8 +569,8 @@ export const Session = z.object({
    *     shelves a session the inactivity rule would have kept; "active" keeps
    *     one the inactivity rule would have shelved. Absent means "let the rule
    *     decide", which is a third answer neither boolean can express.
-   *   - AN OVERRIDE NEVER GOES STALE SILENTLY: the engine clears it when real
-   *     activity happens (a turn is queued), so a settled session that gets a
+   *   - AN OVERRIDE NEVER GOES STALE SILENTLY: the engine clears a settled override when
+   *     a turn is queued (an active pin survives), so a settled session that gets a
    *     new message comes back on its own rather than staying hidden while it
    *     works.
    *   - A SNOOZE IS AN OVERLAY, NOT A STATE. The session stays exactly as
@@ -577,8 +582,7 @@ export const Session = z.object({
    * WHY THE ENGINE HOLDS THEM AT ALL, rather than a browser's local storage:
    * the same sessions are read from the desktop shell, a browser tab and
    * whatever else attaches, and an inbox that disagrees with itself per client
-   * is not an inbox. `readAt` is deliberately still absent — see
-   * `apps/web/lib/session-list.ts` for what unread would need.
+   * is not an inbox. Read receipts above are also engine-owned.
    */
   settledOverride: z.enum(["settled", "active"]).optional(),
   /** When the override was set. Its age is what lets a client tell an old

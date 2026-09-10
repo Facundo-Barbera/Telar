@@ -20,7 +20,7 @@
  * screen. That is the worst kind of missing feature, because every part of it
  * that a reader can see says it works.
  *
- * `readAt` REMAINS UNMODELLED, so unread is still absent rather than faked.
+ * Read receipts are persisted by the engine when a completed result is viewed.
  *
  * Everything else here is the donor's logic verbatim: the same sort, the same
  * "search flattens every band", the same survivor rule that keeps the session
@@ -110,6 +110,9 @@ export type SidebarSession = {
   activityAt?: number;
   /** When the last turn ended, and whether it ended badly — the two facts the
    *  early-wake rule is made of. See `settlingActivity`. */
+  lastTurnSequence?: number;
+  lastReadTurnSequence?: number;
+  readAt?: number;
   lastTurnEndedAt?: number;
   lastTurnFailed?: boolean;
   /**
@@ -164,6 +167,9 @@ export function toSidebarSession(
     ...(session.snoozedAt === undefined ? {} : { snoozedAt: session.snoozedAt }),
     activity: session.activity,
     ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
+    ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
+    ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
+    ...(session.readAt === undefined ? {} : { readAt: session.readAt }),
     ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
     ...(session.lastTurnFailed ? { lastTurnFailed: true } : {}),
   };

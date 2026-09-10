@@ -919,7 +919,7 @@ function parseSession(value: unknown): Session {
  */
 function storedSession(
   session: Session,
-): Omit<Session, "activity" | "activityAt" | "lastTurnEndedAt" | "lastTurnFailed"> {
+): Omit<Session, "activity" | "activityAt" | "lastTurnEndedAt" | "lastTurnFailed" | "lastTurnSequence"> {
   const {
     activity: _activity,
     activityAt: _activityAt,
@@ -928,6 +928,7 @@ function storedSession(
     // only ever be a stale second one.
     lastTurnEndedAt: _lastTurnEndedAt,
     lastTurnFailed: _lastTurnFailed,
+    lastTurnSequence: _lastTurnSequence,
     ...stored
   } = session;
   return stored;
@@ -5311,6 +5312,23 @@ export class EngineStore {
     return next;
   }
 
+  /** A receipt names the terminal turn rendered, never a client clock or the
+   * latest turn at request time. A delayed receipt cannot consume newer work. */
+  markSessionRead(sessionId: string, runId: string): Session {
+    const session = this.getSession(sessionId);
+    const turn = this.readQueue(sessionId).turns.find((entry) => entry.runId === runId);
+    if (!turn || turn.completedAt === undefined || !["completed", "failed", "stopped"].includes(turn.state)) {
+      throw new EngineStateError("invalid_request", "read receipt must name a completed, failed or stopped turn in this session");
+    }
+    if (turn.sequence <= (session.lastReadTurnSequence ?? 0)) return session;
+    session.lastReadTurnSequence = turn.sequence;
+    session.readAt = this.now();
+    // Reading changes the inbox, not the session's work/activity timestamp.
+    atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));
+    this.appendEvent(sessionId, { type: "session.updated", session });
+    return structuredClone(session);
+  }
+
   getSession(sessionId: string): Session {
     const stored = readJson(sessionMetadataFile(this.paths, sessionId));
     if (stored === undefined) throw new EngineStateError("not_found", "session does not exist");
@@ -5342,7 +5360,7 @@ export class EngineStore {
     const ended = lastEndedTurn(turns);
     const base: Session = {
       ...session,
-      ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
+      ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt, lastTurnSequence: ended.sequence }),
       ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
     };
     // Only a request whose turn can still take the answer blocks the session;
@@ -7075,9 +7093,12 @@ export class EngineStore {
    */
   private wakeSessionForNewWork(sessionId: string): void {
     const session = this.getSession(sessionId);
-    if (session.settledOverride === undefined && session.snoozedUntil === undefined) return;
-    delete session.settledOverride;
-    delete session.settledAt;
+    if (session.settledOverride !== "settled" && session.snoozedUntil === undefined) return;
+    // New work wakes a shelved session; it never cancels an explicit pin.
+    if (session.settledOverride === "settled") {
+      delete session.settledOverride;
+      delete session.settledAt;
+    }
     delete session.snoozedUntil;
     delete session.snoozedAt;
     atomicWrite(sessionMetadataFile(this.paths, sessionId), storedSession(session));

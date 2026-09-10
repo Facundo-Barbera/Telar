@@ -3120,6 +3120,11 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
           });
           return;
         }
+        if (request.method === "POST" && session.tail === "/read") {
+          const input = await body(request);
+          writeJson(response, 200, { session: store.markSessionRead(session.sessionId, stringValue(input.runId, "run id")!) });
+          return;
+        }
         if (request.method === "POST" && session.tail === "/archive") {
           await body(request);
           writeJson(response, 200, { session: store.archiveSession(session.sessionId) });
