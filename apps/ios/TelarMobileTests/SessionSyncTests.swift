@@ -41,7 +41,8 @@ actor RecordingEngineAPI: EngineAPI {
     func liveSessionsData() async throws -> Data { fatalError("unused") }
 
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult { fatalError("unused") }
-    func stop(_ id: EngineID, runId: String?) async throws {}
+    func stop(_ id: EngineID, runId: String) async throws {}
+    func stopSession(_ id: EngineID) async throws {}
     func resolveRequest(_ id: EngineID, requestId: EngineID, decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?) async throws {}
     func patchSession(_ id: EngineID, patch: SessionPatch) async throws {}
     func promoteTurn(_ id: EngineID, runId: String) async throws {}

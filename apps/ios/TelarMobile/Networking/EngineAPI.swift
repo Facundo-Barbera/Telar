@@ -15,7 +15,12 @@ protocol EngineAPI: Sendable {
     func sessionData(_ id: EngineID) async throws -> Data
     func liveSessionsData() async throws -> Data
     func submitTurn(_ id: EngineID, runId: String, input: String, attachments: [EngineID]?) async throws -> TurnSubmissionResult
-    func stop(_ id: EngineID, runId: String?) async throws
+    /// Withdraw ONE queued message, by run id. The composer's per-message X.
+    func stop(_ id: EngineID, runId: String) async throws
+    /// Stop the session's work: the running turn ends and anything queued
+    /// behind it is settled. No run id — the Stop button means "stop this",
+    /// not "stop that one turn and let the next start a heartbeat later".
+    func stopSession(_ id: EngineID) async throws
     func resolveRequest(
         _ id: EngineID, requestId: EngineID,
         decision: RequestDecision, reason: String?, answers: [String: AnswerValue]?
@@ -265,9 +270,16 @@ struct HTTPEngineAPI: EngineAPI {
         return try await post("api/sessions/\(escape(id))/turns", body: body)
     }
 
-    func stop(_ id: EngineID, runId: String?) async throws {
-        var body: [String: AnyEncodable] = [:]
-        if let runId { body["runId"] = AnyEncodable(runId) }
+    func stop(_ id: EngineID, runId: String) async throws {
+        let body: [String: AnyEncodable] = ["runId": AnyEncodable(runId)]
+        let _: IgnoredBody = try await post("api/sessions/\(escape(id))/stop", body: body)
+    }
+
+    func stopSession(_ id: EngineID) async throws {
+        // `scope: "session"` is the whole difference. Sending a runId stops one
+        // turn, after which the worker claims the next queued message within a
+        // heartbeat — which reads as the app ignoring the Stop you just pressed.
+        let body: [String: AnyEncodable] = ["scope": AnyEncodable("session")]
         let _: IgnoredBody = try await post("api/sessions/\(escape(id))/stop", body: body)
     }
 

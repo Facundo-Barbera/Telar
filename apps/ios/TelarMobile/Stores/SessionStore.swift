@@ -170,9 +170,11 @@ import Observation
         }
     }
 
+    /// Stop is stop: the live turn ends, what was queued behind it is settled,
+    /// and the session is idle. There is no pause and nothing to resume — the
+    /// next message the person sends just runs.
     func stopActiveTurn() async {
-        let runId = sync.turns.last { $0.state.isActive }?.runId
-        await perform { try await self.api.stop(self.sessionId, runId: runId) }
+        await perform { try await self.api.stopSession(self.sessionId) }
     }
 
     func resolve(_ request: EngineRequest, decision: RequestDecision,
